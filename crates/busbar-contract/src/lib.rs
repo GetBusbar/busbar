@@ -15,6 +15,7 @@ pub mod dest;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
+pub mod limits;
 pub mod plane;
 pub mod plugin;
 pub mod spans;
@@ -51,6 +52,7 @@ pub use kinds::{
     OnFailure, PlaneFacts, RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue,
     SignFailed, Signer, SliceGrant, Store, StoreError, VirtualKeyDirectory,
 };
+pub use limits::{GroupSpec, LimitMetric, LimitSpec, ScopeSpec};
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };

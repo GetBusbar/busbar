@@ -26,6 +26,18 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+# THE CONTRACT, for the configured-limit vocabulary and nothing else (`busbar_contract::limits`).
+# The `groups:` section is parsed by the configuration grammar's crate and PROJECTED by this one,
+# which makes the hand-over a relay — and a relay can only be written somewhere that names both
+# sides. With the spec types declared here, only a composition root could name both, so every engine
+# resolving a model without a root behind it carried its own copy of the relay; two readings of one
+# `groups:` section that must agree exactly is how a node comes to be admitted against one set of
+# ledger cells and billed against another. Declaring the vocabulary in the contract dissolves that.
+# The rule this manifest was written for still holds to the letter: `busbar-contract` is a pure type
+# crate with no store, no config parser and no runtime, and it is ALREADY in this crate's compiled
+# closure through the capability crate named above (which depends on it), so naming it directly adds
+# not one crate to what a money multiply links against.
+busbar-contract = { path = "../busbar-contract" }
 
 # TESTS ONLY, AND THE RULE ABOVE STILL HOLDS. The decimal-to-money conversion exists TWICE in the
 # tree: once here, and once inside the admission unit's rate projection, because that crate depends

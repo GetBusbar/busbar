@@ -73,13 +73,27 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3476`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3509`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
   and its measured lines, this figure amended in the same commit — the virtual-key directory
   face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 19 lines) was the first, and the deletion
-  that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back. Two crates carry their own surface ceilings beside it, because
+  that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back. The
+  second is **`busbar_contract::limits`** (`LimitMetric`, `ScopeSpec`, `LimitSpec`, `GroupSpec`;
+  33 lines, declared at +31 against the two the pair had already given back): the CONFIGURED limit
+  tree, joining the RESOLVED form the contract already owns (`ids::BucketRef`, `ids::BucketScope`,
+  `ids::BucketChain`) — one subject read at two moments, because a limit is what a unit is judged
+  against. It is here because the `groups:` section is parsed by one crate and projected by another,
+  which makes the hand-over a RELAY, and a relay can only be written where both sides can be named:
+  with the vocabulary owned by the projecting crate only a composition root could name both, so the
+  relay lived in the root and every engine resolving a model without a root behind it carried a
+  SECOND copy of it — and two readings of one `groups:` section that must agree exactly is how a
+  deployment comes to be admitted against one set of ledger cells and billed against another,
+  silently, because both readings are internally consistent and neither knows the other exists. The
+  one relay is `busbar_substrate::config::groups::group_specs`, beside the grammar it reads; the
+  root's copy went in the same commit. Nothing is added to what a plugin author must read: no trait
+  takes these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

@@ -44,10 +44,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::{ClaimKey, OpClassId};
-use busbar_substrate::config::groups::{GroupCfg, LimitMetric};
+use busbar_substrate::config::groups::GroupCfg;
 use busbar_substrate::config::limits::LimitsResolved;
 use busbar_transport_http::ClientSettings;
-use busbar_unit_cost::{GroupSpec, GroupTable, LimitMetric as Spec, LimitSpec, ScopeSpec};
+use busbar_unit_cost::{GroupSpec, GroupTable};
 use busbar_unit_scope::{PolicyView, Scope};
 use busbar_unit_usage::MeterPolicy;
 
@@ -204,17 +204,16 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
 
 /// The configured `groups:` tree, read into the values the cost unit resolves.
 ///
-/// A relay with no arithmetic in it, the same shape as the card's: the grammar's metric, amount,
-/// window, scope and downgrade target are copied across a crate boundary in the same order, and
-/// what is DONE with them — which bucket a limit lands in, how repeats fold, whose exhaustion
-/// behaviour governs — is the unit's ([`GroupTable::resolve`]). A projection here would be a second
-/// one, and two projections of the money topology that must agree exactly is how a node comes to be
-/// admitted against one set of ledger cells and billed against another, with nothing on any surface
-/// to say so.
+/// **THE RELAY IS NOT HERE.** It is [`busbar_substrate::config::groups::group_specs`], beside the
+/// grammar it reads, in the neutral vocabulary the contract declares — and it is there rather than
+/// here for one reason: the root is not the only reader. The retiring engine resolves the same
+/// section without a root in the picture, and a reader that cannot reach the relay writes a copy of
+/// it. Two readings of one `groups:` section that must agree exactly is how a deployment comes to be
+/// ADMITTED against one set of ledger cells and BILLED against another, silently, because both
+/// readings are internally consistent and neither knows the other exists.
 ///
-/// `lease_ids` is the boot-interned name per group, from [`Vocabulary::group_ids`]. A group absent
-/// from it carries no lease id, which is not an error: the door counts it exactly the same and the
-/// slot simply does not name it.
+/// What is still the root's is the one thing only a root has: the boot-interned name per group, from
+/// [`Vocabulary::group_ids`], handed to the relay as its second argument.
 ///
 /// [`Vocabulary::group_ids`]: crate::root::vocabulary::Vocabulary::group_ids
 #[must_use]
@@ -222,51 +221,7 @@ pub fn group_specs(
     groups: &BTreeMap<String, GroupCfg>,
     lease_ids: &BTreeMap<String, &'static str>,
 ) -> BTreeMap<String, GroupSpec> {
-    groups
-        .iter()
-        .map(|(name, cfg)| {
-            let limits = cfg
-                .limits
-                .iter()
-                .map(|l| LimitSpec {
-                    metric: metric_spec(l.metric),
-                    amount: l.amount,
-                    window: l.per.map(|w| w.as_str()),
-                    scope: l.scope.as_ref().map(|s| ScopeSpec {
-                        kind: s.kind.to_string(),
-                        value: s.value.clone(),
-                    }),
-                    downgrade_to: l.downgrade_to.as_ref().map(|s| ScopeSpec {
-                        kind: s.kind.to_string(),
-                        value: s.value.clone(),
-                    }),
-                })
-                .collect();
-            let spec = GroupSpec {
-                lease_id: lease_ids.get(name).copied(),
-                parent: cfg.parent.clone(),
-                enabled: cfg.enabled,
-                limits,
-            };
-            (name.clone(), spec)
-        })
-        .collect()
-}
-
-/// The grammar's metric in the cost unit's spelling. One arm per variant and no wildcard, so a
-/// metric the grammar gains and this relay does not is a compile error, never a limit that projects
-/// to nothing.
-fn metric_spec(metric: LimitMetric) -> Spec {
-    match metric {
-        LimitMetric::Requests => Spec::Requests,
-        LimitMetric::Tokens => Spec::Tokens,
-        LimitMetric::TokensInput => Spec::TokensInput,
-        LimitMetric::TokensOutput => Spec::TokensOutput,
-        LimitMetric::TokensCacheRead => Spec::TokensCacheRead,
-        LimitMetric::TokensCacheWrite => Spec::TokensCacheWrite,
-        LimitMetric::Budget => Spec::Budget,
-        LimitMetric::Concurrent => Spec::Concurrent,
-    }
+    busbar_substrate::config::groups::group_specs(groups, lease_ids)
 }
 
 /// The configured `groups:` tree, resolved by the cost unit into the table the door walks.

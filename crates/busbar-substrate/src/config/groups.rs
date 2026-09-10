@@ -422,3 +422,87 @@ impl Serialize for LimitCfg {
         map.end()
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE RELAY — the parsed `groups:` tree read into the neutral limit vocabulary
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// **THE ONE RELAY** from this grammar into [`busbar_contract::limits`], the vocabulary the crate
+/// that projects a limit tree into enforcement buckets reads.
+///
+/// A relay with no arithmetic in it: metric, amount, window, scope and downgrade target are copied
+/// across in the order the grammar declares them, and what is DONE with them — which ledger cell a
+/// limit lands in, how repeats fold, whose exhaustion behaviour governs — belongs entirely to the
+/// projecting crate. A projection written here would be a SECOND projection, and two readings of
+/// one `groups:` section that must agree exactly is how a deployment comes to be ADMITTED against
+/// one set of ledger cells and BILLED against another, silently, because both readings are
+/// internally consistent and neither knows the other exists.
+///
+/// It lives HERE, beside the grammar, because this is the crate that has the section parsed and the
+/// contract vocabulary is one this crate already names. Every reader reaches it: a composition root,
+/// an engine with no root behind it, and a test that builds a table by hand. That reachability is
+/// the whole point — a reader that cannot reach the relay writes a copy of it, and the copy is the
+/// failure above.
+///
+/// `lease_ids` is the interned name per group, where a composition root interned one. A group
+/// absent from the map carries no lease id, which is not an error and not a degraded projection:
+/// the resolved table is identical either way, and a caller reading interned names back simply does
+/// not see that one. A caller with no interning to offer passes an empty map.
+#[must_use]
+pub fn group_specs(
+    groups: &std::collections::BTreeMap<String, GroupCfg>,
+    lease_ids: &std::collections::BTreeMap<String, &'static str>,
+) -> std::collections::BTreeMap<String, busbar_contract::limits::GroupSpec> {
+    groups
+        .iter()
+        .map(|(name, cfg)| {
+            let limits = cfg.limits.iter().map(limit_spec).collect();
+            let spec = busbar_contract::limits::GroupSpec {
+                lease_id: lease_ids.get(name).copied(),
+                parent: cfg.parent.clone(),
+                enabled: cfg.enabled,
+                limits,
+            };
+            (name.clone(), spec)
+        })
+        .collect()
+}
+
+/// One parsed limit in the neutral vocabulary. The window is the grammar's own `&'static str`
+/// spelling, which is also the runtime period sentinel — so the relay hands over the same word the
+/// bucket id is built from rather than a re-spelling of it.
+fn limit_spec(l: &LimitCfg) -> busbar_contract::limits::LimitSpec {
+    busbar_contract::limits::LimitSpec {
+        metric: metric_spec(l.metric),
+        amount: l.amount,
+        window: l.per.map(|w| w.as_str()),
+        scope: l.scope.as_ref().map(scope_spec),
+        downgrade_to: l.downgrade_to.as_ref().map(scope_spec),
+    }
+}
+
+/// A scope reference in the neutral vocabulary, KIND AND ALL. The kind rides along because the
+/// bucket id carries it, and a bucket id is a ledger row name.
+fn scope_spec(s: &ScopeRef) -> busbar_contract::limits::ScopeSpec {
+    busbar_contract::limits::ScopeSpec {
+        kind: s.kind.to_string(),
+        value: s.value.clone(),
+    }
+}
+
+/// The grammar's metric in the neutral spelling. One arm per variant and no wildcard, so a metric
+/// the grammar gains and this relay does not is a COMPILE ERROR, never a limit that projects to
+/// nothing — an unprojected limit is a cap an operator wrote down and the node does not enforce.
+fn metric_spec(metric: LimitMetric) -> busbar_contract::limits::LimitMetric {
+    use busbar_contract::limits::LimitMetric as Spec;
+    match metric {
+        LimitMetric::Requests => Spec::Requests,
+        LimitMetric::Tokens => Spec::Tokens,
+        LimitMetric::TokensInput => Spec::TokensInput,
+        LimitMetric::TokensOutput => Spec::TokensOutput,
+        LimitMetric::TokensCacheRead => Spec::TokensCacheRead,
+        LimitMetric::TokensCacheWrite => Spec::TokensCacheWrite,
+        LimitMetric::Budget => Spec::Budget,
+        LimitMetric::Concurrent => Spec::Concurrent,
+    }
+}

@@ -160,7 +160,7 @@ because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3476
+contract_caps = 3509
 grammar = 388
 contract_transport = 845
 
@@ -381,12 +381,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3478
+caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14755
+unit_total_ceiling = 14725
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23612
+union_ceiling = 23615
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1016,7 +1016,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 90
+ceiling = 91
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1055,7 +1055,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
 # The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
 # this is the sideways step the per-crate rows exist to make visible, not a regression.
-figure = 48
+figure = 49
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1190,8 +1190,8 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.unit_total_ceiling"
-by = 149
-because = "FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union, less the 16 lines the unit-auth deletion (ResolvedKey/KeyVerifier/RevocationView, funded by the VirtualKeyDirectory face) took back on this line: 165 - 16 = 149, declared rather than absorbed"
+by = 119
+because = "149 less the 30 lines busbar-unit-cost gave back when the four configured-limit spec types left it for busbar_contract::limits (the face declared on the caps_contract line beneath this one), leaving one re-export at their historical paths: 149 - 30 = 119. FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union, less the 16 lines the unit-auth deletion (ResolvedKey/KeyVerifier/RevocationView, funded by the VirtualKeyDirectory face) took back on this line: 165 - 16 = 149, declared rather than absorbed"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -1209,6 +1209,42 @@ key = "cell.busbar-unit-admission.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "FACE busbar-unit-cost::CostModel: busbar-unit-admission re-exports the resolved topology it used to declare (GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP) from busbar_unit_cost, the crate that resolves it, on the one line of chain.rs that says so, and its tests resolve their chains through the unit's GroupTable::resolve over the unit's spec values on one import line, in place of a third copy of the projection; the walk over that table stays here as ChainWalk"
+
+# FACE busbar_contract::limits (keep-core-delete-5). THE CONFIGURED LIMIT VOCABULARY IS THE
+# CONTRACT'S. The `groups:` section is parsed by the crate that owns the grammar and PROJECTED by the
+# crate that owns the money, which makes the hand-over a RELAY — and a relay can only be written
+# where both sides can be named. With `GroupSpec`/`LimitSpec`/`ScopeSpec`/`LimitMetric` declared in
+# busbar-unit-cost, only a composition root could name both, so the relay lived in the root and every
+# engine that resolves a model without a root behind it had to carry a SECOND copy of it. Two
+# readings of one `groups:` section that must agree exactly is how a deployment comes to be admitted
+# against one set of ledger cells and billed against another. Moving the vocabulary into the contract
+# — beside the RESOLVED form it already owns (`ids::BucketRef`, `ids::BucketScope`,
+# `ids::BucketChain`) — puts the relay in busbar-substrate, beside the grammar, reachable by every
+# reader through an edge ARCHITECTURE.md already grants.
+#
+# Measured: busbar-contract +33 code lines, busbar-unit-cost -30 (the four types struck, one
+# re-export line in their place), crates/busbar/src/root/policy.rs -39 (its copy of the relay
+# deleted, re-pointed at the face). The union rises by 33 - 30 = 3.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 31
+because = "31 = the face's 33 less the 2 lines the contract had already given back beneath it on this line. FACE busbar_contract::limits — the configured limit tree as plain data (LimitMetric, ScopeSpec, LimitSpec, GroupSpec), 33 code lines, moved off busbar-unit-cost so the one GroupCfg -> GroupSpec relay can live in busbar-substrate beside the grammar and be reached by the retiring engine as well as the composition root. Before it, only a root could name both sides, so a second copy of the relay was the only way any other reader got one, and two readings of one groups: section that must agree exactly is how a node comes to be admitted against one set of ledger cells and billed against another. The root's copy is deleted in the same commit."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 3
+because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::limits: the four spec types are +33 code lines in busbar-contract and -30 in busbar-unit-cost, which re-exports them at their historical paths so no caller of the projection moves; the union carries both crates, so it rises by the difference, 33 - 30 = 3, and by nothing else"
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 31
+because = "31 = the face's 33 less the 2 lines the pair had already given back beneath it on this line. FACE busbar_contract::limits — the same 33 lines, on the surface line as well as the LOC line because a vocabulary shared across a crate boundary IS surface. It is the configured half of a subject the contract already owns the resolved half of (ids::BucketRef, ids::BucketScope, ids::BucketChain): a limit is what a unit is judged against, and the section that declares it and the buckets it resolves to are one subject read at two moments. Nothing is added to what a PLUGIN must read to be written — no trait takes these types and no plugin is handed one; they are the relay's two ends."
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 1
+because = "FACE busbar_contract::limits: the composition root names busbar_substrate::config::groups::group_specs, the ONE relay, where it used to carry its own 39-line copy of it. One symbol in the root's mouth in place of a duplicate projection of the money topology — the root's policy.rs falls by 39 lines in the same commit, and the copy that could disagree with the engine's is gone rather than moved."
 
 # ------------------------------------------------------------------------------------------------
 # [gate.census] — THE RATCHET ON THE RATCHETS
