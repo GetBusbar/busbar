@@ -547,6 +547,9 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "caps"),
     ("root", "contract"),
     ("root", "control"),
+    // The composition root mounts every plugin kind it ships, export included; the edge runs
+    // root -> export and never the reverse.
+    ("root", "export"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),
@@ -6409,6 +6412,68 @@ impl Gate for KindIsolationGate {
                 ],
             ));
         }
+
+        // THE ROOT MOUNTS WHAT IT SHIPS — EXPORT INCLUDED. `ARCHITECTURE_ALLOWED` used to grant the
+        // root every plugin sink it mounts except this one, so `busbar` depending on an export-kind
+        // crate had nowhere to land: the class read as `not-allowed` and the edge was refused
+        // outright, which meant no export-kind plugin crate could ever be composed into the root at
+        // all. The class is granted now, and this plants the edge and asks for the SAME finding
+        // [`busbar-export-planted`] above draws for its own new class: admitted, not refused, and
+        // still a `[[dep]]` row this branch owes before the ledger closes over it.
+        //
+        // Per-push only, for the reason given above: the ship twin's own `:deps` arm carries the
+        // transitional ratchet and reds on the legacy crates regardless of this plant.
+        if !self.ship {
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "the composition root depending on an export-kind crate is an admitted class",
+                &[ROW_DEPS],
+                {
+                    let mut ov = manifest_plant("crates/busbar-export-x", "busbar-export-x", &[]);
+                    ov.set(
+                        "crates/busbar/Cargo.toml",
+                        manifest_plus(
+                            cx,
+                            "crates/busbar/Cargo.toml",
+                            "\n[dependencies]\nbusbar-export-x = { path = \
+                             \"../busbar-export-x\" }\n",
+                        ),
+                    );
+                    ov
+                },
+                &[
+                    "unlisted-dep-edge",
+                    "busbar -> busbar-export-x",
+                    "root -> export",
+                ],
+            ));
+        }
+
+        // …AND THE SINK THE RULING WITHHELD IN THE SAME BREATH. An export plugin names the
+        // contract and nothing else — the owner's ruling was `root -> export`, never
+        // `export -> plugin-tooling`, on the same terms `busbar-store-example-plugin ->
+        // busbar-plugin-sdk` is refused for the store kind. This plants the one fixture crate the
+        // real tree does not have (`busbar-export-x`) naming the REAL `busbar-plugin-sdk`
+        // (`crates/plugin-sdk`), and asks that the edge stay exactly what it was before the grant:
+        // a NEW class this branch introduced, refused outright, with no `[[dep]]` row able to
+        // launder it.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an export crate depending on the plugin tooling is still a new forbidden edge",
+            &[ROW_DEPS],
+            manifest_plant(
+                "crates/busbar-export-x",
+                "busbar-export-x",
+                &["busbar-plugin-sdk"],
+            ),
+            &[
+                "new-forbidden-edge",
+                "busbar-export-x -> busbar-plugin-sdk",
+                "export -> plugin-tooling",
+            ],
+        ));
 
         // THE MANIFEST-SPELLING CASES READ THE LEDGER TOO — every one asks for the finding a
         // MISSING `[[dep]]` row produces — so they belong to the per-push gate, on the same
