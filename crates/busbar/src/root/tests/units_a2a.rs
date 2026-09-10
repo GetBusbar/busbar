@@ -1937,3 +1937,126 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
 }
+
+// ── THE RETENTION AXIS — a record written through the legs is not born infinitely old ────────────
+
+/// A store that KEEPS what the legs write and sweeps it the way a durable backend does: the typed
+/// sidecar `ts` is the only age it reads, because a real backend never decodes the opaque body.
+#[derive(Default)]
+struct SweepingStore {
+    rows: Mutex<Vec<busbar_api::PlaneRecord>>,
+}
+
+impl SweepingStore {
+    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_api::PlaneRecord>> {
+        self.rows.lock().expect("rows lock")
+    }
+}
+
+impl busbar_api::Store for SweepingStore {
+    no_governance_rows!();
+
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        let mut rows = self.rows();
+        rows.retain(|r| !(r.kind == record.kind && r.id == record.id));
+        rows.push(record.clone());
+        Ok(())
+    }
+
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        self.rows().push(record.clone());
+        Ok(())
+    }
+
+    /// The shipped backend's own predicate: a row of this kind older than the cutoff goes, except
+    /// under kind `task`, where only a TERMINAL row may go.
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+        let mut rows = self.rows();
+        let was = rows.len();
+        rows.retain(|r| {
+            if r.kind != kind || r.ts >= before {
+                return true;
+            }
+            kind == "task" && r.disposition != busbar_api::PlaneDisposition::Terminal
+        });
+        Ok((was - rows.len()) as u64)
+    }
+}
+
+/// **A RECORD WRITTEN THROUGH THE LEGS CARRIES THE CLOCK IT WAS WRITTEN AT.**
+///
+/// The store keys, orders and sweeps on the typed sidecar columns and never decodes the body, so
+/// `PlaneRecord::ts` is the only age a row has. A leg that dropped the reading it was handed — or
+/// stamped a placeholder in its place — would write a row that reads as infinitely old, and the
+/// retention sweep would drop it at ANY cutoff: not a stale timestamp, a deleted record.
+///
+/// The clock here is a value this test chose, so the assertion is an equality and not a window: the
+/// leg either carried the reading the unit was pinned at or it did not. Both entries are exercised —
+/// the single leg and the plan — because both cross the same kernel pump and a plan is what the
+/// route step actually runs.
+#[test]
+fn the_legs_carry_the_pinned_clock_onto_the_axis_retention_sweeps() {
+    const PINNED: u64 = 1_700_000_000;
+    let store = Arc::new(SweepingStore::default());
+    let legs = RecordLegs::new(store.clone());
+    let key = LegKey {
+        id: "t-1",
+        parent: Some("t-1"),
+        seq: 1,
+        ts: PINNED,
+        expires_at: PINNED + 3_600,
+        // Terminal, so kind `task`'s terminal-only exemption cannot be what spares the row: the
+        // only thing standing between it and the sweep is its own stamp.
+        terminal: true,
+    };
+
+    // ONE leg, straight through the kernel pump onto the store.
+    legs.run(records::SCHEMA_TASK, records::OP_PUT, &key, b"{}")
+        .expect("the task leg runs");
+    // And the PLAN, which is the shape the route step runs.
+    legs.run_plan(
+        &[leg_record(records::SCHEMA_TASK_EVENT, records::OP_APPEND)],
+        &key,
+        b"{}",
+    )
+    .expect("the event leg runs");
+
+    let stamps: Vec<(String, u64)> = store
+        .rows()
+        .iter()
+        .map(|r| (r.kind.clone(), r.ts))
+        .collect();
+    assert_eq!(stamps.len(), 2, "both legs wrote a row");
+    for (kind, ts) in &stamps {
+        assert_eq!(
+            *ts, PINNED,
+            "the {kind} row was written at the pinned arrival epoch but landed on the retention \
+             axis carrying {ts}"
+        );
+    }
+
+    // THE CONSEQUENCE: a sweep at the instant these rows were written must reach neither of them.
+    // Named through the published store protocol, which is the surface the node's sweep uses.
+    let sweep = |kind: &str, before: u64| {
+        busbar_api::Store::purge_plane_records_before(store.as_ref(), kind, before)
+            .expect("the sweep answers")
+    };
+    for schema in [records::SCHEMA_TASK, records::SCHEMA_TASK_EVENT] {
+        assert_eq!(
+            sweep(schema.as_str(), PINNED),
+            0,
+            "retention dropped a {schema} row written at the very cutoff it was swept against"
+        );
+    }
+    assert_eq!(store.rows().len(), 2, "both rows survive their own instant");
+
+    // And the axis still bites once the window really has passed them.
+    for schema in [records::SCHEMA_TASK, records::SCHEMA_TASK_EVENT] {
+        assert_eq!(
+            sweep(schema.as_str(), PINNED + 1),
+            1,
+            "a cutoff past the write must drop the {schema} row"
+        );
+    }
+    assert!(store.rows().is_empty(), "the sweep is a real sweep");
+}
