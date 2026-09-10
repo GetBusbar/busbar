@@ -413,6 +413,82 @@ pub fn task_ack_result() -> serde_json::Value {
     serde_json::json!({})
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   WHOSE BYTES THE ANSWER IS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Every class whose ANSWER BYTES this plane composes, in declaration order.
+///
+/// **This is a narrower statement than [`ANSWERED`] and the difference is the whole of it.** A class
+/// in `ANSWERED` is one whose UNIT the loop owns: the kernel runs its record legs and the twelve
+/// steps decide it. A class here is one whose BYTES are additionally this plane's own — the document
+/// that reaches the caller was written by [`composed`] below and by nothing else, so the surface the
+/// mount wrapped is never asked about it and its arm there is unreachable.
+///
+/// A class is added here only when every input its answer is composed from is already in this
+/// plane's hands. The listings and the named reads are not, and their absence is a fact about where
+/// the entitlement walk, the trust filter and the render live rather than about this table: those
+/// three read the catalogue and none of them has moved, so composing a listing here would be
+/// composing it out of records this crate cannot reach.
+///
+/// It is a list rather than a predicate because the root's fall-through gate is derived from it, and
+/// a set two readers derive separately is a set they can derive differently.
+pub const COMPOSED: &[OpClassId] = &[ops::OP_COMPLETION];
+
+/// The whole answer document for one composed class, as the bytes that go on the wire.
+///
+/// `None` is a class this plane does not compose the bytes of — the root hands it to the surface the
+/// mount wrapped, exactly as it did before this function existed. That is the DECLARATION and not a
+/// gap: [`COMPOSED`] is the same statement as a list, and the two are pinned to each other by a cell
+/// so a class answered here without being declared there cannot happen.
+///
+/// The envelope is [`crate::jsonrpc::success`] and the discriminator is
+/// [`crate::jsonrpc::RESULT_TYPE_COMPLETE`], both by call rather than by copy: this is the same
+/// writer the plane's own `encode_response` uses for an answer this node composed itself, so a
+/// change to how this protocol frames a result moves both paths at once or neither.
+///
+/// `rpc_id` is the identifier's RAW bytes exactly as they arrived, quotes and all, because those are
+/// the bytes an answer must echo — see [`crate::jsonrpc::Envelope::id_bytes`]. `None` is an arrival
+/// that carried no identifier, and the member is then omitted, which is the success path's own
+/// asymmetry rather than a choice made here.
+///
+/// # Errors
+/// Returns an encode error when the identifier's bytes cannot be read back as a value. The reader
+/// admits only identifiers this can write, so it is the impossible arm — written as an error rather
+/// than an unwrap because the day the two stop agreeing is a day a caller is owed a refusal, not a
+/// day this node panics on the request path.
+#[must_use]
+pub fn composed(
+    op: OpClassId,
+    rpc_id: Option<&[u8]>,
+) -> Option<Result<Vec<u8>, busbar_contract::wire::Encode>> {
+    let result = match op {
+        // The empty candidate set, stated in full. Composed from no record and no caller, which is
+        // why it is the first class whose bytes this plane can own: there is nothing to reach for.
+        ops::OP_COMPLETION => completion_result(),
+        _ => return None,
+    };
+    Some(envelope(&result, rpc_id))
+}
+
+/// One composed result, wrapped in this protocol's successful envelope.
+///
+/// Its own function so every arm of [`composed`] is a RESULT and the framing is written once. An arm
+/// that built its own envelope would be a second place for the discriminator, the version member and
+/// the identifier's omission rule to be decided.
+fn envelope(
+    result: &serde_json::Value,
+    rpc_id: Option<&[u8]>,
+) -> Result<Vec<u8>, busbar_contract::wire::Encode> {
+    let id = match rpc_id {
+        Some(raw) => Some(crate::jsonrpc::id_value(raw)?),
+        None => None,
+    };
+    let body =
+        serde_json::to_vec(result).map_err(|_| busbar_contract::wire::Encode::Unrepresentable)?;
+    crate::jsonrpc::success(id.as_ref(), &body, crate::jsonrpc::RESULT_TYPE_COMPLETE)
+}
+
 #[cfg(test)]
 #[path = "tests/served.rs"]
 mod tests;
