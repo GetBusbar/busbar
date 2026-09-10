@@ -144,7 +144,8 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`
   carry `fires_at` (the resolved stage set), `groups` and `phase`; the overlay-section 404 lists
   the sections that now exist (`identity-providers`, `export`, `tools`, `agents`); `openapi.json`
-  describes the MCP and A2A endpoints.
+  describes the MCP and A2A endpoints. `openapi.json` reports the binary's own version in
+  `info.version`; 1.5.5 published a stale `1.5.4` there.
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
   (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
   (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
