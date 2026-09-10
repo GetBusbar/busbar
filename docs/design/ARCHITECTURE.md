@@ -1670,7 +1670,12 @@ about a kind boundary, this register and that spec win.)*
   the merge-base:** a `[[minted]]` row admits ONE announced crate's own rows once, and a
   `[[minted_kind]]` row admits ONE announced kind's whole COLUMN once — every other crate's
   `<crate> × <kind>` cell at its measured count and every `[[edge]]` class naming the kind — on the
-  branch that lands the kind's first crate. Nothing else opens a row the base did not carry.
+  branch that lands the kind's first crate. Nothing else opens a row the base did not carry. **A
+  later crate of a kind mints its own rows and may raise exactly one base-carried cell:** the
+  composition root's `× plane` cell rises by the crate's NAME (`busbar-plane-<plane>-<dialect>`
+  reads as plane words to the window scanner) at the one manifest line and one table row the root
+  spends on it — declared under `[gate.ceiling_raises]` at the measured figure, never rounded
+  (1798 → 1835 for the first two dialect crates, → the pinned figure for the third and fourth).
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
