@@ -215,6 +215,14 @@ impl Outcome {
 pub struct UnitEnd {
     outcome: Outcome,
     posted: Result<Posted, DurabilityLost>,
+    /// Whether the posting has already been lent for a settlement.
+    ///
+    /// The by-value door — [`UnitEnd::into_posted`] — carries exactly-once in its signature: it
+    /// consumes the end, so there is no second call to make. The LENT door cannot, because a
+    /// `&Posted` is a reference and a reference can be taken again. So the property moves off the
+    /// move and onto this flag: the end that OWNS the posting is the one thing that can say whether
+    /// it has already been handed to a settlement, and it says it once.
+    lent: bool,
 }
 
 impl UnitEnd {
@@ -224,7 +232,11 @@ impl UnitEnd {
         outcome: Outcome,
         posted: Result<Posted, DurabilityLost>,
     ) -> Self {
-        UnitEnd { outcome, posted }
+        UnitEnd {
+            outcome,
+            posted,
+            lent: false,
+        }
     }
 
     /// How the unit finished.
@@ -238,7 +250,72 @@ impl UnitEnd {
     }
 
     /// Take the posting out, for the record writer.
+    ///
+    /// The door for a driver that is FINISHED with the end. It consumes the end, which is what has
+    /// always made a second settlement of one hold unwritable, and it is left exactly as it was:
+    /// every caller of it settles and then drops. A driver that must hand the end ON after settling
+    /// cannot use this door at all — settling through it destroys the thing it still owes — and
+    /// reaches for [`UnitEnd::lend_posting`] instead.
     pub fn into_posted(self) -> Result<Posted, DurabilityLost> {
         self.posted
+    }
+
+    /// **LEND THE POSTING FOR EXACTLY ONE SETTLEMENT, and keep the end intact.**
+    ///
+    /// The door for a driver that settles and then owes the END to something else — a plane whose
+    /// walk is behind a mount, where the mount is owed the kernel's own ending and the plane's exit
+    /// arm has to settle before it can hand one over.
+    ///
+    /// ## The exactly-once property, and where it now lives
+    ///
+    /// It used to live in the MOVE. A [`Posted`] is not `Clone`, settling consumes it, and a second
+    /// settlement of one hold was therefore unwritable — no flag, no check, nothing to get wrong.
+    /// A borrow cannot carry that, because a reference can be taken twice.
+    ///
+    /// So it lives HERE, in the end that owns the posting, and it is a REFUSAL rather than a type
+    /// error: the first call hands back the witness, every later call answers `None`. That is the
+    /// honest description of the mechanism, and it is deliberately not dressed up as the old one.
+    ///
+    /// What the TYPE still carries is the other half. [`PostingLent`] has a private field and no
+    /// public constructor, so the only way to reach a settlement that takes a borrow is through this
+    /// method: a caller cannot manufacture the witness out of a `&Posted` it came by some other way,
+    /// and there is no other way, because [`UnitEnd::posted`] lends a plain reference that no
+    /// settlement accepts.
+    ///
+    /// `None` on the first call means the unit ended with a durability loss recorded in the
+    /// posting's place — there is nothing to settle, which is the same answer
+    /// [`UnitEnd::into_posted`]'s `Err` arm gives. Read [`UnitEnd::posted`] to tell that `None`
+    /// apart from the already-lent one where it matters; no settlement path needs to, because both
+    /// mean settle nothing.
+    pub fn lend_posting(&mut self) -> Option<PostingLent<'_>> {
+        if self.lent {
+            return None;
+        }
+        // Marked only where there IS a posting. An end carrying a durability loss lends nothing and
+        // has nothing to protect, and marking it would make a later reading of this flag say that a
+        // settlement happened.
+        let posted = self.posted.as_ref().ok()?;
+        self.lent = true;
+        Some(PostingLent(posted))
+    }
+}
+
+/// **ONE LEND OF ONE POSTING**, and the only way to reach a settlement that does not consume it.
+///
+/// A witness rather than a bare `&Posted`, and the difference is the whole point: the field is
+/// private and this crate builds one in exactly one place — [`UnitEnd::lend_posting`], which hands
+/// out at most one per end. A ledger door that took `&Posted` could be driven from any borrow
+/// anybody happened to be holding, including one taken off an end that had already settled through
+/// it. A door that takes THIS can only be driven by a lend, and a lend happens once.
+///
+/// It borrows the end for as long as it lives, so the end cannot be consumed out from under a
+/// settlement that is still using it.
+#[derive(Debug)]
+pub struct PostingLent<'a>(&'a Posted);
+
+impl PostingLent<'_> {
+    /// The posting this lend is OF.
+    pub fn posted(&self) -> &Posted {
+        self.0
     }
 }

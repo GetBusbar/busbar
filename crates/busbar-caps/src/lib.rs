@@ -87,7 +87,9 @@ pub use token::{
     AdminToken, AdmitToken, DurabilityToken, EgressAuthToken, ExitToken, KernelSeal, LedgerToken,
     RecoveryToken, TransportKeyToken, TrustToken, UnitToken, UsageToken,
 };
-pub use unit_end::{Abort, IdempotencyKey, Origin, OriginKind, Outcome, SessionId, UnitEnd};
+pub use unit_end::{
+    Abort, IdempotencyKey, Origin, OriginKind, Outcome, PostingLent, SessionId, UnitEnd,
+};
 pub use usage::{LocatorPtr, QuantitySource, Usage, UsageError, UsageLine, MAX_USAGE_LINES};
 
 #[cfg(test)]
