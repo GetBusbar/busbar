@@ -690,6 +690,13 @@ lq_selftest() {
   _t "an absent lock is taken"              0 "$(lq_lock_acquire $$ >/dev/null; echo $?)"
   _t "  ...and names this pid"              "$$" "$(head -n1 "$LOCK")"
   _t "  ...and the runner pid is exported"  "$$" "$(lq_lock_acquire $$ >/dev/null; echo "$LANDQ_RUNNER_PID")"
+  # The export must reach the CALLER, not just the subshell a `$(...)` would run the function in:
+  # this case takes the lock in this shell and reads the variable here; the next one pins the main
+  # flow to that form, because the substitution form passed the case above while the runner refused
+  # its own batch with "landq4.sh (pid N) holds the landing lock".
+  unset LANDQ_RUNNER_PID; lq_lock_acquire $$ >/dev/null
+  _t "  ...in the calling shell, not a subshell" "$$" "${LANDQ_RUNNER_PID:-unset}"
+  _t "the main flow takes the lock in its own shell" 0 "$(grep -c 'holder="\$(lq_lock_acquire' "$0")"
   _t "a live holder refuses a second runner" "$$" "$(lq_lock_acquire 1 2>/dev/null; true)"
   printf '999999999\n' >"$LOCK"
   _t "a dead holder is taken over"          0 "$(lq_lock_acquire $$ >/dev/null; echo $?)"
@@ -730,9 +737,13 @@ esac
 
 mkdir -p "$W/target/gate"
 touch "$Q" "$D" "$PP"
-if ! holder="$(lq_lock_acquire $$)"; then
-  echo "landq4.sh: another runner (pid $holder) holds $LOCK — only one runner lands on this host" >&2; exit 2
+# The lock is taken IN THIS SHELL, never inside a command substitution: `$(lq_lock_acquire ...)` runs
+# the function in a subshell, so the `export LANDQ_RUNNER_PID` it performs dies with that subshell
+# and the batch this runner then launches is refused by its own lock as an outsider.
+if ! lq_lock_acquire $$ >"$W/target/gate/landq4.holder"; then
+  echo "landq4.sh: another runner (pid $(cat "$W/target/gate/landq4.holder")) holds $LOCK — only one runner lands on this host" >&2; exit 2
 fi
+rm -f "$W/target/gate/landq4.holder"
 trap 'lq_lock_release $$' EXIT
 
 if [ "${1:-}" = "--preprove-once" ]; then
