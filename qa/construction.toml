@@ -323,13 +323,17 @@ because = "busbar-core/src/admin/v1/contract's Scope, Grants and required_scope 
 # route matrix, and spent the caller's per-minute mutation budget twice. The third is money: with the
 # budget halved, the sixth CONFIG-class mutation of a minute was refused on a node that had admitted
 # it the release before. The loop now dispatches into a surface with no door on it, and the identity
-# the AUTHENTICATE step resolved travels with the request instead of being re-derived behind it. Six
-# rows move, each measured, each explained. The first five are ROOT COMPOSITION — the root composes
-# the two routers, hands the identity across the seam, and writes the cells that pin both.
+# the AUTHENTICATE step resolved travels with the request instead of being re-derived behind it. Five
+# rows move, each measured, each explained, and every one of them is ROOT COMPOSITION — the root
+# composes the two routers, hands the identity across the seam, and writes the cells that pin both.
+# The engine's own `× control` cell moves too (5131 -> 5133: `admin::transport::mount` and
+# `admin::JsonV1`, the operator surface's routes built a second time because a layered router cannot
+# have a layer taken off it) and carries NO entry here, because it is not a rise against this
+# branch's base — the file's figure was below the base already and the two spellings do not reach it.
 [[gate.ceiling_raises]]
 key = "cell.busbar.api.count"
 file = "qa/kind-isolation.toml"
-by = 5
+by = 4
 because = "the identity the loop resolved, handed to the surface in the request extension the surface has always read it from: four busbar_api spellings in root/units_admin/admin_mount.rs (AuthPrincipal twice, Principal::from_id, CallerToken) plus the doc line naming the neutral ABI they come from. It is the composition root doing the one thing only it can do — pairing the step that decided an identity with the surface that renders under it — and it is what stops the auth chain being run a second time to re-derive it."
 
 [[gate.ceiling_raises]]
@@ -355,19 +359,6 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 16
 because = "the mutation budget the refusal is made of, named where the refusal is written and where it is pinned: busbar_unit_verbs::rate::MUTATION_RATE_WINDOW_SECS is what the advertised back-off is derived from in admin_mount.rs, and the budget cell reads MutationLimiter, MutationClass::for_path, CONFIG_CLASS_RULES and ConfigClassRule off the unit rather than restating any of them. Plus busbar_unit_auth::ANONYMOUS, which is how the anonymous principal maps back to the absence the surface has always rendered as that word."
-
-# AND THE SIXTH IS NOT ROOT COMPOSITION, so it is stated plainly rather than filed under one of the
-# three admitted forms. The engine builds the operator surface's routes a SECOND time — the same two
-# spellings, `admin::transport::mount` and `admin::JsonV1`, one line below the two that already
-# exist — because the loop's surface and the listener's surface differ by a route set and by the auth
-# layer, and neither difference can be expressed by cloning a built router. Every word of prose
-# around it is written without the instance noun, so the rise is exactly the two code spellings and
-# nothing else. It drains with the engine's admin tree at the terminal landing, with the rest.
-[[gate.ceiling_raises]]
-key = "cell.busbar-core.control.count"
-file = "qa/kind-isolation.toml"
-by = 2
-because = "the operator surface's routes built a second time for the loop to dispatch into: `admin::transport::mount` and `admin::JsonV1`, the same two spellings the line above already carries, and no third. A router that has been layered cannot have a layer taken off it, and the served surface must carry the declared operations without the liveness probe and the plugin routes, so it is a second construction rather than a clone. It goes when the engine's admin tree goes."
 
 # ROOT COMPOSITION. The composition root reads the admin surface's claim off `ControlMeta` instead
 # of off `PlaneMeta`, because that is the face the surface now carries, and pairing a claim with the
