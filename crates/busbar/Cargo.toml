@@ -108,6 +108,13 @@ busbar-transport-sse = { path = "../busbar-transport-sse" }
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+# NO `tokio-tungstenite` HERE, not even as a dev-dependency, and the absence is load-bearing.
+# `cargo xtask gate duplex-ws-default-edge` reads the dependency graph of a `--no-default-features`
+# build with the voice plane removed, and that reading includes dev-dependencies — so a WebSocket
+# client borrowed for a battery reds the very gate that keeps this binary strong-form deletable.
+# The generic duplex mount's battery therefore proves the acceptor's decisions at the seam, and the
+# real-socket half of the same claims is proved in `busbar-transport-ws`'s own session battery,
+# where the client library is already on the right side of that edge.
 # Named directly because provisioning a listener means handing the transport-key unit a resolved
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
@@ -210,6 +217,28 @@ plane-voice = ["dep:busbar-voice", "duplex-wire", "busbar-voice?/runtime", "busb
 # thing it mounts needs the plane's own crate edge to exist — and `plane-voice` is what carries the
 # WS transport edge, so `--no-default-features` still drops plane and transport together.
 root-voice = ["plane-voice"]
+# THE GENERIC DUPLEX MOUNT, DEFAULT OFF, AND NAMING NO PLANE. The acceptor that takes upgrades off
+# the node's own listener, serves whatever surface it was handed, and drains on a stop. It is a
+# separate switch from any plane's serving feature because it is separate CODE: it reads no
+# declaration, drives no frame and cannot say whose surface it just served, so a plane-named switch
+# over it would be the one place in this tree where the generic mount was spelled as one plane's.
+#
+# A plane's own serving feature turns this on by implying it rather than by being it, which is what
+# keeps the second duplex plane from needing a second copy of the acceptor — or a second name for
+# this one.
+#
+# No config key, no environment variable, no boot line. Off, the module is not compiled and no call
+# site names it, so the feature-off binary is byte-identical by construction.
+#
+# IT CARRIES THE WIRE'S OWN CONDITION, `duplex-wire`, AND NOT A PLANE'S. The acceptor is generic and
+# needs no wire to compile; a COMPOSITION that serves duplex sessions needs one to exist, and the
+# honest name for "this build has a duplex wire" is the wire's own switch. Leaning on `plane-voice`
+# being in `default` instead would make one plane's presence the answer to a question about a
+# transport — the exact coupling `duplex-wire` was split out to end. Default-off, so
+# `--no-default-features` still drops it, `cargo xtask gate duplex-ws-default-edge` still reads a
+# graph without the WS crate, and the strong-form plane deletion still strips the `?/` forward by the
+# same rule it strips every other one.
+root-duplex-serve = ["duplex-wire", "busbar-transport-ws?/serve-sessions"]
 # THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
 # of the shell over the engine. Same six dialects under the same six names. Default-off was the
 # ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
