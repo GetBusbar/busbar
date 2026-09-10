@@ -1,5 +1,5 @@
 //! The transport battery, for `sse`: the request/N-response-frame shape over a real streamed
-//! upstream, the inherited `StatusClass` at the first response frame, and the terminator/frame
+//! upstream, the inherited `WireStatusClass` at the first response frame, and the terminator/frame
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
@@ -86,7 +86,7 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
     let (_s, first) = frames.next().await.unwrap().unwrap();
     assert_eq!(
         first.meta.status,
-        Some(busbar_contract_transport::wire::StatusClass::Success)
+        Some(busbar_contract_transport::wire::WireStatusClass::Success)
     );
     let (event, data) = proto::parse_sse_frame(first.bytes.as_slice()).unwrap();
     assert_eq!(event, "message");
@@ -442,7 +442,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
         .expect("the error body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract_transport::wire::StatusClass::ClientError),
+        Some(busbar_contract_transport::wire::WireStatusClass::ClientError),
         "the status leg http read off the 429 is attached to the frame that carries the body"
     );
     assert_eq!(
