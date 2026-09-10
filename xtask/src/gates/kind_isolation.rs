@@ -4040,10 +4040,88 @@ fn battery_block_names(text: &str, name: &str) -> bool {
     text.contains(&format!("{}::", name.replace('-', "_")))
 }
 
-fn index_tooling_batteries(
-    cx: &Ctx,
-    crates: &[CrateInfo],
-) -> Result<BTreeMap<String, String>, String> {
+/// Top-level `mod NAME { … }` bodies in `text`, brace-BALANCED against the CODE — a brace sitting
+/// inside a `"…"` (e.g. a doc string quoting a snippet) cannot close a block early, because the
+/// depth counter reads [`scan::blank_code`]'s blanked copy exactly the way [`scan::production_lines`]
+/// does. An external `mod x;` carries no body and is not returned; a kind literal has nowhere to
+/// sit in one.
+fn mod_blocks(text: &str) -> Vec<(String, String)> {
+    let mut lex = scan::LexState::default();
+    let mut depth = 0i32;
+    let mut cur: Option<(String, Vec<&str>)> = None;
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let counted = scan::blank_code(raw, &mut lex);
+        if cur.is_none() && depth == 0 {
+            let t = raw.trim_start();
+            let t = t.strip_prefix("pub ").unwrap_or(t);
+            if let Some(rest) = t.strip_prefix("mod ") {
+                if counted.contains('{') {
+                    if let Some(name) = rest.split(&['{', ' ', ';'][..]).next() {
+                        if !name.is_empty() {
+                            cur = Some((name.to_string(), Vec::new()));
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, body)) = cur.as_mut() {
+            body.push(raw);
+        }
+        depth += counted.matches('{').count() as i32 - counted.matches('}').count() as i32;
+        if depth <= 0 {
+            depth = 0;
+            if let Some((name, body)) = cur.take() {
+                out.push((name, body.join("\n")));
+            }
+        }
+    }
+    out
+}
+
+/// Which of [`BATTERY_KINDS`] a battery BLOCK is about, read off its own kind literal — the shape
+/// `assert_contract_trait_implemented("<kind>", …)` takes for a kind with no crate to name at all
+/// (see [`ToolingKindBattery`]). `code` is comment-stripped (via [`scan::production_lines`]) so a
+/// doc comment's prose mentioning a sibling kind cannot attribute the block to it; the quoted
+/// literal only ever sits in the call itself.
+fn kind_literals_in(code: &str) -> Vec<&'static str> {
+    BATTERY_KINDS
+        .iter()
+        .copied()
+        .filter(|k| code.contains(&format!("\"{k}\"")))
+        .collect()
+}
+
+/// Per-kind status of a battery in a tooling home that names its subject by KIND LITERAL rather
+/// than by crate path.
+///
+/// Four kinds — `auth`, `secret`, `hooks`, `export` — have no `busbar-contract` implementor
+/// anywhere in the tree, so their shared battery cannot be the per-crate shape
+/// [`index_tooling_batteries`]'s other half reads: there is no crate for a `[dev-dependencies]`
+/// edge to name and no crate-path block for [`battery_block_names`] to find. What IS there is one
+/// generic assertion per crate, keyed on the KIND's own name
+/// (`conf::assert_contract_trait_implemented("auth", "AuthScheme", None)`), so this half counts
+/// `#[test]` entries by kind literal instead of by crate name — off THE SAME WALK, in THE SAME
+/// loop, as the per-crate half, never a second one over the tooling homes.
+#[derive(Default, Clone)]
+struct ToolingKindBattery {
+    /// `#[test]` entries scoped to this kind, over every tooling home, that are NOT `#[ignore]`d.
+    live: usize,
+    /// `#[test]` entries scoped to this kind that ARE `#[ignore]`d.
+    ignored: usize,
+    /// The battery file the entries were last counted in — for the finding's text.
+    file: String,
+}
+
+/// Both halves of what a tooling home can say about a kind's battery: the per-crate map
+/// [`index_tooling_batteries`] always read, and the per-kind-literal map that reads the same walk
+/// for the four kinds the per-crate shape cannot see.
+struct ToolingBatteries {
+    by_crate: BTreeMap<String, String>,
+    by_kind: BTreeMap<&'static str, ToolingKindBattery>,
+}
+
+fn index_tooling_batteries(cx: &Ctx, crates: &[CrateInfo]) -> Result<ToolingBatteries, String> {
     let roots: Vec<&str> = TOOLING_BATTERY_HOMES.iter().map(|(p, _)| *p).collect();
     let files = cx
         .walk(
@@ -4052,7 +4130,8 @@ fn index_tooling_batteries(
                 .exclude(TOOLING_BATTERY_SKIP.iter().copied()),
         )
         .map_err(|e| e.to_string())?;
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut by_crate: BTreeMap<String, String> = BTreeMap::new();
+    let mut by_kind: BTreeMap<&'static str, ToolingKindBattery> = BTreeMap::new();
     for (home, _) in TOOLING_BATTERY_HOMES {
         let Ok(manifest_text) = cx.read(format!("{home}/Cargo.toml")) else {
             continue;
@@ -4071,21 +4150,46 @@ fn index_tooling_batteries(
             if !rel.starts_with(&prefix) || !rel.contains(CONFORMANCE_MARKER) {
                 continue;
             }
+            // THE KIND-LITERAL HALF READS EVERY BLOCK, LIVE OR DEAD — unlike the per-crate half
+            // below, which has no reason to look at a file with zero live entries anywhere in it.
+            // A kind whose only battery is entirely `#[ignore]`d is exactly the case this half
+            // exists to catch, so it cannot skip the file the way that early-out does.
+            for (_, body) in mod_blocks(&f.text) {
+                let code: String = scan::production_lines(&body)
+                    .into_iter()
+                    .map(|(_, l)| l)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let kinds = kind_literals_in(&code);
+                if kinds.is_empty() {
+                    continue;
+                }
+                let (blive, bignored) = live_battery_entries(&body);
+                if blive == 0 && bignored == 0 {
+                    continue;
+                }
+                for k in kinds {
+                    let entry = by_kind.entry(k).or_default();
+                    entry.live += blive;
+                    entry.ignored += bignored;
+                    entry.file = rel.clone();
+                }
+            }
             let (live, _ignored) = live_battery_entries(&f.text);
             if live == 0 {
                 continue;
             }
             for c in crates {
-                if !dev.contains(&c.name) || out.contains_key(&c.name) {
+                if !dev.contains(&c.name) || by_crate.contains_key(&c.name) {
                     continue;
                 }
                 if battery_block_names(&f.text, &c.name) {
-                    out.insert(c.name.clone(), rel.clone());
+                    by_crate.insert(c.name.clone(), rel.clone());
                 }
             }
         }
     }
-    Ok(out)
+    Ok(ToolingBatteries { by_crate, by_kind })
 }
 
 fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
@@ -4380,11 +4484,7 @@ fn crate_runs_its_battery(
     idx.conformance.contains(&c.dir) || tooling.contains_key(&c.name)
 }
 
-fn rule_testkit(
-    crates: &[CrateInfo],
-    idx: &SourceIndex,
-    tooling: &BTreeMap<String, String>,
-) -> Row {
+fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex, tooling: &ToolingBatteries) -> Row {
     let batteries: Vec<&str> = crates
         .iter()
         .map(|c| c.name.as_str())
@@ -4404,31 +4504,68 @@ fn rule_testkit(
         let runners: Vec<&CrateInfo> = members
             .iter()
             .copied()
-            .filter(|c| crate_runs_its_battery(c, idx, tooling))
+            .filter(|c| crate_runs_its_battery(c, idx, &tooling.by_crate))
             .collect();
         checked += members.len();
         let want_trait = entry_trait(kind);
-        let no_battery = runners.is_empty();
+        // THE KIND-LITERAL BATTERY COVERS A KIND WITH NO IMPLEMENTOR ANYWHERE, so no member's
+        // `runners` entry can ever name it — there is no crate-path block for it to carry. A live
+        // entry there is coverage for the whole kind, read the same way `runners` is.
+        let kind_tb = tooling.by_kind.get(kind);
+        let kind_live_tooling = kind_tb.is_some_and(|t| t.live > 0);
+        let no_battery = runners.is_empty() && !kind_live_tooling;
         if no_battery {
-            offenders.push(format!(
-                "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} crate(s) has \
-                 a battery in an allowed home: no `tests/*{CONFORMANCE_MARKER}*.rs` of its own, \
-                 and no `*{CONFORMANCE_MARKER}*.rs` block for it in {}. A `{BATTERY_MARKER}` \
-                 dev-dependency ON the crate is NOT one of the homes: that edge runs \
-                 plugin -> plugin-tooling, which the kind graph refuses. Battery crates in the \
-                 tree: {}",
-                members.len(),
-                TOOLING_BATTERY_HOMES
-                    .iter()
-                    .map(|(p, _)| format!("`{p}/tests/`"))
-                    .collect::<Vec<_>>()
-                    .join(" or "),
-                if batteries.is_empty() {
-                    "none".to_string()
-                } else {
-                    batteries.join(", ")
-                }
-            ));
+            if let Some(dead) = kind_tb.filter(|t| t.ignored > 0) {
+                // A BATTERY EXISTS AND DOES NOT RUN — the sharper finding [`live_battery_entries`]'s
+                // doc comment names, read off the tooling home instead of the crate's own `tests/`.
+                // Name the zero-implementor fact alongside it when it holds: for these kinds it is
+                // the REASON the battery is written this way in the first place, not a coincidence.
+                let zero_implementors = members.iter().all(|c| {
+                    idx.impls
+                        .get(&c.dir)
+                        .and_then(|m| m.get(&want_trait))
+                        .copied()
+                        .unwrap_or(0)
+                        == 0
+                });
+                offenders.push(format!(
+                    "battery-ignored\tkind:{kind}\t{kind} carries a battery in {}, off-tree, whose \
+                     every entry for kind `{kind}` is `#[ignore]`d ({} entr{}); `cargo test` runs \
+                     nothing of it — the file exists and the battery does not.{}",
+                    dead.file,
+                    dead.ignored,
+                    if dead.ignored == 1 { "y" } else { "ies" },
+                    if zero_implementors {
+                        format!(
+                            " `{want_trait}` is implemented nowhere under crates/*/src either: \
+                             kind `{kind}` has zero implementors AND an all-ignored battery."
+                        )
+                    } else {
+                        String::new()
+                    }
+                ));
+            } else {
+                offenders.push(format!(
+                    "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} \
+                     crate(s) has a battery in an allowed home: no \
+                     `tests/*{CONFORMANCE_MARKER}*.rs` of its own, and no \
+                     `*{CONFORMANCE_MARKER}*.rs` block for it in {}. A `{BATTERY_MARKER}` \
+                     dev-dependency ON the crate is NOT one of the homes: that edge runs \
+                     plugin -> plugin-tooling, which the kind graph refuses. Battery crates in \
+                     the tree: {}",
+                    members.len(),
+                    TOOLING_BATTERY_HOMES
+                        .iter()
+                        .map(|(p, _)| format!("`{p}/tests/`"))
+                        .collect::<Vec<_>>()
+                        .join(" or "),
+                    if batteries.is_empty() {
+                        "none".to_string()
+                    } else {
+                        batteries.join(", ")
+                    }
+                ));
+            }
         }
         for c in members {
             // A BATTERY WITH NO SUBJECT PROVES NOTHING. The battery's whole content is the kind's
@@ -4459,7 +4596,7 @@ fn rule_testkit(
                 ));
                 continue;
             }
-            if !no_battery && !runners.iter().any(|r| r.name == c.name) {
+            if !no_battery && !kind_live_tooling && !runners.iter().any(|r| r.name == c.name) {
                 offenders.push(format!(
                     "not-run\t{}\t{} does not run kind `{kind}`'s shared battery, which {} of its \
                      siblings do. Give it a `tests/*{CONFORMANCE_MARKER}*.rs` of its own, or a \
@@ -4495,7 +4632,7 @@ fn rule_testkit(
                 "{checked} crate(s) over {} kind(s); {} of them covered by an off-tree tooling \
                  battery ({}), the rest by one of their own; battery crates: {}",
                 BATTERY_KINDS.len(),
-                tooling.len(),
+                tooling.by_crate.len(),
                 TOOLING_BATTERY_HOMES
                     .iter()
                     .map(|(p, _)| *p)
@@ -8305,6 +8442,73 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             ov,
             &["battery-ignored", "busbar-store-ignored"],
+        ));
+
+        // ── THE SAME FINDING, OFF-TREE — A BATTERY NAMED BY KIND LITERAL, NOT BY CRATE PATH ───────
+        //
+        // `auth` has real members (`busbar-auth-admin-tokens`, `busbar-auth-static-plugin`) and no
+        // `Auth` implementor anywhere in shipped source, so its shared battery cannot be the
+        // per-crate shape above: there is no crate for a `[dev-dependencies]` edge to name and no
+        // `busbar_auth_admin_tokens::` block for `battery_block_names` to find. What K13/K14 landed
+        // instead is one generic assertion per kind, keyed on the kind's own name literal
+        // (`assert_contract_trait_implemented("auth", "AuthScheme", None)`), in a battery that lives
+        // in `xtask/tests/`, off-tree, because tooling reaches product and never the reverse — the
+        // only legal home a shared battery for these four kinds could ever have.
+        //
+        // Before this case, `live_battery_entries`'s own doc comment named the anti-pattern
+        // (`#[ignore = "not yet on busbar-contract: …"]` on every entry reads as green) and the row
+        // could not see it in this home at all: the per-crate half of `index_tooling_batteries`
+        // skips a file the moment its OVERALL live count is zero, so an all-ignored kind-literal
+        // battery was invisible rather than caught. The fix reads the same walk, the same loop, and
+        // partitions a battery's `#[test]` entries by KIND LITERAL instead of by crate name.
+        let auth_kind_dev = format!(
+            "{}\n[dev-dependencies]\nbusbar-contract = {{ path = \"../crates/busbar-contract\" }}\n",
+            cx.read("xtask/Cargo.toml").unwrap_or_default()
+        );
+        const AUTH_KIND_BLOCK_IGNORED: &str = "mod auth_admin_tokens {\n    //! Conformance: this \
+             crate is a well-formed `auth`.\n    use crate::conf;\n\n    #[test]\n    #[ignore = \
+             \"not yet on busbar-contract: AuthScheme has no implementor here\"]\n    fn \
+             the_kinds_contract_trait_has_an_implementor() {\n        \
+             conf::assert_contract_trait_implemented(\"auth\", \"AuthScheme\", None);\n    }\n}\n";
+
+        let mut ov = Overlay::new();
+        ov.set("xtask/Cargo.toml", auth_kind_dev.clone());
+        ov.set("xtask/tests/kind_conformance.rs", AUTH_KIND_BLOCK_IGNORED);
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tooling battery that names its subject by kind literal reds battery-ignored — same \
+             finding as the crate-local case — when every entry for that kind is ignored, and \
+             names the kind's zero implementors alongside it",
+            &[ROW_TESTKIT],
+            ov,
+            &[
+                "battery-ignored",
+                "kind:auth",
+                "xtask/tests/kind_conformance.rs",
+                "zero implementors",
+            ],
+        ));
+
+        // ONE LIVE ENTRY FOR THE KIND IS COVERAGE FOR THE WHOLE KIND, so `battery-ignored` (and the
+        // `no-battery` it would otherwise fall back to) both go quiet — the same difference a
+        // crate-local battery makes when its one entry stops being `#[ignore]`d.
+        let mut ov = Overlay::new();
+        ov.set("xtask/Cargo.toml", auth_kind_dev);
+        ov.set(
+            "xtask/tests/kind_conformance.rs",
+            "mod auth_admin_tokens {\n    use crate::conf;\n\n    #[test]\n    fn \
+             the_kinds_contract_trait_has_an_implementor() {\n        \
+             conf::assert_contract_trait_implemented(\"auth\", \"AuthScheme\", None);\n    }\n}\n",
+        );
+        report.push(prove_rows_quiet_about(
+            cx,
+            self,
+            "a tooling battery with one live entry for a kind named by literal covers the whole \
+             kind, and battery-ignored goes quiet",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored\tkind:auth", "no-battery\tkind:auth"],
         ));
 
         // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its

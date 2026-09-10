@@ -1298,6 +1298,22 @@ The row's other input can now be starved on its own, so it has its own refusal: 
 did not read is not a walk that found no battery, and it reds as `the tooling battery index did not
 run` rather than demoting every covered crate to `not-run`.
 
+**Four kinds have no crate for the per-crate shape to name at all.** `auth`, `secret`, `hooks` and
+`export` have no `busbar-contract` implementor anywhere in the tree, so their shared battery is one
+generic assertion per crate keyed on the KIND's own name literal
+(`assert_contract_trait_implemented("auth", "AuthScheme", None)`) rather than a `use
+busbar_auth_admin_tokens::…;` block — there is no crate for a `[dev-dependencies]` edge to name and
+no crate-path text for `battery_block_names` to find, so the per-crate half of the tooling index
+cannot see this shape at all, `#[ignore]`d or not. `index_tooling_batteries` reads a second answer
+off the SAME walk, in the SAME loop, over the SAME `xtask/tests/`-or-`crates/plugin-testkit/tests/`
+files: it partitions each battery file's top-level `mod { … }` blocks by the kind literal quoted
+inside them and counts `#[test]` entries per kind rather than per crate. A kind whose only tooling
+entries are all `#[ignore]`d reds `battery-ignored\tkind:<kind>` exactly as the crate-local case
+does, naming the file and, when it holds, the second fact that makes the shape necessary in the
+first place — the kind's trait is implemented nowhere under `crates/*/src` either. One live entry
+anywhere for the kind is coverage for the whole kind, and both `battery-ignored` and the `no-battery`
+it would otherwise fall back to go quiet, the same way a crate-local battery's one live entry does.
+
 ### 9.4 `--write` re-pins DOWN, and refuses if anything would rise
 
 An exact ratchet taxes the landing that does the right thing: a cut that removes two of a crate's
