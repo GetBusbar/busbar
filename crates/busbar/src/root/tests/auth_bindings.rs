@@ -15,6 +15,10 @@ struct Directory {
 }
 
 impl VirtualKeyDirectory for Directory {
+    fn operator_token_hash(&self) -> Option<String> {
+        None
+    }
+
     fn verify(&self, credential: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
         self.asked
             .lock()
@@ -26,7 +30,7 @@ impl VirtualKeyDirectory for Directory {
             .map(|(_, f)| f.clone())
     }
 
-    fn revoked(&self, credential: &str) -> bool {
+    fn is_revoked(&self, credential: &str) -> bool {
         self.revoked.iter().any(|r| r == credential)
     }
 }
@@ -38,6 +42,10 @@ fn a_directory() -> Arc<Directory> {
             KeyFacts {
                 id: "vk_1".to_string(),
                 name: "the operator's key".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             },
         )],
         revoked: vec!["vk_gone".to_string()],
