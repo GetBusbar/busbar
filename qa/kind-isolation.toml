@@ -1344,7 +1344,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+count = "160"
 
 [[cell]]
 crate = "busbar"
@@ -1579,7 +1579,7 @@ count = "7"
 [[cell]]
 crate = "busbar-contract"
 kind = "kernel"
-count = "1"
+count = "2"
 
 [[cell]]
 crate = "busbar-contract"
