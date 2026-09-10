@@ -653,51 +653,65 @@ impl LlmNode {
 // The late accrual
 // ---------------------------------------------------------------------------------------------
 
-/// The plane's neutral consumption report, in the record the cost unit prices.
+/// The declared classes this root's card reserves, in the order a line sequence is written in.
 ///
-/// A lift and nothing more: one line per reported class, at the quantity the tap read, counted rather
-/// than estimated because the figures came off the destination's own response. The class names are
-/// the neutral reserved-unit spellings — the same names the plane's own metering step reports its
-/// lines under and the same names a card entry is written against — so no name is translated on the
-/// way. A rename here would be this root deciding what a lane's rates apply to.
+/// The four names and their sequence are read off [`busbar_unit_cost::RESERVED_CLASSES`] — the one
+/// list a card's class fan-out and the map-shaped summation already share — rather than off the
+/// previous release's key vocabulary, so a class this root writes a line for and a class the card
+/// prices can never be two different sets.
+fn reserved_classes() -> Vec<busbar_unit_usage::CanonicalClass> {
+    busbar_unit_cost::RESERVED_CLASSES
+        .iter()
+        .map(|class| {
+            busbar_unit_usage::CanonicalClass::counted(busbar_caps::MeterClassId::new(class))
+        })
+        .collect()
+}
+
+/// **The plane's neutral consumption report, in the record the cost unit prices** — and, beside it,
+/// whatever the record could not hold.
 ///
-/// The four reserved tiers are walked in the canonical order rather than the report's map order,
-/// which is what makes the line sequence a property of this function rather than of a `BTreeMap`'s
-/// collation. An OPEN unit a report carries prices at nothing on this path and is left off: the card
-/// this node binds names the reserved four, so a line for a class it cannot price would be a zero
-/// line claiming to be a priced one.
+/// A lift and nothing more: one line per reported class, at the quantity the tap read, counted
+/// rather than estimated because the figures came off the destination's own response. The class
+/// names are the neutral reserved-unit spellings — the same names the plane's own metering step
+/// reports its lines under and the same names a card entry is written against — so no name is
+/// translated on the way. A rename here would be this root deciding what a lane's rates apply to.
 ///
-/// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
-/// from the billable count the report carries, which is what keeps one configured fee to one place.
-fn usage_record(
+/// **THE WALK IS THE USAGE UNIT'S, AND THE FOUR NAMES ARE THE MONEY UNIT'S.** This root states which
+/// classes its card reserves and in what order they are written down; it does not decide which
+/// classes survive the fold, because that decision belongs to whoever owns the accrual and there
+/// used to be two of them deciding it differently.
+///
+/// **AN UNDECLARED UNIT IS NOT DROPPED SILENTLY — IT COMES BACK BY NAME.** It used to vanish, on
+/// the argument that a class the card cannot price would be a zero line claiming to be a priced one.
+/// The LEGACY book beside this one — the budget cell the same report is folded into by
+/// `record_usage` — accrues every class the report carries, so vanishing here is precisely the dual
+/// book: two books holding different classes for one delivered response. The record cannot hold an
+/// undeclared class (a line is keyed by a declared `MeterClassId`, which is a `&'static str`), so
+/// the fold hands it back instead of losing it, and [`priced_posting`] says so out loud.
+///
+/// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its
+/// own from the billable count the report carries, which is what keeps one configured fee to one
+/// place.
+///
+/// A report wider than the record holds is not a reason to post nothing: the record's own limit is a
+/// bound on lines, and the tiers this plane reports are far inside it. An empty record with the
+/// whole report handed back undeclared is the honest fallback — it prices the fee and no tokens,
+/// which is what a response that reported nothing costs, and it says what it did not carry.
+fn fold_report(
     token: &busbar_caps::UsageToken,
     usage: &busbar_substrate::billing::Usage,
-) -> busbar_caps::Usage {
-    let lines = [
-        busbar_api::UNIT_INPUT,
-        busbar_api::UNIT_OUTPUT,
-        busbar_api::UNIT_CACHE_READ,
-        busbar_api::UNIT_CACHE_WRITE,
-    ]
-    .into_iter()
-    .filter_map(|class| {
-        // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
-        // them for the same reason. Kept out here too so the two reports have the same shape.
-        let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_caps::UsageLine {
-            class: busbar_caps::MeterClassId::new(class),
-            quantity,
-            source: busbar_caps::QuantitySource::Count,
-            estimated: false,
+) -> busbar_unit_usage::Folded {
+    busbar_unit_usage::report_from_units(token, &usage.usage_units, &reserved_classes())
+        .unwrap_or_else(|_| busbar_unit_usage::Folded {
+            usage: busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"),
+            undeclared: usage
+                .usage_units
+                .iter()
+                .filter(|(_, quantity)| **quantity > 0)
+                .map(|(class, quantity)| (class.clone(), *quantity))
+                .collect(),
         })
-    })
-    .collect();
-    // A report wider than the record holds is not a reason to post nothing: the record's own limit is
-    // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
-    // the honest fallback — it prices the fee and no tokens, which is what a response that reported
-    // nothing costs.
-    busbar_caps::Usage::report(token, lines)
-        .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
 }
 
 /// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
@@ -732,9 +746,26 @@ fn priced_posting(
     // readings. The instant is not a clock read — this runs after the body drained, which may be a
     // different day from the one the request was admitted in, and a fresh reading would price the
     // request against a card it never agreed to.
+    // WHAT THE FOLD COULD NOT HOLD IS SAID OUT LOUD. The previous release's budget cell accrues
+    // every class the report carries; this record can only carry a class some plane DECLARED. A
+    // report that carried one nobody declared would otherwise settle here for less than it accrued
+    // there, silently and by exactly that class's quantity — which is the dual book, and the one
+    // direction a money defect must never go. Nothing on the llm path reports an undeclared class
+    // today, and the whole point of saying so is that the day one does, it is a line in the log and
+    // not a discrepancy somebody finds in a month's reconciliation.
+    let folded = fold_report(token, &report.usage);
+    if !folded.whole() {
+        tracing::warn!(
+            lane = %report.lane,
+            provider = %report.provider,
+            undeclared = ?folded.undeclared,
+            "the delivered report carried meter classes no plane declares; they accrue on the \
+             previous release's cell and cannot be carried on a posting"
+        );
+    }
     let mut posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
-        &usage_record(token, &report.usage),
+        &folded.usage,
         u64::from(report.fee_count),
         busbar_unit_cost::STANDARD_TIER_BP,
         arrived.ms(),

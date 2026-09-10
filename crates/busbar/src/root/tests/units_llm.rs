@@ -2421,15 +2421,17 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
 /// WHOLE — `ledger_and_meter` hands `tier` to `EngineHost::meter_ledger`, which is
 /// `GovState::record_usage`, which folds EVERY entry of `usage_units` into the budget cell and skips
 /// only the zeros (`busbar-core/src/governance/mod.rs:205-211`). The unit book takes the same report
-/// through [`usage_record`], which walks a HARD-CODED LIST of four token class names and leaves every
-/// other class off.
+/// through [`fold_report`], which used to walk a HARD-CODED LIST of four token class names and leave
+/// every other class off.
 ///
 /// So the books are byte-identical only for as long as a report carries nothing but those four
 /// names. This cell replays recorded reports through both and compares the classes and the
 /// quantities each one ends up holding. It is the proof obligation the dual-book collapse has to
 /// meet before the legacy accrual can be deleted: whatever the one book is, it has to hold what both
 /// of them held.
-fn legacy_book(report: &busbar_substrate::billing::Usage) -> std::collections::BTreeMap<String, u64> {
+fn legacy_book(
+    report: &busbar_substrate::billing::Usage,
+) -> std::collections::BTreeMap<String, u64> {
     // WHAT THE LEGACY ACCRUAL FOLDS: every entry, zeros skipped. Not a restatement of a rule — it is
     // the whole of `BudgetCell::accrue`'s loop over the map `record_usage` was handed, and the map is
     // handed over by `ledger_and_meter` verbatim.
@@ -2442,12 +2444,25 @@ fn legacy_book(report: &busbar_substrate::billing::Usage) -> std::collections::B
 }
 
 /// What the UNIT book holds for the same report, read off the real reader rather than restated.
+///
+/// Both halves of the fold's answer count as held: the lines the record carries, and the classes it
+/// handed back because no plane declared them. What must never happen is a class in neither — that
+/// is a quantity nothing can dispute, re-derive or invoice, and it is the difference between the two
+/// books.
 fn unit_book(report: &busbar_substrate::billing::Usage) -> std::collections::BTreeMap<String, u64> {
     let token = busbar_caps::UsageToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
-    usage_record(&token, report)
+    let folded = fold_report(&token, report);
+    folded
+        .usage
         .lines()
         .iter()
         .map(|line| (line.class.as_str().to_string(), line.quantity))
+        .chain(
+            folded
+                .undeclared
+                .iter()
+                .map(|(class, quantity)| (class.clone(), *quantity)),
+        )
         .collect()
 }
 

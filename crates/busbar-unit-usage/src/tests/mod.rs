@@ -12,6 +12,7 @@ use crate::{
     RetainedLocatorValues,
 };
 
+mod accrual_tests;
 mod lane_tests;
 mod meter_tests;
 mod series_tests;
