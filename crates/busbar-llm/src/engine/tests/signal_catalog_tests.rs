@@ -225,20 +225,16 @@ async fn undeclared_signal_is_absent() {
 }
 
 /// The DEFAULT path — no hook anywhere declares a `signals:` entry — computes nothing extra: the
-/// candidate's bag is empty AND never spills its inline `SmallVec` capacity onto the heap. This is
-/// the "zero cost when undeclared" guarantee's proof: `RequestedSignals` is the all-zero bitmask,
+/// candidate's bag is empty, and an empty bag has allocated nothing. This is the "zero cost when
+/// undeclared" guarantee's proof: `RequestedSignals` is the all-zero bitmask,
 /// `requested.is_empty()` short-circuits `decide_policy_order`'s candidate-signal block entirely, so
-/// `SignalBag::push` is never called.
+/// `SignalBag::upsert` is never called.
 #[tokio::test]
 async fn default_path_allocates_no_signals_container() {
     crate::testkit::install_test_seams();
     let bags = run_with_declared(Vec::new()).await;
     assert_eq!(bags.len(), 1);
     assert!(bags[0].is_empty(), "no hook declared any signal");
-    assert!(
-        !bags[0].spilled(),
-        "an empty (or ≤4-entry) SignalBag must never spill onto the heap"
-    );
 }
 
 /// `CandidateBreakerState` tracks the REAL breaker FSM state: forcing the (pool, lane) cell Open

@@ -40,7 +40,6 @@ futures = { workspace = true }
 # (nothing declared) path never touches the heap.
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-smallvec = { workspace = true }
 # THE SECRET CARRIER (`redacted`): a resolved secret's backing memory is zeroized on drop.
 zeroize = { workspace = true }
 

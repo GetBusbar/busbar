@@ -665,7 +665,7 @@ pub(crate) async fn decide_policy_order(
     // bitmask, resolved ONCE at config apply (`hooks::requested_signals`) and read here with a
     // single `u64` comparison — never recomputed per request. `is_empty()` short-circuits the
     // WHOLE candidate-signal loop below on the zero-cost default (no hook anywhere declared a
-    // catalog signal): no `SignalBag` is ever pushed to, so it never spills its inline capacity.
+    // catalog signal): no `SignalBag` is ever written to, so none ever allocates.
     let requested = host.requested_signals();
     let now_ts = now();
 
@@ -690,14 +690,14 @@ pub(crate) async fn decide_policy_order(
                         busbar_substrate::store::BreakerState::Open { .. } => "open",
                         busbar_substrate::store::BreakerState::HalfOpen => "half_open",
                     };
-                    signals.push(
+                    signals.upsert(
                         busbar_api::Signal::CandidateBreakerState,
                         busbar_api::SignalValue::Str(std::borrow::Cow::Borrowed(label)),
                     );
                 }
                 if requested.wants(busbar_api::Signal::CandidateErrorRate) {
                     if let Some(rate) = host.lane_store().error_rate_in(pool_name, wl.idx, now_ts) {
-                        signals.push(
+                        signals.upsert(
                             busbar_api::Signal::CandidateErrorRate,
                             busbar_api::SignalValue::F64(rate),
                         );
