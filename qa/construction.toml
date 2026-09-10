@@ -286,6 +286,35 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "two more references to the retiring engine by name in rate.rs's own documentation, and they are the deletion being recorded: the module doc now states which table busbar-core DERIVED and which this crate listed as literals, which is the drift this seam closes. A doc line naming the crate that is dying is the retirement's ledger, not new coupling."
 
+# THE AUTHORIZATION MATRIX, made ONE. The engine's `(method, path) -> Scope` matrix and the scope
+# unit's port of it were both live -- the engine's is what the enforcement chokepoint spends and
+# what stamps `x-busbar-required-scope` into the served document, the port is what the kernel loop's
+# APPROVE step spends -- and the port was not the verbatim thing its own doc called it. It folded a
+# lowercase method into the read rung (`get` is an extension method, not a `GET`) and it made the
+# two stateless dry-runs method-conditional where the enforced matrix keys them on the path alone.
+# One request, two authorization answers, on the two paths the same node takes through it. The port
+# is corrected to the enforced matrix exactly, under a cell that walks the cross product of every
+# path the frozen table names against every method a socket can put in front of it; the engine's
+# copy is deleted against it. The three rows below are what that costs, each measured.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 18
+because = "the engine names busbar-unit-scope so its own matrix can be deleted against it: 4 in Cargo.toml (the dependency and its drain note), 12 in admin/v1/contract/tests/tests.rs (the cross-product cell that is the licence to delete one of the two matrices), 2 in admin/v1/json/tests/tests.rs (the cell that reads x-busbar-required-scope off the SERVED document and checks every published bar against the matrix the node now spends)."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "one in each of the two new cells, where each has to say which wire the question is asked on: the cross-product cell names the method type it builds its extension methods through, and the served-document cell names the request whose response body it is reading the published scope out of. Neither is new machinery -- both are prose in a test that already had to name the surface it serves."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-scope.control.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "all 9 are in the scope unit's own tests.rs, in the cell that pins the exact-method rule and the path-keyed dry-run rule: it names the admin paths the matrix answers for, which is the only way to state the rule as fixtures rather than as a second copy of the matrix. The unit already owns this vocabulary -- it is where ADMIN_SCOPE_TABLE lives -- and lib.rs does not move at all (one admin word out, one back in)."
+
+
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them

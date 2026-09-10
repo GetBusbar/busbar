@@ -196,27 +196,34 @@ pub fn is_kernel_granted(path: &str) -> bool {
 /// crate that has to name it names one literal.
 pub use busbar_contract::surface::ADMIN_PREFIX;
 
-/// `POST /config/validate` and `POST /plugins/inspect` — stateless dry-runs (reads in POST
-/// clothing: the body is the config to lint / tarball to preview) that stay `read-only` although
-/// every other mutation-shaped method needs `full`.
-const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
+/// `/config/validate` and `/plugins/inspect` — stateless dry-runs (reads in mutation clothing: the
+/// body is the config to lint / the tarball to preview, far past any URL length limit) that stay
+/// `read-only` although every other mutation-shaped method needs `full`. Keyed on the PATH alone,
+/// which is what the surface enforces: a read-only CI token must be able to lint a config, and the
+/// two paths carry no other operation to be confused with.
+const READ_ONLY_DRY_RUN_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 
 /// The authorization matrix: the scope an admin endpoint requires, derived from METHOD + PATH —
 /// never from the body. A strict two-rung split: every read (`GET`/`HEAD`) plus the two stateless
-/// dry-run `POST`s is `read-only`; every mutation needs `full`. Unknown methods fail closed to
-/// `full`.
+/// dry-runs is `read-only`; every mutation needs `full`. Unknown methods fail closed to `full`.
 ///
-/// Ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope` (behaviourally
-/// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
-/// so this crate carries no HTTP-framework dependency at all).
+/// THE METHOD IS MATCHED EXACTLY, NOT CASE-INSENSITIVELY. An HTTP method is a case-sensitive token:
+/// `get` is not `GET`, it is an extension method nothing routes, and a matrix that folded it into
+/// the read rung would answer `read-only` for a lowercase spelling of a path whose every real
+/// operation is a mutation. Nothing routes it, so the request ends at a 405 either way — but the
+/// bar it cleared to get there is the bar this function exists to set, and it must be the same bar
+/// wherever the question is asked.
 pub fn admin_required_scope(method: &str, path: &str) -> Scope {
-    if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
+    if method == "GET" || method == "HEAD" {
         return Scope::ReadOnly;
     }
+    // Matched RELATIVE to the one true prefix so the matrix can never drift from the mount grammar.
+    // A path outside the prefix (impossible for a mounted admin route) fails closed to `full`.
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    if method.eq_ignore_ascii_case("POST") && READ_ONLY_POST_PATHS.contains(&rel) {
+    if READ_ONLY_DRY_RUN_PATHS.contains(&rel) {
         return Scope::ReadOnly;
     }
+    // Every other mutation (and any non-read extension method) is full-only.
     Scope::Full
 }
 

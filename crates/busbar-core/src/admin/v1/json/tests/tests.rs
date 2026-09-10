@@ -736,3 +736,57 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
         }
     }
 }
+
+/// THE SERVED ANSWER, READ OFF THE SERVED BYTES. Every operation in the document this node hands a
+/// client carries `x-busbar-required-scope` — the machine-readable half of the authorization
+/// contract, the thing a generated client branches on to decide whether the credential it holds can
+/// make the call at all. It is not documentation: it is the bar, published.
+///
+/// This reads that annotation out of the SERVED document (the inflate of the embedded gz — what a
+/// `GET /api/v1/admin/openapi.json` with no `Accept-Encoding: gzip` puts on the wire, not a
+/// freshly-generated one; the generator is a CI-only feature and is not in the shipped binary) and
+/// checks every one of them against the scope unit's matrix. It is UNGATED on purpose: the shipped
+/// feature set is the one whose served bytes matter, and this is the pin that stays behind when the
+/// generator moves out of this crate.
+///
+/// The value it guards is byte identity across a move. The matrix that stamped these strings and
+/// the matrix the node now spends are one function in one crate; if they ever stop being one, every
+/// published bar in this document is a claim the node does not honour, and the first thing anyone
+/// learns about it is a 403 on a call the client was told it could make.
+#[test]
+fn the_served_document_publishes_the_scope_unit_matrix() {
+    let served: serde_json::Value =
+        serde_json::from_str(&crate::admin::v1::json::handlers::openapi_json())
+            .expect("served document");
+    let paths = served["paths"].as_object().expect("served paths object");
+    assert!(!paths.is_empty(), "the served document has operations");
+
+    let mut checked = 0usize;
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("path item") {
+            // Path-item `x-*` specification extensions are valid OpenAPI and are not operations.
+            if method.starts_with("x-") {
+                continue;
+            }
+            let published = op["x-busbar-required-scope"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} is served with no scope annotation"));
+            // The document spells a method the way OpenAPI does (lowercase key); the wire, and so
+            // the matrix, spells it the way HTTP does.
+            let enforced =
+                busbar_unit_scope::admin_required_scope(&method.to_ascii_uppercase(), path);
+            assert_eq!(
+                published,
+                enforced.as_str(),
+                "{method} {path}: the served document publishes `{published}` and the node spends \
+                 `{}` — a published bar the node does not honour",
+                enforced.as_str()
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 66,
+        "the served document must publish a scope for every operation; only {checked} were read"
+    );
+}

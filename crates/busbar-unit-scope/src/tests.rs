@@ -222,3 +222,48 @@ fn a_claims_operation_class_is_scoped_through_the_policy() {
         "an operation nobody wrote a policy entry for has not been authorized"
     );
 }
+
+/// AN HTTP METHOD IS A CASE-SENSITIVE TOKEN, and the matrix reads it as one. `get` is not `GET` —
+/// it is an extension method with no route behind it, and folding it into the read rung would
+/// answer `read-only` for a lowercase spelling of a path whose every real operation is a mutation.
+/// The two stateless dry-runs are keyed on the PATH alone for the mirror-image reason: they are
+/// read-only because of what they are, not because of how they were asked for, and making the
+/// exemption method-conditional narrows the bar the surface actually sets. Both are the rungs of
+/// the enforced matrix this function is the port of, and both were drift when the port was made.
+#[test]
+fn the_method_is_matched_exactly_and_the_dry_runs_by_path() {
+    // A lowercase read verb is not a read.
+    for method in ["get", "head", "Get", "hEaD"] {
+        assert_eq!(
+            admin_required_scope(method, "/api/v1/admin/keys"),
+            Scope::Full,
+            "`{method}` is an extension method, not a read"
+        );
+    }
+    // The exact spellings are.
+    for method in ["GET", "HEAD"] {
+        assert_eq!(
+            admin_required_scope(method, "/api/v1/admin/keys"),
+            Scope::ReadOnly,
+            "{method}"
+        );
+    }
+    // The dry-runs are read-only whatever mutation-shaped method carries them.
+    for path in [
+        "/api/v1/admin/config/validate",
+        "/api/v1/admin/plugins/inspect",
+    ] {
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            assert_eq!(
+                admin_required_scope(method, path),
+                Scope::ReadOnly,
+                "{method} {path}"
+            );
+        }
+    }
+    // And a mutation anywhere else still needs the top rung.
+    assert_eq!(
+        admin_required_scope("POST", "/api/v1/admin/config/validate/nested"),
+        Scope::Full
+    );
+}

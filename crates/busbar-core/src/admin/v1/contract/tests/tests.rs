@@ -196,3 +196,55 @@ fn usage_view_serializes_currency_from_const() {
         "the raw-split ledger breakdown must NOT carry a currency"
     );
 }
+
+/// THE LICENCE TO DELETE ONE OF THE TWO MATRICES. `busbar_unit_scope::admin_required_scope` says
+/// in its own doc that it is the verbatim port of the function above, "behaviourally identical;
+/// the only change is that `method` is a plain string". Both are LIVE: this one is what the
+/// enforcement chokepoint spends (`auth::auth_middleware`) and what the served document's
+/// `x-busbar-required-scope` annotation is stamped from; the port is what the kernel loop's
+/// APPROVE step spends. Two matrices over one surface is how the same request comes to need
+/// `read-only` on one path through the node and `full` on the other, and the request that lands in
+/// that gap is by construction an authorization decision.
+///
+/// So the claim is checked rather than believed, over the CROSS PRODUCT of every path the frozen
+/// 1.5.5 table names and every method a socket can put in front of it — including the extension
+/// methods (`get`, `post`, `BREW`) that never appear in a route table and are exactly where a
+/// hand-port drifts, because nothing routes them and so nothing noticed.
+#[test]
+fn the_scope_unit_matrix_is_the_enforced_matrix_for_every_method() {
+    // Every method the shipped surface mounts, plus the ones it does not: a lowercase spelling of
+    // each read verb (a distinct extension method to `http`, NOT a `GET`), and an unknown verb.
+    let methods: Vec<Method> = [
+        "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "get", "head", "post", "BREW",
+    ]
+    .iter()
+    .map(|m| Method::from_bytes(m.as_bytes()).expect("valid method token"))
+    .collect();
+
+    let mut checked = 0usize;
+    for op in busbar_unit_scope::ADMIN_SCOPE_TABLE {
+        for method in &methods {
+            let enforced = required_scope(method, op.path);
+            let ported = busbar_unit_scope::admin_required_scope(method.as_str(), op.path);
+            let ported = match ported {
+                busbar_unit_scope::Scope::ReadOnly => Scope::ReadOnly,
+                busbar_unit_scope::Scope::Full => Scope::Full,
+            };
+            assert_eq!(
+                ported,
+                enforced,
+                "{method} {}: the scope unit's port answers `{}` where the enforced matrix \
+                 answers `{}` — one request, two authorization answers",
+                op.path,
+                ported.as_str(),
+                enforced.as_str()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked,
+        busbar_unit_scope::ADMIN_SCOPE_TABLE.len() * methods.len(),
+        "the cross product is the whole proof; a shrunken one proves less than it reads"
+    );
+}

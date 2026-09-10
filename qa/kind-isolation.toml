@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5179"
+count = "5187"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2118"
+count = "2120"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "93"
+count = "111"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2809,12 +2809,7 @@ count = "3"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "control"
-count = "139"
-
-[[cell]]
-crate = "busbar-unit-scope"
-kind = "legacy"
-count = "1"
+count = "148"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -3749,6 +3744,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
 why     = "busbar-core names busbar-unit-verbs: declared normal in the shipped graph, 1 declaration(s) at this commit. THE ADMIN MUTATION LIMITER, read rather than restated. The engine carried its own per-principal mutation limiter and its own CONFIG-class blast-radius table, and the unit crate carried the verbatim move of both; two copies of one rate table is how a mutation comes to be blast-radius class on the path the kernel loop takes and roomy CRUD class on the path the layered surface takes, and the copies had already drifted (the engine derived the named-definition map roots from the section registry, the unit listed two of them as literals). The engine's copy is DELETED — busbar-core/src/admin/rate.rs, 200 lines — and the one chokepoint every admin request crosses (auth::auth_middleware) now spends from the unit's `MutationLimiter` and classifies with the unit's `MutationClass::for_path`. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "the edge dies with busbar-core: the enforcement moves onto the Route step's own admit once the admin surface stops being served twice (the double-run), at which point auth/mod.rs's mutation gate and its `App::mutation_limiter`/`mutation_class_rules` fields go with the middleware. `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-scope"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
+why     = "busbar-core names busbar-unit-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. THE AUTHORIZATION MATRIX, read rather than restated. The engine carried its own two-rung scope chain, its own grant set and its own `(method, path) -> Scope` matrix, and the scope unit carried the port of all three, its own doc calling the port verbatim. It was not: the port folded a lowercase method into the read rung and made the two stateless dry-runs method-conditional, so the same request could need `read-only` on the path the kernel loop takes and `full` on the path the layered surface takes. Two matrices over one surface is how a request comes to be authorized twice and answered once. The engine's copy is DELETED and it now names `Scope`, `Grants` and `admin_required_scope` at the one enforcement chokepoint (auth::auth_middleware) and at the stamp that publishes `x-busbar-required-scope` in the served document. The count is TODAY'S MEASUREMENT, exact in both directions -- above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the enforcement moves onto the Route step's own approve once the admin surface stops being served twice (the double-run), at which point auth/mod.rs's scope gate goes with the middleware and the served document's stamp goes with the control crate. `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-core"

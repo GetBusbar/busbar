@@ -49,6 +49,15 @@ busbar-unit-admission = { path = "../busbar-unit-admission" }
 # chokepoint (`auth::auth_middleware`). It is the drain named by
 # `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
+# THE AUTHORIZATION MATRIX, read rather than restated. The engine carried its own two-rung scope
+# chain, its own grant set and its own `(method, path) -> Scope` matrix, and this crate carried the
+# port of all three; its own doc said the port was verbatim. Two copies of one authorization matrix
+# is how the same request comes to need `read-only` on the path the kernel loop takes and `full` on
+# the path the layered surface takes. The engine's copy is DELETED and it now names this crate's
+# `Scope`, `Grants` and `admin_required_scope` at the one enforcement chokepoint
+# (`auth::auth_middleware`) and in the served document's `x-busbar-required-scope` stamp. It is the
+# drain named by `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
+busbar-unit-scope = { path = "../busbar-unit-scope" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
