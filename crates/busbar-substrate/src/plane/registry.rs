@@ -687,7 +687,7 @@ fn canonical_key_order(
 // ── THE PROCESS PLANE LIST ─────────────────────────────────────────────────────────────────────────
 // The DECLARATION LIST lives where its storage does. `PlaneDecl` is a substrate type and the
 // test-registration set below is a substrate static, so the process fold that reads them — and every
-// by-key / by-section / by-index reader over it — belongs here too rather than in `busbar-core`. That
+// by-key / by-section / by-index reader over it — belongs here too rather than a layer above. That
 // placement is what lets the CONFIG layer (`config::named_map`'s section fold, the named-definition
 // write path) resolve a plane's declared section without depending on core: a config crate that names
 // `busbar_substrate::plane::registry` names no plane and no core.
@@ -698,7 +698,7 @@ fn canonical_key_order(
 
 /// The BUILT-IN declarations the owning crate installed, as DATA. Empty until installed, which is the
 /// production answer (production carries no built-in plane rows: every plane is a plugin the
-/// composition root installs). `busbar-core`'s own `#[cfg(test)]` binary compiles its plane
+/// composition root installs). The owning crate's own `#[cfg(test)]` binary compiles its plane
 /// dev-dependencies back in as built-ins and installs that list here.
 static BUILTINS: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 

@@ -281,7 +281,8 @@ pub fn config_sections() -> Vec<&'static str> {
 
 /// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
 /// pass a plane busbar does not have and watch its section reach this grammar with nothing written
-/// for it in core (see `busbar-core`'s `plane/tests/registry_tests.rs`). [`config_sections`] passes
+/// for it in the crate that owns the built-in rows (see its `plane/tests/registry_tests.rs`).
+/// [`config_sections`] passes
 /// the process [`crate::plane::registry::plane_decls`]; the plane sections come off each decl's
 /// [`crate::plane::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what
 /// lets a registered plane's section into the hook-reference grammar.
