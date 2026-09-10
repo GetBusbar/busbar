@@ -7,9 +7,12 @@
     "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
     "always allowed and just printed; only a SHRINK needs to be named.",
     "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
-    "golden/1.5.5/ledger.tsv's PASS rows. The one entry below is a cell that has never been owed:",
-    "it is named here so the reason it is not recorded is written down and owned, and so the entry",
-    "is already in place the day the cell is baselined and then re-loses its fixture."
+    "golden/1.5.5/ledger.tsv's PASS rows. The entries below are of two shapes. A cell that has",
+    "never been owed is named so the reason it is not recorded is written down and owned, and so",
+    "the entry is already in place the day the cell is baselined and then re-loses its fixture. A",
+    "cell that IS owed but that THIS RECORDING HOST cannot produce is named so a host-shaped",
+    "absence can never be read as a pass; such an entry names what the host lacks, and expires",
+    "on a host that has it rather than being a decision to stop owing the cell."
   ],
   "accepted": [
     {
@@ -17,6 +20,12 @@
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
       "owner": "llm-plane",
       "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden."
+    },
+    {
+      "id": "store-persist-server-backends-no-container-runtime",
+      "cells": "^plugins\\.store-persist\\|store-(mysql|postgres|valkey)$",
+      "owner": "store-kind",
+      "rationale": "NO CONTAINER RUNTIME ON THE RECORDING HOST. The golden records PASS for all four plugins.store-persist cells, so these three are genuinely owed; a recording host that cannot stand the servers up reports them missing.candidate, and that loss is named here rather than passing in silence. testing/fleet-fixtures/store-services.sh is the ONLY provisioner for postgres/mysql/valkey and it is written on `docker run -d --rm` plus a `docker exec` readiness probe (its own header states why there is deliberately no compose file); measured on the recording host: no docker, and no podman/colima/lima/nerdctl, and no native postgres/mysqld/valkey-server/redis-server. plugins.store-persist|store-sqlite needs no server, DOES run here, and is deliberately NOT covered by this entry -- it is the load-bearing cell for the store kind's ABI-2 wire on a host like this one. SCOPE AND STANDING: this is the only family that would catch an ABI-2 regression on the three server-backed stores, so a green local run of the store-kind face line (gate/STORE-design-face-completion.md, the ABI-2/4 <-> 5 translator commit) must NOT be read as proving those three backends; the entry exists so that reading is impossible to make by accident. It expires the day the cells are recorded on a host with a container runtime -- a fleet box or CI, where the shadow-oracle job already stands the three services up -- and it is not a decision to stop owing them."
     }
   ]
 }
