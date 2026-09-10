@@ -35,6 +35,12 @@ busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }
+# THE HOOKS-KIND FACE (`hooks`, `signal`): the routing-policy trait is async, its projections carry
+# opaque JSON the plugin author shaped, and the declared-signal bag is inline-small so the default
+# (nothing declared) path never touches the heap.
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+smallvec = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

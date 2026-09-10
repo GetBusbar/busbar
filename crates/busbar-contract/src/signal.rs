@@ -3,15 +3,11 @@
 
 //! The "decision observability" signal CATALOG: a single, append-only
 //! enumeration of every observable busbar can produce about a request/decision/outcome, plus the
-//! compact wire value type and bag it rides the hook projections in. Lives here (`busbar-api`) —
-//! not a new crate — because `busbar-plugin-sdk` (a hook-plugin author's actual dependency) and
-//! `busbar-plugin` both already depend on `busbar-api` directly, so both re-export [`Signal`]
-//! wholesale (see `busbar_plugin::cold::signal` / `busbar_plugin_sdk`); a plugin author never needs
-//! a raw `busbar-api` dependency to reference `Signal::CandidateBreakerState` at compile time.
-//! Placing the catalog in the SAME crate as [`crate::RoutingRequest`]/[`crate::Candidate`] also
-//! lets those projections carry a `signals` field directly, with no cross-crate cycle (`busbar-
-//! plugin-abi` depends on `busbar-api`, not the other way around — a dependency the catalog must
-//! not invert).
+//! compact wire value type and bag it rides the hook projections in. It is part of the hooks-kind
+//! FACE of this contract: it sits in the same crate as [`crate::RoutingRequest`]/
+//! [`crate::Candidate`] so those projections carry a `signals` field directly, and a hook-plugin
+//! author reaches `Signal::CandidateBreakerState` through the same contract every other plugin
+//! is written against.
 //!
 //! ADDITIVE BY CONSTRUCTION: [`Signal`] is `#[non_exhaustive]` (a new variant never breaks an
 //! exhaustive `match` in an out-of-tree consumer — there can be none, since the type forbids one),
@@ -148,10 +144,15 @@ impl Signal {
 /// str>` so the common case (a fixed label like a breaker-state name) allocates nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignalValue {
+    /// An unsigned counter or size.
     U64(u64),
+    /// A signed quantity.
     I64(i64),
+    /// A measured ratio or rate.
     F64(f64),
+    /// A label; a fixed name allocates nothing.
     Str(Cow<'static, str>),
+    /// A flag.
     Bool(bool),
 }
 
@@ -189,14 +190,17 @@ pub struct SignalBag(SignalBagInner);
 
 impl SignalBag {
     /// An empty bag — the zero-cost default every projection starts from.
+    /// An empty bag; allocates nothing.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Whether nothing has been pushed.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// How many signals have been pushed.
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -214,6 +218,7 @@ impl SignalBag {
         self.0.iter().find(|(s, _)| *s == signal).map(|(_, v)| v)
     }
 
+    /// The pushed signals, in push order — the wire serializes straight from this.
     pub fn iter(&self) -> impl Iterator<Item = &(Signal, SignalValue)> {
         self.0.iter()
     }

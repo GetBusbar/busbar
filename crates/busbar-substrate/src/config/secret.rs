@@ -34,7 +34,7 @@
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
+pub use busbar_api::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the

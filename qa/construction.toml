@@ -120,13 +120,36 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
+# THE HOOKS-KIND FACE MOVED INTO THE CONTRACT (busbar-api -> busbar-contract, Track 4's hooks
+# step pulled forward so the hook policy engine is written against the contract and never against
+# the crate being deleted). `hooks.rs` + `signal.rs` are 291 surface lines the contract did not
+# carry at the base; the three ceilings that count the contract rise by exactly that, and by
+# nothing else. Each declaration is one edit and expires the moment it lands: the base then carries
+# the new number and `ceiling-rose` refuses the entry as stale. THE STRIKE IS OWED by the next
+# commit on the integration line after this one lands ("strike the three
+# `[gate.ceiling_raises]` entries below; re-pin nothing, the numbers are already exact").
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3769
+because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 291 surface lines moved in from busbar-api, verbatim, so the plugin-visible surface of the contract pair is measured at 3769 and pinned there"
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3774
+because = "the same move under the loc-ceilings counting rule: busbar-caps 1153 + busbar-contract 2621 = 3774, the contract having taken the hooks-kind face from busbar-api"
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23759
+because = "the union row sums caps/contract; it rises by the same 294 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged)"
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3769
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +370,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3774
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23759
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

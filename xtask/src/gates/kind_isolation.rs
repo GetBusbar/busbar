@@ -407,12 +407,22 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // is refused — which is the machine form of "a core crate names no plane, dialect, transport or
     // unit". A core crate that needs a sink not listed here adds the line and says why; the gate
     // names the missing class for it.
-    ("core", "api"),
     ("core", "caps"),
+    // THE CONTRACT IS THE FACE A CORE CRATE IS WRITTEN AGAINST. The hooks-kind face
+    // (`RoutingPolicy` and its projections) is `busbar-contract`'s, so the hook policy engine
+    // reaches it there. `busbar-api` is NOT on this list: that crate is being deleted (Track 4),
+    // and a core crate that named it would be built beside legacy rather than on the contract.
+    ("core", "contract"),
     ("core", "grammar"),
     ("core", "kernel"),
     ("core", "substrate"),
     ("core", "timing"),
+    // `busbar-api` IS BEING DELETED (Track 4), face by face, into the contract. Each face moves
+    // first and `busbar-api` re-exports it until its last reader is repointed — so for the length
+    // of that drain the old crate names the new one. The edge exists so that no reader ever
+    // compiles against two definitions of one trait; it falls with the crate, and the ship twin
+    // refuses a tree that still carries `busbar-api` at all.
+    ("api", "contract"),
     // THE COMPOSITION ROOT NAMES EVERY AXIS — that is what a root IS, and the list above already
     // says so eleven times over in `ARCHITECTURE_ALLOWED`. `core` is missing from it for one
     // reason: the kind has no crates yet. So the class is stated HERE, with the rest of the carve-
