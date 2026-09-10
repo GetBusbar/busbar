@@ -2071,6 +2071,56 @@ mod tests {
         }
     }
 
+    /// A PLANT OF A FILE THE TREE HAS NOT GOT REACHES THE SCAN SET, AND REACHES IT UNDER THE CRATE
+    /// THAT OWNS IT — the two claims the `dialect` fixture was silently failing.
+    ///
+    /// `crates/busbar-store-memory/src/vendor.rs` is a path no manifest sits above: `owning_dir`
+    /// answers `crates/busbar-store-memory`, `by_dir` has no entry for it, [`measure`] `continue`s,
+    /// and the case asserting RED went GREEN while the same bytes written to disk at
+    /// `crates/store-memory/src/vendor.rs` went red as they should. The fixture was corrected to
+    /// name the directory the tree really has; this is the unit-speed guard that says so, because
+    /// the only other instrument that could was a twenty-six-minute self-test.
+    ///
+    /// The three steps are asserted separately on purpose — a plant can be dropped by the walker,
+    /// by the ignore filter, or by the crate lookup, and a single end-to-end assertion cannot say
+    /// which. NO VENDOR WORD IS PLANTED HERE: what is under test is the path, not the scanner.
+    #[test]
+    fn a_planted_new_file_reaches_the_scan_set_under_the_crate_that_owns_it() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let rel = "crates/store-memory/src/vendor.rs";
+        let body = "pub const PLANTED: &str = \"planted\";\n";
+        let cx = cx.with_overlay(plant(rel, body));
+
+        // THE WALKER, and the ignore filter it ends in.
+        let listed = cx.list(&WalkSpec::new(["crates"])).expect("the walk lists");
+        assert!(
+            listed.iter().any(|p| p.to_string_lossy() == rel),
+            "{rel}: planted and not listed — a plant the walk drops is a fixture that proves \
+             nothing, whatever the case asserts"
+        );
+
+        // THE SCAN SET, which is the walk plus the read and the binary-extension skip.
+        let (files, _skipped) = scan_set(&cx).expect("the scan set builds");
+        let found = files.iter().find(|(p, _)| p == rel);
+        assert_eq!(
+            found.map(|(_, t)| t.as_str()),
+            Some(body),
+            "{rel}: listed and not scanned"
+        );
+
+        // THE CRATE THAT OWNS IT. This is the step the old fixture failed: a path under a directory
+        // no manifest governs is scanned and then attributed to nothing.
+        let dir = owning_dir(rel).expect("a path under crates/ has an owning directory");
+        let crates = crate::gates::kind_isolation::census(&cx).expect("the census reads");
+        let owner = crates.iter().find(|c| c.dir == dir);
+        assert_eq!(
+            owner.map(|c| c.name.as_str()),
+            Some("busbar-store-memory"),
+            "{rel}: scanned under `{dir}`, which no crate of the census owns — every hit in it \
+             would be counted against no cell at all"
+        );
+    }
+
     #[test]
     fn a_camel_spelling_is_seen_by_both() {
         let (a, b) = both("let VoiceServe = 1;", "voice");
