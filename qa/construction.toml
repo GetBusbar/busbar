@@ -216,7 +216,23 @@ key = "gate.surface_ceilings.contract_transport"
 by = 29
 because = "FACE busbar-contract-transport::surface — `BindingDecl::mounts` becomes a list of PATTERNS rather than a list of literal targets, in the one path grammar this module already defines (literal segments and whole-segment `{name}` captures, matched by `match_target`), with one rule relaxed against a target template: an empty segment is legitimate in a mount, because `/a2a/` is the spelling an HTTP client resolving `/` against a base sends and it has to answer. `mount_is_wellformed` is that grammar as a public predicate and is what `check_surface` now refuses a malformed mount by; `duplex_binding_at` matches the pattern and returns the `Capture` list it yielded as a third value. The capture is the thing a session mount could not express and needed to: a request/answer operation carries a `Dispatch::Target` template and has read captures off it since this vocabulary was written, but a session declares no template at all — after the upgrade the wire has no target — so its binding's mounts are the only place an identifier in the served URL is ever written down, and a vocabulary of literals left a declaration choosing between changing the published URL and declaring one literal per live call. Every mount declared before this is an all-literal pattern, which matches exactly the one target it spells and captures nothing, so nothing that matched before matches differently now. 29 surface lines measured by scripts/loc-surface.py at 1,056 against 1,027 at the base"
 
-# ── declared raises: the streams line — a plane and a wire DECLARE a duplex surface as data. The
+# ── declared raises: THE CONFORMANCE RIG READS THE DECLARATION. The legacy engine's own harness stops
+# holding a copy of the URLs it judges and reads them off the composition's declared surface instead,
+# which is a legacy crate naming the plane kind's vocabulary where it used to name a string literal.
+# Each expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 7
+because = "busbar-voice \u00d7 plane (busbar-voice, plane): the gemini-live-route conformance leg used to compare the mounted arrival and the admitted bases against URLs written out in the harness \u2014 a copy of the declaration standing beside the declaration, which goes apart the moment either is edited and leaves the leg passing against its own copy while the served surface changes. That is the exact failure that let the composition declare `/twilio/stream` while the node served `/v1/realtime/telephony/{call_id}`, with every test in the tree green. The leg now reads the mounts off `busbar_plane_streams::surface::SURFACE` \u2014 the same const a duplex wire addresses an upgrade against \u2014 and holds ALL THREE declared mounts to the arrivals the legacy engine actually serves, each keyed to the plane's own slot. Import lines and a lookup over declared data, not a plane in a plane: the words counted are the declaration's own, and they are the price of the rig judging the node rather than judging itself (795 -> 802)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "busbar-voice \u00d7 dialect (busbar-voice, dialect): the same conformance leg, counted again in the dialect kind's vocabulary because the declared names it now looks up ARE dialect names \u2014 the binding whose mount it reads is the Gemini Live dialect's own, and the leg says so by name instead of by a URL somebody typed. A leg that avoided the word would be back to holding its own copy of the string, which is the coupling that was actually expensive. Read-lines over declared data in a harness, not a dialect in an engine (676 -> 681)"
+
+# ── declared raise: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
 # (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport
 # face for the Duplex dispatch kind. Every hit is a use-line or a declaration of that face; ws × plane
