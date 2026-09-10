@@ -21,6 +21,7 @@ pub mod spans;
 pub mod surface;
 pub mod transport;
 pub mod unit;
+pub mod upstream;
 pub mod wire;
 
 pub use bounded::{
