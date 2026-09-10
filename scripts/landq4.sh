@@ -1132,6 +1132,11 @@ EOF
   local ck ctext
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
+    # THE CHAIN BEFORE THE BOX. A candidate whose chain no longer resolves must not first be handed
+    # a host it then never uses: `fleet_pick_host` is a read-modify-write of a shared cursor, and a
+    # box taken and abandoned is a box the next line in this very loop is refused.
+    local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
+    [ -n "$chain2" ] || continue
     cand=""; try=0
     while [ "$try" -lt $(( PREPROVE_LINES * 4 )) ]; do
       try=$((try + 1))
@@ -1141,8 +1146,6 @@ EOF
       cand="$h2"; hosts="$hosts $h2"; break
     done
     [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
-    local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
-    [ -n "$chain2" ] || continue
     ctext="$(printf '%s' "$chain2" | tail -n1)"
     ck="$(printf '%s' "$chain2" | sed '$d' | lq_chain_key "$key")"
     i=$((i + 1))

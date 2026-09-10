@@ -50,15 +50,39 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONVERGE=0
 RESTART=0
 REMOTE=1
+SELFTEST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --converge)  CONVERGE=1 ;;
     --restart)   RESTART=1; CONVERGE=1 ;;   # a restart with no convergence is just an outage
     --no-remote) REMOTE=0 ;;
-    *)           die "unknown argument '$1' (expected --converge, --restart or --no-remote)" ;;
+    --selftest)  SELFTEST=1 ;;
+    *)           die "unknown argument '$1' (expected --converge, --restart, --no-remote or --selftest)" ;;
   esac
   shift
 done
+
+# ── --selftest: the one rule this script must never lose ────────────────────────────────────────
+# It runs BEFORE require_aws, because a check on the text of the refresh command needs no fleet, no
+# credentials and no `gh` — and a selftest that cannot be run on a laptop is a selftest nobody runs.
+reconcile_selftest() {
+  local fails=0
+  _t() { if [ "$2" = "$3" ]; then printf '  ok   %-52s\n' "$1"
+         else printf '  FAIL %-52s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  echo "ci-runners-reconcile selftest: the SSM refresh never prunes a live run's refs"
+  # THE PATTERNS ARE BRACKETED SO THEY DO NOT MATCH THEIR OWN SOURCE LINE. `grep`ing this file for
+  # the string the check forbids finds the check itself, reads 1, and is red forever — or, worse,
+  # is "fixed" by loosening it until it can never be red at all.
+  _t "the refresh does not prune refs/heads" 0 \
+     "$(grep -c 'fetch -q --prun[e] origin' "${BASH_SOURCE[0]}")"
+  _t "  ...it mirrors origin plainly"        1 \
+     "$(grep -c 'git -C busbar.git fetch -q ori[g]in' "${BASH_SOURCE[0]}")"
+  _t "  ...and no other leg prunes heads"    0 \
+     "$(grep -c -- '--prun[e] origin' "${BASH_SOURCE[0]}")"
+  if [ "$fails" -eq 0 ]; then echo "ci-runners-reconcile selftest: GREEN (the SSM refresh, without --prune)"; return 0; fi
+  echo "ci-runners-reconcile selftest: RED ($fails failure(s))" >&2; return 1
+}
+[ "$SELFTEST" = 1 ] && { reconcile_selftest; exit $?; }
 
 require_aws
 command -v gh >/dev/null || die "gh is required (the sweep and the registration check both use it)"
@@ -185,8 +209,19 @@ if [ "$REMOTE" = 1 ]; then
       # Idempotent by construction: clone only when absent, fetch always. `git clean` is NOT done
       # here — that is prove-remote.sh's job immediately before a proof, and doing it on a timer
       # would delete a running proof's working tree out from under it.
+      #
+      # AND NEITHER IS `--prune`, FOR EXACTLY THE SAME REASON, ONE LEVEL UP. `--prune` over
+      # `+refs/heads/*:refs/heads/*` deletes every ref under refs/heads that origin does not have —
+      # which is precisely the set a live landing owns: `land-<stamp>-<pid>`, its `-base`, and the
+      # `-landed` tip the box publishes when land.sh returns. This watchdog runs on a ~10-minute
+      # timer against EVERY box, so it lands inside other people's runs by construction, and it is
+      # the SSM half: ci-remote-lib.sh's own refresh was fixed and this one still ran with --prune,
+      # so the greens kept vanishing. Measured 09-10: gate-mutants-2's 2.2 h GREEN discarded at
+      # 06:39, and tree-reds' per-line outcome file gone at 09:09 — both mid-run, both with
+      # refs/proof/* (outside this refspec, and so outside the prune) intact, which is the
+      # fingerprint. A stale mirror costs objects on the next push; a pruned ref costs a proof.
       # shellcheck disable=SC2016  # $HOME and $(…) are for the REMOTE shell, not this one
-      printf '"su - ubuntu -c %scd $HOME; test -d busbar.git || git clone --bare -q https://github.com/GetBusbar/busbar.git busbar.git; git -C busbar.git config gc.auto 256; git -C busbar.git fetch -q --prune origin \\"+refs/heads/*:refs/heads/*\\" 2>/dev/null; test -d busbar-prove/.git || git clone -q busbar.git busbar-prove; git -C busbar-prove remote get-url prove >/dev/null 2>&1 || git -C busbar-prove remote add prove $HOME/busbar.git; git -C busbar-prove config user.name \\"busbar remote prove\\"; git -C busbar-prove config user.email ci@busbar.invalid; git -C busbar-prove config advice.detachedHead false%s; echo prove=$(su - ubuntu -c %sgit -C $HOME/busbar-prove rev-parse --short HEAD 2>/dev/null || echo MISSING%s)"' \
+      printf '"su - ubuntu -c %scd $HOME; test -d busbar.git || git clone --bare -q https://github.com/GetBusbar/busbar.git busbar.git; git -C busbar.git config gc.auto 256; git -C busbar.git fetch -q origin \\"+refs/heads/*:refs/heads/*\\" 2>/dev/null; test -d busbar-prove/.git || git clone -q busbar.git busbar-prove; git -C busbar-prove remote get-url prove >/dev/null 2>&1 || git -C busbar-prove remote add prove $HOME/busbar.git; git -C busbar-prove config user.name \\"busbar remote prove\\"; git -C busbar-prove config user.email ci@busbar.invalid; git -C busbar-prove config advice.detachedHead false%s; echo prove=$(su - ubuntu -c %sgit -C $HOME/busbar-prove rev-parse --short HEAD 2>/dev/null || echo MISSING%s)"' \
         "'" "'" "'" "'"
       printf ']}'
     } > "$T"
