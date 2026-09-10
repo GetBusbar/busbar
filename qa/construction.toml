@@ -303,6 +303,19 @@ file = "qa/kind-isolation.toml"
 by = 22
 because = "MOUNT identity, root × unit: the mount files' unit lines: a leg assembled before the loop holds the scope, trust and admission entries its plane's operations are governed by, because a unit may not be reached from inside a plane and the root is the only place both are visible; measured in the production halves of the seven mount files only (units_a2a_leg.rs 0->12, units_mcp_leg.rs 0->10); 1169 -> 1191"
 
+# THE COMPOSITION MANIFEST. `crates/busbar/Cargo.toml` names every plane crate the binary mounts —
+# `busbar-plane-mcp = { path = "../busbar-plane-mcp" }` and its four siblings — and the `root-*`
+# feature table that decides which of them a build composes. A dependency line and a feature-table
+# line ARE the root composing what it mounts: there is no other spelling of "this binary mounts the
+# MCP plane", and a manifest that mounted a plane without naming it would not mount anything. The
+# number is the MEASURED rise in the manifest's DECLARATION halves only; its comment prose is not
+# declared here and stays measured.
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 11
+because = "COMPOSITION MANIFEST identity, root × plane: the five `busbar-plane-* = { path = ... }` dependency lines and the `root-*` / `plane-*` feature-table lines that select them, in crates/busbar/Cargo.toml — the one place the binary states which planes it composes; measured over the manifest's declaration lines only, comments excluded (Cargo.toml 78 -> 89); 2116 -> 2127"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
