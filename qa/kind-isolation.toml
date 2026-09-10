@@ -5533,11 +5533,6 @@ kind = "dialect"
 count = "3"
 
 [[cell]]
-crate = "busbar-unit-auth"
-kind = "dialect"
-count = "4"
-
-[[cell]]
 crate = "busbar-unit-breaker"
 kind = "dialect"
 count = "3"

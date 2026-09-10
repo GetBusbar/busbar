@@ -22,9 +22,6 @@
 //!   entries take five seconds plus a deterministic jitter; a reject is never cached. Passes are
 //!   buffered and committed only when the chain actually identifies, so unauthenticated traffic
 //!   cannot churn a real identity out of a full cache. The keys arm is cache-exempt.
-//! - **The carriers.** Bearer first, then the Anthropic key header, then the Google key header. A
-//!   present-but-empty header is treated as absent; a non-bearer authorization header falls through
-//!   to the next carrier rather than swallowing the request.
 //! - **Anonymous.** The anonymous principal has no bucket and renders its actor id as the literal
 //!   word `anonymous` on every surface.
 //! - **Revocation.** Gates NEW units only. A unit already in flight runs to its end.
@@ -33,7 +30,7 @@
 //! ## The two things the kernel supplies
 //!
 //! The crate is dependency-free BY DEFAULT, so anything that would have pulled in an HTTP stack, a
-//! hash, or a clock arrives as a trait: [`HeaderView`] for the request's headers, [`CredentialDigest`]
+//! hash, or a clock arrives as a trait: [`CredentialDigest`]
 //! for the credential digest, [`KeyVerifier`] for the built-in signed-key arm, and [`RevocationView`]
 //! for the revocation set the kernel derives from the journal tail. The `sha256` feature adds a
 //! production [`cache::Sha256Digest`] for callers willing to take the `sha2`/`hex` dependency rather
@@ -45,7 +42,6 @@
 
 pub mod admin;
 pub mod cache;
-pub mod carrier;
 pub mod chain;
 pub mod challenge;
 pub mod exchange;
@@ -55,7 +51,6 @@ pub mod unit;
 
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
 pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
-pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
 pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
 pub use challenge::{Challenge, ChallengeBounds};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};
