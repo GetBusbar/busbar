@@ -1280,3 +1280,60 @@ file once PER WIRE for an answer that does not depend on which wire is being loo
 scan's memo (`the xtask shard: the wire scan is memoised`) is what removed it. The battery needs
 `XTASK_GATE_CEILING_SECS` raised above the 300s per-gate default — `land.sh` and CI give the two long
 self-tests their own hang ceiling for exactly this.
+
+## 10. The two ratchets over the ceilings THEMSELVES
+
+Every other rule in the construction gate measures the TREE against a number in `qa/construction.toml`.
+These two measure the NUMBERS: `ceiling-rose` refuses one going UP, `ceiling-census` refuses one going
+DOWN. Both were readable in ways that made them report the wrong thing, and both are stated here
+because the shape of the fix is a rule about the FILE and not about the code that reads it.
+
+### 10.1 A `[[cell]]` ceiling is named by its identity, never by its position
+
+`ceiling-rose` compares every number in `qa/construction.toml` and `qa/kind-isolation.toml` against
+the same number at the merge-base. The kind ledger is an array of tables, so the reader spelled each
+count by POSITION — `cell.294.count`. A position is not a name. Strike one `[[cell]]` and every later
+row renumbers by one, so `cell.294.count` on this tree and `cell.294.count` at the base are two
+DIFFERENT cells, and the comparison manufactures rises where nothing rose while hiding the rises that
+did. Measured on a branch that deleted one dead crate: thirty false rises, and a deletion is exactly
+the landing this ratchet exists to make cheap.
+
+So a row of an identified table is relabelled by the fields that NAME it — `cell.<crate>.<kind>.count`,
+`dep.<from>.<to>.<half>.count`, `face.<crate>.<face>.count` — which is the same string on both sides of
+a strike. A table the reader has no identity for, and a row missing a field that would name it, keep
+the ordinal rather than dropping out of the comparison: a ceiling that cannot be named is still a
+ceiling.
+
+The same string is what a `[[gate.ceiling_raises]]` entry's `key` must be. An ORDINAL key is refused
+outright rather than resolved, whatever it happens to line up with: a declaration is a transaction
+about ONE ceiling, and `cell.294.count` names a slot that the next strike above it hands to a
+different crate.
+
+### 10.2 `[[gate.census_retired]]` — the only thing that lowers a census floor, and it is spent once
+
+`[gate.census]` pins how many rule tables, plane crates and kind-glob matches this gate is supposed to
+be reading, and each number is a FLOOR that may not go down — because "delete the rule table and drop
+its census number" is one edit that deletes a check and the obligation to run it together, and by the
+numbers alone it is indistinguishable from a legitimate retirement. Deleting a legacy crate is the
+work 1.6.0 exists to do, and every such deletion drops a count: a `plane_crates` entry, a
+`legacy-reach` prefix, a `[gate.plugin_kinds]` glob matching one directory fewer. Before this rule
+there was no route through at all, so the retirement was red either way and the floor was a thing to
+edit rather than a thing to spend.
+
+A NAME tells the two apart. A `[[gate.census_retired]]` row says which crate went, in which commit,
+which floor moved, from what to what, and WHY the tree no longer needs it, and it is checked six ways:
+the crate must be GONE from the tree; the floor named must be the floor that moved; `from` must be the
+number the merge-base carried; `to = from - 1` exactly (one retirement deletes one crate); the `why` is
+at least sixty characters, because the numbers say what moved and only the `why` says whether it should
+have; and the row must be LIVE.
+
+AND IT EXPIRES, on the same terms a declared raise does. The row rides in the commit that deletes the
+crate, so one batch later the merge-base carries both the row and the lowered floor — from then on the
+row is SPENT, and a spent row admits nothing. A spent row that still names a drop this branch made is
+RED by name: one deletion's ceremony buying two. A spent row that names no drop is a WARNING, never a
+red (the strike cannot ride in the same batch as the deletion), and `cargo xtask gate construction
+--write` strikes it. A LIVE row that names no drop is RED: the base does not carry it and the floor it
+names did not move, so it is either a deletion that is not on this branch or a floor that is misspelt —
+and a dead row is the door the NEXT drop of that floor walks through. The record of what 1.6.0 deleted
+is the commit history the `commit` field points at, not a pile of spent rows in the ceilings file.
+
