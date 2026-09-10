@@ -362,3 +362,38 @@ fn a_deployment_is_bootstrapped_exactly_once() {
         BootstrapVerdict::KeysetMissing
     );
 }
+
+/// A handshake name is case-insensitive, and the boot check has to read it the way an arrival will.
+///
+/// `Example.com` and `example.com` are ONE server name: the domain-name grammar an SNI value is
+/// written in does not distinguish case, and the contract — which is what a plane writes its claims
+/// in, so its reading is what a declaration MEANS — already says so at `Selector::overlaps`. A boot
+/// that proves the two disjoint hands the same handshake to two planes and lets the declaration
+/// order decide which of them wins it, which is the one thing this check exists to prevent.
+#[test]
+fn two_handshake_names_differing_only_in_case_are_one_name() {
+    let upper = Selector::Sni("Example.com");
+    let lower = Selector::Sni("example.com");
+
+    // The contract's reading is the truth: SNI is case-insensitive.
+    assert!(
+        upper.overlaps(&lower),
+        "the contract reads a handshake name case-insensitively"
+    );
+
+    // And the boot check reads the same name the same way.
+    assert!(overlaps(&upper, &lower));
+    let claims = vec![
+        PlaneClaim {
+            plane: "left",
+            claim: claim("wire", upper),
+        },
+        PlaneClaim {
+            plane: "right",
+            claim: claim("wire", lower),
+        },
+    ];
+    let conflict =
+        check_claims(&claims).expect_err("one handshake name, two planes, nothing to choose by");
+    assert_eq!(conflict.reason, ConflictReason::EqualPrecedence);
+}

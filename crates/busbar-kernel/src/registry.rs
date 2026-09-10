@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use crate::grammar::{Selector, SelectorFamily};
+use crate::grammar::Selector;
 
 /// Which generation of the registry a lookup is against.
 ///
@@ -449,59 +449,18 @@ pub fn precedence_order(claims: &[PlaneClaim]) -> Vec<usize> {
 /// conservative direction: an operator sees it once, at boot, with both claims named.
 ///
 /// Reflexive and symmetric by construction, and both are asserted by the battery.
-pub fn overlaps(left: &Selector, right: &Selector) -> bool {
-    if crate::grammar::family(left) != crate::grammar::family(right) {
-        // Different axes. Nothing here can prove they do not coincide, so they might.
-        return true;
-    }
-    match crate::grammar::family(left) {
-        SelectorFamily::Header => header_overlaps(left, right),
-        SelectorFamily::Path => path_overlaps(left, right),
-        SelectorFamily::Transport => transport_overlaps(left, right),
-    }
-}
-
-/// Header forms: different headers never collide; the same header collides unless two exact values
-/// differ, or a prefix rules the value out.
-fn header_overlaps(left: &Selector, right: &Selector) -> bool {
-    let (ln, rn) = (left.header_name(), right.header_name());
-    if !matches!((ln, rn), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)) {
-        return false;
-    }
-    match (left, right) {
-        (Selector::HeaderExact(_, a), Selector::HeaderExact(_, b)) => a == b,
-        (Selector::HeaderExact(_, v), Selector::HeaderPrefix(_, p))
-        | (Selector::HeaderPrefix(_, p), Selector::HeaderExact(_, v)) => v.starts_with(p),
-        (Selector::HeaderPrefix(_, a), Selector::HeaderPrefix(_, b)) => {
-            a.starts_with(b) || b.starts_with(a)
-        }
-        // Presence matches every value of that header, so it overlaps anything on it.
-        _ => true,
-    }
-}
-
-/// Path forms, as the contract decides them.
 ///
-/// The rule is READ here rather than spelled a second time. It used to be transcribed — the same
-/// arms, one crate down — and a transcription is exactly where a boot that proves two claims
-/// disjoint and a request that matches both come apart: the contract is what a plane writes its
-/// claims in, so the contract's reading is the one the declaration means. What the kernel keeps of
-/// the path question is what the contract has no business knowing: how specific one selector is
+/// The rule is READ from the contract rather than spelled a second time. The path axis was already
+/// read here; the header and handshake axes were transcribed — the same arms, one crate down — and
+/// a transcription is exactly where a boot that proves two claims disjoint and a request that
+/// matches both come apart. It did: the contract reads a handshake name case-insensitively, as the
+/// name's own grammar requires, and the transcription compared it byte for byte, so `Example.com`
+/// and `example.com` sealed as two claims and arrived as one. The contract is what a plane writes
+/// its claims in, so the contract's reading is the one a declaration MEANS. What the kernel keeps
+/// of the question is what the contract has no business knowing: how specific one selector is
 /// against another, which is the precedence order and not part of what a selector IS.
-fn path_overlaps(left: &Selector, right: &Selector) -> bool {
+pub fn overlaps(left: &Selector, right: &Selector) -> bool {
     left.overlaps(right)
-}
-
-/// Transport forms: same form compares its value, different forms coincide.
-fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
-    match (left, right) {
-        (Selector::Sni(a), Selector::Sni(b))
-        | (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
-        | (Selector::StreamName(a), Selector::StreamName(b))
-        | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
-        (Selector::Port(a), Selector::Port(b)) => a == b,
-        _ => true,
-    }
 }
 
 /// Whether this deployment has already been bootstrapped.
