@@ -10079,6 +10079,129 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// WIRE-BYTE LOCK for the `documented|changelog|admin-restart` oracle cell: the exact body the
+/// recorded 1.5.5 golden captured for
+/// `PUT /config/settings {"advanced":{"response_headers":{"server_timing":true}}}`. The sibling
+/// tests above assert the CLASSIFICATION (`advanced.response_headers` is flagged); this one asserts
+/// the SERVED BYTES an operator (and the shadow oracle) actually reads — `applied`,
+/// `reload_to_apply`, the merged `settings` echo, and the `note` sentence character for character,
+/// em dash included. A note that goes empty, loses its clause, or renames a field is a silent
+/// contract break on a money-adjacent operator surface that a `contains("reload")` assertion cannot
+/// see.
+#[tokio::test]
+async fn test_admin_v1_config_settings_restart_note_wire_bytes() {
+    let (dir, _overlay, addr, handle) = settings_test_app("restartnotebytes").await;
+    let client = reqwest::Client::new();
+
+    let put = client
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(r#"{"advanced":{"response_headers":{"server_timing":true}}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+
+    assert_eq!(
+        body["note"].as_str(),
+        Some(
+            "applied live except advanced.response_headers — stored in the overlay, effective on \
+             the next RESTART (a socket rebind / TLS bind is read once at process start, and the \
+             store backend is reused across a hot reload; none can hot-swap)"
+        ),
+        "the served note must be byte-identical to the 1.5.5 golden; got {}",
+        serde_json::to_string(&body).unwrap()
+    );
+    assert_eq!(
+        body["reload_to_apply"],
+        serde_json::json!(["advanced.response_headers"]),
+        "the restart-required set names exactly the one section the request touched"
+    );
+    assert_eq!(
+        body["applied"],
+        serde_json::json!(true),
+        "a durable mutable config always applies"
+    );
+    assert_eq!(
+        body["settings"],
+        serde_json::json!({"advanced":{"response_headers":{"route_policy":false,"server_timing":true}}}),
+        "the merged echo carries the whole block, the untouched sibling toggle at its default"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The RULE the note above is one instance of, asserted where no single section can satisfy it: a
+/// `PUT` that touches restart-scoped fields in THREE different shapes at once — a top-level bind
+/// (`listen`), a dotted member of a mixed section (`limits.max_inbound_concurrent`) and a whole
+/// sub-block of another (`advanced.response_headers`) — plus a live field that must NOT appear. The
+/// note is rebuilt here from the response's OWN `reload_to_apply`, so it asserts the invariant
+/// ("applied live except <every flagged path, in order> — <the why>") rather than any one section's
+/// wording: a classifier that drops a section, reorders the list, or stops naming it in the sentence
+/// is caught for whichever section it happens to.
+#[tokio::test]
+async fn test_admin_v1_config_settings_note_names_every_flagged_field() {
+    let (dir, _overlay, addr, handle) = settings_test_app("noteeveryfield").await;
+    let client = reqwest::Client::new();
+
+    let put = client
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "listen": "127.0.0.1:0",
+                "limits": { "max_inbound_concurrent": 512, "tls_handshake_timeout_secs": 30 },
+                "advanced": { "response_headers": { "server_timing": true } },
+                "per_request_fee": 3
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let flagged: Vec<String> = body["reload_to_apply"]
+        .as_array()
+        .expect("reload_to_apply is always an array on a PUT")
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .expect("each flagged path is a string")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        flagged,
+        vec![
+            "listen".to_string(),
+            "limits.max_inbound_concurrent".to_string(),
+            "advanced.response_headers".to_string(),
+        ],
+        "every restart-scoped shape the table names is flagged, and the live siblings are not"
+    );
+    assert_eq!(
+        body["note"].as_str(),
+        Some(
+            format!(
+                "applied live except {} — stored in the overlay, effective on the next RESTART (a \
+                 socket rebind / TLS bind is read once at process start, and the store backend is \
+                 reused across a hot reload; none can hot-swap)",
+                flagged.join(", ")
+            )
+            .as_str()
+        ),
+        "the note names EVERY field the response flagged, in the same order, in one sentence"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// PARTIAL UPDATE: a second `PUT` naming only `per_request_fee` preserves the earlier `rate_card`
 /// A store secret reference that does not resolve HERE must not be rejected. The store is
 /// restart-to-apply, so staging a ref whose secret the orchestrator mounts on the next deploy is a
