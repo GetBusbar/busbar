@@ -538,6 +538,24 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
 }
 
 fn selftest_cmd(args: &[String]) -> i32 {
+    // `--shard` HERE IS A REFUSAL, NOT A NO-OP. This subcommand runs EVERY registered gate's
+    // self-test and reads no flags at all, so `cargo xtask selftest --shard 1/4` would have run the
+    // whole registry — forty-odd minutes of it — while the caller believed four boxes were each
+    // taking a quarter. That is the same fault the `--all --selftest` refusal above exists for: a
+    // flag that is accepted and ignored reports a proof that was never taken.
+    if args
+        .iter()
+        .any(|a| a == "--shard" || a.starts_with("--shard="))
+    {
+        eprintln!(
+            "xtask selftest: --shard partitions ONE gate's case list. This subcommand runs every \
+             registered gate's self-test and takes no shard; running it here would prove the whole \
+             registry while reporting a quarter of it."
+        );
+        eprintln!("  one gate, sharded:  cargo xtask gate <name> --selftest --shard k/n");
+        return 2;
+    }
+
     let cx = match open_ctx() {
         Ok(cx) => cx,
         Err(code) => return code,
