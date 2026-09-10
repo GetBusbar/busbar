@@ -100,7 +100,8 @@ CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh   # create/scale from nothing. Idem
 ./scripts/ci-runners-ssh.sh         # ssh key + session-manager-plugin + ~/.busbar-fleet
 ./scripts/ci-runners-down.sh        # deregister + terminate the SPOT boxes; the floor SURVIVES
 ./scripts/ci-runners-down.sh --all  # …everything, floor included
-./scripts/ci-runners-lint.sh        # bash -n + shellcheck -x over all eight scripts
+./scripts/ci-runners-lint.sh        # bash -n + shellcheck -x over all nine scripts
+./scripts/ci-runners-selftest.sh    # the registration path, stubbed — no AWS, no gh auth, no fleet
 CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-<anything>.sh   # print the AWS calls, make none
 ```
 
@@ -388,7 +389,8 @@ it is also the right thing to run when you are not sure there is a problem. One 
 1. **Top up.** Spot to `CI_RUNNER_COUNT`, on-demand to `CI_RUNNER_ONDEMAND_FLOOR`, counted
    separately off `InstanceLifecycle` and launched across every pool (§4).
 2. **Sweep the ghosts.** Every `offline` org registration whose instance no longer exists.
-3. **Register** the boxes that are short of agents — and *only* those.
+3. **Register** the boxes that are short of agents — and *only* those, through `register_agents`
+   in `scripts/ci-runners-lib.sh` (§ *Registration is a library call*).
 4. **Refresh** `~/.busbar-fleet` and the remote-prove bare repo + checkout on every box.
 
 It ends in one line:
@@ -399,6 +401,37 @@ reconcile: spot 8/8, on-demand 2/2, online runners 32, swept ghosts 0, registere
 
 `spot 0/8` is a fleet that is down. `online runners 0` alongside `spot 8/8` is a registration
 problem, not a capacity problem. That line is the whole status report.
+
+### Registration is a library call, not an exec of a sibling script
+
+`register_agents` — the token mint and the SSM dispatch — lives in `scripts/ci-runners-lib.sh`, and
+both `ci-runners-register.sh` (the operator's entry point) and the reconcile's step 3 call it. It
+used to live only in `ci-runners-register.sh`, which the reconcile ran as
+`"$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1 || true`.
+
+On 2026-09-10 a spot interruption wave replaced seven boxes and the fleet sat at **8 agents online
+of 40 for over an hour**. Every replacement had finished its bootstrap and unpacked all four runner
+trees; the AMI, the user-data, the labels and the egress were all fine. The reconcile was being run
+from a *copied* scripts directory that contained everything it sources except that one sibling. The
+exec failed 127 into `/dev/null`, `|| true` discarded it, and each pass printed
+
+```
+registering: i-0a51811c6fb5a08e6 i-06997fa8615add7ae …
+  (still no agents online on those boxes — bootstrap is not finished; the next pass retries)
+```
+
+which is a true sentence about a fleet that had finished bootstrapping forty minutes earlier and
+would never register, because nothing had been dispatched.
+
+Two properties now hold, and `scripts/ci-runners-selftest.sh` checks both:
+
+* **A partial `scripts/` copy cannot silently skip registration.** The reconcile cannot start
+  without `ci-runners-lib.sh` — sourcing it is fatal when it is missing — so anything that can run
+  the reconcile at all can register.
+* **A failed registration is reported as itself.** `register_agents` returns non-zero on an empty
+  token (the org API limit) or a rejected/failed SSM command, and the reconcile prints
+  `REGISTRATION STEP FAILED (rc=…) — these boxes will NOT come online on their own` instead of the
+  line about bootstrapping.
 
 ### Why the order of 2 and 3 is load-bearing
 
