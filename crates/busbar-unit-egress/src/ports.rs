@@ -35,6 +35,19 @@ pub use busbar_contract::DestinationId;
 /// box its future, and one box per port call is the price of the seam being a trait at all.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// The boxed future of the ONE port call that borrows a unit's own context: the route walk.
+///
+/// NOT `Send`, and the reason is the per-unit arena. The walk borrows the plane's `Ctx` across the
+/// upstream await, and a `Ctx` reaches the one resource a plugin is given — a bump cursor, which is
+/// `Send` and cannot be `Sync`, because a cursor two threads carve at once is not a cursor. Rust
+/// reads a shared borrow crossing an await inside a `Send` future as "another thread may touch this
+/// while it is suspended", and for an arena that reading is correct. So this future says what a
+/// unit already IS: one task owns it end to end, and the route walk is that task's own work.
+///
+/// Scoped to this one call rather than to [`BoxFut`]: a permit acquisition and a clock sleep borrow
+/// no unit's arena, and a port that could be driven from any thread keeps saying so.
+pub type UnitFut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 // ── the breaker seam ────────────────────────────────────────────────────────────────────────────
 
 /// Why a member cannot take a request right now.

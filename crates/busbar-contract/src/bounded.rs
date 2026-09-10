@@ -289,10 +289,22 @@ impl SlabBytes {
 /// fallible because the arena is fixed size: exhaustion ends the unit at the step that asked, it
 /// does not grow the arena.
 ///
+/// # Threading
+/// An arena is PER UNIT. The task running the unit owns it for the length of that unit and shares
+/// it with no thread while a borrow it produced is alive, so the bound here is `Send` alone.
+///
+/// `Sync` stood here and could not be honoured. These allocators take `&self` and answer with
+/// slices borrowed FROM `self` — a bump allocator's signature — and every crate in the tree is
+/// `forbid(unsafe_code)`. A lock cannot lend a borrow past its guard, an atomic byte has no `&[u8]`
+/// view, and a write-once slot cannot type the span-table pairs by the caller's lifetime. So under
+/// `Sync` every implementor was a double that leaked to fake a lifetime it could not produce, and
+/// no serving path could build a `Ctx`. The clause the design never needed is gone; the one that
+/// matters stays.
+///
 /// # Errors
 /// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left
 /// of the arena.
-pub trait Arena: Send + Sync {
+pub trait Arena: Send {
     /// Copy bytes into the arena.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
 
