@@ -182,7 +182,13 @@ jobs:
     needs: scope
     if: needs.scope.outputs.in_scope == 'yes'
     runs-on: [self-hosted, linux, x64, busbar-xl]
-    timeout-minutes: 55
+    # 120, NOT 55, AND THE NUMBER IS MEASURED RATHER THAN GUESSED. A shard pays the test command
+    # twice for one mutant -- once as its baseline, once for the mutant -- and the widest test
+    # command measures 39m43 (docs/ci/gate-integrity.md). 55 minutes could not hold that, and a
+    # shard that times out is red ABOUT THE CLOCK rather than about the tree, which is the least
+    # useful red there is. The narrowing brings a construction-scoped push to ~14m; a
+    # kind-isolation-scoped one is still ~67m, and this is the number that lets it report.
+    timeout-minutes: 120
     strategy:
       # fail-fast OFF on purpose. The output of this job is the LIST of survivors; cancelling the
       # other 23 shards the moment one of them finds a hole reports one hole and hides the rest,
