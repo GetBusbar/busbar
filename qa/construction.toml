@@ -135,8 +135,44 @@ busbar-voice = ["busbar-voice-codec"]
 # striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
 # the face.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
-# every entry that ever stood here was struck once the base carried it.
+# Every entry that ever stood here before these was struck once the base carried it; the entries
+# below ride with the faces they name and expire the same way.
+
+# THE TELLER LOOP'S TWO KERNEL FACES, landed by the mount chain (keep-mount-chain-funded). Both are
+# seams the composition root drives the loop through from ABOVE it, and neither is drainable
+# without un-mounting a plane: a mounted driver has to answer a completed unit with the bytes its
+# plane wrote, and a leg assembled before the loop starts has to hold a trust token it did not mint.
+# The same ten lines are counted three times — the teller file, the kernel total it is part of,
+# and the union that sums the kernel — so the same two faces are declared against each key.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 3
+because = "kernel face `Kernel::trust_token`: the trust unit's token lent to a leg the root assembles BEFORE the loop (units_a2a_leg/units_mcp_leg hold it for the Verify step), minted beside `admit_token` so the seal stays the kernel's and the root never spells `KernelSeal`; 3 lines in teller.rs"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 7
+because = "kernel face `Ended::Settled { frame }`: the ending carries the frame the Encode step wrote, so a mounted driver (plane_mount.rs) answers a completed unit with the bytes its own plane produced instead of a rendering of the money alone; the write site and the exit parameter, 7 lines in teller.rs"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 3
+because = "kernel face `Kernel::trust_token`: the trust unit's token lent to a leg the root assembles BEFORE the loop (units_a2a_leg/units_mcp_leg hold it for the Verify step), minted beside `admit_token` so the seal stays the kernel's and the root never spells `KernelSeal`; the same 3 teller.rs lines counted in the kernel total"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 7
+because = "kernel face `Ended::Settled { frame }`: the ending carries the frame the Encode step wrote, so a mounted driver (plane_mount.rs) answers a completed unit with the bytes its own plane produced instead of a rendering of the money alone; the same 7 teller.rs lines counted in the kernel total"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 3
+because = "kernel face `Kernel::trust_token`: the trust unit's token lent to a leg the root assembles BEFORE the loop (units_a2a_leg/units_mcp_leg hold it for the Verify step), minted beside `admit_token` so the seal stays the kernel's and the root never spells `KernelSeal`; the same 3 teller.rs lines, summed into the union"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 7
+because = "kernel face `Ended::Settled { frame }`: the ending carries the frame the Encode step wrote, so a mounted driver (plane_mount.rs) answers a completed unit with the bytes its own plane produced instead of a rendering of the money alone; the same 7 teller.rs lines, summed into the union"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -362,7 +398,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5389
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -370,7 +406,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23475
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -379,7 +415,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 616
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

@@ -550,7 +550,7 @@ impl<U: busbar_kernel::teller::Units + Send + Sync> PlaneLeg for U {
 /// ## The three things it does, in order
 ///
 /// 1. **Reads with the plane.** One arrival is one inbound frame, and the plane says what it is —
-///    over the root's own per-unit context, whose arena is `busbar_kernel::arena::UnitArena` and
+///    over the root's own per-unit context, whose arena is `crate::root::arena::UnitArena` and
 ///    whose transport facts are the ones the mount published. The driver does not read the body.
 /// 2. **Runs the loop.** The ten steps, against the node's own units, under the node's gauge and
 ///    canary. Not an approximation of the loop and not a subset of it.

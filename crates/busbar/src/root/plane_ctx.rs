@@ -18,7 +18,7 @@
 //!
 //! ## The arena is the whole shape of the API
 //!
-//! `busbar_kernel::arena::UnitArena` borrows its `ArenaSpace` and hands out slices that borrow the
+//! `crate::root::arena::UnitArena` borrows its `ArenaSpace` and hands out slices that borrow the
 //! arena. That is what makes it a *real* allocator rather than the leaking test doubles that stood
 //! in for one — and it is also why this module offers a scope function rather than a value. Nothing
 //! a plane allocates can outlive the call, because the compiler has already proved the space it came
@@ -38,12 +38,12 @@
 //! and a session is what a duplex transport opens. A one-shot arrival handed a session view would be
 //! handed somebody else's.
 
+use crate::root::arena::{ArenaSpace, UnitArena};
 use busbar_contract::bounded::{Labels, SlabBytes};
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::Arrival;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, TransportView};
 use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
-use busbar_kernel::arena::{ArenaSpace, UnitArena};
 
 /// A plugin's own configuration block, for a call that has not been told which plugin it is for.
 ///
