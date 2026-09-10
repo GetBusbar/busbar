@@ -1602,3 +1602,64 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         .expect("verifies");
     assert_eq!(replayed.len(), 2, "the posting, then the carry");
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE STATUS LEG THIS PLANE DECLARES, AND THE KERNEL ARM IT REACHES
+// ------------------------------------------------------------------------------------------------
+
+/// **THE PLANE SAYS WHERE ITS STATUS IS, AND THIS LEG READS IT.**
+///
+/// Read off `busbar_plane_mcp`'s own declaration rather than spelled again here: a literal repeated
+/// in the leg and in the cell agrees with itself forever, including on the day the plane changes
+/// its mind.
+#[test]
+fn the_leg_carries_the_status_leg_the_plane_declares() {
+    let declared = <busbar_plane_mcp::McpPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    assert!(
+        declared.is_some(),
+        "this dialect answers on a frame, so it has a status leg to declare"
+    );
+    let shape = Shape {
+        op: ops::OP_TOOL_CALL,
+        hops_upstream: true,
+    };
+    let evidence = fee_evidence(
+        shape,
+        busbar_caps::OriginKind::Client,
+        true,
+        busbar_contract::unit::FinishClass::Complete,
+    );
+    assert_eq!(
+        evidence.status_at, declared,
+        "the leg builds the kernel's evidence from what the plane declares"
+    );
+}
+
+/// **A TOOL CALL THAT DIES MID-FRAME REACHES THE KERNEL'S DISPUTE ARM.**
+///
+/// The reply already went out: the client has the first frame and knows the call was accepted. The
+/// event stream then stops before the result. Those are two readings of one unit that do not agree,
+/// and the same arm the llm plane's dead stream reaches is the arm this reaches — one policy, one
+/// function, no per-plane copy of what a contradicted fee costs.
+#[test]
+fn a_tool_call_that_dies_mid_frame_is_disputed() {
+    let shape = Shape {
+        op: ops::OP_TOOL_CALL,
+        hops_upstream: true,
+    };
+    let evidence = fee_evidence(
+        shape,
+        busbar_caps::OriginKind::Client,
+        true,
+        busbar_contract::unit::FinishClass::Error,
+    );
+    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    assert_eq!(
+        fee, 1,
+        "the frame the client saw decides the fee, on this plane and on every other"
+    );
+    assert!(
+        flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+        "the frame the client saw and the plane's finish contradict each other"
+    );
+}

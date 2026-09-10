@@ -903,3 +903,98 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
     assert_eq!(requests_drawn(OriginKind::Client, false), 0);
     assert_eq!(requests_drawn(OriginKind::Tick, true), 0);
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE ONE POLICY FOR A CONTRADICTED FEE
+// ------------------------------------------------------------------------------------------------
+
+/// **WHEN THE TWO SOURCES CONTRADICT EACH OTHER, THE FRAME THE CLIENT SAW DECIDES — AND THE POSTING
+/// SAYS SO.**
+///
+/// A unit has two readings of how it ended: the status the transport reported on the frame it says
+/// it reports one on, and the finish the plane afterwards gives. Most of the time they agree. When
+/// they do not, one of two things has happened — an answer that started well and then died, or a
+/// plane that is not telling the truth about its own finish — and the fee cannot wait to find out
+/// which.
+///
+/// The rule is the one the previous release already billed by, stated here as a rule rather than
+/// left implicit in six providers' worth of stream handling: **the fee is decided at the first
+/// frame the client actually saw, and no later abort reverses it.** A response that was good at the
+/// moment it started was a response. What the contradiction changes is not the count — it is that
+/// the posting is MARKED, so a plane whose finishes routinely disagree with its own wire shows up
+/// on the disputes report instead of quietly billing like everyone else.
+///
+/// The other direction is the same rule and a different answer: a status that says the request
+/// failed, against a plane claiming a whole answer, posts NOTHING. The client saw a failure; a
+/// plane cannot bill over the top of it by asserting otherwise.
+///
+/// One function, one policy, every plane. Changing what a contradicted fee costs is one edit at one
+/// site — a pricing decision somebody makes on purpose — and not a structural gap that has to be
+/// found first.
+#[test]
+fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
+    for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
+        // The client saw an answered request; the plane says it ended badly. Billed, and disputed.
+        let died_after_a_good_frame = FeeEvidence {
+            status_at: Some(at),
+            status: Some(StatusClass::Success),
+            finish: Some(FinishClass::Error),
+            ..billable()
+        };
+        assert_eq!(
+            fee_count(&died_after_a_good_frame),
+            (1, PostingFlags::METER_DISPUTED),
+            "a stream that dies halfway through a good response was still a good response at the \
+             moment it started, on every transport that reports a status at all"
+        );
+
+        // The client saw a failure; the plane claims a whole answer. Not billed, and disputed.
+        for claimed in [
+            FinishClass::Complete,
+            FinishClass::TurnComplete,
+            FinishClass::Partial,
+        ] {
+            for failed in [StatusClass::ClientError, StatusClass::ServerError] {
+                let claiming_over_a_failure = FeeEvidence {
+                    status_at: Some(at),
+                    status: Some(failed),
+                    finish: Some(claimed),
+                    ..billable()
+                };
+                assert_eq!(
+                    fee_count(&claiming_over_a_failure),
+                    (0, PostingFlags::METER_DISPUTED),
+                    "a plane cannot bill over the top of a failure the client was handed"
+                );
+            }
+        }
+    }
+}
+
+/// **A PLANE THAT DECLARES NO STATUS LEG IS UNCHANGED BY ANY OF THIS.**
+///
+/// The contradiction arm needs two readings, and a dialect whose answer document IS the whole of
+/// the evidence has one. Its finish decides alone, exactly as it did — which is what makes the
+/// declaration a real answer rather than a way of opting out of the arm.
+#[test]
+fn a_plane_that_declares_no_status_leg_is_decided_by_its_finish_alone() {
+    for finish in [
+        FinishClass::Complete,
+        FinishClass::TurnComplete,
+        FinishClass::Partial,
+        FinishClass::Error,
+    ] {
+        let no_leg = FeeEvidence {
+            status_at: None,
+            status: None,
+            finish: Some(finish),
+            ..billable()
+        };
+        let expected = u32::from(finish != FinishClass::Error);
+        assert_eq!(
+            fee_count(&no_leg),
+            (expected, PostingFlags::NONE),
+            "no second reading exists, so there is nothing to contradict and nothing to dispute"
+        );
+    }
+}

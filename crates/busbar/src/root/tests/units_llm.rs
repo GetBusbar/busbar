@@ -2534,3 +2534,64 @@ fn the_two_books_hold_the_same_report() {
         findings.join("\n")
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE STATUS LEG THIS PLANE DECLARES, AND THE KERNEL ARM IT REACHES
+// ------------------------------------------------------------------------------------------------
+
+/// **THE PLANE SAYS WHERE ITS STATUS IS, AND THIS LEG READS IT.**
+///
+/// The declaration is `busbar_plane_llm`'s, sealed at registration beside its claims and its meter
+/// classes. What is asserted here is that this leg's evidence CARRIES it — not that it equals a
+/// literal spelled twice, which would pass on the day the leg stopped reading the plane and started
+/// remembering what it used to say.
+#[test]
+fn the_leg_carries_the_status_leg_the_plane_declares() {
+    let declared = <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    assert!(
+        declared.is_some(),
+        "this dialect answers on a frame, so it has a status leg to declare"
+    );
+    let evidence = fee_facts(
+        Some(200),
+        true,
+        Some(busbar_contract::FinishClass::Complete),
+        OriginKind::Client,
+    );
+    assert_eq!(
+        evidence.status_at, declared,
+        "the leg builds the kernel's evidence from what the plane declares, not from a `None` it \
+         chose on the plane's behalf"
+    );
+}
+
+/// **A STREAM THAT DIES AFTER A GOOD HEAD REACHES THE KERNEL'S DISPUTE ARM, AND STILL BILLS ONE.**
+///
+/// This is the shape the golden's mid-stream family records: the door writes 200, the first frames
+/// go out, and the upstream then fails in the stream's own dialect. Two readings of one unit, and
+/// they contradict — the client saw an answered request, the tap says the answer never finished.
+///
+/// The COUNT is not what changes. The previous release keeps that request in its billable count and
+/// refunds nothing, and so does this: the fee is decided at the frame the client saw and no later
+/// abort reverses it. What changes is that the contradiction is now VISIBLE — the posting carries
+/// the disputed mark instead of settling silently as if the two readings had agreed — and that the
+/// arm which raises it is reachable at all, which on this plane it was not.
+#[test]
+fn a_dead_stream_after_a_good_head_is_disputed_and_still_bills_one() {
+    let evidence = fee_facts(
+        Some(200),
+        true,
+        Some(busbar_contract::FinishClass::Error),
+        OriginKind::Client,
+    );
+    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    assert_eq!(
+        fee, 1,
+        "the frame the client saw decides the fee, and a later abort does not reverse it"
+    );
+    assert!(
+        flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+        "the transport's status and the plane's finish contradict each other; a posting that did \
+         not say so would make a plane that lies about its finish profitable rather than visible"
+    );
+}

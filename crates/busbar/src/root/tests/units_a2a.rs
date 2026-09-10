@@ -1949,3 +1949,45 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE STATUS LEG THIS PLANE DECLARES, AND THE KERNEL ARM IT REACHES
+// ------------------------------------------------------------------------------------------------
+
+/// **THE PLANE SAYS WHERE ITS STATUS IS, AND THIS LEG READS IT.**
+#[test]
+fn the_leg_carries_the_status_leg_the_plane_declares() {
+    let declared = <busbar_plane_a2a::A2aPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    assert!(
+        declared.is_some(),
+        "this dialect answers on a frame, so it has a status leg to declare"
+    );
+    let draft = draft(ops::OP_MESSAGE_SEND);
+    let evidence = fee_evidence(&draft, busbar_caps::OriginKind::Client, true);
+    assert_eq!(
+        evidence.status_at, declared,
+        "the leg builds the kernel's evidence from what the plane declares"
+    );
+}
+
+/// **A TASK LOST MID-STREAM REACHES THE KERNEL'S DISPUTE ARM.**
+///
+/// The agent accepted the task and the first frame said so; the stream then ends without the task
+/// ever reaching a terminal state. The client saw an accepted request and the plane says the unit
+/// failed, which is the contradiction the kernel has one arm and one policy for.
+#[test]
+fn a_task_lost_mid_stream_is_disputed() {
+    let mut draft = draft(ops::OP_MESSAGE_SEND);
+    draft.streaming = true;
+    draft.finish = FinishClass::Error;
+    let evidence = fee_evidence(&draft, busbar_caps::OriginKind::Client, true);
+    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    assert_eq!(
+        fee, 1,
+        "the frame the client saw decides the fee, on this plane and on every other"
+    );
+    assert!(
+        flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+        "the frame the client saw and the plane's finish contradict each other"
+    );
+}

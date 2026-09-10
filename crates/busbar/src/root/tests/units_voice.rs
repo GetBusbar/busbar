@@ -2481,3 +2481,56 @@ fn two_turns_of_one_session_are_handed_the_same_chain() {
         "and it is the session's own value"
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE STATUS LEG THIS PLANE DECLARES, AND THE KERNEL ARM IT REACHES
+// ------------------------------------------------------------------------------------------------
+
+/// **THE PLANE SAYS WHERE ITS STATUS IS, AND THIS LEG READS IT.**
+#[test]
+fn the_leg_carries_the_status_leg_the_plane_declares() {
+    let declared =
+        <busbar_plane_voice::VoicePlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    assert!(
+        declared.is_some(),
+        "this dialect answers on a frame, so it has a status leg to declare"
+    );
+    let evidence = fee_evidence(
+        UnitShape::SessionOpen,
+        busbar_caps::OriginKind::Client,
+        true,
+        true,
+        Some(busbar_contract::FinishClass::TurnComplete),
+    );
+    assert_eq!(
+        evidence.status_at, declared,
+        "the leg builds the kernel's evidence from what the plane declares"
+    );
+}
+
+/// **A SESSION THAT DIES AFTER IT WAS OPENED REACHES THE KERNEL'S DISPUTE ARM.**
+///
+/// The caller connected, the one leg was dialled, and the frame that opens the conversation went
+/// back — the unit that PAYS is that open, and it was answered. The session then dies. Calling the
+/// whole thing an error and posting nothing would refund a connection the node really made; posting
+/// silently would hide that the two readings disagree. The kernel does neither, in one place, for
+/// every plane.
+#[test]
+fn a_session_that_dies_after_it_opened_is_disputed() {
+    let evidence = fee_evidence(
+        UnitShape::SessionOpen,
+        busbar_caps::OriginKind::Client,
+        true,
+        true,
+        Some(busbar_contract::FinishClass::Error),
+    );
+    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    assert_eq!(
+        fee, 1,
+        "the frame the caller saw decides the fee, on this plane and on every other"
+    );
+    assert!(
+        flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+        "the frame the caller saw and the plane's finish contradict each other"
+    );
+}

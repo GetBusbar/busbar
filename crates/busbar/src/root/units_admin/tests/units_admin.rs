@@ -2870,3 +2870,74 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE STATUS LEG THIS PLANE DECLARES, AND THE KERNEL ARM IT REACHES
+// ------------------------------------------------------------------------------------------------
+
+/// **THE PLANE SAYS WHERE ITS STATUS IS, AND THIS LEG READS IT — including the surface that never
+/// bills.**
+///
+/// A control surface selects no upstream, so its fee is zero whatever its status says. That is a
+/// fact about what this surface DOES, and it is not a reason to leave the declaration unread: a
+/// zero that comes out of "nobody asked the plane" and a zero that comes out of "this surface dials
+/// nothing" are different zeros, and only the second one survives somebody wiring an upstream leg
+/// onto this plane by mistake.
+#[test]
+fn the_leg_carries_the_status_leg_the_plane_declares() {
+    let declared =
+        <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    assert!(
+        declared.is_some(),
+        "an admin answer's head says whether the verb ran, so this plane has a leg to declare"
+    );
+    let ctx = UnitCtx {
+        key: UnitKey::new(a_fresh_unit()),
+        origin: busbar_caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: true,
+        kernel_verb_only: true,
+    };
+    let fee = evidence(&ctx).fee;
+    assert_eq!(
+        fee.status_at, declared,
+        "the leg builds the kernel's evidence from what the plane declares, rather than taking the \
+         whole of it off a `Default`"
+    );
+    assert!(
+        !fee.selected_upstream,
+        "and this surface still selects no upstream, which is what makes its fee zero"
+    );
+    assert_eq!(
+        busbar_kernel::teller::fee_count(&fee).0,
+        0,
+        "a control surface posts no fee, and it posts none for the reason it always did"
+    );
+}
+
+/// **THE DECLARATION THIS PLANE MAKES REACHES THE SAME ARM EVERY OTHER PLANE'S DOES.**
+///
+/// One fact is supplied that no admin unit can produce: an upstream leg. It is stated here rather
+/// than smuggled, because what this proves is that the plane's ANSWER is wired to the kernel's arm
+/// — the declaration is the plane's own, read off the plane — and not that an admin request can be
+/// disputed, which it cannot. Without this the surface would carry a declaration nothing reads, and
+/// a declaration nothing reads is the defect this landing exists to remove.
+#[test]
+fn the_declared_leg_reaches_the_dispute_arm_once_a_unit_is_eligible() {
+    let declared =
+        <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
+    let (fee, flags) = busbar_kernel::teller::fee_count(&busbar_kernel::teller::FeeEvidence {
+        client_open_or_one_shot: true,
+        selected_upstream: true,
+        relayed_first_response_frame: true,
+        status_at: declared,
+        status: Some(busbar_contract::StatusClass::Success),
+        finish: Some(busbar_contract::FinishClass::Error),
+    });
+    assert_eq!(fee, 1, "the frame the client saw decides the fee");
+    assert!(
+        flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+        "the declared leg and the plane's finish contradict each other"
+    );
+}
