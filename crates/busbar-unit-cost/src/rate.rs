@@ -55,6 +55,21 @@ pub const CLASS_CACHE_READ: &str = "cache_read";
 /// The cache-write (cache creation) meter class.
 pub const CLASS_CACHE_WRITE: &str = "cache_write";
 
+/// **THE RESERVED FOUR, IN CANONICAL ORDER** — the one order this crate folds them in.
+///
+/// It is the order a card's class fan-out writes ([`TierRates::by_class`] reads it) and the order
+/// the map-shaped summation adds in ([`LaneRates::reserved_units_nanos`]), so the four names and
+/// their sequence exist once rather than once per reader. A sum is commutative and the order does
+/// not change the total; what a second list would change is WHICH FOUR are summed, and a
+/// constructor fanning out one set of names against a summation folding another prices every line
+/// of the difference at zero — which the ledger identity reads as value delivered for free.
+pub const RESERVED_CLASSES: [&str; 4] = [
+    CLASS_INPUT,
+    CLASS_OUTPUT,
+    CLASS_CACHE_READ,
+    CLASS_CACHE_WRITE,
+];
+
 /// ONE LANE'S CONFIGURED RATES, in micro-units per unit of quantity — the neutral raw-value view a
 /// card is built from.
 ///
@@ -83,14 +98,12 @@ pub struct TierRates {
 }
 
 impl TierRates {
-    /// The four rates paired with the class each one prices, in the canonical order.
+    /// The four rates paired with the class each one prices, in [`RESERVED_CLASSES`] order — read
+    /// off that one list rather than restating it, so the names a card is BUILT with and the names
+    /// a usage map is PRICED against cannot come apart.
     fn by_class(self) -> [(&'static str, f64); 4] {
-        [
-            (CLASS_INPUT, self.input),
-            (CLASS_OUTPUT, self.output),
-            (CLASS_CACHE_READ, self.cache_read),
-            (CLASS_CACHE_WRITE, self.cache_write),
-        ]
+        let micro = [self.input, self.output, self.cache_read, self.cache_write];
+        std::array::from_fn(|i| (RESERVED_CLASSES[i], micro[i]))
     }
 }
 
@@ -434,6 +447,38 @@ impl LaneRates<'_> {
         lines.iter().fold(0u128, |acc, l| {
             let amount = u128::from(l.quantity)
                 .saturating_mul(u128::from(self.nanos_per_unit(l.class.as_str())));
+            acc.saturating_add(amount)
+        })
+    }
+
+    /// **THE SAME COST, OFF A MAP-SHAPED REPORT**: the reserved four multiply-adds in
+    /// [`RESERVED_CLASSES`] order, over a `class -> quantity` map instead of a line slice.
+    ///
+    /// ONE ARITHMETIC, TWO REPORT SHAPES. The 1.5.5 ledger stores usage as a name-keyed map and the
+    /// 1.6.0 report carries it as lines; the price of either is the same fold at the same rates, and
+    /// this is that fold reading the map. It is here, beside [`Self::nanos`] and against the same
+    /// card, so the two shapes cannot be priced by two policies — a map priced outside this crate is
+    /// a second answer to what a request cost, and the ledger cannot say which one it recorded.
+    ///
+    /// ONLY THE RESERVED FOUR PRICE HERE, and that is the shape of the map rather than a narrowing:
+    /// the reserved names are the only ones a configured card names, because the two constructors a
+    /// deployment reaches ([`RateCard::from_config`] and its currency-carrying spelling) fan a lane's
+    /// [`TierRates`] out over exactly [`RESERVED_CLASSES`]. A card with an open class is reachable
+    /// only through [`RateCard::set_rate`], which nothing in production calls; pin
+    /// `open_class_prices_only_through_set_rate` says so and would go red the day one did.
+    ///
+    /// A quantity times a rate cannot overflow the wide accumulator — a `u64` times a `u64` is
+    /// inside a `u128` by a whole bit — but four maximal products summed are past the top of it. So
+    /// the running total SATURATES rather than adding plainly: a plain add panics in a debug build
+    /// and wraps in a release one, and a wrapped total lands back near zero, which is an
+    /// over-the-top ledger deriving as nearly free and escaping every budget cap. Below the
+    /// accumulator's top the two are the same number to the byte, which
+    /// `saturating_add_matches_plain_add_below_overflow` pins.
+    pub fn reserved_units_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
+        RESERVED_CLASSES.iter().fold(0u128, |acc, class| {
+            let quantity = units.get(*class).copied().unwrap_or(0);
+            let amount =
+                u128::from(quantity).saturating_mul(u128::from(self.nanos_per_unit(class)));
             acc.saturating_add(amount)
         })
     }
