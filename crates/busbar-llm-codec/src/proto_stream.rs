@@ -834,26 +834,32 @@ impl StreamTranslate {
                     self.scanned = end;
 
                     if self.same_proto
-                        && self.egress.name_static() == "anthropic"
-                        && !matches!(
-                            busbar_substrate_values::proto::sse_event_type(frame),
-                            "message_start" | "message_delta" | "error"
-                        )
+                        && self
+                            .egress
+                            .reader()
+                            .same_proto_decoded_events()
+                            .is_some_and(|decoded| {
+                                !decoded.contains(&busbar_substrate_values::proto::sse_event_type(
+                                    frame,
+                                ))
+                            })
                     {
-                        // The Anthropic same-proto reader is stateless
-                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
-                        // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
-                        // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
-                        // downstream of this egress needs a decoded `data` for any event except the
-                        // two that carry usage plus the terminal error. Decided on the BORROWING
-                        // `sse_event_type` probe BEFORE `parse_sse_frame` runs, so the ~99% of
-                        // frames that are `content_block_*` skip the frame parse's own three
-                        // allocations (event-type String, data-line Vec, joined-payload String) as
-                        // well as the DOM parse and the IR event Vec — the first cut of this skip
-                        // sat AFTER the frame parse and silently kept paying the join per token.
-                        // The bytes still reach the client verbatim via the `[emit_from..]` bulk
-                        // copy below, which never touches `data`. (A no-`data:` or keepalive frame
-                        // reads as event "" here and is skipped too — the same `continue` the
+                        // DECODE-SET fast path. The egress reader named the wire event types whose
+                        // decoded `data` this path can consume (`ProtocolReader::
+                        // same_proto_decoded_events`, defaulting to `None` = decode everything),
+                        // and this frame is not one of them, so nothing downstream of this egress
+                        // needs it parsed. The translator asks the FACE and never names a dialect:
+                        // the set, and the stateless-decode promise that makes skipping safe, are
+                        // the owning codec module's to state — the same rule that keeps every wire
+                        // event-type literal (`abort_exception_type`, `inject_streaming_metrics`)
+                        // out of this file. Decided on the BORROWING `sse_event_type` probe BEFORE
+                        // `parse_sse_frame` runs, so a skipped frame pays neither the frame parse's
+                        // three allocations (event-type String, data-line Vec, joined-payload
+                        // String) nor the DOM parse nor the IR event Vec — the first cut of this
+                        // skip sat AFTER the frame parse and silently kept paying the join per
+                        // token. The bytes still reach the client verbatim via the `[emit_from..]`
+                        // bulk copy below, which never touches `data`. (A no-`data:` or keepalive
+                        // frame reads as event "" here and is skipped too — the same `continue` the
                         // parse-based arms below take for it.)
                         continue;
                     }

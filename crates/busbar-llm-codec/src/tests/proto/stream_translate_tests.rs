@@ -4859,8 +4859,11 @@ fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
 /// On the Anthropic same-proto verbatim path, only the two usage-bearing event types
 /// (`message_start`, `message_delta`) plus `error` may reach the `busbar_substrate_values::json::parse_str` DOM parse —
 /// every other frame (here, five `content_block_delta`s and a `content_block_start`/`_stop` pair) must
-/// skip it entirely, because the Anthropic reader is stateless and the framing seams it would feed are
-/// constant-false defaults for this egress. Bytes must still round-trip verbatim regardless.
+/// skip it entirely. The set is the READER'S declaration
+/// (`ProtocolReader::same_proto_decoded_events`), not a name the translator matched: this test
+/// drives the dialect end-to-end and `decode_set_is_the_readers_declaration` pins the declaration
+/// itself, so the pair proves the fact and its home together. Bytes must still round-trip verbatim
+/// regardless.
 #[test]
 fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
     let mut t = StreamTranslate::new_same_proto("anthropic").expect("translator");
@@ -4899,6 +4902,41 @@ fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
     let usage = t.usage().expect("terminal usage must still be captured");
     assert_eq!(usage.input_tokens, 10);
     assert_eq!(usage.output_tokens, 5);
+}
+
+/// THE DECODE SET IS THE READER'S, AND THE DEFAULT IS THE PESSIMISTIC ONE.
+///
+/// The fast path above is only correct because the codec that owns the wire declared which of its
+/// event types can produce an A-tap event. Two halves, and both must hold or the skip is either
+/// wrong or a dialect name in the neutral translator again:
+///
+/// 1. The dialect that opts in declares exactly its three A-tap-bearing event types. A fourth
+///    (or a missing one) here would silently drop usage on the verbatim path.
+/// 2. Every dialect that has NOT opted in answers `None` — the trait default — so the translator
+///    decodes every one of its frames. `None` is the safe answer, which is why it is the default:
+///    forgetting the declaration costs a slower stream, never a wrong bill.
+#[test]
+fn decode_set_is_the_readers_declaration() {
+    assert_eq!(
+        Protocol::anthropic().reader().same_proto_decoded_events(),
+        Some(&["message_start", "message_delta", "error"][..]),
+        "the opted-in dialect declares its own three A-tap event types"
+    );
+    for p in [
+        Protocol::openai(),
+        Protocol::gemini(),
+        Protocol::cohere(),
+        Protocol::responses(),
+        Protocol::bedrock(),
+    ] {
+        assert_eq!(
+            p.reader().same_proto_decoded_events(),
+            None,
+            "{}: a dialect that has not declared a decode set must fall to the trait default, so \
+             every frame is decoded",
+            p.name()
+        );
+    }
 }
 
 /// THE TERMINAL-USAGE FOLD CARRIES THE SUB-BUCKETS, end to end through the translator. The
