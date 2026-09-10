@@ -602,6 +602,178 @@ EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE TWO LONG SELF-TESTS, SPLIT OVER THE FLEET
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# `cargo xtask gate kind-isolation --selftest` is 1508 s on the laptop and 1642 s on a fleet box;
+# `construction --selftest` is 370-420 s. Both run on EVERY landing by design, and both are ONE
+# process on ONE box while seven boxes idle. `--shard k/n` partitions the case list by index (see
+# `gates::Shard`), so the same battery runs on up to four boxes at once.
+#
+# THE SAME PROOF, NOT A SMALLER ONE. That is the whole claim, and it rests on three refusals:
+#
+#   * every shard must be GREEN. Nothing is inferred from a sibling's verdict.
+#   * every shard must REPORT. A shard whose exit status never came back is RED — not skipped, not
+#     "the box was busy". A box that does not vote is not a box that voted yes, and the reason this
+#     is written down is that "the transport failed so we ran the other three" is exactly how a
+#     four-box leg quietly becomes a three-quarter proof.
+#   * the UNION must be the whole list. Every shard prints `shard k/n: X of TOTAL case(s)`; the
+#     shards must agree about TOTAL (they ran the same tree) and their X must SUM to it. That is
+#     what makes "no case was lost" a measurement rather than a hope, and it needs no unsharded run
+#     to compare against — which is the run this exists to avoid taking.
+#
+# OFF BY DEFAULT. With `LAND_SELFTEST_SHARDS` unset, every landing runs exactly what it ran before.
+
+# The shard count, validated. Empty or 1 is "do not shard"; anything above 4 or not a number is a
+# REFUSAL rather than a silent fallback, because a caller who wrote `LAND_SELFTEST_SHARDS=eight`
+# and got an unsharded run would believe eight boxes had proven it.
+land_shard_count() {
+  local n="${LAND_SELFTEST_SHARDS:-}"
+  [ -n "$n" ] || { echo 0; return 0; }
+  case "$n" in
+    *[!0-9]*) echo "land.sh: RED — LAND_SELFTEST_SHARDS='$n' is not a number" >&2; return 1 ;;
+  esac
+  [ "$n" -le 4 ] || { echo "land.sh: RED — LAND_SELFTEST_SHARDS=$n: at most 4 boxes take a leg" >&2; return 1; }
+  [ "$n" -ge 2 ] || { echo 0; return 0; }
+  echo "$n"
+}
+
+# THE UNION CHECK, over the logs the shards left behind. See the three refusals above.
+land_shard_union() { # $1 = gate  $2 = n  $3 = dir
+  local g="$1" n="$2" dir="$3" k rc line owned total first="" sum=0
+  k=1
+  while [ "$k" -le "$n" ]; do
+    rc="$(cat "$dir/shard-$k.rc" 2>/dev/null || true)"
+    if [ -z "$rc" ]; then
+      echo "land.sh: RED — $g self-test shard $k/$n never reported an exit status. A box that did not vote is not a box that voted yes (log: $dir/shard-$k.log)" >&2
+      return 1
+    fi
+    if [ "$rc" != 0 ]; then
+      grep -E 'FAILED|REFUSED|expected|infra|^  - ' "$dir/shard-$k.log" 2>/dev/null | head -12 >&2
+      echo "land.sh: RED — $g self-test shard $k/$n exited $rc (log: $dir/shard-$k.log)" >&2
+      return 1
+    fi
+    line="$(grep -E "^ *shard $k/$n: [0-9]+ of [0-9]+ case\(s\)$" "$dir/shard-$k.log" 2>/dev/null | tail -1)"
+    if [ -z "$line" ]; then
+      echo "land.sh: RED — $g self-test shard $k/$n exited 0 without printing its case count. A shard that does not say what it ran has not reported (log: $dir/shard-$k.log)" >&2
+      return 1
+    fi
+    owned="$(printf '%s\n' "$line" | awk '{print $3}')"
+    total="$(printf '%s\n' "$line" | awk '{print $5}')"
+    [ -n "$first" ] || first="$total"
+    if [ "$total" != "$first" ]; then
+      echo "land.sh: RED — $g self-test shards disagree about the case list: shard $k/$n counted $total case(s), an earlier shard counted $first. They did not prove the same tree." >&2
+      return 1
+    fi
+    sum=$((sum + owned))
+    k=$((k + 1))
+  done
+  if [ "$sum" != "$first" ]; then
+    echo "land.sh: RED — $g self-test: $n shard(s) own $sum of $first case(s). $((first - sum)) case(s) were proven by nobody, so this is a smaller proof, not a faster one." >&2
+    return 1
+  fi
+  echo "land.sh: $g self-test: $n shard(s) green, $sum of $first case(s), union complete"
+  return 0
+}
+
+# ONE SHARD ON A SIBLING BOX. Its own clone under ~/busbar-shards/<ref>, so a box already running a
+# landing in ~/busbar-prove is not disturbed by one; the ref is pushed to that box's OWN bare repo
+# by `remote_push_tree`, which is why the sibling can fetch it at all.
+land_shard_remote_one() { # $1 host  $2 ref  $3 gate  $4 k/n  $5 CEIL=VALUE
+  local host="$1" ref="$2" g="$3" spec="$4" ceil="$5"
+  remote_push_tree "$host" "$here" "$ref" || return 1
+  rsh_script "$host" "$ref" "$g" "$spec" "$ceil" <<'SHARD'
+set -uo pipefail
+REF="$1"; GATE="$2"; SPEC="$3"; CEIL="$4"
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
+export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
+# A SERVER PORT OF ITS OWN, for the reason land-remote.sh gives: a neighbour's
+# `sccache --stop-server` must not appear inside this shard's rustc as a reset connection.
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4310}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+export "$CEIL"
+BARE="$HOME/busbar.git"
+W="$HOME/busbar-shards/$REF"
+mkdir -p "$HOME/busbar-shards"
+[ -d "$W/.git" ] || git clone -q --shared "$BARE" "$W" || exit 2
+cd "$W" || exit 2
+git fetch -q origin "+refs/heads/$REF:refs/heads/$REF" || exit 2
+git checkout -q -f "$REF" || exit 2
+git clean -qffdx -e target -e .cargo
+echo "shard $SPEC of $GATE on $(hostname): tree $(git rev-parse --short HEAD)"
+cargo xtask gate "$GATE" --selftest --shard "$SPEC"
+SHARD
+}
+
+# THE FAN-OUT. Shard 1 stays on THIS box — it is already checked out, its target/ is warm, and it is
+# the one shard no transport can lose — and shards 2..n go to siblings, in parallel.
+land_shard_remote() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
+  local g="$1" n="$2" dir="$3" ceil="$4" k host pid1
+  # shellcheck source=scripts/ci-remote-lib.sh
+  . "$here/scripts/ci-remote-lib.sh" || {
+    echo "land.sh: RED — scripts/ci-remote-lib.sh will not source; the fan-out has no transport" >&2; return 1; }
+  # `rdie` in that library exits; every call to it from here is made inside a subshell so a
+  # transport that gives up is a RED leg rather than a landing that vanished with status 2.
+  ( remote_wrapper ) || { echo "land.sh: RED — no ssh wrapper for the fleet" >&2; return 1; }
+  local ref="landshard-$stamp"
+  ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest --shard "1/$n" >"$dir/shard-1.log" 2>&1 ) &
+  pid1=$!
+  k=2
+  while [ "$k" -le "$n" ]; do
+    host="$( fleet_pick_host )" || host=""
+    if [ -z "$host" ]; then
+      echo "land.sh: shard $k/$n: no fleet host to hand it to" >"$dir/shard-$k.log"
+      echo 2 >"$dir/shard-$k.rc"
+    else
+      (
+        land_shard_remote_one "$host" "$ref" "$g" "$k/$n" "$ceil" >"$dir/shard-$k.log" 2>&1
+        echo $? >"$dir/shard-$k.rc"
+      ) &
+    fi
+    k=$((k + 1))
+  done
+  wait "$pid1"; echo $? >"$dir/shard-1.rc"
+  wait
+  return 0
+}
+
+land_shard_local() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
+  local g="$1" n="$2" dir="$3" ceil="$4" k=1
+  while [ "$k" -le "$n" ]; do
+    ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest --shard "$k/$n" >"$dir/shard-$k.log" 2>&1 )
+    echo $? >"$dir/shard-$k.rc"
+    k=$((k + 1))
+  done
+  return 0
+}
+
+# THE LEG. Unsharded unless asked; sharded across the fleet when this copy is already ON a box
+# (LAND_REMOTE_INNER), sharded SEQUENTIALLY when it is not — a laptop has one set of cores, and four
+# shards racing on it is the same wall clock with four times the noise.
+land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
+  local g="$1" log="$2" ceil="$3" n dir
+  n="$(land_shard_count)" || return 1
+  if [ "$n" = 0 ]; then
+    ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest >"$log" 2>&1 )
+    return $?
+  fi
+  dir="$here/target/land-shards-$g-$stamp"
+  mkdir -p "$dir"
+  if [ -n "${LAND_REMOTE_INNER:-}" ]; then
+    echo "land.sh: $g self-test in $n shard(s): shard 1 here, the rest on the fleet"
+    land_shard_remote "$g" "$n" "$dir" "$ceil"
+  else
+    echo "land.sh: $g self-test in $n shard(s), sequentially (this is not a remote landing)"
+    land_shard_local "$g" "$n" "$dir" "$ceil"
+  fi
+  # ONE LOG, so every reader below — and every operator — still has the gate's own words in the
+  # place the unsharded leg left them.
+  cat "$dir"/shard-*.log > "$log" 2>/dev/null || true
+  land_shard_union "$g" "$n" "$dir" || return 1
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE PROOF. Every leg a landing has ever had, over a union of packages / rows / families, at
 # whatever tip the tree is at. Called once per batch, and once per bisected half.
 #
@@ -751,7 +923,7 @@ EOF
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
         # Same reason as the kind-isolation leg above: 394s measured over thirty-two planted trees.
-        (cd "$here" && XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
+        land_selftest_leg construction "$here/target/land-cselftest-$stamp.log" XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 \
           || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
                echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
         local clog="$here/target/land-ceilings-$stamp.log"
@@ -842,7 +1014,7 @@ EOF
       # gate can no longer prove itself" and the operator re-ran fifteen minutes of proof to learn
       # which case — on a fleet box, from a session that had already ended.
       local kslog="$here/target/land-kselftest-$stamp.log"
-      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 cargo xtask gate kind-isolation --selftest >"$kslog" 2>&1) \
+      land_selftest_leg kind-isolation "$kslog" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 \
         || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
              echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
       (cd "$here" && cargo xtask gate kind-isolation) \
@@ -1389,6 +1561,69 @@ land_selftest() {
   # A gate that produced nothing at all.
   : >"$root/cl-empty.txt"
   _st "ceilings: an empty report is red"         1 land_ceiling_verdict "$root/cl-empty.txt"
+
+  # ── THE SHARDED SELF-TEST LEG ──────────────────────────────────────────────────────────────────
+  # A leg split over four boxes is only the same proof if a box that does not answer is RED. These
+  # cases are the ones that hold that: every way a shard can fail to report is exercised here
+  # against fabricated shard directories, because the failure being guarded against is a TRANSPORT
+  # failure and a transport that works is no test of what happens when it does not.
+  echo "land.sh selftest: the shard count (a nonsense value is a refusal, not an unsharded run)"
+  # `env` cannot call a shell function, and the thing under test IS one.
+  _shcount() { LAND_SELFTEST_SHARDS="$1" land_shard_count; }
+  _st "shards: unset is 'do not shard'"          0 _shcount ""
+  _stgrep "shards: unset prints 0"                 "$ST_OUT" '^0$'
+  _st "shards: 1 is 'do not shard'"              0 _shcount 1
+  _stgrep "shards: 1 prints 0"                     "$ST_OUT" '^0$'
+  _st "shards: 4 is four shards"                 0 _shcount 4
+  _stgrep "shards: 4 prints 4"                     "$ST_OUT" '^4$'
+  _st "shards: a word is REFUSED"                1 _shcount eight
+  _st "shards: above four boxes is REFUSED"      1 _shcount 8
+
+  echo "land.sh selftest: the shard union (a shard that does not report is RED, never skipped)"
+  _mkshard() { # $1 = dir, $2 = k, $3 = n, $4 = rc, $5 = owned|'-' for no count line, $6 = total
+    mkdir -p "$1"
+    printf 'xtask selftest g --shard %s/%s\n' "$2" "$3" >"$1/shard-$2.log"
+    [ "$5" = "-" ] || printf '  shard %s/%s: %s of %s case(s)\n' "$2" "$3" "$5" "$6" >>"$1/shard-$2.log"
+    [ "$4" = "-" ] || printf '%s\n' "$4" >"$1/shard-$2.rc"
+  }
+  local sd="$root/shards"
+  rm -rf "$sd/ok"; _mkshard "$sd/ok" 1 4 0 38 152; _mkshard "$sd/ok" 2 4 0 38 152
+  _mkshard "$sd/ok" 3 4 0 38 152; _mkshard "$sd/ok" 4 4 0 38 152
+  _st "union: four green shards summing to the total" 0 land_shard_union g 4 "$sd/ok"
+  _stgrep "union: it says what it proved"             "$ST_OUT" '4 shard\(s\) green, 152 of 152 case\(s\), union complete'
+
+  # THE CASE THIS WHOLE LEG EXISTS FOR. Three boxes answered; the fourth never did. Nothing about
+  # the three is evidence about the fourth, and a leg that reported green here would be reporting a
+  # proof three quarters of which was taken and one quarter of which was assumed.
+  rm -rf "$sd/silent"; _mkshard "$sd/silent" 1 4 0 38 152; _mkshard "$sd/silent" 2 4 0 38 152
+  _mkshard "$sd/silent" 3 4 0 38 152; _mkshard "$sd/silent" 4 4 - 38 152
+  _st "union: a shard that never reported is RED"     1 land_shard_union g 4 "$sd/silent"
+  _stgrep "union: the silent shard is NAMED"          "$ST_OUT" 'shard 4/4 never reported an exit status'
+
+  rm -rf "$sd/red"; _mkshard "$sd/red" 1 4 0 38 152; _mkshard "$sd/red" 2 4 1 38 152
+  _mkshard "$sd/red" 3 4 0 38 152; _mkshard "$sd/red" 4 4 0 38 152
+  _st "union: a shard that went red is RED"           1 land_shard_union g 4 "$sd/red"
+  _stgrep "union: the red shard is NAMED"             "$ST_OUT" 'shard 2/4 exited 1'
+
+  # Exit 0 and no count line: the binary was replaced, the flag was ignored, the log was truncated.
+  # An exit status alone is not a report.
+  rm -rf "$sd/mute"; _mkshard "$sd/mute" 1 4 0 38 152; _mkshard "$sd/mute" 2 4 0 - 152
+  _mkshard "$sd/mute" 3 4 0 38 152; _mkshard "$sd/mute" 4 4 0 38 152
+  _st "union: exit 0 without a case count is RED"     1 land_shard_union g 4 "$sd/mute"
+  _stgrep "union: the mute shard is NAMED"            "$ST_OUT" 'shard 2/4 exited 0 without printing its case count'
+
+  # Two boxes that saw different case lists ran different trees. Their union is not a proof of
+  # either of them.
+  rm -rf "$sd/split"; _mkshard "$sd/split" 1 4 0 38 152; _mkshard "$sd/split" 2 4 0 37 148
+  _mkshard "$sd/split" 3 4 0 38 152; _mkshard "$sd/split" 4 4 0 38 152
+  _st "union: shards that disagree about the total are RED" 1 land_shard_union g 4 "$sd/split"
+  _stgrep "union: the disagreement is NAMED"          "$ST_OUT" 'disagree about the case list'
+
+  # Every shard green, every shard reporting, and the arithmetic still short: a case nobody ran.
+  rm -rf "$sd/lost"; _mkshard "$sd/lost" 1 4 0 38 152; _mkshard "$sd/lost" 2 4 0 38 152
+  _mkshard "$sd/lost" 3 4 0 38 152; _mkshard "$sd/lost" 4 4 0 30 152
+  _st "union: a case owned by no shard is RED"        1 land_shard_union g 4 "$sd/lost"
+  _stgrep "union: the lost cases are COUNTED"         "$ST_OUT" 'own 144 of 152 case\(s\). 8 case\(s\) were proven by nobody'
 
   echo "land.sh selftest: the construction gate's standing reds"
   _stgrep "standing reds: the list is not empty" <(land_construction_standing_reds) '[^[:space:]]'
