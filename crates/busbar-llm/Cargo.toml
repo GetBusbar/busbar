@@ -132,8 +132,11 @@ smallvec = { workspace = true }
 # The relocated native-plane gauntlet (`native_ingress::NativePlane`) implements the async
 # `busbar_substrate::plane_host::GauntletPlane` trait.
 async-trait = { workspace = true }
-# Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
-# bytes, hex-encoded.
+# THE CODECS' ENTROPY SOURCE. The codec crate owns none (its closure is the plane's and reaches
+# no OS primitive); its synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids,
+# responses `resp_…`) draw from a pool this crate feeds with the OS CSPRNG through
+# `install_os_entropy` -> `synth_rng::install`, the same seam the composition root and the test kit
+# both write.
 getrandom = { workspace = true }
 hex = { workspace = true }
 # T3 inbound webhook signature verification (Standard Webhooks / OpenAI Responses async webhooks):

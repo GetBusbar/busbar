@@ -119,6 +119,28 @@ pub use busbar_llm_codec::{
     usage_tail, wire_shim, DECLS,
 };
 
+/// INSTALL THE OS AS THE CODECS' ENTROPY SOURCE — this plugin's one write into [`synth_rng`]'s
+/// seam, made from [`PLANE_DECL`]'s `build` hook (the call the composition root already makes into
+/// every installed plane, once per config generation) and from the test kit.
+///
+/// The codec crate is the pure half of this plugin and owns no entropy source: its synthesized wire
+/// ids (`msg_`, `resp_`, the cohere uuid, the gemini/bedrock request ids) draw from a pool that a
+/// source has to be [`synth_rng::install`]ed into, and until one is every draw reports
+/// entropy-unavailable. THIS crate is the half that reads the OS, so this is where the OS becomes
+/// that source: `getrandom` — the same fail-closed OS CSPRNG core's key secrets use. Idempotent
+/// (the seam is first-writer-wins and accepts a repeat of the same function), so the plane's build
+/// hook and the test kit may both call it, as often as they like. Returns what
+/// [`synth_rng::install`] returns: `false` only if some OTHER source was installed first, which no
+/// busbar target does.
+pub fn install_os_entropy() -> bool {
+    synth_rng::install(os_entropy)
+}
+
+/// The one-line adapter from `getrandom`'s `Result` to the seam's `bool` contract.
+fn os_entropy(out: &mut [u8]) -> bool {
+    getrandom::fill(out).is_ok()
+}
+
 /// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
 pub mod engine;
@@ -230,7 +252,16 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         admission: |_| None,
         // NO DISPATCH SLOT / NO SURFACE / NO DURABLE STATE — the fallback plane claims no path, so it
         // contributes no config-conditional dispatch resource, and it restores/reconciles nothing.
-        build: |_| None,
+        //
+        // WHAT IT DOES ON BUILD: install the codecs' entropy source. `build` is the one call the
+        // composition root already makes into every installed plane, once per config generation and
+        // before a request is served, so it is where this plugin's engine half hands the OS to the
+        // codec half's `synth_rng` seam — the root adds no line and reaches nothing new. Idempotent
+        // across generations (the seam is first-writer-wins for the same function).
+        build: |_| {
+            crate::install_os_entropy();
+            None
+        },
         // T3 — the fallback plane MOUNTS NOTHING by default (its documented stance): `routes` stays
         // `None` so its boot is byte-identical. The OFF-by-default `webhook-receiver` feature flips it
         // to the inbound OpenAI Responses webhook receiver's route builder (which itself mounts nothing

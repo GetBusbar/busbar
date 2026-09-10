@@ -23,6 +23,10 @@
 /// `install_path_ingress` — so a `test-support` consumer that builds a path-model `App` resolves the
 /// gemini/bedrock arrivals, while a body-model `App` (which never resolves one) is unaffected.
 pub fn install_test_seams() {
+    // The codecs' entropy source, exactly as the plane's `build` hook installs it in production:
+    // without it every synthesized wire id in this process reads entropy-unavailable, which is the
+    // codec crate's contract for a process no composition root has built.
+    crate::install_os_entropy();
     busbar_substrate::proto::register_test_protocols(crate::DECLS);
     busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
     busbar_substrate::ingress::arrival::set_test_path_ingress(|| crate::PATH_INGRESS);
