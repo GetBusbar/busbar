@@ -137,73 +137,73 @@ contract_transport = 845
 # reading in the commit that widened it. Not one is a new coupling — the cross-kind text they count
 # was already in those files, unread. Each entry expires by itself the moment the base carries the
 # wider number; a stale entry is refused by the row that reads this table.
-[gate.ceiling_raises."cell.62.count"]
+[gate.ceiling_raises."cell.busbar-core.api.count"]
 file = "qa/kind-isolation.toml"
 from = 603
 to = 610
 because = "busbar-core × api: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 7 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.65.count"]
+[gate.ceiling_raises."cell.busbar-core.control.count"]
 file = "qa/kind-isolation.toml"
 from = 5200
 to = 5521
 because = "busbar-core × control: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 321 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.67.count"]
+[gate.ceiling_raises."cell.busbar-core.plane.count"]
 file = "qa/kind-isolation.toml"
 from = 3033
 to = 3067
 because = "busbar-core × plane: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 34 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.68.count"]
+[gate.ceiling_raises."cell.busbar-core.plugin-tooling.count"]
 file = "qa/kind-isolation.toml"
 from = 265
 to = 266
 because = "busbar-core × plugin-tooling: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 1 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.69.count"]
+[gate.ceiling_raises."cell.busbar-core.secret.count"]
 file = "qa/kind-isolation.toml"
 from = 319
 to = 337
 because = "busbar-core × secret: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 18 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.73.count"]
+[gate.ceiling_raises."cell.busbar-core.transport.count"]
 file = "qa/kind-isolation.toml"
 from = 2117
 to = 2145
 because = "busbar-core × transport: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 28 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.104.count"]
+[gate.ceiling_raises."cell.busbar-llm-codec.plane.count"]
 file = "qa/kind-isolation.toml"
 from = 284
 to = 285
 because = "busbar-llm-codec × plane: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 1 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.107.count"]
+[gate.ceiling_raises."cell.busbar-llm-codec.transport.count"]
 file = "qa/kind-isolation.toml"
 from = 596
 to = 615
 because = "busbar-llm-codec × transport: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 19 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.163.count"]
+[gate.ceiling_raises."cell.busbar-plugin.control.count"]
 file = "qa/kind-isolation.toml"
 from = 34
 to = 35
 because = "busbar-plugin × control: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 1 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.168.count"]
+[gate.ceiling_raises."cell.busbar-plugin.unit.count"]
 file = "qa/kind-isolation.toml"
 from = 12
 to = 13
 because = "busbar-plugin × unit: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 1 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.219.count"]
+[gate.ceiling_raises."cell.busbar-substrate.plane.count"]
 file = "qa/kind-isolation.toml"
 from = 768
 to = 770
 because = "busbar-substrate × plane: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 2 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
-[gate.ceiling_raises."cell.268.count"]
+[gate.ceiling_raises."cell.busbar-unit-admission.caps.count"]
 file = "qa/kind-isolation.toml"
 from = 48
 to = 50
