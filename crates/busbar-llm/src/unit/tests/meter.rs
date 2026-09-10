@@ -204,7 +204,6 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
     let (seal, unit_token, usage_token) = tokens();
@@ -271,10 +270,6 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     assert_eq!(usage.total(), INPUT + OUTPUT);
     assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
     assert!(!usage.is_estimated(), "the destination reported this");
-    assert_eq!(
-        metered.fee_count, 1,
-        "a delivered 2xx from an upstream posts the flat fee"
-    );
     assert!(!metered.refund, "a 2xx refunds nothing");
     server2.shutdown().await;
 }
@@ -288,55 +283,27 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
 /// owes none either way. The fee is the mirror image, and it is the LEG plus the client-facing
 /// status that decides it, never the refund.
 #[test]
-fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
+fn the_refund_is_decided_by_the_status_and_the_charge() {
     let host: Arc<dyn EngineHost> =
         busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
     let (_seal, unit_token, usage_token) = tokens();
-    for (status, charged, upstream_leg, fee, refund, why) in [
-        (200u16, true, true, 1u32, false, "delivered and charged"),
-        (
-            502,
-            true,
-            true,
-            0,
-            true,
-            "a failed transfer refunds the fee base",
-        ),
+    for (status, charged, refund, why) in [
+        (200u16, true, false, "delivered and charged"),
+        (502, true, true, "a failed transfer refunds the fee base"),
         (
             502,
             false,
-            true,
-            0,
             false,
             "admitted without charging, so there is nothing to refund",
-        ),
-        (
-            200,
-            true,
-            false,
-            0,
-            false,
-            "no upstream leg, so no flat fee: a kernel verb is not a proxied request",
         ),
         (
             404,
             true,
             true,
-            0,
-            true,
             "a post-admission 404 is charged, unbilled and refunded",
         ),
     ] {
-        let ctx = MeterCtx::new(
-            &host,
-            None,
-            None,
-            None,
-            status,
-            charged,
-            upstream_leg,
-            false,
-        );
+        let ctx = MeterCtx::new(&host, None, None, None, status, charged, false);
         let metered = meter(
             &unit_token,
             &usage_token,
@@ -345,7 +312,6 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
             &Outcome::Completed,
             &worth_of,
         );
-        assert_eq!(metered.fee_count, fee, "{why}: fee_count");
         assert_eq!(metered.refund, refund, "{why}: refund");
         assert!(
             metered.row.is_none(),
@@ -370,7 +336,7 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         output: OUTPUT,
         ..Default::default()
     };
-    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true, true);
+    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true);
     let metered = meter(
         &unit_token,
         &usage_token,
@@ -381,10 +347,6 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
             busbar_caps::ReasonCode::DestinationUnreachable,
         ),
         &worth_of,
-    );
-    assert_eq!(
-        metered.fee_count, 1,
-        "the 2xx that went out is not reversed"
     );
     assert!(!metered.refund, "the client saw a success");
     assert!(metered.row.is_none(), "nothing was accrued");
@@ -535,7 +497,6 @@ fn the_accrual_against_the_reservation_is_the_priced_total_not_the_token_count()
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
 
@@ -619,7 +580,6 @@ fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
 
@@ -702,7 +662,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             Some(&reported),
             200,
             true,
-            true,
             false,
         ),
         None,
@@ -725,7 +684,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
         usage: Some(reported.clone()),
         status: 200,
         billing_failed: false,
-        upstream_leg: true,
         accrued: true,
     };
     let sealing = meter(

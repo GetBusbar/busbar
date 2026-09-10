@@ -115,8 +115,8 @@ struct Carry {
     /// WHAT THE HOLDER OF THE CARD ANSWERED over that report, in nano-units. Zero where there was
     /// nothing to price, which is the honest figure for a unit that reached no lane.
     priced: u64,
-    /// What the Meter step said about the fee and the refund.
-    fee_count: u32,
+    /// What the Meter step said about the refund. The FEE is not here: it is the kernel's one
+    /// decision, taken in the composition root off the evidence the exit path settles from.
     refund: bool,
     /// The bytes the terminal posted, which are the bytes the client is given.
     terminal: Option<Served>,
@@ -147,11 +147,6 @@ pub struct LateReport {
     /// The tier split the tap reported, by neutral unit class — the same counts the governance
     /// ledger accrued when the cell filled. Empty for a response that billed nothing.
     pub usage: busbar_substrate::billing::Usage,
-    /// How many billable requests this unit is: one for a delivered client request that reached an
-    /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
-    /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
-    /// come to different answers about the same unit.
-    pub fee_count: u32,
     /// The SERVING lane's config name — the lane that actually answered, after any failover, which
     /// is the key a rate card is written against and the key the legacy row carries.
     pub lane: String,
@@ -383,12 +378,6 @@ impl Walk {
         self.lock().upstream_candidate
     }
 
-    /// What the Meter step said the fee was.
-    #[must_use]
-    pub fn fee_count(&self) -> u32 {
-        self.lock().fee_count
-    }
-
     /// Whether the Meter step made the accrual rather than sealing the walk's.
     #[must_use]
     pub fn posted_here(&self) -> bool {
@@ -507,7 +496,6 @@ impl Walk {
         };
         Some(LateReport {
             usage,
-            fee_count: carry.fee_count,
             lane: lane.model.clone(),
             provider: lane.provider.clone(),
         })
@@ -734,7 +722,6 @@ impl Walk {
         // only sealed, so reading it here called every sealed unit a posting — and this value is
         // what the rehearsal asserts one-posting-per-unit on.
         carry.posted_here = metered.posted;
-        carry.fee_count = metered.fee_count;
         carry.refund = metered.refund;
         // WHAT THE STEP REPORTED AND WHAT IT WAS TOLD IT WAS WORTH, kept rather than dropped. Both
         // used to fall on the floor here, which is what made the whole seam unobservable: a report

@@ -143,9 +143,6 @@ pub(crate) struct MeterFacts {
     pub(crate) status: u16,
     /// The terminal-error/abort/cut fact the taps read at the end of the response.
     pub(crate) billing_failed: bool,
-    /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
-    /// request rather than a turn-away that never dialled.
-    pub(crate) upstream_leg: bool,
     /// Whether the walk's own taps hold this unit's accrual. When true this step seals; when false
     /// this step posts.
     pub(crate) accrued: bool,
@@ -183,7 +180,6 @@ pub struct MeterCtx<'a> {
     usage: Option<&'a busbar_substrate::billing::TokenUsage>,
     status: u16,
     charged: bool,
-    upstream_leg: bool,
     billing_failed: bool,
     accrued: bool,
 }
@@ -193,9 +189,7 @@ impl<'a> MeterCtx<'a> {
     ///
     /// `status` is the status the CLIENT saw, never the upstream's — the fee is decided from the
     /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
-    /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
-    /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
-    /// kernel verb or a delivery. `billing_failed` is the terminal-error/abort fact the stream taps
+    /// therefore whether there is anything a non-2xx could refund. `billing_failed` is the terminal-error/abort fact the stream taps
     /// read off the translator.
     ///
     /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
@@ -208,7 +202,6 @@ impl<'a> MeterCtx<'a> {
         usage: Option<&'a busbar_substrate::billing::TokenUsage>,
         status: u16,
         charged: bool,
-        upstream_leg: bool,
         billing_failed: bool,
     ) -> Self {
         MeterCtx {
@@ -218,7 +211,6 @@ impl<'a> MeterCtx<'a> {
             usage,
             status,
             charged,
-            upstream_leg,
             billing_failed,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
@@ -246,7 +238,6 @@ impl<'a> MeterCtx<'a> {
             usage: facts.usage.as_ref(),
             status: facts.status,
             charged,
-            upstream_leg: facts.upstream_leg,
             billing_failed: facts.billing_failed,
             accrued: facts.accrued,
         }
@@ -274,9 +265,6 @@ pub struct Metered {
     /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
     /// is the only case in which nothing is metered at all.
     pub row: Option<busbar_api::MeteringRow>,
-    /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
-    /// otherwise. Decided here, from the client-facing status, and never reversed later.
-    pub fee_count: u32,
     /// Whether the Audit step must refund the fee base. True exactly when the admission charge
     /// landed and the client did not see a 2xx.
     pub refund: bool,
@@ -364,11 +352,17 @@ pub fn meter(
     worth: Worth<'_>,
 ) -> Metered {
     let delivered = ctx.delivered();
-    // The fee is the KIND of leg and the client-facing status, and nothing else: one per delivered
-    // client request that routed to an upstream. Decided once, here, and carried on both the step's
-    // own answer and the report handed over to be priced, so the two cannot come to different
-    // answers about the same unit.
-    let fee_count = u32::from(delivered && ctx.upstream_leg);
+    // THE FEE IS NOT DECIDED HERE, and this comment is what used to be the decision. This step
+    // answered `delivered && ctx.upstream_leg` — two booleans — and carried the count out on its
+    // report, and that was the number that BILLED, while the kernel decided the same fee off seven
+    // fields on the same request and had its answer discarded. One request, two deciders, and the
+    // one that reached the money was the one that could not see the origin or the dispute.
+    //
+    // The fee is `busbar_kernel::teller::fee_count` and nothing else. The composition root builds
+    // its evidence once and prices both the settlement and the late report through it — see
+    // `busbar/src/root/units_llm.rs`'s `fee_evidence`. What this step still owns is what the unit
+    // CONSUMED; what it is worth, and how many billable requests it is, are the kernel's and the
+    // card holder's.
     // A stream whose end carried a terminal error, or whose translation aborted, bills ZERO: the
     // accrual is skipped, not floored. The figures seen before the error are evidence only.
     let bills = !ctx.billing_failed;
@@ -415,7 +409,6 @@ pub fn meter(
             // translation between them.
             report = Some(crate::unit::walk::LateReport {
                 usage: tier,
-                fee_count,
                 lane: lane.model.clone(),
                 provider: lane.provider.clone(),
             });
@@ -493,7 +486,6 @@ pub fn meter(
         decision: Decision::proceed(unit_token, usage),
         hold,
         row,
-        fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it
         // is owed against the fee base alone.
         refund: ctx.charged && !delivered,
