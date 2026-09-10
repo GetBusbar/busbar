@@ -584,15 +584,48 @@ macro_rules! export_login_plugin {
 
 // ── SECRET-plugin glue (`kind: secret`) ─────────────────────────────────────────────────────────
 // Mirrors the store glue one-to-one: same six-symbol shape via `export_plugin!`, same
-// panic-catching impl style, its own handle type (`Box<dyn SecretModule>`) and its own tiny
+// panic-catching impl style, its own handle type (`Box<dyn Secret>`) and its own tiny
 // request enum.
 
-/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`]. Named at
-/// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type SecretHandle = Box<dyn busbar_api::SecretModule>;
+/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::kinds::Secret`].
+/// Named at the module level so the `export_plugin!` expansion can pass it to
+/// `close_boundary::<$ty>`.
+pub type SecretHandle = Box<dyn busbar_contract::kinds::Secret>;
 
-/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`].
+/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_contract::kinds::Secret`].
 type BoxedSecret = SecretHandle;
+
+/// THE FACE ERROR → WIRE TOKEN MAP, which is the PLUGIN side and is not the loader's map read
+/// backwards.
+///
+/// The loader holds `wire token -> face error` because it is the side that receives one. This is
+/// the side that SENDS one, and the two are different functions rather than one relation: the
+/// loader's map is not injective (`not_found` and `internal` both arrive as `Unknown`), so an
+/// inverse does not exist and a choice has to be made and stated.
+///
+/// * `Unknown` sends `not_found`, because "the reference does not resolve" is what a miss IS and
+///   `internal` is the residue rather than the meaning. A host that maps it back gets `Unknown`
+///   again, so the round trip is stable.
+/// * `Malformed` sends `invalid` and `Unavailable` and `Denied` send their own tokens; all three
+///   round-trip exactly.
+/// * `NotAuthentic` sends `internal`, AND THAT ONE IS LOSSY, on purpose. `SECRET_ABI_VERSION` 1
+///   predates sealing: there is no `not_authentic` token, and inventing one would change a signed
+///   wire to describe an operation the same wire has no request for. A cold-lane plugin cannot be
+///   asked to unseal, so it cannot honestly produce this in the first place; the arm exists because
+///   the match must be total, not because it is reachable.
+fn wire_error_kind(
+    e: &busbar_contract::kinds::SecretError,
+) -> busbar_plugin::cold::SecretErrorKind {
+    use busbar_contract::kinds::SecretError as Face;
+    use busbar_plugin::cold::SecretErrorKind as Wire;
+    match e {
+        Face::Unknown => Wire::NotFound,
+        Face::Unavailable => Wire::Unavailable,
+        Face::Denied => Wire::Denied,
+        Face::Malformed => Wire::Invalid,
+        Face::NotAuthentic => Wire::Internal,
+    }
+}
 
 /// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`). See
 /// `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
@@ -603,21 +636,34 @@ pub fn secret_abi_version() -> u32 {
 /// Run one [`busbar_plugin::cold::SecretRequest`] against a secret module - the single match that
 /// maps the wire enum to the trait, unit-testable without FFI.
 pub fn dispatch_secret(
-    module: &dyn busbar_api::SecretModule,
+    module: &dyn busbar_contract::kinds::Secret,
     req: busbar_plugin::cold::SecretRequest,
-) -> Result<busbar_plugin::cold::SecretResponse, busbar_api::SecretError> {
+) -> Result<busbar_plugin::cold::SecretResponse, busbar_contract::kinds::SecretError> {
     match req {
-        // `deadline_ms` is advisory — nothing at THIS layer enforces it — but it is handed to the
-        // module, which is the only party that could act on it. The old comment described a seam
-        // where the module "reads it from the request before this dispatch runs": there is no such
-        // seam. `secret_dispatch` decodes the request and calls straight into here, so this match
-        // was the field's first and last stop, and dropping it meant a module that CAN bound its own
-        // upstream call was never told what bound to apply.
+        // THE REFERENCE IS REBUILT FROM THE SETTINGS MAP, which is the cold lane's grammar seen
+        // from the plugin's side: the host hands the loader the reference's settings JSON, the
+        // loader parses it to the map the frozen wire carries, and here it becomes a reference
+        // string again for the plugin to read. Semantically lossless in both directions — the
+        // plugin parses it straight back to a map — and the wire itself does not move.
+        //
+        // `deadline_ms` IS DECODED AND DROPPED, and that is a LOSS this commit is choosing rather
+        // than hiding. The wire has always carried the caller's advisory bound and 1.5.x handed it
+        // to the module through `resolve_with_deadline`; `busbar_contract::kinds::Secret::resolve`
+        // has no deadline parameter, so there is nowhere on the face to put it. A module that can
+        // bound its own upstream call is once again not told what bound to apply, and the engine's
+        // own timeout around the call is what is left. This is named in the retirement ledger as
+        // the secret kind's one behavioural regression; closing it is a face change and a face
+        // change is not this commit.
         busbar_plugin::cold::SecretRequest::Resolve {
             settings,
-            deadline_ms,
+            deadline_ms: _,
         } => Ok(busbar_plugin::cold::SecretResponse::Bytes(
-            module.resolve_with_deadline(&settings, deadline_ms)?,
+            module
+                .resolve(&busbar_contract::kinds::SecretRef(
+                    serde_json::Value::Object(settings).to_string(),
+                ))?
+                .expose()
+                .to_vec(),
         )),
     }
 }
@@ -646,16 +692,20 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
         // unreachable". If encoding that itself fails (should be unreachable — the payload is two
         // primitives), fall back to the untyped channel rather than losing the failure entirely.
         Err(e) => {
+            // The face's error IS the taxonomy and carries no message, so the message channel on
+            // the wire carries the taxonomy's own name. That is strictly more than the untyped
+            // STATUS_ERR path gave and strictly less than a module's own prose gave; a module that
+            // wants to say more says it in its own log, never in a channel that could carry secret
+            // material.
             let typed = busbar_plugin::cold::SecretResponse::Error {
-                kind: e.kind.into(),
-                message: e.message.clone(),
+                kind: wire_error_kind(&e),
+                message: e.to_string(),
             };
             match serde_json::to_vec(&typed) {
                 Ok(payload) => BoundaryOutcome::Ok(payload),
-                Err(enc_err) => BoundaryOutcome::Error(format!(
-                    "{} (also failed to encode: {enc_err})",
-                    e.message
-                )),
+                Err(enc_err) => {
+                    BoundaryOutcome::Error(format!("{e} (also failed to encode: {enc_err})"))
+                }
             }
         }
     }
@@ -1077,7 +1127,7 @@ macro_rules! export_plugin {
 }
 
 /// Emit a `secret`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_api::SecretModule>, String>`). Expands through
+/// `fn(&str) -> Result<Box<dyn busbar_contract::kinds::Secret>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "secret"` + the six neutral symbols.
 #[macro_export]
 macro_rules! export_secret_plugin {

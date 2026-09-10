@@ -1007,6 +1007,13 @@ drain = "delete the plane name from the secret crate: a secret reaches plane thr
 
 [[edge]]
 from = "secret"
+to = "secret"
+cite = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. A secret plugin naming SECRET vocabulary is a kind naming its OWN kind, which is what a plugin of a kind does; the clause that would be violated is the one about naming ANOTHER kind's instance."
+why = "crates of kind secret naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included. THE NUMBER IS MOSTLY A TYPE'S NAME rather than a coupling: `busbar-secret-ref` is a crate of this kind, so the contract face's own reference type `SecretRef` — which every secret plugin must name in two trait signatures — reads as naming it."
+drain = "the crate's own name and the face's own type name are not couplings and do not drain. What DOES drain is busbar-secret-ref itself: it is busbar-api's one outbound edge and it goes with the retirement, at which point the `SecretRef` spelling stops matching a package at all and this class falls to whatever genuine cross-instance naming is left, which today is none."
+
+[[edge]]
+from = "secret"
 to = "plugin-tooling"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
 why = "crates of kind secret naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -2239,7 +2246,7 @@ count = "14"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "api"
-count = "60"
+count = "47"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2250,6 +2257,11 @@ count = "1"
 crate = "busbar-plugin-sdk"
 kind = "plane"
 count = "20"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "secret"
+count = "5"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2284,7 +2296,7 @@ count = "5"
 [[cell]]
 crate = "busbar-secret-example-plugin"
 kind = "api"
-count = "4"
+count = "1"
 
 [[cell]]
 crate = "busbar-secret-example-plugin"
@@ -2294,7 +2306,12 @@ count = "1"
 [[cell]]
 crate = "busbar-secret-example-plugin"
 kind = "plugin-tooling"
-count = "3"
+count = "5"
+
+[[cell]]
+crate = "busbar-secret-example-plugin"
+kind = "secret"
+count = "7"
 
 [[cell]]
 crate = "busbar-secret-ref"
@@ -4222,6 +4239,16 @@ drain   = "none while the loader and the plugin tooling are outside the kind sys
 
 [[dep]]
 from    = "busbar-plugin-sdk"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The SDK's SECRET glue is written against busbar_contract::kinds::Secret, so an author of a kind:secret plugin implements the contract's face and names nothing else; the SDK holds the face-error -> wire-token half of the seam and the loader holds the other half. This is the edge the busbar-api row above drains ONTO. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"
@@ -4249,6 +4276,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
 why     = "busbar-secret-example-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-api dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-secret-example-plugin"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. This is the ONE crate the allow-list names."
+why     = "busbar-secret-example-plugin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is how a plugin of a kind is written at all — the module implements busbar_contract::kinds::Secret and nothing else — and it is the edge the busbar-api row above drains ONTO. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none. This edge is the allow-list, not a debt against it; a kind:secret plugin that did not name the contract would not be one."
 
 [[dep]]
 from    = "busbar-secret-example-plugin"

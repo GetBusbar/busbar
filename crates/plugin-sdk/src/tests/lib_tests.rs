@@ -98,51 +98,150 @@ unsafe fn hook_close_impl(handle: *mut c_void) {
     close_boundary::<HookHandle>(handle)
 }
 
+/// The three answers every plugin gives about itself, once, for the fixtures below.
+macro_rules! test_secret_plugin_identity {
+    ($ty:ty, $key:literal) => {
+        impl busbar_contract::plugin::Plugin for $ty {
+            fn key(&self) -> &'static str {
+                $key
+            }
+            fn kind(&self) -> busbar_contract::plugin::Kind {
+                busbar_contract::plugin::Kind::Secret
+            }
+            fn abi(&self) -> busbar_contract::plugin::AbiVersion {
+                busbar_contract::plugin::AbiVersion(busbar_plugin::cold::SECRET_ABI_VERSION as u16)
+            }
+        }
+    };
+}
+
 /// A test secret module: settings.name in, "resolved:<name>" bytes out; missing name errors.
 struct EchoSecret;
-impl busbar_api::SecretModule for EchoSecret {
+test_secret_plugin_identity!(EchoSecret, "echo");
+impl busbar_contract::kinds::Secret for EchoSecret {
+    fn ref_grammar(&self) -> &'static str {
+        "a JSON object with a `name`"
+    }
+
     fn resolve(
         &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+        r: &busbar_contract::kinds::SecretRef,
+    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::kinds::SecretError> {
+        let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&r.0)
+            .map_err(|_| busbar_contract::kinds::SecretError::Malformed)?;
         match settings.get("name").and_then(|v| v.as_str()) {
-            Some(n) => Ok(format!("resolved:{n}").into_bytes()),
-            None => Err(busbar_api::SecretError::invalid("settings.name required")),
+            Some(n) => Ok(busbar_contract::kinds::SecretValue::new(
+                format!("resolved:{n}").into_bytes(),
+            )),
+            None => Err(busbar_contract::kinds::SecretError::Malformed),
         }
     }
+
+    fn watch(
+        &self,
+        _r: &busbar_contract::kinds::SecretRef,
+    ) -> Result<Option<u64>, busbar_contract::kinds::SecretError> {
+        Ok(None)
+    }
+
+    fn sign(
+        &self,
+        _key: &str,
+        _bytes: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
+    }
+
+    fn seal(
+        &self,
+        _key: &str,
+        _context: &[u8],
+        _plaintext: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
+    }
+
+    fn unseal(
+        &self,
+        _key: &str,
+        _context: &[u8],
+        _sealed: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
+    }
 }
 
-/// A secret module that RECORDS the advisory deadline it was handed, so the test can prove the
-/// field survives the dispatch instead of being dropped there.
+/// A secret module that RECORDS the reference it was handed, so the two claims below can be made
+/// about the same dispatch: the reference DOES arrive, and the wire's advisory deadline does NOT.
 #[derive(Default)]
-struct RecordingSecret(std::sync::Mutex<Option<Option<u64>>>);
-impl busbar_api::SecretModule for RecordingSecret {
+struct RecordingSecret(std::sync::Mutex<Option<String>>);
+test_secret_plugin_identity!(RecordingSecret, "recording");
+impl busbar_contract::kinds::Secret for RecordingSecret {
+    fn ref_grammar(&self) -> &'static str {
+        "anything"
+    }
+
     fn resolve(
         &self,
-        _settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
-        Ok(b"no-deadline".to_vec())
+        r: &busbar_contract::kinds::SecretRef,
+    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::kinds::SecretError> {
+        *self.0.lock().unwrap() = Some(r.0.clone());
+        Ok(busbar_contract::kinds::SecretValue::new(
+            b"observed".to_vec(),
+        ))
     }
 
-    fn resolve_with_deadline(
+    fn watch(
         &self,
-        _settings: &serde_json::Map<String, serde_json::Value>,
-        deadline_ms: Option<u64>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
-        *self.0.lock().unwrap() = Some(deadline_ms);
-        Ok(b"observed".to_vec())
+        _r: &busbar_contract::kinds::SecretRef,
+    ) -> Result<Option<u64>, busbar_contract::kinds::SecretError> {
+        Ok(None)
+    }
+
+    fn sign(
+        &self,
+        _key: &str,
+        _bytes: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
+    }
+
+    fn seal(
+        &self,
+        _key: &str,
+        _context: &[u8],
+        _plaintext: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
+    }
+
+    fn unseal(
+        &self,
+        _key: &str,
+        _context: &[u8],
+        _sealed: &[u8],
+    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
+        Err(busbar_contract::kinds::SecretError::Unknown)
     }
 }
 
-/// The wire request has always carried `deadline_ms`; the dispatcher dropped it, so a module that
-/// could bound its own upstream call was never told what bound to apply. It now reaches the module.
+/// THE SETTINGS MAP ARRIVES AS A REFERENCE, AND THE ADVISORY DEADLINE DOES NOT ARRIVE AT ALL.
+///
+/// Both halves are stated here because the second is a LOSS and a loss that only a comment records
+/// is a loss the next reader argues with. `busbar_contract::kinds::Secret::resolve` takes a
+/// reference and nothing else, so the `deadline_ms` the frozen wire has always carried — and which
+/// 1.5.x handed to the module through `resolve_with_deadline` — has nowhere on the face to go. A
+/// module that can bound its own upstream call is once again not told what bound to apply. Closing
+/// it is a face change; this cell is what makes the regression visible until one lands.
 #[test]
-fn secret_dispatch_hands_the_advisory_deadline_to_the_module() {
+fn the_reference_reaches_the_module_and_the_advisory_deadline_does_not() {
     let module = RecordingSecret::default();
+    let mut settings = serde_json::Map::new();
+    settings.insert("name".to_string(), serde_json::Value::String("db".into()));
     let resp = dispatch_secret(
         &module,
         busbar_plugin::cold::SecretRequest::Resolve {
-            settings: serde_json::Map::new(),
+            settings,
             deadline_ms: Some(500),
         },
     )
@@ -151,23 +250,48 @@ fn secret_dispatch_hands_the_advisory_deadline_to_the_module() {
         busbar_plugin::cold::SecretResponse::Bytes(b) => assert_eq!(b, b"observed"),
         other => panic!("expected Bytes, got {other:?}"),
     }
-    assert_eq!(
-        *module.0.lock().unwrap(),
-        Some(Some(500)),
-        "the module must observe the caller's advisory deadline"
-    );
 
-    // A caller that set NO bound is still distinguishable from one that set zero.
-    let module = RecordingSecret::default();
-    dispatch_secret(
-        &module,
-        busbar_plugin::cold::SecretRequest::Resolve {
-            settings: serde_json::Map::new(),
-            deadline_ms: None,
-        },
-    )
-    .expect("resolves");
-    assert_eq!(*module.0.lock().unwrap(), Some(None));
+    let seen = module.0.lock().unwrap().clone().expect("the module ran");
+    assert_eq!(
+        seen, r#"{"name":"db"}"#,
+        "the settings map arrives as the reference, in the cold lane's grammar"
+    );
+    assert!(
+        !seen.contains("500") && !seen.contains("deadline"),
+        "the advisory deadline has nowhere on the face to go, and it is not smuggled into the \
+         reference either: {seen}"
+    );
+}
+
+/// THE FACE ERROR → WIRE TOKEN MAP, every variant, on the side that SENDS one.
+///
+/// It is not the loader's map read backwards and cannot be: the loader's map sends both `not_found`
+/// and `internal` to `Unknown`, so no inverse exists and the choice has to be made and stated. Four
+/// of the five round-trip exactly; `NotAuthentic` is the lossy one, and it is lossy because
+/// `SECRET_ABI_VERSION` 1 predates sealing and inventing a token would change a signed wire.
+#[test]
+fn every_face_error_sends_the_wire_token_a_host_can_map_back() {
+    use busbar_contract::kinds::SecretError as Face;
+    use busbar_plugin::cold::SecretErrorKind as Wire;
+    let map = [
+        (Face::Unknown, Wire::NotFound),
+        (Face::Unavailable, Wire::Unavailable),
+        (Face::Denied, Wire::Denied),
+        (Face::Malformed, Wire::Invalid),
+        (Face::NotAuthentic, Wire::Internal),
+    ];
+    for (face, wire) in map {
+        assert_eq!(
+            crate::wire_error_kind(&face),
+            wire,
+            "the face error {face:?} sends {wire:?}"
+        );
+    }
+    assert_ne!(
+        crate::wire_error_kind(&Face::Denied),
+        Wire::NotFound,
+        "a denial must not leave the plugin looking like a miss"
+    );
 }
 
 fn secret_ctor(_cfg: &str) -> Result<BoxedSecret, String> {
@@ -199,8 +323,7 @@ fn secret_dispatch_resolves_and_fails_closed() {
         },
     )
     .unwrap_err();
-    assert_eq!(err.kind, busbar_api::SecretErrorKind::Invalid);
-    assert!(err.message.contains("settings.name required"));
+    assert_eq!(err, busbar_contract::kinds::SecretError::Malformed);
 }
 
 /// SECRET glue: the FFI path (open -> call -> close) round-trips a resolve and surfaces a
@@ -262,7 +385,11 @@ fn secret_ffi_roundtrip_open_call_close() {
         match resp {
             busbar_plugin::cold::SecretResponse::Error { kind, message } => {
                 assert_eq!(kind, busbar_plugin::cold::SecretErrorKind::Invalid);
-                assert!(message.contains("settings.name required"), "got {message}");
+                // The face's error IS the taxonomy and has no message field, so the wire's message
+                // channel now carries the taxonomy's own name rather than a module's prose. More
+                // than the untyped STATUS_ERR path ever gave; less than 1.5.x's message, and named
+                // as such rather than left for a reader to notice.
+                assert_eq!(message, "Malformed", "got {message}");
             }
             other => panic!("expected Error, got {other:?}"),
         }

@@ -14,6 +14,11 @@ tracing = { workspace = true }
 tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
+# The plugin faces themselves. The SECRET glue is written against
+# `busbar_contract::kinds::Secret`, so a `kind: secret` plugin author implements the contract's face
+# and nothing else; the SDK holds the face-error -> wire-token half of the seam, and the loader
+# holds the other half.
+busbar-contract = { path = "../busbar-contract" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
