@@ -97,7 +97,7 @@ pub(crate) fn registration_config(
         oauth_as::grant::GrantType::RefreshToken,
     ];
     // RFC 7592 management is OFF. A registration that can be rewritten after it was approved is a
-    // way to change what a user consented to without asking them again, and nothing in the MCP
+    // way to change what a user consented to without asking them again, and nothing in the tool
     // client population uses it.
     config.management_enabled = false;
     Box::new(config)

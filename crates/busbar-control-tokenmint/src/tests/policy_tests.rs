@@ -34,7 +34,7 @@ fn plane(grant: &[&str]) -> TokenIssuer {
     TokenIssuer::build(
         identity,
         None,
-        vec!["https://gw.example.com/mcp".to_string()],
+        vec!["https://gw.example.com/resource".to_string()],
         std::sync::Arc::new(crate::cimd::NoDocuments),
     )
     .expect("the plane builds")
@@ -58,10 +58,13 @@ fn attempt(scope: Option<&str>, grant_types: Option<Vec<&str>>) -> ClientMetadat
 /// carries the scope it asked for.
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
-    let plane = plane(&["mcp:read"]);
+    let plane = plane(&["tools:read"]);
     let refusal = plane
         .server()
-        .register_dynamic_client(&attempt(Some("mcp:read mcp:write elevated"), None), None)
+        .register_dynamic_client(
+            &attempt(Some("tools:read tools:write elevated"), None),
+            None,
+        )
         .await
         .expect_err(
             "registering with `elevated` succeeded. A client that can name its own scope at \
@@ -81,7 +84,7 @@ async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
     let plane = plane(&[]);
     let refusal = plane
         .server()
-        .register_dynamic_client(&attempt(Some("mcp:read"), None), None)
+        .register_dynamic_client(&attempt(Some("tools:read"), None), None)
         .await
         .expect_err("an unconfigured ceiling admitted a scope");
     assert!(matches!(refusal, RegistrationFailure::Invalid(_)));
@@ -92,10 +95,10 @@ async fn with_no_default_grant_configured_every_requested_scope_is_refused() {
 /// endpoint being broken.
 #[tokio::test]
 async fn a_registration_within_the_default_grant_is_accepted() {
-    let plane = plane(&["mcp:read"]);
+    let plane = plane(&["tools:read"]);
     let info = plane
         .server()
-        .register_dynamic_client(&attempt(Some("mcp:read"), None), None)
+        .register_dynamic_client(&attempt(Some("tools:read"), None), None)
         .await
         .expect("a registration inside the operator's ceiling must succeed");
     assert!(!info.client_id.is_empty());
@@ -115,14 +118,14 @@ async fn a_registration_within_the_default_grant_is_accepted() {
 /// watched fail is exactly what this project's standing rules call not-evidence.
 #[tokio::test]
 async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() {
-    let plane = plane(&["mcp:read"]);
+    let plane = plane(&["tools:read"]);
     // A CONFIDENTIAL client, deliberately. `client_credentials` is a confidential-client grant, so
     // a registration presenting `token_endpoint_auth_method: none` is refused for being public
     // rather than for the grant it asked for — and a test refused for the wrong reason passes
     // against a server that has no ceiling at all. Watched: with `token_endpoint_auth_method: none`
     // this test PASSED against a build whose `allowed_grant_types` included `client_credentials`,
     // which is the "green about something it never tested" defect, caught by running it red.
-    let mut metadata = attempt(Some("mcp:read"), Some(vec!["client_credentials"]));
+    let mut metadata = attempt(Some("tools:read"), Some(vec!["client_credentials"]));
     metadata.token_endpoint_auth_method = Some("client_secret_basic".to_string());
     let refusal = plane
         .server()
@@ -140,8 +143,8 @@ async fn a_self_registered_client_cannot_ask_for_the_client_credentials_grant() 
 /// "busbar" cannot tell the gateway from a stranger who typed the word.
 #[tokio::test]
 async fn a_client_that_names_itself_after_the_deployment_is_refused() {
-    let plane = plane(&["mcp:read"]);
-    let mut metadata = attempt(Some("mcp:read"), None);
+    let plane = plane(&["tools:read"]);
+    let mut metadata = attempt(Some("tools:read"), None);
     metadata.client_name = Some("Busbar Gateway".to_string());
     let refusal = plane
         .server()
@@ -162,7 +165,7 @@ async fn registration_is_on_whenever_the_plane_is() {
     let cfg = Section {
         issuer: "https://gw.example.com".to_string(),
         key_id: None,
-        default_grant: vec!["mcp:read".to_string()],
+        default_grant: vec!["tools:read".to_string()],
         access_token_ttl_secs: None,
     };
     let identity = Identity::from_section(&cfg).expect("valid");
@@ -174,7 +177,7 @@ async fn registration_is_on_whenever_the_plane_is() {
     let plane = TokenIssuer::build(
         identity,
         None,
-        vec!["https://gw.example.com/mcp".into()],
+        vec!["https://gw.example.com/resource".into()],
         std::sync::Arc::new(crate::cimd::NoDocuments),
     )
     .expect("builds");

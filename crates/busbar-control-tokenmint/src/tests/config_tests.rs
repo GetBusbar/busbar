@@ -91,7 +91,7 @@ fn an_issuer_with_a_query_or_fragment_is_refused_at_boot() {
 #[test]
 fn a_default_grant_entry_that_is_not_a_scope_token_is_refused_at_boot() {
     let mut c = cfg("https://gw.example.com");
-    c.default_grant = vec!["mcp:read".into(), "not a token".into()];
+    c.default_grant = vec!["tools:read".into(), "not a token".into()];
     assert_eq!(
         code_of(Identity::from_section(&c)),
         catalog::CONFIG_SCOPE_NOT_A_TOKEN

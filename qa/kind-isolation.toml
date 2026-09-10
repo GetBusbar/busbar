@@ -134,6 +134,21 @@ reason = "the admin CONTROL surface — an unmetered served surface on the contr
 #   to     = "busbar-secret-grammar"
 #   commit = "0000000"
 
+# THE FIRST RENAME THAT NEEDED ONE. `busbar-control-oauth2` is the name the merge-base ANNOUNCED
+# this crate under, and `busbar-control-tokenmint` is the name it landed under. The change is an
+# owner ruling and not a preference: as a control-kind instance id, `oauth2` is a bare needle that
+# catches Microsoft's and Google's token URLs wherever core or the substrate mentions them, and the
+# first replacement (`issuer`) was measured WORSE by that ruling's own criterion -- it collides with
+# five kinds' RFC vocabulary at once (RFC 8414/OIDC in core, the X.509 certificate `issuer` field in
+# busbar-transport-tls, the A2A card issuer, the substrate's own CardIssuer face, and the root).
+# `tokenmint` had ZERO pre-existing hits in `crates/` and `xtask/`. The crate under the old name
+# never landed anywhere, so `from` is gone from the workspace by construction.
+
+[[renamed]]
+from   = "busbar-control-oauth2"
+to     = "busbar-control-tokenmint"
+commit = "4df6e08d4"
+
 [[announced]]
 crate = "busbar-control-tokenmint"
 kind = "control"
@@ -181,6 +196,40 @@ reason = "the hook-dispatch surface being carved out of busbar-core; core kind, 
 # it, so the row and the crate land together. Writing one ahead of the crate would spend the crate's
 # one admission on the branch that did not need it — the landing would then be a SECOND mint and
 # refused, which is the rule working exactly as written and against the wrong branch.
+
+# THE TABLE IS NO LONGER EMPTY. `busbar-control-tokenmint` is the OAuth 2.1 authorization server
+# rebuilt out of `busbar-core/src/oauth_as/` as a control-kind crate with a contract-only edge. It
+# did not exist at the merge-base, so every ledger row it needs is a row the base cannot carry, and
+# `minted-row` refused all of them -- which is the ratchet being right about a crate it was not
+# written for.
+#
+# IT MINTS EXACTLY ONE CELL, and the count is the whole review. Seven of the eight cells the crate
+# started with were DRAINED to zero rather than admitted: `caps` (a manifest sentence naming the
+# capability crate to say it is NOT a dependency), `store` (every hit the path
+# `oauth_as::store::Memory...`, now one `use oauth_as::store as backing;` per file), `secret`,
+# `legacy`, `control` (prose about the node's operator chain; one private constant renamed, VALUE
+# UNCHANGED; and a registration fixture whose privileged scope was literally spelled `admin`),
+# `plane` (27 -- the RFC 8707 protected-resource fixtures and the prose around them) and `dialect`
+# (1 -- the word `responses` in a sentence about what the RFCs fix). What is left is ONE:
+#
+#   busbar-control-tokenmint x transport = 44, AND IT IS NOT DRAINABLE. This is an HTTP
+#   authorization server. `http::Request` and `http::Response` are its own vocabulary and the wire
+#   its RFCs are written against -- and `http` is the instance id of `busbar-transport-http`, so
+#   every mention scores. The 44 are the `http` crate dependency in the manifest (3) and its types
+#   at the crate's own surface (41), already hoisted to one import per file. A control crate that
+#   answers an HTTP request cannot stop naming HTTP; the row is the cite, and the drain is the day
+#   the neutral route seam carries its own request type and this crate stops touching `http` at all.
+#
+# `moved_from` is DELIBERATELY ABSENT. This is not a carve-out: the served half of
+# `busbar-core/src/oauth_as/` was deleted and the surface REBUILT against a protocol library, so
+# the vocabulary is the new crate's own rather than the old crate's under a new name. Claiming
+# `moved_from = "busbar-core"` would put busbar-core's own `x transport` ceiling (2081) over a
+# 44-hit row, which is a ceiling that measures nothing.
+
+[[minted]]
+crate  = "busbar-control-tokenmint"
+commit = "4df6e08d4"
+cells  = "1"
 
 # ------------------------------------------------------------------------------------------------
 # [[minted_kind]] — THE COLUMN A KIND THAT DID NOT EXIST BRINGS WITH IT
@@ -1421,7 +1470,7 @@ count = "122"
 [[cell]]
 crate = "busbar"
 kind = "auth"
-count = "25"
+count = "26"
 
 [[cell]]
 crate = "busbar"
@@ -1441,7 +1490,7 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1071"
+count = "1080"
 
 [[cell]]
 crate = "busbar"
@@ -1461,7 +1510,7 @@ count = "97"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1799"
+count = "1802"
 
 [[cell]]
 crate = "busbar"
@@ -1486,7 +1535,7 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "955"
+count = "970"
 
 [[cell]]
 crate = "busbar"
@@ -1741,7 +1790,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5504"
 
 [[cell]]
 crate = "busbar-core"
@@ -1751,17 +1800,17 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3037"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "266"
+count = "265"
 
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "337"
+count = "336"
 
 [[cell]]
 crate = "busbar-core"
@@ -1781,7 +1830,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+count = "2081"
 
 [[cell]]
 crate = "busbar-core"
@@ -2196,12 +2245,16 @@ count = "82"
 
 
 
-[[cell]]
-crate = "busbar-control-tokenmint"
-kind = "plane"
-count = "27"
-
-
+# `busbar-control-tokenmint x plane` STOOD HERE AT 27 AND WAS DRAINED TO ZERO. Every hit was the
+# bare instance id of a sibling data plane in text that did not need it: the RFC 8707
+# protected-resource fixtures in the crate's own tests (`mcp:read`, `mcp:write` and a
+# `https://gw.example.com/mcp` audience, all three arbitrary to what those tests prove -- they
+# prove that a self-registered client cannot ask for more than the operator's `default_grant`, and
+# the scope's spelling is not the subject), and doc comments that cited a sibling row's constants
+# and its protocol revision by name to explain this crate's own. The fixtures now read
+# plane-neutral literals and the prose says what it means without the instance. A control crate's
+# only busbar edge is busbar-contract; naming a plane instance in its tests was vocabulary, not
+# coupling, and vocabulary drains.
 
 [[cell]]
 crate = "busbar-control-tokenmint"
@@ -5610,7 +5663,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1196"
+count = "1195"
 
 [[cell]]
 crate = "busbar-hooks-ranking"

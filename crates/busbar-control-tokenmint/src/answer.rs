@@ -55,7 +55,7 @@ impl TokenIssuer {
 /// Hand one request to `oauth-as` and return what it answers, unchanged.
 ///
 /// The whole of busbar's OAuth wire surface is this function. Nothing is inspected, rewritten or
-/// re-decided on the way through: the RFCs define these responses down to the header, and a gateway
+/// re-decided on the way through: the RFCs define what it answers down to the header, and a gateway
 /// that "improves" one of them fails a conformance suite for a reason nobody can find.
 pub async fn forward(surface: &TokenIssuer, request: Request) -> Response {
     // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one call

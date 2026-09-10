@@ -4,7 +4,7 @@
 //! CLIENT ID METADATA DOCUMENTS: the `client_id`-that-is-a-URL mechanism, served at the
 //! `Storage::get_client` seam.
 //!
-//! The `2026-07-28` MCP revision lists CIMD as the `SHOULD` among the three ways a client obtains
+//! The `2026-07-28` tool-protocol revision lists CIMD as the `SHOULD` among the three ways a client obtains
 //! a `client_id`. The shape here is the one `oauth_as/mod.rs` records: a `client_id` that parses
 //! as an HTTPS URL and is absent from the store is FETCHED, validated (`client_id` equal to the
 //! URL it was fetched from, `redirect_uris` taken from the document and exact-matched by
@@ -29,7 +29,7 @@
 //! NODE'S and this crate does not carry a copy of it: a control surface holding its own SSRF guard
 //! would be the second copy of one security control in one tree, which is the exact
 //! divergence-by-duplication failure mode a drifted copy of that guard already caused once on the
-//! MCP plane. So the fetch is a SEAM — [`CimdFetch`] — and the composition installs the node's
+//! sibling data plane. So the fetch is a SEAM — [`CimdFetch`] — and the composition installs the node's
 //! guarded implementation, with this path's own bounds (a client metadata document is a few
 //! kilobytes on an interactive authorization request, so 5 KB and 10 s, not a card fetch's 512 KB;
 //! no redirects, because the document lives at the `client_id` or it is not that client's

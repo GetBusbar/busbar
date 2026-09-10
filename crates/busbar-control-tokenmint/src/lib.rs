@@ -8,7 +8,7 @@
 //! busbar already speaks OAuth as a RESOURCE server: an operator points it at Okta, Entra or Auth0,
 //! and busbar refuses any token not minted for its own canonical URI. That covers the deployment
 //! that has an identity provider and can get a client registered in it. The clients people actually
-//! run cannot do that: Codex, ChatGPT and Claude.ai discover an MCP server, register themselves,
+//! run cannot do that: Codex, ChatGPT and Claude.ai discover a tool server, register themselves,
 //! and expect a token — and an enterprise identity team will not turn on RFC 7591 dynamic
 //! registration to let them. With `oauth_as:` configured, busbar IS the authorization server, and
 //! an agent that has never heard of this deployment completes a login against it.

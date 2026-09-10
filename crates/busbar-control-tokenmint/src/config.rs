@@ -24,7 +24,8 @@ pub struct Section {
     /// value every endpoint below is derived from.
     ///
     /// OPERATOR-CONFIGURED rather than derived from the request's `Host`, for the same reason
-    /// `mcp.canonical_uri` is: an issuer a caller can choose by sending a header is not an identity.
+    /// a protected resource's own canonical URI is: an issuer a caller can choose by sending a
+    /// header is not an identity.
     /// It is also what RFC 9207 puts in the `iss` of every authorization response, so a client
     /// comparing it byte-for-byte against what it discovered is doing the mix-up defence — which
     /// only works if this value never moves.
@@ -44,7 +45,8 @@ pub struct Section {
     #[serde(default)]
     pub default_grant: Vec<String>,
 
-    /// Access token lifetime in seconds. Short on purpose (RFC 9728 §7 / the MCP revision's token
+    /// Access token lifetime in seconds. Short on purpose (RFC 9728 section 7 / the tool-protocol
+    /// revision's token
     /// theft note both ask for it); a client that wants continuity refreshes.
     #[serde(default)]
     pub access_token_ttl_secs: Option<u64>,
@@ -133,10 +135,10 @@ pub struct Identity {
 /// RFC 8414 §3.1: the well-known segment goes BEFORE the issuer's path, not after it. This is the
 /// one detail of the document that is easy to get backwards, and getting it backwards means every
 /// conforming client's discovery 404s. (RFC 9728 inserts the path the OTHER way round, which is why
-/// `mcp::PROTECTED_RESOURCE_WELL_KNOWN` and this constant are used differently a few lines apart.)
+/// the PROTECTED-RESOURCE well-known constant and this one are used differently a few lines apart.)
 const AS_WELL_KNOWN: &str = "/.well-known/oauth-authorization-server";
 
-/// The default access token lifetime: ten minutes. Short because the MCP revision's token-theft note
+/// The default access token lifetime: ten minutes. Short because the tool-protocol revision's token-theft note
 /// asks for short-lived access tokens, and a client that wants continuity has a refresh token.
 const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -234,7 +236,8 @@ impl Identity {
 
 /// Split an absolute `http(s)` URL into `(origin, path)`, or `None` when it is not one.
 ///
-/// Hand-written for the same reason `mcp::split_absolute` is: what is needed is a STRICT recogniser
+/// Hand-written for the same reason the sibling protected resource's own splitter is: what is
+/// needed is a STRICT recogniser
 /// for one shape, and a permissive general-purpose parser is the wrong tool for a value whose whole
 /// job is to be compared for exact equality. A lenient parse that normalised `HTTPS://Host:443/as`
 /// would hand back a string that no longer equals the `iss` a client recorded.
