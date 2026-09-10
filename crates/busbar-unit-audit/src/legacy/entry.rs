@@ -40,32 +40,37 @@ use serde::{Deserialize, Serialize};
 
 use super::chain::{ChainLabels, ChainedRecord, Digest, Framing};
 
-/// One admin audit record.
-///
-/// The digest is the hexadecimal SHA-256 of the previous hash, sequence, timestamp, action,
-/// resource, outcome and principal joined by vertical bars, and the previous hash is the preceding
-/// entry's digest. Recomputing the chain detects any altered, reordered or deleted entry — detection,
-/// not prevention. A compromised host can still rewrite the whole chain; prevention is shipping the
-/// log off-box to something that host cannot reach.
+/// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
+/// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
+/// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
+/// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
+/// the whole chain; prevention is shipping the log off-box to a SIEM).
+//
+// The doc comments on this struct and its eight wire fields are a PUBLISHED SURFACE, not prose:
+// under `openapi-schema` the record is a response schema and every sentence of them is a
+// `description` in the emitted document, which is byte-frozen. Reword one and the document moves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
-    /// Monotonic sequence number, one-based, unique within a process lifetime.
+    /// Monotonic sequence number (1-based), unique within a process lifetime.
     pub seq: u64,
     /// Unix seconds when the mutation was attempted.
     pub ts: u64,
-    /// The action, as a noun and a verb — for example `hook.register`.
+    /// The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).
     pub action: String,
-    /// The resource acted on, for example `hook:compress`. Never a secret.
+    /// The resource acted on (e.g. `hook:compress`). Never a secret.
     pub resource: String,
-    /// Stable outcome token: applied when the mutation committed, rejected when nothing changed.
+    /// Stable outcome token: `applied` (mutation committed) | `rejected` (validation/conflict, nothing
+    /// changed).
     pub outcome: String,
-    /// WHO: the authenticated principal that attempted the mutation. Attribution, never a
-    /// credential.
+    /// WHO: the authenticated principal id that attempted the mutation (`admin` for the operator
+    /// token; a virtual-key id or an external module's principal id otherwise; `anonymous` for the
+    /// explicit open admin posture). Attribution, never a credential.
     pub principal: String,
-    /// The preceding entry's digest. Empty for the first entry of the process, or for the oldest
-    /// retained entry whose predecessor was pruned.
+    /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
+    /// entry whose predecessor was pruned).
     pub prev_hash: String,
-    /// This entry's own digest: the tamper-evidence.
+    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
     pub hash: String,
     /// TRUE only for entries THIS process appended live. Seeded entries — restored from a durable
     /// store — are false. Skipped on the wire, which gives the right default on the encoded and

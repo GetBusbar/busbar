@@ -413,6 +413,53 @@ fn there_are_thirty_three_action_names_and_they_are_all_distinct() {
     assert_eq!(sorted.len(), 33, "the action set has a duplicate in it");
 }
 
+/// The thirty-three names IN ORDER. The distinctness test above sorts before it compares, so a
+/// reordering — or a rename that keeps the count — passes it; this one compares the array as it is
+/// written. The order is the array's, not a call site's: nothing dispatches on position. It is
+/// pinned because "the set did not change" is only checkable if the list cannot drift under the
+/// check that reads it.
+#[test]
+fn the_thirty_three_action_names_are_pinned_in_order() {
+    assert_eq!(
+        AUDIT_ACTIONS,
+        [
+            "admin.restart",
+            "auth.admin_chain_put",
+            "auth.cache_flush",
+            "config.apply",
+            "config.reload",
+            "config.rollback",
+            "config.settings",
+            "group.create",
+            "group.delete",
+            "group.patch",
+            "group.provision",
+            "group.replace",
+            "hook.delete",
+            "hook.register",
+            "hook.replace",
+            "hook.settings",
+            "key.create",
+            "key.delete",
+            "key.patch",
+            "key.revoke",
+            "key.rotate",
+            "overlay.reset",
+            "plugin.install",
+            "plugin.reload",
+            "plugin.remove",
+            "plugin.rollback",
+            "signing_key.report",
+            "identity-provider.replace",
+            "identity-provider.settings",
+            "identity-provider.delete",
+            "exporter.replace",
+            "exporter.settings",
+            "exporter.delete",
+        ]
+    );
+}
+
 #[test]
 fn every_action_name_reads_as_a_noun_and_a_verb() {
     for action in AUDIT_ACTIONS {

@@ -23,7 +23,7 @@
 //! registers with `digests_scope = FALSE`. The prelude the host frames is then exactly
 //! `frame_prelude(PipeSeparated, prev_hash, None, seq)` = `prev_hash|seq`, and the plane's suffix
 //! `|ts|action|resource|outcome|principal` byte-concatenates onto it to reproduce the legacy
-//! [`crate::admin::audit::AuditEntry`] digest input byte-for-byte. Registering with `digests_scope = 1`
+//! [`AuditEntry`] digest input byte-for-byte. Registering with `digests_scope = 1`
 //! would fold the scope into the prelude and make EVERY already-persisted admin record report
 //! `DigestMismatch` at the next boot.
 //!
@@ -37,7 +37,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::admin::audit::{AuditEntry, MAX_AUDIT_ENTRIES};
+use crate::admin::audit::MAX_AUDIT_ENTRIES;
 use crate::audit::journal::NeutralBody;
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
@@ -46,7 +46,7 @@ use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
 };
-use busbar_unit_audit::legacy::{verify_chain, ChainBreak, Framing};
+use busbar_unit_audit::legacy::{verify_chain, AuditEntry, ChainBreak, Framing};
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the admin `audit` durable stream is registered under and addressed by
@@ -270,7 +270,7 @@ pub struct PlaneAuditLog {
     kind_id: u32,
     /// THE READ MODEL. A bounded ring of the most-recent [`MAX_AUDIT_ENTRIES`] records, held newest-
     /// LAST (seq-ascending) so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()` reads newest-
-    /// first — the same shape and bound as the legacy [`crate::admin::audit::AuditLog`] ring it will
+    /// first — the same shape and bound as the legacy [`crate::admin::audit::AUDIT`] ring it will
     /// replace as the `GET /audit` read source. Guarded by its OWN `Mutex` (independent of the seam's
     /// mint serialization point) and inserted BY SEQ, so the newest-first order holds even when a
     /// mint's release-to-push window interleaves with another recorder's.
@@ -326,7 +326,7 @@ impl PlaneAuditLog {
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
     /// skip `offset`, then take `limit`. `None` filters match everything. Copied VERBATIM from
-    /// [`crate::admin::audit::AuditLog::list_filtered`] — THE read surface `GET /audit` serves,
+    /// the legacy [`crate::admin::audit::AUDIT`] ring's `list_filtered` — THE read surface `GET /audit` serves,
     /// byte-identical to the legacy ring it replaced.
     pub fn list_filtered(
         &self,
@@ -589,7 +589,7 @@ pub(crate) fn register_and_migrate(
 }
 
 /// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Called once from
-/// [`crate::admin::audit::AuditLog::record_by`] — which is the ONE place an admin mutation is recorded
+/// [`crate::admin::audit::AUDIT`]'s `record_by` — which is the ONE place an admin mutation is recorded
 /// — with the SAME `ts` `record_by` sealed the legacy ring under (never a second clock read, which
 /// would let the seam and the legacy ring diverge by up to a second). `record_by` is a method on the
 /// process-global `AUDIT` static and has NO `app`/host to open a dispatch scope with, so it reaches the

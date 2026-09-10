@@ -407,15 +407,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5381
+kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14947
+unit_total_ceiling = 14948
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23839
+union_ceiling = 23841
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1442,3 +1442,50 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 32
 because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
+
+# THE RECORD MOVE (line 4 of gate/CORE-HOMES-design.md). `busbar-core/src/admin/audit.rs` held a
+# SECOND definition of the admin audit record — the eight wire fields, their `ChainedRecord` impl,
+# the bounded ring and its `record_by` — beside the identical record `busbar-unit-audit` already
+# holds in `legacy::entry`. The duplicate is STRUCK, not moved: core's file falls 325 -> 71 lines and
+# what is left is only what this crate alone can supply, the clock the ring reads and the durable
+# seam it feeds, bound ONCE into the process-wide static. That is the composition of a mount, and
+# the four spellings it costs are the whole of core's rise here.
+#
+# NOTHING IS WRITTEN ANEW IN THE UNIT. The record, the ring, the `Clock`/`DurableSeam` seams and the
+# thirty-three action names were already there; what rises are the WORDS CORE LOST — the record's
+# doc comments, which are a PUBLISHED SURFACE (under `openapi-schema` every sentence of them is a
+# `description` in the admin document, and `crates/busbar-core/src/admin/v1/json/openapi.json`
+# carries them frozen), and the one derive line that emits them.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "MOVE by identity onto busbar_unit_audit::legacy::entry: core's duplicate admin audit record and ring are deleted (admin/audit.rs 325 -> 71) and the five spellings that replace them are the mount and its readers — Cargo.toml's openapi-schema forward to busbar-unit-audit/openapi-schema so the moved record keeps its schema impl in lock-step (+1), admin/audit.rs's two remaining seam lines naming AuditLog/Clock/DurableSeam and MAX_AUDIT_ENTRIES (+1), admin/v1/contract/schema.rs's AuditPageView items (+1) and two paths in plane_host/tests/journal_tests.rs (+2); each occurrence is counted by both the hyphen and the underscore needle, so five occurrences are ten hits"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-audit.control.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "MOVE by identity: the words busbar-core/src/admin/audit.rs lost land in the crate that now owns the record. legacy/entry.rs +2 (the record's own doc comments, verbatim from core, because they are the frozen descriptions of the admin document's AuditEntry schema), Cargo.toml +2 (the manifest note stating why the schema derive travels with the record) and the action-order cell +2. The unit writes no new admin behaviour: the ring, the seams and the thirty-three names were already here, and core's 254 lines of second definition are deleted against them"
+
+# The one line that is genuinely NEW in the unit: `#[cfg_attr(feature = "openapi-schema",
+# derive(schemars::JsonSchema))]` on `AuditEntry`, moved off core's copy of the same struct. It is
+# one surface line and it moves three ceilings, because `busbar-unit-audit/src/legacy/entry.rs` is
+# in the kernel's call-graph name-match set: the unit sum counts it once, the kernel budget counts
+# it once, and the union counts it twice by construction (the union's own note says a reachable unit
+# file counts in both halves). Measured by deleting the line and re-running the gate: kernel 5382 ->
+# 5381, unit-total 14948 -> 14947, union 23841 -> 23839, all three green without it.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "MOVE by identity of busbar-core/src/admin/audit.rs's schema derive onto the record's one remaining definition: `#[cfg_attr(feature = \"openapi-schema\", derive(schemars::JsonSchema))]` on busbar_unit_audit::legacy::entry::AuditEntry. The admin document embeds this record, the descriptions in it are this struct's own doc comments, and an orphan impl cannot put the derive anywhere else; core deletes the same line with the duplicate struct it sat on"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 2
+because = "the same single moved line as the unit_total_ceiling raise, counted twice: busbar-unit-audit/src/legacy/entry.rs is call-graph-reachable from the kernel by name-match, so it spends unit budget AND kernel budget, and this union sums both halves. One line of derive, two lines of ceiling, against the 254 lines busbar-core deletes in the same commit"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 1
+because = "the same single moved line: busbar-unit-audit/src/legacy/entry.rs is in the kernel's call-graph name-match set, so a derive attribute on the record that crate owns spends kernel budget. It is one line of SCHEMA WIRING, not one line of kernel — nothing the Teller loop executes changed, and the line it replaces was deleted from busbar-core in the same commit"

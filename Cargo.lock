@@ -1121,6 +1121,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",

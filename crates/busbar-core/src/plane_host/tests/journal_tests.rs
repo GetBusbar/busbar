@@ -557,7 +557,7 @@ extern "C-unwind" fn admin_reframe(
 ) -> StatusClass {
     // SAFETY: live borrowed body range (ABI).
     let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-    let r: crate::admin::audit::AuditEntry =
+    let r: busbar_unit_audit::legacy::AuditEntry =
         serde_json::from_slice(body).expect("AuditEntry decodes");
     let suffix = format!("|{}|{}|{}|{}", r.ts, r.action, r.resource, r.outcome);
     // The last field is `principal`; append it (kept off the format! line only for readability).
@@ -697,7 +697,8 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
         );
 
         let mcp_tail: FrozenCallBody = serde_json::from_slice(G_MCP_2).unwrap();
-        let ad_tail: crate::admin::audit::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
+        let ad_tail: busbar_unit_audit::legacy::AuditEntry =
+            serde_json::from_slice(G_AD_2).unwrap();
 
         restore_and_verify(host, vt, mcp_id, b"vk_alice", &mcp_tail.hash, G_MCP_TAIL);
         restore_and_verify(host, vt, admin_id, b"log", &ad_tail.hash, G_AD_TAIL);

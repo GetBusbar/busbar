@@ -12,6 +12,10 @@
 #   serde        the previous release's record is serialised onto a wire with eight fields and one
 #                skipped provenance flag. That is part of what "unchanged" means, so the derives
 #                travel with the record rather than being reimplemented at the boundary.
+#   schemars     OPTIONAL, behind `openapi-schema`: the previous release's record is ALSO a published
+#                response schema (the admin surface's audit page embeds it), and the descriptions in
+#                that document are this record's own doc comments. The derive travels with the record
+#                for the same reason the serde derives do.
 [package]
 name = "busbar-unit-audit"
 version = "1.6.0"
@@ -30,6 +34,12 @@ busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[features]
+# The admin surface's OpenAPI document embeds the previous release's record; the crate that emits
+# that document enables this so the record carries its schema impl in lock-step.
+openapi-schema = ["dep:schemars"]
 
 [dev-dependencies]
 # The wire shape of the previous release's record — eight fields, one of them skipped — is a claim

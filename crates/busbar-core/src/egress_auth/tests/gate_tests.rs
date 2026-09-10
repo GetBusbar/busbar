@@ -24,8 +24,8 @@
 
 use super::*;
 
-use crate::admin::audit::{AuditEntry, AuditInput, OUTCOME_REJECTED};
-use busbar_unit_audit::legacy::{verify_chain, Chain};
+use crate::admin::audit::OUTCOME_REJECTED;
+use busbar_unit_audit::legacy::{verify_chain, AuditEntry, AuditInput, Chain};
 
 // ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════
 //
