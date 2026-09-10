@@ -63,6 +63,9 @@ pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
 pub mod policy;
+/// The composition root's one write into both protocol seams, moved verbatim out of
+/// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
+pub mod proto_install;
 pub mod registry;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
