@@ -35,22 +35,24 @@ use busbar_plane_llm::registry::DialectEntry;
 /// The dialects of the `llm` plane this build carries.
 ///
 /// One row per dialect crate, and adding one is adding ONE LINE. `busbar-plane-llm-openai` was the
-/// first of the six the plane's ladder was written for, `busbar-plane-llm-responses` the second and
-/// `busbar-plane-llm-anthropic` the third; the remaining rows are still the plane's own and move
-/// here, one row at a time, as each is cut out.
+/// first of the six the plane's ladder was written for, `busbar-plane-llm-responses` the second,
+/// `busbar-plane-llm-anthropic` the third and `busbar-plane-llm-gemini` the fourth; the two rows
+/// that remain are still the plane's own and move here, one row at a time, as each is cut out.
 ///
 /// The first two rows are one vendor's two request surfaces, and they are two rows for the same
 /// reason they are two crates: the boot has no way to tell "a vendor" from "a wire vocabulary", and
 /// it should not have one. What it seals is a row and a ladder, whoever wrote them. The third row
-/// is the first whose rungs are HEADERS, and the boot did not learn what a header is to seal it.
+/// is the first whose rungs are HEADERS and the fourth the first whose rungs are path PATTERNS,
+/// and the boot learned neither shape to seal them.
 ///
 /// ORDER IS REGISTRATION ORDER, and registration order breaks a tie between two dialects that
-/// declare the same rung. These three declare 7 and 14, 10, and 2, 4 and 11, and tie nowhere, so
-/// the order below is not currently deciding anything — which is exactly why it is worth saying
-/// that it is the order the boot uses, so the day two dialects do tie the answer is written down
-/// here rather than discovered.
+/// declare the same rung. These four declare 7 and 14; 10; 2, 4 and 11; and 3, 5 and 6 — and tie
+/// nowhere, so the order below is not currently deciding anything — which is exactly why it is
+/// worth saying that it is the order the boot uses, so the day two dialects do tie the answer is
+/// written down here rather than discovered.
 pub const LLM: &[DialectEntry] = &[
     busbar_plane_llm_openai::dialect::ENTRY,
     busbar_plane_llm_responses::dialect::ENTRY,
     busbar_plane_llm_anthropic::dialect::ENTRY,
+    busbar_plane_llm_gemini::dialect::ENTRY,
 ];
