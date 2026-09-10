@@ -159,10 +159,19 @@ jobs:
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: The test command, unmutated
+        # THE SAME COMMAND THE SHARDS RUN, INCLUDING THE SAME GATE LIST. `--gates` computes it from
+        # the diff (see scripts/gate-mutants.sh): a diff confined to one gate's directory needs only
+        # that gate's self-proof, because no other gate's self-proof runs the stubbed line. A
+        # baseline proving a WIDER command than the shards run would be a baseline about a different
+        # command, and this job exists precisely to be about the shards' command.
         env:
           XTASK_GATE_MUTATION_PROOF: "1"
           XTASK_GATE_CEILING_SECS: "3600"
-        run: cargo test -p xtask --lib --test gate_mutation_proof
+        run: |
+          set -euo pipefail
+          gates="$(scripts/gate-mutants.sh --gates)"
+          echo "gate self-proofs in the test command: $gates"
+          XTASK_GATE_MUTATION_GATES="$gates" cargo test -p xtask --lib --test gate_mutation_proof
 
   # -------------------------------------------------------------------------------------------
   # THE MUTANTS. One shard per runner; every shard sees the same diff and the same denominator, or

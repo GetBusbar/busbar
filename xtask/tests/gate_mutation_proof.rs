@@ -45,6 +45,59 @@ const GATES: &[&str] = &[
 /// The switch. See the module comment: absent means inert, and inert means RED, never green.
 const SWITCH: &str = "XTASK_GATE_MUTATION_PROOF";
 
+/// THE NARROWING, AND WHY IT IS SAFE TO HAVE ONE.
+///
+/// The four self-proofs cost about the same each, and a shard pays for all four once as its
+/// baseline and once per mutant. When the diff touches only `gates/construction/**`, three of those
+/// four prove nothing about the stubbed line — `kind-isolation --selftest` cannot go red on a
+/// mutation of a construction rule, so running it is wall clock spent proving the mutant is not
+/// somewhere it cannot be.
+///
+/// `scripts/gate-mutants.sh` computes the list from the diff and sets this variable; the mapping,
+/// and the rule that ANY shared file (`manifest.rs`, `scan.rs`, `ctx.rs`, `gates/mod.rs`, a gate
+/// source with no directory of its own) widens it back to all four, live there.
+///
+/// THE NARROWING FAILS SAFE IN BOTH DIRECTIONS. Unset means ALL FOUR — a job that forgot to set it
+/// pays full price and measures everything, which is the expensive mistake, not the quiet one. Set
+/// to an empty list, or to a name that is not a gate, is a PANIC: "run no gates" is a test command
+/// that catches nothing, and a command that catches nothing reports every mutant SURVIVING, but it
+/// would do so having measured nothing, and that red would be about the wrong thing. Better to say
+/// so.
+const GATES_VAR: &str = "XTASK_GATE_MUTATION_GATES";
+
+/// The gates this run will prove, from [`GATES_VAR`], defaulting to all of [`GATES`].
+fn gates_to_prove() -> Vec<&'static str> {
+    let raw = match std::env::var(GATES_VAR) {
+        Err(_) => return GATES.to_vec(),
+        Ok(v) => v,
+    };
+    let wanted: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert!(
+        !wanted.is_empty(),
+        "{GATES_VAR} is set to {raw:?}, which names no gate. A test command that proves no gate \
+         catches no mutant; if the intent was `all four`, leave {GATES_VAR} unset."
+    );
+    let mut out: Vec<&'static str> = Vec::new();
+    for w in &wanted {
+        match GATES.iter().find(|g| *g == w) {
+            Some(g) => {
+                if !out.contains(g) {
+                    out.push(g);
+                }
+            }
+            None => panic!(
+                "{GATES_VAR} names `{w}`, which is not one of the gates this proof drives \
+                 ({GATES:?}). A misspelled gate silently proves less than the job claims."
+            ),
+        }
+    }
+    out
+}
+
 /// A self-test that plants ~150 faults across a real tree copy is not a 300-second gate. The job
 /// sets this too; the default here matches it so a hand run behaves like the job.
 const CEILING_SECS: &str = "3600";
@@ -74,7 +127,14 @@ fn the_four_gates_prove_themselves() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut failed: Vec<String> = Vec::new();
 
-    for gate in GATES {
+    let gates = gates_to_prove();
+    eprintln!(
+        "gate_mutation_proof: proving {} of {} gates: {gates:?}",
+        gates.len(),
+        GATES.len()
+    );
+
+    for gate in &gates {
         let started = Instant::now();
         let out = Command::new(&cargo)
             .current_dir(&root)
@@ -85,7 +145,7 @@ fn the_four_gates_prove_themselves() {
                 "xtask",
                 "--",
                 "gate",
-                gate,
+                *gate,
                 "--selftest",
             ])
             .env("XTASK_GATE_CEILING_SECS", CEILING_SECS)
