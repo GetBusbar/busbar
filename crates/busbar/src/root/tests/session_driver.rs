@@ -434,6 +434,20 @@ impl SessionPlane for MadeUpPlane {
     ) -> PlaneSessionState {
         PlaneSessionState::new(Opened { frames: 0 })
     }
+
+    /// This plane declares nothing gateable at a session open, so a composition skips BOTH operator
+    /// hops: no payload is serialized and no hook is consulted, which is the byte-identical posture
+    /// this plane has always had at its own open.
+    fn session_params<'p, 'u>(
+        &self,
+        _st: &'p mut PlaneSessionState,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::plane::SessionParams<'p>> {
+        None
+    }
+
+    /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
+    fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
 }
 
 /// The made-up plane's configuration block, which has nothing in it.

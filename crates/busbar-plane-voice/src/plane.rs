@@ -68,7 +68,7 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
-    Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
+    Ingress, Plane, PlaneSessionState, Progress, Response, SessionParams, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ResourceLocator, ScopeFacts, Unit, UnitEnd,
@@ -76,6 +76,7 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
+use busbar_voice_codec::ir::config;
 use busbar_voice_codec::ir::control::IrDuplexControl;
 use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
 use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
@@ -581,6 +582,79 @@ impl SessionPlane for VoicePlane {
         let dialect = upstream_dialect_for(self, dest);
         PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
     }
+
+    /// THE PROJECTION: what an operator's gate or tap sees when this plane's session is opened.
+    ///
+    /// The posture is the same one the 1.5.x front door locks and for the same two reasons: a
+    /// carrier leg is µ-law end to end, so it opens on [`busbar_voice_codec::ir::config::g711_config`]
+    /// and nothing may resample it; every other dialect opens on the deployment's own declared
+    /// defaults, read off this call's configuration view under [`SESSION_DEFAULTS_KEY`] and falling
+    /// back to the section default when a deployment declares none.
+    ///
+    /// Rendered ONCE per connection and then held. The bytes are what a configured gate matches on,
+    /// so re-rendering them on a second call — after a tap has committed a rewrite — would hand the
+    /// second hop a payload the first hop never saw.
+    fn session_params<'p, 'u>(
+        &self,
+        st: &'p mut PlaneSessionState,
+        ctx: &Ctx<'u>,
+    ) -> Option<SessionParams<'p>> {
+        let state = st.get_mut::<VoiceSessionState>()?;
+        if state.params.is_empty() {
+            let locked = match state.dialect {
+                Some(Dialect::TwilioMediaStreams) => config::g711_config(),
+                _ => declared_defaults(ctx),
+            };
+            state.params = serde_json::to_vec(&locked).ok()?;
+        }
+        Some(SessionParams {
+            container: HOOK_CONTAINER,
+            operation: SESSION_OPEN_METHOD,
+            declared: &state.params,
+        })
+    }
+
+    /// ADOPT what a rewrite committed, in place of the posture the projection rendered.
+    ///
+    /// The bytes are taken VERBATIM and only after they read back as this plane's own session
+    /// shape: a payload that does not is not a rewrite of these parameters, and adopting it would
+    /// replace a locked posture with something no dialect can open on.
+    fn adopt_session_params(&self, st: &mut PlaneSessionState, declared: &[u8]) {
+        let Some(state) = st.get_mut::<VoiceSessionState>() else {
+            return;
+        };
+        if serde_json::from_slice::<config::SessionConfig>(declared).is_ok() {
+            state.params = declared.to_vec();
+        }
+    }
+}
+
+/// The container a deployment files this plane's session hooks under.
+///
+/// The deployment's own word for the section, which is what a configured gate is filed against;
+/// spelled here because the projector is now the one place that answers what a hook sees.
+const HOOK_CONTAINER: &str = "streams";
+
+/// The method name a session-open hook sees.
+///
+/// The hook wire's name for the open, NOT [`meta::OP_SESSION_OPEN`]: the operation class prices a
+/// unit and this string is matched by a deployment's configured gate. They are different vocabularies
+/// and a gate written against one would not match the other.
+const SESSION_OPEN_METHOD: &str = "session.open";
+
+/// The configuration key a deployment's declared session defaults are carried under, as the dialect's
+/// own `session` object in the notation the wire is written in.
+const SESSION_DEFAULTS_KEY: &str = "session_defaults";
+
+/// The declared session defaults for this call: the deployment's, or the section default.
+///
+/// A value that does not read back as a session shape is NOT half-adopted — the section default
+/// stands — because a partially-applied posture is one no operator wrote down.
+fn declared_defaults<'u>(ctx: &Ctx<'u>) -> config::SessionConfig {
+    ctx.config()
+        .get_str(SESSION_DEFAULTS_KEY)
+        .and_then(|raw| serde_json::from_str::<config::SessionConfig>(raw).ok())
+        .unwrap_or_else(config::default_session)
 }
 
 /// What a refused session is told, in the closed vocabulary a client is allowed to see.

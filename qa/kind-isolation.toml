@@ -2094,7 +2094,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "codec"
-count = "24"
+count = "28"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -2114,7 +2114,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "transport"
-count = "108"
+count = "112"
 
 [[cell]]
 crate = "busbar-plugin"

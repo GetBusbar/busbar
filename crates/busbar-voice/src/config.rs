@@ -27,7 +27,6 @@
 //! live-voice CEILINGS cannot be retyped or removed without the gate flagging it.
 
 use crate::ir::config::SessionConfig;
-use crate::ir::control::IrVad;
 use serde::{Deserialize, Serialize};
 
 /// Hard session wall-clock ceiling default — 3600s (60 minutes).
@@ -49,19 +48,13 @@ fn default_max_output_tokens() -> u32 {
 /// which is what a RAW wire decode round-trip must keep. The `streams:`-LEVEL default is 500ms — a
 /// plane posture, not a wire fact — so it is synthesized HERE (when the operator writes no
 /// `turn_detection`) rather than by changing the IR's own default, keeping the two distinct.
+///
+/// ONE VALUE, not a copy of one: the posture itself lives beside the type it configures
+/// (`crate::ir::config::default_session`), because the plane's own session-parameter projector has
+/// to render the same bytes this section's default renders. This function is the `serde` default
+/// hook and nothing more.
 fn default_session() -> SessionConfig {
-    SessionConfig {
-        // `Some(Some(..))` — a CONFIGURED detector. The outer `Some` says the operator default names
-        // turn detection at all (see `SessionConfig::turn_detection`'s three states).
-        turn_detection: Some(Some(IrVad::ServerVad {
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-            create_response: true,
-            interrupt_response: true,
-        })),
-        ..SessionConfig::default()
-    }
+    crate::ir::config::default_session()
 }
 
 /// THE `streams:` SECTION — the voice plane's owned config. Its VAD/session/media shape IS the GA

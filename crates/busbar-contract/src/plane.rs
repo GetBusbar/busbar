@@ -312,15 +312,51 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     ) -> crate::kinds::ContentFacts<'u>;
 }
 
+/// The declared parameters of one session, as an operator gate or a rewrite tap reads them.
+///
+/// A deployment may screen a session OPEN the same way it screens a one-shot pass: a gate that may
+/// refuse it, and a tap that may commit a rewrite of what it declared. Neither is a step of the
+/// loop, and neither may be given the plane's own type: the payload crosses that seam as OPAQUE
+/// BYTES, exactly as it already does, so a deployment's configured gates keep matching the same
+/// arguments they matched before. This is the projector pair that lets a composition carry those
+/// two hops without naming what the bytes mean — [`SessionPlane::session_params`] says what a hook
+/// would see, and [`SessionPlane::adopt_session_params`] takes back what a tap committed.
+///
+/// `None` from the projector is the whole of "this plane has nothing gateable at open": both hops
+/// are then skipped, which is the byte-identical posture a plane that declares nothing keeps.
+#[derive(Debug)]
+pub struct SessionParams<'p> {
+    /// The container a deployment files this plane's session hooks under.
+    pub container: &'static str,
+    /// The method name a hook sees for the open.
+    pub operation: &'static str,
+    /// The payload, serialized by the plane itself, byte for byte as a hook receives it.
+    pub declared: &'p [u8],
+}
+
 /// A plane that can run over a session transport.
 ///
 /// The registry requires this trait exactly when any transport the plane claims declares itself a
-/// session transport. The two methods are where the plane's per-connection codec state comes from:
-/// one half for the client connection, one per upstream the session dials.
+/// session transport. The first two methods are where the plane's per-connection codec state comes
+/// from: one half for the client connection, one per upstream the session dials. The second pair is
+/// the projector a composition screens an OPEN through ([`SessionParams`]).
 pub trait SessionPlane: Plane {
     /// Open the client half of this session's codec state.
     fn open_session<'u>(&self, ctx: &Ctx<'u>) -> PlaneSessionState;
 
     /// Open one upstream half of this session's codec state.
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, ctx: &Ctx<'u>) -> PlaneSessionState;
+
+    /// What an operator gate or tap would see for this session's open, or `None` when this plane
+    /// declares nothing gateable there. Borrowed out of the plane's own half of the session state,
+    /// because the bytes are the plane's to render and nobody else's to own.
+    fn session_params<'p, 'u>(
+        &self,
+        st: &'p mut PlaneSessionState,
+        ctx: &Ctx<'u>,
+    ) -> Option<SessionParams<'p>>;
+
+    /// Take back the payload a rewrite tap committed, in place of the one the projector rendered.
+    /// A payload this plane cannot read is not adopted; the locked one stands.
+    fn adopt_session_params(&self, st: &mut PlaneSessionState, declared: &[u8]);
 }

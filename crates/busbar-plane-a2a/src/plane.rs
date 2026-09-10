@@ -899,6 +899,20 @@ impl SessionPlane for A2aPlane {
     fn open_upstream<'u>(&self, _dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
         PlaneSessionState::new(Codec::default())
     }
+
+    /// This plane declares nothing gateable at a session open, so a composition skips BOTH operator
+    /// hops: no payload is serialized and no hook is consulted, which is the byte-identical posture
+    /// this plane has always had at its own open.
+    fn session_params<'p, 'u>(
+        &self,
+        _st: &'p mut PlaneSessionState,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::plane::SessionParams<'p>> {
+        None
+    }
+
+    /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
+    fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
 }
 
 /// The agent's own name for a task, where a record leg came back carrying one.

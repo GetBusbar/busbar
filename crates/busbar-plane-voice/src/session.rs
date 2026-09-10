@@ -76,6 +76,13 @@ pub struct VoiceSessionState {
     pub twilio_stream_sid: Option<String>,
     /// The one already-decoded event a two-call step pair is carrying across (see [`Pending`]).
     pub pending: Option<Pending>,
+    /// THE DECLARED SESSION PARAMETERS, serialized once and held for the life of the connection.
+    ///
+    /// Empty until the projector renders them (`crate::plane`'s `session_params`); replaced whole
+    /// when a rewrite is adopted. It is bytes rather than a `SessionConfig` on purpose: what an
+    /// operator's gate matched, and what a tap committed, is the PAYLOAD, and re-deriving it from a
+    /// typed value would be a second opinion about which bytes the deployment screened.
+    pub params: Vec<u8>,
     /// The buffer one downlink audio frame is rendered into, held across frames.
     ///
     /// The renderer this crate carries for the carrier dialect clears and refills a buffer the

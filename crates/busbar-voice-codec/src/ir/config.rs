@@ -164,3 +164,43 @@ pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<MaxOutputTokens>,
 }
+
+/// THE LOCKED CONFIG a carrier (µ-law telephony) leg opens with: `g711_ulaw` on BOTH the input and
+/// the output audio format, so the 8 kHz µ-law carrier passes straight through with no resample.
+///
+/// It lives beside the type rather than beside one of its callers because there are now two: the
+/// 1.5.x mount that locks a media leg with it, and the plane's own session-parameter projector,
+/// which has to render the SAME bytes an operator's configured gate already matches. Two spellings
+/// of one posture would be two answers, and the one that drifted would be the one a deployment's
+/// gate stopped recognising.
+#[must_use]
+pub fn g711_config() -> SessionConfig {
+    SessionConfig {
+        input_audio_format: Some(AudioFormat::G711Ulaw),
+        output_audio_format: Some(AudioFormat::G711Ulaw),
+        ..SessionConfig::default()
+    }
+}
+
+/// THE LOCKED SESSION DEFAULTS a session opens with when the deployment configures none.
+///
+/// The IR's own `IrVad::ServerVad` wire default is `silence_duration_ms = 200`, which is what a RAW
+/// wire decode round-trip must keep. The SECTION-level default is 500 ms — a posture, not a wire
+/// fact — so it is synthesized here rather than by changing the wire default, keeping the two
+/// distinct. Same reason as [`g711_config`] for living here: the mount's default and the projector's
+/// have to be one value.
+#[must_use]
+pub fn default_session() -> SessionConfig {
+    SessionConfig {
+        // `Some(Some(..))` — a CONFIGURED detector. The outer `Some` says the default names turn
+        // detection at all (see `SessionConfig::turn_detection`'s three states).
+        turn_detection: Some(Some(IrVad::ServerVad {
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500,
+            create_response: true,
+            interrupt_response: true,
+        })),
+        ..SessionConfig::default()
+    }
+}

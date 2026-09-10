@@ -17,7 +17,6 @@
 
 use crate::ir::codec::{DuplexReader, DuplexWriter};
 use crate::ir::config::SessionConfig;
-use crate::ir::media::AudioFormat;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, UplinkForwarder, VoiceSession};
@@ -31,13 +30,13 @@ use std::sync::Arc;
 /// THE LOCKED CONFIG for a telephony leg: `g711_ulaw` on BOTH the input and output audio formats so the
 /// 8 kHz µ-law carrier passes straight through with no resample. Callers overlay their own
 /// instructions/tools onto the returned config before locking it.
+///
+/// ONE VALUE, not a copy of one: the lock itself lives beside the type it configures
+/// (`crate::ir::config::g711_config`), because the plane's own session-parameter projector renders
+/// the SAME bytes an operator's configured gate already matches.
 #[must_use]
 pub fn g711_config() -> SessionConfig {
-    SessionConfig {
-        input_audio_format: Some(AudioFormat::G711Ulaw),
-        output_audio_format: Some(AudioFormat::G711Ulaw),
-        ..SessionConfig::default()
-    }
+    crate::ir::config::g711_config()
 }
 
 /// A LIVE TELEPHONY PROXY — the two planes to serve (one per socket), the funnels between them, the
