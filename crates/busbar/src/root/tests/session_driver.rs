@@ -161,6 +161,8 @@ const NOT_YET_A_UNIT: &[u8] = b"noise";
 const RELAYS_A_FRAME: &[u8] = b"relay";
 /// The end of the open unit, which is what finishes the leg.
 const ENDS_THE_UNIT: &[u8] = b"end";
+/// What a made-up PROVIDER says back down the leg: one response frame of the open exchange.
+const A_PROVIDER_REPLY: &[u8] = b"reply";
 
 /// A plane whose reader knows three words and whose refusal encoder writes the reason.
 ///
@@ -266,23 +268,62 @@ impl Plane for MadeUpPlane {
             .map_err(|_| busbar_contract::wire::Encode::ArenaExhausted)
     }
 
+    /// What the made-up provider said, read against the LEG's own codec state.
+    ///
+    /// The state is required rather than optional, for the reason the client reader requires one: a
+    /// half of a session that was handed a fresh state per frame would be a composition that kept
+    /// none, and the cell that reads the counter back out is what holds that.
     fn decode_response<'u>(
         &self,
-        _frames: &mut FrameCursor<'u>,
+        frames: &mut FrameCursor<'u>,
         _dest: &busbar_contract::dest::VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
+        st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, busbar_contract::wire::Decode> {
-        Ok(Progress::NeedMore)
+        let opened = st
+            .and_then(|s| s.get_mut::<Opened>())
+            .ok_or(busbar_contract::wire::Decode::MissingDeclaredFact)?;
+        opened.frames += 1;
+        let frame = frames
+            .next_frame()
+            .ok_or(busbar_contract::wire::Decode::MissingDeclaredFact)?;
+        match frame.bytes.as_slice() {
+            A_PROVIDER_REPLY => Ok(Progress::Frame {
+                for_: None,
+                r: Box::new(Response {
+                    ir: Ir::new(A_PROVIDER_REPLY, &[]),
+                    finish: busbar_contract::FinishClass::Complete,
+                    facts: Facts::new(),
+                }),
+            }),
+            NOT_YET_A_UNIT => Ok(Progress::NeedMore),
+            _ => Err(busbar_contract::wire::Decode::UnsupportedOperation),
+        }
     }
 
+    /// The reply as it goes back to the CLIENT, written against the client half's state.
+    ///
+    /// The counter is in the output for the same reason the unit key is in the relay's: it is the
+    /// only way to observe from outside that the state this was written against is the one the
+    /// session accumulated on its client half, rather than the leg's or a fresh one.
     fn encode_response<'u>(
         &self,
-        _r: &Response<'u>,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        r: &Response<'u>,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, busbar_contract::wire::Encode> {
-        Err(busbar_contract::wire::Encode::Unrepresentable)
+        let opened = st
+            .and_then(|s| s.get_mut::<Opened>())
+            .ok_or(busbar_contract::wire::Encode::Unrepresentable)?;
+        opened.frames += 1;
+        let spelled = format!(
+            "down:{}:{}",
+            opened.frames,
+            String::from_utf8_lossy(r.ir.body())
+        );
+        ctx.arena()
+            .alloc_bytes(spelled.as_bytes())
+            .map_err(|_| busbar_contract::wire::Encode::ArenaExhausted)
     }
 
     /// The reason, spelled, ON THE ARENA the driver opened: a cell that reads it back is reading a
@@ -1455,4 +1496,189 @@ async fn a_failed_dial_ends_the_session_before_the_next_frame_is_read() {
         "the read is where a failed dial is answered, and the pump ends the session on it"
     );
     assert_eq!(*dials.lock().expect("the log"), 1, "dialled once, not spun");
+}
+
+// ── the leg's inbound half: what the provider says, on its way back to the client ────────────────
+
+/// Attach a dialled leg and a client offering end to an open session, the way the composition does.
+///
+/// The leg goes on through the DECORATOR rather than by calling `attach_leg` directly, because that
+/// is the only path the composition has: a cell that attached one by hand would be proving the
+/// driver's half of an arrangement whose other half nothing exercised.
+async fn relayed(
+    driver: &SessionLoopDriver<'_, RecordingUnits>,
+    session: SessionHandle,
+    client: FakeLease,
+) {
+    let dialler = FakeDialler {
+        offers: Arc::new(Mutex::new(Vec::new())),
+        finished: Arc::new(Mutex::new(false)),
+        lease_answer: None,
+        dial_answer: None,
+        dials: Arc::new(Mutex::new(0)),
+    };
+    assert_eq!(
+        driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
+        Outcome::Completed,
+        "the unit that seals the leg"
+    );
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted(Default::default()),
+        driver,
+        session,
+        &dialler,
+    );
+    let ended = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+    assert!(
+        ended.is_none(),
+        "the client said nothing more; the dial ran anyway"
+    );
+    assert!(
+        driver.attach_client(session, Box::new(client)),
+        "the session takes its client's offering end"
+    );
+}
+
+/// A MADE-UP PROVIDER'S REPLY REACHES THE CLIENT, and it reaches it as the PLANE wrote it.
+///
+/// The whole of the inbound half is in this cell. Bytes arrive off a leg nobody's, the plane reads
+/// them against the LEG's codec state, writes them against the CLIENT's, and what it wrote is what
+/// the client's offering end was handed. Nothing here spelled a byte and nothing walked a unit: the
+/// exchange those bytes answer was priced when it opened, and pricing it again on the way back
+/// would price one exchange twice.
+///
+/// The counter in the plane's output is what makes "against the CLIENT's state" checkable: the
+/// client half had already read the frame that opened the unit, so its second write is `2`. A
+/// composition that handed the reply the leg's state, or a fresh one, could not produce that number.
+#[tokio::test]
+async fn a_made_up_providers_reply_reaches_the_client() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    let downstream = Arc::new(Mutex::new(Vec::new()));
+    let finished = Arc::new(Mutex::new(false));
+    relayed(
+        &driver,
+        session,
+        FakeLease {
+            offers: Arc::clone(&downstream),
+            finished: Arc::clone(&finished),
+            answer: None,
+        },
+    )
+    .await;
+
+    let end = crate::root::leg_pump::pump_leg(
+        &driver,
+        session,
+        Scripted([A_PROVIDER_REPLY].into_iter().collect()),
+    )
+    .await;
+
+    assert_eq!(
+        downstream.lock().expect("the log").clone(),
+        vec![b"down:2:reply".to_vec()],
+        "the plane's own rendering of the provider's reply, written against the client half's own \
+         codec state, on the client's offering end"
+    );
+    assert_eq!(
+        node.moments(),
+        vec![(1, false), (1, true)],
+        "the opening unit and the unit the client's frame opened, and NOTHING for the reply"
+    );
+    assert_eq!(
+        end.reason,
+        CloseReason::Normal,
+        "the provider then finished, which is orderly"
+    );
+}
+
+/// A PROVIDER THAT CLOSES ENDS THE SESSION, and ends it EXACTLY ONCE.
+///
+/// A leg with nothing left on it is a relayed session with nothing left to relay, and a node that
+/// carried on would be answering a talking client with silence. The "once" is the other half and it
+/// is the same "once" a double close is: the client's own pump closes the session it was serving
+/// when its read ends, and finding nothing is the answer it should get.
+#[tokio::test]
+async fn a_provider_close_ends_the_session_once() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    relayed(
+        &driver,
+        session,
+        FakeLease {
+            offers: Arc::new(Mutex::new(Vec::new())),
+            finished: Arc::new(Mutex::new(false)),
+            answer: None,
+        },
+    )
+    .await;
+    assert_eq!(driver.open_sessions(), 1);
+
+    let end = crate::root::leg_pump::pump_leg(&driver, session, Scripted(Default::default())).await;
+
+    assert_eq!(end.cut, Cut::Upstream, "the leg is the end that went");
+    assert_eq!(end.reason, CloseReason::Normal);
+    assert_eq!(driver.open_sessions(), 0, "the session was released");
+    // The client's pump, arriving at the same session a moment later.
+    driver.close(session, CLIENT_WENT);
+    assert_eq!(
+        node.units.closed(),
+        vec![session.0],
+        "told once, by whichever pump got there first"
+    );
+    assert_eq!(
+        driver.drive(session, frame(1, OPENS_A_UNIT)).close,
+        Some(CloseReason::TransportFailed),
+        "a frame for a session that is over has nothing to be read against"
+    );
+}
+
+/// A REPLY THAT CANNOT BE WRITTEN ENDS THE SESSION, in the words the relay ends it in.
+///
+/// The same posture in both directions, and for the same reason: a client at depth has fallen
+/// behind and `CapacityExhausted` says so — nothing is wrong with anybody and the same session
+/// opened later may well run. Dropping the reply instead would leave the client waiting on an
+/// answer this node had already thrown away.
+#[tokio::test]
+async fn a_providers_reply_that_cannot_be_written_ends_the_session() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    relayed(
+        &driver,
+        session,
+        FakeLease {
+            offers: Arc::new(Mutex::new(Vec::new())),
+            finished: Arc::new(Mutex::new(false)),
+            answer: Some(busbar_contract::TransportError::Backpressure),
+        },
+    )
+    .await;
+
+    let end = crate::root::leg_pump::pump_leg(
+        &driver,
+        session,
+        // Two replies, and the cell is that the SECOND is never read: the first ended the session.
+        Scripted([A_PROVIDER_REPLY, A_PROVIDER_REPLY].into_iter().collect()),
+    )
+    .await;
+
+    assert_eq!(
+        end.reason,
+        CloseReason::CapacityExhausted,
+        "a client at depth is 'try again later' and not anybody's fault"
+    );
+    assert_eq!(driver.open_sessions(), 0);
 }

@@ -144,7 +144,7 @@ use busbar_caps::{
 use busbar_contract::bounded::{Ir, Labels, SlabBytes};
 use busbar_contract::dest::VerifiedDestination as PlaneDestination;
 use busbar_contract::ids::{OpClassId, SessionId, StreamId};
-use busbar_contract::plane::{Ingress, PlaneSessionState, SessionPlane, UnitDraft};
+use busbar_contract::plane::{Ingress, PlaneSessionState, Progress, SessionPlane, UnitDraft};
 use busbar_contract::transport::driver::Outcome;
 use busbar_contract::transport::facts as tfacts;
 use busbar_contract::transport::session::{
@@ -472,6 +472,19 @@ struct Open {
     pending: Option<PendingLeg>,
     /// The session's upstream leg, once it has been dialled and attached.
     upstream: Option<UpstreamLeg>,
+    /// THE CLIENT'S OFFERING END, for the half of the session that is written to from a task the
+    /// client's own pump is not on.
+    ///
+    /// A lease and not a sink, for the reason the leg's is one: what writes here is
+    /// [`SessionLoopDriver::upstream`], which is synchronous, and a socket write is not. The wire's
+    /// own write half is behind one lock inside the transport, so the lease's drain and the client
+    /// pump's sink are two OFFERERS and one writer — which is what a full-duplex session is: the
+    /// answers to the client's own frames and the replies coming back off the leg are genuinely
+    /// concurrent, and nothing here may interleave them into an order neither side asked for.
+    ///
+    /// `None` for every session that never relays, and dropping it is what closes the client's half:
+    /// the drain writes this wire's orderly close when its offering end goes.
+    client: Option<Box<dyn EgressLease>>,
 }
 
 /// The session, as the plane is allowed to see it.
@@ -895,6 +908,165 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
         true
     }
 
+    /// ATTACH THE CLIENT'S OFFERING END, so the inbound half of a leg has somewhere to write.
+    ///
+    /// The counterpart of [`attach_leg`](Self::attach_leg) in the other direction and for the same
+    /// reason: [`SessionLoopDriver::upstream`] is synchronous, so what it can reach is a bounded
+    /// lease and never a socket. It is attached by the composition at the accept, before any frame
+    /// of the session has been read, because a provider's first reply can arrive before the
+    /// client's second frame does.
+    ///
+    /// `false` for a session that has gone. Nothing is half-installed on it: the lease is dropped
+    /// here, which is what ends its drain rather than leaving one running with nothing to feed it.
+    pub fn attach_client(&self, session: SessionHandle, lease: Box<dyn EgressLease>) -> bool {
+        let Some(slot) = self.slot(session) else {
+            return false;
+        };
+        let Ok(mut guard) = slot.lock() else {
+            return false;
+        };
+        guard.client = Some(lease);
+        true
+    }
+
+    /// ONE REPLY OFF THE UPSTREAM LEG, read by the plane and written back to the client.
+    ///
+    /// The mirror of [`SessionDriver::drive`] and deliberately the same shape: a fresh arena for the
+    /// moment, the plane asked what the bytes mean against the codec state that half of the session
+    /// accumulated — the LEG's state here, which is why the leg is what carries one — and whatever
+    /// comes back written through the one offering end the client half has.
+    ///
+    /// It runs NO unit for a reply of an already-open exchange, for the reason the relay runs none
+    /// in the other direction: that exchange was priced when it opened, and walking the steps again
+    /// on the way back would price it twice. An upstream that pushes something that OPENS a unit is
+    /// the other case, and it is an ordinary unit of this node's loop like any other — a push is a
+    /// thing that happened, and a node that carried one without judging it would be a node whose
+    /// upstreams could spend on its behalf.
+    ///
+    /// A REPLY THAT CANNOT BE WRITTEN ENDS THE SESSION, in the same words the relay ends it in: at
+    /// depth the client has fallen behind and `CapacityExhausted` is the honest answer, and over is
+    /// `TransportFailed`. A relayed session whose replies were dropped would leave the client
+    /// waiting on an answer this node had already thrown away.
+    ///
+    /// The reply's `frames` are always empty and that is not an oversight: everything this half
+    /// writes goes through the lease, so the only thing the caller reads off the answer is whether
+    /// the session is over.
+    #[must_use]
+    pub fn upstream(&self, session: SessionHandle, payload: &[u8]) -> SessionReply {
+        let Some(slot) = self.slot(session) else {
+            // The session is over and this is a frame off a leg nothing owns any more. There is
+            // nothing to read it against.
+            return SessionReply::ending(Outcome::NotFound, CloseReason::TransportFailed);
+        };
+        let mut guard = match slot.lock() {
+            Ok(open) => open,
+            Err(_) => return SessionReply::ending(Outcome::Unavailable, CloseReason::Poisoned),
+        };
+        let Open {
+            facts,
+            transport,
+            chain,
+            state,
+            upstream,
+            client,
+            ..
+        } = &mut *guard;
+        let Some(leg) = upstream.as_mut() else {
+            // A reply off a leg this session does not have. Only the composition that dialled one
+            // pumps its inbound half, so this is a frame from a socket nobody here owns.
+            return SessionReply::ending(Outcome::NotFound, CloseReason::TransportFailed);
+        };
+
+        let mut space = ArenaSpace::new();
+        let arena = UnitArena::new(&mut space);
+        let labels = Labels::new();
+        let clock = self.clock();
+        let view_transport = SlotTransport {
+            key: transport,
+            chain,
+            facts,
+        };
+        let view_session = SlotSession {
+            id: SessionId(session.0),
+            facts,
+            bound: true,
+            upstreams: 1,
+        };
+        let ctx = Ctx::new(
+            clock,
+            self.config,
+            Some(&view_session),
+            &view_transport,
+            &labels,
+            &arena,
+        );
+
+        let frames = [Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(Arc::from(payload)),
+            meta: FrameMeta::default(),
+        }];
+        let mut cursor = FrameCursor::new(&frames);
+        let read =
+            match self
+                .plane
+                .decode_response(&mut cursor, &leg.dest, Some(&mut leg.state), &ctx)
+            {
+                Ok(read) => read,
+                // THE PLANE COULD NOT READ THE PROVIDER'S REPLY. Nothing goes back to the client,
+                // because there is nothing to send: the reading is the whole content of the reply and
+                // there is none, and the next frame of this exchange would be read against a state this
+                // one did not advance. There is also nowhere to render a refusal TO — a refusal is
+                // something this node says about a caller's request, and the caller did not send this.
+                Err(_) => {
+                    return SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed)
+                }
+            };
+        match read {
+            // Not yet a whole anything, and a frame the dialect says to drop. Consumed, honestly.
+            Progress::NeedMore | Progress::Discard { .. } => {
+                SessionReply::quiet(Outcome::Completed)
+            }
+            // A RESPONSE FRAME OF AN OPEN EXCHANGE. Written by the plane against the CLIENT half's
+            // codec state — the half it is going out on — and offered. `Terminal` is written the
+            // same way and by the same call: what makes it the last frame is the dialect's own
+            // spelling of it, which the plane just wrote, and the exchange's own ENDING is settled
+            // by the close that comes the other way. A driver that settled the unit here as well
+            // would settle one exchange twice.
+            Progress::Frame { r, .. } | Progress::Terminal { r, .. } => {
+                match self.plane.encode_response(&r, Some(state), &ctx) {
+                    Ok(bytes) => offered(offer_client(client, bytes.as_slice())),
+                    Err(_) => {
+                        SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed)
+                    }
+                }
+            }
+            // AN UPSTREAM PUSHED SOMETHING THAT OPENS A UNIT OF ITS OWN, which is a unit and is
+            // judged as one — by the same steps, carrying this session's identity, exactly as a
+            // frame the client opened is. What the loop makes of it is rendered through the plane
+            // and offered on the client's half.
+            Progress::Open(draft) | Progress::OneShot(draft) => {
+                let ended = self.run(
+                    self.next_unit(),
+                    &SessionRead {
+                        session: session.0,
+                        draft: Some(&draft),
+                        facts,
+                        clock,
+                    },
+                );
+                let outcome = outcome_of(&ended);
+                for bytes in rendered(self.plane, &ended, Some(&draft), state, &ctx) {
+                    if let Err(error) = offer_client(client, &bytes) {
+                        return offered(Err(error));
+                    }
+                }
+                SessionReply::quiet(outcome)
+            }
+        }
+    }
+
     /// THE LOOP, over the unit the composed units say this moment is.
     ///
     /// THE SAME LOOP the one-shot driver runs, and deliberately so: a session's frame is an ordinary
@@ -1029,6 +1201,7 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             state,
             pending: None,
             upstream: None,
+            client: None,
         };
         // The table is the LAST thing touched, so every path that refuses above leaves it untouched.
         let mut table = self.open.lock().map_err(|_| Outcome::Unavailable)?;
@@ -1242,6 +1415,22 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
         // Dropping the slot is what releases the session: it is owned, and nothing else holds a
         // handle to it once the table has given it up. The plane's two halves go with it.
         let _ = (slot, end);
+    }
+}
+
+/// OFFER ONE FRAME ON THE CLIENT'S HALF, or say why there was nowhere to put it.
+///
+/// A session with no client lease attached has an inbound leg being pumped into a session whose
+/// other half was never wired up, which is a composition that built half an arrangement. `Closed` is
+/// the honest word for it — there is no end here to write to — and it ends the session rather than
+/// dropping the reply, because a client waiting on an answer this node threw away waits forever.
+fn offer_client(
+    client: &mut Option<Box<dyn EgressLease>>,
+    bytes: &[u8],
+) -> Result<(), busbar_contract::TransportError> {
+    match client {
+        Some(lease) => lease.offer(bytes),
+        None => Err(busbar_contract::TransportError::Closed),
     }
 }
 

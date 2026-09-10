@@ -83,6 +83,11 @@ pub mod registry;
 // wire — what it is handed is a driver, a session handle and something that can open a leg.
 #[cfg(feature = "root-duplex-serve")]
 pub mod leg_dial;
+// THE OTHER HALF OF THE SAME LEG, under the SAME neutral switch: what a provider says on its way
+// back to the client. It names no plane and no wire either — it reads a frame source and hands the
+// bytes to the driver, which hands them to a plane it cannot name.
+#[cfg(feature = "root-duplex-serve")]
+pub mod leg_pump;
 #[cfg(feature = "root-duplex-serve")]
 pub mod session_driver;
 pub mod transports;
