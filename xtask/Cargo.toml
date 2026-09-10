@@ -69,3 +69,16 @@ busbar-unit-trust = { path = "../crates/busbar-unit-trust" }
 busbar-unit-usage = { path = "../crates/busbar-unit-usage" }
 busbar-unit-verbs = { path = "../crates/busbar-unit-verbs" }
 busbar-unit-wal = { path = "../crates/busbar-unit-wal" }
+# The `transport` kind's declaration face (`TransportMeta`), which `tests/battery/transport.rs` is
+# written against, and the seven wires that state it.
+busbar-contract = { path = "../crates/busbar-contract" }
+busbar-transport-grpc = { path = "../crates/busbar-transport-grpc" }
+busbar-transport-http = { path = "../crates/busbar-transport-http" }
+busbar-transport-sse = { path = "../crates/busbar-transport-sse" }
+busbar-transport-stdio = { path = "../crates/busbar-transport-stdio" }
+busbar-transport-tcp = { path = "../crates/busbar-transport-tcp" }
+busbar-transport-tls = { path = "../crates/busbar-transport-tls" }
+busbar-transport-ws = { path = "../crates/busbar-transport-ws" }
+# The universal `open`-seam contract, which `busbar-plugin-testkit` has held since 1.5 and which the
+# contract-kind battery wires. The edge runs tooling -> tooling and creates nothing.
+busbar-plugin-testkit = { path = "../crates/plugin-testkit" }
