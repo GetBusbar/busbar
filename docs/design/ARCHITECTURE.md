@@ -97,7 +97,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
-  ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
+  ≤ 15k); union ≤ 56k. The gated figure moves for a unit face on the same terms as the pair's, and
+  the ACTIVE-PROBE SCHEDULE amends it by 104: active upstream probing is a capability of the NODE,
+  so the schedule and the health state belong to the breaker unit (§3.4) and the cadence that drives
+  them is the node's own Tick, with each plane answering only what a live upstream of its dialect is
+  asked (`Plane::probe_request`, §3.2). It is a move and its net is negative by a wide margin — the
+  retiring engine's prober is 535 lines and 195 of those do not move at all, being the per-generation
+  task machinery a unit that outlives every config snapshot does not need. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —

@@ -38,6 +38,7 @@ pub mod classify;
 pub mod clock;
 pub mod journal;
 pub mod port;
+pub mod probe;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +50,7 @@ use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, Pro
 use cfg::BreakerCfg;
 use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
+use probe::{DueProbe, ProbePolicy, Scheduled};
 
 /// The pool-member locator, as the contract crate defines it. The egress unit names the same one,
 /// which is what makes `(transport, destination)` and `(pool, destination)` the same key.
@@ -336,6 +338,16 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::
     /// lookup, so a classifier's own diagnostics sink cannot run while this unit's `error_maps`
     /// lock is held.
     error_maps: RwLock<HashMap<DestinationId, Arc<HashMap<String, String>>>>,
+    /// Each destination's declared active-probe policy and the moment it is next due
+    /// (see [`probe`]). Undeclared is ABSENT rather than a `None`-mode entry, so a destination the
+    /// operator never asked to probe costs nothing to hold and nothing to walk.
+    ///
+    /// One lock, not the per-lane atomic slots 1.5.5 needed: those existed because several
+    /// generations of prober tasks raced over one deadline table, and the whole point of putting
+    /// the schedule here is that the racers are gone. The map is written once per config apply and
+    /// walked once per Tick, both of them at a seconds cadence, so a lock is the right primitive
+    /// and a compare-exchange would be machinery for a race that no longer exists.
+    probes: RwLock<HashMap<DestinationId, Scheduled>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
@@ -387,6 +399,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             counters: RwLock::new(HashMap::new()),
             hard_down_reasons: RwLock::new(HashMap::new()),
             error_maps: RwLock::new(HashMap::new()),
+            probes: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
             journal,
@@ -419,6 +432,105 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(destination, Arc::new(budget));
+    }
+
+    /// Declare a destination's active-probe policy, as of `now`.
+    ///
+    /// The same shape as [`Self::set_budget`] and `set_error_map`, and called from the same place
+    /// for the same reason: the composition root reads the operator's per-destination `health:`
+    /// block, narrows it to a [`DestinationId`], and declares it. Nothing plane-shaped crosses —
+    /// this unit never learns which dialect, which model or which host is behind the destination,
+    /// and could not send the probe if it did.
+    ///
+    /// RE-DECLARING IS THE NORMAL CASE, not the exception: every config apply re-declares every
+    /// destination it still carries. A destination that keeps its policy keeps its deadline (see
+    /// [`Scheduled::declare`] for why that must be monotone-earliest), so probing does not go dark
+    /// under a burst of applies. A `none` mode is stored rather than dropped, because storing it is
+    /// what makes it survive as an ANSWER — a destination the operator explicitly turned probing
+    /// off for reads back as declared-and-silent, not as never-mentioned.
+    pub fn set_probe_policy(&self, destination: DestinationId, policy: ProbePolicy, now: u64) {
+        let mut probes = self.probes.write().unwrap_or_else(|e| e.into_inner());
+        let previous = probes.get(&destination).copied();
+        probes.insert(destination, Scheduled::declare(previous, policy, now));
+    }
+
+    /// Withdraw a destination's probe policy — the config no longer carries it.
+    ///
+    /// A destination dropped from the config must lose its slot, or its deadline outlives the
+    /// declaration that made it and the schedule keeps naming something nothing else in the node
+    /// knows about.
+    pub fn forget_probe_policy(&self, destination: DestinationId) {
+        self.probes
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&destination);
+    }
+
+    /// Which destinations are due to be probed at `now`, and how long each probe may take.
+    ///
+    /// THIS IS THE TICK'S QUESTION, and it is the whole of what the node's clock asks this unit.
+    /// The answer is a decision over the values handed in — the declared policies, the deadlines,
+    /// and each destination's own current state — so replaying the same inputs replays the same
+    /// answer. What happens next is not this unit's: the plane writes the request
+    /// (`Plane::probe_request`), the egress-auth unit decorates it, the egress unit sends it, and
+    /// the outcome comes back through [`Breaker::observe`] like any other.
+    ///
+    /// TAKING A TURN AND ANSWERING ARE THE SAME CALL, deliberately. A destination whose deadline
+    /// passed has its next one set here whether or not this Tick ends up asking it, so a `dead`
+    /// destination that is healthy — the common case, and the one that answers nothing — does not
+    /// accumulate an elapsed deadline that fires the instant it finally trips.
+    ///
+    /// `Dead` mode's filter reads every pool cell this destination already HAS: suppressed in any
+    /// one of them means unusable there, and recovering it early is the entire job of the mode.
+    /// That is 1.5.5's `lane_needs_probe`, expressed in the vocabulary this crate already had.
+    pub fn probes_due(&self, now: u64) -> Vec<DueProbe> {
+        let due: Vec<(DestinationId, Scheduled)> = {
+            let mut probes = self.probes.write().unwrap_or_else(|e| e.into_inner());
+            let taken: Vec<(DestinationId, Scheduled)> = probes
+                .iter()
+                .filter(|(_, s)| s.due(now))
+                .map(|(d, s)| (*d, *s))
+                .collect();
+            for (destination, scheduled) in &taken {
+                probes.insert(*destination, scheduled.taken(now));
+            }
+            taken
+        };
+        due.into_iter()
+            .filter(|(destination, scheduled)| match scheduled.policy.mode {
+                probe::ProbeMode::Active => true,
+                probe::ProbeMode::Dead => self.suppressed_anywhere(*destination, now),
+                probe::ProbeMode::None => false,
+            })
+            .map(|(destination, scheduled)| DueProbe {
+                destination,
+                timeout_secs: scheduled.policy.timeout_secs.max(1),
+            })
+            .collect()
+    }
+
+    /// Whether the breaker is suppressing this destination in any cell it is registered in — the
+    /// default `""` cell included, because a destination reached without a pool routes through it.
+    ///
+    /// A destination whose lifetime budget is spent is NOT suppressed in the sense this asks about:
+    /// it does not self-recover, so probing it can only produce failures against an upstream that
+    /// was never the problem.
+    /// A Tick MUST NOT MATERIALIZE A CELL. Cells are created on first touch by the traffic that
+    /// routes through them, and that is what makes the map a record of what this node has actually
+    /// reached; a sweep that created one per declared destination per Tick would fill it with cells
+    /// nothing ever used and make "which pools is this destination in" answer a config question
+    /// instead of a traffic one. So this reads the existing cells only — and a destination with no
+    /// cell yet is Closed-and-unspent by this crate's own lazy rule, which is not suppressed.
+    fn suppressed_anywhere(&self, destination: DestinationId, now: u64) -> bool {
+        if self.budget_exhausted(destination) {
+            return false;
+        }
+        self.cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter_map(|by_destination| by_destination.get(&destination))
+            .any(|cell| matches!(cell.verdict(now), BreakerVerdict::Open { .. }))
     }
 
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
