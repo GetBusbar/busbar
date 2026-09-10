@@ -6878,3 +6878,29 @@ fn test_writer_open_tools_capped_in_entry_count() {
         "open_tools must admit exactly the cap and refuse past it, got {held}"
     );
 }
+
+// ── GOLDEN PARITY CELL: the (class -> (HTTP status, google.rpc.Code word)) pair this dialect
+//    renders, pinned as bytes; the nine classes are spelled by hand so the cell says the same thing
+//    whichever crate owns the enum.
+#[test]
+fn status_word_golden_gemini() {
+    use busbar_substrate_values::breaker::StatusClass;
+    let golden: [(StatusClass, u16, &str); 9] = [
+        (StatusClass::RateLimit, 429, "RESOURCE_EXHAUSTED"),
+        (StatusClass::Overloaded, 503, "UNAVAILABLE"),
+        (StatusClass::ServerError, 500, "INTERNAL"),
+        (StatusClass::Timeout, 504, "DEADLINE_EXCEEDED"),
+        (StatusClass::Network, 503, "UNAVAILABLE"),
+        (StatusClass::Auth, 401, "UNAUTHENTICATED"),
+        (StatusClass::Billing, 403, "PERMISSION_DENIED"),
+        (StatusClass::ClientError, 400, "INVALID_ARGUMENT"),
+        (StatusClass::ContextLength, 400, "INVALID_ARGUMENT"),
+    ];
+    for (class, status, word) in golden {
+        assert_eq!(
+            gemini_stream_error_code_status(class),
+            (status, word),
+            "class={class:?}"
+        );
+    }
+}

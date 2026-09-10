@@ -5762,3 +5762,37 @@ fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
         "the Anthropic client must receive a native error frame, not a silent success: {wire}"
     );
 }
+
+// ── GOLDEN PARITY CELL: the (class -> `error.type` word) column this dialect renders, pinned as
+//    bytes through the writer's own stream-error path; the nine classes are spelled by hand so the
+//    cell says the same thing whichever crate owns the enum.
+#[test]
+fn status_word_golden_openai_chat() {
+    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
+    let golden: [(StatusClass, &str); 9] = [
+        (StatusClass::RateLimit, "rate_limit_error"),
+        (StatusClass::Overloaded, "server_error"),
+        (StatusClass::ServerError, "server_error"),
+        (StatusClass::Timeout, "server_error"),
+        (StatusClass::Network, "server_error"),
+        (StatusClass::Auth, "authentication_error"),
+        (StatusClass::Billing, "insufficient_quota"),
+        (StatusClass::ClientError, "invalid_request_error"),
+        (StatusClass::ContextLength, "invalid_request_error"),
+    ];
+    for (class, word) in golden {
+        let ev = IrStreamEvent::Error(CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        });
+        let (_, chunk) = openai_writer()
+            .write_response_event(&ev)
+            .expect("error emits a chunk");
+        assert_eq!(
+            chunk["error"]["type"],
+            serde_json::json!(word),
+            "class={class:?}"
+        );
+    }
+}
