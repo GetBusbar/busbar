@@ -67,57 +67,36 @@
 # owner = "the person who reviewed it"
 
 [[allow]]
-crate = "auth-admin-tokens"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "auth-static-plugin"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "busbar-plane-a2a"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
 crate = "busbar-plane-llm"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane, both closed once the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) dropped the third, unreal one (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc: faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace -- confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv). (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable through this edge. (2) getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
-owner = "orchestrator, 2026-09-05"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is structural to sonic-rs: sonic_rs -> ahash -> getrandom -> libc. sonic-rs (the JSON scanner busbar-plane-llm and busbar-substrate-values name) requests `ahash` with its default features in EVERY published version (0.4.0 through 0.5.8, checked against the crates.io index), and ahash's default `runtime-rng` feature turns on `getrandom` to seed its hasher once per process; Cargo cannot subtract a feature a dependency requests, so no manifest in this workspace can drop the edge. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall for that seed — a syscall wrapper, not a socket, file or process primitive — and nothing in this crate's closure reaches getrandom by any other path (`via` is the ahash edge alone: a second path would fail this waiver's bypass check and go red by itself). The two roots this crate's row was red on before 1.6.0 — busbar-llm-codec's own getrandom (the synth_rng pool) and busbar-api's sha2 -> cpufeatures — are FIXED, not waived: entropy is an installed source (synth_rng::install, written by the composition root) and SHA-256/HMAC-SHA256 are plain Rust in busbar-api. Closing this last edge means sonic-rs gaining a feature to build ahash without runtime-rng (an upstream change), or the closure naming a different scanner; re-review if any other path to libc appears."
+owner = "S2 dialect-closure slot, 2026-09-09"
+
+[[allow]]
+crate = "busbar-plane-llm-openai"
+dep = "libc"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is structural to sonic-rs: sonic_rs -> ahash -> getrandom -> libc. sonic-rs (the JSON scanner busbar-plane-llm and busbar-substrate-values name) requests `ahash` with its default features in EVERY published version (0.4.0 through 0.5.8, checked against the crates.io index), and ahash's default `runtime-rng` feature turns on `getrandom` to seed its hasher once per process; Cargo cannot subtract a feature a dependency requests, so no manifest in this workspace can drop the edge. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall for that seed — a syscall wrapper, not a socket, file or process primitive — and nothing in this crate's closure reaches getrandom by any other path (`via` is the ahash edge alone: a second path would fail this waiver's bypass check and go red by itself). The two roots this crate's row was red on before 1.6.0 — busbar-llm-codec's own getrandom (the synth_rng pool) and busbar-api's sha2 -> cpufeatures — are FIXED, not waived: entropy is an installed source (synth_rng::install, written by the composition root) and SHA-256/HMAC-SHA256 are plain Rust in busbar-api. Closing this last edge means sonic-rs gaining a feature to build ahash without runtime-rng (an upstream change), or the closure naming a different scanner; re-review if any other path to libc appears."
+owner = "S2 dialect-closure slot, 2026-09-09"
+
+[[allow]]
+crate = "busbar-plane-llm-responses"
+dep = "libc"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is structural to sonic-rs: sonic_rs -> ahash -> getrandom -> libc. sonic-rs (the JSON scanner busbar-plane-llm and busbar-substrate-values name) requests `ahash` with its default features in EVERY published version (0.4.0 through 0.5.8, checked against the crates.io index), and ahash's default `runtime-rng` feature turns on `getrandom` to seed its hasher once per process; Cargo cannot subtract a feature a dependency requests, so no manifest in this workspace can drop the edge. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall for that seed — a syscall wrapper, not a socket, file or process primitive — and nothing in this crate's closure reaches getrandom by any other path (`via` is the ahash edge alone: a second path would fail this waiver's bypass check and go red by itself). The two roots this crate's row was red on before 1.6.0 — busbar-llm-codec's own getrandom (the synth_rng pool) and busbar-api's sha2 -> cpufeatures — are FIXED, not waived: entropy is an installed source (synth_rng::install, written by the composition root) and SHA-256/HMAC-SHA256 are plain Rust in busbar-api. Closing this last edge means sonic-rs gaining a feature to build ahash without runtime-rng (an upstream change), or the closure naming a different scanner; re-review if any other path to libc appears."
+owner = "S2 dialect-closure slot, 2026-09-09"
 
 [[allow]]
 crate = "busbar-plane-mcp"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
-owner = "orchestrator, 2026-09-05"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this plane through its codec's JSON scanner: sonic_rs -> ahash -> getrandom -> libc. sonic-rs requests `ahash` with its default features in every published version and ahash's default `runtime-rng` seeds its hasher through `getrandom`, which uses libc only to issue the getentropy(2)/getrandom(2) syscall — not a socket, file or process primitive. Cargo cannot subtract a feature a dependency requests, so the edge is sonic-rs's to close (a feature to build ahash without runtime-rng) or the closure's to avoid by naming a different scanner. The cpufeatures edge this entry used to name is GONE: busbar-api and busbar-substrate-values no longer depend on sha2 (SHA-256/HMAC-SHA256 are plain Rust in busbar-api as of 1.6.0). Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-05; narrowed to the ahash edge by the S2 dialect-closure slot, 2026-09-09"
 
 [[allow]]
 crate = "busbar-plane-voice"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "hook-test-plugin"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "hooks-ranking"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this plane through its codec's JSON scanner: sonic_rs -> ahash -> getrandom -> libc. sonic-rs requests `ahash` with its default features in every published version and ahash's default `runtime-rng` seeds its hasher through `getrandom`, which uses libc only to issue the getentropy(2)/getrandom(2) syscall — not a socket, file or process primitive. Cargo cannot subtract a feature a dependency requests, so the edge is sonic-rs's to close (a feature to build ahash without runtime-rng) or the closure's to avoid by naming a different scanner. The cpufeatures edge this entry used to name is GONE: busbar-api and busbar-substrate-values no longer depend on sha2 (SHA-256/HMAC-SHA256 are plain Rust in busbar-api as of 1.6.0). Re-review if any other path to libc appears."
+owner = "orchestrator, 2026-09-05; narrowed to the ahash edge by the S2 dialect-closure slot, 2026-09-09"
