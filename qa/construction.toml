@@ -153,19 +153,26 @@ busbar-voice = ["busbar-voice-codec"]
 # one type. Each declaration below names the exact path and both numbers as MEASURED at the base
 # (the base carries the earlier +1 `Denied` raise unlanded, so each spans from that number), and
 # each expires by itself the moment this lands.
+#
+# RE-PRICED FROM 206 TO 205 BY THE DELETION IN THE SAME COMMIT THAT STRUCK THE FIFTH ENTRY. The
+# never-written `Unit` byte and frame counts came out on this line, and the twenty-one lines they
+# took back are one more than the twenty the virtual-key face put in: the face is paid for whole,
+# and the twenty-first came off the top of THIS seam's rise. 3478 -> 3683 is 205, and a declared
+# raise sums to EXACTLY the rise or it is refused, so 205 is what the three entries say. The prose
+# below still describes the seam as it was measured (2328 -> 2533); the DELTA is what moved.
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 206
+by = 205
 because = "busbar_contract::error -- the one structured error every plugin kind answers with (`PluginError { class, code, params, developer_message, advisory }`), its closed ten-class taxonomy (`ErrorClass`: malformed, not_found, denied, rejected, conflict, integrity, unavailable, timeout, exhausted, internal) and the catalog-as-data shape (`Catalog`, `CatalogEntry`, `Template`, with `check()` and locale fallback) a plugin ships beside its claims. MEASURED by this rule's own counter: busbar-contract 2328 -> 2533 (error.rs +205 net of the deleted `StoreError`/`SecretError` enums, bounded.rs +15 for the `BoundedVec` Deserialize that refuses an over-capacity list), busbar-caps 1151 -> 1153 (the base's figure; nothing in caps moved). The Store, Anchor and Secret faces now return the one type, so two per-kind taxonomies became one."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 206
+by = 205
 because = "The same seam seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14606, unmoved): the plugin structured-error seam lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the +206 here is the caps/contract +206 by arithmetic."
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 206
+by = 205
 because = "The plugin-visible surface a plugin author reads grows by the structured error seam and nothing else: `ErrorClass` (the closed class taxonomy), `PluginError` (the one error type and its builders), `Catalog`/`CatalogEntry`/`Template` (the catalog data shape) and the three bounds `MAX_ERROR_PARAMS`/`MAX_CATALOG_CODES`/`MAX_CATALOG_LOCALES`. scripts/loc-surface.py measures busbar-contract 2328 -> 2533 and busbar-caps 1151 unchanged; `StoreError` and `SecretError` leave the surface on the same commit."
 
 # A FOURTH, AND IT IS ABOUT A TYPE'S NAME RATHER THAN ABOUT COUPLING. `kind-isolation:matrix`
@@ -185,36 +192,14 @@ file = "qa/kind-isolation.toml"
 by = 8
 because = "busbar-plugin-loader x secret. The loader now implements busbar_contract::kinds::Secret for DynSecret, and the face's reference type is spelled `SecretRef` -- which the matrix reads as the loader naming the `busbar-secret-ref` package. It does not: the loader has no such dependency and the ledger's dep rows show none. Eight hits, every one of them the face's own type name in a signature, a construction or the single import; the battery's five call sites were already collapsed behind one helper. It falls when busbar-secret-ref is deleted, later in this same retirement."
 
-# A FIFTH, AND IT IS THE SECOND LEGITIMATE RAISE THE OWNER RULED FOR 1.6.0: a NEW-ARCHITECTURE
-# FACE. The contract pair's surface is pinned at zero slack, and a face the architecture names
-# cannot be paid for out of a surface that has nothing deletable in it. So each such face lands
-# with a declaration here that names the FACE and its MEASURED lines, and ARCHITECTURE.md section
-# 1.1 is amended in the same commit to the new total.
-#
-# The virtual-key directory face (`busbar_contract::kinds::{KeyScope, KeyFacts,
-# VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
-# posture, the revocation denylist and the operator credential digest, inside the loop. It measures
-# 20 surface lines, and the three entries below are the SAME twenty lines counted three times --
-# once by the surface script, once by the loc-ceilings rule's own counter, and once more in the
-# kernel + contract + unit union that the loc-ceilings rule sums. The face moved home from the
-# composition root (`crates/busbar/src/root/auth_bindings.rs`), where it was a port declared in the
-# one place the design does not list as a home for one. Each is a SECOND delta on a key the
-# structured-error seam above already raised, which is why the raise is an array per key: the two
-# faces landed on one line and each says its own number.
-[[gate.ceiling_raises]]
-key = "gate.surface_ceilings.contract_caps"
-by = 20
-because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: 20 surface lines MEASURED ON THIS BASE by scripts/loc-surface.py (3684 -> 3704), not the 19 the face measured on its own base -- the structured-error seam beneath it took `SecretError` and `StoreError` out of the lib.rs re-export list, so adding the face's three names rewraps that list one line longer here. The number is this tree's measurement, never the source branch's. A second delta on this key beside the structured-error seam's 206."
-
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 20
-because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 20 lines as the surface-ceiling raise, as the loc-ceilings rule counts them (3686 -> 3706)."
-
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.union_ceiling"
-by = 20
-because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 20 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms (23671 -> 23691)."
+# A FIFTH STOOD HERE AND WAS STRUCK BY THE COMMIT THAT PAID FOR IT. The virtual-key directory
+# face (`busbar_contract::kinds::{KeyScope, KeyFacts, VirtualKeyDirectory}`) landed under three
+# declarations of exactly the shape above -- 20 surface lines measured on this base, 3684 -> 3704
+# -- and the DELETION in this same commit (`Unit::{byte_counts, frame_counts, set_counts}` and
+# their two fields, lines the kernel never wrote) took the pair back BELOW the number the face
+# raised it to. A declaration that describes no rise at the base is stale and refused, so the three
+# were struck here and the ceilings re-pinned to the measurement: the face is paid for, and the
+# only entries left are the structured-error seam's and the loader's `SecretRef` name.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -222,7 +207,7 @@ because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the sam
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3704
+contract_caps = 3683
 grammar = 388
 contract_transport = 845
 
@@ -443,12 +428,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3706
+caps_contract_ceiling = 3685
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23691
+union_ceiling = 23670
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
