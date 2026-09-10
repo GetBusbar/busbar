@@ -373,7 +373,25 @@ by = 9
 because = """S1 upstream status-table face: `busbar_contract::upstream::{StatusClass, Disposition}` becomes the one owner of the upstream status class, and every copy in busbar-llm-codec is deleted and re-pointed at it. The re-point spells the contract's own name where a local copy stood, which the matrix reads as vocabulary; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-llm-codec x dialect: 11298 -> 11307)"""
 
 
-# THIRTY ENTRIES STAND HERE TODAY (K7 re-key). Twenty-six are the dialect column, keyed by
+[[gate.ceiling_raises]]
+key = "cell.busbar-api.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """S2 dialect-closure face: the codec's entropy becomes an INSTALLED source (getrandom to a dev-dep, the installer written by PLANE_DECL.build) and SHA-256/HMAC-SHA256 become plain Rust in busbar-api, so sha2, cpufeatures and libc leave the dialect crates' closure. The replacement code spells the dialect kind's own vocabulary where a vendor crate stood; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-api x dialect: 20 -> 22)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """S2 dialect-closure face: the codec's entropy becomes an INSTALLED source (getrandom to a dev-dep, the installer written by PLANE_DECL.build) and SHA-256/HMAC-SHA256 become plain Rust in busbar-api, so sha2, cpufeatures and libc leave the dialect crates' closure. The replacement code spells the dialect kind's own vocabulary where a vendor crate stood; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-llm x dialect: 3424 -> 3427)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm-codec.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """S2 dialect-closure face: the codec's entropy becomes an INSTALLED source (getrandom to a dev-dep, the installer written by PLANE_DECL.build) and SHA-256/HMAC-SHA256 become plain Rust in busbar-api, so sha2, cpufeatures and libc leave the dialect crates' closure. The replacement code spells the dialect kind's own vocabulary where a vendor crate stood; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-llm-codec x dialect: 11307 -> 11310)"""
+
+# THIRTY-THREE ENTRIES STAND HERE TODAY (K7 re-key). Twenty-six are the dialect column, keyed by
 # row identity (`cell.<crate>.<kind>.count`, `file` naming the ledger) rather than by slot, per
 # db7f08cca, and they carry the R6 dialect lines' rises for THIS base. The four such entries
 # keep-status-table wrote on its own base were DROPPED in the re-key: they name four of the same
