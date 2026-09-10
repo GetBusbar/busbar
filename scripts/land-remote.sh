@@ -112,9 +112,19 @@ RRC="busbar-prove/target/land-remote-$REF.rc"
 # `${XTASK_GATE_CEILING_SECS:-1800}` inside it is expanded on the BOX, where nothing sets it: the
 # runner's 3600 never arrived and the box judged with 1800 (seen: a green tree reported "hung").
 # It goes across as a positional, the one channel this script already owns.
-rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "${RARGS[@]}" <<'RUN'
+# THE INTEGRATION BASE TRAVELS TOO. The construction gate's ceiling rows diff every ceiling against
+# `ceilings::base_ref`, which is the merge-base with `origin/integration/oracle-phase0` — and falls back
+# to HEAD~1 when that ref does not resolve. The box's checkout has no `origin` remote (it was renamed
+# `prove` at setup), so on a box the ref never resolved: with three picks on the tree, HEAD~1 is the
+# second pick, every earlier pick's rise was invisible to `ceiling-rose`, and a raise declared by the
+# first pick and measured by the third read as stale. The runner's tip — the base the picks go onto,
+# which is exactly what the laptop's own ref points at when the queue is caught up — is pinned under
+# that name in the box's checkout before land.sh runs, verified with `rev-parse --verify`, and printed
+# into the landing log so a reader of the log can see what the ceilings were judged against.
+LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; CEIL="$2"; shift 2
+REF="$1"; CEIL="$2"; BASEREF="$3"; shift 3
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
@@ -137,6 +147,9 @@ mkdir -p target
 LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
 rm -f "$RC"
 echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
+git update-ref "$BASEREF" "$(git rev-parse "refs/heads/$REF")" || exit 2
+BASE_SHA="$(git rev-parse --verify --quiet "$BASEREF")" || { echo "integration base $BASEREF does not resolve on $(hostname) — the ceiling rows would judge against HEAD~1" | tee -a "$LOG"; exit 2; }
+echo "integration base: $BASEREF = $BASE_SHA (the runner's tip; ceilings are diffed against it)" >>"$LOG"
 # The landed tip is published to the bare repo under refs/heads/<ref>-landed the moment land.sh
 # returns, whatever its status: a partially green batch has a tip too, and the local side
 # fast-forwards to exactly what the box proved.
