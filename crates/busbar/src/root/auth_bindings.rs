@@ -26,10 +26,12 @@
 //! chain needs out of a key — does this credential verify, what id does it resolve to, and is that
 //! subject revoked — are a far smaller surface than the state that answers them, and a root that
 //! named the whole state would make every later reader of this file reason about the whole state.
-//! So the shape is: a port with three methods ([`VirtualKeyDirectory`]), an adapter that turns it
-//! into the two traits the unit asks for ([`AuthBindings`]), and a deployment supplying the one
-//! implementor it has. `GovernanceDirectory` is that implementor for a node whose keys are busbar's
-//! own; a deployment whose keys come from somewhere else writes its own and nothing here changes.
+//! The port is the contract's [`VirtualKeyDirectory`] face — declared there, beside the other kind
+//! faces, because the unit that asks and the root that answers may not name each other. This file
+//! is the root's side of it: an adapter that turns the face into the two traits the unit asks for
+//! ([`AuthBindings`]), and the one implementor this deployment has. `GovernanceDirectory` is that
+//! implementor for a node whose keys are busbar's own; a deployment whose keys come from somewhere
+//! else writes its own and nothing here changes.
 //!
 //! ## What an unbound node does
 //!
@@ -39,60 +41,10 @@
 //! The cache is still built, because a cache is not an authority: it holds what a module already
 //! decided, for less time than the module suggested, and never holds a rejection at all.
 
+use busbar_contract::{KeyFacts, KeyScope, VirtualKeyDirectory};
 use busbar_unit_auth::cache::CredentialCache;
 use busbar_unit_auth::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
-
-/// The facts the chain reads out of a verified key.
-///
-/// Two strings, because two strings are what the unit's own `ResolvedKey` carries and what the
-/// principal it builds is made of. The key's policy — its group, its pools, its labels — is the
-/// governance state's business and is deliberately not in this shape: a value carried through here
-/// would be a value the authenticate step could act on, and the authenticate step decides who is
-/// calling and nothing else.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyFacts {
-    /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
-    pub id: String,
-    /// The key's operator-facing label.
-    pub name: String,
-}
-
-/// The port the root reaches a node's virtual-key directory through.
-///
-/// Both methods answer about a PRESENTED credential and neither hands anything back that could be
-/// presented again, which is what makes the port safe to hold behind a shared handle: there is no
-/// method on it that leaks a secret and no method that mutates the directory.
-pub trait VirtualKeyDirectory: Send + Sync {
-    /// Verify a busbar-minted signed key and resolve the facts behind it. `None` for anything that
-    /// is not a currently-valid key: unknown, unsigned, expired, rotated, revoked or disabled.
-    ///
-    /// `expected_aud` is the plane boundary, and it is threaded rather than checked by a caller for
-    /// the reason the unit's own trait doc gives: a route added to an audience-bound plane later
-    /// cannot forget a check that happens inside the verifier. `None` means the residual plane,
-    /// where a token that CARRIES an audience is inadmissible.
-    ///
-    /// The order an implementor must follow is the ladder the design pins — signature, then the
-    /// token's own expiry, then the denylist, then the rotation generation — each step
-    /// short-circuiting the ones after it, so the FIRST reason a token failed is the one the design
-    /// names rather than a later one that happened to also be true.
-    fn verify(&self, credential: &str, now: u64, expected_aud: Option<&str>) -> Option<KeyFacts>;
-
-    /// Whether the subject a credential names is on the revocation denylist.
-    ///
-    /// This is the gate for a NEW unit and for nothing else — a unit already in flight is never
-    /// asked, because revoking mid-unit would tear down work already paid for and observed while
-    /// the next unit is refused a fraction of a second later anyway.
-    ///
-    /// It is deliberately NOT the only place revocation is enforced, and it is not the place a
-    /// signed token's revocation is enforced: [`VirtualKeyDirectory::verify`] consults the same
-    /// denylist as its third step, so a revoked token is already refused before this is reached.
-    /// What this covers is the credential shapes whose subject IS the credential's own id, where
-    /// there is no signature to read a subject out of. An implementor that cannot resolve a
-    /// credential to a subject answers `false` and loses nothing: the verifier has already refused
-    /// everything this would have refused.
-    fn revoked(&self, credential: &str) -> bool;
-}
 
 /// The two traits the unit asks for, over one directory.
 ///
@@ -118,7 +70,7 @@ impl KeyVerifier for DirectoryArm {
 
 impl RevocationView for DirectoryArm {
     fn is_revoked(&self, credential: &str) -> bool {
-        self.0.revoked(credential)
+        self.0.is_revoked(credential)
     }
 }
 
@@ -199,9 +151,10 @@ fn credential_cache() -> CredentialCache {
 
 /// The virtual-key directory a node whose keys are busbar's own has: the governance state.
 ///
-/// A delegation and nothing more. Both methods forward to the state's own published answer, so
-/// there is no second opinion here about what a valid key is, no second denylist, and nothing this
-/// type could get wrong that the state has not already decided.
+/// A delegation and nothing more. Every method forwards to the state's own published answer, so
+/// there is no second opinion here about what a valid key is, no second denylist, no second copy
+/// of the operator's credential digest, and nothing this type could get wrong that the state has
+/// not already decided.
 pub struct GovernanceDirectory {
     state: Arc<busbar_core::governance::GovState>,
 }
@@ -221,15 +174,33 @@ impl VirtualKeyDirectory for GovernanceDirectory {
             .map(|key| KeyFacts {
                 id: key.id.clone(),
                 name: key.name.clone(),
+                scopes: key.allowed_scopes.as_ref().map(|scopes| {
+                    scopes
+                        .iter()
+                        .map(|s| KeyScope {
+                            kind: s.kind.clone(),
+                            value: s.value.clone(),
+                        })
+                        .collect()
+                }),
+                enabled: key.enabled,
+                expires_at: key.expires_at,
+                deleted_at: key.deleted_at,
             })
     }
 
-    fn revoked(&self, credential: &str) -> bool {
+    fn is_revoked(&self, credential: &str) -> bool {
         // The denylist is keyed by SUBJECT id. A signed token's own revocation was already enforced
         // inside `verify_token`, so what this answers for is a credential that IS its subject's id.
         // A credential that is neither is not on the denylist and answers `false`, which is the same
         // answer the gate would have reached by any other route.
         self.state.is_revoked(credential)
+    }
+
+    fn operator_token_hash(&self) -> Option<String> {
+        // Read through to the state on every call rather than copied at boot: an operator who
+        // rotates the credential expects the next request to be judged against the new one.
+        self.state.admin_token_hash()
     }
 }
 
@@ -251,18 +222,19 @@ pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 /// the same one the credential cache digests with, a few lines up — so there is no second spelling
 /// of the digest in this file, only one function named twice.
 pub struct AdminTokens {
-    state: Arc<busbar_core::governance::GovState>,
+    directory: Arc<dyn VirtualKeyDirectory>,
 }
 
 impl AdminTokens {
-    /// Bind the module to the governance state that holds the configured hash.
+    /// Bind the module to the directory that holds the configured hash.
     ///
-    /// The hash is read PER CALL rather than captured at boot, because an operator who rotates the
-    /// admin token expects the next request to be judged against the new one — a copy taken here
-    /// would keep admitting the old credential until the process restarted.
+    /// The hash is read PER CALL through [`VirtualKeyDirectory::operator_token_hash`] rather than
+    /// captured at boot, because an operator who rotates the credential expects the next request
+    /// to be judged against the new one — a copy taken here would keep admitting the old
+    /// credential until the process restarted.
     #[must_use]
-    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
-        AdminTokens { state }
+    pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
+        AdminTokens { directory }
     }
 }
 
@@ -276,7 +248,7 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
         // No token configured is not a refusal and not an admission: this module has nothing to
         // judge, so it defers. What that means for the node is decided by the chain around it — an
         // all-pass chain denies — and not by an opinion invented here.
-        let Some(configured) = self.state.admin_token_hash() else {
+        let Some(configured) = self.directory.operator_token_hash() else {
             return AuthOutcome::Pass;
         };
         // No credential presented is likewise this module's to defer on rather than to refuse: the
@@ -311,11 +283,11 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
 /// which is the previous release's "the admin API is disabled without a token", reached the same
 /// way rather than restated here.
 #[must_use]
-pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_unit_auth::AuthChain {
+pub fn admin_chain(directory: Arc<dyn VirtualKeyDirectory>) -> busbar_unit_auth::AuthChain {
     busbar_unit_auth::AuthChain::new(
         vec![busbar_unit_auth::chain::ChainEntry {
             provider: ADMIN_TOKENS_MODULE.to_string(),
-            module: Box::new(AdminTokens::new(state)),
+            module: Box::new(AdminTokens::new(directory)),
         }],
         // The signed-key arm is not in the administrative chain: the previous release's admin door
         // is the operator token, and naming the arm here would open a second one.

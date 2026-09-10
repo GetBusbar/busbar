@@ -803,24 +803,32 @@ impl AdminDispatch for AnsweringDispatch {
 struct Denylist(bool);
 
 #[cfg(feature = "root-admin")]
-impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
+impl busbar_contract::VirtualKeyDirectory for Denylist {
+    fn operator_token_hash(&self) -> Option<String> {
+        None
+    }
+
     fn verify(
         &self,
         credential: &str,
         _now: u64,
         _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
+    ) -> Option<busbar_contract::KeyFacts> {
         // A revocation withdraws an IDENTIFICATION: the directory has to know the credential
         // before its denylist can take it away, or the refusal would be a probe answered for
         // a string nothing verified. So the one credential these cells present is one this
         // directory minted.
-        (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
+        (credential == "admin-token").then(|| busbar_contract::KeyFacts {
             id: "key-admin-1".to_string(),
             name: "the operator credential these cells present".to_string(),
+            scopes: None,
+            enabled: true,
+            expires_at: None,
+            deleted_at: None,
         })
     }
 
-    fn revoked(&self, _credential: &str) -> bool {
+    fn is_revoked(&self, _credential: &str) -> bool {
         self.0
     }
 }

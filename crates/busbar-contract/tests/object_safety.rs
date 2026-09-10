@@ -23,7 +23,7 @@ use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
     CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
     HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret, SecretRef,
-    SecretValue, Signer, Store,
+    SecretValue, Signer, Store, VirtualKeyDirectory,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -46,6 +46,7 @@ const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _TRANSPORT: Option<&dyn Transport> = None;
 const _AUTH: Option<&dyn AuthScheme> = None;
+const _VIRTUAL_KEY_DIRECTORY: Option<&dyn VirtualKeyDirectory> = None;
 const _EGRESS_AUTH: Option<&dyn EgressAuthScheme> = None;
 const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;
