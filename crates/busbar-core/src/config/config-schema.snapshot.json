@@ -481,6 +481,10 @@
           "optional": true,
           "type": "StreamsSection"
         },
+        "tariff": {
+          "optional": true,
+          "type": "crate::config::tariff::TariffCfg"
+        },
         "tls": {
           "optional": true,
           "type": "TlsCfg"
@@ -488,6 +492,27 @@
         "tools": {
           "optional": true,
           "type": "ToolsSection"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "DisputePolicyCfg": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "entry_only",
+        "entry_plus_units",
+        "full"
+      ]
+    },
+    "EntryFeeCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "enabled": {
+          "optional": true,
+          "type": "bool"
         }
       },
       "kind": "struct",
@@ -2077,6 +2102,44 @@
         "session_max_secs": {
           "optional": true,
           "type": "u32"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "TariffCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "default": {
+          "optional": true,
+          "type": "TariffScopeCfg"
+        },
+        "plane": {
+          "optional": true,
+          "type": "BTreeMap<String, TariffScopeCfg>"
+        },
+        "pool": {
+          "optional": true,
+          "type": "BTreeMap<String, TariffScopeCfg>"
+        },
+        "tier": {
+          "optional": true,
+          "type": "BTreeMap<String, TariffScopeCfg>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "TariffScopeCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "dispute_policy": {
+          "optional": true,
+          "type": "DisputePolicyCfg"
+        },
+        "entry_fee": {
+          "optional": true,
+          "type": "EntryFeeCfg"
         }
       },
       "kind": "struct",

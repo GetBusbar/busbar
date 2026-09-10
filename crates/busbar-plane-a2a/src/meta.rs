@@ -121,6 +121,10 @@ impl PlaneMeta for A2aPlane {
     // the dialect's, and the dialect decides at the first frame. A task lost mid-stream contradicts
     // that frame, and a contradiction is the kernel's to settle.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    /// A TASK IS THE AGENT'S WORK. This plane carries a task to an agent and the agent's answer
+    /// back; where no agent was reachable, nothing was performed on the caller's behalf and there
+    /// is no exchange to charge for — whatever shape the document the caller was handed took.
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
 

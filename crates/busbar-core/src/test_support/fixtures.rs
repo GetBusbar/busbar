@@ -60,6 +60,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        tariff: None,
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),

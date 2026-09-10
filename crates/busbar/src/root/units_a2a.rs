@@ -546,15 +546,26 @@ impl A2aDraft {
     /// plane produced and not from a second table of operation names.
     #[must_use]
     pub fn has_upstream(&self) -> bool {
-        matches!(
-            self.destination,
-            DestinationFacts::Upstream { .. } | DestinationFacts::SessionUpstream { .. }
-        ) || self.legs.iter().any(|l| {
-            matches!(
-                l.destination,
-                DestinationFacts::Upstream { .. } | DestinationFacts::SessionUpstream { .. }
-            )
-        })
+        reachable(&self.destination) || self.legs.iter().any(|l| reachable(&l.destination))
+    }
+}
+
+/// **WHETHER A DESTINATION IS SOMEWHERE.**
+///
+/// The shape of a destination and the existence of one are two different facts, and reading the
+/// first as the second is how a unit that reached nothing came to be charged as though it had. A
+/// task for which no agent is configured still resolves to an upstream-SHAPED destination — that is
+/// what the shape is for, it says which family would carry it — with no lane behind it, because
+/// there was nothing to name. The lane is the priced leg; no lane is no leg, and no leg is no
+/// exchange.
+///
+/// Read on the LANE rather than on the variant, so a destination that names nowhere answers no
+/// under every shape a future family might add, without this function learning the family.
+fn reachable(destination: &DestinationFacts) -> bool {
+    match destination {
+        DestinationFacts::Upstream { lane, .. }
+        | DestinationFacts::SessionUpstream { lane, .. } => !lane.as_str().is_empty(),
+        _ => false,
     }
 }
 
@@ -973,8 +984,12 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         // The record does not decide the fee a second time. It reads the same evidence the exit
         // path settles from, through the same function, so a row that says one and a posting that
         // says none cannot both be true of one unit.
-        let (fee_count, _) =
-            busbar_kernel::teller::fee_count(&fee_identity(&self.draft, ctx.origin()), ctx.head());
+        let fee_count = busbar_kernel::teller::charge(
+            &fee_identity(&self.draft, ctx.origin()),
+            ctx.head(),
+            &crate::root::kernel::tariff_cell(<A2aPlane as busbar_contract::plane::PlaneMeta>::KEY),
+        )
+        .transaction;
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
                 Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
@@ -1497,6 +1512,9 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
             fee: fee_identity(&self.draft, ctx.origin()),
+            tariff: crate::root::kernel::tariff_cell(
+                <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            ),
         }
     }
 }
@@ -1516,8 +1534,14 @@ pub(crate) fn fee_identity(
     origin: busbar_caps::OriginKind,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
+        // Filled by the kernel's exit, which is the only place that holds it. A record is not the
+        // door: it reports what the exchange contained, and the visit was counted where it happened.
+        admitted: false,
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: draft.has_upstream(),
+        // READ OFF THE PLANE'S DECLARATION. Whether work this plane does without a destination is
+        // something somebody bought is the plane's to declare and this leg's to relay.
+        chargeable_local: <A2aPlane as busbar_contract::plane::PlaneMeta>::CHARGEABLE_LOCAL,
     }
 }
 

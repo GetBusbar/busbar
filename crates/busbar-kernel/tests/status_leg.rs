@@ -52,7 +52,7 @@ use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
 use busbar_kernel::record::{UnitRecord, UnitViews};
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
 use busbar_kernel::teller::{
-    fee_count, AccrualMeter, Ended, Evidence, FeeEvidence, Kernel, Run, Units,
+    charge, AccrualMeter, Ended, Evidence, FeeEvidence, Kernel, Run, TariffCell, Units,
 };
 
 /// What the exit's own reading of the fee came to, and what the record was carrying when it read
@@ -87,6 +87,11 @@ impl Served {
     /// and whether the route selected an upstream at all. Neither is a reading of the answer.
     fn identity() -> FeeEvidence {
         FeeEvidence {
+            // The unit passed the door — a fee reading over a visit that never happened would be a
+            // reading of nothing. The door's own count is the entry fee's and is not what is
+            // asserted here.
+            admitted: true,
+            chargeable_local: false,
             client_open_or_one_shot: true,
             selected_upstream: true,
         }
@@ -238,7 +243,7 @@ impl Units for Served {
     /// about the answer: the head is the RECORD's, and the kernel reads it from there.
     fn evidence(&self, record: &UnitRecord<'_>) -> Evidence {
         *self.seen.head.lock().unwrap() = Some(record.head().copied());
-        *self.seen.fee.lock().unwrap() = Some(fee_count(&Served::identity(), record.head()));
+        *self.seen.fee.lock().unwrap() = Some(transaction_fee(&Served::identity(), record.head()));
         Evidence {
             upstream_candidate: true,
             fee: Served::identity(),
@@ -385,7 +390,7 @@ fn the_two_sources_agreeing_bills_what_it_always_billed() {
     let (_seen, ended) = run_one(Some(clean));
     assert_eq!(settled_fee(&ended), 1, "a good answer bills one");
     assert_eq!(
-        fee_count(&Served::identity(), Some(&clean)),
+        transaction_fee(&Served::identity(), Some(&clean)),
         (1, PostingFlags::NONE),
         "and nothing is disputed"
     );
@@ -401,7 +406,7 @@ fn the_two_sources_agreeing_bills_what_it_always_billed() {
     let (_seen, ended) = run_one(Some(refused));
     assert_eq!(settled_fee(&ended), 0, "an upstream that failed bills none");
     assert_eq!(
-        fee_count(&Served::identity(), Some(&refused)),
+        transaction_fee(&Served::identity(), Some(&refused)),
         (0, PostingFlags::NONE),
         "and nothing is disputed, because the two sources said the same thing"
     );
@@ -422,7 +427,7 @@ fn a_head_that_never_arrived_bills_nothing_and_disputes_a_whole_answer() {
         relayed_error: None,
     };
     assert_eq!(
-        fee_count(&Served::identity(), Some(&lost)),
+        transaction_fee(&Served::identity(), Some(&lost)),
         (0, PostingFlags::METER_DISPUTED),
         "a whole answer over a status that never came is a dispute"
     );
@@ -431,7 +436,7 @@ fn a_head_that_never_arrived_bills_nothing_and_disputes_a_whole_answer() {
         ..lost
     };
     assert_eq!(
-        fee_count(&Served::identity(), Some(&honest)),
+        transaction_fee(&Served::identity(), Some(&honest)),
         (0, PostingFlags::NONE),
         "a plane telling the same story the transport is telling is not a dispute"
     );
@@ -451,4 +456,16 @@ fn the_head_is_written_once_and_not_replaced() {
         Some(Some(cut_after_a_good_head())),
         "one head per unit, and it is the one the served leg saw"
     );
+}
+
+/// **THE TRANSACTION COUNT AND THE MARK, UNDER THE DEPLOYMENT'S DEFAULT SCHEDULE.**
+///
+/// Every case in this file asks what one exchange costs, so every case is driven through the one
+/// site a tariff is applied at, with the cell a node that has configured nothing is charged under.
+fn transaction_fee(
+    evidence: &FeeEvidence,
+    head: Option<&StatusLeg>,
+) -> (u32, busbar_caps::PostingFlags) {
+    let charged = charge(evidence, head, &TariffCell::default());
+    (charged.transaction, charged.flags)
 }

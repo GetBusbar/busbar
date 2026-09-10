@@ -1325,8 +1325,11 @@ kind = "caps"
 # neither may name the other, which is the one place a shared name can sit. Three legs report one
 # declared class each and share ONE spelling of "what a unit spent in one class", in the root's own
 # module rather than three times over; the fourth reads the completion straight off the record.
-count = "309"
-count = "316"
+# 316 -> 317: ONE. The composition root's own entry-fee cell names `busbar_caps::PostingFlags`
+# once more: the mark a contradicted posting carries is a caps type and always was, and a cell that
+# asserted the count without the mark would pass over the half of the answer that puts a
+# disagreement on the disputes report.
+count = "324"
 
 [[cell]]
 crate = "busbar"
@@ -1357,8 +1360,10 @@ kind = "control"
 # 1077 -> 1078: the admin leg records the answer's head at its response encoder, which is the one
 # place a LOCALLY SERVED plane sees one. One line, and it is what keeps "every plane fills the same
 # face" true rather than true of four.
-count = "1078"
-count = "1076"
+# 1076 -> 1078: the fee schedule's install and its holder in the composition root. Boot closes over
+# the deployment's `tariff:` section and hands the root a RESOLVER; the holder answers it. Control
+# vocabulary because the root is where a deployment's configuration becomes a running node.
+count = "1093"
 
 [[cell]]
 crate = "busbar"
@@ -1371,8 +1376,9 @@ kind = "kernel"
 # 157 -> 159: TWO, and both are the same rename seen where the root reads it. The settlement table
 # answers with LINES rather than one amount, so the two cells that assert what a turn settles at add
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
-count = "159"
-count = "173"
+# 173 -> 168: FIVE FEWER, as measured. The five hand-written fee-evidence assemblies are gone and
+# each leg relays two declarations instead, so the root names less kernel vocabulary than it did.
+count = "169"
 
 [[cell]]
 crate = "busbar"
@@ -1388,8 +1394,13 @@ kind = "plane"
 # The streaming plane's leg carries the rest: its reported figure is still its seven-plus classes
 # TOTALLED against one of them, which the shape now makes visible rather than hiding, and the
 # comment that says so names the plane's own declaration.
-count = "1807"
-count = "1852"
+# 1852 -> 1869: the chargeable-local face and the plane's own schedule key, read where every other
+# plane declaration is read. Each of the five composition legs names its own plane type once more to
+# relay `PlaneMeta::CHARGEABLE_LOCAL`, and once more again to resolve the plane's cell by the
+# registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
+# asks the same question of all five in the same words, and a sixth answers it without this file
+# changing.
+count = "1878"
 
 [[cell]]
 crate = "busbar"
@@ -1418,8 +1429,7 @@ kind = "transport"
 # the kernel's own fee decision. It builds the head the served leg records from each cell's own
 # recorded status, and the head's first source is the TRANSPORT's reading of it — so the cell names
 # the transport's status class exactly where the leg it is proving does.
-count = "944"
-count = "945"
+count = "950"
 
 [[cell]]
 crate = "busbar"
@@ -1659,8 +1669,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "610"
-count = "602"
+count = "609"
 
 [[cell]]
 crate = "busbar-core"
@@ -1685,8 +1694,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
-count = "3031"
+count = "3065"
 
 [[cell]]
 crate = "busbar-core"

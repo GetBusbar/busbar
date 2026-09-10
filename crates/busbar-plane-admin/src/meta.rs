@@ -89,5 +89,9 @@ impl PlaneMeta for AdminPlane {
     // surface goes on to POST is zero because it selects no upstream, never because it declined to
     // say where its status is.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    /// OPERATING A NODE IS NOT A SERVICE THE NODE SELLS TO ITS OPERATOR. Every verb on this plane
+    /// is the deployment asking its own node a question about itself, and a node that charged for
+    /// being administered would be billing its owner for reading the meter.
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }

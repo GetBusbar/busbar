@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 
 use busbar_caps::{OriginKind, Outcome, PostingFlags};
 use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_lines, Evidence, FeeEvidence, FinishClass,
-    StatusAt, StatusClass, StatusLeg, KERNEL_ACCRUAL_CLASS,
+    charge, requests_drawn, requests_settled, settle_lines, Evidence, FeeEvidence, FinishClass,
+    StatusAt, StatusClass, StatusLeg, TariffCell, KERNEL_ACCRUAL_CLASS,
 };
 
 /// The pinned golden's cell directory.
@@ -162,11 +162,15 @@ fn every_recorded_model_plane_cell_settles_exactly_what_it_recorded() {
         let head = served_head(rec.status);
         let upstream = selected_upstream(rec);
         let identity = FeeEvidence {
+            // Every cell in this corpus is a unit the golden recorded a request slot for, so every
+            // one of them passed the door.
+            admitted: true,
+            chargeable_local: false,
             // Every cell in this corpus is a caller's request; the oracle drives no provider push.
             client_open_or_one_shot: true,
             selected_upstream: upstream,
         };
-        let (fee, fee_flags) = fee_count(&identity, Some(&head));
+        let (fee, fee_flags) = transaction_fee(&identity, Some(&head));
 
         // The model plane's served leg reports NO completion: what it spent is four declared
         // dimensions and it does not put them on the unit yet. That is the same answer the old
@@ -256,11 +260,13 @@ fn a_unit_refused_at_the_door_draws_no_slot_and_pays_no_fee() {
     assert_eq!(refused.len(), 30, "30 recorded cells carry no usage delta");
     for rec in refused {
         let identity = FeeEvidence {
+            admitted: true,
+            chargeable_local: false,
             client_open_or_one_shot: true,
             selected_upstream: false,
         };
         assert_eq!(
-            fee_count(&identity, Some(&served_head(rec.status))),
+            transaction_fee(&identity, Some(&served_head(rec.status))),
             (0, PostingFlags::NONE),
             "{} recorded no spend",
             rec.name
@@ -272,4 +278,16 @@ fn a_unit_refused_at_the_door_draws_no_slot_and_pays_no_fee() {
             rec.name
         );
     }
+}
+
+/// **THE TRANSACTION COUNT AND THE MARK, UNDER THE DEPLOYMENT'S DEFAULT SCHEDULE.**
+///
+/// Every cell in this corpus asks what one exchange costs, so every one is driven through the one
+/// site a tariff is applied at, with the cell a node that has configured nothing is charged under.
+fn transaction_fee(
+    evidence: &FeeEvidence,
+    head: Option<&StatusLeg>,
+) -> (u32, busbar_caps::PostingFlags) {
+    let charged = charge(evidence, head, &TariffCell::default());
+    (charged.transaction, charged.flags)
 }

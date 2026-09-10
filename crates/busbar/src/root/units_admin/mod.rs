@@ -2164,6 +2164,13 @@ pub(crate) fn evidence(_ctx: &UnitRecord<'_>) -> busbar_kernel::teller::Evidence
         fee: busbar_kernel::teller::FeeEvidence {
             ..Default::default()
         },
+        // THE SCHEDULE, READ THE SAME WAY EVERY OTHER PLANE READS IT. This surface owes nothing
+        // under any schedule — the eligibility gate answers zero before a knob is consulted — and
+        // it still resolves one, because "admin is free" is a fact about what this plane does and
+        // not a licence for one leg to skip the deployment's own tariff.
+        tariff: crate::root::kernel::tariff_cell(
+            <AdminPlane as busbar_contract::plane::PlaneMeta>::KEY,
+        ),
         ..Default::default()
     }
 }

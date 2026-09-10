@@ -49,8 +49,8 @@ use busbar_caps::{
 };
 use busbar_caps::{ReasonCode, StepName};
 use busbar_kernel::teller::{
-    fee_count, settle_lines, Evidence, FeeEvidence, FinishClass, StatusAt, StatusClass, StatusLeg,
-    KERNEL_ACCRUAL_CLASS,
+    charge, settle_lines, Evidence, FeeEvidence, FinishClass, StatusAt, StatusClass, StatusLeg,
+    TariffCell, KERNEL_ACCRUAL_CLASS,
 };
 
 /// The four classes the model plane declares, in the order it declares them.
@@ -240,6 +240,8 @@ fn a_terminal_error_bills_none_of_the_dimensions() {
 /// answer, which is the whole point of the split P3 landed.
 fn client_with_an_upstream() -> FeeEvidence {
     FeeEvidence {
+        admitted: true,
+        chargeable_local: false,
         client_open_or_one_shot: true,
         selected_upstream: true,
     }
@@ -265,7 +267,7 @@ fn a_mid_stream_cut_disputes_from_two_independent_sources() {
         relayed_error: None,
     };
     assert_eq!(
-        fee_count(&client_with_an_upstream(), Some(&head)),
+        transaction_fee(&client_with_an_upstream(), Some(&head)),
         (0, PostingFlags::METER_DISPUTED),
         "the lower count, and somebody is told to look at it"
     );
@@ -299,7 +301,7 @@ fn a_leg_that_derives_both_sources_from_the_status_never_disputes() {
         degraded: false,
         relayed_error: None,
     };
-    let (fee, flags) = fee_count(&client_with_an_upstream(), Some(&head));
+    let (fee, flags) = transaction_fee(&client_with_an_upstream(), Some(&head));
     assert_eq!(fee, 1, "the cut bills the full fee");
     assert_eq!(
         flags,
@@ -324,7 +326,19 @@ fn a_whole_answer_from_two_agreeing_sources_bills_one_and_flags_nothing() {
         relayed_error: None,
     };
     assert_eq!(
-        fee_count(&client_with_an_upstream(), Some(&head)),
+        transaction_fee(&client_with_an_upstream(), Some(&head)),
         (1, PostingFlags::NONE)
     );
+}
+
+/// **THE TRANSACTION COUNT AND THE MARK, UNDER THE DEPLOYMENT'S DEFAULT SCHEDULE.**
+///
+/// Every case in this file asks what one exchange costs, so every case is driven through the one
+/// site a tariff is applied at, with the cell a node that has configured nothing is charged under.
+fn transaction_fee(
+    evidence: &FeeEvidence,
+    head: Option<&StatusLeg>,
+) -> (u32, busbar_caps::PostingFlags) {
+    let charged = charge(evidence, head, &TariffCell::default());
+    (charged.transaction, charged.flags)
 }

@@ -8,6 +8,7 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
+        tariff: None,
         tool_defs: crate::plane::config::ToolsSection::default().0,
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),

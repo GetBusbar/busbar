@@ -327,6 +327,13 @@ pub struct Evidence {
     pub upstream_candidate: bool,
     /// Everything the flat fee is decided from.
     pub fee: FeeEvidence,
+    /// **THE SCHEDULE THIS UNIT IS CHARGED UNDER**, resolved by scope before the unit ran.
+    ///
+    /// It arrives ON THE EVIDENCE rather than on the kernel, because a node serves more than one
+    /// deployment's worth of traffic and the cell that applies is a property of the unit — of the
+    /// tier, the pool and the plane it was admitted for — not of the loop that runs it. The loop
+    /// applies whatever it is handed and holds no schedule of its own to disagree with.
+    pub tariff: TariffCell,
 }
 
 /// The class the kernel's own accrual is reported against when nothing else named one.
@@ -469,11 +476,13 @@ fn total_of(lines: &[UsageLine]) -> u64 {
         .fold(0_u64, |acc, line| acc.saturating_add(line.quantity))
 }
 
-/// WHAT THE UNIT IS, for the fee decision. Everything about the ANSWER is the head's.
+/// WHAT THE UNIT IS, for the fee decision — the VISIT, and whether it held a TRANSACTION.
+/// Everything about the ANSWER is the head's.
 ///
-/// Two booleans, and neither is a reading of the response: whose request this was, and whether the
-/// route selected an upstream leg at all. They are facts about the unit, so the leg that built the
-/// unit is entitled to state them.
+/// Four facts, and not one of them is a reading of the response: whether there was a visit at all,
+/// whose request it was, whether the route selected an upstream leg, and whether this plane
+/// declared its local work a service somebody buys. They are facts about the UNIT, so the leg that
+/// built the unit — and, for the door, the loop that admitted it — is entitled to state them.
 ///
 /// The three fields that used to sit here — where the transport reports its status, what it
 /// reported, and what the plane made of the ending — are [`StatusLeg`], recorded on the unit by
@@ -481,15 +490,53 @@ fn total_of(lines: &[UsageLine]) -> u64 {
 /// leg in the tree filled them in by hand and every one of them wrote the same disarming literal.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FeeEvidence {
+    /// Whether the unit passed the admission door. A visit begins at ADMIT and nowhere earlier: a
+    /// caller refused at authenticate, verify or approve never became one, and a tariff that
+    /// charges at the door has nothing to charge for. It is a separate fact from the three below
+    /// because it is a different question — those three ask what the visit CONTAINED, and this asks
+    /// whether there was a visit at all.
+    pub admitted: bool,
     /// Whether this is a client unit that opened or ran as a one-shot. A provider push through a
     /// session's own upstream is not, and posts no fee.
     pub client_open_or_one_shot: bool,
     /// Whether the route selected an upstream leg at all. It is the KIND that decides, not the
     /// price: with no rate card the fee still posts.
     pub selected_upstream: bool,
+    /// Whether this plane DECLARED that a unit it serves without an upstream is still a completed
+    /// exchange — a chargeable local service, read off `PlaneMeta::CHARGEABLE_LOCAL`.
+    ///
+    /// A transaction is a completed exchange with a destination OR a declared chargeable local
+    /// service, and those are the only two. Without this fact a plane that answers out of its own
+    /// state has exactly two options, both wrong: claim an upstream it did not dial, or serve for
+    /// nothing. It is a DECLARATION and not a per-unit guess, because whether a plane's local work
+    /// is a service somebody buys is a property of the plane, not of the request.
+    pub chargeable_local: bool,
 }
 
-/// **THE POLICY FOR A FEE WHOSE TWO READINGS CONTRADICT EACH OTHER.**
+/// **WHAT A DEPLOYMENT AGREED TO CHARGE, IN COUNTS.**
+///
+/// The half of a deployment's tariff that decides HOW MANY of a thing a unit owes — one entry, one
+/// transaction, its metered units or none of them. It holds no amount, and that is the rule the
+/// whole design rests on: an amount is a price, a price belongs to the card, and the card is dated
+/// and re-read at settlement, so a stored amount would be a second answer to what one unit was charged that
+/// nobody could re-price. The counts are what the ledger keeps; the money is what the card makes of
+/// them at the moment somebody asks.
+///
+/// It names no plane, no dialect and no protocol. Every plugin of a kind is identical to every
+/// other of that kind, and billing a plane is billing a plane: the cell a unit is charged under is
+/// SELECTED by scope before it gets here, and by the time it does there is one schedule and one
+/// unit and no question of whose it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TariffCell {
+    /// Whether a visit is charged for at the door, independently of what it went on to contain.
+    ///
+    /// The AMOUNT lives on the card. This is the count: one entry per admitted visit, or none.
+    pub entry_fee_enabled: bool,
+    /// What a unit whose two endings contradict each other is charged.
+    pub dispute_policy: DisputePolicy,
+}
+
+/// **WHAT A CONTRADICTED UNIT IS CHARGED.**
 ///
 /// A unit ends twice: the transport reports a status on the frame it declares one on, and the plane
 /// afterwards gives a finish. When those disagree, something has gone wrong that the fee cannot
@@ -503,6 +550,12 @@ pub struct FeeEvidence {
 /// cited in a dispute, chosen per deployment and changed on purpose. Written as an `if` it is a
 /// property of the code that nobody outside the code can see.
 ///
+/// The three variants are the three answers to ONE question — what does the customer owe for an
+/// exchange that half happened — and they are ordered from the most generous to the least. They are
+/// NOT three readings of the evidence: which ending is true is not a thing a deployment gets to
+/// choose, and a policy that let a plane make a unit free by disagreeing with its own wire was a
+/// policy about truth rather than about money.
+///
 /// Every variant marks the posting disputed. That is not the policy's to decide: the mark says the
 /// two readings disagreed, which is true under all three, and it is what puts the unit on the
 /// disputes report instead of letting it settle as though nothing had happened.
@@ -512,62 +565,105 @@ pub struct FeeEvidence {
 /// a session dropped after it opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DisputePolicy {
-    /// **THE FRAME THE CLIENT SAW DECIDES**, and this is the default because it is what the node
-    /// has always billed.
+    /// **THE VISIT ONLY.** The exchange did not complete, so nothing about it is charged: not the
+    /// transaction, not what the meter saw. The customer pays for having been let in and no more.
+    EntryOnly,
+    /// **THE VISIT AND WHAT WAS DELIVERED**, and this is the default because it is the only reading
+    /// under which the same fault costs the same money on every dialect.
     ///
-    /// A request the client was handed an answer to was answered, and no later abort un-answers it;
-    /// a request the client was handed a failure for was not, and no plane may bill over the top of
-    /// that by claiming otherwise. A stream that dies halfway through a good response was still a
-    /// good response at the moment it started, and the previous release keeps it in the billable
-    /// count and refunds nothing.
+    /// The exchange did not complete, so the transaction is not charged; the units the customer
+    /// actually received are, because they were delivered and somebody paid an upstream for them.
+    /// The previous release billed the transaction here too, on the frame the client saw — and it
+    /// billed it unevenly, because whether the half-delivered answer carried a locatable usage
+    /// figure is an accident of which dialect's partial frame happened to contain one. The uniform
+    /// rule replaces it: the customer pays for what was delivered, identically for every dialect.
     #[default]
-    TheFrameTheClientSaw,
-    /// **THE PLANE'S FINISH DECIDES.** The later reading wins: a deployment that would rather bill
-    /// what its planes say happened than what its wires say the client saw.
-    ThePlanesFinish,
-    /// **NEITHER READING DECIDES** and a contradicted fee posts nothing. The most generous of the
-    /// three, and the only one under which a plane can make a request free by disagreeing with its
-    /// own wire.
-    NeitherReading,
+    EntryPlusUnits,
+    /// **EVERYTHING, AS THOUGH IT HAD COMPLETED.** The frame the client saw decides, a request the
+    /// client was handed the start of an answer to was answered, and no later abort un-answers it.
+    /// This is what the previous release billed, kept as a named choice for a deployment that wants
+    /// it back.
+    Full,
 }
 
 impl DisputePolicy {
+    /// **THE POLICY THAT CHARGES THIS.** A policy is what it charges, so it can be named by it.
+    ///
+    /// The way a deployment's configured choice arrives: what a configuration SPELLS it is the
+    /// configuration's, what it COSTS is this file's, and a type crossing between the two crates
+    /// would be a dependency the retirement runs the other way down. Total over both booleans —
+    /// a unit that owes a transaction owes what it consumed as well, so the fourth combination is
+    /// the third policy and not a hole.
+    #[must_use]
+    pub fn charging(transaction: bool, units: bool) -> Self {
+        match (transaction, units) {
+            (true, _) => DisputePolicy::Full,
+            (false, true) => DisputePolicy::EntryPlusUnits,
+            (false, false) => DisputePolicy::EntryOnly,
+        }
+    }
+
     /// What this policy charges when the two readings disagree, and the mark that says they did.
     ///
     /// Both readings are handed over rather than one, so that a policy which reads the other side
     /// is a variant here and not a second call site somewhere else.
     #[must_use]
-    pub fn decide(
-        self,
-        status_says_answered: bool,
-        finish_says_answered: bool,
-    ) -> (u32, PostingFlags) {
-        let count = match self {
-            DisputePolicy::TheFrameTheClientSaw => u32::from(status_says_answered),
-            DisputePolicy::ThePlanesFinish => u32::from(finish_says_answered),
-            DisputePolicy::NeitherReading => 0,
-        };
-        (count, PostingFlags::METER_DISPUTED)
+    pub fn decide(self, status_says_answered: bool, _finish_says_answered: bool) -> (u32, bool) {
+        match self {
+            DisputePolicy::EntryOnly => (0, false),
+            DisputePolicy::EntryPlusUnits => (0, true),
+            DisputePolicy::Full => (u32::from(status_says_answered), true),
+        }
     }
 }
 
-/// Decide the flat fee, and say whether the two sources of truth disagreed.
+/// **WHAT ONE UNIT OWES, IN COUNTS.** The whole of the kernel's answer to a tariff.
+///
+/// Three counts and a mark, and no amount anywhere: [`charge`] decides HOW MANY, the card decides
+/// what each one is worth, and the two meet at the pricing site. `units_allowed` is a count in the
+/// same sense — it is the meter's own quantities, admitted or not admitted, which is the only
+/// question about them a fee schedule is entitled to answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Charge {
+    /// One per admitted visit where the deployment charges for the door, else none.
+    pub entry: u32,
+    /// One per completed transaction, else none.
+    pub transaction: u32,
+    /// Whether the quantities the meter reported are charged for at all.
+    pub units_allowed: bool,
+    /// What the posting is marked with — disputed, where the two endings disagreed.
+    pub flags: PostingFlags,
+}
+
+/// **THE ONE SITE A TARIFF IS APPLIED AT**, for every plane, every dialect and every transport.
 ///
 /// The fee is decided at the first frame the client actually saw, and it is never reversed by a
 /// later abort: a stream that dies halfway through a good response was still a good response at the
 /// moment it started. Where the transport reports a status AND the plane reports a finish, the two
-/// have to agree; where they do not, the [`DisputePolicy`] decides, once, for every plane.
+/// have to agree; where they do not, the [`DisputePolicy`] the deployment agreed to decides, once,
+/// for every plane.
 ///
 /// A transport that says WHERE its status is reported and then reports none has lost the evidence:
-/// the stream ended before the frame carrying it. Nothing is billed, and a plane claiming a clean
-/// finish over a status that never arrived is disputed.
+/// the stream ended before the frame carrying it. No transaction is billed, and a plane claiming a
+/// clean finish over a status that never arrived is disputed.
+///
+/// **A VISIT AND A TRANSACTION ARE TWO THINGS.** A caller admitted at the door made a visit, and
+/// that is what the entry fee is for; a caller whose visit reached a destination, or whose plane
+/// declared its local work a service, completed a transaction, and that is what the transaction fee
+/// is for. A visit that contained no transaction is charged the entry fee and NOTHING ELSE — there
+/// is no arm here that bills an exchange that did not happen.
 ///
 /// The head is the UNIT's, not the caller's: it is recorded by the one step that saw the answer
 /// and read here from the record. A unit with no head relayed nothing, which is the same answer
 /// this function gave when every leg in the tree wrote that by hand.
-pub fn fee_count(evidence: &FeeEvidence, head: Option<&StatusLeg>) -> (u32, PostingFlags) {
+pub fn charge(evidence: &FeeEvidence, head: Option<&StatusLeg>, tariff: &TariffCell) -> Charge {
+    // THE DOOR'S OWN COUNT, decided before anything about the exchange is read. A visit is charged
+    // for because it was admitted, not because it went well.
+    let entry = u32::from(tariff.entry_fee_enabled && evidence.admitted);
+    // A TRANSACTION IS A COMPLETED EXCHANGE WITH A DESTINATION, or a declared chargeable local
+    // service. The two are alternatives and neither is a plane's name.
     let eligible = evidence.client_open_or_one_shot
-        && evidence.selected_upstream
+        && (evidence.selected_upstream || evidence.chargeable_local)
         && head.is_some_and(|head| head.delivered);
     let by_status = head
         .and_then(|head| head.status)
@@ -587,20 +683,28 @@ pub fn fee_count(evidence: &FeeEvidence, head: Option<&StatusLeg>) -> (u32, Post
         head.and_then(|head| head.finish),
         Some(FinishClass::Complete | FinishClass::TurnComplete)
     );
-    match (eligible, missing_status, by_status, by_finish) {
-        (false, _, _, _) => (0, PostingFlags::NONE),
-        (true, true, _, _) if claims_whole => (0, PostingFlags::METER_DISPUTED),
-        (true, true, _, _) => (0, PostingFlags::NONE),
+    let (transaction, units_allowed, flags) = match (eligible, missing_status, by_status, by_finish)
+    {
+        (false, _, _, _) => (0, true, PostingFlags::NONE),
+        (true, true, _, _) if claims_whole => (0, true, PostingFlags::METER_DISPUTED),
+        (true, true, _, _) => (0, true, PostingFlags::NONE),
         (true, _, Some(status_ok), Some(finish_ok)) if status_ok != finish_ok => {
-            // THE ONE SITE THE DISPUTE POLICY IS APPLIED AT, for every plane and every transport.
-            // The value is the default until a deployment's agreed tariff supplies one; when it
-            // does, it arrives here and nowhere else, because there is nowhere else it could go.
-            DisputePolicy::default().decide(status_ok, finish_ok)
+            // THE ONE SITE THE DISPUTE POLICY IS APPLIED AT. The value arrives on the tariff cell
+            // the deployment agreed to and is read here and nowhere else, because there is nowhere
+            // else it could go.
+            let (count, units) = tariff.dispute_policy.decide(status_ok, finish_ok);
+            (count, units, PostingFlags::METER_DISPUTED)
         }
-        (true, _, Some(true), _) => (1, PostingFlags::NONE),
-        (true, _, Some(false), _) => (0, PostingFlags::NONE),
-        (true, _, None, Some(finish_ok)) => (u32::from(finish_ok), PostingFlags::NONE),
-        (true, _, None, None) => (1, PostingFlags::NONE),
+        (true, _, Some(true), _) => (1, true, PostingFlags::NONE),
+        (true, _, Some(false), _) => (0, true, PostingFlags::NONE),
+        (true, _, None, Some(finish_ok)) => (u32::from(finish_ok), true, PostingFlags::NONE),
+        (true, _, None, None) => (1, true, PostingFlags::NONE),
+    };
+    Charge {
+        entry,
+        transaction,
+        units_allowed,
+        flags,
     }
 }
 
@@ -1304,8 +1408,16 @@ pub fn exit<U: Units>(
         Some(mut hold) => {
             let evidence = units.evidence(record);
             let (lines, table_flags) = settle_lines(&outcome, &evidence);
-            let (fee, fee_flags) = fee_count(&evidence.fee, record.head());
-            let flags = table_flags.with(fee_flags);
+            // THE DOOR'S FACT IS THE KERNEL'S. Whether a unit became a VISIT is `reached_admitted`,
+            // and this loop is the only thing that holds it: no leg is told, and a leg that guessed
+            // would be a second answer to the one question the entry fee is charged on. It is
+            // written onto the evidence here rather than asked for, so the visit is counted once,
+            // at the exit, on the unit that actually passed the door.
+            let mut fee_evidence = evidence.fee;
+            fee_evidence.admitted = reached_admitted;
+            let charged = charge(&fee_evidence, record.head(), &evidence.tariff);
+            let fee = charged.entry.saturating_add(charged.transaction);
+            let flags = table_flags.with(charged.flags);
             let requests = requests_settled(
                 reached_admitted,
                 requests_drawn(record.origin(), evidence.upstream_candidate),

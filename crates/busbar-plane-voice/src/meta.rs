@@ -309,5 +309,9 @@ impl PlaneMeta for VoicePlane {
     // caller connected, the leg was dialled, and the answer began — and the contradiction is the
     // kernel's to settle rather than this plane's to resolve by calling the whole session an error.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    /// A SESSION CARRIES SOMEBODY ELSE'S CONVERSATION. The turns this plane serves are a model's,
+    /// relayed; a session that reached no model held no conversation, and the visit is all there
+    /// was.
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }

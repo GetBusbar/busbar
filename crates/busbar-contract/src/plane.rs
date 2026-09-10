@@ -56,6 +56,19 @@ pub trait PlaneMeta {
     /// a declaration every plane makes, sealed at registration, rather than a field one composition
     /// leg fills in for its own plane and pins to nothing for the rest.
     const STATUS_LEG: Option<StatusAt>;
+    /// WHETHER A UNIT THIS PLANE SERVES WITHOUT A DESTINATION IS STILL SOMETHING SOMEBODY BOUGHT.
+    ///
+    /// A transaction is a completed exchange with a destination, or a declared chargeable local
+    /// service, and there is no third kind. A plane that answers out of its own state — a task
+    /// board, an index, a policy evaluation — performs work that a deployment may legitimately
+    /// charge for, and without a declaration it has exactly two ways to be paid for it, both
+    /// dishonest: claim an upstream leg it never dialled, or hand its work over for nothing.
+    ///
+    /// It is a CONSTANT because the answer is a property of the plane and not of the request. Asked
+    /// per unit it would be a plane deciding, request by request, whether this one was chargeable —
+    /// which is the plane deciding money, under another name. Declared once, it is a fact about the
+    /// kind that an operator can read before deploying it and a tariff can price uniformly.
+    const CHARGEABLE_LOCAL: bool;
     /// The schema of this plane's own configuration block.
     const CONFIG_SCHEMA: &'static str;
 }

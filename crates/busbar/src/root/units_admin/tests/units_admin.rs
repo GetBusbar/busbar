@@ -588,7 +588,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         0
     );
     assert_eq!(
-        busbar_kernel::teller::fee_count(&evidence.fee, record.head()).0,
+        crate::root::kernel::default_fee(&evidence.fee, record.head()).0,
         0
     );
 }
@@ -3016,10 +3016,22 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         admin_listener: true,
         kernel_verb_only: true,
     };
-    let fee = evidence(&ctx).fee;
+    crate::open_record!(record, &ctx);
+    let fee = evidence(&record).fee;
+    // THE DECLARATION IS READ WHERE THE HEAD IS WRITTEN — at the response encoder, on the record,
+    // which is the one place this plane sees an answer. The evidence carries what the UNIT is; the
+    // head carries what the ANSWER was, and a leg that read the declaration twice would have two.
+    let head = busbar_contract::StatusLeg {
+        at: <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        status: None,
+        finish: Some(busbar_contract::FinishClass::Complete),
+        delivered: true,
+        degraded: false,
+        relayed_error: None,
+    };
     assert_eq!(
-        fee.status_at, declared,
-        "the leg builds the kernel's evidence from what the plane declares, rather than taking the \
+        head.at, declared,
+        "the leg builds the answer's head from what the plane declares, rather than taking the \
          whole of it off a `Default`"
     );
     assert!(
@@ -3027,7 +3039,7 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         "and this surface still selects no upstream, which is what makes its fee zero"
     );
     assert_eq!(
-        busbar_kernel::teller::fee_count(&fee).0,
+        crate::root::kernel::default_fee(&fee, Some(&head)).0,
         0,
         "a control surface posts no fee, and it posts none for the reason it always did"
     );
@@ -3044,15 +3056,27 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
 fn the_declared_leg_reaches_the_dispute_arm_once_a_unit_is_eligible() {
     let declared =
         <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
-    let (fee, flags) = busbar_kernel::teller::fee_count(&busbar_kernel::teller::FeeEvidence {
-        client_open_or_one_shot: true,
-        selected_upstream: true,
-        relayed_first_response_frame: true,
-        status_at: declared,
-        status: Some(busbar_contract::StatusClass::Success),
-        finish: Some(busbar_contract::FinishClass::Error),
-    });
-    assert_eq!(fee, 1, "the frame the client saw decides the fee");
+    let (fee, flags) = crate::root::kernel::default_fee(
+        &busbar_kernel::teller::FeeEvidence {
+            admitted: true,
+            chargeable_local: false,
+            client_open_or_one_shot: true,
+            selected_upstream: true,
+        },
+        Some(&busbar_contract::StatusLeg {
+            at: declared,
+            status: Some(busbar_contract::StatusClass::Success),
+            finish: Some(busbar_contract::FinishClass::Error),
+            delivered: true,
+            degraded: false,
+            relayed_error: None,
+        }),
+    );
+    assert_eq!(
+        fee, 0,
+        "the shipped schedule charges nothing for an exchange that did not \
+                        complete, and the arm is reached, which is what this cell is about"
+    );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
         "the declared leg and the plane's finish contradict each other"

@@ -22,6 +22,7 @@ pub(crate) mod patch;
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
 pub mod secret;
+pub mod tariff;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
@@ -448,6 +449,8 @@ pub struct RootCfg {
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
+    /// The top-level `tariff:` fee schedule. See `DeployCfg::tariff`.
+    pub tariff: Option<crate::config::tariff::TariffCfg>,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub store: Option<StoreCfg>,
@@ -1227,6 +1230,11 @@ pub struct DeployCfg {
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub(crate) per_request_fee: i64,
+    /// The top-level `tariff:` — the fee schedule, by scope. ADDITIVE: absent ⇒ the previous
+    /// release exactly, because the two keys above ARE the default cell's two fields. See
+    /// [`crate::config::tariff`].
+    #[serde(default)]
+    pub tariff: Option<crate::config::tariff::TariffCfg>,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2656,6 +2664,7 @@ pub fn resolve(
             groups: deploy.groups.clone(),
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
+            tariff: deploy.tariff.clone(),
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,

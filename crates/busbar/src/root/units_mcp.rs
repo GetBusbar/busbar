@@ -1290,8 +1290,14 @@ pub fn fee_identity(
     origin: busbar_caps::OriginKind,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
+        // Filled by the kernel's exit, which is the only place that holds it. A record is not the
+        // door: it reports what the exchange contained, and the visit was counted where it happened.
+        admitted: false,
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: shape.hops_upstream,
+        // READ OFF THE PLANE'S DECLARATION. Whether work this plane does without a destination is
+        // something somebody bought is the plane's to declare and this leg's to relay.
+        chargeable_local: <McpPlane as busbar_contract::plane::PlaneMeta>::CHARGEABLE_LOCAL,
     }
 }
 
@@ -1391,6 +1397,9 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
         // The fee's upstream rule and the request slot's are the same rule, read from the same fact.
         upstream_candidate: ended.shape.hops_upstream,
         fee: fee_identity(ended.shape, ended.origin),
+        tariff: crate::root::kernel::tariff_cell(
+            <McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+        ),
     }
 }
 
@@ -1498,10 +1507,12 @@ pub fn audit_inputs(
     origin: busbar_caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
-    let (fee_count, _) = busbar_kernel::teller::fee_count(
+    let fee_count = busbar_kernel::teller::charge(
         &fee_identity(ended.shape, ended.origin),
         Some(&ended.head()),
-    );
+        &crate::root::kernel::tariff_cell(<McpPlane as busbar_contract::plane::PlaneMeta>::KEY),
+    )
+    .transaction;
     AuditInputs {
         subject: match ended.principal {
             Some(who) => busbar_unit_audit::Subject::PrincipalId(who.as_str().to_string()),

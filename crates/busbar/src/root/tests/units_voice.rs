@@ -1338,12 +1338,12 @@ fn unit_zero_reserves_nothing_itself_and_takes_the_sessions_opening_reservation(
 /// called an error pays nothing.
 #[test]
 fn the_flat_fee_is_the_session_open_and_nothing_else() {
+    use crate::root::kernel::default_fee;
     use busbar_caps::OriginKind;
     use busbar_contract::FinishClass;
-    use busbar_kernel::teller::fee_count;
 
     let open = |finish| {
-        fee_count(
+        default_fee(
             &fee_identity(UnitShape::SessionOpen, OriginKind::Client, true),
             Some(&served_head(true, Some(finish))),
         )
@@ -1351,17 +1351,17 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
     assert_eq!(open(FinishClass::Complete).0, 1);
     // AN OPEN THE CALLER SAW SUCCEED, THAT THE PLANE THEN CALLS AN ERROR, IS THE CONTRADICTION.
     // The caller connected, the leg was dialled and the frame that opens the conversation went
-    // back; the session then died. The connection was really made, so the frame the caller saw
-    // counts and the posting is marked — the same policy, the same function, as every other plane.
-    // This assertion used to read 0, which was the plane's ending deciding alone because this leg
-    // told the kernel there was no status leg to reconcile it against.
+    // back; the session then died. The two readings of this unit disagree, so the posting is
+    // MARKED — the reach this leg gained — and what it costs is the deployment's schedule: the
+    // shipped one charges the visit and what was delivered, and nothing for a conversation that did
+    // not happen.
     let (fee, flags) = open(FinishClass::Error);
-    assert_eq!(fee, 1);
+    assert_eq!(fee, 0);
     assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
     // A session that named no upstream, and one whose dial never opened: neither reached a leg,
     // and a fee is for a connection that was actually made.
     assert_eq!(
-        fee_count(
+        default_fee(
             &fee_identity(UnitShape::SessionOpen, OriginKind::Client, false),
             Some(&served_head(true, Some(FinishClass::Complete))),
         )
@@ -1369,7 +1369,7 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
         0
     );
     assert_eq!(
-        fee_count(
+        default_fee(
             &fee_identity(UnitShape::SessionOpen, OriginKind::Client, true),
             Some(&served_head(false, Some(FinishClass::Complete))),
         )
@@ -1379,7 +1379,7 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
     // A turn of a conversation the session already paid to open pays nothing, however it ended.
     for finish in [FinishClass::TurnComplete, FinishClass::Error] {
         assert_eq!(
-            fee_count(
+            default_fee(
                 &fee_identity(UnitShape::Turn, OriginKind::Client, true),
                 Some(&served_head(true, Some(finish))),
             )
@@ -1389,7 +1389,7 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
     }
     // The provider's own push through the session's leg is not a caller's request.
     assert_eq!(
-        fee_count(
+        default_fee(
             &fee_identity(UnitShape::ToolCall, OriginKind::Provider, true),
             Some(&served_head(true, Some(FinishClass::TurnComplete))),
         )
@@ -2478,19 +2478,26 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
 /// **A SESSION THAT DIES AFTER IT WAS OPENED REACHES THE KERNEL'S DISPUTE ARM.**
 ///
 /// The caller connected, the one leg was dialled, and the frame that opens the conversation went
-/// back — the unit that PAYS is that open, and it was answered. The session then dies. Calling the
-/// whole thing an error and posting nothing would refund a connection the node really made; posting
-/// silently would hide that the two readings disagree. The kernel does neither, in one place, for
-/// every plane.
+/// back, and the session then dies. Posting silently would hide that the two readings disagree, and
+/// this cell is about the mark: the arm is REACHED on this plane. What it charges is the schedule's
+/// to say, in one place, for every plane.
 #[test]
 fn a_session_that_dies_after_it_opened_is_disputed() {
-    let (fee, flags) = busbar_kernel::teller::fee_count(
-        &fee_identity(UnitShape::SessionOpen, busbar_caps::OriginKind::Client, true),
-        Some(&served_head(true, Some(busbar_contract::FinishClass::Error))),
+    let (fee, flags) = crate::root::kernel::default_fee(
+        &fee_identity(
+            UnitShape::SessionOpen,
+            busbar_caps::OriginKind::Client,
+            true,
+        ),
+        Some(&served_head(
+            true,
+            Some(busbar_contract::FinishClass::Error),
+        )),
     );
     assert_eq!(
-        fee, 1,
-        "the frame the caller saw decides the fee, on this plane and on every other"
+        fee, 0,
+        "the shipped schedule charges the visit and what was delivered, and nothing for an \
+         exchange that did not complete — the same answer on this plane as on every other"
     );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
