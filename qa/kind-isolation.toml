@@ -1349,7 +1349,7 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "98"
+count = "96"
 
 [[cell]]
 crate = "busbar"
@@ -5475,7 +5475,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1196"
+count = "1193"
 
 [[cell]]
 crate = "busbar-hooks-ranking"

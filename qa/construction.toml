@@ -147,6 +147,12 @@ busbar-voice = ["busbar-voice-codec"]
 contract_caps = 3478
 grammar = 388
 contract_transport = 845
+# ── declared raises (one delta per face; see the prose above) ──────────────────────────────────────
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 1
+because = "MOVE, by identity: P4 C-A/C-B — the root names PathIngress and the substrate home at busbar_substrate:: instead of through busbar_core::'s re-export; busbar_core reach falls 27 -> 25 and the legacy-reach total falls 91 -> 90, so the one symbol the substrate figure gains is one core lost"
+file = "qa/construction.toml"
 
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
@@ -1001,7 +1007,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 90
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1013,7 +1019,7 @@ ceiling = 91
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 27
+figure = 25
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1034,7 +1040,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+figure = 48
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
