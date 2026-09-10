@@ -645,6 +645,49 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         );
     }
 
+    // -- ceiling-census: THE ONE THING THAT LOWERS A FLOOR ---------------------------------------
+    //
+    // Deleting a legacy crate is the work 1.6.0 exists to do, and every deletion drops a census
+    // count. The floor refuses that, correctly — it cannot tell a retirement apart from "delete the
+    // rule table and drop its number in the same edit" by looking at the numbers. A NAME can, so a
+    // `[[gate.census_retired]]` row is the only thing that admits a lowered floor, and these are the
+    // three ways the row itself is refused. The ADMISSION half is a claim about real git history —
+    // the base's copy of the ceilings file — so it is proven by unit test in `census`, on the same
+    // terms `lowered_floors` already was: no branch can stage a base commit.
+    for (name, row, naming) in [
+        (
+            "a retirement row naming a crate that is still in the tree is refused",
+            "crate = \"busbar-voice\"\ncommit = \"deadbeef\"\nfloor = \"plane_crates\"\nfrom = \
+             4\nto = 3\n",
+            &["busbar-voice", "is still in", "nothing was retired"][..],
+        ),
+        (
+            "a retirement row that lowers its floor by more than one is refused",
+            "crate = \"busbar-nosuch\"\ncommit = \"deadbeef\"\nfloor = \"plane_crates\"\nfrom = \
+             4\nto = 2\n",
+            &["lowers it by 2", "deletes ONE crate"][..],
+        ),
+        (
+            "a retirement row missing a field is refused, not skipped",
+            "crate = \"busbar-nosuch\"\nfloor = \"plane_crates\"\nfrom = 4\nto = 3\n",
+            &["missing one of", "not a retirement"][..],
+        ),
+    ] {
+        let mut ov = on(base);
+        ov.set(
+            CEILINGS,
+            format!("{}\n\n[[gate.census_retired]]\n{row}", text.trim_end()),
+        );
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            name,
+            &[census::ROW_CENSUS],
+            ov,
+            naming,
+        ));
+    }
+
     r.push(prove_rows_green(
         cx,
         gate,

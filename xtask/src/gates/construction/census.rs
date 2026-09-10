@@ -149,11 +149,32 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
             .map(|k| format!("[gate.census.plugin_kinds] {k} names no key in [gate.plugin_kinds]")),
     );
 
-    // ── the floors themselves, against the base ──────────────────────────────────────────────────
+    // ── the retirements, and the floors themselves against the base ──────────────────────────────
+    let (retired, mut retired_bad) = retirements(&cfg.doc);
+    // A RETIREMENT EXPIRES WITH THE DELETION IT RECORDS. A row naming a crate that is still in the
+    // tree has not retired anything: it is a lowered floor bought in advance, which is the same
+    // manoeuvre the floor exists to refuse, one row further back.
+    for r in &retired {
+        if cx.exists(format!("crates/{}", r.krate)) {
+            retired_bad.push(format!(
+                "[[gate.census_retired]] names `{}` (retired in {}) and crates/{} is still in \
+                 this tree. The row admits a census floor going down BECAUSE a crate was deleted; \
+                 while the crate is there, nothing was retired and the floor has no reason to \
+                 have moved",
+                r.krate, r.commit, r.krate
+            ));
+        }
+    }
+    bad.extend(retired_bad);
     if let Ok(base) = base_ref(cx) {
         if let Ok(was) = cx.git_show(&base, CEILINGS) {
             if let Ok(doc) = crate::toml_doc::parse_str(&was) {
-                bad.extend(lowered_floors(&cfg.doc, &doc, &base[..base.len().min(10)]));
+                bad.extend(lowered_floors(
+                    &cfg.doc,
+                    &doc,
+                    &base[..base.len().min(10)],
+                    &retired,
+                ));
             }
         }
     }
@@ -201,21 +222,104 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// A separate function from [`ceiling_census`] because the base is real git history, and the one
 /// property that most needs a test is the one a branch cannot stage — until this table lands on the
 /// integration line, no base commit carries it.
-fn lowered_floors(now_doc: &Document, base_doc: &Document, short: &str) -> Vec<String> {
+fn lowered_floors(
+    now_doc: &Document,
+    base_doc: &Document,
+    short: &str,
+    retired: &[Retired],
+) -> Vec<String> {
     let now = census_pins(now_doc);
     census_pins(base_doc)
         .into_iter()
         .filter_map(|(k, before)| {
             let after = now.get(&k).copied().unwrap_or(0);
-            (after < before).then(|| {
-                format!(
-                    "[gate.census] {k}: the floor itself went {before} -> {after} since the base \
-                     {short}. `ceiling-rose` watches numbers going UP; lowering a census floor is \
-                     how a deleted rule table would be made to look accounted for"
-                )
-            })
+            if after >= before {
+                return None;
+            }
+            // THE ONE THING THAT ADMITS A LOWERED FLOOR, and it admits exactly this drop: the row
+            // names the crate whose deletion caused it, the commit that deleted it, the floor, and
+            // both numbers. A drop of two under a row that says one is not this row's drop.
+            if retired
+                .iter()
+                .any(|r| r.floor == k && r.from == before && r.to == after)
+            {
+                return None;
+            }
+            Some(format!(
+                "[gate.census] {k}: the floor itself went {before} -> {after} since the base \
+                 {short}. `ceiling-rose` watches numbers going UP; lowering a census floor is how a \
+                 deleted rule table would be made to look accounted for. A floor that went down \
+                 because a CRATE was deleted says so in a `[[gate.census_retired]]` row — `crate`, \
+                 `commit`, `floor = \"{k}\"`, `from = {before}`, `to = {after}` — and nothing else \
+                 lowers one"
+            ))
         })
         .collect()
+}
+
+/// One `[[gate.census_retired]]` row: THE ONLY THING THAT LOWERS A CENSUS FLOOR.
+///
+/// Deleting a legacy crate is the work 1.6.0 exists to do, and every deletion drops a census count:
+/// `gate.plane_crates` loses an entry, `rules.legacy-reach.prefixes` loses a prefix, a kind glob
+/// matches one directory fewer. The floor is what refuses that, correctly — "delete the rule table
+/// and drop its number in the same edit" is exactly the manoeuvre it was built for, and it cannot
+/// tell that edit apart from a retirement by looking at the numbers.
+///
+/// A NAME CAN. The row says which crate went, in which commit, which floor moved and from what to
+/// what, and it is checked four ways: the crate must be GONE from the tree, the floor named must be
+/// the floor that moved, the `from` must be the number the BASE carried, and the drop must be
+/// EXACTLY ONE. A retirement deletes one crate; a row that lowers a floor by two is two retirements
+/// under one sentence, and the second one is the one nobody read.
+struct Retired {
+    krate: String,
+    commit: String,
+    floor: String,
+    from: i64,
+    to: i64,
+}
+
+/// Every `[[gate.census_retired]]` row, and every row that could not be read as one.
+fn retirements(doc: &Document) -> (Vec<Retired>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut bad = Vec::new();
+    for (i, t) in doc
+        .array_of_tables("gate.census_retired")
+        .iter()
+        .enumerate()
+    {
+        let at = i + 1;
+        let (Some(krate), Some(commit), Some(floor), Some(from), Some(to)) = (
+            t.str_of("crate").filter(|v| !v.is_empty()),
+            t.str_of("commit").filter(|v| !v.is_empty()),
+            t.str_of("floor").filter(|v| !v.is_empty()),
+            t.int_of("from"),
+            t.int_of("to"),
+        ) else {
+            bad.push(format!(
+                "[[gate.census_retired]] #{at} is missing one of `crate`, `commit`, `floor`, \
+                 `from`, `to`. A row nobody can read is not a retirement, and a half-read row that \
+                 was skipped would be a floor lowered by nothing"
+            ));
+            continue;
+        };
+        if to != from - 1 {
+            bad.push(format!(
+                "[[gate.census_retired]] `{krate}`: `from = {from}`, `to = {to}` — a retirement \
+                 deletes ONE crate, so it lowers its floor by exactly one. A row that lowers it by \
+                 {} is that many retirements under one sentence, and only the first was read",
+                from - to
+            ));
+            continue;
+        }
+        rows.push(Retired {
+            krate: krate.to_string(),
+            commit: commit.to_string(),
+            floor: floor.to_string(),
+            from,
+            to,
+        });
+    }
+    (rows, bad)
 }
 
 /// Every integer under `[gate.census]`, including its `plugin_kinds` sub-table, by dotted key.
@@ -277,6 +381,7 @@ mod tests {
             &doc(&DOC.replace("plane_crates = 4", "plane_crates = 3")),
             &doc(DOC),
             "abc1234",
+            &[],
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(
@@ -293,6 +398,7 @@ mod tests {
             &doc("[gate.census]\nplane_crates = 4\n"),
             &doc(DOC),
             "abc1234",
+            &[],
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(
@@ -301,11 +407,87 @@ mod tests {
         );
     }
 
+    fn retired(floor: &str, from: i64, to: i64) -> Vec<Retired> {
+        let text = format!(
+            "[[gate.census_retired]]\ncrate = \"busbar-voice\"\ncommit = \"deadbee\"\nfloor = \
+             \"{floor}\"\nfrom = {from}\nto = {to}\n"
+        );
+        let (rows, bad) = retirements(&doc(&text));
+        assert!(bad.is_empty(), "{bad:?}");
+        rows
+    }
+
+    /// THE DOOR. A legacy crate's deletion drops `gate.plane_crates` by one, and the ONLY thing
+    /// that admits the drop is a row naming the crate, the commit, the floor and both numbers.
+    #[test]
+    fn a_census_retired_row_admits_the_floor_it_names_and_nothing_else() {
+        let now = doc(&DOC.replace("plane_crates = 4", "plane_crates = 3"));
+        assert!(
+            lowered_floors(&now, &doc(DOC), "abc1234", &retired("plane_crates", 4, 3)).is_empty(),
+            "the row that names this exact drop admits it"
+        );
+        // …AND IT IS A DOOR AND NOT A HOLE. A row about a different floor, or about different
+        // numbers, admits nothing: the drop it describes is not the drop that happened.
+        for wrong in [
+            retired("plugin_kinds.plane", 4, 3),
+            retired("plane_crates", 9, 8),
+        ] {
+            let out = lowered_floors(&now, &doc(DOC), "abc1234", &wrong);
+            assert_eq!(out.len(), 1, "{out:?}");
+            assert!(
+                out[0].contains("plane_crates: the floor itself went 4 -> 3"),
+                "{out:?}"
+            );
+        }
+    }
+
+    /// A LOWERED FLOOR WITH NO ROW STAYS REFUSED, and the refusal now says which row would have
+    /// admitted it — the finding is a scaffold, not a dead end.
+    #[test]
+    fn a_lowered_floor_with_no_retirement_row_is_still_red() {
+        let out = lowered_floors(
+            &doc(&DOC.replace("plane_crates = 4", "plane_crates = 3")),
+            &doc(DOC),
+            "abc1234",
+            &[],
+        );
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("gate.census_retired"), "{out:?}");
+        assert!(out[0].contains("from = 4"), "{out:?}");
+        assert!(out[0].contains("to = 3"), "{out:?}");
+    }
+
+    /// ONE RETIREMENT DELETES ONE CRATE. A row that lowers its floor by two is two retirements
+    /// under one sentence, and the second is the one nobody read.
+    #[test]
+    fn a_retirement_row_may_lower_its_floor_by_exactly_one() {
+        let (rows, bad) = retirements(&doc(
+            "[[gate.census_retired]]\ncrate = \"busbar-voice\"\ncommit = \"deadbee\"\nfloor = \
+             \"plane_crates\"\nfrom = 4\nto = 2\n",
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].contains("lowers it by 2"), "{bad:?}");
+    }
+
+    /// A ROW WITH HALF ITS FIELDS IS NOT A RETIREMENT. Skipping it silently would be a floor
+    /// lowered by nothing at all.
+    #[test]
+    fn a_retirement_row_missing_a_field_is_refused_not_skipped() {
+        let (rows, bad) = retirements(&doc(
+            "[[gate.census_retired]]\ncrate = \"busbar-voice\"\nfloor = \"plane_crates\"\nfrom = \
+             4\nto = 3\n",
+        ));
+        assert!(rows.is_empty());
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].contains("missing one of"), "{bad:?}");
+    }
+
     /// Raising a floor, and adding a new one, are the ordinary direction and are not findings.
     #[test]
     fn a_floor_that_rose_or_appeared_is_not_a_finding() {
         let grown =
             format!("{DOC}egress_auth = 0\n").replace("plane_crates = 4", "plane_crates = 9");
-        assert!(lowered_floors(&doc(&grown), &doc(DOC), "abc1234").is_empty());
+        assert!(lowered_floors(&doc(&grown), &doc(DOC), "abc1234", &[]).is_empty());
     }
 }
