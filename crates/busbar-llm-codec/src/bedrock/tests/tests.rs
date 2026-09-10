@@ -6662,3 +6662,32 @@ fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
         "both citations must reach the wire, in order, got {frames:?}"
     );
 }
+
+// ── GOLDEN PARITY CELL: the (class -> `__type` exception name) column this dialect renders, pinned
+//    as bytes; the nine classes are spelled by hand so the cell says the same thing whichever crate
+//    owns the enum.
+#[test]
+fn status_word_golden() {
+    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
+    let golden: [(StatusClass, &str); 9] = [
+        (StatusClass::RateLimit, "ThrottlingException"),
+        (StatusClass::Overloaded, "ServiceUnavailableException"),
+        (StatusClass::ServerError, "InternalServerException"),
+        (StatusClass::Timeout, "ModelStreamErrorException"),
+        (StatusClass::Network, "InternalServerException"),
+        (StatusClass::Auth, "InternalServerException"),
+        (StatusClass::Billing, "InternalServerException"),
+        (StatusClass::ClientError, "ValidationException"),
+        (StatusClass::ContextLength, "ValidationException"),
+    ];
+    for (class, word) in golden {
+        let err = CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        };
+        let (name, message) = bedrock_stream_exception_for(&err);
+        assert_eq!(name, word, "class={class:?}");
+        assert_eq!(message, word, "an absent signal falls back to the name");
+    }
+}

@@ -1834,7 +1834,7 @@ count = "285"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "substrate"
-count = "904"
+count = "909"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -5490,7 +5490,7 @@ count = "3208"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11200"
+count = "11204"
 
 [[cell]]
 crate = "busbar-mcp"
