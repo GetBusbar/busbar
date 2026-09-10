@@ -306,13 +306,20 @@ pub fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
     if let Ok(n) = s.parse::<u64>() {
         return Some(n);
     }
+    // All THREE date forms RFC 9110 §5.6.7 requires a recipient to accept. A parser that reads only
+    // the recommended one silently discards the cooldown floor an upstream actually stated, and the
+    // breaker then guesses a backoff against a destination that had already told it the answer —
+    // which is exactly what a `Retry-After` is for. 1.5.5 got all three from `httpdate`
+    // (`busbar-substrate-values/src/breaker.rs:148`); this crate takes no such dependency, so the
+    // two obsolete forms are read here, off the same civil-date arithmetic as the first.
     parse_imf_fixdate_retry_after(s, now)
+        .or_else(|| parse_rfc850_retry_after(s, now))
+        .or_else(|| parse_asctime_retry_after(s, now))
 }
 
-/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole HTTP-date form RFC
-/// 9110 recommends generating, though obsolete forms are permitted for parsing — this parser
-/// accepts only the recommended form, matching every provider observed in practice) and return the
-/// whole seconds remaining until it, floored at 0 for a date already in the past.
+/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole form RFC 9110
+/// recommends GENERATING) and return the whole seconds remaining until it, floored at 0 for a date
+/// already in the past.
 fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
     // "Www, dd Mon yyyy HH:MM:SS GMT" — fixed-width, so a byte-length check plus field slicing is
     // enough; no general calendar library is warranted for one wire format.
@@ -329,6 +336,48 @@ fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
     if s.as_bytes().get(3) != Some(&b',') || s.as_bytes().get(4) != Some(&b' ') {
         return None;
     }
+    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
+    Some(epoch_secs.saturating_sub(now))
+}
+
+/// Parse the obsolete RFC-850 form (`Sunday, 06-Nov-94 08:49:37 GMT`) — a full weekday name, a
+/// hyphenated date and a TWO-DIGIT year. The century is resolved the way `httpdate` resolves it, so
+/// a value 1.5.5 accepted keeps the same meaning: `< 70` is this century, anything else the last.
+fn parse_rfc850_retry_after(s: &str, now: u64) -> Option<u64> {
+    // The weekday is a full name of no fixed width, so the date is taken from after the comma
+    // rather than by absolute offset; everything after it IS fixed-width.
+    let rest = s.split_once(", ")?.1;
+    let b = rest.as_bytes();
+    if b.len() != 22 || !rest.ends_with(" GMT") || b[2] != b'-' || b[6] != b'-' {
+        return None;
+    }
+    let day: u64 = rest.get(0..2)?.parse().ok()?;
+    let month = month_from_abbrev(rest.get(3..6)?)?;
+    let two_digit_year: u64 = rest.get(7..9)?.parse().ok()?;
+    let year = if two_digit_year < 70 {
+        2000 + two_digit_year
+    } else {
+        1900 + two_digit_year
+    };
+    let hour: u64 = rest.get(10..12)?.parse().ok()?;
+    let minute: u64 = rest.get(13..15)?.parse().ok()?;
+    let second: u64 = rest.get(16..18)?.parse().ok()?;
+    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
+    Some(epoch_secs.saturating_sub(now))
+}
+
+/// Parse the obsolete asctime form (`Sun Nov  6 08:49:37 1994`) — no comma, no zone, and a day that
+/// is SPACE-padded rather than zero-padded, which is why the day field is trimmed before it is read.
+fn parse_asctime_retry_after(s: &str, now: u64) -> Option<u64> {
+    if s.len() != 24 {
+        return None;
+    }
+    let month = month_from_abbrev(s.get(4..7)?)?;
+    let day: u64 = s.get(8..10)?.trim_start().parse().ok()?;
+    let hour: u64 = s.get(11..13)?.parse().ok()?;
+    let minute: u64 = s.get(14..16)?.parse().ok()?;
+    let second: u64 = s.get(17..19)?.parse().ok()?;
+    let year: u64 = s.get(20..24)?.parse().ok()?;
     let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
     Some(epoch_secs.saturating_sub(now))
 }
