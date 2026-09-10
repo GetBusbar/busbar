@@ -63,6 +63,7 @@ pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
 pub mod policy;
+pub mod pool_hydration;
 pub mod registry;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
