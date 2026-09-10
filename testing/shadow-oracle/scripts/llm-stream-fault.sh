@@ -44,8 +44,9 @@
 #                      mystery in the answer
 #   effects.stream_fault  the surfaces a normalized body cannot carry: the client-side transport
 #                      verdict (curl's rc: 0 = the door closed cleanly, 18/56 = the CALLER's socket
-#                      died too), the frame count, and a second usage read after a settle pause --
-#                      a late or doubled posting is drift here, not silence
+#                      died too), the frame count, the byte length of the body AS RECORDED, and a
+#                      second usage read after a settle pause -- a late or doubled posting is drift
+#                      here, not silence
 #
 # THE TWO FAULT SHAPES, both from the pinned mock's own verb vocabulary, both deterministic:
 #   stream-error   the upstream sends the dialect's normal frames up to and including the text
@@ -174,11 +175,58 @@ kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 python3 "${TOOL}/capture.py" "$RAW/headers" "$status" "$RAW/body" "$RAW/before" "$RAW/after" "${egress_files[@]}" \
   >"$W/captured.json" 2>"$W/capture.err" || broke "capture.py failed: $(tail -c 300 "$W/capture.err")"
 
-# THE SURFACES A NORMALIZED BODY CANNOT CARRY. Counted here, on the raw bytes, before normalize.py
-# ever sees them: a frame count taken after normalization would be a property of the normalizer.
+# THE SURFACES A NORMALIZED BODY CANNOT CARRY. The FRAME COUNT is counted here, on the raw bytes,
+# before normalize.py ever sees them: a frame count taken after normalization would be a property of
+# the normalizer, and the number of frames a body decodes to is a property of the dialect's framing,
+# not of its bytes.
 frames="$(awk '/^(data|event):/{n++} END{print n+0}' "$RAW/body" 2>/dev/null)"
 [ -n "$frames" ] || frames=0
-bytes="$(wc -c <"$RAW/body" | tr -d ' ')"
+
+# THE BYTE COUNT IS OF THE BODY AS RECORDED, NOT AS RECEIVED -- and this is the one figure in this
+# script that had to change its mind.
+#
+# It used to be `wc -c <"$RAW/body"`: the bytes that came off the socket. That is a fine number and a
+# real measurement, but it is a measurement of something the recording does not keep. normalize.py
+# rewrites the body before it becomes a cell -- a synthesized wire id becomes `<ID>`, a unix second
+# becomes `0` -- so the count and the body sat at a DISTANCE from each other, and the distance was
+# different on the two binaries. On `llm.stream|responses|cut` the golden's count sat 53 bytes above
+# its recorded body (a 48-character synthesized `resp_` id, plus a ten-digit `created_at`) and the
+# candidate's sat 44 above its own (the same id, and a `created_at` that had regressed to a single
+# `0`). Every recorded class agreed; the two counts did not, by exactly the nine bytes the body class
+# could no longer see. The count had become the shadow of a value that had just been normalized away
+# -- which is precisely what normalize.py's own `hdr.length` rule exists to handle, replacing
+# Content-Length with `<LEN>` whenever a body rule fired.
+#
+# TWO WAYS TO STOP A SHADOW BEING MISTAKEN FOR A FACT, and this takes the first:
+#   1. count the body AS RECORDED, so the count and the body are the same measurement of the same
+#      bytes and move together by construction;
+#   2. drop the figure, `hdr.length`-style, whenever a body rule fired.
+# (2) is the safer-looking option and is the wrong one here: it throws away a real number on exactly
+# the cells that are most interesting (any cell whose body carried an id or a timestamp), and it
+# cannot even be implemented on this side of the harness -- WHICH rules fired is normalize.py's
+# answer, and normalize.py is the pinned tool's, not busbar's to interrogate. (1) keeps a count that
+# still means something -- the recorded body's length, comparable across binaries and derivable by
+# anyone reading the cell -- and it is what the oracle's derived-from-body relation needs to see: a
+# script figure that IS a measurement of the accepted body, at the same distance from it (here, zero)
+# on both sides.
+#
+# THE COUNT IS TAKEN THROUGH THE TOOL'S OWN NORMALIZER, invoked exactly as record.sh invokes it for a
+# script cell (no --key-id, no --keep, no --driver), so the number cannot drift from the cell that
+# gets written: it is the length of the very field the differ will compare. Nine of the ten SSE cells
+# in this family already agreed to the byte before this change -- their bodies carry nothing a rule
+# rewrites -- so what this moves is the one cell where a rule fired, which is the point.
+#
+# A body with no recorded byte form (bedrock's `eventstream`, recorded as STRUCTURE) has no length to
+# take: it falls back to the received count, which is what it always was, and the derived relation
+# declines that cell by its own rule rather than being fed a number that means something else.
+normalized="$W/normalized.json"
+bytes=""
+if python3 "${TOOL}/normalize.py" "$W/captured.json" >"$normalized" 2>"$W/normalize.err"; then
+  if jq -e '.body | type == "object" and has("text")' "$normalized" >/dev/null 2>&1; then
+    bytes="$(jq -j '.body.text' "$normalized" | wc -c | tr -d ' ')"
+  fi
+fi
+[ -n "$bytes" ] || bytes="$(wc -c <"$RAW/body" | tr -d ' ')"
 late_delta="$(jq -n --argjson a "$usage_settled" --argjson b "$usage_late" \
   '{requests: (($b.requests//0) - ($a.requests//0)), tokens: (($b.tokens//0) - ($a.tokens//0)),
     spend_cents: (($b.spend_cents//0) - ($a.spend_cents//0))}' 2>/dev/null)" || late_delta='null'
