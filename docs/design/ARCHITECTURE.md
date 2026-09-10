@@ -57,6 +57,19 @@ them). Each axis is blind to the other two; only the kernel composes them.
   cross-check detects inconsistency between the plane's two legs and the kernel-sealed destination lane, and a uniformly lying plane is
   what the expensive-lane meta-test and the variance rule's kernel-derived lines are for). It is pure over its inputs and performs no I/O; its durable state is
   kernel-held records reached only through Route legs (§2.3 `PlaneRecord`).
+  **A CLAIM KEY IS THE ONE PLACE A WIRE'S NAME MAY APPEAR IN PLANE SOURCE, AND IT APPEARS THERE
+  ONCE.** The claim FACE of a plane is its crate's `claims` module: one `pub const` per wire the
+  plane claims, named for the ROLE the claim plays and carrying the wire's own name only as its
+  VALUE. Every other spelling of a wire inside a plane crate — a constant or a predicate named after
+  the carrier, a binding name spelled after it, a doc sentence, a manifest comment, a test that
+  types a carrier to drive a rig or to be told "no" — is a plane naming a transport INSTANCE, and it
+  is drained rather than declared: a rig reads the plane's registered claims (`PlaneMeta::CLAIMS`)
+  instead of enumerating wires, and a negative case asks the plane's own `declares` about a key the
+  plane declares nothing on. Declared by identity, per file, and these are the only files:
+  `busbar-plane-llm/src/claims.rs` **2** (`TRANSPORT`, `STREAM_TRANSPORT`) and
+  `busbar-plane-mcp/src/claims.rs` **3** (`TRANSPORT`, `STREAM_TRANSPORT`, `CONSOLE_TRANSPORT`) —
+  one line each, the value and nothing else. `busbar-plane-mcp × transport` falls **82 → 3** on this
+  rule, and no other file of that crate names a wire at all.
 - A **unit** takes facts + a principal + the kernel's clock and nothing else; it names no plane and no
   transport; it never calls another unit.
 - The **kernel** is the **registry** and the **Teller** plus what the loop needs: frame pump, sessions

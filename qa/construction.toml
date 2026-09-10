@@ -459,6 +459,36 @@ file = "qa/kind-isolation.toml"
 by = 29
 because = "TEST SIBLING identity, root x transport: the cells that prove the composition, in tests/units_llm_mount.rs 0 -> 16, tests/plane_ctx.rs 0 -> 6, tests/data_plane.rs 0 -> 5, tests/units_a2a_boot.rs 0 -> 1 and tests/units_llm_leg.rs 0 -> 1 - a sibling resolves a declared binding against the instance the root composed, which is the mount it is testing; 1099 -> 1128"
 
+# THE MCP PLANE'S CLAIM FACE, DECLARED BY IDENTITY -- AND NO RAISE IS OWED, BECAUSE EVERY FIGURE
+# FELL. A plane never names a transport INSTANCE. The claim FACE is the crate's `claims` module:
+# one `pub const` per wire the plane claims, named for the ROLE the claim plays, carrying the
+# wire's own name only as its VALUE. ARCHITECTURE.md 1.1 states the rule and names the files it
+# holds for. The identity, per file, and these are the only files that carry it:
+#
+#   crates/busbar-plane-mcp/src/claims.rs   3   TRANSPORT / STREAM_TRANSPORT / CONSOLE_TRANSPORT
+#   crates/busbar-plane-llm/src/claims.rs   2   TRANSPORT / STREAM_TRANSPORT   (already at 35, unmoved)
+#
+# Everything else fell rather than being declared -- constants and a predicate spelled after the
+# carrier, a binding name whose value was a wire's name, doc and manifest prose, and four test rigs
+# that enumerated wires instead of reading `PlaneMeta::CLAIMS`:
+#
+#   cell.busbar-plane-mcp.transport.count            82 -> 3
+#
+# The ROOT follows the renames at its 51 mcp call sites, so ten root cells fall with it. THE FIGURES
+# BELOW ARE MEASURED UNDER THE ROOT-PROSE RULE (the four commits ending 47fe3863b), which this line
+# is held after; on this branch alone the root cells still measure their pre-prose numbers.
+#
+#   cell.busbar.api.count                            65 -> 63
+#   cell.busbar.caps.count                          329 -> 328
+#   cell.busbar.contract-transport.count            102 -> 101
+#   cell.busbar.control.count                      1051 -> 928
+#   cell.busbar.kernel.count                        250 -> 245
+#   cell.busbar.legacy.count                         90 -> 80
+#   cell.busbar.plane.count                        2598 -> 2376
+#   cell.busbar.substrate.count                       5 -> 4
+#   cell.busbar.transport.count                    1128 -> 880
+#   cell.busbar.unit.count                         1206 -> 1173
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
