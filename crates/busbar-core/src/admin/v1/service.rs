@@ -116,7 +116,13 @@ fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &Usage
     // key. The identity `resolve_model_alias` that used to stand between them was a seam held open
     // for a re-aliasing the 1.5.0 keying decision made impossible; it named nothing this call site
     // does not already have.
-    cost.derive_spend_micros([(model, &units)].into_iter(), b.requests, true)
+    crate::cost::derive_spend_micros_units(
+        cost.card(),
+        crate::cost::CurrencyCode::USD,
+        [(model, &units)].into_iter(),
+        b.requests,
+        true,
+    )
 }
 
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
