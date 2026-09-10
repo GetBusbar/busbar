@@ -1724,7 +1724,7 @@ count = "4"
 [[cell]]
 crate = "busbar-kernel"
 kind = "caps"
-count = "68"
+count = "70"
 
 [[cell]]
 crate = "busbar-kernel"

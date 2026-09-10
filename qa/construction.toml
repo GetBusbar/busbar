@@ -207,6 +207,46 @@ file = "qa/kind-isolation.toml"
 by = 49
 because = "THE UPSTREAM LEG extends this by 7 (207 -> 214): the dial the leg is opened with is this transport's own `Transport::dial`, reached through the wire vocabulary the crate already names — the sealed destination, the key handle and the connection the socket is taken whole out of — so there is no second dialling path in this crate. busbar-transport-ws × transport (busbar-transport-ws, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
+# ── declared raises: the UNIT VIEW's 29 lines of the kernel's own budget. Three ratchets move and
+# they are the SAME 29 lines counted three ways — the Teller-loop file, the kernel total that file
+# is in, and the union that total is in — so a reader who saw one without the other two would be
+# reading a kernel that grew somewhere it did not. section 1.1's OWNER figures are untouched and
+# still true: busbar-kernel <= 8k with the Teller loop <= 1.5k, measured at 5,408 and 635. What
+# these three pin is today's measurement, at zero slack, which is what makes the next line visible.
+#
+# Why the lines are in teller.rs rather than a file of their own: the mint is the SIXTH thing minted
+# outside the loop and the whole reason the other five are named symbols on `Kernel` is that the
+# source scan can then account for every one of them in one place. A view minted from a sibling
+# module would be the one mint a reader of this file could not see.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 29
+because = "FACE busbar_kernel::teller::Kernel::unit_view + UnitIdentity \u2014 the unit VIEW the composition is lent for the length of one call, beside the five tokens minted outside the loop. `Unit::new` takes the contract's sealing marker, so a `Unit` was a value nothing in this tree constructed and the two upstream encoders had a parameter no caller could supply; this is the same shape `transport_key_token` and `admin_token` already are, one step over. 29 surface lines measured (606 -> 635), of which the identity is 8: the six fields a `Unit` does NOT take from a `UnitDraft`, gathered into one value because six positional arguments of which four are Options is four chances to transpose the session and the stream"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 29
+because = "The same 29 lines as the Teller-loop raise above, counted again in the kernel total the file belongs to (5,379 -> 5,408). No reachable busbar-unit-* file moved: the view names none of them"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 13
+because = "The same 29 lines again, counted in the union the kernel total belongs to \u2014 but the union is NET 13 against the base (23,465 -> 23,478), because this branch had already drained 16 lines out of it before this landing and the ceiling was re-pinned to 23,449 there. 13 is what this tree actually rose by, which is what a declared raise is for; the other 16 were paid. caps/contract did not move \u2014 the view is spelled in the vocabulary the contract already carries, and busbar-caps gained nothing: the seal reaches the contract as a token that already exists"
+
+# ── declared raise: the UNIT VIEW. `Kernel::unit_view` is the sixth thing minted outside the loop,
+# and the two lines it costs are the two the other five cost: the seal reaches the contract as a
+# TOKEN (`KernelSeal` is busbar-caps's own hole and does not implement the contract's marker; the
+# twelve tokens do), so the mint is spelled where the `token-sealed` scan accounts for it. Nothing
+# else in the kernel moved: the view's own vocabulary is the CONTRACT's, because a `Unit` is the
+# contract's object and the loop's settlement ids never cross into a plugin's view.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-kernel.caps.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-kernel \u00d7 caps (busbar-kernel, caps): `Kernel::unit_view` lends the ENCODE step's own token as the contract's sealing marker for the one call that writes a unit's bytes upstream \u2014 `UnitToken::<Encode>::mint(&self.seal)`, minted fresh and dropped with the call, exactly as the step's own is inside the loop. Two spellings: the token and the step. The mint is deliberately in this crate's source rather than hidden behind a helper, because the `token-sealed` scan's whole job is to see every one of them"
+
 # THE SESSION DRIVER'S TWO NEW CELLS, and both of them are `busbar` — the composition root, the one
 # WIRE-PERMITTED kind, naming what it composes. A rise anywhere else would be coupling and would be
 # drained instead, which is what being generic over the units and over the wire buys: the driver
@@ -446,7 +486,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5408
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3479
@@ -454,7 +494,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23449
+union_ceiling = 23478
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -463,7 +503,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 635
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -693,7 +733,16 @@ review to do it. Scanned INCLUDING test code on purpose -- every site this rule 
 was written was in a test module, so a production-only reading of it would be vacuous by \
 construction and would prove nothing. This is the in-tree half only: an out-of-tree plugin can still \
 implement the trait, and per the trust policy a loaded plugin is trusted code, so that is not a line \
-this rule pretends to draw."""
+this rule pretends to draw.
+
+EXTENDED for the unit VIEW. Until `busbar_kernel::teller::Kernel::unit_view` landed, the `Unit` \
+this trait guards was a value NOTHING in the tree constructed -- a workspace search for `Unit::new` \
+found only planes' own newtypes -- so the trait's in-tree forgery surface was theoretical for that \
+one view and real only for the other three. It is real for all four now: a relayed session's \
+upstream write takes a `Unit`, the kernel's seal is a private field so `unit_view` is the only route \
+out of that crate to one, and THIS scan is what says the route cannot be gone round by a crate \
+implementing the marker itself. The three untracked sites below are the debt that reading exposes, \
+not a new one this landing made."""
 pattern = 'impl(<[^>]*>)?\s+(busbar_contract::)?(plugin::)?KernelSeal\s+for'
 allowed_root = "crates/busbar-caps/src"
 max_sites = 0

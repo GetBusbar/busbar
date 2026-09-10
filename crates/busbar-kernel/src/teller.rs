@@ -192,12 +192,121 @@ impl Kernel {
         UsageToken::mint(&self.seal)
     }
 
+    /// THE UNIT VIEW, as the composition is lent one for the length of one call.
+    ///
+    /// The sixth thing minted outside the loop, and the reason is the same shape as the other five:
+    /// [`busbar_contract::unit::Unit::new`] takes a [`KernelSeal`], so a `Unit` is a value nothing
+    /// in this tree could construct — a workspace search for it finds only planes' own newtypes —
+    /// and the two encoders that take one (`Plane::encode_egress` and `Plane::encode_end`) therefore
+    /// had a parameter no caller outside a plane's own tests could supply. That was true of
+    /// `provision_server` until `transport_key_token` existed, and it is true of the upstream half
+    /// of a relayed session until this exists.
+    ///
+    /// ## What it is a view OF, and what it is not
+    ///
+    /// It is a PROJECTION and it mints no judgement. Everything about the work is the draft's — the
+    /// operation class that priced the unit, the body the plane decoded, the facts it read off the
+    /// bytes, the correlation it answers — and it is carried across verbatim. Everything about
+    /// WHOSE work it is is the identity's, and that is the half only the kernel can seal: the key,
+    /// the origin, the session, the stream, the direction and the principal the authenticate step
+    /// answered with. A composition that could write the first half would be a plane writing its own
+    /// evidence; one that could write the second would be a caller writing whose it was.
+    ///
+    /// So this call decides NOTHING. It does not admit, price, meter, post or settle, and it opens
+    /// no unit in the in-flight table — a view is not a unit's life, it is what the unit looks like
+    /// to the one call that is about to write its bytes. The loop that judged the draft has already
+    /// run by the time anybody wants one.
+    ///
+    /// ## Why forgery is closed here rather than by the type system
+    ///
+    /// `KernelSeal` has to be a public trait — busbar-caps implements it on every token and sits
+    /// ABOVE the contract, and Rust cannot say "implementable by exactly one other crate" — so the
+    /// compiler does not close it and two other things do. IN-TREE: the seal this kernel holds is a
+    /// private field, so this call is the only way out of this crate to a `Unit`, and the
+    /// construction gate's `kernel-seal-impls` scan counts every crate that implements the trait
+    /// instead. OUT-OF-TREE a plugin can still implement it, and that is not a line this pretends to
+    /// draw: a loaded plugin is trusted code under the signed-plugin boundary
+    /// (`busbar-contract`'s `plugin` module, the loader's own fixture), and the trust decision was
+    /// made when it was signed.
+    ///
+    /// The private field is what the cell below cannot get round:
+    ///
+    /// ```compile_fail
+    /// let kernel = busbar_kernel::teller::Kernel::new();
+    /// // The seal is a private field, so there is no route from outside this crate to the one
+    /// // argument `Unit::new` needs. `unit_view` is the whole of the way through.
+    /// let forged = &kernel.seal;
+    /// ```
+    ///
+    /// Kept beside the other five and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    #[must_use]
+    pub fn unit_view<'u>(
+        &self,
+        id: &UnitIdentity,
+        draft: &busbar_contract::plane::UnitDraft<'u>,
+    ) -> busbar_contract::unit::Unit<'u> {
+        // THE SEAL REACHES THE CONTRACT AS A TOKEN, never as itself: `KernelSeal` is this crate's
+        // hole and does not implement the contract's marker; the twelve tokens do, and a call site
+        // reads `Unit::new(&SomeToken, ..)`. The one lent here is the ENCODE step's, because the
+        // one thing a view is for is the call that writes the unit's bytes — `encode_egress`,
+        // `encode_ingress_frame`, `encode_end` — and the step whose authority that is is the step
+        // the plane spells those on. It is minted fresh and dropped with this call, exactly as the
+        // step's own is inside the loop, and the mint is spelled where the `token-sealed` scan can
+        // account for it.
+        busbar_contract::unit::Unit::new(
+            &UnitToken::<Encode>::mint(&self.seal),
+            id.key,
+            id.origin,
+            id.session,
+            id.stream,
+            id.direction,
+            id.principal.clone(),
+            draft.op,
+            draft.body_ir,
+            draft.facts,
+            draft.correlates,
+        )
+    }
+
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
     /// module, which materialises a hold from a journal record, and the node's sweep, which is the
     /// second and last holder of an exit token.
     pub(crate) fn seal(&self) -> &KernelSeal {
         &self.seal
     }
+}
+
+/// WHOSE WORK A UNIT IS — the half of a unit that is not the draft's, and the only half the kernel
+/// seals.
+///
+/// The six fields are exactly the six [`busbar_contract::unit::Unit`] does not take from a
+/// [`busbar_contract::plane::UnitDraft`], and they are gathered into one value rather than passed as
+/// six arguments for the reason the loop's own contexts are: a caller assembling six positional
+/// arguments of which four are `Option`s is a caller who can silently transpose two of them, and the
+/// two that would transpose here are the session and the stream.
+///
+/// It carries no money, no step token and no decision. Holding one is not permission to do anything
+/// — [`Kernel::unit_view`] is what turns one into a view, and only the kernel can call that.
+///
+/// The six are spelled in the CONTRACT's vocabulary rather than the loop's, and that is not an
+/// accident of types: a `Unit` is the contract's object, read by a plane, and the plane's ids are
+/// the ones it is keyed on. The loop's own `busbar_caps` ids are the settlement side of the same
+/// facts and never cross into a plugin's view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitIdentity {
+    /// The unit's node-local identity.
+    pub key: busbar_contract::UnitKey,
+    /// Why the unit exists.
+    pub origin: busbar_contract::unit::Origin,
+    /// Which session it belongs to, on a session transport.
+    pub session: Option<busbar_contract::SessionId>,
+    /// Which stream of that session it belongs to.
+    pub stream: Option<busbar_contract::StreamId>,
+    /// Which way it is flowing.
+    pub direction: busbar_contract::wire::Direction,
+    /// Who it is for, once the authenticate step has answered.
+    pub principal: Option<busbar_contract::PrincipalId>,
 }
 
 /// What the loop knows about a unit that is not the money.
