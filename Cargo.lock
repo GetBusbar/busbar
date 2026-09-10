@@ -5234,6 +5234,15 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "busbar-caps",
+ "busbar-contract",
+ "busbar-plugin-testkit",
+ "busbar-transport-grpc",
+ "busbar-transport-http",
+ "busbar-transport-sse",
+ "busbar-transport-stdio",
+ "busbar-transport-tcp",
+ "busbar-transport-tls",
+ "busbar-transport-ws",
  "busbar-unit-admission",
  "busbar-unit-audit",
  "busbar-unit-auth",
