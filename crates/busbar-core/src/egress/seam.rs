@@ -12,7 +12,7 @@
 //! that moves here. What moves is the hop itself — the socket, the pinned client, the peer
 //! certificate, the streamed body — which the host already owns behind the egress vtable. This module
 //! is the thin translation between the host's poll seam and the planes' existing
-//! [`Response`](super::Response) / [`StreamHead`](super::StreamHead) vocabulary, so those callers read
+//! [`Response`](busbar_substrate::egress::Response) / [`StreamHead`](busbar_substrate::egress::StreamHead) vocabulary, so those callers read
 //! unchanged.
 //!
 //! ## Byte-identity, by construction
@@ -234,13 +234,13 @@ pub fn buffered(
 /// relay is its one consumer); truth value of the former `plane-a2a` gate.
 #[cfg(feature = "egress-stream")]
 pub enum StreamOutcome {
-    /// A non-2xx or non-event-stream reply, read whole to the cap. The [`StreamHead`](super::StreamHead)
+    /// A non-2xx or non-event-stream reply, read whole to the cap. The [`StreamHead`](busbar_substrate::egress::StreamHead)
     /// carries the body; there is nothing to pump.
-    Buffered(super::StreamHead),
+    Buffered(busbar_substrate::egress::StreamHead),
     /// A live `text/event-stream`: the head (empty body — the bytes go to the sink) and the egress id
     /// the caller [`pump`]s.
     Streaming {
-        head: super::StreamHead,
+        head: busbar_substrate::egress::StreamHead,
         id: busbar_plugin::hot::EgressId,
     },
 }
@@ -267,7 +267,7 @@ pub fn stream_head(
         (200..300).contains(&head.status) && content_type.starts_with("text/event-stream");
     if is_stream {
         Ok(StreamOutcome::Streaming {
-            head: super::StreamHead {
+            head: busbar_substrate::egress::StreamHead {
                 status: head.status,
                 content_type,
                 body: Vec::new(),
@@ -287,11 +287,13 @@ pub fn stream_head(
                 url: spec.url.to_string(),
             });
         }
-        Ok(StreamOutcome::Buffered(super::StreamHead {
-            status: head.status,
-            content_type,
-            body,
-        }))
+        Ok(StreamOutcome::Buffered(
+            busbar_substrate::egress::StreamHead {
+                status: head.status,
+                content_type,
+                body,
+            },
+        ))
     }
 }
 
@@ -307,7 +309,7 @@ pub enum PumpEnd {
 }
 
 /// Drive a live event-stream body to `on_chunk`, one host read per call, until EOF, the sink's
-/// [`ChunkFlow::Stop`](super::ChunkFlow), or a transport failure. The egress is closed on return.
+/// [`ChunkFlow::Stop`](busbar_substrate::egress::ChunkFlow), or a transport failure. The egress is closed on return.
 ///
 /// PER-CHUNK BOUNDARY NUANCE: the host delivers bytes in reads bounded by the buffer this pump offers,
 /// which need not match the upstream's own chunk boundaries. The CONCATENATION of what `on_chunk` sees
@@ -318,7 +320,7 @@ pub enum PumpEnd {
 pub fn pump(
     scope: &DispatchScope,
     id: busbar_plugin::hot::EgressId,
-    on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
+    on_chunk: &mut (dyn FnMut(&[u8]) -> busbar_substrate::egress::ChunkFlow + Send),
 ) -> PumpEnd {
     let mut scratch = vec![0u8; READ_CHUNK];
     let end = loop {
@@ -326,7 +328,7 @@ pub fn pump(
         match class {
             StatusClass::Ok if n == 0 => break PumpEnd::Done,
             StatusClass::Ok => {
-                if on_chunk(&scratch[..n]) == super::ChunkFlow::Stop {
+                if on_chunk(&scratch[..n]) == busbar_substrate::egress::ChunkFlow::Stop {
                     break PumpEnd::Done;
                 }
             }
@@ -356,8 +358,8 @@ impl HostlessEgress for CoreHostlessEgress {
         &self,
         spec: &HopSpec<'_>,
         cap: usize,
-        on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
-    ) -> Result<super::StreamHead, EgressFaultInfo> {
+        on_chunk: &mut (dyn FnMut(&[u8]) -> busbar_substrate::egress::ChunkFlow + Send),
+    ) -> Result<busbar_substrate::egress::StreamHead, EgressFaultInfo> {
         // ONE hostless scope spans the head AND the pump, so the streaming egress stays open between
         // `stream_head` and `pump` — byte-identical to how `a2a::transport::post_stream` drives it,
         // save that the neutral fault is surfaced whole (the caller maps it to its own message).

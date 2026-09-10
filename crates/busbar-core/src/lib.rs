@@ -149,10 +149,8 @@ pub mod cost;
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
 // existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_api::durable;
-// The host-owned neutral outbound backend, shared across protocol planes AND the plugin egress
-// vtable — always compiled, like `net_guard`, because the host owns every outbound byte whether or
-// not a protocol plane is built. The pooled client + the neutral return surface it hands back are
-// gated INSIDE the module to their consumers (the pool to either plane; the A2A return types to A2A).
+// The host-mediated egress SEAM only (`egress::seam`, the sole `HostlessEgress` impl). The neutral
+// outbound backend it drives is `busbar_substrate::egress`; core's glob re-export of it was deleted.
 pub mod egress;
 // `egress_auth` DELETED (1.6.0 deletion wave): a `pub use busbar_substrate::egress_auth::*` glob
 // plus a `gate` shim that was the same glob one level down. Readers name the substrate. The three
