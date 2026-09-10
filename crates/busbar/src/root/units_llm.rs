@@ -91,7 +91,8 @@ use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units}
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
-use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_substrate_values::proxy::{KIND_OVERLOADED, KIND_PERMISSION, POOL_LABEL_UNRESOLVED};
+use busbar_substrate_values::store::{now, now_ms};
 
 /// The transport stack every request on this plane arrives over.
 ///
@@ -367,10 +368,7 @@ impl LlmNode {
     /// window it is charged in, the stamp the in-flight table enters it under, and the pair the
     /// audit record and the posting are dated and ordered by — is spelled out of this one value.
     fn arrived(&self) -> Arrived {
-        Arrived::at(
-            busbar_substrate_values::store::now_ms(),
-            self.mono.fetch_add(1, Ordering::AcqRel),
-        )
+        Arrived::at(now_ms(), self.mono.fetch_add(1, Ordering::AcqRel))
     }
 
     /// The interner, as the walk borrows it for the length of one unit.
@@ -981,7 +979,7 @@ fn vetoed(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
         proto,
         StatusCode::FORBIDDEN,
-        busbar_substrate_values::proxy::KIND_PERMISSION,
+        KIND_PERMISSION,
         "Your API key does not have permission to access this resource.",
     )
 }
@@ -1006,7 +1004,7 @@ fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
-        busbar_substrate_values::proxy::KIND_OVERLOADED,
+        KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
     )
 }
@@ -1831,7 +1829,7 @@ fn gemini_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     let rest = busbar_llm::arrival::gemini_rest(&a.host, &a.path);
     let parsed = busbar_llm::arrival::gemini_path_parse(
         &a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at,
@@ -1851,7 +1849,7 @@ fn bedrock_path_arrival(
     a: ArrivalRequest,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let started = Instant::now();
-    let charged_at = busbar_substrate_values::store::now();
+    let charged_at = now();
     let parsed = busbar_llm::arrival::bedrock_path_parse(
         &a.host, &a.ctx, &a.path, &a.uri, &a.body, started, charged_at,
     );
