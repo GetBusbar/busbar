@@ -30,6 +30,45 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
 . "$HERE/ci-remote-lib.sh"
 
+# The oracle leg's --golden path, extracted from THIS FILE rather than duplicated as a string
+# literal in the selftest below — a selftest that copies the path instead of reading it would still
+# pass after someone reintroduces the bug in the real heredoc. Matches the "one function, so
+# --selftest drives the REAL reader rather than a copy of it" discipline used elsewhere in scripts/
+# (loom.sh, profile-lock.sh).
+oracle_golden_path() {
+  sed -n 's/.*oracle replay --golden[[:space:]][[:space:]]*\([^ ]*\).*/\1/p' "$HERE/prove-remote.sh" | head -1
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+  fails=0
+  say() { if [ "$1" = PASS ]; then echo "  ok: $2"; else echo "  SELFTEST FAILED: $2"; fails=$((fails + 1)); fi; }
+  echo "== prove-remote SELF-TEST (the oracle leg's --golden path) =="
+
+  gp="$(oracle_golden_path)"
+  echo "  --golden resolves to: $gp"
+
+  # THE BUG THIS GUARDS: target/oracle/recordings/golden is a path no prove box ever populates (it
+  # is a build-artifact directory, never checked in) — `oracle replay` against it always exits 2 on
+  # its own usage line, so the oracle leg is red on every proof regardless of the tree under test.
+  [ "$gp" != "target/oracle/recordings/golden" ] \
+    && say PASS "the golden path is not the never-populated build-artifact path" \
+    || say FAIL "the golden path is the never-populated build-artifact path ($gp)"
+
+  # THE FIX: the published golden lives in-tree, same spelling land.sh's own oracle leg uses
+  # ($here/testing/shadow-oracle/golden/1.5.5) — so it exists in every checkout a prove box pushes,
+  # with nothing to populate first.
+  [ -d "$REPO/$gp" ] \
+    && say PASS "the golden path exists in-tree at $gp" \
+    || say FAIL "the golden path does not exist in-tree at $gp"
+
+  if [ "$fails" -ne 0 ]; then
+    echo "[selftest] FAILED: $fails case(s) did not hold." >&2
+    exit 1
+  fi
+  echo "[selftest] PASS"
+  exit 0
+fi
+
 HOST=""; BRANCH=""; SETUP=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -146,7 +185,7 @@ if [ -x ./bin/oracle ]; then
   export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
   ./bin/oracle record --plane all --bin target/release/busbar \
      --filter "$FAMILIES" --out target/oracle/recordings/candidate || exit 1
-  ./bin/oracle replay --golden target/oracle/recordings/golden \
+  ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 \
      --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || exit 1
 else
   echo "   (no ./bin/oracle in this tree — the oracle leg is NOT part of this verdict)"
