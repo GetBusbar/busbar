@@ -1717,7 +1717,7 @@ count = "2145"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "43"
+count = "37"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
