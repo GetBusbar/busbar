@@ -53,6 +53,44 @@ to = "busbar-plane-voice"
 reason = "legacy drain"
 
 # ------------------------------------------------------------------------------------------------
+# [[renamed]] — A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME
+# ------------------------------------------------------------------------------------------------
+#
+# Every rule in this gate that reads HISTORY keys a crate by name against the merge-base, and none of
+# them can tell a rename apart from a delete plus an add. Measured on the owner-ruled
+# busbar-secret-ref -> busbar-secret-grammar rename: four dependency edges went `new-forbidden-edge`
+# (they exist at the base under the OLD name, so the base was asked about a name history never had),
+# five [[cell]] rows went `minted-row` for the same reason, and the rows left behind under the old
+# name were dead. [[announced]] does not help — that table opens the window for a crate that is
+# APPEARING, and a renamed crate is not appearing. R7 renames every plane and control crate, so this
+# is not one branch's problem.
+#
+# So the rename is DATA, and what it buys is exactly one thing: EVERY RULE THAT ASKS THE BASE ABOUT
+# `to` ASKS IT ABOUT `from` INSTEAD. Nothing is admitted that was not already admitted under the old
+# name — an edge the base did not have is still refused, a cell the base did not carry is still
+# minted. It is a translation, not an exemption.
+#
+#   from   — the name the merge-base carried. Must be GONE from the workspace.
+#   to     — the name this tree carries. Must be PRESENT.
+#   commit — the commit that performed the rename.
+#
+# THE KIND MAY NOT CHANGE, and that is refused on the two NAMES alone, at load, before any tree or
+# base is read. The naming scheme puts the kind IN the name, so a name change that changes the kind
+# changes what the crate IS — inheriting a store plugin's edges for a transport is the widest hole
+# this table could have. A rename across kinds is a delete plus an add BY DESIGN: argue the new
+# crate's edges afresh.
+#
+# BOTH ENDS ARE RATCHETED. `from` still in the tree would hand one crate's history to two live crates
+# at once; a `to` that is in no crate translates into nothing. Either is RED.
+#
+# The shape, for the first rename that needs one:
+#
+#   [[renamed]]
+#   from   = "busbar-secret-ref"
+#   to     = "busbar-secret-grammar"
+#   commit = "0000000"
+
+# ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
 # ------------------------------------------------------------------------------------------------
 #

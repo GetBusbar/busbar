@@ -747,6 +747,37 @@ struct Announced {
     reason: String,
 }
 
+/// One `[[renamed]]` row: A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME.
+///
+/// Every rule in this gate that reads history keys a crate BY NAME against the merge-base, and none
+/// of them can tell a rename from a delete plus an add. `busbar-secret-ref` -> `busbar-secret-
+/// grammar` is an owner-ruled rename of four letters, and it goes red four ways at once: the crate's
+/// four dependency edges are `new-forbidden-edge` (they exist at the base under the OLD name, so the
+/// base is asked about a name it never had), its five `[[cell]]` rows are `minted-row` (same
+/// reason), and the ledger rows left behind under the old name are dead. `[[announced]]` does not
+/// help — it opens the window for a crate that is APPEARING, and this crate is not appearing.
+///
+/// So the rename is DATA, and what it buys is one thing: EVERY RULE THAT ASKS THE BASE ABOUT `to`
+/// ASKS IT ABOUT `from` INSTEAD. Nothing is admitted that was not already admitted under the old
+/// name — an edge the base did not have is still refused, a cell the base did not carry is still
+/// minted — which is why this is a translation and not an exemption.
+///
+/// Three refusals hold it to that:
+///
+/// * `from` MUST BE GONE from the workspace. A row naming a crate that is still there is not a
+///   rename, it is a second name for a live crate, and it would let the base's rows answer for two.
+/// * `to` MUST BE PRESENT. A row pointing at nothing translates nothing and is stale.
+/// * THE KIND MAY NOT CHANGE. A rename that moves a crate from one kind to another is a
+///   delete-plus-add BY DESIGN — the whole point of the naming scheme is that the name says the
+///   kind, so a name change that changes the kind changes what the crate IS, and its edges have to
+///   be argued afresh rather than inherited.
+#[derive(Debug, Clone)]
+struct Renamed {
+    from: String,
+    to: String,
+    commit: String,
+}
+
 /// One `[[registered]]` row: a crate whose KIND its name does not yet say.
 ///
 /// The one exception to "a crate reaches its kind through its name", and it exists for one
@@ -856,6 +887,8 @@ struct FaceDebt {
 struct KindRegistry {
     transitional: Vec<Transitional>,
     announced: Vec<Announced>,
+    /// The base-name translation table — see [`Renamed`].
+    renamed: Vec<Renamed>,
     registered: Vec<Registered>,
     /// The `:deps` and `:test-deps` rows' two tables — one row per edge instance, one question per
     /// unruled one.
@@ -885,6 +918,16 @@ impl KindRegistry {
     /// The crate names an announced row names, for the same reason on the waiver side.
     fn announced_names(&self) -> BTreeSet<&str> {
         self.announced.iter().map(|a| a.name.as_str()).collect()
+    }
+
+    /// THE NAME THIS CRATE ANSWERED TO AT THE BASE: today's name -> yesterday's, for the rules that
+    /// ask history a question keyed by crate name. One direction only, because that is the only
+    /// direction any of them read in.
+    pub(super) fn base_names(&self) -> BTreeMap<&str, &str> {
+        self.renamed
+            .iter()
+            .map(|r| (r.to.as_str(), r.from.as_str()))
+            .collect()
     }
 
     /// crate name -> the kind a `[[registered]]` row assigns it, as the kind table's own `&'static
@@ -1060,6 +1103,41 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 return;
             }
             reg.announced.push(Announced { name, kind, reason });
+        }
+        // THE BASE-NAME TRANSLATION TABLE. What it buys is that every rule asking history about
+        // `to` asks about `from` instead; what it is REFUSED for is being anything more than that.
+        // The kind check is here rather than downstream because it is a property of the two NAMES
+        // and of nothing else — no tree, no base, no measurement — so it belongs where the row is
+        // read, beside every other refusal that only needs the row.
+        "renamed" => {
+            let Some(v) = take_row(fields, &["from", "to", "commit"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            let (from, to, commit) = (v[0].clone(), v[1].clone(), v[2].clone());
+            if from == to {
+                reg.errors.push(format!(
+                    "same-name\t{REGISTRY_FILE}:{at}\t`[[renamed]] from` and `to` are both \
+                     `{from}`. A row that translates a name into itself translates nothing, and a \
+                     table of them is a table nobody re-reads"
+                ));
+                return;
+            }
+            let (was, went) = (kind_of_name(&from), kind_of_name(&to));
+            if was != went {
+                reg.errors.push(format!(
+                    "rename-changes-kind\t{REGISTRY_FILE}:{at}\t`{from}` is kind `{}` and `{to}` \
+                     is kind `{}`. A rename carries a crate's HISTORY across, and history is only \
+                     transferable while the crate is the same thing: the naming scheme puts the \
+                     kind IN the name, so a name change that changes the kind changes what the \
+                     crate is. That is a delete plus an add by design — argue the new crate's edges \
+                     afresh, do not inherit them. {MAKE_A_NEW_KIND}",
+                    was.unwrap_or("(none)"),
+                    went.unwrap_or("(none)")
+                ));
+                return;
+            }
+            reg.renamed.push(Renamed { from, to, commit });
         }
         "registered" => {
             let Some(v) = take_row(
@@ -1257,9 +1335,9 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         }
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
-             file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and \
-             nothing else"
+             file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[renamed]]`, \
+             `[[dep]]`, `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` \
+             rows and nothing else"
         )),
     }
 }
@@ -1293,8 +1371,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             fields.clear();
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
-                 `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
+                 `[[registered]]`, `[[announced]]`, `[[renamed]]`, `[[dep]]`, `[[question]]`, \
+                 `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -1442,6 +1520,13 @@ fn resolve_kind(name: &str) -> (Option<&'static str>, Vec<String>, Vec<&'static 
         }
         _ => (None, Vec::new(), hits.into_iter().map(|(k, _)| k).collect()),
     }
+}
+
+/// The kind a crate NAME says it is, refined through the plane/dialect split — the whole of what a
+/// `[[renamed]]` row is checked against, because a name is all a rename changes.
+fn kind_of_name(name: &str) -> Option<&'static str> {
+    let (kind, remainder, _) = resolve_kind(name);
+    refine(kind, &remainder)
 }
 
 /// THE PLANE/DIALECT SPLIT. `busbar-plane-llm` is a plane; `busbar-plane-llm-openai` is a DIALECT
@@ -2301,12 +2386,20 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     // See [`base`] for why a base that cannot be established is RED rather than green.
     match base::read(cx) {
         Ok(base) => {
+            // A RENAME IS NOT A NEW EDGE. Every name in the base's graph is the name the base
+            // carried, so an edge whose endpoints were renamed on this branch is asked about under
+            // a name history never had and comes back "introduced" — four letters of an owner-ruled
+            // rename reading as four new forbidden dependencies. The `[[renamed]]` table translates
+            // the QUESTION and nothing else: an edge the base did not have under the OLD name is
+            // still refused here, which is why this is a translation and not an exemption.
+            let was = reg.base_names();
+            let at_base = |n: &str| was.get(n).copied().unwrap_or(n).to_string();
             for e in &measured {
                 let implied = verdict_for(&e.class);
                 if implied == "allowed" || implied == "tcb" {
                     continue;
                 }
-                if base.has_edge(&e.from, &e.to, half.word()) {
+                if base.has_edge(&at_base(&e.from), &at_base(&e.to), half.word()) {
                     continue;
                 }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
@@ -3194,6 +3287,33 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     }
 
     let present: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+
+    // A RENAME IS A TRANSLATION BETWEEN A NAME THAT IS GONE AND A NAME THAT IS HERE.
+    //
+    // Both halves are checked, and both are the same claim from opposite ends: the row exists so
+    // that history's answer about the OLD name is read as an answer about the NEW one, and that is
+    // only honest while there is exactly one crate. A `from` still in the workspace would let the
+    // base's rows answer for two live crates at once — the widest possible reading of a table whose
+    // whole value is that it is narrow — and a `to` that is not there translates into nothing.
+    for r in &reg.renamed {
+        if present.contains(r.from.as_str()) {
+            offenders.push(format!(
+                "rename-not-done\t{REGISTRY_FILE}\t`[[renamed]] from = \"{}\"` and `{}` is still \
+                 in the tree ({}). A rename has ONE crate at the end of it; while both names are \
+                 live the row would hand the base's rows for `{}` to `{}` as well, which is two \
+                 crates answering to one history. Finish the rename, or strike the row.",
+                r.from, r.from, r.commit, r.from, r.to
+            ));
+        }
+        if !present.contains(r.to.as_str()) {
+            offenders.push(format!(
+                "rename-stale\t{REGISTRY_FILE}\t`[[renamed]] to = \"{}\"` names no crate in this \
+                 tree ({}). The row translates the base's rows for `{}` into rows for a crate that \
+                 is not here, so it translates nothing; strike it.",
+                r.to, r.commit, r.from
+            ));
+        }
+    }
 
     // THE RENAME ALIASES EXPIRE WITH THE CRATE THEY TRANSLATE.
     for (from, to, crate_name) in PLANE_ALIASES {
@@ -5546,6 +5666,36 @@ impl Gate for KindIsolationGate {
             &["dead-registration", "busbar-control-ghost"],
         ));
 
+        // A RENAME HAS ONE CRATE AT THE END OF IT, AND BOTH ENDS ARE RATCHETED.
+        //
+        // The row's whole effect is that history's rows for the OLD name answer for the NEW one, so
+        // it is honest only while exactly one of the two names is live. `from` still in the tree
+        // would hand one crate's history to two crates at once — the widest reading a translation
+        // table could have — and a `to` that is not there translates into nothing at all. Neither
+        // needs a base to see, which is why both live beside the other dead-row ratchets.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a rename whose old name is still in the tree is two crates answering to one history",
+            &[ROW_REGISTRY],
+            registry_plant(
+                "[[renamed]]\nfrom = \"busbar-store-memory\"\nto = \
+                 \"busbar-store-example-plugin\"\ncommit = \"deadbeef\"\n",
+            ),
+            &["rename-not-done", "busbar-store-memory", "ONE crate"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a rename whose new name is in no crate translates nothing",
+            &[ROW_REGISTRY],
+            registry_plant(
+                "[[renamed]]\nfrom = \"busbar-store-ghost\"\nto = \
+                 \"busbar-store-phantom\"\ncommit = \"deadbeef\"\n",
+            ),
+            &["rename-stale", "busbar-store-phantom", "translates nothing"],
+        ));
+
         // ONE PLANE REACHING INTO ANOTHER PLANE'S HALF.
         report.push(prove_rows_red(
             cx,
@@ -6815,6 +6965,23 @@ impl Gate for KindIsolationGate {
                 "[[announced]]\ncrate = \"busbar-nosuch-x\"\nkind = \"nosuchkind\"\nreason = \
                  \"planted\"\n",
                 &["unknown-kind", "announced", "nosuchkind"][..],
+            ),
+            // A RENAME CARRIES A CRATE'S HISTORY ACROSS, and history is transferable only while the
+            // crate is the same thing. The naming scheme puts the KIND in the name, so a rename
+            // that changes the kind changes what the crate IS — and inheriting a store plugin's
+            // edges for a transport is the widest hole this table could have. It is refused at
+            // LOAD, on the two names alone, before any tree or base is consulted.
+            (
+                "a [[renamed]] row that changes the crate's kind is refused at load",
+                "[[renamed]]\nfrom = \"busbar-store-memory\"\nto = \
+                 \"busbar-transport-memory\"\ncommit = \"deadbeef\"\n",
+                &["rename-changes-kind", "store", "transport"][..],
+            ),
+            (
+                "a [[renamed]] row that renames a name into itself is refused",
+                "[[renamed]]\nfrom = \"busbar-store-memory\"\nto = \
+                 \"busbar-store-memory\"\ncommit = \"deadbeef\"\n",
+                &["same-name", "busbar-store-memory"][..],
             ),
             (
                 "a [[registered]] row naming a kind the table does not have is refused",

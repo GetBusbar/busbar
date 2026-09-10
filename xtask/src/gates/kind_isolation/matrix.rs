@@ -763,7 +763,7 @@ pub fn measured_cells(
 /// and the refusal is the transaction the ceiling machinery is built on everywhere else: the number
 /// moves in a commit that says so, and a reviewer reads the sentence rather than the diff's
 /// arithmetic.
-fn minted_rows(cx: &Ctx) -> Vec<String> {
+fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let base = match super::base::read(cx) {
         Ok(b) => b,
         Err(why) => {
@@ -780,6 +780,9 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
         return Vec::new();
     }
     let now = cx.read(LEDGER).unwrap_or_default();
+    // old name -> new name, the direction the BASE's keys have to be read in.
+    let renamed_to: BTreeMap<&str, &str> =
+        reg.base_names().into_iter().map(|(k, v)| (v, k)).collect();
     let mut out = Vec::new();
     for (table, ids, what) in [
         (
@@ -798,7 +801,8 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             "an excuse for the two scanners reading one cell differently",
         ),
     ] {
-        let was = super::base::row_keys(&base.registry, table, ids);
+        // A RENAMED CRATE'S ROWS ARE NOT MINTED ROWS — the base carries them under the OLD name.
+        let was = super::base::row_keys_as_now(&base.registry, table, ids, &renamed_to);
         for key in super::base::row_keys(&now, table, ids) {
             if was.contains(&key) {
                 continue;
@@ -861,7 +865,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let listed = read_ledger(reg);
 
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx));
+    offenders.extend(minted_rows(cx, reg));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))

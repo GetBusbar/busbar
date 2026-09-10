@@ -372,6 +372,64 @@ pub fn base_ref(cx: &Ctx) -> Result<String, String> {
 /// [`raises`] for the shape and [`Declared`] for how an entry lives, expires and is refused. The
 /// verdict over a ceiling that rose is: the LIVE entries for that ceiling sum to EXACTLY the rise,
 /// or the row is red and says which side is short.
+/// THE `[[renamed]]` TABLE, READ FOR THIS RATCHET'S SAKE — old crate name -> new.
+///
+/// `ceiling-rose` walks the BASE's keys and asks this tree for the same key. Every key in
+/// `qa/kind-isolation.toml` that is not an `[[edge]]` carries a CRATE NAME in it
+/// (`cell.busbar-plane-voice.codec.count`), so a crate renamed on this branch has every one of its
+/// ceilings looked up under a name this tree does not have, `now.get(path)` returns `None`, and the
+/// loop `continue`s — SILENTLY. A rename would hide every rise and every declared raise on the
+/// renamed crate's rows, which is the one thing this row exists to make impossible. The
+/// `[[renamed]]` door already translates the same question for `kind-isolation`; this is that
+/// translation for the sibling ratchet, read out of the same table, with the same limit: it renames
+/// a key, it admits nothing.
+fn renamed_crates(cx: &Ctx) -> BTreeMap<String, String> {
+    let Ok(text) = cx.read(KIND_CEILINGS) else {
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    let (mut from, mut to, mut open) = (None, None, false);
+    let mut flush = |from: &mut Option<String>, to: &mut Option<String>| {
+        if let (Some(f), Some(t)) = (from.take(), to.take()) {
+            out.insert(f, t);
+        }
+    };
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with("[[") {
+            flush(&mut from, &mut to);
+            open = t == "[[renamed]]";
+            continue;
+        }
+        if !open || t.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            let v = v.trim().trim_matches('"').to_string();
+            match k.trim() {
+                "from" => from = Some(v),
+                "to" => to = Some(v),
+                _ => {}
+            }
+        }
+    }
+    flush(&mut from, &mut to);
+    out
+}
+
+/// One base key, spelled in TODAY'S names. A crate name is one dotted segment and carries no dot of
+/// its own (`identity_of` refuses a field that does), so the substitution is exact rather than
+/// textual; an `[[edge]]` key is two KINDS and no kind is a crate name, so it is never touched.
+fn key_as_now(path: &str, renamed: &BTreeMap<String, String>) -> String {
+    if renamed.is_empty() {
+        return path.to_string();
+    }
+    path.split('.')
+        .map(|seg| renamed.get(seg).map_or(seg, |s| s.as_str()))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     let base = match base_ref(cx) {
         Ok(b) => b,
@@ -392,6 +450,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
         }
     };
     let short = &base[..8.min(base.len())];
+    let renamed = renamed_crates(cx);
     let declared = raises(cx, &base);
     let mut risen: Vec<String> = declared.refused.clone();
     let mut allowed: Vec<String> = Vec::new();
@@ -426,7 +485,12 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             }
         };
         for (path, before) in &was {
-            let Some(after) = now.get(path) else { continue };
+            // THE BASE'S KEY, IN TODAY'S NAMES. See [`renamed_crates`]: without this a rename makes
+            // every ceiling it touched invisible to this ratchet, which is not the same as flat.
+            let path = key_as_now(path, &renamed);
+            let Some(after) = now.get(&path) else {
+                continue;
+            };
             if after <= before {
                 continue;
             }
