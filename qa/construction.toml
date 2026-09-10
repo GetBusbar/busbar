@@ -152,20 +152,23 @@ busbar-voice = ["busbar-voice-codec"]
 # The two per-kind enums leave on the same commit; the Store, Anchor and Secret faces return the
 # one type. Each declaration below names the exact path and both numbers as MEASURED at the base
 # (the base carries the earlier +1 `Denied` raise unlanded, so each spans from that number), and
-# each expires by itself the moment this lands.
+# each expires by itself the moment this lands. On THIS branch each reads 205, not 206: the seam
+# measured 206, the virtual-key directory face that followed it added 20 and was paid for by the
+# 21-line Unit-counts deletion in the same series, so the pair stands one line BELOW seam + face
+# and `ceiling-rose` sums what the tree actually rose by from the merge-base (3478 -> 3683 = 205).
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 206
+by = 205
 because = "busbar_contract::error -- the one structured error every plugin kind answers with (`PluginError { class, code, params, developer_message, advisory }`), its closed ten-class taxonomy (`ErrorClass`: malformed, not_found, denied, rejected, conflict, integrity, unavailable, timeout, exhausted, internal) and the catalog-as-data shape (`Catalog`, `CatalogEntry`, `Template`, with `check()` and locale fallback) a plugin ships beside its claims. MEASURED by this rule's own counter: busbar-contract 2328 -> 2533 (error.rs +205 net of the deleted `StoreError`/`SecretError` enums, bounded.rs +15 for the `BoundedVec` Deserialize that refuses an over-capacity list), busbar-caps 1151 -> 1153 (the base's figure; nothing in caps moved). The Store, Anchor and Secret faces now return the one type, so two per-kind taxonomies became one."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 206
+by = 205
 because = "The same seam seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14606, unmoved): the plugin structured-error seam lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the +206 here is the caps/contract +206 by arithmetic."
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 206
+by = 205
 because = "The plugin-visible surface a plugin author reads grows by the structured error seam and nothing else: `ErrorClass` (the closed class taxonomy), `PluginError` (the one error type and its builders), `Catalog`/`CatalogEntry`/`Template` (the catalog data shape) and the three bounds `MAX_ERROR_PARAMS`/`MAX_CATALOG_CODES`/`MAX_CATALOG_LOCALES`. scripts/loc-surface.py measures busbar-contract 2328 -> 2533 and busbar-caps 1151 unchanged; `StoreError` and `SecretError` leave the surface on the same commit."
 
 # A FOURTH, AND IT IS ABOUT A TYPE'S NAME RATHER THAN ABOUT COUPLING. `kind-isolation:matrix`
