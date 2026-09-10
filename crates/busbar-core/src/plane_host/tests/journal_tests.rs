@@ -4,179 +4,10 @@
 //! Tests for `crates/busbar-core/src/plane_host/journal.rs`.
 
 use super::*;
-use crate::plane_host::{recover, with_dispatch_scope, HostState};
+use crate::plane_host::with_dispatch_scope;
 use busbar_plugin::hot::host::PlaneHostVtable;
 use busbar_plugin::hot::POD_VERSION;
 use std::sync::atomic::{AtomicU32, Ordering};
-
-/// A distinct scope per test run so the process-global registry never collides across parallel
-/// tests (each test owns a fresh chain).
-static NEXT_SCOPE: AtomicU32 = AtomicU32::new(1);
-fn fresh_scope() -> u32 {
-    NEXT_SCOPE.fetch_add(1, Ordering::SeqCst)
-}
-
-fn framing_desc(framing: AbiFraming, digests_scope: u8) -> FramingDesc {
-    FramingDesc {
-        size: core::mem::size_of::<FramingDesc>() as u32,
-        version: POD_VERSION,
-        framing: RawFraming::of(framing),
-        digests_scope,
-    }
-}
-
-fn query(scope: u32) -> JournalQuery {
-    JournalQuery {
-        size: core::mem::size_of::<JournalQuery>() as u32,
-        version: POD_VERSION,
-        _reserved: 0,
-        scope,
-        _reserved2: 0,
-        from_seq: 0,
-        limit: 0,
-    }
-}
-
-fn with_test_state<R>(f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
-    let app = crate::test_support::TestApp::new().build();
-    with_dispatch_scope(&app, |host, vt| {
-        // SAFETY: live HostState minted by `with_dispatch_scope`.
-        let _state: &HostState = unsafe { recover(host) };
-        f(host, vt)
-    })
-}
-
-/// The task's gate: append two records to a scope via the VTABLE, then the REAL `verify_chain`
-/// passes on the result and the second record's `prev_hash` byte-exactly links the first.
-fn append_two_and_verify(framing: AbiFraming, digests_scope: u8) {
-    let scope = fresh_scope();
-    let fd = framing_desc(framing, digests_scope);
-    with_test_state(|host, vt| {
-        let append = vt.journal_append.unwrap();
-        let c1 = b"|ts1|first"; // Option A: leading `|` is inert under LengthPrefixed, load-bearing under PipeSeparated
-        let c2 = b"|ts2|second";
-        let s1 = append(
-            host,
-            scope,
-            c1.as_ptr(),
-            c1.len(),
-            &fd as *const FramingDesc,
-        );
-        let s2 = append(
-            host,
-            scope,
-            c2.as_ptr(),
-            c2.len(),
-            &fd as *const FramingDesc,
-        );
-        assert_eq!(s1, Seq(1), "genesis record is seq 1");
-        assert_eq!(s2, Seq(2), "second record is seq 2");
-    });
-
-    // Read the rows back through the real audit chain: verify_chain must pass, and the link must
-    // be byte-exact (record 2's prev_hash == record 1's hash, record 1's prev_hash empty).
-    let map = lock();
-    let st = map.get(&scope).expect("scope has rows");
-    assert!(
-        crate::audit::verify_chain(&st.rows).is_ok(),
-        "the appended chain must verify byte-identically"
-    );
-    assert_eq!(st.rows.len(), 2);
-    assert_eq!(st.rows[0].prev_hash(), "", "genesis prev_hash is empty");
-    assert!(!st.rows[0].hash().is_empty());
-    assert_eq!(
-        st.rows[1].prev_hash(),
-        st.rows[0].hash(),
-        "record 2 links record 1 byte-exactly"
-    );
-}
-
-#[test]
-fn append_two_verifies_length_prefixed_with_scope() {
-    append_two_and_verify(AbiFraming::LengthPrefixed, 1);
-}
-
-#[test]
-fn append_two_verifies_pipe_separated_with_scope() {
-    // The PipeSeparated landmine: the leading `|` in the suffix + the always-first empty/nonempty
-    // prev_hash must reproduce the legacy join. verify_chain re-runs the SAME digest, so a missing
-    // `|` at the join would surface here as DigestMismatch.
-    append_two_and_verify(AbiFraming::PipeSeparated, 1);
-}
-
-#[test]
-fn append_two_verifies_pipe_separated_no_scope() {
-    // admin-style: digests_scope = 0 — scope must NOT enter the digest.
-    append_two_and_verify(AbiFraming::PipeSeparated, 0);
-}
-
-/// The digest is byte-exact against a hand-built `frame_prelude ⧺ content` recompute — this
-/// localizes any failure to the reframe rather than the whole chain walk.
-#[test]
-fn genesis_digest_matches_hand_built_prelude_join() {
-    let scope = fresh_scope();
-    let fd = framing_desc(AbiFraming::PipeSeparated, 1);
-    with_test_state(|host, vt| {
-        let content = b"|ts|kind|state";
-        let seq = (vt.journal_append.unwrap())(
-            host,
-            scope,
-            content.as_ptr(),
-            content.len(),
-            &fd as *const FramingDesc,
-        );
-        assert_eq!(seq, Seq(1));
-    });
-    let map = lock();
-    let st = map.get(&scope).unwrap();
-    let mut expected_input = frame_prelude(Framing::PipeSeparated, "", Some(&scope.to_string()), 1);
-    expected_input.extend_from_slice(b"|ts|kind|state");
-    let expected = busbar_api::sha256_hex(&expected_input);
-    assert_eq!(
-        st.rows[0].hash(),
-        expected,
-        "genesis hash == sha256(prelude ⧺ suffix)"
-    );
-}
-
-#[test]
-fn journal_read_returns_ok_and_writes_bytes() {
-    let scope = fresh_scope();
-    let fd = framing_desc(AbiFraming::LengthPrefixed, 1);
-    let q = query(scope);
-    with_test_state(|host, vt| {
-        let c = b"payload";
-        (vt.journal_append.unwrap())(host, scope, c.as_ptr(), c.len(), &fd as *const FramingDesc);
-
-        let mut out_written: usize = 0;
-        let read = vt.journal_read.unwrap();
-        // Undersized buffer: Refused, required length reported.
-        let mut tiny = [0u8; 1];
-        let s = read(
-            host,
-            &q as *const JournalQuery,
-            tiny.as_mut_ptr(),
-            tiny.len(),
-            &mut out_written as *mut usize,
-        );
-        assert_eq!(s, StatusClass::Refused);
-        assert!(out_written > tiny.len(), "reports the required size");
-
-        let needed = out_written;
-        let mut big = vec![0u8; needed];
-        let s = read(
-            host,
-            &q as *const JournalQuery,
-            big.as_mut_ptr(),
-            big.len(),
-            &mut out_written as *mut usize,
-        );
-        assert_eq!(s, StatusClass::Ok);
-        assert_eq!(out_written, needed);
-        // First 4 bytes are the row count = 1.
-        assert_eq!(u32::from_le_bytes(big[0..4].try_into().unwrap()), 1);
-    });
-}
 
 // ── THE DURABLE SEAM — register + append_scoped + verify/read/restore over a real store ────────
 
@@ -873,27 +704,6 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
     });
 }
 
-#[test]
-fn null_pods_fail_closed() {
-    let fd = framing_desc(AbiFraming::LengthPrefixed, 1);
-    with_test_state(|host, vt| {
-        // Null framing → Seq::NONE, not a fabricated sequence.
-        let s = (vt.journal_append.unwrap())(host, 999_001, std::ptr::null(), 0, std::ptr::null());
-        assert_eq!(s, Seq::NONE);
-        let _ = fd;
-        // Null query → Refused.
-        let mut out_written: usize = 0;
-        let s = (vt.journal_read.unwrap())(
-            host,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            0,
-            &mut out_written as *mut usize,
-        );
-        assert_eq!(s, StatusClass::Refused);
-    });
-}
-
 /// ALLOC-BOMB CLOSED (F-AVAIL1 / PH1): `unpack_bodies` reads a `u32` count from the packed header and
 /// pre-sizes its Vec from it. A hostile/corrupt header can claim up to `u32::MAX` records; pre-sizing
 /// from that raw count reserves gigabytes from a few-byte buffer BEFORE any per-record bounds check.
@@ -938,40 +748,6 @@ fn unpack_bodies_fails_closed_on_oversized_count() {
 // `FramingDesc` and `JournalStreamDesc` are filled ENTIRELY by the plane, so their `framing` byte is
 // plane-chosen. A byte no shipped `Framing` names must fail CLOSED at the seam — never decode into an
 // enum with an invalid discriminant the host then `match`es (UB before the match).
-
-/// `journal_append` over a `FramingDesc` carrying an unnamed framing byte returns the reserved
-/// invalid sequence, never a fabricated one — and never dispatches on the byte.
-#[test]
-fn out_of_range_append_framing_is_refused_not_matched() {
-    let scope = fresh_scope();
-    let good = framing_desc(AbiFraming::LengthPrefixed, 1);
-    let mut image = MaybeUninit::<FramingDesc>::uninit();
-    // SAFETY: `image` is a whole, aligned `MaybeUninit<FramingDesc>`; the byte write lands on the
-    // one-byte `framing` field.
-    unsafe {
-        core::ptr::copy_nonoverlapping(&good as *const FramingDesc, image.as_mut_ptr(), 1);
-        image
-            .as_mut_ptr()
-            .cast::<u8>()
-            .add(core::mem::offset_of!(FramingDesc, framing))
-            .write(7);
-    }
-    with_test_state(|host, vt| {
-        let content = b"|ts1|first";
-        let seq = (vt.journal_append.unwrap())(
-            host,
-            scope,
-            content.as_ptr(),
-            content.len(),
-            image.as_ptr(),
-        );
-        assert_eq!(
-            seq,
-            Seq::NONE,
-            "an unnamed framing is refused, not dispatched on"
-        );
-    });
-}
 
 /// `journal_register` over a `JournalStreamDesc` carrying an unnamed framing byte is REFUSED, so the
 /// stream never enters the registry under a framing this build cannot name.

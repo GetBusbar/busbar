@@ -58,8 +58,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_write: Some(egress_write),
         egress_close: Some(egress_close),
         egress_fault: Some(egress_fault),
-        journal_append: Some(super::journal::journal_append),
-        journal_read: Some(super::journal::journal_read),
+        // The two UNSCOPED legacy journal slots are UNWIRED. Their only implementation was a second,
+        // process-global RAM registry beside the durable seam, reached by nothing — no plane crate,
+        // no plugin, no production path in core. It is deleted; the scoped family below is the seam.
+        journal_append: None,
+        journal_read: None,
         nested_dispatch: Some(super::dispatch::nested_dispatch),
         workhandle_open: Some(super::dispatch::workhandle_open),
         workhandle_resume: Some(super::dispatch::workhandle_resume),
@@ -392,8 +395,9 @@ extern "C-unwind" fn egress_fault(
 ) -> StatusClass {
     super::egress::egress_fault(host, out, cause_buf, cause_cap, url_buf, url_cap)
 }
-// journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
-// `crate::audit` hash chain). The builder references them directly; no stub lives here.
+// journal_append / journal_read are the UNSCOPED legacy pair and are `None` above: the RAM registry
+// that backed them is deleted. The SCOPED journal family (`journal_register` … `journal_verify_scoped`)
+// is WIRED in `super::journal` over the real `crate::audit` hash chain and the durable store.
 // `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
 // are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
 // `drift_quarantine` / `approval_redeem` / `trust_evaluate` are WIRED over the real trust store in

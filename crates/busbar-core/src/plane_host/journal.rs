@@ -42,12 +42,12 @@
 
 use super::recover;
 use crate::audit::journal::{Journal, NeutralRecord};
-use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStoreView;
 use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
 use busbar_plugin::hot::{
-    ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
-    ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
+    ChainBreakHdr, Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, RestoredHdr,
+    Seq, StatusClass, VerifyChainHdr, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
@@ -708,7 +708,7 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
             Ok(r) => r,
             Err(_) => return StatusClass::Fault,
         };
-        // Verify before trusting the stored chain (mirrors the RAM `journal_read`).
+        // Verify before trusting the stored chain (the same judgement `Chain::from_persisted` makes).
         if crate::audit::verify_chain(&rows).is_err() {
             return StatusClass::Fault;
         }
@@ -988,26 +988,6 @@ fn unpack_bodies(packed: &[u8]) -> Option<Vec<Vec<u8>>> {
     Some(out)
 }
 
-/// One scope's live position + its appended rows. The `Chain` is the seq authority (identical to the
-/// three shipped streams); `rows` is the store stand-in this Phase-2 bridge holds in-process.
-struct ScopeState {
-    chain: Chain<PlaneJournalRecord>,
-    rows: Vec<PlaneJournalRecord>,
-}
-
-/// The process-local per-scope registry. Durable-store cleave point: this map (position cache + rows)
-/// would become the generic scope-keyed Journal over an `Arc<dyn PlaneStore>`.
-fn journals() -> &'static Mutex<HashMap<u32, ScopeState>> {
-    static J: OnceLock<Mutex<HashMap<u32, ScopeState>>> = OnceLock::new();
-    J.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Poison-recovering lock: a panic mid-append must not wedge the registry (same discipline as the
-/// dispatch arena).
-fn lock() -> std::sync::MutexGuard<'static, HashMap<u32, ScopeState>> {
-    journals().lock().unwrap_or_else(|e| e.into_inner())
-}
-
 /// Decode the plane-written raw framing byte into core's own [`Framing`], or `None` for a byte no
 /// shipped [`AbiFraming`] names. The descriptor is filled ENTIRELY by the plane, so this is a
 /// checked decode of untrusted memory, never a `match` on a bare enum: an unnamed byte would
@@ -1019,110 +999,6 @@ fn map_framing(f: RawFraming) -> Option<Framing> {
         AbiFraming::LengthPrefixed => Framing::LengthPrefixed,
         AbiFraming::PipeSeparated => Framing::PipeSeparated,
     })
-}
-
-/// WIRED `journal_append` → [`crate::audit::Chain::append`] for the scope. Frames the prelude in the
-/// [`FramingDesc`]'s framing, joins the plane's pre-framed content suffix, and appends to the real
-/// chain, returning the assigned [`Seq`]. Fail-closed: any panic / null POD → [`Seq::NONE`] (the
-/// reserved invalid handle), never a fabricated sequence.
-pub(crate) extern "C-unwind" fn journal_append(
-    host: HostCtx,
-    scope: u32,
-    content_ptr: *const u8,
-    content_len: usize,
-    framing: *const FramingDesc,
-) -> Seq {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`). The state is recovered even though this
-        // slot draws the chain from the process registry, keeping the boundary discipline uniform.
-        let _state = unsafe { recover(host) };
-        if framing.is_null() {
-            return Seq::NONE;
-        }
-        // SAFETY: a non-null `framing` is a live, initialized `FramingDesc` for the call (ABI).
-        let fd = unsafe { &*framing };
-        // The plane writes this byte. A framing this build cannot name yields the RESERVED invalid
-        // sequence — never a record appended (and digested) under a guessed framing.
-        let Some(record_framing) = map_framing(fd.framing) else {
-            return Seq::NONE;
-        };
-        let content: Vec<u8> = if content_ptr.is_null() || content_len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: `(content_ptr, content_len)` is a live borrowed range for the call (ABI).
-            unsafe { std::slice::from_raw_parts(content_ptr, content_len) }.to_vec()
-        };
-        let input = PlaneJournalInput {
-            content,
-            framing: record_framing,
-            digests_scope: fd.digests_scope != 0,
-        };
-        let scope_str = scope.to_string();
-
-        let mut map = lock();
-        let st = map.entry(scope).or_insert_with(|| ScopeState {
-            chain: Chain::new(),
-            rows: Vec::new(),
-        });
-        // Durable-store cleave point: a store-backed Journal would advance the RAM position only AFTER
-        // a durable write ok. Here (no durable store yet) append == commit; the seq authority is
-        // already the real `Chain`.
-        let record = st.chain.append(&scope_str, input);
-        let seq = record.seq();
-        st.rows.push(record);
-        Seq(seq)
-    }))
-    .unwrap_or(Seq::NONE) // fail-closed: a panicked append yields no sequence.
-}
-
-/// WIRED `journal_read` → the real audit read path: [`crate::audit::verify_chain`] over the stored
-/// rows, then the requested window encoded into the caller buffer. Fail-closed: a panic → `Fault`, a
-/// tamper-detected chain → `Fault`, a null query/out → `Refused`, a too-small buffer → `Refused` with
-/// the required length reported in `out_written`.
-pub(crate) extern "C-unwind" fn journal_read(
-    host: HostCtx,
-    query: *const JournalQuery,
-    buf: *mut u8,
-    buf_cap: usize,
-    out_written: *mut usize,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
-        if query.is_null() || out_written.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `query` is a live, initialized `JournalQuery` for the call (ABI).
-        let q = unsafe { &*query };
-        // SAFETY: `out_written` is a live, writable `usize` for the call (ABI). Default to 0.
-        unsafe { *out_written = 0 };
-
-        let map = lock();
-        let Some(st) = map.get(&q.scope) else {
-            // An unknown scope has no rows; that is a legitimate empty read, not a fault.
-            return StatusClass::Ok;
-        };
-        // The real audit read path VERIFIES the stored chain before it is trusted — a tamper is
-        // surfaced as a fault rather than silently handed back (mirrors `Chain::from_persisted`).
-        if crate::audit::verify_chain(&st.rows).is_err() {
-            return StatusClass::Fault;
-        }
-        // Durable-store cleave point: a store-backed Journal would make this window read a range scan.
-        let encoded = encode_rows(&st.rows, q.from_seq, q.limit);
-        if encoded.len() > buf_cap {
-            // SAFETY: see above — report the required length so the caller can size a retry.
-            unsafe { *out_written = encoded.len() };
-            return StatusClass::Refused;
-        }
-        if !buf.is_null() && !encoded.is_empty() {
-            // SAFETY: `encoded.len() <= buf_cap` and `buf` is a live range of `buf_cap` bytes (ABI).
-            unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), buf, encoded.len()) };
-        }
-        // SAFETY: see above.
-        unsafe { *out_written = encoded.len() };
-        StatusClass::Ok
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
 /// Encode the rows whose `seq >= from_seq` (up to `limit`, `0` = all) into a self-describing blob:
