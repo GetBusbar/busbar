@@ -631,10 +631,25 @@ lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live l
 # `ceiling-rose` judging against a base the head line is about to repair; a red the tree-moved
 # guard raised is a race with the tip, and the line is simply queued again.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# BASE-STATE: A RED THAT IS THE BASE'S, NOT THE LINE'S (rule 2c). Two things must both be true, and
+# the second is what keeps this from becoming a way to launder any red at all: the log must SAY the
+# figures it refused are the base's — "at the base", "ROSE since the base", or the construction
+# gate's own words for rows that are red without being on the standing list — AND the tip must
+# actually carry raise headers (`[gate.ceiling_raises.…]` in qa/), which is the state the phrase
+# describes. On a tip with no raises pending, a red naming the base is just a red.
+LQ_BASE_STATE_RE='at the base|ROSE since the base|construction gate rows red that the standing list does not name'
+lq_tip_has_raises() { # $1 = tree; 0 when the tip carries ceiling-raise headers
+  grep -rqE '^\[gate\.ceiling_raises\.' "$1"/qa 2>/dev/null
+}
+lq_base_state_red() { # $1 = log path, $2 = tree; 0 when this RED is the base's
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qiE "$LQ_BASE_STATE_RE" "$1" 2>/dev/null || return 1
+  lq_tip_has_raises "$2"
+}
 lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log; prints GREEN, RED, or NONE:<why>
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
-  if grep -qiE 'at the base|ROSE since the base' "$2" 2>/dev/null; then echo "NONE:base"; return 0; fi
+  if grep -qiE "$LQ_BASE_STATE_RE" "$2" 2>/dev/null; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
 }
@@ -787,9 +802,19 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
       # PARKED WITH ITS LOG, so the marker names where the evidence is rather than only that there
       # was some. A `#RED-preproof` line is requeued the same way a `#RED` one is.
       local lg; lg="$(awk -F"$TAB" -v tip="$tip" -v t="$line" '$1 == "RED" && $2 == tip && $4 == t {print $3}' "$PP" 2>/dev/null | tail -1)"
-      printf '#RED-preproof %s %s\n' "${lg:-no-log}" "$line" >>"$keep"
-      lq_log "pre-prove RED at $(printf '%.9s' "$tip"): parked $(printf '%.80s' "$line") (log: ${lg:-none})"
-      continue
+      # ...UNLESS THE RED IS THE BASE'S (rule 2c, made real). lq_preproof_verdict rules on this at
+      # SWEEP time, but the popper parked every recorded RED regardless — so a row written by an
+      # older engine, or by a sweep whose log grew its base sentence after the verdict was taken,
+      # parked a line that nothing is wrong with. The log is read again HERE, against the tree, and
+      # a base-state red is recorded NONE: the line stays live and unmarked. (Audit 14.)
+      if lq_base_state_red "$lg" "$W"; then
+        lq_log "pre-prove RED at $(printf '%.9s' "$tip") is the BASE's (a ceiling the head repairs); NONE, left live: $(printf '%.80s' "$line") (log: $lg)"
+        st=NONE
+      else
+        printf '#RED-preproof %s %s\n' "${lg:-no-log}" "$line" >>"$keep"
+        lq_log "pre-prove RED at $(printf '%.9s' "$tip"): parked $(printf '%.80s' "$line") (log: ${lg:-none})"
+        continue
+      fi
     fi
     if [ "$greens" -gt 0 ] && [ "$st" != GREEN ]; then
       printf '%s\n' "$line" >>"$keep"; continue
@@ -1282,6 +1307,39 @@ lq_selftest() {
   n="$(lq_pop tipX 4 "$root/b2.txt" "$root/k2.txt")"
   _t "no records at this tip -> the ordinary pop" 3 "$n"
 
+  # ── RULE 2c MADE REAL AT THE POP: A BASE-STATE RED IS NONE, NOT A PARK ────────────────────────
+  # lq_preproof_verdict rules on this at SWEEP time and always has. The POPPER did not: it parked
+  # every recorded RED, so a row written by an older engine — or by a sweep whose log grew its base
+  # sentence after the verdict was taken — parked a line that nothing is wrong with, and the
+  # integrator had to un-park it by hand. Audit 14 measured it still doing so.
+  echo "landq4 selftest: a base-state red is NONE at the pop too, and the line stays live"
+  local bslog="$root/base-state.log" ordlog="$root/ordinary-red.log" gatelog="$root/gate-rows.log"
+  printf 'FAIL ceiling-rose: busbar-core x api ROSE since the base\n' >"$bslog"
+  printf 'land.sh: RED — tests failed in: busbar\n' >"$ordlog"
+  printf 'land.sh: RED — construction gate rows red that the standing list does not name: x\n' >"$gatelog"
+  mkdir -p "$repo/qa"; rm -f "$repo/qa/construction.toml"
+  _t "an ordinary red is not a base-state red" 1 "$(lq_base_state_red "$ordlog" "$repo"; echo $?)"
+  # BOTH HALVES ARE REQUIRED. Without this one the phrase alone would launder any red at all.
+  _t "the base phrase alone, with no raises on the tip, is still a red" 1 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
+  printf '[gate.ceiling_raises.core-x-api]\nfigure = 60\n' >"$repo/qa/construction.toml"
+  _t "the base phrase on a tip that carries raises is the base's" 0 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
+  _t "  ...as are the construction gate's own words" 0 "$(lq_base_state_red "$gatelog" "$repo"; echo $?)"
+  _t "a log that is not on disk is not a base-state red" 1 "$(lq_base_state_red "$root/nosuch.log" "$repo"; echo $?)"
+  _t "  ...nor is an empty log path"           1 "$(lq_base_state_red "" "$repo"; echo $?)"
+  # AT THE POP. One line, recorded RED at this tip, whose log is the base's: it must be popped, and
+  # nothing may be written in front of it.
+  local savedPP4="$PP"; PP="$root/pp-basestate.txt"
+  printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$bslog" "$TAB" "$hb" >"$PP"
+  printf -- '--prove %s\n' "$hb" >"$Q"
+  n="$(lq_pop tip1 4 "$root/b17.txt" "$root/k17.txt")"
+  _t "a base-state red is not parked"          0 "$(grep -c '#RED-preproof' "$root/k17.txt" || true)"
+  _t "  ...the line stays live and unmarked"   "--prove $hb" "$(cat "$root/b17.txt")"
+  _t "  ...and the ledger says why"            1 "$(grep -c "is the BASE's (a ceiling the head repairs); NONE, left live" "$L" || true)"
+  # AND AN ORDINARY RED IS STILL PARKED — the rule narrows nothing else.
+  printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$ordlog" "$TAB" "$hb" >"$PP"
+  n="$(lq_pop tip1 4 "$root/b18.txt" "$root/k18.txt")"
+  _t "an ordinary pre-proof red is still parked" 1 "$(grep -c "^#RED-preproof $ordlog " "$root/k18.txt" || true)"
+  PP="$savedPP4"; rm -f "$repo/qa/construction.toml"
   Q="$savedQ"; PP="$savedPP"; L="$savedL"; W="$savedW"
 
   # ── A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) ─────────────────────────────
