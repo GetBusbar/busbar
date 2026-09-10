@@ -307,6 +307,7 @@ fn secret_error_kind_is_byte_identical_to_the_legacy_enum_it_replaces() {
         let envelope = serde_json::to_string(&SecretResponse::Error {
             kind: *new,
             message: "m".to_string(),
+            error: None,
         })
         .expect("envelope serialises");
         assert_eq!(

@@ -213,6 +213,10 @@ struct RawPlugin {
     close: CloseFn,
     /// The plugin name/path, for diagnostics.
     path: String,
+    /// The plugin's own error catalog, read ONCE at load from the optional `busbar_catalog`
+    /// symbol and checked; `None` for a plugin that ships none, which then emits only the
+    /// wire's own codes.
+    catalog: Option<busbar_contract::Catalog>,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker
     /// (`dlclose` runs the image's `.fini_array`); it is always `Some` until then. Declared BEFORE
     /// `_backing` so the unload still happens first — the UNLOAD-then-REMOVE order Windows requires.
@@ -567,6 +571,15 @@ fn wire_up_raw(
         }
     }
 
+    // ── 3c. Read the error catalog (OPTIONAL symbol; a present catalog must CHECK). ──
+    //
+    // LOAD-TIME: a catalog that fails `Catalog::check()` refuses the load here, because a plugin
+    // whose declaration of its own codes is malformed cannot be rendered correctly for any code.
+    // What is NOT decidable here is whether the plugin will only ever emit codes it declared — a
+    // cdylib cannot be asked what it will say — so an uncatalogued code is refused at FIRST USE,
+    // the moment the plugin contradicts its declaration (see `DynSecret::admit`).
+    let catalog = read_catalog(lib, &display)?;
+
     // ── 4. open: construct the instance from the JSON config. ──
     // Guarded: `busbar_open` runs plugin constructor code on every load (boot AND hot config-reload).
     // With the `extern "C-unwind"` ABI a panicking constructor unwinds here and fails the load CLOSED,
@@ -640,6 +653,7 @@ fn wire_up_raw(
     let (lib, backing) = guard.disarm();
     Ok(RawPlugin {
         handle,
+        catalog,
         call,
         free,
         close,
@@ -664,6 +678,32 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
     cstr.to_str()
         .map(str::to_string)
         .map_err(|_| format!("plugin '{display}' kind string is not valid UTF-8"))
+}
+
+/// Read the optional `busbar_catalog` symbol: `None` when absent, the checked catalog when
+/// present, and a load REFUSAL when present and malformed, over-capacity, not UTF-8 or not JSON.
+fn read_catalog(lib: &Library, display: &str) -> Result<Option<busbar_contract::Catalog>, String> {
+    let Ok(f) = (unsafe { lib.get::<busbar_plugin::cold::CatalogFn>(symbol::CATALOG) }) else {
+        return Ok(None);
+    };
+    let mut len: usize = 0;
+    let ptr = ffi_guard_confined(display, "catalog", || unsafe { (*f)(&mut len) })?;
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    if len > MAX_PLUGIN_RESPONSE_LEN {
+        return Err(format!(
+            "plugin '{display}' catalog of {len} bytes exceeds the {MAX_PLUGIN_RESPONSE_LEN}-byte cap"
+        ));
+    }
+    // SAFETY: the symbol's contract is `len` live `'static` bytes at `ptr`.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let catalog: busbar_contract::Catalog = serde_json::from_slice(bytes)
+        .map_err(|e| format!("plugin '{display}' catalog is not a catalog document: {e}"))?;
+    catalog
+        .check()
+        .map_err(|e| format!("plugin '{display}' catalog refused at load: {e}"))?;
+    Ok(Some(catalog))
 }
 
 /// A `Store` backend loaded from a dynamic library over the kind-neutral ABI. Wraps a [`RawPlugin`]
@@ -1441,10 +1481,22 @@ impl Secret for DynSecret {
                 PluginError::new(ErrorClass::Internal, "wire.internal").with_message(message),
             )),
             Ok(busbar_plugin::cold::SecretResponse::Bytes(b)) => Ok(SecretValue::new(b)),
-            Ok(busbar_plugin::cold::SecretResponse::Error { kind, message }) => Err(self.record(
-                PluginError::new(secret_wire_class(kind), secret_wire_code(kind))
-                    .with_message(message),
-            )),
+            Ok(busbar_plugin::cold::SecretResponse::Error {
+                kind,
+                message,
+                error,
+            }) => {
+                // The structured error beside the frozen pair, when the plugin sent one; the
+                // pair minted into the wire's own code otherwise.
+                let e = match error.map(serde_json::from_value::<PluginError>) {
+                    Some(Ok(e)) => e,
+                    Some(Err(bad)) => PluginError::new(ErrorClass::Internal, "wire.internal")
+                        .with_message(format!("structured error did not decode: {bad}; {message}")),
+                    None => PluginError::new(secret_wire_class(kind), secret_wire_code(kind))
+                        .with_message(message),
+                };
+                Err(self.record(self.admit(e)))
+            }
         }
     }
 
@@ -1564,6 +1616,31 @@ fn not_on_the_wire(op: &str) -> PluginError {
 }
 
 impl DynSecret {
+    /// The catalog this plugin's codes are rendered through: its own, or the wire's when it
+    /// shipped none.
+    pub fn catalog(&self) -> &busbar_contract::Catalog {
+        self.raw.catalog.as_ref().unwrap_or_else(|| wire_catalog())
+    }
+
+    /// FIRST-USE REFUSAL of an uncatalogued code. A code the plugin's catalog does not declare
+    /// is the plugin contradicting its own declaration; the answer is replaced by an `Internal`
+    /// failure under the wire's code, with the offending code as a parameter, so nothing renders
+    /// a template that does not exist and the contradiction is on the record.
+    fn admit(&self, e: PluginError) -> PluginError {
+        if self.catalog().entry(&e.code).is_some() || wire_catalog().entry(&e.code).is_some() {
+            return e;
+        }
+        PluginError::new(ErrorClass::Internal, "wire.internal")
+            .with_param(
+                "uncatalogued_code",
+                busbar_contract::ParamValue::Str(e.code.clone()),
+            )
+            .with_message(format!(
+                "the plugin emitted `{}`, a code its catalog does not declare; refused ({e})",
+                e.code
+            ))
+    }
+
     /// THE LOG PATH: the five fields, verbatim, beside the plugin that said them. Nothing here
     /// renders — rendering is the reason table's, in the caller's locale — this is the record.
     fn record(&self, e: PluginError) -> PluginError {
