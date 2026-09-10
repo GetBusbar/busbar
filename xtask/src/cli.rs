@@ -237,7 +237,14 @@ fn gate(args: &[String]) -> i32 {
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
         // reader can diff rather than as a message on stderr.
-        if reg.name == "kind-isolation" {
+        //
+        // `config-schema --write` is the same shape: the gate's own drift row REWRITES the
+        // snapshot instead of diffing it, from the identical derivation, and reports what it
+        // wrote as its row. It was reachable only from the gate's doc comment until now — the
+        // dispatch below fell through to "this gate has nothing to write", so the documented
+        // regeneration command printed a refusal and the one artefact the frozen config surface
+        // is diffed against could not be regenerated at all.
+        if reg.name == "kind-isolation" || reg.name == "config-schema" {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);
