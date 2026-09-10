@@ -233,6 +233,112 @@ key = "gate.surface_ceilings.contract_caps"
 by = 21
 because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, fallback_key, is_fallback}: the fallback plane is a fact of the plane LIST, answered beside it; MEASURED 21 plugin-visible surface lines by scripts/loc-surface.py; names no plane."
 
+# THE SIXTEEN KIND-ISOLATION CELLS THE CONFIG-LAYER CARVE-OUT RAISES, by identity. Not one of them is
+# the new crate's own row — those are minted with the crate (`[[minted]] busbar-core-config`), because
+# a crate that does not exist has nothing at any base to be higher than. These sixteen are cells in
+# crates that DO exist, and every one of them is the same phenomenon: a shape that lived in
+# busbar-core moved to the neutral crate that owns it, and its vocabulary moved with it. The
+# arithmetic is net-negative in every case — busbar-core's own rows fall by 487 (control), 382
+# (plane), 69 (secret), 164 (transport), 25 (store) and 24 (auth) in the same tree — which is what
+# `moved_from = "busbar-core"` on the mint is checking and what makes this a MOVE rather than a
+# growth. These entries EXPIRE when this commit lands on the integration line.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the root's `plugins:` RESOLUTION rewiring (crates/busbar/src/main.rs, 867785e76): the composition root is the one crate that may name both the grammar's home and the plugin tooling, and building the loader's fetch list from the operator's block puts one more `busbar_core::` spelling in the root's mouth. The root's own busbar_core:: reach falls elsewhere in the same commit; this is the net."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-api.secret.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar-api names the `SecretRef` grammar three more times (crates/api/src/lib.rs, +4 lines) so the redaction face the config layer is written against resolves from the api crate without an edge back into the engine. The config layer's own secret-ref walker is what needs it; the alternative was the carve-out reaching through busbar-core for a face."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.api.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "busbar-core's own callers repointed onto the substrate and api spellings when the `ir/` and `trust/` re-export shims were retired (563585a66, bab9fbf67, 5bf20c2b7): a shim that resolved a name for free is now the name, written out, at each call site. Eight sites, no new coupling — the same reads under their own address."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the same shim retirement as `cell.busbar-core.api.count` above: `busbar_substrate::` is now spelled at the four sites in `src/ir/mod.rs`, `src/diagnostics/mod.rs` and `src/state.rs` that used to reach the substrate through busbar-core's own dead re-export modules. The shims are deleted in the same commits."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "two unit-crate names appear in busbar-core where a retired shim used to hide them (the trust/verify shim's callers, bab9fbf67). The engine already depended on the units through `[[transitional]]` rows; what changed is that the dependency is now written where it is used instead of behind a module that forwarded it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the three config value-grammar moves this branch lands (`oauth_as:` 45f6349eb, the export projection 6a4e6c939, the pool failover grammar db4b30adf) bring their own api-face reads down with them: the shapes moved verbatim and the faces they were written against moved with them, out of busbar-core and into the neutral crate that owns the shape."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.control.count"
+file = "qa/kind-isolation.toml"
+by = 47
+because = "the `oauth_as:` block is a value grammar and now lives at busbar-substrate/src/config/oauth_as.rs beside the auth config shapes (45f6349eb), and the admin-verb table it is validated against moved with it (src/config/auth.rs, +51 lines; src/admin_verbs.rs, +18). The word `admin` came across on the shapes; busbar-core's own control row falls by 487 in the same tree."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "fifteen doc lines in busbar-substrate now say which module of `busbar_core` a relocated shape came out of and which historical spelling core still re-exports it at — the retirement being described where it happened, by the three value-grammar moves and the D33 R5 shim retirements. Prose only; the substrate depends on nothing new."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.plane.count"
+file = "qa/kind-isolation.toml"
+by = 70
+because = "the export PROJECTION grammar (busbar-substrate/src/config/projection.rs, 6a4e6c939) and the pool FAILOVER value grammar (src/config/pools.rs, db4b30adf) moved verbatim out of busbar-core into the neutral crate that owns the shapes they project and pool. Both are keyed by plane, so the plane words came across with them; busbar-core's plane row falls by 382 in the same tree."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "two lines of busbar-substrate/src/config/{mod.rs,sections.rs} name the plugin-tooling crates when they say where the `plugins:` block's grammar now lives and why the substrate re-exports it rather than declaring it (e9207ecca). The substrate gains no dependency: the shapes are declared in the pure value leaf below it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.secret.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "the `oauth_as:` block carries client secrets, so the `SecretRef` spelling came across with it when the block moved to busbar-substrate/src/config/oauth_as.rs (45f6349eb) — six reads, the same reads, under the shape that owns them. busbar-core's secret row falls by 69 in the same tree."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-substrate names the pure value leaf `busbar-substrate-values` twice more, in `src/lib.rs` and `src/config/mod.rs`, where it re-exports the `plugins:` grammar declared below it so the block keeps ONE address to an operator and to `cargo xtask gate config-schema` (e9207ecca). A re-export line, not a new edge."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.transport.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "three wire words arrive with the relocated config value shapes (the `oauth_as:` issuer URL's scheme checks and the pool grammar's endpoint fields). They are the same three reads the config layer already had; they moved with the shape rather than being added to it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "one api-face read arrives with the `plugins:` grammar's new home in the pure value leaf (crates/busbar-substrate-values/src/config/plugins.rs, 165 lines, f61f774c7): the block's shapes are declared where the loader can read them without an edge to the whole engine substrate."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "one more `admin` word in busbar-substrate-values, in the `plugins:` grammar's doc lines about the audited `POST /plugins/rollback` that writes a per-plugin version pin (f61f774c7). The grammar states what an operator may write; the verb that writes it lives on the control path and is named once, in prose."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "four plane words arrive with the `plugins:` grammar and the subscribe-IR fact landed beside it (crates/busbar-substrate-values/src/config/plugins.rs and src/ir/subscribe.rs): a plugin's manifest `kind` and the subscribe fact are both keyed by the subsystem that consumes them, and the words came across on the shapes."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

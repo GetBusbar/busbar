@@ -201,7 +201,7 @@ fn resolve_rel(file: &str, config_dir: &Path) -> PathBuf {
 /// must open for write; a not-yet-created file needs a writable parent dir (create + immediately
 /// remove a probe file). This never routes through `crate::durable` because it writes nothing that
 /// must survive — it is a boot-time capability check, not a config write.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn is_backend_writable(p: &Path) -> bool {
     if p.exists() {
@@ -321,7 +321,7 @@ pub fn persist(
 /// carried forward so a write to one section never clobbers another); `Unreadable` -> `None`, and the
 /// caller aborts the write, because overwriting a corrupt overlay would drop the deletion tombstones
 /// of EVERY section. `version` is stamped by the caller just before `write`.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
     match read_state(p) {

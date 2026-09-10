@@ -30,7 +30,7 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// below this bound that boots/applies TODAY keeps doing so unchanged; only values that were ALREADY
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
@@ -1245,7 +1245,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// Range-check the resolved operational limits. Pushes a message per violation (collect-all, like the
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
@@ -1666,7 +1666,7 @@ fn reserved_operator_principal_id(role: &str) -> bool {
 /// moved to `/api` — the exact drift a customer's `api` pool would have walked through). A name
 /// containing a `/` could also smuggle an `api/` first segment, so the first-segment test covers
 /// that family too.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn reserved_admin_name(name: &str) -> bool {
     name.split('/').next() == Some(admin_root_segment())
@@ -1681,7 +1681,7 @@ pub fn reserved_admin_name(name: &str) -> bool {
 /// long-standing promise that `admin` is a management name no lane may take. Dropping it would let a
 /// config an earlier release refused boot cleanly here, and the reverse-compatibility oracle checks
 /// exactly that. Same first-segment test as the sibling so `admin/x` cannot slip through either.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn reserved_legacy_admin_name(name: &str) -> bool {
     name.split('/').next() == Some("admin")
@@ -1700,7 +1700,7 @@ pub fn reserved_legacy_admin_name(name: &str) -> bool {
 /// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
 /// resolution, in `config::resolve`, where the members are still visible before projection; this
 /// function is the name-uniqueness half that makes that inference unambiguous.)
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
@@ -1884,7 +1884,7 @@ pub use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, sec
 /// is read at ONE site (`validate_with_unset`'s call to this function), and
 /// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
 /// the production code path, error ordering and all — against an empty set.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn validate_providers_with(
     known: &'static [&'static str],
@@ -2232,7 +2232,7 @@ pub fn validate_providers_with(
 /// So zero is its OWN refusal: once, naming the build, per provider. The empty-set test in
 /// `tests/tests.rs` (`an_empty_protocol_set_refuses_every_provider_naming_the_build`) was watched
 /// RED against the contains-only body before this arm existed; do not fold the arms back together.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn validate_provider_protocol_with(
     known: &'static [&'static str],
@@ -2270,8 +2270,8 @@ pub fn validate_provider_protocol_with(
 /// answer.
 ///
 /// It lives HERE, with the config layer, because it reads nothing else: the config layer's own
-/// `SecretResolver` and its own [`boot_resolved_secret_refs`] walk. `busbar-core` re-exports it at
-/// its historical `busbar_core::preflight::validate_builtin_secrets_resolve` spelling, which is what
+/// `SecretResolver` and its own [`boot_resolved_secret_refs`] walk. The engine re-exports it at
+/// its historical `preflight::validate_builtin_secrets_resolve` spelling, which is what
 /// the binary's `--validate` arm calls.
 ///
 /// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.

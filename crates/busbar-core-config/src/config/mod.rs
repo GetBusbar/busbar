@@ -32,8 +32,8 @@ pub use secret::SecretRef;
 use crate::planes::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 // Re-export status_class_from_str for config validation. Named at its NEUTRAL home
-// (`busbar_substrate::breaker`, re-exported from `busbar-substrate-values`) rather than through
-// `crate::breaker`'s shim: the config layer must not carry an edge into a busbar-core module for a
+// (`busbar_substrate::breaker`, re-exported from the pure value leaf below it) rather than through
+// `crate::breaker`'s shim: the config layer must not carry an edge into an engine module for a
 // value that is already a leaf.
 //
 // DECLARED BELOW THE `use crate::…` GROUP, DELIBERATELY. rustfmt sorts `pub use` after
@@ -210,7 +210,7 @@ pub fn interpolate_env_with(
 /// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
 /// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
 /// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn structural_placeholder(occurrence_index: usize) -> String {
     format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
@@ -340,11 +340,11 @@ fn assert_interpolation_preserves_structure(
 /// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
 /// closed into the ordinary "would change structure" rejection) rather than let a document too
 /// deep to safely verify slip through.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
 
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
     use serde_yaml::Value;
@@ -393,7 +393,7 @@ pub fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, dep
 /// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
 /// common case is exact; the fallback exists only so a non-string key (not expected in practice)
 /// degrades to a still-deterministic, still-comparable representation instead of panicking.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn mapping_key_repr(key: &serde_yaml::Value) -> String {
     match key {
@@ -882,7 +882,7 @@ pub use busbar_substrate::config::pools::{
 
 // The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
 // they live in the neutral `busbar_substrate::failover` (a plane names the per-request failover
-// budget without reaching into `busbar-core`); re-exported here at their historical
+// budget without reaching into the engine); re-exported here at their historical
 // `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
 // the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
 pub use busbar_substrate::failover::{
@@ -1085,7 +1085,7 @@ pub fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<Strin
 // `busbar_substrate::config::sections`, re-exported at their historical `config::` path.
 pub use busbar_substrate::config::sections::{DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR};
 
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn default_listen() -> String {
     DEFAULT_LISTEN_ADDR.into()
@@ -1369,7 +1369,7 @@ pub use busbar_substrate::config::sections::SecurityCfg;
 // The `plugins:` block — the master switch, the trust block, the anti-downgrade floors and the
 // fetch list — is plain serde data whose CONSUMERS (`busbar-plugin-sign`'s trust policy,
 // `busbar-plugin-loader`'s fetch list) are outside the config layer entirely. The GRAMMAR moved to
-// `busbar_substrate_values::config::plugins` (re-exported by `busbar_substrate::config::plugins`);
+// the pure value leaf's `config::plugins` (re-exported by `busbar_substrate::config::plugins`);
 // the RESOLUTION of it moved to `busbar_plugin_loader::{fetch_specs, trust_policy}`, beside the
 // types it produces. Re-exported at their historical `config::` path.
 pub use busbar_substrate::config::plugins::{
@@ -1719,7 +1719,7 @@ pub use busbar_substrate::config::limits::{
 /// filter. The plugin reference must be non-empty; an unresolvable/wrong-kind reference is caught
 /// fail-closed at the plugin pre-flight (like a store/auth ref). A named hook attached to a pool is a
 /// decision point by default, so an unset `kind:` defaults to `gate`.
-// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+// `pub` for the engine-hosted proofs (see the engine's `config/tests`); not a runtime surface.
 #[doc(hidden)]
 pub fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     let plugin = def.module.trim().to_string();

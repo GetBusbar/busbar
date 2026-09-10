@@ -58,7 +58,7 @@ where
 
 // ── THE PLANE-SECTION CARRIERS ───────────────────────────────────────────────────────────────────
 //
-// Moved verbatim from `busbar_core::plane::config` with the document that holds them. They are
+// Moved verbatim from the engine's `plane::config` with the document that holds them. They are
 // type-erased (`PlaneCfg` / `PlaneEndpointCfg`), so the document names no plane type; every
 // plane-specific answer comes off the behaviour row the plane registered.
 

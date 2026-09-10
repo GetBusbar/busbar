@@ -31,7 +31,7 @@
 //!
 //! The SHAPES (the serde structs/enums, their `Default`s and their pure accessors) live in
 //! `busbar_substrate::config::groups` and are re-exported below at this historical path, so no
-//! caller of `busbar_core::config::groups::*` moves. This module keeps the tree VALIDATION and the
+//! caller of the engine's `config::groups::*` spelling moves. This module keeps the tree VALIDATION and the
 //! child-provisioning helpers, which touch the pool namespace and are core-only concerns.
 
 use std::collections::BTreeMap;

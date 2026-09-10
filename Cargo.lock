@@ -593,7 +593,6 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-substrate",
- "busbar-substrate-values",
  "schemars",
  "serde",
  "serde_json",

@@ -4,14 +4,14 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "busbar's config layer: the 1.5.5 document grammar (RootCfg/DeployCfg/PluginsCfg/ExportCfg), the loader and env interpolation, the 1.4.x->1.5.0 migrator, the overlay, the named-definition map, the byte-identity prepass, the SecretResolver and the validator. Depends on the neutral substrate and NEVER on busbar-core, so the engine can retire out from under it."
+description = "busbar's config layer: the 1.5.5 document grammar (RootCfg/DeployCfg/PluginsCfg/ExportCfg), the loader and env interpolation, the 1.4.x->1.5.0 migrator, the overlay, the named-definition map, the byte-identity prepass, the SecretResolver and the validator. Depends on the neutral substrate and NEVER on the engine, so the engine can retire out from under it."
 license = "Apache-2.0"
 
 [dependencies]
 # THE NEUTRAL SUBSTRATE, and the only structural edge this crate has. It carries the config
 # grammar's PURE SHAPES (the leaf sections, the `pools:` value grammar, `plugins:` via the values
 # crate) AND the plane BEHAVIOUR table this layer asks "what does the plane that owns this section
-# do for it". Never `busbar-core`: the whole reason this crate exists is that the config layer must
+# do for it". Never the engine: the whole reason this crate exists is that the config layer must
 # outlive the engine.
 busbar-substrate = { path = "../busbar-substrate" }
 # THE PLANE DECLARATION LIST — which planes exist, which one owns a section, which is the fallback —
@@ -24,7 +24,6 @@ busbar-contract = { path = "../busbar-contract" }
 busbar-api = { path = "../api" }
 # The `plugins:` grammar's home, one layer below the substrate: its consumers sit outside the
 # substrate's closure, so the block lives in the values crate and is named from here.
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The document is YAML, and every parse/serialize in this crate rides the same maintained fork the
@@ -46,16 +45,16 @@ schemars = { workspace = true, optional = true }
 default = ["auth-admin-tokens", "hooks-ranking"]
 # The built-in `admin-tokens` auth module is compiled in. NO dependency edge: this crate only needs
 # to know WHETHER the module is present, because the validator reserves the operator principal id
-# only when there is an operator principal to shadow. busbar-core's feature of the same name
+# only when there is an operator principal to shadow. The engine's feature of the same name
 # forwards to this one, so the validator's answer and the binary's contents can never disagree.
 auth-admin-tokens = []
 # The built-in ranking strategies are compiled in. NO dependency edge here: this crate only needs to
 # know WHETHER they are present, because the validator refuses a hook naming a strategy the binary
-# was built without. busbar-core's feature of the same name forwards to this one.
+# was built without. The engine's feature of the same name forwards to this one.
 hooks-ranking = []
 # The CI-only OpenAPI schema derive, mirroring core and the plane crates.
 openapi-schema = ["dep:schemars"]
-# The test-only helpers the config layer's proofs reach (they run in busbar-core's test binary,
+# The test-only helpers the config layer's proofs reach (they run in the engine's test binary,
 # which enables this on its dev-dependency): a handful of `#[cfg(test)]` constructors and the
 # secret-bearing-type coverage table. Nothing here is a runtime surface.
 test-support = []

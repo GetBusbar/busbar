@@ -17,7 +17,7 @@
 //!
 //! ## What it may name, and what it may not
 //!
-//! It depends on the neutral substrate and NEVER on `busbar-core`. That direction is the whole point:
+//! It depends on the neutral substrate and NEVER on the engine. That direction is the whole point:
 //! the engine's retirement cannot proceed while the config layer is inside the engine, and every
 //! attempt to cut it while it still reached UP into ten core modules produced a Cargo cycle. The last
 //! of those reaches — the plane list — was closed when the plane declaration list became contract
@@ -27,13 +27,13 @@
 //!
 //! It names NO plane crate and NO dialect. Every plane-specific fact it needs — a section's owning
 //! plane, its parse hook, its subject noun, its validator — is read off a row the plane itself
-//! registered. `busbar-core` re-exports both modules at their historical `busbar_core::config` /
-//! `busbar_core::config_validate` spellings, so every existing caller resolves unchanged.
+//! registered. The engine re-exports both modules at the two historical spellings it owns, so every
+//! existing caller resolves unchanged.
 //!
 //! ## Where its proofs live
 //!
 //! The config layer's test battery (and the 1.4.x->1.5.0 migrator's corpus, and the config-schema
-//! snapshot) stays in `busbar-core`'s tree and runs in the engine's test binary. A test that writes
+//! snapshot) stays in the engine's tree and runs in the engine's test binary. A test that writes
 //! a plane's own top-level section needs the plane that OWNS it registered, and only a
 //! composition root or a legacy crate may name a plane crate — a core-kind crate may not, not even
 //! as a dev-dependency. The engine's test binary already carries the shipped plane set as its
