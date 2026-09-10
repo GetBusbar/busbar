@@ -1395,8 +1395,8 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.unit_total_ceiling"
-by = 165
-because = "FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union, declared rather than absorbed"
+by = 112
+because = "TWO FACES MEET IN ONE TREE, and the `by` is what the tree ACTUALLY rose by rather than what either face measured alone. M3' FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union. S1's face lands in the same tree and takes 53 lines OUT of the units — the units' own copies of the upstream status class and its disposition, deleted once busbar_contract::upstream owns the one table. 14606 + 165 - 53 = 14718, so the rise this raise pays for is 112. A `by` is the lines the tree rose by, not room for a face"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
@@ -1406,8 +1406,8 @@ because = "the same FACE as the unit_total_ceiling raise, busbar-unit-cost::Cost
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
-by = 10
-because = "FACE busbar-unit-cost::CostModel: the composition root now names the cost unit's GroupSpec, LimitSpec, ScopeSpec and GroupTable where it named the admission unit's topology types, hands the unit's resolver the configured limits, holds the byte-identity cell against the unit's CostModel, and imports busbar_unit_admission::ChainWalk at each .chain_for site because the walk over the cost unit's table is a trait the door declares"
+by = 7
+because = "The same two faces in one tree as the unit_total_ceiling raise above, netted the same way: M3' adds 10 and S1 takes 3 back (the root's own copies of the status class go with the units'), 1169 + 10 - 3 = 1176, so the rise is 7. M3' FACE busbar-unit-cost::CostModel: the composition root now names the cost unit's GroupSpec, LimitSpec, ScopeSpec and GroupTable where it named the admission unit's topology types, hands the unit's resolver the configured limits, holds the byte-identity cell against the unit's CostModel, and imports busbar_unit_admission::ChainWalk at each .chain_for site because the walk over the cost unit's table is a trait the door declares"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-unit-admission.unit.count"
