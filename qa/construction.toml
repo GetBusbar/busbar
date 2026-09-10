@@ -154,6 +154,40 @@ key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
 because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
 
+# THE TRANSPORT-STATUS LEG, DECLARED BY THE PLANE: `busbar_contract::plane::PlaneMeta::STATUS_LEG`
+# (`Option<StatusAt>`, one const on the declaration table every plane already fills in, +1 surface
+# line in crates/busbar-contract/src/plane.rs and nothing else — the type it names is
+# `busbar_contract_transport::wire::StatusAt`, which the pair already re-exports, so no import and no
+# new edge).
+#
+# WHAT IT IS FOR. A unit has two sources of truth about how it ended: the status the client SAW on
+# the frame the transport reports one on, and the finish the plane afterwards SAYS. The kernel's fee
+# has an arm for the case where those two contradict — a stream that dies after a 200 head — and
+# that arm was unreachable on EVERY plane, because every composition leg filled the kernel's
+# `status_at` in with `None`. `None` is a real answer for a dialect whose answer document is the
+# whole of the evidence; it is not an answer four legs may pin on a plane's behalf. Declared here,
+# it is sealed at registration beside `INTERRUPT_FACT` and `EGRESS_PACING_FACT`, which are the same
+# shape: an optional locator the dialect either has or does not.
+#
+# The count is one line for the whole tree. The five plane crates each answer it in their own
+# `meta.rs`, which carries no ceiling; the five composition legs read the answer, which is the root's
+# own line; and the llm leg's `status_at: None` is DELETED rather than defaulted.
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 1
+because = "the transport-status leg face busbar_contract::plane::PlaneMeta::STATUS_LEG: one const on the plane declaration table, measured by scripts/loc-surface.py at 3509 -> 3510. It names StatusAt, which busbar-contract already re-exports from busbar-contract-transport, so the face adds a declaration and not a type: the plane says WHERE its status is reported and the kernel reads the class off the frame it relayed."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 1
+because = "the same face, busbar_contract::plane::PlaneMeta::STATUS_LEG, measured under the loc-ceilings rule's own surface count: one const line in crates/busbar-contract/src/plane.rs, no import added and no other file in the pair touched. It is the declaration that makes the kernel's contradicted-fee arm reachable for every plane instead of unreachable for all five."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "the same face, busbar_contract::plane::PlaneMeta::STATUS_LEG: the union carries the caps+contract pair, so it rises by the same one line and by nothing else. The kernel, the unit union and the verbs sub-ceiling do not move on this commit."
+
 # THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
 # (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
 # crate's lib.rs = 138 measured). Every chain a resolved `GroupTable` can produce, walked ONCE at
@@ -213,7 +247,7 @@ because = "the byte-identity cell for the fee's two deciders, crates/busbar/test
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3509
+contract_caps = 3510
 grammar = 388
 contract_transport = 845
 
@@ -434,12 +468,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5381
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3511
+caps_contract_ceiling = 3512
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14933
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23825
+union_ceiling = 23826
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3509`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3510`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -93,7 +93,17 @@ them). Each axis is blind to the other two; only the kernel composes them.
   silently, because both readings are internally consistent and neither knows the other exists. The
   one relay is `busbar_substrate::config::groups::group_specs`, beside the grammar it reads; the
   root's copy went in the same commit. Nothing is added to what a plugin author must read: no trait
-  takes these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
+  takes these types and no plugin is handed one. The third is **the transport-status leg**
+  (`PlaneMeta::STATUS_LEG`, `Option<StatusAt>`; 1 line), the last of the declaration table's
+  optional locators: a plane says WHERE its dialect reports a unit's status — the head of a one-shot
+  answer, the trailer of a stream, or nowhere at all — and the kernel reads the class off the frame
+  it actually relayed. It is here rather than in a composition leg because a unit has TWO sources of
+  truth about how it ended, what the client SAW and what the plane afterwards SAYS, and telling them
+  apart is only possible where both are readable: with nothing declared, every leg filled the
+  kernel's status in with "none", the two sources collapsed into one, and the arm that exists for a
+  stream that dies after a good head was unreachable on every plane at once. A locator and never a
+  value — a plane that reported the class as well as the place would be a plane deciding its own
+  fee. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

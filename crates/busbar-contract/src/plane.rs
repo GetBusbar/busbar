@@ -11,7 +11,7 @@ use crate::plugin::Plugin;
 use crate::unit::{
     AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ScopeFacts, Unit, UnitEnd, UsageLocators,
 };
-use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
+use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, StatusAt};
 use std::any::Any;
 
 /// Everything a plane declares about itself.
@@ -40,6 +40,22 @@ pub trait PlaneMeta {
     const INTERRUPT_FACT: Option<&'static str>;
     /// The fact key that paces the kernel's outbound write path, where the dialect has one.
     const EGRESS_PACING_FACT: Option<&'static str>;
+    /// WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT, where it reports one at all.
+    ///
+    /// The locator and never the value: it names the FRAME a status rides on — the head of a
+    /// one-shot answer, the trailer of a stream — and the kernel reads the class off the frame it
+    /// actually relayed. Declaring it is what makes the two sources of a unit's ending separable:
+    /// what the client SAW, and what the plane afterwards SAYS. A plane that declares nothing here
+    /// is claiming the answer document is the whole of the evidence, and its own finish then
+    /// decides alone.
+    ///
+    /// Two endings can only be told apart where both are readable. A dialect that names a frame and
+    /// then loses it has lost the evidence the fee is decided from; a dialect that names one and
+    /// then contradicts it is disputed, and the frame the client saw is what decides. Both are the
+    /// kernel's arms, and neither is reachable for a plane that says nothing — which is why this is
+    /// a declaration every plane makes, sealed at registration, rather than a field one composition
+    /// leg fills in for its own plane and pins to nothing for the rest.
+    const STATUS_LEG: Option<StatusAt>;
     /// The schema of this plane's own configuration block.
     const CONFIG_SCHEMA: &'static str;
 }
