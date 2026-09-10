@@ -3014,7 +3014,7 @@ count = "1"
 [[cell]]
 crate = "busbar-streams-codec"
 kind = "plane"
-count = "95"
+count = "94"
 
 [[cell]]
 crate = "busbar-streams-codec"

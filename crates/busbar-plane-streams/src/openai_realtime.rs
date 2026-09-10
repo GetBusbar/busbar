@@ -16,12 +16,12 @@
 //! crate for it is minted, when it moves again by the same identity.
 
 use busbar_streams_codec::ir::codec::{
-    decode_audio, encode_audio, parse, session_config_lenient, str_at, wire_of, DecodeState,
+    decode_media, encode_media, parse, session_config_lenient, str_at, wire_of, DecodeState,
     DuplexReader, DuplexWriter, WireEvent, WireRef,
 };
 use busbar_streams_codec::ir::control::IrDuplexControl;
 use busbar_streams_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_streams_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use busbar_streams_codec::ir::media::{IrMediaFrame, IrMediaRef, MediaFormat, UpDown};
 use busbar_streams_codec::ir::tool::IrDuplexTool;
 use busbar_streams_codec::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
@@ -67,7 +67,7 @@ fn u64_at(v: &Value, key: &str) -> u64 {
 /// Read the item correlation this dialect states on a downlink audio event. Each field is carried only
 /// when the wire actually said it — an absent field stays absent rather than becoming an empty string
 /// or a zero index, which name a different (real) item.
-fn audio_ref_of(v: &Value) -> IrAudioRef {
+fn audio_ref_of(v: &Value) -> IrMediaRef {
     let text = |k: &str| {
         v.get(k)
             .and_then(Value::as_str)
@@ -79,7 +79,7 @@ fn audio_ref_of(v: &Value) -> IrAudioRef {
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
     };
-    IrAudioRef {
+    IrMediaRef {
         response_id: text("response_id"),
         item_id: text("item_id"),
         output_index: index("output_index"),
@@ -113,23 +113,23 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 })]
             }
             wire::INPUT_AUDIO_APPEND => {
-                let Some(media) = decode_audio(str_at(&v, "audio")) else {
+                let Some(media) = decode_media(str_at(&v, "audio")) else {
                     return Vec::new();
                 };
-                vec![IrClientEvent::AudioFrame(IrAudioFrame {
+                vec![IrClientEvent::MediaFrame(IrMediaFrame {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
                     media,
                     // The uplink append names no item — the item does not exist until the server
                     // makes one.
-                    origin: IrAudioRef::default(),
+                    origin: IrMediaRef::default(),
                 })]
             }
             wire::INPUT_AUDIO_COMMIT => {
-                vec![IrClientEvent::Control(IrDuplexControl::InputAudioCommit)]
+                vec![IrClientEvent::Control(IrDuplexControl::UplinkCommit)]
             }
             wire::INPUT_AUDIO_CLEAR => {
-                vec![IrClientEvent::Control(IrDuplexControl::InputAudioClear)]
+                vec![IrClientEvent::Control(IrDuplexControl::UplinkClear)]
             }
             wire::ITEM_CREATE => {
                 let item = v.get("item").cloned().unwrap_or(Value::Null);
@@ -147,7 +147,7 @@ impl DuplexReader for OpenAiRealtimeCodec {
                         output,
                     })]
                 } else {
-                    vec![IrClientEvent::Control(IrDuplexControl::ItemCreate { item })]
+                    vec![IrClientEvent::Control(IrDuplexControl::ItemInject { item })]
                 }
             }
             wire::ITEM_TRUNCATE => {
@@ -157,22 +157,22 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     // the same answer an ABSENT `content_index` gets. Narrowing with `as` would
                     // instead hand back a different, perfectly valid index into different content.
                     content_index: u32::try_from(u64_at(&v, "content_index")).unwrap_or(0),
-                    audio_played_ms: u64_at(&v, "audio_end_ms"),
+                    played_ms: u64_at(&v, "audio_end_ms"),
                 })]
             }
             wire::ITEM_DELETE => {
-                vec![IrClientEvent::Control(IrDuplexControl::ItemDelete {
+                vec![IrClientEvent::Control(IrDuplexControl::ItemRemove {
                     item_ref: str_at(&v, "item_id").to_string(),
                 })]
             }
             wire::RESPONSE_CREATE => {
-                let response = v.get("response").cloned();
-                vec![IrClientEvent::Control(IrDuplexControl::ResponseCreate {
-                    response,
+                let overrides = v.get("response").cloned();
+                vec![IrClientEvent::Control(IrDuplexControl::TurnRequest {
+                    overrides,
                 })]
             }
             wire::RESPONSE_CANCEL => {
-                vec![IrClientEvent::Control(IrDuplexControl::ResponseCancel)]
+                vec![IrClientEvent::Control(IrDuplexControl::TurnCancel)]
             }
             _ => Vec::new(),
         }
@@ -189,26 +189,26 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 if let Some(fmt) = session
                     .get("output_audio_format")
                     .and_then(Value::as_str)
-                    .and_then(AudioFormat::from_wire)
+                    .and_then(MediaFormat::from_wire)
                 {
                     st.set_output_format(fmt);
                 }
-                vec![IrServerEvent::SessionCreated { session }]
+                vec![IrServerEvent::SessionOpened { session }]
             }
-            wire::SPEECH_STARTED => vec![IrServerEvent::SpeechStarted {
-                audio_start_ms: u64_at(&v, "audio_start_ms"),
+            wire::SPEECH_STARTED => vec![IrServerEvent::ActivityStarted {
+                at_ms: u64_at(&v, "audio_start_ms"),
                 item_id: str_at(&v, "item_id").to_string(),
             }],
-            wire::SPEECH_STOPPED => vec![IrServerEvent::SpeechStopped {
-                audio_end_ms: u64_at(&v, "audio_end_ms"),
+            wire::SPEECH_STOPPED => vec![IrServerEvent::ActivityStopped {
+                at_ms: u64_at(&v, "audio_end_ms"),
                 item_id: str_at(&v, "item_id").to_string(),
             }],
             wire::OUTPUT_AUDIO_DELTA | wire::OUTPUT_AUDIO_DELTA_LEGACY => {
-                let Some(media) = decode_audio(str_at(&v, "delta")) else {
+                let Some(media) = decode_media(str_at(&v, "delta")) else {
                     return Vec::new();
                 };
                 st.record_played(media.len() as u64);
-                vec![IrServerEvent::AudioFrame(IrAudioFrame {
+                vec![IrServerEvent::MediaFrame(IrMediaFrame {
                     dir: UpDown::Down,
                     seq: st.next_down_seq(),
                     media,
@@ -219,7 +219,7 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 // THE ITEM BOUNDARY: this item's audio is complete, so the played-out position starts
                 // over. Carrying it forward would truncate the NEXT turn at the running session total.
                 st.reset_playback();
-                vec![IrServerEvent::AudioDone {
+                vec![IrServerEvent::MediaDone {
                     item_id: str_at(&v, "item_id").to_string(),
                 }]
             }
@@ -326,42 +326,42 @@ impl DuplexWriter for OpenAiRealtimeCodec {
     /// tool call was named from, so it never accumulates: each fragment is already a frame here.
     fn write_up(&self, ev: IrClientEvent, _st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
-            IrClientEvent::AudioFrame(f) => json!({
+            IrClientEvent::MediaFrame(f) => json!({
                 "type": wire::INPUT_AUDIO_APPEND,
-                "audio": encode_audio(&f.media),
+                "audio": encode_media(&f.media),
             }),
             IrClientEvent::Control(c) => match c {
                 IrDuplexControl::SessionConfigure { config } => json!({
                     "type": wire::SESSION_UPDATE,
                     "session": config,
                 }),
-                IrDuplexControl::ResponseCreate { response } => {
+                IrDuplexControl::TurnRequest { overrides } => {
                     let mut o = json!({ "type": wire::RESPONSE_CREATE });
-                    if let Some(r) = response {
+                    if let Some(r) = overrides {
                         o["response"] = r;
                     }
                     o
                 }
-                IrDuplexControl::ResponseCancel => json!({ "type": wire::RESPONSE_CANCEL }),
-                IrDuplexControl::InputAudioCommit => json!({ "type": wire::INPUT_AUDIO_COMMIT }),
-                IrDuplexControl::InputAudioClear => json!({ "type": wire::INPUT_AUDIO_CLEAR }),
-                IrDuplexControl::ItemCreate { item } => json!({
+                IrDuplexControl::TurnCancel => json!({ "type": wire::RESPONSE_CANCEL }),
+                IrDuplexControl::UplinkCommit => json!({ "type": wire::INPUT_AUDIO_COMMIT }),
+                IrDuplexControl::UplinkClear => json!({ "type": wire::INPUT_AUDIO_CLEAR }),
+                IrDuplexControl::ItemInject { item } => json!({
                     "type": wire::ITEM_CREATE,
                     "item": item,
                 }),
-                IrDuplexControl::ItemDelete { item_ref } => json!({
+                IrDuplexControl::ItemRemove { item_ref } => json!({
                     "type": wire::ITEM_DELETE,
                     "item_id": item_ref,
                 }),
                 IrDuplexControl::ItemTruncate {
                     item_ref,
                     content_index,
-                    audio_played_ms,
+                    played_ms,
                 } => json!({
                     "type": wire::ITEM_TRUNCATE,
                     "item_id": item_ref,
                     "content_index": content_index,
-                    "audio_end_ms": audio_played_ms,
+                    "audio_end_ms": played_ms,
                 }),
             },
             IrClientEvent::Tool(t) => match t {
@@ -403,7 +403,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
     /// writer never answers `None`.
     fn write_down(&self, ev: IrServerEvent, _st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
-            IrServerEvent::SessionCreated { session } => json!({
+            IrServerEvent::SessionOpened { session } => json!({
                 "type": wire::SESSION_CREATED,
                 "session": session,
             }),
@@ -436,30 +436,24 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                     },
                 }),
             },
-            IrServerEvent::SpeechStarted {
-                audio_start_ms,
-                item_id,
-            } => json!({
+            IrServerEvent::ActivityStarted { at_ms, item_id } => json!({
                 "type": wire::SPEECH_STARTED,
-                "audio_start_ms": audio_start_ms,
+                "audio_start_ms": at_ms,
                 "item_id": item_id,
             }),
-            IrServerEvent::SpeechStopped {
-                audio_end_ms,
-                item_id,
-            } => json!({
+            IrServerEvent::ActivityStopped { at_ms, item_id } => json!({
                 "type": wire::SPEECH_STOPPED,
-                "audio_end_ms": audio_end_ms,
+                "audio_end_ms": at_ms,
                 "item_id": item_id,
             }),
-            IrServerEvent::AudioFrame(f) => {
+            IrServerEvent::MediaFrame(f) => {
                 // The item correlation the source dialect named rides back out — the client relays
                 // through this writer even same-dialect, and a client that cannot name the item it is
                 // hearing cannot truncate it when the user interrupts. What no source named is not
                 // invented here.
                 let mut o = json!({
                     "type": wire::OUTPUT_AUDIO_DELTA,
-                    "delta": encode_audio(&f.media),
+                    "delta": encode_media(&f.media),
                 });
                 if let Some(id) = &f.origin.response_id {
                     o["response_id"] = json!(id);
@@ -475,7 +469,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                 }
                 o
             }
-            IrServerEvent::AudioDone { item_id } => json!({
+            IrServerEvent::MediaDone { item_id } => json!({
                 "type": wire::OUTPUT_AUDIO_DONE,
                 "item_id": item_id,
             }),

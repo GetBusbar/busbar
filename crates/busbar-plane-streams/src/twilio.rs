@@ -15,8 +15,8 @@
 //! public wire format, not a copy.
 //!
 //! The events this module models onto the shared [`busbar_streams_codec::ir`] vocabulary: a `media` event
-//! becomes an [`busbar_streams_codec::ir::media::IrAudioFrame`] (direction `Up`, format
-//! [`busbar_streams_codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
+//! becomes an [`busbar_streams_codec::ir::media::IrMediaFrame`] (direction `Up`, format
+//! [`busbar_streams_codec::ir::media::MediaFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
 //! verbatim — the µ-law↔PCM16 transform happens at the plane's `encode_ingress_frame` seam
 //! ([`crate::plane`]), never here. The lifecycle events carry no audio and are surfaced as their own
 //! variant so the plane can track (or ignore) them without guessing at a synthetic IR event for a

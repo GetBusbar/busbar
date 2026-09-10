@@ -12,8 +12,8 @@ use bytes::Bytes;
 /// THE CORRELATION ABSTRACTION for one in-flight tool call — NOT the wire `call_id`.
 ///
 /// Modeled on the LLM plane's `IrDelta::InputJsonDelta` id-remap move (`plane4-duplex-session.md`): a
-/// `CallRef → (client_call_id, upstream_call_id)` table held in the session scope lets a client that
-/// speaks OpenAI `call_id` be bridged to a Gemini Live tool-call that correlates by NAME, not id.
+/// `CallRef → (client_call_id, upstream_call_id)` table held in the session scope lets a client whose
+/// dialect correlates a call by ID be bridged to an upstream whose dialect correlates it by NAME.
 ///
 /// An opaque newtype over a monotonic per-session counter, minted in
 /// [`crate::ir::codec::DecodeState`]. The `CallRef ↔ call_id` map lives there; each tool IR variant
@@ -22,15 +22,14 @@ use bytes::Bytes;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CallRef(pub u64);
 
-/// THE NEUTRAL TOOL-CALL IR — busbar-owned, names no OpenAI noun in core. Modeled on
+/// THE NEUTRAL TOOL-CALL IR — busbar-owned, and it names no dialect's noun. Modeled on
 /// `IrDelta::InputJsonDelta`. `call_ref` is the join key across every variant; `call_id` is the raw
 /// dialect id the wire correlates on (kept so a stateless writer can re-frame the result).
 ///
-/// The Realtime tool loop this normalizes: the model announces a call
-/// (`response.output_item.added` with a `function_call` item) then streams
-/// `response.function_call_arguments.delta` → `…done`; busbar executes the tool server-side and
-/// returns `conversation.item.create{ function_call_output }` then `response.create`. A tool-call turn
-/// often produces NO audio until the result is fed back.
+/// The tool loop this normalizes, in whatever tokens a dialect spells it: the model ANNOUNCES a call,
+/// then STREAMS its arguments to a close; busbar executes the tool server-side, under governance, and
+/// writes the RESULT back followed by a request for the next turn. A tool-call turn often produces no
+/// media at all until that result is fed back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrDuplexTool {
     /// A function call was ANNOUNCED by the model (server→client). Carries the tool name.
@@ -59,14 +58,14 @@ pub enum IrDuplexTool {
         call_id: String,
     },
     /// busbar's SERVER-SIDE RESULT (client→server) — authored by the plane after governance, never by
-    /// the browser. Written back to the upstream as `function_call_output` + `response.create`.
+    /// the browser. Written back to the upstream as the dialect's own result item, then a turn request.
     CallResult {
         /// The call this result answers.
         call_ref: CallRef,
         /// The raw wire id the dialect correlates on.
         call_id: String,
         /// The tool NAME the result answers for, remembered from the call that opened it. Gemini's
-        /// `functionResponse` REQUIRES a name and OpenAI's `function_call_output` carries none, so the
+        /// result item REQUIRES a name where another dialect's carries none, so the
         /// name rides the IR rather than being looked up by a writer that is deliberately stateless.
         /// EMPTY when the result answers a call this session never saw announced — a name nobody told
         /// us is not a name to invent, so it is simply omitted from the wire.

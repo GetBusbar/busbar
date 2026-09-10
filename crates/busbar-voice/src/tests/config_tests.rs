@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-voice/src/config.rs`.
 
 use super::*;
-use crate::ir::control::IrVad;
+use crate::ir::control::IrTurnDetection;
 
 /// An ABSENT section (`default_section`) and an empty `streams: {}` must decode to the SAME value,
 /// or a present-but-empty block would silently differ from an omitted one.
@@ -24,7 +24,7 @@ fn defaults_are_the_dod_values() {
     assert_eq!(c.context_window_tokens, 32_768);
     assert_eq!(c.max_output_tokens, 4096);
     match c.session.turn_detection {
-        Some(Some(IrVad::ServerVad {
+        Some(Some(IrTurnDetection::ServerVad {
             silence_duration_ms,
             ..
         })) => assert_eq!(silence_duration_ms, 500),

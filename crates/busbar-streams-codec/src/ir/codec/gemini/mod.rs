@@ -27,7 +27,7 @@
 //!    inherently lossy at the BYTE level (it is a genuine cross-dialect map, not verbatim carriage):
 //!    it is a FIXPOINT at the IR level (wire→IR→wire→IR is stable) but not byte-for-byte.
 //!  * Gemini's `interrupted` (the model's generation was cut off by a barge-in) maps onto the shared
-//!    barge-in signal [`IrServerEvent::SpeechStarted`]; `turnComplete` maps onto [`IrServerEvent::AudioDone`].
+//!    barge-in signal [`IrServerEvent::ActivityStarted`]; `turnComplete` maps onto [`IrServerEvent::MediaDone`].
 //!
 //! DROP+WARN (Gemini concepts with NO shared-IR home): input/output transcription side-channels,
 //! `toolCallCancellation`, `goAway` / session-resumption, and non-audio model-turn parts. Following
@@ -37,12 +37,12 @@
 //! clear, item delete/truncate, per-response overrides) — frames NOTHING (`write_up` answers `None`),
 //! because a stand-in frame carrying none of the semantics reads upstream as the concept surviving.
 
-use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
+use super::{decode_media, encode_media, parse, str_at, wire_of, DecodeState};
 use super::{DuplexReader, DuplexWriter, WireEvent, WireRef};
 use crate::ir::config::{MaxOutputTokens, SessionConfig};
-use crate::ir::control::{IrDuplexControl, IrVad};
+use crate::ir::control::{IrDuplexControl, IrTurnDetection};
 use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use crate::ir::media::{IrMediaFrame, IrMediaRef, MediaFormat, UpDown};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
@@ -93,11 +93,11 @@ const PCM_16K_MIME: &str = "audio/pcm;rate=16000";
 /// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the
 /// cross-dialect map records the telephony codecs as having no Gemini twin), and there is no honest
 /// mime to write for one.
-fn pcm_mime(fmt: AudioFormat, dir: UpDown) -> Option<&'static str> {
+fn pcm_mime(fmt: MediaFormat, dir: UpDown) -> Option<&'static str> {
     match (fmt, dir) {
-        (AudioFormat::Pcm16, UpDown::Up) => Some(PCM_16K_MIME),
-        (AudioFormat::Pcm16, UpDown::Down) => Some(PCM_24K_MIME),
-        (AudioFormat::G711Ulaw, _) => None,
+        (MediaFormat::Pcm16, UpDown::Up) => Some(PCM_16K_MIME),
+        (MediaFormat::Pcm16, UpDown::Down) => Some(PCM_24K_MIME),
+        (MediaFormat::G711Ulaw, _) => None,
     }
 }
 
@@ -109,7 +109,7 @@ pub struct GeminiLiveCodec;
 
 // ── mime / audio-format helpers ───────────────────────────────────────────────────────────────────
 
-/// Map a Gemini audio `mimeType` to the shared [`AudioFormat`], IN THE DIRECTION IT ARRIVED.
+/// Map a Gemini audio `mimeType` to the shared [`MediaFormat`], IN THE DIRECTION IT ARRIVED.
 ///
 /// The two directions of this dialect run at DIFFERENT rates — 16 kHz is what Gemini requires on its
 /// uplink, 24 kHz is what the model synthesizes — and the shared `Pcm16` token carries exactly one
@@ -122,7 +122,7 @@ pub struct GeminiLiveCodec;
 /// 16 kHz audio (30 ms) as 10 ms, cutting the user off mid-word at the next barge-in. An untagged
 /// `audio/pcm` takes the direction's own rate, which is what an untagged frame in that direction is.
 #[must_use]
-pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
+pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<MediaFormat> {
     let m = mime.to_ascii_lowercase();
     if !m.starts_with("audio/pcm") {
         return None;
@@ -132,9 +132,9 @@ pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     let untagged = !m.contains("rate=");
     match dir {
         // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
-        UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),
+        UpDown::Up if rate_16k || rate_24k || untagged => Some(MediaFormat::Pcm16),
         // The truncate math measures against THIS rate; anything else is a different format.
-        UpDown::Down if rate_24k || untagged => Some(AudioFormat::Pcm16),
+        UpDown::Down if rate_24k || untagged => Some(MediaFormat::Pcm16),
         _ => None,
     }
 }
@@ -166,12 +166,12 @@ fn system_instruction_text(si: &Value) -> Option<String> {
 ///
 /// Gemini's sensitivity enums have no shared home (dropped); OpenAI-only knobs (`threshold` /
 /// `create_response` / `interrupt_response`) take their shared defaults.
-fn vad_from_realtime_input_config(ric: &Value) -> Option<Option<IrVad>> {
+fn vad_from_realtime_input_config(ric: &Value) -> Option<Option<IrTurnDetection>> {
     let aad = ric.get("automaticActivityDetection")?;
     if aad.get("disabled").and_then(Value::as_bool) == Some(true) {
         return Some(None);
     }
-    Some(Some(IrVad::ServerVad {
+    Some(Some(IrTurnDetection::ServerVad {
         threshold: 0.5,
         // A timing that does not fit in the shared IR's `u32` takes the SAME documented default an
         // absent field takes. Narrowing with `as` would turn a nonsense value into "no padding at
@@ -308,7 +308,7 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
                 json!({ "automaticActivityDetection": { "disabled": true } }),
             );
         }
-        Some(Some(IrVad::ServerVad {
+        Some(Some(IrTurnDetection::ServerVad {
             prefix_padding_ms,
             silence_duration_ms,
             ..
@@ -321,7 +321,7 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
                 }}),
             );
         }
-        Some(Some(IrVad::SemanticVad { .. })) => {
+        Some(Some(IrTurnDetection::SemanticVad { .. })) => {
             // Semantic VAD has no Gemini knob set; enable automatic detection generically.
             setup.insert(
                 "realtimeInputConfig".into(),
@@ -403,7 +403,7 @@ impl DuplexReader for GeminiLiveCodec {
             let cfg = session_config_from_setup(setup, st);
             // Gemini's downlink synthesis is 24 kHz PCM — the format the truncate math measures.
             if cfg.modalities.iter().any(|m| m == "audio") || cfg.modalities.is_empty() {
-                st.set_output_format(AudioFormat::Pcm16);
+                st.set_output_format(MediaFormat::Pcm16);
             }
             // The UPLINK format is adopted separately, from whatever the config states about the
             // client's own audio. Gemini's `setup` states nothing about it, so an unstated input
@@ -420,13 +420,13 @@ impl DuplexReader for GeminiLiveCodec {
         if let Some(cc) = v.get(wire::CLIENT_CONTENT) {
             // A client turn (`turns` + `turnComplete`) is injected VERBATIM as a conversation item —
             // the plane locks/reconciles it but never reshapes the content bytes.
-            return vec![IrClientEvent::Control(IrDuplexControl::ItemCreate {
+            return vec![IrClientEvent::Control(IrDuplexControl::ItemInject {
                 item: cc.clone(),
             })];
         }
 
         if let Some(ri) = v.get(wire::REALTIME_INPUT) {
-            // Uplink audio arrives in TWO Gemini spellings, both decoded to `IrAudioFrame{dir:Up}` with
+            // Uplink audio arrives in TWO Gemini spellings, both decoded to `IrMediaFrame{dir:Up}` with
             // a monotonic seq: the GA (`v1beta`) `realtimeInput.audio` SINGLE inline blob, and the
             // legacy `realtimeInput.mediaChunks[]` ARRAY. A `{mimeType,data}` blob whose mime is not a
             // modeled audio format has no shared frame (drop).
@@ -435,15 +435,15 @@ impl DuplexReader for GeminiLiveCodec {
                 if audio_format_from_mime(str_at(blob, "mimeType"), UpDown::Up).is_none() {
                     return; // non-audio realtime input has no shared frame (drop).
                 }
-                let Some(media) = decode_audio(str_at(blob, "data")) else {
+                let Some(media) = decode_media(str_at(blob, "data")) else {
                     return; // a payload that is not base64 is not silence — emit no frame.
                 };
-                out.push(IrClientEvent::AudioFrame(IrAudioFrame {
+                out.push(IrClientEvent::MediaFrame(IrMediaFrame {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
                     media,
                     // This dialect names no item on either audio direction.
-                    origin: IrAudioRef::default(),
+                    origin: IrMediaRef::default(),
                 }));
             };
             // Prefer the GA single blob when present so a GA peer never double-decodes; else fall back
@@ -457,10 +457,10 @@ impl DuplexReader for GeminiLiveCodec {
             }
             // `realtimeInput.audioStreamEnd` is Gemini's manual end-of-uplink marker; it is the
             // cross-dialect twin of OpenAI's discrete `input_audio_buffer.commit`. Map it to the shared
-            // `IrDuplexControl::InputAudioCommit` so the "end the buffered uplink turn" concept survives
+            // `IrDuplexControl::UplinkCommit` so the "end the buffered uplink turn" concept survives
             // cross-dialect (a frame may carry audio AND the end marker; emit the commit after the audio).
             if ri.get(wire::AUDIO_STREAM_END).is_some() {
-                out.push(IrClientEvent::Control(IrDuplexControl::InputAudioCommit));
+                out.push(IrClientEvent::Control(IrDuplexControl::UplinkCommit));
             }
             return out;
         }
@@ -506,7 +506,7 @@ impl DuplexReader for GeminiLiveCodec {
         };
 
         if let Some(sc) = v.get(wire::SETUP_COMPLETE) {
-            return vec![IrServerEvent::SessionCreated {
+            return vec![IrServerEvent::SessionOpened {
                 session: sc.clone(),
             }];
         }
@@ -526,27 +526,27 @@ impl DuplexReader for GeminiLiveCodec {
                         if audio_format_from_mime(mime, UpDown::Down).is_none() {
                             continue;
                         }
-                        let Some(media) = decode_audio(str_at(inline, "data")) else {
+                        let Some(media) = decode_media(str_at(inline, "data")) else {
                             continue; // a payload that is not base64 is not silence — emit no frame.
                         };
                         st.record_played(media.len() as u64);
-                        out.push(IrServerEvent::AudioFrame(IrAudioFrame {
+                        out.push(IrServerEvent::MediaFrame(IrMediaFrame {
                             dir: UpDown::Down,
                             seq: st.next_down_seq(),
                             media,
                             // A Gemini `modelTurn` part carries no response/item correlation, and an
                             // id nobody issued is worse than an absent one.
-                            origin: IrAudioRef::default(),
+                            origin: IrMediaRef::default(),
                         }));
                     }
                     // A `text` part / transcription side-channel has no shared IR home (drop+warn).
                 }
             }
             // `interrupted` = the model's generation was cut off by a barge-in → the shared barge-in
-            // signal. `turnComplete` = the model turn's audio is complete → AudioDone.
+            // signal. `turnComplete` = the model turn's audio is complete → MediaDone.
             if sc.get("interrupted").and_then(Value::as_bool) == Some(true) {
-                out.push(IrServerEvent::SpeechStarted {
-                    audio_start_ms: 0,
+                out.push(IrServerEvent::ActivityStarted {
+                    at_ms: 0,
                     item_id: String::new(),
                 });
             }
@@ -554,7 +554,7 @@ impl DuplexReader for GeminiLiveCodec {
                 // THE GEMINI ITEM BOUNDARY: the turn's audio is complete, so the played-out position
                 // starts over — the next turn's barge-in truncates at ITS audio, not the running total.
                 st.reset_playback();
-                out.push(IrServerEvent::AudioDone {
+                out.push(IrServerEvent::MediaDone {
                     item_id: String::new(),
                 });
             }
@@ -666,18 +666,18 @@ impl DuplexWriter for GeminiLiveCodec {
             // THE GA UPLINK SHAPE: `realtimeInput.audio`, a SINGLE inline blob — the spelling this
             // codec's own reader prefers, and the one the cross-dialect map names. The legacy
             // `mediaChunks[]` array is still READ (a peer may speak it) but no longer written.
-            IrClientEvent::AudioFrame(f) => json!({
+            IrClientEvent::MediaFrame(f) => json!({
                 wire::REALTIME_INPUT: {
-                    "audio": { "mimeType": pcm_mime(st.input_format(), UpDown::Up)?, "data": encode_audio(&f.media) }
+                    "audio": { "mimeType": pcm_mime(st.input_format(), UpDown::Up)?, "data": encode_media(&f.media) }
                 }
             }),
             IrClientEvent::Control(c) => match c {
                 IrDuplexControl::SessionConfigure { config } => setup_from_session_config(&config),
-                IrDuplexControl::ItemCreate { item } => json!({ wire::CLIENT_CONTENT: item }),
-                // `InputAudioCommit` (end the buffered uplink turn) round-trips to Gemini's
+                IrDuplexControl::ItemInject { item } => json!({ wire::CLIENT_CONTENT: item }),
+                // `UplinkCommit` (end the buffered uplink turn) round-trips to Gemini's
                 // `realtimeInput.audioStreamEnd` marker — the cross-dialect twin of OpenAI's
                 // `input_audio_buffer.commit`, so the concept survives rather than dropping.
-                IrDuplexControl::InputAudioCommit => json!({
+                IrDuplexControl::UplinkCommit => json!({
                     wire::REALTIME_INPUT: { wire::AUDIO_STREAM_END: true }
                 }),
                 // The Gemini uplink has no discrete cancel/clear/delete/truncate verb and no per-turn
@@ -691,10 +691,10 @@ impl DuplexWriter for GeminiLiveCodec {
                 // concept having survived, which is exactly the confusion a barge-in cannot afford.
                 // Gemini's `activityStart` is NOT a substitute: it announces USER activity under manual
                 // activity detection, not "abandon the response you are generating".
-                IrDuplexControl::ResponseCreate { .. }
-                | IrDuplexControl::ResponseCancel
-                | IrDuplexControl::InputAudioClear
-                | IrDuplexControl::ItemDelete { .. }
+                IrDuplexControl::TurnRequest { .. }
+                | IrDuplexControl::TurnCancel
+                | IrDuplexControl::UplinkClear
+                | IrDuplexControl::ItemRemove { .. }
                 | IrDuplexControl::ItemTruncate { .. } => return None,
             },
             IrClientEvent::Tool(t) => match t {
@@ -734,7 +734,7 @@ impl DuplexWriter for GeminiLiveCodec {
 
     fn write_down(&self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
-            IrServerEvent::SessionCreated { session } => json!({ wire::SETUP_COMPLETE: session }),
+            IrServerEvent::SessionOpened { session } => json!({ wire::SETUP_COMPLETE: session }),
             IrServerEvent::Tool(t) => match t {
                 IrDuplexTool::CallOpen {
                     call_ref,
@@ -765,21 +765,21 @@ impl DuplexWriter for GeminiLiveCodec {
                     ..
                 } => tool_response_frame(&call_id, &name, &output),
             },
-            // Gemini's barge-in signal is `serverContent.interrupted`; the shared SpeechStarted maps
-            // onto it. SpeechStopped has no Gemini wire event → an empty serverContent (dropped).
-            IrServerEvent::SpeechStarted { .. } => json!({
+            // Gemini's barge-in signal is `serverContent.interrupted`; the shared ActivityStarted maps
+            // onto it. ActivityStopped has no Gemini wire event → an empty serverContent (dropped).
+            IrServerEvent::ActivityStarted { .. } => json!({
                 wire::SERVER_CONTENT: { "interrupted": true }
             }),
-            IrServerEvent::SpeechStopped { .. } => json!({ wire::SERVER_CONTENT: {} }),
-            IrServerEvent::AudioFrame(f) => json!({
+            IrServerEvent::ActivityStopped { .. } => json!({ wire::SERVER_CONTENT: {} }),
+            IrServerEvent::MediaFrame(f) => json!({
                 wire::SERVER_CONTENT: {
                     "modelTurn": { "parts": [ { "inlineData": {
                         "mimeType": pcm_mime(st.output_format(), UpDown::Down)?,
-                        "data": encode_audio(&f.media)
+                        "data": encode_media(&f.media)
                     } } ] }
                 }
             }),
-            IrServerEvent::AudioDone { .. } => json!({
+            IrServerEvent::MediaDone { .. } => json!({
                 wire::SERVER_CONTENT: { "turnComplete": true }
             }),
             IrServerEvent::Usage(u) => json!({ wire::USAGE_METADATA: usage_to_metadata(&u) }),

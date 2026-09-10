@@ -82,16 +82,16 @@ enum Norm {
     Connect,
     AudioUp(Vec<u8>),
     AudioDown(Vec<u8>),
-    AudioDone,
+    MediaDone,
     Item(Value),
     SpeechStart,
     SpeechStop,
-    Truncate(u64), // audio_played_ms — precision that does NOT survive toward Gemini
+    Truncate(u64), // played_ms — precision that does NOT survive toward Gemini
     Commit,
     Clear,
-    ResponseCreate,
-    ResponseCancel,
-    ItemDelete,
+    TurnRequest,
+    TurnCancel,
+    ItemRemove,
     Usage(u64, u64, u64, u64), // audio_in, audio_out, text_in, text_out (cached rarely survives)
     RateLimits,
     Error(String, String),
@@ -138,22 +138,22 @@ fn norm_up(evs: &[IrClientEvent]) -> Vec<Norm> {
     let mut out = Vec::new();
     for e in evs {
         match e {
-            IrClientEvent::AudioFrame(f) => out.push(Norm::AudioUp(f.media.to_vec())),
+            IrClientEvent::MediaFrame(f) => out.push(Norm::AudioUp(f.media.to_vec())),
             IrClientEvent::Tool(t) => out.push(norm_tool(t)),
             IrClientEvent::Control(c) => match c {
                 IrDuplexControl::SessionConfigure { config } => {
                     out.push(cfg_essentials(config));
                     out.push(Norm::ConfigModalities(config.modalities.clone()));
                 }
-                IrDuplexControl::ItemCreate { item } => out.push(Norm::Item(item.clone())),
-                IrDuplexControl::ItemTruncate {
-                    audio_played_ms, ..
-                } => out.push(Norm::Truncate(*audio_played_ms)),
-                IrDuplexControl::InputAudioCommit => out.push(Norm::Commit),
-                IrDuplexControl::InputAudioClear => out.push(Norm::Clear),
-                IrDuplexControl::ResponseCreate { .. } => out.push(Norm::ResponseCreate),
-                IrDuplexControl::ResponseCancel => out.push(Norm::ResponseCancel),
-                IrDuplexControl::ItemDelete { .. } => out.push(Norm::ItemDelete),
+                IrDuplexControl::ItemInject { item } => out.push(Norm::Item(item.clone())),
+                IrDuplexControl::ItemTruncate { played_ms, .. } => {
+                    out.push(Norm::Truncate(*played_ms))
+                }
+                IrDuplexControl::UplinkCommit => out.push(Norm::Commit),
+                IrDuplexControl::UplinkClear => out.push(Norm::Clear),
+                IrDuplexControl::TurnRequest { .. } => out.push(Norm::TurnRequest),
+                IrDuplexControl::TurnCancel => out.push(Norm::TurnCancel),
+                IrDuplexControl::ItemRemove { .. } => out.push(Norm::ItemRemove),
             },
         }
     }
@@ -164,12 +164,12 @@ fn norm_down(evs: &[IrServerEvent]) -> Vec<Norm> {
     let mut out = Vec::new();
     for e in evs {
         match e {
-            IrServerEvent::SessionCreated { .. } => out.push(Norm::Connect),
+            IrServerEvent::SessionOpened { .. } => out.push(Norm::Connect),
             IrServerEvent::Tool(t) => out.push(norm_tool(t)),
-            IrServerEvent::SpeechStarted { .. } => out.push(Norm::SpeechStart),
-            IrServerEvent::SpeechStopped { .. } => out.push(Norm::SpeechStop),
-            IrServerEvent::AudioFrame(f) => out.push(Norm::AudioDown(f.media.to_vec())),
-            IrServerEvent::AudioDone { .. } => out.push(Norm::AudioDone),
+            IrServerEvent::ActivityStarted { .. } => out.push(Norm::SpeechStart),
+            IrServerEvent::ActivityStopped { .. } => out.push(Norm::SpeechStop),
+            IrServerEvent::MediaFrame(f) => out.push(Norm::AudioDown(f.media.to_vec())),
+            IrServerEvent::MediaDone { .. } => out.push(Norm::MediaDone),
             IrServerEvent::Usage(u) => {
                 out.push(Norm::Usage(u.audio_in, u.audio_out, u.text_in, u.text_out))
             }
@@ -291,7 +291,7 @@ fn drop_reason(dialect: &str, fixture: &str) -> Option<&'static str> {
             Some("output transcription side-channel: no shared IR home (drop+warn)")
         }
         // NB: `realtimeInput.audioStreamEnd` is NOT here — it is no longer a drop. It maps to the
-        // shared `InputAudioCommit` (OpenAI's `input_audio_buffer.commit` twin), so it decodes to a
+        // shared `UplinkCommit` (OpenAI's `input_audio_buffer.commit` twin), so it decodes to a
         // real IR event and is exercised as an IR-fixpoint-stable fixture, not a documented drop.
         _ => None,
     }
@@ -436,16 +436,16 @@ fn tag(n: &Norm) -> &'static str {
         Norm::Connect => "connect",
         Norm::AudioUp(_) => "audio-in",
         Norm::AudioDown(_) => "audio-out",
-        Norm::AudioDone => "audio-done",
+        Norm::MediaDone => "audio-done",
         Norm::Item(_) => "item",
         Norm::SpeechStart => "speech-start",
         Norm::SpeechStop => "speech-stop",
         Norm::Truncate(_) => "truncate",
         Norm::Commit => "commit",
         Norm::Clear => "clear",
-        Norm::ResponseCreate => "response-create",
-        Norm::ResponseCancel => "cancel",
-        Norm::ItemDelete => "item-delete",
+        Norm::TurnRequest => "response-create",
+        Norm::TurnCancel => "cancel",
+        Norm::ItemRemove => "item-delete",
         Norm::Usage(..) => "usage",
         Norm::RateLimits => "rate-limits",
         Norm::Error(..) => "error",
@@ -864,7 +864,7 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
             "clear has no Gemini twin — dropped",
         ),
         "openai_response_overrides" => drop_if(
-            n2.iter().all(|n| !matches!(n, Norm::ResponseCreate)),
+            n2.iter().all(|n| !matches!(n, Norm::TurnRequest)),
             "per-response overrides dropped (Gemini is setup-time only)",
         ),
         "openai_truncate_precision" => drop_if(
@@ -915,10 +915,10 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
             "no OpenAI twin — dropped at decode (drop+warn)",
         ),
         "gemini_generation_complete" => {
-            // turnComplete → AudioDone survives; the generationComplete distinction is collapsed away.
+            // turnComplete → MediaDone survives; the generationComplete distinction is collapsed away.
             drop_if(
-                has(n2, &|n| matches!(n, Norm::AudioDone)),
-                "turnComplete→AudioDone survives; generationComplete collapsed",
+                has(n2, &|n| matches!(n, Norm::MediaDone)),
+                "turnComplete→MediaDone survives; generationComplete collapsed",
             )
         }
         "gemini_audio_stream_end" => drop_if(
@@ -926,7 +926,7 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
             "audioStreamEnd ↔ input_audio_buffer.commit: the end-of-uplink turn survives cross-dialect",
         ),
         "gemini_setup_complete" => {
-            // setupComplete → SessionCreated (the ack survives); the GATE semantics are runtime-only.
+            // setupComplete → SessionOpened (the ack survives); the GATE semantics are runtime-only.
             drop_if(
                 has(n2, &|n| matches!(n, Norm::Connect)),
                 "ack maps to session.created; gate semantics are runtime-only, not IR",
@@ -1822,7 +1822,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
     }
 
     // THE HANDSHAKE ITSELF, over the exact runtime type the mounted route is generic over: a provider's
-    // `setupComplete` answers the client's `setup` by relaying verbatim (`IrServerEvent::SessionCreated`
+    // `setupComplete` answers the client's `setup` by relaying verbatim (`IrServerEvent::SessionOpened`
     // is a pass-through in `SessionCore::on_server_frame`) — the same relay the Gemini WS accept's
     // provider leg drives once a session is dialed (see the `provider-dial` leg for the live-socket
     // proof; this leg proves the PLANE'S side of that relay against the mounted codec).

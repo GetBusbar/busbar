@@ -64,7 +64,7 @@ async fn telephony_proxy_relays_both_directions() {
     let cfg = g711_config();
     assert_eq!(
         cfg.output_audio_format,
-        Some(crate::ir::media::AudioFormat::G711Ulaw)
+        Some(crate::ir::media::MediaFormat::G711Ulaw)
     );
     let proxy = begin_telephony(
         &rt,

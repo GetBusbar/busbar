@@ -226,33 +226,30 @@ where
                             // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
                             out.push_up(self.codec.write_up(
-                                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
+                                IrClientEvent::Control(IrDuplexControl::TurnCancel),
                                 &mut inner.decode,
                             ));
                             out.close = true;
                         }
                     }
                     // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
-                    IrServerEvent::SpeechStarted { item_id, .. } => {
+                    IrServerEvent::ActivityStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
                         out.push_up(self.codec.write_up(
-                            IrClientEvent::Control(IrDuplexControl::ResponseCancel),
+                            IrClientEvent::Control(IrDuplexControl::TurnCancel),
                             &mut inner.decode,
                         ));
                         out.push_up(self.codec.write_up(
                             IrClientEvent::Control(IrDuplexControl::ItemTruncate {
                                 item_ref: item_id.clone(),
                                 content_index: 0,
-                                audio_played_ms: heard_ms,
+                                played_ms: heard_ms,
                             }),
                             &mut inner.decode,
                         ));
                         // The client still hears the barge-in acknowledgement.
                         out.downlink.extend(self.codec.write_down(
-                            IrServerEvent::SpeechStarted {
-                                item_id,
-                                audio_start_ms: 0,
-                            },
+                            IrServerEvent::ActivityStarted { item_id, at_ms: 0 },
                             &mut inner.decode,
                         ));
                     }
@@ -307,10 +304,10 @@ where
                         }
                     }
                     // ── media + control: relay downlink verbatim (identity IR) ────────────────────
-                    ev @ (IrServerEvent::AudioFrame(_)
-                    | IrServerEvent::AudioDone { .. }
-                    | IrServerEvent::SpeechStopped { .. }
-                    | IrServerEvent::SessionCreated { .. }
+                    ev @ (IrServerEvent::MediaFrame(_)
+                    | IrServerEvent::MediaDone { .. }
+                    | IrServerEvent::ActivityStopped { .. }
+                    | IrServerEvent::SessionOpened { .. }
                     | IrServerEvent::Error { .. }) => {
                         // A downlink event that is not a frame on its own (a held tool-argument
                         // fragment) relays nothing — the same answer an unrepresentable uplink gives.
@@ -342,7 +339,7 @@ where
                 &mut g.decode,
             ));
             out.push_up(self.codec.write_up(
-                IrClientEvent::Control(IrDuplexControl::ResponseCreate { response: None }),
+                IrClientEvent::Control(IrDuplexControl::TurnRequest { overrides: None }),
                 &mut g.decode,
             ));
             drop(g);
@@ -412,8 +409,8 @@ where
                                 &mut g.decode,
                             ));
                             out.push_up(self.codec.write_up(
-                                IrClientEvent::Control(IrDuplexControl::ResponseCreate {
-                                    response: None,
+                                IrClientEvent::Control(IrDuplexControl::TurnRequest {
+                                    overrides: None,
                                 }),
                                 &mut g.decode,
                             ));

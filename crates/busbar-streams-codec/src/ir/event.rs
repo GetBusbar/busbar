@@ -9,7 +9,7 @@
 //! `IrRequest`, not a stream of events).
 
 use crate::ir::control::IrDuplexControl;
-use crate::ir::media::IrAudioFrame;
+use crate::ir::media::IrMediaFrame;
 use crate::ir::tool::IrDuplexTool;
 use crate::ir::usage::IrDuplexUsage;
 
@@ -17,8 +17,8 @@ use crate::ir::usage::IrDuplexUsage;
 /// **This vocabulary has no analog anywhere in the tree today** — building it is the net-new IR work.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrClientEvent {
-    /// An uplink audio frame (`dir: Up`) — `input_audio_buffer.append`.
-    AudioFrame(IrAudioFrame),
+    /// An uplink media frame (`dir: Up`) — the client's own media, framed.
+    MediaFrame(IrMediaFrame),
     /// A session-control / config event the client sent (reconciled against the locked config).
     Control(IrDuplexControl),
     /// A server-side tool RESULT the plane authored back toward the upstream (`CallResult`).
@@ -29,40 +29,43 @@ pub enum IrClientEvent {
 /// the sibling of `IrStreamEvent`, plane-owned.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrServerEvent {
-    /// The upstream acknowledged the session and returned its resolved config — `session.created`.
-    /// Carried VERBATIM as opaque JSON (it holds server-assigned fields — `id`, `model`, `expires_at`
-    /// — beyond the writable `SessionConfig` subset).
-    SessionCreated {
-        /// The resolved `session` object, opaque.
+    /// The upstream acknowledged the session OPEN and returned its resolved config. Carried VERBATIM
+    /// as opaque JSON, because the resolved object holds server-assigned fields — an id, the model it
+    /// settled on, an expiry — beyond the writable [`crate::ir::config::SessionConfig`] subset, and
+    /// exactly which ones is the answering dialect's business, not the IR's.
+    SessionOpened {
+        /// The resolved session object, opaque.
         session: serde_json::Value,
     },
     /// A tool-call announcement / argument delta / close (`CallOpen` / `CallArgs` / `CallClose`).
     Tool(IrDuplexTool),
-    /// The user began speaking — barge-in trigger (`input_audio_buffer.speech_started`).
-    SpeechStarted {
-        /// Uplink-buffer offset (ms) where speech began.
-        audio_start_ms: u64,
+    /// The upstream detected the START of client activity on the uplink — the barge-in trigger. On a
+    /// voice session that activity is speech; the IR states only that it began, because the modality is
+    /// the session's, not this event's.
+    ActivityStarted {
+        /// Uplink-buffer offset (ms) where the activity began.
+        at_ms: u64,
         /// The conversation item the buffered speech is being attributed to.
         item_id: String,
     },
-    /// The user stopped speaking (`input_audio_buffer.speech_stopped`). `audio_end_ms` is the carrier
-    /// the truncate math reads to bound the just-heard turn.
-    SpeechStopped {
-        /// Uplink-buffer offset (ms) where speech ended.
-        audio_end_ms: u64,
+    /// The upstream detected the END of that activity. `at_ms` is the carrier the truncate math reads
+    /// to bound the turn just taken in.
+    ActivityStopped {
+        /// Uplink-buffer offset (ms) where the activity ended.
+        at_ms: u64,
         /// The conversation item the buffered speech is being attributed to.
         item_id: String,
     },
-    /// A downlink audio frame (`dir: Down`) — `response.output_audio.delta`.
-    AudioFrame(IrAudioFrame),
-    /// The downlink audio for an item is complete — `response.output_audio.done`.
-    AudioDone {
-        /// The item whose audio just completed.
+    /// A downlink media frame (`dir: Down`) — the upstream's own media, framed.
+    MediaFrame(IrMediaFrame),
+    /// The downlink media for an item is complete.
+    MediaDone {
+        /// The item whose media just completed.
         item_id: String,
     },
-    /// Extracted usage for a completed turn (`response.done.usage`).
+    /// Extracted usage for a completed turn — a metering fact, read and never client-translated.
     Usage(IrDuplexUsage),
-    /// A rate-limit update (`rate_limits.updated`) — extraction-only.
+    /// A rate-limit update the upstream volunteered — extraction-only.
     RateLimits,
     /// An upstream error surfaced on the session.
     Error {

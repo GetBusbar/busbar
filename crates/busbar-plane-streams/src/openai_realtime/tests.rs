@@ -8,7 +8,7 @@
 
 use super::*;
 use busbar_streams_codec::ir::config::{MaxOutputTokens, SessionConfig};
-use busbar_streams_codec::ir::control::{Eagerness, IrVad};
+use busbar_streams_codec::ir::control::{Eagerness, IrTurnDetection};
 use busbar_streams_codec::ir::tool::CallRef;
 use busbar_streams_codec::ir::GeminiLiveCodec;
 
@@ -23,7 +23,7 @@ fn as_value(w: &WireEvent) -> Value {
 }
 
 fn b64(bytes: &[u8]) -> String {
-    encode_audio(&Bytes::copy_from_slice(bytes))
+    encode_media(&Bytes::copy_from_slice(bytes))
 }
 
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer may drop
@@ -103,8 +103,8 @@ fn session_update_server_vad_roundtrips_and_types() {
         Some("You are a helpful voice agent.")
     );
     assert_eq!(config.voice.as_deref(), Some("marin"));
-    assert_eq!(config.input_audio_format, Some(AudioFormat::Pcm16));
-    assert_eq!(config.output_audio_format, Some(AudioFormat::G711Ulaw));
+    assert_eq!(config.input_audio_format, Some(MediaFormat::Pcm16));
+    assert_eq!(config.output_audio_format, Some(MediaFormat::G711Ulaw));
     assert_eq!(config.max_output_tokens, Some(MaxOutputTokens::Limit(4096)));
     assert_eq!(config.tools.len(), 1);
     assert_eq!(
@@ -112,7 +112,7 @@ fn session_update_server_vad_roundtrips_and_types() {
         Some("auto")
     );
     match &config.turn_detection {
-        Some(Some(IrVad::ServerVad {
+        Some(Some(IrTurnDetection::ServerVad {
             threshold,
             prefix_padding_ms,
             silence_duration_ms,
@@ -145,7 +145,7 @@ fn session_update_semantic_vad_roundtrips() {
     };
     assert_eq!(
         config.turn_detection,
-        Some(Some(IrVad::SemanticVad {
+        Some(Some(IrTurnDetection::SemanticVad {
             eagerness: Eagerness::High
         }))
     );
@@ -234,13 +234,13 @@ fn an_unmodelled_output_format_leaves_the_negotiated_format_alone() {
     // one neither adopts nor silently resets it.
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::G711Ulaw);
+    st.set_output_format(MediaFormat::G711Ulaw);
     let src = json!({
         "type": "session.update",
         "session": { "output_audio_format": "g711_alaw" }
     });
     let _ = codec.read_up(wire(&src.to_string()), &mut st);
-    assert_eq!(st.output_format(), AudioFormat::G711Ulaw);
+    assert_eq!(st.output_format(), MediaFormat::G711Ulaw);
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn session_update_null_turn_detection_disables_vad() {
 /// server VAD to close its turns. Absent stays absent, `null` stays `null`, a value stays itself.
 #[test]
 fn turn_detection_keeps_absent_null_and_value_apart_in_both_directions() {
-    let cases: [(Value, Option<Option<IrVad>>); 3] = [
+    let cases: [(Value, Option<Option<IrTurnDetection>>); 3] = [
         // Absent — the patch names only `instructions`.
         (json!({ "instructions": "x" }), None),
         // Explicit null — disable VAD.
@@ -272,7 +272,7 @@ fn turn_detection_keeps_absent_null_and_value_apart_in_both_directions() {
         ),
         (
             json!({ "instructions": "x", "turn_detection": { "type": "semantic_vad", "eagerness": "high" } }),
-            Some(Some(IrVad::SemanticVad {
+            Some(Some(IrTurnDetection::SemanticVad {
                 eagerness: Eagerness::High,
             })),
         ),
@@ -297,11 +297,11 @@ fn turn_detection_keeps_absent_null_and_value_apart_in_both_directions() {
 fn session_update_sets_decode_output_format() {
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
-    assert_eq!(st.output_format(), AudioFormat::Pcm16);
+    assert_eq!(st.output_format(), MediaFormat::Pcm16);
     let _ = codec.read_up(wire(&ga_session_server_vad().to_string()), &mut st);
     assert_eq!(
         st.output_format(),
-        AudioFormat::G711Ulaw,
+        MediaFormat::G711Ulaw,
         "output_audio_format adopted"
     );
 }
@@ -331,8 +331,8 @@ fn uplink_audio_append_decodes_base64_and_frames_up() {
     let payload = b"pretend-uplink-audio-bytes";
     let src = json!({ "type": "input_audio_buffer.append", "audio": b64(payload) });
     let ir = roundtrip_up(&src);
-    let IrClientEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame")
+    let IrClientEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame")
     };
     assert_eq!(f.dir, UpDown::Up);
     assert_eq!(&f.media[..], payload, "base64 decoded to the exact bytes");
@@ -349,7 +349,7 @@ fn uplink_seq_is_monotonic_across_frames() {
         .map(|n| {
             let ir = codec.read_up(mk(n), &mut st);
             match &ir[0] {
-                IrClientEvent::AudioFrame(f) => f.seq,
+                IrClientEvent::MediaFrame(f) => f.seq,
                 _ => panic!(),
             }
         })
@@ -361,12 +361,12 @@ fn uplink_seq_is_monotonic_across_frames() {
 fn downlink_audio_delta_frames_down_tracks_playback_and_bumps_seq() {
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    st.set_output_format(MediaFormat::Pcm16); // 48 bytes/ms
     let payload = vec![0u8; 96]; // 96 bytes -> 2 ms
     let src = json!({ "type": "response.output_audio.delta", "delta": b64(&payload) });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
-    let IrServerEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame")
+    let IrServerEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame")
     };
     assert_eq!(f.dir, UpDown::Down);
     assert_eq!(f.seq, 0);
@@ -375,7 +375,7 @@ fn downlink_audio_delta_frames_down_tracks_playback_and_bumps_seq() {
 
     // A second delta advances the downlink seq and accumulates playback.
     let ir2 = codec.read_down(wire(&src.to_string()), &mut st);
-    let IrServerEvent::AudioFrame(f2) = &ir2[0] else {
+    let IrServerEvent::MediaFrame(f2) = &ir2[0] else {
         panic!()
     };
     assert_eq!(f2.seq, 1);
@@ -396,8 +396,8 @@ fn a_downlink_audio_delta_says_which_item_it_is_part_of() {
         "delta": b64(b"audio"),
     });
     let ir = roundtrip_down(&src);
-    let IrServerEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrServerEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(f.origin.response_id.as_deref(), Some("resp_1"));
     assert_eq!(f.origin.item_id.as_deref(), Some("item_1"));
@@ -412,11 +412,11 @@ fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
     let codec = OpenAiRealtimeCodec;
     let w = down(
         &codec,
-        IrServerEvent::AudioFrame(IrAudioFrame {
+        IrServerEvent::MediaFrame(IrMediaFrame {
             dir: UpDown::Down,
             seq: 0,
             media: Bytes::from_static(b"x"),
-            origin: IrAudioRef::default(),
+            origin: IrMediaRef::default(),
         }),
     );
     let v = as_value(&w);
@@ -431,7 +431,7 @@ fn downlink_audio_delta_legacy_alias_decodes() {
     let mut st = DecodeState::default();
     let src = json!({ "type": "response.audio.delta", "delta": b64(b"x") });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
-    assert!(matches!(&ir[0], IrServerEvent::AudioFrame(f) if f.dir == UpDown::Down));
+    assert!(matches!(&ir[0], IrServerEvent::MediaFrame(f) if f.dir == UpDown::Down));
 }
 
 #[test]
@@ -440,7 +440,7 @@ fn playback_position_resets_at_the_item_boundary_so_turns_do_not_accumulate() {
     // CURRENT item, not the running total since the session opened.
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    st.set_output_format(MediaFormat::Pcm16); // 48 bytes/ms
     let delta = |ms: usize| {
         json!({ "type": "response.output_audio.delta", "delta": b64(&vec![0u8; 48 * ms]) })
             .to_string()
@@ -483,7 +483,7 @@ fn a_new_function_call_item_does_not_zero_the_playing_item() {
     // audio item's boundary, so it must not move the truncate point.
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_output_format(MediaFormat::Pcm16);
     let _ = codec.read_down(
         wire(
             &json!({ "type": "response.output_audio.delta", "delta": b64(&vec![0u8; 48 * 120]) })
@@ -516,17 +516,14 @@ fn item_truncate_roundtrips_end_ms() {
     let IrClientEvent::Control(IrDuplexControl::ItemTruncate {
         item_ref,
         content_index,
-        audio_played_ms,
+        played_ms,
     }) = &ir[0]
     else {
         panic!("expected ItemTruncate");
     };
     assert_eq!(item_ref, "item_42");
     assert_eq!(*content_index, 0);
-    assert_eq!(
-        *audio_played_ms, 500,
-        "wire audio_end_ms maps to plane audio_played_ms"
-    );
+    assert_eq!(*played_ms, 500, "wire at_ms maps to plane played_ms");
 }
 
 /// A CONTENT INDEX THAT DOES NOT FIT MUST NOT BECOME A DIFFERENT, VALID INDEX.
@@ -882,7 +879,7 @@ fn session_created_roundtrips_verbatim() {
         "session": { "id": "sess_1", "object": "realtime.session", "model": "gpt-realtime", "output_audio_format": "pcm16" }
     });
     let ir = roundtrip_down(&src);
-    assert!(matches!(&ir[0], IrServerEvent::SessionCreated { .. }));
+    assert!(matches!(&ir[0], IrServerEvent::SessionOpened { .. }));
 }
 
 #[test]

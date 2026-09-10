@@ -231,11 +231,11 @@ pub const FACT_ERROR_MESSAGE: &str = "error_message";
 
 /// The fact key this plane's `INTERRUPT_FACT` names — written wherever a barge-in truncation is
 /// established, in either direction: when the client (or the plane, synthesizing on the client's
-/// behalf from an upstream's `SpeechStarted`) sends an
-/// `IrDuplexControl::ItemTruncate { audio_played_ms, .. }`. The value written is the
-/// `audio_played_ms` figure itself, as `FactValue::Int`. See `crate::plane`'s `decode_ingress` (the
+/// behalf from an upstream's `ActivityStarted`) sends an
+/// `IrDuplexControl::ItemTruncate { played_ms, .. }`. The value written is the
+/// `played_ms` figure itself, as `FactValue::Int`. See `crate::plane`'s `decode_ingress` (the
 /// client-authored case) and `decode_response` (the plane-synthesized case, on an upstream's
-/// `SpeechStarted`).
+/// `ActivityStarted`).
 pub const FACT_INTERRUPT_AUDIO_PLAYED_MS: &str = "voice.interrupt.audio_played_ms";
 
 /// The fact key this plane's `EGRESS_PACING_FACT` names — written on every downlink audio frame

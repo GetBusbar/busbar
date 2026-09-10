@@ -26,14 +26,14 @@
 
 use crate::ir::config::SessionConfig;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::AudioFormat;
+use crate::ir::media::MediaFormat;
 use crate::ir::tool::CallRef;
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
 /// ONE WIRE EVENT — the opaque, dialect-shaped message a reader parses / a writer produces: the JSON
-/// bytes of one OpenAI Realtime event. Kept deliberately opaque so the reader/writer own all framing
+/// bytes of one dialect wire event. Kept deliberately opaque so the reader/writer own all framing
 /// knowledge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireEvent(pub bytes::Bytes);
@@ -64,7 +64,7 @@ impl<'a> From<&'a WireEvent> for WireRef<'a> {
 /// THE CEILING ON THE `call_id → CallRef` TABLE, stated here rather than left implicit.
 ///
 /// The table is a correlation convenience — open, args, close and result for ONE call meeting under
-/// one handle — not a ledger, and nothing removes from it within a session (a `conversation.item.delete`
+/// one handle — not a ledger, and nothing removes from it within a session (an item removal
 /// deletes an ITEM, which is not the call). A client that mints distinct `call_id`s therefore grows
 /// it for as long as the call lasts. 1024 is far past any real turn's concurrent tool calls, so the
 /// eviction below is unreachable in ordinary use; past it the OLDEST entry goes and a re-sighting of
@@ -96,7 +96,7 @@ pub struct DecodeState {
     /// without asking the map, which has no order.
     call_id_order: VecDeque<String>,
     /// The tool NAME the model announced for a `call_id` — the slot Gemini's `functionResponse`
-    /// requires and OpenAI's `function_call_output` does not carry, remembered from the originating
+    /// requires and another dialect's result item does not carry, remembered from the originating
     /// call so a cross-dialect result can still name its tool.
     call_names: HashMap<String, String>,
     /// Wire fields the decode could not model and therefore DROPPED, newest last. This crate links no
@@ -126,14 +126,14 @@ pub struct DecodeState {
     /// `None` while nobody feeds one. This crate owns no time source; it bounds, never invents.
     played_clock_ms: Option<u64>,
     /// Negotiated OUTPUT format the truncate math measures against.
-    output_fmt: AudioFormat,
+    output_fmt: MediaFormat,
     /// Negotiated INPUT format — what the bytes the CLIENT sends are in.
     ///
     /// It is a separate field from `output_fmt` because the two directions of a session are
     /// negotiated separately and need not agree: a dialect may take one format up and synthesize
     /// another down. A writer that framed the uplink from `output_fmt` would label the client's own
     /// audio with the model's synthesis format, which is a description of bytes nobody sent.
-    input_fmt: AudioFormat,
+    input_fmt: MediaFormat,
 }
 
 impl Default for DecodeState {
@@ -150,8 +150,8 @@ impl Default for DecodeState {
             call_args_order: VecDeque::new(),
             played_bytes: 0,
             played_clock_ms: None,
-            output_fmt: AudioFormat::Pcm16,
-            input_fmt: AudioFormat::Pcm16,
+            output_fmt: MediaFormat::Pcm16,
+            input_fmt: MediaFormat::Pcm16,
         }
     }
 }
@@ -192,7 +192,7 @@ impl DecodeState {
         r
     }
 
-    /// REMEMBER the tool name the model announced for a `call_id`. OpenAI's `function_call_output`
+    /// REMEMBER the tool name the model announced for a `call_id`. A dialect whose result item
     /// carries no name; Gemini's `functionResponse` REQUIRES one, so the name is kept from the
     /// originating call and handed back on the result. An empty name records nothing.
     pub fn remember_call_name(&mut self, call_id: &str, name: &str) {
@@ -211,7 +211,7 @@ impl DecodeState {
     }
 
     /// ACCUMULATE one streamed argument fragment for a call, on the WRITE seam. The shared IR streams
-    /// a tool call's arguments (the OpenAI dialect's own shape); a dialect that delivers the call
+    /// a tool call's arguments (one dialect's own shape); a dialect that delivers the call
     /// ATOMICALLY has nothing to frame from a fragment, so the pieces are held here until the call
     /// closes. Past [`MAX_TOOL_ARG_BYTES`] the accumulation is abandoned and stays abandoned.
     ///
@@ -289,14 +289,14 @@ impl DecodeState {
         self.dropped_fields.iter().map(String::as_str).collect()
     }
 
-    /// The negotiated output format (defaults to `pcm16` until a `session.update` sets it).
+    /// The negotiated output format (defaults to `pcm16` until a session patch sets it).
     #[must_use]
-    pub fn output_format(&self) -> AudioFormat {
+    pub fn output_format(&self) -> MediaFormat {
         self.output_fmt
     }
 
-    /// Adopt the negotiated output audio format (from a `session.update` / `session.created`).
-    pub fn set_output_format(&mut self, fmt: AudioFormat) {
+    /// Adopt the negotiated output media format (from a session patch, or the open the server echoed).
+    pub fn set_output_format(&mut self, fmt: MediaFormat) {
         self.output_fmt = fmt;
     }
 
@@ -304,12 +304,12 @@ impl DecodeState {
     /// until a session config states otherwise, which is what an unstated input format means on
     /// every dialect this plane speaks.
     #[must_use]
-    pub fn input_format(&self) -> AudioFormat {
+    pub fn input_format(&self) -> MediaFormat {
         self.input_fmt
     }
 
     /// Adopt the negotiated input audio format (from a session config that states one).
-    pub fn set_input_format(&mut self, fmt: AudioFormat) {
+    pub fn set_input_format(&mut self, fmt: MediaFormat) {
         self.input_fmt = fmt;
     }
 
@@ -351,7 +351,7 @@ impl DecodeState {
         }
     }
 
-    /// FLUSH the queued/played downlink audio on `speech_started` (barge-in): returns the just-heard
+    /// FLUSH the queued/played downlink media when client activity starts (barge-in): returns the just-heard
     /// duration (ms) — the value an [`IrDuplexControl::ItemTruncate`] carries — and zeroes the
     /// playback counter for the next item. This is the DATA move; the runtime that cancels the
     /// in-flight response and emits the truncate is the next layer.
@@ -398,12 +398,12 @@ pub fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
 /// frame relayed and metered in place of a refusal is indistinguishable from a caller who said
 /// nothing, which is the one confusion a voice plane cannot afford. The Twilio grammar in this same
 /// crate already answers this way (`BadPayload`, never an empty payload).
-pub fn decode_audio(b64: &str) -> Option<Bytes> {
+pub fn decode_media(b64: &str) -> Option<Bytes> {
     busbar_substrate_values::media::base64_decode(b64)
 }
 
 /// base64-encode opaque media bytes back to a wire audio string.
-pub fn encode_audio(media: &Bytes) -> String {
+pub fn encode_media(media: &Bytes) -> String {
     busbar_substrate_values::media::base64_encode(media)
 }
 
@@ -419,7 +419,7 @@ pub fn encode_audio(media: &Bytes) -> String {
 /// client's instructions, tools, voice and turn detection with an EMPTY session, which is the one
 /// answer a session patch must never give.
 ///
-/// Unknown KEYS are not drops: `SessionConfig` ignores them by design (a partial GA patch names only
+/// Unknown KEYS are not drops: `SessionConfig` ignores them by design (a partial patch names only
 /// what it changes), so they never reach this path.
 pub fn session_config_lenient(session: &Value, st: &mut DecodeState) -> SessionConfig {
     use serde::Deserialize as _;
@@ -487,8 +487,8 @@ pub trait DuplexWriter {
     /// Re-frame a client→server event onto the UPSTREAM dialect's wire, or `None` when the dialect has
     /// NO VERB for the concept.
     ///
-    /// The uplink is where the cross-dialect map's drop rows live (an OpenAI `response.cancel` or
-    /// `input_audio_buffer.clear` has no Gemini twin), and a dropped concept must produce NOTHING: a
+    /// The uplink is where the cross-dialect map's drop rows live (one dialect's turn-cancel or
+    /// uplink-clear has no twin in another), and a dropped concept must produce NOTHING: a
     /// stand-in frame carrying none of the semantics is indistinguishable, upstream, from the concept
     /// having survived. `None` IS the warn — this crate links no logging surface, so the caller that
     /// sees the drop is the one positioned to report it.

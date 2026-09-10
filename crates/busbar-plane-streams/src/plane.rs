@@ -79,7 +79,7 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 use busbar_streams_codec::ir::config;
 use busbar_streams_codec::ir::control::IrDuplexControl;
 use busbar_streams_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_streams_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use busbar_streams_codec::ir::media::{IrMediaFrame, IrMediaRef, MediaFormat, UpDown};
 use busbar_streams_codec::ir::tool::IrDuplexTool;
 use busbar_streams_codec::ir::{DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, WireRef};
 
@@ -229,15 +229,15 @@ impl Plane for VoicePlane {
                     twilio::TwilioEvent::Media { payload, .. } => {
                         // Priced from the raw carrier payload, before the transform below widens
                         // it: what the caller spoke is µ-law on this dialect's wire.
-                        let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
+                        let ms = MediaFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
                         state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
                         let pcm = ulaw::decode_frame(&payload);
-                        IrClientEvent::AudioFrame(IrAudioFrame {
+                        IrClientEvent::MediaFrame(IrMediaFrame {
                             dir: UpDown::Up,
                             seq: state.codec.next_up_seq(),
                             media: bytes::Bytes::from(pcm),
                             // A carrier media frame names no conversation item.
-                            origin: IrAudioRef::default(),
+                            origin: IrMediaRef::default(),
                         })
                     }
                     // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are
@@ -271,9 +271,9 @@ impl Plane for VoicePlane {
         // audio nobody is charged for.
         // Twilio's own uplink was counted from its carrier payload above, before the transform.
         if client_dialect != Dialect::TwilioMediaStreams {
-            if let IrClientEvent::AudioFrame(f) = &client_event {
+            if let IrClientEvent::MediaFrame(f) = &client_event {
                 // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
-                let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
+                let ms = MediaFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
                 state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
             }
         }
@@ -938,7 +938,7 @@ fn decode_twilio_frame<'u>(
             // Counted at the relay seam, not here: see `encode_ingress_frame`. A frame that OPENS
             // the turn is the one exception — it becomes the unit's own egress body and never
             // reaches that seam — so its milliseconds travel on the draft the unit is minted from.
-            let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
+            let ms = MediaFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
             let arena_bytes = ctx
                 .arena()
                 .alloc_bytes(&payload)
@@ -1007,20 +1007,20 @@ fn ingress_from_client_event<'u>(
         });
     }
     let (relay, interrupt_ms, audio_ms) = match &event {
-        IrClientEvent::AudioFrame(f) => {
+        IrClientEvent::MediaFrame(f) => {
             // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
             // The figure is not accumulated here — see `encode_ingress_frame`, which counts what
             // is actually relayed on the half the response step later reads it back from.
-            let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
+            let ms = MediaFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
             let bytes = ctx
                 .arena()
                 .alloc_bytes(&f.media)
                 .map_err(|_| Decode::Oversize)?;
             (bytes, None, Some(ms))
         }
-        IrClientEvent::Control(IrDuplexControl::ItemTruncate {
-            audio_played_ms, ..
-        }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
+        IrClientEvent::Control(IrDuplexControl::ItemTruncate { played_ms, .. }) => {
+            (ArenaBytes::new(&[]), Some(*played_ms), None)
+        }
         IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
     };
     open_or_relay(state, dialect, relay, interrupt_ms, audio_ms, ctx)
@@ -1091,7 +1091,7 @@ fn progress_from_server_event<'u>(
 ) -> Result<Progress<'u>, Decode> {
     let for_ = state.turn_correlation;
     match event {
-        IrServerEvent::SessionCreated { .. } | IrServerEvent::RateLimits => Ok(Progress::Discard {
+        IrServerEvent::SessionOpened { .. } | IrServerEvent::RateLimits => Ok(Progress::Discard {
             reason: DiscardCode::Unsupported,
         }),
         IrServerEvent::Tool(IrDuplexTool::CallOpen { call_id, name, .. }) => {
@@ -1130,7 +1130,7 @@ fn progress_from_server_event<'u>(
                 facts: Facts::new(),
             }),
         }),
-        IrServerEvent::SpeechStarted { .. } => {
+        IrServerEvent::ActivityStarted { .. } => {
             let ms = state.codec.flush_playback();
             let mut facts = Facts::new();
             facts
@@ -1148,7 +1148,7 @@ fn progress_from_server_event<'u>(
                 }),
             })
         }
-        IrServerEvent::SpeechStopped { .. } | IrServerEvent::AudioDone { .. } => {
+        IrServerEvent::ActivityStopped { .. } | IrServerEvent::MediaDone { .. } => {
             Ok(Progress::Frame {
                 for_,
                 r: Box::new(Response {
@@ -1158,7 +1158,7 @@ fn progress_from_server_event<'u>(
                 }),
             })
         }
-        IrServerEvent::AudioFrame(f) => {
+        IrServerEvent::MediaFrame(f) => {
             let writer = writer_for(client_dialect);
             let media_len = f.media.len() as u64;
             // One buffer, filled and then copied into the arena. The identifier is BORROWED from the
@@ -1185,7 +1185,7 @@ fn progress_from_server_event<'u>(
                 }
                 _ => {
                     let rendered = writer
-                        .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
+                        .write_down(IrServerEvent::MediaFrame(f), &mut state.codec)
                         .ok_or(Decode::Malformed)?
                         .0;
                     ctx.arena()

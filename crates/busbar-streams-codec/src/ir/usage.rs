@@ -3,8 +3,8 @@
 
 //! LAYER 4 — USAGE / RATE-LIMIT (EXTRACTION only). Design `plane4-duplex-session.md`.
 //!
-//! `response.done.usage` (audio vs text are SEPARATE token classes, audio dominates) and
-//! `rate_limits.updated` are EXTRACTED, never client-translated. This is the metering/audit tap that
+//! A completed turn's usage report (media vs text are SEPARATE token classes, media dominates) and any
+//! rate-limit update the upstream volunteers are EXTRACTED, never client-translated. This is the metering/audit tap that
 //! the plane folds into a `CostBreakdown` (whose labeled components core never interprets) feeding
 //! `cost_settle` + `journal_append_scoped`. The same move the LLM reader makes with `IrUsage`.
 
@@ -42,10 +42,9 @@ impl IrDuplexUsage {
     /// - `cached` → `cache_read`
     ///
     /// `cached` is NETTED OUT of the input lane because in BOTH dialects the cached figure is a SUBSET
-    /// of the input figure, not a class beside it — OpenAI Realtime reports `cached_tokens` INSIDE
-    /// `input_token_details` alongside `audio_tokens`/`text_tokens`, and Gemini's
-    /// `cachedContentTokenCount` is part of `promptTokenCount` (which is what `promptTokensDetails`
-    /// breaks out by modality). Billing the full input figure AND the cache figure would charge the
+    /// of the input figure, not a class beside it — one reports its cached count INSIDE the input
+    /// token detail alongside the media/text classes, the other makes it part of the prompt count the
+    /// detail then breaks out by modality. Billing the full input figure AND the cache figure would charge the
     /// cached tokens on two lanes at once. This is the same normalization the LLM plane's reader makes
     /// (`prompt_tokens` minus `cached_tokens` is what lands on the input lane), so a cached turn prices
     /// identically whichever plane carried it.

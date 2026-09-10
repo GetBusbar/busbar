@@ -9,8 +9,8 @@
 
 use super::*;
 use crate::ir::config::MaxOutputTokens;
-use crate::ir::control::IrVad;
-use crate::ir::media::{IrAudioRef, UpDown};
+use crate::ir::control::IrTurnDetection;
+use crate::ir::media::{IrMediaRef, UpDown};
 use crate::ir::tool::CallRef;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ fn setup_maps_to_session_config_fields() {
         "Gemini functionDeclarations carried verbatim"
     );
     match &config.turn_detection {
-        Some(Some(IrVad::ServerVad {
+        Some(Some(IrTurnDetection::ServerVad {
             prefix_padding_ms,
             silence_duration_ms,
             ..
@@ -190,7 +190,7 @@ fn out_of_range_vad_timings_fall_back_to_their_documented_defaults() {
     let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
         panic!("expected SessionConfigure");
     };
-    let Some(Some(IrVad::ServerVad {
+    let Some(Some(IrTurnDetection::ServerVad {
         prefix_padding_ms,
         silence_duration_ms,
         ..
@@ -256,7 +256,7 @@ fn an_undecodable_gemini_audio_payload_emits_no_frame() {
     assert!(
         !down
             .iter()
-            .any(|e| matches!(e, IrServerEvent::AudioFrame(_))),
+            .any(|e| matches!(e, IrServerEvent::MediaFrame(_))),
         "expected no downlink audio frame, got {down:?}"
     );
     assert_eq!(
@@ -299,7 +299,7 @@ fn setup_adopts_pcm16_output_format() {
     let _ = codec.read_up(wire(&gemini_setup().to_string()), &mut st);
     assert_eq!(
         st.output_format(),
-        AudioFormat::Pcm16,
+        MediaFormat::Pcm16,
         "Gemini downlink is 24kHz PCM"
     );
 }
@@ -371,14 +371,14 @@ fn realtime_input_audio_decodes_and_frames_up() {
     });
     let ir = codec.read_up(wire(&src.to_string()), &mut DecodeState::default());
     assert_eq!(ir.len(), 1);
-    let IrClientEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrClientEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(f.dir, UpDown::Up);
     assert_eq!(&f.media[..], payload, "base64 decoded to the exact bytes");
     let ir2 = codec.read_up(up(&codec, ir[0].clone()), &mut DecodeState::default());
-    let IrClientEvent::AudioFrame(f2) = &ir2[0] else {
-        panic!("expected AudioFrame");
+    let IrClientEvent::MediaFrame(f2) = &ir2[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(f.media, f2.media, "the audio survives the re-frame");
 }
@@ -395,7 +395,7 @@ fn realtime_input_uplink_seq_is_monotonic() {
     };
     let seqs: Vec<u64> = (0..3)
         .map(|n| match &codec.read_up(mk(n), &mut st)[0] {
-            IrClientEvent::AudioFrame(f) => f.seq,
+            IrClientEvent::MediaFrame(f) => f.seq,
             _ => panic!(),
         })
         .collect();
@@ -414,7 +414,7 @@ fn realtime_input_multiple_chunks_frame_each() {
     });
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 2, "one frame per media chunk");
-    assert!(matches!(&ir[1], IrClientEvent::AudioFrame(f) if f.seq == 1));
+    assert!(matches!(&ir[1], IrClientEvent::MediaFrame(f) if f.seq == 1));
 }
 
 #[test]
@@ -428,8 +428,8 @@ fn realtime_input_ga_audio_blob_decodes_and_frames_up() {
     });
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "one uplink frame from the GA audio blob");
-    let IrClientEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrClientEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(f.dir, UpDown::Up);
     assert_eq!(f.seq, 0);
@@ -451,8 +451,8 @@ fn realtime_input_ga_audio_is_ir_fixpoint() {
     );
     let back = up(&codec, ir1[0].clone());
     let ir2 = codec.read_up(back, &mut DecodeState::default());
-    let (IrClientEvent::AudioFrame(f1), IrClientEvent::AudioFrame(f2)) = (&ir1[0], &ir2[0]) else {
-        panic!("expected AudioFrame on both decodes");
+    let (IrClientEvent::MediaFrame(f1), IrClientEvent::MediaFrame(f2)) = (&ir1[0], &ir2[0]) else {
+        panic!("expected MediaFrame on both decodes");
     };
     assert_eq!(f1.dir, UpDown::Up);
     assert_eq!(
@@ -471,14 +471,14 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
     // downlink is set does not change what the client's own audio is labelled.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_output_format(MediaFormat::Pcm16);
     let w = codec
         .write_up(
-            IrClientEvent::AudioFrame(IrAudioFrame {
+            IrClientEvent::MediaFrame(IrMediaFrame {
                 dir: UpDown::Up,
                 seq: 0,
                 media: Bytes::from_static(b"uplink-pcm"),
-                origin: IrAudioRef::default(),
+                origin: IrMediaRef::default(),
             }),
             &mut st,
         )
@@ -494,8 +494,8 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
     assert_eq!(mime, "audio/pcm;rate=16000");
     // And the codec reads its own frame back to the same bytes.
     let ir = codec.read_up(w, &mut DecodeState::default());
-    let IrClientEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrClientEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(&f.media[..], b"uplink-pcm");
 }
@@ -508,22 +508,22 @@ fn each_direction_states_its_own_negotiated_rate() {
     let mut st = DecodeState::default();
     let up = codec
         .write_up(
-            IrClientEvent::AudioFrame(IrAudioFrame {
+            IrClientEvent::MediaFrame(IrMediaFrame {
                 dir: UpDown::Up,
                 seq: 0,
                 media: Bytes::from_static(b"up"),
-                origin: IrAudioRef::default(),
+                origin: IrMediaRef::default(),
             }),
             &mut st,
         )
         .expect("uplink audio frames");
     let down = codec
         .write_down(
-            IrServerEvent::AudioFrame(IrAudioFrame {
+            IrServerEvent::MediaFrame(IrMediaFrame {
                 dir: UpDown::Down,
                 seq: 0,
                 media: Bytes::from_static(b"down"),
-                origin: IrAudioRef::default(),
+                origin: IrMediaRef::default(),
             }),
             &mut st,
         )
@@ -545,15 +545,15 @@ fn a_g711_uplink_frames_nothing_rather_than_a_pcm_mime() {
     // which is negotiated separately and still frames its own rate.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
-    st.set_input_format(AudioFormat::G711Ulaw);
+    st.set_input_format(MediaFormat::G711Ulaw);
     assert!(
         codec
             .write_up(
-                IrClientEvent::AudioFrame(IrAudioFrame {
+                IrClientEvent::MediaFrame(IrMediaFrame {
                     dir: UpDown::Up,
                     seq: 0,
                     media: Bytes::from_static(b"ulaw"),
-                    origin: IrAudioRef::default(),
+                    origin: IrMediaRef::default(),
                 }),
                 &mut st,
             )
@@ -562,11 +562,11 @@ fn a_g711_uplink_frames_nothing_rather_than_a_pcm_mime() {
     );
     let down = codec
         .write_down(
-            IrServerEvent::AudioFrame(IrAudioFrame {
+            IrServerEvent::MediaFrame(IrMediaFrame {
                 dir: UpDown::Down,
                 seq: 0,
                 media: Bytes::from_static(b"down"),
-                origin: IrAudioRef::default(),
+                origin: IrMediaRef::default(),
             }),
             &mut st,
         )
@@ -595,8 +595,8 @@ fn realtime_input_prefers_ga_audio_over_media_chunks() {
         1,
         "GA audio blob is preferred; mediaChunks not additionally decoded"
     );
-    let IrClientEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrClientEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(&f.media[..], b"ga");
 }
@@ -604,7 +604,7 @@ fn realtime_input_prefers_ga_audio_over_media_chunks() {
 #[test]
 fn realtime_input_audio_stream_end_maps_to_input_audio_commit() {
     // Gemini's manual end-of-uplink marker is the cross-dialect twin of OpenAI's discrete
-    // `input_audio_buffer.commit`; it maps to the shared `IrDuplexControl::InputAudioCommit` so the
+    // `input_audio_buffer.commit`; it maps to the shared `IrDuplexControl::UplinkCommit` so the
     // "end the buffered uplink turn" concept survives cross-dialect rather than dropping.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
@@ -620,9 +620,9 @@ fn realtime_input_audio_stream_end_maps_to_input_audio_commit() {
     assert!(
         matches!(
             &ir[0],
-            IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+            IrClientEvent::Control(IrDuplexControl::UplinkCommit)
         ),
-        "audioStreamEnd maps to InputAudioCommit, got {:?}",
+        "audioStreamEnd maps to UplinkCommit, got {:?}",
         ir[0]
     );
 }
@@ -644,28 +644,28 @@ fn realtime_input_audio_and_stream_end_yields_frame_then_commit() {
         &mut st,
     );
     assert_eq!(ir.len(), 2, "expected audio frame then commit, got {ir:?}");
-    assert!(matches!(&ir[0], IrClientEvent::AudioFrame(_)));
+    assert!(matches!(&ir[0], IrClientEvent::MediaFrame(_)));
     assert!(matches!(
         &ir[1],
-        IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+        IrClientEvent::Control(IrDuplexControl::UplinkCommit)
     ));
 }
 
 #[test]
 fn input_audio_commit_round_trips_to_audio_stream_end() {
-    // The encode side is the mirror: InputAudioCommit → `realtimeInput.audioStreamEnd` → decode back
-    // to InputAudioCommit (IR-fixpoint stable), the property the conformance harness now asserts.
+    // The encode side is the mirror: UplinkCommit → `realtimeInput.audioStreamEnd` → decode back
+    // to UplinkCommit (IR-fixpoint stable), the property the conformance harness now asserts.
     let codec = GeminiLiveCodec;
     let framed = up(
         &codec,
-        IrClientEvent::Control(IrDuplexControl::InputAudioCommit),
+        IrClientEvent::Control(IrDuplexControl::UplinkCommit),
     );
     let mut st = DecodeState::default();
     let back = codec.read_up(framed, &mut st);
     assert_eq!(back.len(), 1);
     assert!(matches!(
         &back[0],
-        IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
+        IrClientEvent::Control(IrDuplexControl::UplinkCommit)
     ));
 }
 
@@ -676,17 +676,17 @@ fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
     // the cancel semantics and would be sent upstream as if the concept had survived.
     let codec = GeminiLiveCodec;
     for ev in [
-        IrDuplexControl::ResponseCancel,
-        IrDuplexControl::InputAudioClear,
-        IrDuplexControl::ItemDelete {
+        IrDuplexControl::TurnCancel,
+        IrDuplexControl::UplinkClear,
+        IrDuplexControl::ItemRemove {
             item_ref: "item_1".into(),
         },
         IrDuplexControl::ItemTruncate {
             item_ref: "item_1".into(),
             content_index: 0,
-            audio_played_ms: 240,
+            played_ms: 240,
         },
-        IrDuplexControl::ResponseCreate { response: None },
+        IrDuplexControl::TurnRequest { overrides: None },
     ] {
         assert!(
             codec
@@ -701,7 +701,7 @@ fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
     // The concepts Gemini DOES have still frame.
     assert!(codec
         .write_up(
-            IrClientEvent::Control(IrDuplexControl::InputAudioCommit),
+            IrClientEvent::Control(IrDuplexControl::UplinkCommit),
             &mut DecodeState::default()
         )
         .is_some());
@@ -713,7 +713,7 @@ fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
 fn server_content_audio_frames_down_tracks_playback() {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    st.set_output_format(MediaFormat::Pcm16); // 48 bytes/ms
     let payload = vec![0u8; 96]; // 2 ms
     let src = json!({
         "serverContent": { "modelTurn": { "parts": [
@@ -721,8 +721,8 @@ fn server_content_audio_frames_down_tracks_playback() {
         ] } }
     });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
-    let IrServerEvent::AudioFrame(f) = &ir[0] else {
-        panic!("expected AudioFrame");
+    let IrServerEvent::MediaFrame(f) = &ir[0] else {
+        panic!("expected MediaFrame");
     };
     assert_eq!(f.dir, UpDown::Down);
     assert_eq!(f.seq, 0);
@@ -743,14 +743,14 @@ fn server_content_single_audio_part_roundtrips() {
 fn server_content_turn_complete_maps_audio_done() {
     let src = json!({ "serverContent": { "turnComplete": true } });
     let ir = roundtrip_down(&src);
-    assert!(matches!(&ir[0], IrServerEvent::AudioDone { .. }));
+    assert!(matches!(&ir[0], IrServerEvent::MediaDone { .. }));
 }
 
 #[test]
 fn server_content_interrupted_maps_speech_started() {
     let src = json!({ "serverContent": { "interrupted": true } });
     let ir = roundtrip_down(&src);
-    assert!(matches!(&ir[0], IrServerEvent::SpeechStarted { .. }));
+    assert!(matches!(&ir[0], IrServerEvent::ActivityStarted { .. }));
 }
 
 #[test]
@@ -767,10 +767,10 @@ fn server_content_audio_then_turn_complete_is_multi_event() {
         }
     });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
-    assert_eq!(ir.len(), 3, "two audio frames + AudioDone");
-    assert!(matches!(&ir[0], IrServerEvent::AudioFrame(_)));
-    assert!(matches!(&ir[1], IrServerEvent::AudioFrame(_)));
-    assert!(matches!(&ir[2], IrServerEvent::AudioDone { .. }));
+    assert_eq!(ir.len(), 3, "two audio frames + MediaDone");
+    assert!(matches!(&ir[0], IrServerEvent::MediaFrame(_)));
+    assert!(matches!(&ir[1], IrServerEvent::MediaFrame(_)));
+    assert!(matches!(&ir[2], IrServerEvent::MediaDone { .. }));
 }
 
 #[test]
@@ -779,7 +779,7 @@ fn the_gemini_turn_boundary_resets_the_playback_position() {
     // THAT turn, not at the session's running total.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16); // 48 bytes/ms
+    st.set_output_format(MediaFormat::Pcm16); // 48 bytes/ms
     let turn = |ms: usize| {
         json!({
             "serverContent": {
@@ -832,13 +832,13 @@ fn a_downlink_blob_at_the_uplink_rate_is_not_counted_as_playback() {
     assert_eq!(st.played_ms(), 10, "480 bytes at 48 B/ms");
 }
 
-// ── setupComplete ↔ SessionCreated ────────────────────────────────────────────────────────────────
+// ── setupComplete ↔ SessionOpened ────────────────────────────────────────────────────────────────
 
 #[test]
 fn setup_complete_maps_session_created() {
     let src = json!({ "setupComplete": {} });
     let ir = roundtrip_down(&src);
-    assert!(matches!(&ir[0], IrServerEvent::SessionCreated { .. }));
+    assert!(matches!(&ir[0], IrServerEvent::SessionOpened { .. }));
 }
 
 // ── tools: correlation across the expanded call loop ─────────────────────────────────────────────
@@ -1054,16 +1054,16 @@ fn audio_format_from_mime_probe() {
     // Uplink: either PCM rate is the shared token (no millisecond count is taken from the uplink).
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=24000", UpDown::Up),
-        Some(AudioFormat::Pcm16)
+        Some(MediaFormat::Pcm16)
     );
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=16000", UpDown::Up),
-        Some(AudioFormat::Pcm16)
+        Some(MediaFormat::Pcm16)
     );
     // Downlink: only the rate the shared token actually means — the truncate math divides by it.
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=24000", UpDown::Down),
-        Some(AudioFormat::Pcm16)
+        Some(MediaFormat::Pcm16)
     );
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=16000", UpDown::Down),
@@ -1073,7 +1073,7 @@ fn audio_format_from_mime_probe() {
     // An untagged `audio/pcm` is the direction's own rate.
     assert_eq!(
         audio_format_from_mime("audio/pcm", UpDown::Down),
-        Some(AudioFormat::Pcm16)
+        Some(MediaFormat::Pcm16)
     );
     for dir in [UpDown::Up, UpDown::Down] {
         assert_eq!(audio_format_from_mime("text/plain", dir), None);

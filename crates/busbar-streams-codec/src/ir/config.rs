@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GA `session` CONFIG OBJECT — the typed shape carried by `session.update` (client→server) and
-//! echoed by `session.created` (server→client). Design `plane4-duplex-session.md`.
+//! THE SESSION CONFIG OBJECT — the typed shape a session PATCH carries up and a session OPEN echoes
+//! back down. Design `plane4-duplex-session.md`.
 //!
 //! This is the ONE place in the plane where a serde-derived struct models the wire directly, rather
 //! than the hand-mapped `serde_json::Value` dispatch the event codec uses. The justification is the
 //! LLM-plane precedent: serde-derive is reserved for CONFIG shapes (stable, named, closed field sets),
-//! while streaming EVENTS are hand-mapped. The Realtime `session` object is exactly a config shape.
+//! while streaming EVENTS are hand-mapped. A session object is exactly a config shape.
 //!
-//! This typed config IS the plane's neutral session-config IR — the cross-dialect superset both dialects
-//! (OpenAI Realtime + Gemini Live, `plane4-duplex-session.md`) read and write, now that the plane
-//! has earned a superset at its second wire format. The GA field set is modeled faithfully so a
+//! This typed config IS the plane's neutral session-config IR — the cross-dialect superset the dialects
+//! (`plane4-duplex-session.md`) read and write, now that the plane has earned a superset at its second
+//! wire format. SAY THE RESIDUE PLAINLY: the serde spellings below are PINNED WIRE, inherited from the
+//! first dialect this plane spoke, and the session-parameter projector renders them as the bytes an
+//! operator's gate is matched against. A field name here does not move without moving those bytes, so
+//! the neutralisation that reached every other type in this crate stops at this struct's derive. The
+//! field set is modeled faithfully so a
 //! decode→encode round-trip is JSON-stable (opaque `tools` / `tool_choice` ride as `serde_json::Value`;
 //! the plane locks and reconciles them but never reshapes them).
 
-use crate::ir::control::IrVad;
-use crate::ir::media::AudioFormat;
+use crate::ir::control::IrTurnDetection;
+use crate::ir::media::MediaFormat;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Deserialize a PRESENT key into `Some(_)`, so an `Option<Option<T>>` field can tell an absent key
@@ -29,7 +33,7 @@ fn deserialize_some<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
     T::deserialize(d).map(Some)
 }
 
-/// THE GA `max_output_tokens` FIELD — either an explicit cap or the `"inf"` sentinel (uncapped). A
+/// THE OUTPUT-TOKEN CAP FIELD — either an explicit cap or the `"inf"` sentinel (uncapped). A
 /// bespoke (de)serialize keeps the int-or-string wire union without dragging an untagged-enum null
 /// ambiguity into the config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,13 +71,13 @@ impl<'de> Deserialize<'de> for MaxOutputTokens {
 }
 
 /// serde glue for the optional negotiated audio formats — the enum carries its own dialect tokens
-/// (`pcm16` / `g711_ulaw`), so a small module bridges `Option<AudioFormat>` to the wire string.
+/// (`pcm16` / `g711_ulaw`), so a small module bridges `Option<MediaFormat>` to the wire string.
 mod opt_audio_fmt {
-    use super::AudioFormat;
+    use super::MediaFormat;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub(super) fn serialize<S: Serializer>(
-        v: &Option<AudioFormat>,
+        v: &Option<MediaFormat>,
         s: S,
     ) -> Result<S::Ok, S::Error> {
         match v {
@@ -84,29 +88,29 @@ mod opt_audio_fmt {
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(
         d: D,
-    ) -> Result<Option<AudioFormat>, D::Error> {
+    ) -> Result<Option<MediaFormat>, D::Error> {
         use serde::de::Error as _;
         match Option::<String>::deserialize(d)? {
             None => Ok(None),
-            Some(s) => AudioFormat::from_wire(&s)
+            Some(s) => MediaFormat::from_wire(&s)
                 .map(Some)
                 .ok_or_else(|| D::Error::custom(format!("unknown audio format: {s}"))),
         }
     }
 }
 
-/// THE GA `session` CONFIG OBJECT (`plane4-duplex-session.md`). Every field is optional on the wire (a partial
-/// `session.update` patches only what it names), so absent keys decode to `None`/empty and are
-/// omitted on re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field with
-/// THREE wire states rather than two, because GA gives `null` its own meaning: see the field.
+/// THE SESSION CONFIG OBJECT (`plane4-duplex-session.md`). Every field is optional on the wire (a partial
+/// patch names only what it changes), so absent keys decode to `None`/empty and are omitted on
+/// re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field with THREE wire
+/// states rather than two, because the wire gives `null` its own meaning: see the field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionConfig {
-    /// THE UPSTREAM MODEL ID the session targets. OpenAI Realtime carries this SERVER-SIDE (it appears
-    /// on `session.created`, not the writable `session.update` patch), so it stays `None` for the
-    /// OpenAI dialect; Gemini Live carries it as `setup.model`. Modeled here as the genuinely-shared
-    /// field the SECOND dialect (Gemini) earns into the superset IR (`plane4-duplex-session.md`). Optional — an OpenAI
-    /// `session.update` omits it (decodes to `None`, skipped on re-encode, so the OpenAI round-trip is
-    /// unaffected).
+    /// THE UPSTREAM MODEL ID the session targets. A dialect that settles the model SERVER-SIDE names it
+    /// only on the open it echoes back, never on the writable patch, so it stays `None` there; a dialect
+    /// that lets the client state it up front carries it in its own setup. Modeled here as the
+    /// genuinely-shared field the SECOND dialect earned into the superset IR
+    /// (`plane4-duplex-session.md`). Optional — a patch that omits it decodes to `None` and is skipped
+    /// on re-encode, so a round-trip through a dialect that never says it is unaffected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Requested modalities (e.g. `["audio", "text"]`).
@@ -124,20 +128,20 @@ pub struct SessionConfig {
         skip_serializing_if = "Option::is_none",
         with = "opt_audio_fmt"
     )]
-    pub input_audio_format: Option<AudioFormat>,
+    pub input_audio_format: Option<MediaFormat>,
     /// Negotiated OUTPUT (downlink) audio format — the format the truncate math measures against.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "opt_audio_fmt"
     )]
-    pub output_audio_format: Option<AudioFormat>,
-    /// Voice-activity-detection config — THREE-STATE, because the GA wire gives each state a
-    /// different meaning and a partial `session.update` patches only what it names:
+    pub output_audio_format: Option<MediaFormat>,
+    /// Turn-detection config — THREE-STATE, because the wire gives each state a different meaning and a
+    /// partial patch names only what it changes:
     ///
     /// - `None` — the key was ABSENT. The patch says nothing about turn detection, so re-encoding
     ///   omits the key and whatever the session already had keeps applying.
-    /// - `Some(None)` — the key was an explicit `null`. That is GA's "disable VAD"; the client
+    /// - `Some(None)` — the key was an explicit `null`. That is the wire's "no detector"; the client
     ///   drives turn boundaries. Re-encoded as `null`.
     /// - `Some(Some(vad))` — a configured detector, re-encoded verbatim.
     ///
@@ -152,7 +156,7 @@ pub struct SessionConfig {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_some"
     )]
-    pub turn_detection: Option<Option<IrVad>>,
+    pub turn_detection: Option<Option<IrTurnDetection>>,
     /// The tool set, carried VERBATIM as opaque JSON (the plane locks the set but never reshapes a
     /// definition — `plane4-duplex-session.md`'s moat normalizes call CORRELATION, not the argument/definition bytes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -176,15 +180,15 @@ pub struct SessionConfig {
 #[must_use]
 pub fn g711_config() -> SessionConfig {
     SessionConfig {
-        input_audio_format: Some(AudioFormat::G711Ulaw),
-        output_audio_format: Some(AudioFormat::G711Ulaw),
+        input_audio_format: Some(MediaFormat::G711Ulaw),
+        output_audio_format: Some(MediaFormat::G711Ulaw),
         ..SessionConfig::default()
     }
 }
 
 /// THE LOCKED SESSION DEFAULTS a session opens with when the deployment configures none.
 ///
-/// The IR's own `IrVad::ServerVad` wire default is `silence_duration_ms = 200`, which is what a RAW
+/// The IR's own `IrTurnDetection::ServerVad` wire default is `silence_duration_ms = 200`, which is what a RAW
 /// wire decode round-trip must keep. The SECTION-level default is 500 ms — a posture, not a wire
 /// fact — so it is synthesized here rather than by changing the wire default, keeping the two
 /// distinct. Same reason as [`g711_config`] for living here: the mount's default and the projector's
@@ -194,7 +198,7 @@ pub fn default_session() -> SessionConfig {
     SessionConfig {
         // `Some(Some(..))` — a CONFIGURED detector. The outer `Some` says the default names turn
         // detection at all (see `SessionConfig::turn_detection`'s three states).
-        turn_detection: Some(Some(IrVad::ServerVad {
+        turn_detection: Some(Some(IrTurnDetection::ServerVad {
             threshold: 0.5,
             prefix_padding_ms: 300,
             silence_duration_ms: 500,

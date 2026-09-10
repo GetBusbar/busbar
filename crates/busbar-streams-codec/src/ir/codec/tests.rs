@@ -16,7 +16,7 @@ fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() 
     // it plays. The position is derived from BYTES RELAYED, so after the burst it reads the whole
     // turn — an UPPER BOUND on what the user heard, not a measurement of it.
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16); // 48 B/ms
+    st.set_output_format(MediaFormat::Pcm16); // 48 B/ms
     st.record_played(48 * 10_000); // ten seconds of audio, handed over at once
     assert_eq!(
         st.played_ms(),
@@ -27,7 +27,7 @@ fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() 
     // THE SEAM A CLOCK GOES THROUGH. Fed how long the item has actually been playing, the position
     // is bounded by it: no more audio can have been heard than there has been time to hear it in.
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_output_format(MediaFormat::Pcm16);
     st.record_played_at(48 * 10_000, Some(1_200));
     assert_eq!(
         st.played_ms(),
@@ -36,7 +36,7 @@ fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() 
     );
     // And a clock that has run longer than the audio relayed does not invent audio.
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_output_format(MediaFormat::Pcm16);
     st.record_played_at(48 * 100, Some(9_000));
     assert_eq!(st.played_ms(), 100, "only the audio actually handed over");
 }
@@ -44,13 +44,13 @@ fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() 
 
 #[test]
 fn audio_format_math() {
-    assert_eq!(AudioFormat::Pcm16.bytes_per_ms(), 48);
-    assert_eq!(AudioFormat::G711Ulaw.bytes_per_ms(), 8);
-    assert_eq!(AudioFormat::Pcm16.bytes_to_ms(480), 10);
-    assert_eq!(AudioFormat::Pcm16.ms_to_bytes(10), 480);
-    assert_eq!(AudioFormat::G711Ulaw.bytes_to_ms(80), 10);
+    assert_eq!(MediaFormat::Pcm16.bytes_per_ms(), 48);
+    assert_eq!(MediaFormat::G711Ulaw.bytes_per_ms(), 8);
+    assert_eq!(MediaFormat::Pcm16.bytes_to_ms(480), 10);
+    assert_eq!(MediaFormat::Pcm16.ms_to_bytes(10), 480);
+    assert_eq!(MediaFormat::G711Ulaw.bytes_to_ms(80), 10);
     assert_eq!(
-        crate::ir::media::truncate_point_ms(480, AudioFormat::Pcm16),
+        crate::ir::media::truncate_point_ms(480, MediaFormat::Pcm16),
         10
     );
 }
@@ -58,7 +58,7 @@ fn audio_format_math() {
 #[test]
 fn flush_playback_returns_heard_ms_and_resets() {
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_output_format(MediaFormat::Pcm16);
     st.record_played(48 * 500); // 500 ms played
     assert_eq!(st.played_ms(), 500);
     let heard = st.flush_playback();
@@ -67,7 +67,7 @@ fn flush_playback_returns_heard_ms_and_resets() {
 }
 /// THE CALL-ID CORRELATION TABLE HAS A CEILING.
 ///
-/// Nothing removes from it within a session — not even `conversation.item.delete` — so a client
+/// Nothing removes from it within a session — not even an item removal — so a client
 /// that mints distinct `call_id`s grows it for as long as the call lasts. The table is a
 /// correlation convenience, not a ledger: past the documented ceiling the OLDEST entry goes, and a
 /// re-sighting of an evicted id correlates as a new call rather than keeping the map growing.

@@ -14,7 +14,7 @@
 //! ## The VAD/session grammar is REUSED, not restated
 //!
 //! Its media/VAD/session shape IS the GA `session` object ([`SessionConfig`], which already carries
-//! `turn_detection: Option<IrVad>` with the `server_vad` knobs threshold / prefix_padding_ms /
+//! `turn_detection: Option<IrTurnDetection>` with the `server_vad` knobs threshold / prefix_padding_ms /
 //! silence_duration_ms / create_response / interrupt_response). The plane adds only the three
 //! plane-imposed ceilings — session wall-clock, context window, per-response output tokens — as the
 //! sole NEW scalars. No second copy of the VAD grammar exists to drift from the wire one.
@@ -44,7 +44,7 @@ fn default_max_output_tokens() -> u32 {
 
 /// THE LOCKED SESSION DEFAULTS an absent `streams.session:` opens with.
 ///
-/// The IR's own `IrVad::ServerVad` wire default is `silence_duration_ms = 200` (`ir/control.rs`),
+/// The IR's own `IrTurnDetection::ServerVad` wire default is `silence_duration_ms = 200` (`ir/control.rs`),
 /// which is what a RAW wire decode round-trip must keep. The `streams:`-LEVEL default is 500ms — a
 /// plane posture, not a wire fact — so it is synthesized HERE (when the operator writes no
 /// `turn_detection`) rather than by changing the IR's own default, keeping the two distinct.
