@@ -31,7 +31,11 @@ const MIGRATED_FILES: &[&str] = &[
     // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
     // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
     "src/trust/verify.rs",
-    "src/oauth_as/plane.rs",
+    // `oauth_as/plane.rs` (the OAuth issuer's served half) RELOCATED to `busbar-control-tokenmint`
+    // on the cut-over that made the issuer a plugin. Core does NOT scan a plugin crate's tree —
+    // a neutral crate must name no plugin path — and that crate answers every refusal with a
+    // `PluginError { class, code }` off its own catalog rather than with an uncoded `tracing::warn!`,
+    // which is a stronger floor than this list's. So it is not listed here.
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
     // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
     "src/governance/mod.rs",
