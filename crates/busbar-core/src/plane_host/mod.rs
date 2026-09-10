@@ -55,6 +55,30 @@ pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
 use crate::state::App;
+
+/// **THE ONE PLACE A `Usage` BECOMES A PRICE ON THIS HOST**, and it is a call into the crate that
+/// owns money rather than a fold of its own.
+///
+/// Two seams need it and neither can name the other's shape: `MeteringHost::price_usage` prices
+/// against the host's BOUND snapshot, and `cost_price_usage` prices against the card the CALLER's
+/// opaque handle names. Written at both, the reserved-four fold, the currency and the three
+/// card outcomes would exist twice in one file — so it is written once here, next to both of them,
+/// and the arithmetic itself is the cost unit's map-shaped fold, reached off the card.
+///
+/// The card's three outcomes carry straight through and are the whole of the pricing posture: card
+/// absent => `Some(0)`, every class prices at nothing; card present and the lane named =>
+/// `Some(nanos)`; card present and the lane UNKNOWN => `None`, so the caller fails closed on an
+/// unpriced passthrough model. Only the reserved four price here — the carrier maps its own unit
+/// classes onto the reserved keys before calling — which is exactly what the map-shaped fold does.
+fn price_usage_nanos(
+    cost: &crate::cost::CostModel,
+    model: &str,
+    usage: &busbar_substrate::billing::Usage,
+) -> Option<u128> {
+    cost.card()
+        .lane_rates(model, crate::cost::CurrencyCode::USD)
+        .map(|lane| lane.reserved_units_nanos(&usage.usage_units))
+}
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use std::sync::Arc;
 
@@ -549,7 +573,7 @@ impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
         // Price against the BOUND snapshot's resolved `CostModel` — the SAME rate card + arithmetic the
         // LLM enforcement/derive path prices with (a new reader, not a new pricer), so a live voice
         // carrier meters against the deployment's real rates while staying plane-neutral.
-        self.app.cost.price_usage_nanos(model, usage)
+        price_usage_nanos(&self.app.cost, model, usage)
     }
 }
 
@@ -871,7 +895,7 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
             .clone()
             .downcast::<crate::cost::CostModel>()
             .ok()
-            .and_then(|c| c.price_usage_nanos(model, usage))
+            .and_then(|c| price_usage_nanos(&c, model, usage))
     }
 
     fn meter_ledger(

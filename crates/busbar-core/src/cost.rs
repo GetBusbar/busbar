@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The COST + LIMIT MODEL: rate-card resolution, ledger-to-spend derivation, and the resolved
-//! `groups:` limit topology the generic limit engine (governance) enforces. This is the ONE module
-//! the engine calls for anything cost- or limit-shaped; the `Store` trait (in `busbar-api`) stays
-//! the persistence seam and carries ONLY tokens.
+//! The LIMIT MODEL, and the SEAM onto the crate that owns money.
 //!
-//! Principles (the 1.5.0 redesign):
+//! **NO MONEY IS DERIVED IN THIS FILE.** It used to be: a private nano-rate table, a fold over a
+//! bucket's reserved four, a divide to cents, a flat-fee multiply and a floor at zero, all beside
+//! busbar-unit-cost's. Two answers to what a request cost, each internally consistent, with the
+//! ledger unable to say which one it recorded. Every one of them is gone. The card and the
+//! derivations over it belong to the cost unit, and this module's whole remaining part in pricing
+//! is to hold the resolved card and hand it over — which
+//! is why the `pub(crate) use` line below is the ONE place in this crate that names the cost unit,
+//! and everything else spells `crate::cost::`.
+//!
+//! What is still here is the resolved `groups:` limit topology the generic limit engine
+//! (governance) enforces, as a CURSOR over the units' values, plus the per-group chain walked once
+//! at boot. The `Store` trait (in `busbar-api`) stays the persistence seam and carries ONLY tokens.
+//!
+//! Principles (the 1.5.0 redesign), now upheld by the unit rather than restated here:
 //! - TOKENS ARE THE LEDGER; dollars are ALWAYS derived, never stored as truth. Every spend figure
-//!   is computed here at read time as `ledger x current rate card`, so correcting a rate is a
+//!   is computed at read time as `ledger x current rate card`, so correcting a rate is a
 //!   config edit + reload - past and future derived figures instantly become right. (Honest limit:
 //!   repricing cannot un-make PAST admit/reject decisions taken under a wrong rate.)
 //! - NO CURRENCY in the core. Rates are ABSTRACT cost units (micro-units per token in config,
@@ -16,8 +26,8 @@
 //!   is a display concern owned entirely by the consumer.
 //! - ALL-OR-NOTHING pricing: `rate_card` absent => every model prices at 0 (only the flat
 //!   per-request fee counts); present => authoritative + complete (validated at boot).
-//! - INTEGER MATH ONLY on the hot path: config floats convert ONCE here to nano-units per token;
-//!   derivation is a few u128 multiply-adds over the models a bucket actually used.
+//! - INTEGER MATH ONLY on the hot path: config floats convert ONCE, inside the unit, to nano-units
+//!   per unit of quantity; derivation is a few u128 multiply-adds over the lanes a bucket used.
 //! - GROUPS are the ONE limit tree: a group's generic limits (requests / tokens / budget per
 //!   window, plus the instantaneous `concurrent` gauge) resolve here into per-(group, window)
 //!   ENFORCEMENT BUCKETS; keys are pure auth and contribute no caps of their own.
@@ -411,33 +421,6 @@ impl CostModel {
     pub(crate) fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
         let table = self.inner.groups();
         table.index_of(name).map(|i| &table.groups()[i])
-    }
-
-    /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
-    /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
-    /// seam a live carrier (voice) drives folds through.
-    ///
-    /// A RELAY ONTO THE FACE. The fold this used to run in this file — the reserved four
-    /// multiply-adds over a `class -> quantity` map — is now
-    /// [`busbar_unit_cost::LaneRates::reserved_units_nanos`], beside the line-shaped fold and against
-    /// the same card. It is the same arithmetic on the same values (the unit's cells copied it
-    /// verbatim before this one went), with one change that is a fix rather than a difference: the
-    /// running sum saturates instead of adding plainly, which is identical below the accumulator's
-    /// top and pins rather than wrapping above it.
-    ///
-    /// The three `lane` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
-    /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
-    /// caller fails closed on an unpriced passthrough model). Only the reserved four price here — the
-    /// carrier maps its own unit classes onto the reserved keys before calling, so no open-key
-    /// `ExtraRates` lookup (and thus no `CostBreakdown`) is involved.
-    pub(crate) fn price_usage_nanos(
-        &self,
-        model: &str,
-        usage: &busbar_substrate::billing::Usage,
-    ) -> Option<u128> {
-        self.card()
-            .lane_rates(model, CurrencyCode::USD)
-            .map(|lane| lane.reserved_units_nanos(&usage.usage_units))
     }
 
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
