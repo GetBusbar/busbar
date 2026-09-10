@@ -135,7 +135,13 @@ fi
 # (f) a cell in the universe that the recording lacks -> 2 named SKIP rows, never a PASS — and,
 # because nothing in named-gaps.json admits them, the run is RED. A gap is coverage that went away;
 # a run that lost coverage and reported green is the failure this whole rig exists to prevent.
-printf '%s' '{"expected": 0, "accepted": []}' >"$W/no-gaps.json"
+# ONE FILE, TWO SECTIONS, AND BOTH READERS SEE IT. `named-gaps.json` carries `gaps` — the
+# violations validate.py forgives on a named row — and `accepted`/`expected` — the SKIP rows run.sh
+# reconciles in step 3b. run.sh hands the same path to both. A fixture that carries only the second
+# section is REFUSED by the first ("must be an object with a `gaps` list"), validate.py exits 2, and
+# the case under test never runs at all. These three fixtures are about the reconciliation only, so
+# their `gaps` list is empty — which is a statement, not a formality: no violation is forgiven here.
+printf '%s' '{"gaps": [], "expected": 0, "accepted": []}' >"$W/no-gaps.json"
 cp -R "$FIX" "$W/f-rec"
 rm "$W/f-rec/cells/llm__gemini__gemini__request__ok.json"
 RUN_ARGS="--gaps $W/no-gaps.json"
@@ -151,7 +157,8 @@ fi
 # (f2) the SAME two gaps, named with an owner and a rationale and counted -> GREEN, gap still a gap.
 # The rows stay SKIP and stay out of the owed set; what changed is that somebody signed for them.
 cat >"$W/gaps-f.json" <<'EOF'
-{"expected": 2,
+{"gaps": [],
+ "expected": 2,
  "accepted": [{"cells": "^llm\\|gemini\\|gemini\\|request\\|ok#(request|response)$",
                "owner": "llm-conformance selftest",
                "rationale": "the selftest deletes this cell from the recording on purpose, to prove a gap can be signed for"}]}
@@ -170,7 +177,8 @@ fi
 cp -R "$W/f-rec" "$W/f3-rec"
 rm "$W/f3-rec/cells/llm__cohere__cohere__request__ok.json"
 cat >"$W/gaps-f3.json" <<'EOF'
-{"expected": 2,
+{"gaps": [],
+ "expected": 2,
  "accepted": [{"cells": "#(request|response)$",
                "owner": "llm-conformance selftest",
                "rationale": "a deliberately broad entry: it names any row, so only the declared COUNT can catch one more gap than was signed for"}]}
