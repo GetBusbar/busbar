@@ -333,6 +333,17 @@ from = 941
 to = 944
 because = """CHAIN FORM off P3's tip 941. `busbar` x `transport`, +3, in the cell that derives the model plane's 103 recorded money cells through the kernel's own fee decision. It builds the head the served leg records from each cell's own recorded status, and the head's FIRST source is the transport's reading of it — so the cell names the transport's status class exactly where the leg it is proving names it."""
 
+# kind-isolation cell: crate `busbar`, kind `substrate`. The protocol boot installer moved verbatim
+# out of the legacy core (52 lines) into `crates/busbar/src/root/proto_install.rs`; the composition
+# root owns the boot installers, and the one symbol the move newly puts in the root's mouth is
+# `busbar_substrate::ingress::arrival::install_path_ingress`. The same commit takes the root's reach
+# into the legacy core DOWN by two and its total legacy reach DOWN by one, so the retirement is net
+# forward and this single name is the sideways step that paid for it.
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 1
+because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
+
 [gate.surface_ceilings]
 contract_caps = 3548
 grammar = 388
@@ -1201,7 +1212,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 90
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1213,7 +1224,7 @@ ceiling = 91
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 27
+figure = 25
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1234,7 +1245,13 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+#
+# 47 -> 48 (declared in `[gate.ceiling_raises]` above): the protocol boot installer moved out of the
+# legacy core into `crates/busbar/src/root/proto_install.rs`, and the one name it brought with it
+# that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
+# The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
+# this is the sideways step the per-crate rows exist to make visible, not a regression.
+figure = 48
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

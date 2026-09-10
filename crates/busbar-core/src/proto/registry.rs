@@ -143,35 +143,12 @@ pub fn declared_verbs() -> &'static [crate::operation::Operation] {
     busbar_substrate::proto::declared_verbs()
 }
 
-/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
-/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
-/// split off `ProtocolDecl` (Batch C-6) cannot drift from the first. Folds the two installs into one
-/// call and, before either lands, asserts the PARITY that keeps the split honest:
-///
-/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
-/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
-/// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
-/// Asserting it here makes that drift a LOUD PANIC at boot. Stays in `busbar-core` because it names
-/// the core-only `Arrival` (`crate::ingress::path_ingress`).
-///
-/// # Panics
-/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
-/// - if either underlying install was already called (two composition roots).
-#[allow(dead_code)] // pub-widened and called by the busbar binary's `register_protocols`
-pub fn install_protocols_with_path_ingress(
-    decls: Vec<&'static ProtocolDecl>,
-    path_ingress: Vec<(&'static str, crate::ingress::path_ingress::PathIngress)>,
-) {
-    if let Some(name) = first_path_model_without_arrival(
-        &decls,
-        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-    ) {
-        panic!(
-            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
-             arrival: a request naming its URL model would silently fall through to the body-model \
-             branch. Register its arrival alongside its declaration."
-        );
-    }
-    install_protocols(decls);
-    crate::ingress::path_ingress::install_path_ingress(path_ingress);
-}
+// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS (`install_protocols_with_path_ingress`)
+// MOVED to the composition root itself (`crates/busbar/src/root/proto_install.rs`). It folded the
+// declaration install and the path-model arrival install into one call and asserted their parity;
+// its one caller was `main.rs::register_protocols`, and every name it reached was already neutral
+// (`first_path_model_without_arrival` in the neutral values leaf, `install_protocols` and
+// `ingress::arrival::{install_path_ingress, PathIngress}` on the substrate) — the "names the
+// core-only `Arrival`" line that kept it here had been stale since `ingress/path_ingress.rs` became
+// a re-export. Nothing re-exports it here: the composition root is the only reader, so a
+// transitional path back into core would be a coupling invented for no caller.
