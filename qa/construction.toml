@@ -706,9 +706,9 @@ max_sites = 0
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
   "crates/busbar-core/src/plane_host/",
-  "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
   "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
+  "crates/busbar-substrate/src/plane/registry.rs",
   "crates/busbar-substrate/src/plane_host/mod.rs",
   "crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all",
   "crates/busbar-substrate-values/src/proto.rs",
