@@ -7,8 +7,9 @@
     "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
     "always allowed and just printed; only a SHRINK needs to be named.",
     "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
-    "golden/1.5.5/ledger.tsv's PASS rows. The one entry below is a cell that has never been owed:",
-    "it is named here so the reason it is not recorded is written down and owned, and so the entry",
+    "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
+    "golden/1.5.5/ledger.tsv's PASS rows. The entries below are cells that have never been owed:",
+    "each is named here so the reason it is not recorded is written down and owned, and so the entry",
     "is already in place the day the cell is baselined and then re-loses its fixture."
   ],
   "accepted": [
@@ -17,6 +18,12 @@
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
       "owner": "llm-plane",
       "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden."
+    },
+    {
+      "id": "llm-stream-upstream-error-needs-recorder",
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error$",
+      "owner": "llm-plane",
+      "rationale": "needs a TOOL release, not a fixture. The pinned mock (oracle.pin v0.3.7) already implements the `stream-error` verb for all six dialects; the RECORDER cannot drive it on an llm cell, twice over. (1) record.sh's built-in `llm` driver writes the mock control for exactly one outcome — `if [ \"$outcome\" = upstream_down ]` -> \"down\" — so a cell's own `mock_control` is honoured only by the `http` and `concurrent` drivers and is dead here: the mock serves the healthy 200. (2) build-request.py decides streaming by `oc in (\"ok_stream\", \"ok_stream_array\")`, and `stream_upstream_error` is in neither, so the request is BUFFERED and cannot fail mid-stream at all. Measured 2026-09-10 against the published 1.5.5 (aarch64-apple-darwin, binary 48e2800cc1fb) with needs_fixture lifted: all six recorded `HTTP 200; usage delta {\"requests\":1,\"spend_cents\":250,\"tokens\":18}` and a buffered chat.completion body — the happy path frozen under the name of the failure, and reproduced identically by any candidate, so the cell would have proven the opposite of what it claims. The rows stay needs_fixture until a pin bump teaches the llm driver `mock_control` and the builder the streaming outcome. THE BEHAVIOUR IS NOT UNRECORDED IN THE MEANTIME: the `llm.stream|<dialect>|<fault>` script family (scripts/llm-stream-fault.sh, 12 cells) pins the mid-stream arm — the caller's bytes, the ledger row, the breaker's record — in the half of the harness busbar owns, for both the in-band-error and the socket-cut shape."
     }
   ]
 }

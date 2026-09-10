@@ -55,11 +55,11 @@
     }
   ],
   "counts": {
-    "total": 2318,
+    "total": 2330,
     "by_plane": {
       "a2a": 468,
       "core": 789,
-      "llm": 149,
+      "llm": 161,
       "mcp": 912
     },
     "by_family": {
@@ -80,6 +80,7 @@
       "hooks": 10,
       "http.crosscut": 23,
       "ledger": 5,
+      "llm.stream": 12,
       "llm.wire": 142,
       "mcp": 912,
       "neutrality": 18,
@@ -18790,6 +18791,234 @@
       "bindings": [
         "PB-103"
       ]
+    },
+    {
+      "id": "llm.stream|anthropic|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "anthropic",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the anthropic door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|anthropic|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "anthropic",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the anthropic door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|bedrock|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "bedrock",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the bedrock door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|bedrock|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "bedrock",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the bedrock door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|cohere|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "cohere",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the cohere door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|cohere|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "cohere",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the cohere door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|gemini|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "gemini",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the gemini door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|gemini|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "gemini",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the gemini door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|openai|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "openai",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the openai door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|openai|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "openai",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the openai door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|responses|cut",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "responses",
+          "cut"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the responses door, headers, the first frame, then the socket dies with no error at all -- the reset, where the door is the only party that can say anything about the failure -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
+    },
+    {
+      "id": "llm.stream|responses|stream-error",
+      "plane": "llm",
+      "family": "llm.stream",
+      "driver": "script",
+      "script": {
+        "name": "llm-stream-fault.sh",
+        "args": [
+          "responses",
+          "stream-error"
+        ]
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "why": "mid-stream upstream failure on the responses door, the upstream sends the dialect's normal frames up to and including the text delta, then an IN-BAND error event in that dialect's own error shape, and no terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status -- the cell pins what the caller was told after the 200 (status, headers, every byte including the terminal frame or its absence), the LEDGER ROW drawn for a stream that delivered text and then died, a second usage read after a settle pause (a late or doubled posting), what the breaker recorded, and what busbar sent upstream"
     },
     {
       "id": "llm|anthropic|anthropic|request|malformed",
