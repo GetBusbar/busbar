@@ -120,6 +120,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   Its vocabulary cost is declared cell by cell in `qa/construction.toml`: a namespaced status is
   the seam's subject and cannot cross it without its numbering, and the reason's text is the
   previous release's own `/stats` field, moved by identity.
+  THE DECORATION SEES THE DESTINATION IT DECORATES amends it by a further 4: the egress unit's
+  `EgressAuth` port took the outbound request alone, and the credential a dialect's declared egress
+  scheme substitutes is the LANE'S, not the scheme's — several dialects decorate under one scheme, so
+  a port that hides the lane leaves the decoration to infer which secret to write, and an inferred
+  credential is the one thing this seam exists to make impossible. The port now takes the sealed
+  destination beside the request. Nothing is decided in the port: the destination is handed over,
+  not read.
   100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 

@@ -634,6 +634,9 @@ pub struct TestEgressAuth {
     /// cross-check exists to catch.
     pub rewrite_lane_to: Mutex<Option<String>>,
     pub lane_field: Mutex<Option<String>>,
+    /// The lane of every destination this decoration was asked about, in order — so a test can
+    /// see that the sealed destination reached the decoration and not only the scheme.
+    pub decorated_lanes: Mutex<Vec<Option<busbar_contract::LaneId>>>,
 }
 
 impl TestEgressAuth {
@@ -645,8 +648,13 @@ impl TestEgressAuth {
 impl EgressAuth for TestEgressAuth {
     fn decorate(
         &self,
+        dest: &busbar_contract::VerifiedDestination,
         request: &mut OutboundRequest<'_>,
     ) -> Result<(), crate::ports::DecorationRefused> {
+        self.decorated_lanes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(dest.lane());
         request
             .fields
             .push(("authorization".to_string(), b"decorated".to_vec()));

@@ -407,7 +407,7 @@ fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a
         body_signature: None,
     };
     hop.egress_auth
-        .decorate(&mut request)
+        .decorate(hop.dest, &mut request)
         .map_err(|_| Shed::internal())?;
 
     // The byte layout of an envelope belongs to the transport, and this asks the transport for it.

@@ -369,11 +369,22 @@ pub trait Capacity: Send + Sync {
 pub trait EgressAuth: Send + Sync {
     /// Decorate one outbound request for one verified destination.
     ///
+    /// The destination is handed over WITH the request, because the scheme alone does not name a
+    /// credential: several dialects decorate under one scheme, and which secret is substituted is
+    /// a fact of the lane the trust unit sealed, not of the scheme the plane named. A decoration
+    /// that could not see the destination would have to guess the credential from the scheme, and
+    /// a guessed credential is the one thing this seam exists to make impossible.
+    ///
     /// # Errors
     /// Returns the scheme's own refusal when the request cannot be decorated — an unresolvable
-    /// secret, an unknown scheme. The attempt treats that as a failure to assemble: nothing was
-    /// sent and nothing is recorded against the destination.
-    fn decorate(&self, request: &mut OutboundRequest<'_>) -> Result<(), DecorationRefused>;
+    /// secret, an unknown scheme, a destination this unit holds no credential for. The attempt
+    /// treats that as a failure to assemble: nothing was sent and nothing is recorded against the
+    /// destination.
+    fn decorate(
+        &self,
+        dest: &busbar_contract::VerifiedDestination,
+        request: &mut OutboundRequest<'_>,
+    ) -> Result<(), DecorationRefused>;
 }
 
 /// The outbound request as the decoration sees it: the envelope the plane built, the body it

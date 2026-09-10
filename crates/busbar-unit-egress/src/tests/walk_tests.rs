@@ -33,6 +33,34 @@ fn two_lane_pool() -> Node {
     node
 }
 
+/// The decoration is asked about the SEALED destination, not only the scheme: several dialects
+/// decorate under one scheme, and the credential substituted is the lane's. A walk that handed the
+/// decoration the scheme alone would leave it to guess which secret to write.
+#[test]
+fn the_decoration_sees_the_sealed_destination_of_every_hop() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.transport
+        .script("a", Script::DialError(TransportError::Refused));
+    node.transport.script("b", Script::Frames(ok_frames()));
+
+    assert!(node.route("primary").is_delivered());
+    let seen = node
+        .egress_auth
+        .decorated_lanes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    assert_eq!(
+        seen,
+        vec![
+            Some(busbar_contract::LaneId::new("a")),
+            Some(busbar_contract::LaneId::new("b")),
+        ],
+        "each hop's decoration was asked about that hop's own sealed lane"
+    );
+}
+
 #[test]
 fn a_member_that_cannot_be_dialled_is_failed_over_from() {
     let node = two_lane_pool();
