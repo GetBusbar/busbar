@@ -79,14 +79,25 @@ them). Each axis is blind to the other two; only the kernel composes them.
   with a declared raise (`[[gate.ceiling_raises]]` in `qa/construction.toml`) that names the face
   and its measured lines, this figure amended in the same commit — the per-unit arena face
   (`bounded::Arena: Send`, the unsatisfiable `Sync` clause struck so a shipping implementor can
-  exist; `docs/design/1.6.0-per-unit-arena.md`) measured 0 lines and declared nothing. Two crates carry their own surface ceilings beside it, because
+  exist; `docs/design/1.6.0-per-unit-arena.md`) measured 0 lines and declared nothing. THE MOUNT
+  CHAIN AMENDS THE PAIR TO **3,502** on two named faces, each declared and each counted exactly:
+  `busbar-caps::UnitEnd::lend_posting` / `PostingLent` — a unit's end LENDS its posting for one
+  settlement and refuses the second, so an exit arm can settle from a lend instead of being handed
+  the posting outright (22 lines, `unit_end.rs` + the re-export in `lib.rs`); and
+  `busbar-contract::RecordSink` — the three record verbs become a trait of their own that `Store`
+  IS, because the kernel's record runner and a store-kind plugin may not name each other and the
+  contract is the only crate both are allowed to name (2 lines net in `kinds.rs`; the verbs MOVED
+  off `Store`'s inherent half rather than being added). Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
   `surface-ceiling:grammar`; `busbar-contract-transport` — the transport-facing contract: the
   connection and listener handles, the detached stream, the closed transport failure and close
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
-  generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
+  generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`,
+  pinned at **850** on one declared face: `facts::{CREDENTIAL, ACCEPTS, MEDIA}` — the three reserved
+  transport fact keys a mounted leg reads instead of a header, so a plane never reads the wire's
+  own vocabulary (5 lines in `registry.rs`: the three constants and the widened `RESERVED` list).
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
