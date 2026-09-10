@@ -130,6 +130,48 @@ contract_caps = 3478
 grammar = 388
 contract_transport = 845
 
+# ── declared raises: the streams line — a plane and a wire DECLARE a duplex surface as data. The
+# plane (busbar-plane-voice) writes its duplex route in the transport contract's vocabulary, the wire
+# (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport
+# face for the Duplex dispatch kind. Every hit is a use-line or a declaration of that face; ws × plane
+# stayed at 2 throughout. Each entry expires when the base carries the number.
+[gate.ceiling_raises."cell.51.count"]
+file = "qa/kind-isolation.toml"
+from = 16
+to = 19
+because = "busbar-contract × contract-transport (busbar-contract, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+[gate.ceiling_raises."cell.61.count"]
+file = "qa/kind-isolation.toml"
+from = 183
+to = 184
+because = "busbar-contract-transport × transport (busbar-contract-transport, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+[gate.ceiling_raises."cell.158.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 6
+because = "busbar-plane-voice × contract-transport (busbar-plane-voice, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+[gate.ceiling_raises."cell.161.count"]
+file = "qa/kind-isolation.toml"
+from = 102
+to = 108
+because = "busbar-plane-voice × transport (busbar-plane-voice, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+[gate.ceiling_raises."cell.265.count"]
+file = "qa/kind-isolation.toml"
+from = 70
+to = 99
+because = "busbar-transport-ws × contract-transport (busbar-transport-ws, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+[gate.ceiling_raises."cell.267.count"]
+file = "qa/kind-isolation.toml"
+from = 165
+to = 207
+because = "busbar-transport-ws × transport (busbar-transport-ws, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+
+
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
 why = """Exactly one function in the workspace may send the egress request for a unit. Two twins \
