@@ -34,7 +34,20 @@ use busbar_plane_llm::registry::DialectEntry;
 
 /// The dialects of the `llm` plane this build carries.
 ///
-/// One row per dialect crate. `busbar-plane-llm-openai` is the first of the six the plane's ladder
-/// was written for; the remaining five are still the plane's own rows and move here, one row at a
-/// time, as each is cut out.
-pub const LLM: &[DialectEntry] = &[busbar_plane_llm_openai::dialect::ENTRY];
+/// One row per dialect crate, and adding one is adding ONE LINE. `busbar-plane-llm-openai` was the
+/// first of the six the plane's ladder was written for and `busbar-plane-llm-responses` is the
+/// second; the remaining four are still the plane's own rows and move here, one row at a time, as
+/// each is cut out.
+///
+/// The two rows here are one vendor's two request surfaces, and they are two rows for the same
+/// reason they are two crates: the boot has no way to tell "a vendor" from "a wire vocabulary", and
+/// it should not have one. What it seals is a row and a ladder, whoever wrote them.
+///
+/// ORDER IS REGISTRATION ORDER, and registration order breaks a tie between two dialects that
+/// declare the same rung. These two declare 7, 14 and 10 and tie nowhere, so the order below is not
+/// currently deciding anything — which is exactly why it is worth saying that it is the order the
+/// boot uses, so the day two dialects do tie the answer is written down here rather than discovered.
+pub const LLM: &[DialectEntry] = &[
+    busbar_plane_llm_openai::dialect::ENTRY,
+    busbar_plane_llm_responses::dialect::ENTRY,
+];
