@@ -165,7 +165,7 @@ static INSTALLED_PATH_INGRESS: std::sync::OnceLock<Vec<(&'static str, PathIngres
     std::sync::OnceLock::new();
 
 /// INSTALL THE PATH-MODEL ARRIVALS — the composition root's one write, folded into
-/// [`crate::proto::install_protocols_with_path_ingress`] beside the decl install so the two cannot
+/// `busbar::root::proto_install::install_protocols_with_path_ingress` beside the decl install so the two cannot
 /// drift. Set-once, mirroring `install_protocols`.
 ///
 /// # Panics
