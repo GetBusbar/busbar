@@ -694,6 +694,35 @@ land_shard_count() {
   echo "$n"
 }
 
+# ── CAN THIS TREE'S XTASK EVEN SHARD? ────────────────────────────────────────────────────────────
+# 03:24 AND 03:27: the strike batch was judged RED BY THE ENGINE, not by the line. The runner asked
+# for four shards on a PICKED tree whose xtask predates `--shard` (T0-D's xtask lands only with
+# T0-D2's line). An xtask that does not know the flag does not fail on it in a way the union can
+# read: shard 1 ran ALL 36 construction cases, green, and printed no `shard k/n: X of Y case(s)`
+# line — so land_shard_union refused it for "exited 0 without printing its case count", which is
+# the RIGHT refusal for a mute shard of a sharding xtask and the WRONG verdict about a tree that
+# cannot shard at all. Twice, an hour apart, on a batch that had already been proven green
+# unsharded.
+#
+# THE PROBE IS OF THE TREE'S SOURCE, NOT OF THIS SCRIPT'S KNOWLEDGE — the same rule as
+# land_repin_available above, and for the same reason: the tree being proven is a cherry-picked tip
+# that may be older or newer than the engine driving it, and the engine must ask it rather than
+# assume. `--shard` is parsed in xtask/src/cli.rs (shard_arg, `--shard=` and the spaced form); a
+# tree without that literal anywhere under xtask/src has no shard support. Prose about "the shard's
+# wall clock" in a gate's doc comment is NOT the flag, which is why the needle is the flag itself.
+#
+# ABSENT IS A FALLBACK, NOT A REFUSAL. The unsharded run is the SAME proof — it is the proof the
+# sharding exists to make faster, and every case runs. So the leg says so, in one line the ledger
+# can grep for, and proves the tree on one box. It is never silently downgraded to "fewer cases".
+#
+# The tree read is `$here` — the picked tip itself. LAND_SHARD_XTASK_TREE names another, and is set
+# by this script's own self-test (which plants both an old tree and a new one) and by nothing else.
+land_shard_available() { # $1 = tree; prints nothing when the tree's xtask takes `--shard`, else the reason
+  local tree="$1"
+  grep -rq -- '--shard' "$tree/xtask/src" 2>/dev/null \
+    || echo "selftest sharding unsupported by this tree's xtask: running unsharded"
+}
+
 # THE UNION CHECK, over the logs the shards left behind. See the three refusals above.
 land_shard_union() { # $1 = gate  $2 = n  $3 = dir
   local g="$1" n="$2" dir="$3" k rc line owned total first="" sum=0
@@ -806,8 +835,14 @@ land_shard_dir() { # $1 = gate; sets LAND_SHARD_DIR (does not create it)
 # (LAND_REMOTE_INNER), sharded SEQUENTIALLY when it is not — a laptop has one set of cores, and four
 # shards racing on it is the same wall clock with four times the noise.
 land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
-  local g="$1" log="$2" ceil="$3" n dir
+  local g="$1" log="$2" ceil="$3" n dir why
   n="$(land_shard_count)" || return 1
+  # THE TREE MAY NOT BE ABLE TO SHARD (see land_shard_available). Asked before the fan-out, because
+  # after it the evidence is a mute shard and a red batch.
+  if [ "$n" != 0 ]; then
+    why="$(land_shard_available "${LAND_SHARD_XTASK_TREE:-$here}")"
+    [ -z "$why" ] || { echo "land.sh: $g $why"; n=0; }
+  fi
   if [ "$n" = 0 ]; then
     ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest >"$log" 2>&1 )
     return $?
@@ -1671,6 +1706,23 @@ land_selftest() {
   _st "shards: a word is REFUSED"                1 _shcount eight
   _st "shards: above four boxes is REFUSED"      1 _shcount 8
 
+  # ── THE TREE'S OWN XTASK DECIDES WHETHER A LEG CAN BE SHARDED (03:24 and 03:27) ────────────────
+  # Two planted trees, because the thing that went wrong was read off a tree and not off a flag:
+  # the OLD one is the picked tip the strike batch was proven on — its xtask has no `--shard`, and
+  # it does have a gate doc-comment that talks ABOUT shards, which is exactly the prose a looser
+  # needle would have mistaken for support. The NEW one parses the flag.
+  local xtold="$root/xt-old" xtnew="$root/xt-new"
+  mkdir -p "$xtold/xtask/src/gates" "$xtnew/xtask/src"
+  printf 'fn main() {}\n' >"$xtold/xtask/src/cli.rs"
+  printf '/// That is where the xtask test shard'"'"'s wall clock went.\npub struct Gates;\n' >"$xtold/xtask/src/gates/mod.rs"
+  printf 'fn shard_arg(a: &[String]) -> Option<String> { a.iter().find_map(|x| x.strip_prefix("--shard=")).map(String::from) }\n' >"$xtnew/xtask/src/cli.rs"
+  echo "land.sh selftest: a tree whose xtask cannot shard is proven UNSHARDED, never judged RED"
+  _st "shards: an xtask that parses --shard can shard" 0 land_shard_available "$xtnew"
+  _stno "shards: ...and the probe says nothing"        "$ST_OUT" '.'
+  _st "shards: an xtask without the flag cannot"       0 land_shard_available "$xtold"
+  _stgrep "shards: ...and the reason is the ruled line" "$ST_OUT" '^selftest sharding unsupported by this tree.s xtask: running unsharded$'
+  _st "shards: a tree with no xtask at all cannot"     0 land_shard_available "$root/nosuchtree"
+
   echo "land.sh selftest: the shard directory (one per LEG, so a bisect round never reads the last round's votes)"
   local sd1 sd2; land_shard_dir kind-isolation; sd1="$LAND_SHARD_DIR"; land_shard_dir kind-isolation; sd2="$LAND_SHARD_DIR"
   [ "$sd1" != "$sd2" ] && printf '  ok   %-46s\n' "shards: two legs of one gate get two directories" \
@@ -1731,14 +1783,19 @@ land_selftest() {
   echo "land.sh selftest: the request/wait arm (the box asks, waits, and judges only what arrived)"
   local stubbin="$root/stubbin"; mkdir -p "$stubbin"
   # argv: xtask gate <g> --selftest --shard k/n — the stub owns 38 of 152, like the union cases above.
-  printf '#!/bin/sh\necho "stub xtask $*"\nn=${6#*/}\necho "  shard $6: $((152 / n)) of 152 case(s)"\nexit 0\n' >"$stubbin/cargo"; chmod +x "$stubbin/cargo"
-  _req() { # $1 = shards, $2 = fanout, $3 = inner, $4 = deliver (0|1), $5 = publish rc
-    local out="$root/req-$1-$2-$3-$4-$5"; mkdir -p "$out"
+  # The unsharded arm passes no `--shard`, so the stub must answer as the real xtask does there:
+  # a total, and no `shard k/n` line at all.
+  printf '#!/bin/sh\necho "stub xtask $*"\ncase "$6" in\n  */*) n=${6#*/}; echo "  shard $6: $((152 / n)) of 152 case(s)" ;;\n  *) echo "  152 case(s)" ;;\nesac\nexit 0\n' >"$stubbin/cargo"; chmod +x "$stubbin/cargo"
+  _req() { # $1 = shards, $2 = fanout, $3 = inner, $4 = deliver (0|1), $5 = publish rc, $6 = xtask tree
+    local out="$root/req-$1-$2-$3-$4-$5${6:+-$(basename "$6")}"; mkdir -p "$out"
     # THE ENVIRONMENT IS THE CASE'S, NOT THE CALLER'S. On a fleet box this self-test runs INSIDE a
     # landing, whose environment carries LAND_REMOTE_INNER=1; inherited, it turned "FANOUT without
     # INNER is refused" into a request arm that timed out — found by the box, not by the laptop.
     ( unset LAND_REMOTE_INNER LAND_SHARD_FANOUT
       export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=4 LAND_SHARD_POLL_SECS=1
+      # THE TREE THE PROBE READS. Named explicitly so these cases mean the same thing on a fleet
+      # box, where the four scripts are rsynced ALONE and $here has no xtask/ to read at all.
+      export LAND_SHARD_XTASK_TREE="${6:-$xtnew}"
       [ -n "$2" ] && export LAND_SHARD_FANOUT="$2"; [ -n "$3" ] && export LAND_REMOTE_INNER=1
       eval "land_shard_publish() { return $5; }"
       # The leg names its own directory (land_shard_dir, sequence 1 of this subshell); the stand-in
@@ -1767,6 +1824,19 @@ land_selftest() {
   rm -rf "$here"/target/land-shards-kind-isolation-*
   _st "req: sequential when no laptop serves (INNER, no FANOUT)" 0 _req 2 "" 1 0 0
   _stgrep "req: ...and says it ran sequentially"     "$ST_OUT" 'sequentially'
+  rm -rf "$here"/target/land-shards-kind-isolation-*
+
+  # THE 03:24/03:27 BATCH, AS THE ENGINE NOW TAKES IT. Same request (four shards, a laptop serving,
+  # nothing delivered — the arrangement that was RED an hour apart), on the tree that cannot shard.
+  # It must be GREEN, by RE-RUNNING THE GATE WHOLE on this one box: never by keeping shard 1's
+  # output and calling it the gate, because a shard killed mid-run can print a total-case line too.
+  # So the log must carry the gate's own unsharded total and NO `--shard` invocation, and no
+  # request may have been written for siblings that are not coming.
+  _st "req: a tree whose xtask cannot shard is GREEN, unsharded" 0 _req 4 laptop 1 0 0 "$xtold"
+  _stgrep "req: ...and says so in the ruled words"   "$ST_OUT" 'selftest sharding unsupported by this tree.s xtask: running unsharded'
+  _stgrep "req: ...the WHOLE gate ran (its own total)" "$root/req-4-laptop-1-0-0-xt-old/leg.log" '152 case\(s\)'
+  _stno "req: ...no shard was asked of it"           "$root/req-4-laptop-1-0-0-xt-old/leg.log" '[-]-shard'
+  _stno "req: ...and no sibling was asked for a vote" "$ST_OUT" 'requested from the laptop'
   rm -rf "$here"/target/land-shards-kind-isolation-*
 
   echo "land.sh selftest: the integration base (the box judges against the sha the laptop resolved)"
