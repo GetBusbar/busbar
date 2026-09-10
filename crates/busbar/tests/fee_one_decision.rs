@@ -1,7 +1,7 @@
 //! **THE FEE IS DECIDED ONCE, AND THE KERNEL DECIDES IT.**
 //!
 //! The flat per-request fee had two deciders on the llm plane and one everywhere else. The kernel's
-//! is `busbar_kernel::teller::fee_count` over a `FeeEvidence` the composition root builds — the same
+//! is `busbar_kernel::teller::charge` over a `FeeEvidence` the composition root builds — the same
 //! function `units_mcp`, `units_a2a` and `units_voice` already price their records through, under a
 //! comment that states the rule out loud: *"The record does not decide the fee a second time. It
 //! reads the same evidence the exit path settles from, through the same function, so a row that says
@@ -52,7 +52,7 @@
 //! recorded. It is not, and cannot be, a claim that the golden recorded a fee.
 
 use busbar_contract::FinishClass;
-use busbar_kernel::teller::{fee_count, FeeEvidence};
+use busbar_kernel::teller::{charge, Charge, DisputePolicy, FeeEvidence, TariffCell};
 
 /// One recorded cell, reduced to the facts the two deciders read.
 ///
@@ -88,14 +88,31 @@ struct Cell {
 /// ended, and the leg carries that instead. Arm 1's cells are driven at the first; arm 3's at the
 /// second.
 fn kernel_fee(c: &Cell, finish: FinishClass) -> (u32, busbar_caps::PostingFlags) {
-    fee_count(&FeeEvidence {
-        client_open_or_one_shot: c.client_origin,
-        selected_upstream: c.upstream_candidate,
-        relayed_first_response_frame: true,
-        status_at: <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
-        status: Some(busbar_transport_http::status_class(c.status)),
-        finish: Some(finish),
-    })
+    let charged = kernel_charge(c, finish, TariffCell::default());
+    (charged.transaction, charged.flags)
+}
+
+/// The same evidence, under a NAMED schedule rather than the shipped one — what a deployment that
+/// asked for the previous release's dispute rule back is charged.
+fn kernel_charge(c: &Cell, finish: FinishClass, tariff: TariffCell) -> Charge {
+    charge(
+        &FeeEvidence {
+            // Every cell below is a unit the golden recorded a request slot for, so every one of
+            // them passed the door. The door's own count is not what this file is about — it reads
+            // the exchange — but a visit that never happened would make the reading meaningless.
+            admitted: true,
+            chargeable_local:
+                <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::CHARGEABLE_LOCAL,
+            client_open_or_one_shot: c.client_origin,
+            selected_upstream: c.upstream_candidate,
+            relayed_first_response_frame: true,
+            status_at:
+                <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+            status: Some(busbar_transport_http::status_class(c.status)),
+            finish: Some(finish),
+        },
+        &tariff,
+    )
 }
 
 /// The finish the EXIT arm derives, when the frame the client saw is all there is to read.
@@ -867,50 +884,86 @@ fn the_two_rules_are_not_the_same_rule() {
 /// exactly the input the dispute arm is for and exactly the input no other arm in this file
 /// produces.
 ///
-/// Three things are asserted about each of the twelve, and the order matters.
+/// **THIS IS THE ONE PLACE THE SHIPPED DEFAULT MOVED, AND IT MOVED ON PURPOSE.** The previous
+/// release kept a mid-stream failure in its billable count and refunded nothing. It also billed the
+/// same fault unevenly: of the twelve recorded cells, eleven charged nothing at all for the
+/// half-delivered answer and one — `gemini|cut`, whose partial frame happened to carry a complete
+/// usage block — charged for eighteen tokens. That difference is a property of a wire format, not a
+/// decision anybody made, and a fee schedule that says every plugin of a kind is billed identically
+/// cannot keep it. The default is now the visit and what was delivered: no transaction fee for an
+/// exchange that did not complete, and the units the customer actually received, identically for
+/// every dialect.
 ///
-/// 1. **The count does not move.** 1.5.5 keeps a mid-stream failure in its billable count and
-///    refunds nothing — `retired_plane_fee` is that rule, verbatim — and so does the kernel under
-///    the shipped policy. The structure changed; the money did not.
-/// 2. **The default policy is what decides it.** Checked against `DisputePolicy::default()`'s own
-///    answer rather than against the literal 1, so that the day somebody changes the shipped
-///    default this cell reports a POLICY change and not an arithmetic mystery.
-/// 3. **The posting is marked.** The count alone would say nothing was wrong. It was.
+/// Four things are asserted about each of the twelve, and the order matters.
+///
+/// 1. **The previous release's rule is still a rule somebody can choose.** `DisputePolicy::Full`
+///    answers exactly what `retired_plane_fee` answers and exactly what the golden billed, on all
+///    twelve. So the change is a change of DEFAULT and not a capability that was taken away.
+/// 2. **The shipped default charges no transaction.** One number, the same on all twelve.
+/// 3. **The shipped default still charges the units.** The customer paid for what was delivered,
+///    which is what makes the uniform rule the honest one rather than the cheap one.
+/// 4. **The posting is marked, under both.** The count alone would say nothing was wrong. It was.
 #[test]
-fn recorded_stream_faults_are_disputed_and_bill_what_1_5_5_billed() {
+fn recorded_stream_faults_are_disputed_and_the_default_charges_what_was_delivered() {
     assert_eq!(
         RECORDED_STREAM_FAULTS.len(),
         12,
         "six dialects, two fault shapes; the golden's own count"
     );
+    let previous_release = TariffCell {
+        dispute_policy: DisputePolicy::Full,
+        ..TariffCell::default()
+    };
     let mut diverged = Vec::new();
     for cell in RECORDED_STREAM_FAULTS {
         // The plane's own verdict after the body drained: the stream did not finish.
-        let (kernel, flags) = kernel_fee(cell, FinishClass::Error);
+        let under_previous = kernel_charge(cell, FinishClass::Error, previous_release);
+        let under_default = kernel_charge(cell, FinishClass::Error, TariffCell::default());
         let plane = retired_plane_fee(cell);
-        let policy = busbar_kernel::teller::DisputePolicy::default().decide(true, false);
-        if (kernel, flags) != policy || kernel != plane || kernel != cell.billed {
+        let marked = busbar_caps::PostingFlags::METER_DISPUTED;
+        if under_previous.transaction != plane
+            || under_previous.transaction != cell.billed
+            || !under_previous.flags.contains(marked)
+            || under_default.transaction != 0
+            || !under_default.units_allowed
+            || !under_default.flags.contains(marked)
+        {
             diverged.push(format!(
-                "  {:<28} kernel={kernel} flags={flags:?} plane={plane} billed={} policy={policy:?}",
-                cell.name, cell.billed
+                "  {:<28} previous={:?} default={:?} plane={plane} billed={}",
+                cell.name, under_previous, under_default, cell.billed
             ));
         }
     }
     assert!(
         diverged.is_empty(),
-        "a mid-stream failure after a good head does not bill what 1.5.5 billed, or is not \
-         decided by the shipped dispute policy — either way it is a money finding and stops \
-         here:\n{}",
+        "a mid-stream failure after a good head is not decided by the schedule it is charged \
+         under — either the previous release's rule has stopped answering what it answered, or \
+         the shipped default has stopped charging the visit and the delivery. Either way it is a \
+         money finding and stops here:\n{}",
         diverged.join("\n")
     );
-    // And the mark is the point: without it the disagreement settles as though it never happened.
-    for cell in RECORDED_STREAM_FAULTS {
-        assert!(
-            kernel_fee(cell, FinishClass::Error)
-                .1
-                .contains(busbar_caps::PostingFlags::METER_DISPUTED),
-            "{} settles without saying its two readings disagreed",
-            cell.name
-        );
-    }
+}
+
+/// **THE UNIFORMITY THE DEFAULT BUYS, COUNTED.**
+///
+/// The twelve recorded mid-stream cells, asked what the shipped schedule charges each of them for
+/// the exchange. The answer must be ONE answer. Under the previous release it was one answer too —
+/// for the transaction — and a second, uneven one for the units, which is what the tokens column of
+/// `gemini|cut` records against eleven neighbours that recorded none. This cell does not re-open
+/// that recording; it pins the rule that made it impossible to happen again.
+#[test]
+fn every_dialect_is_charged_the_same_way_for_the_same_fault() {
+    let answers: std::collections::BTreeSet<(u32, bool)> = RECORDED_STREAM_FAULTS
+        .iter()
+        .map(|cell| {
+            let charged = kernel_charge(cell, FinishClass::Error, TariffCell::default());
+            (charged.transaction, charged.units_allowed)
+        })
+        .collect();
+    assert_eq!(
+        answers.len(),
+        1,
+        "twelve cells, {} answers: the schedule is reading something about the dialect",
+        answers.len()
+    );
 }

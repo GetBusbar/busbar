@@ -999,7 +999,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        crate::root::kernel::default_fee(&unit.evidence(&ctx).fee).0
     };
     assert_eq!(
         fee(OriginKind::Client),
@@ -2572,23 +2572,24 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
 /// go out, and the upstream then fails in the stream's own dialect. Two readings of one unit, and
 /// they contradict — the client saw an answered request, the tap says the answer never finished.
 ///
-/// The COUNT is not what changes. The previous release keeps that request in its billable count and
-/// refunds nothing, and so does this: the fee is decided at the frame the client saw and no later
-/// abort reverses it. What changes is that the contradiction is now VISIBLE — the posting carries
-/// the disputed mark instead of settling silently as if the two readings had agreed — and that the
-/// arm which raises it is reachable at all, which on this plane it was not.
+/// What this cell is about is REACH: the arm that raises the contradiction is reachable on this
+/// plane at all, which it was not. What the arm then charges is the deployment's schedule, and the
+/// shipped one charges the visit and what was delivered — no transaction for an exchange that did
+/// not complete. The previous release charged the transaction here, unevenly, and a deployment that
+/// wants that rule back names `full` and has it.
 #[test]
-fn a_dead_stream_after_a_good_head_is_disputed_and_still_bills_one() {
+fn a_dead_stream_after_a_good_head_is_disputed_and_bills_what_was_delivered() {
     let evidence = fee_facts(
         Some(200),
         true,
         Some(busbar_contract::FinishClass::Error),
         OriginKind::Client,
     );
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    let (fee, flags) = crate::root::kernel::default_fee(&evidence);
     assert_eq!(
-        fee, 1,
-        "the frame the client saw decides the fee, and a later abort does not reverse it"
+        fee, 0,
+        "the shipped schedule charges the visit and what was delivered, and nothing for an \
+         exchange that did not complete — the same answer on this plane as on every other"
     );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),

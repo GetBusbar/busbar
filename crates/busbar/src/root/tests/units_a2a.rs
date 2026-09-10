@@ -679,35 +679,35 @@ fn only_a_hop_to_an_agent_carries_the_fee() {
 /// and the ending the plane itself called an error. Only the fifth shape pays, and it pays once.
 #[test]
 fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
+    use crate::root::kernel::default_fee;
     use busbar_caps::OriginKind;
-    use busbar_kernel::teller::fee_count;
 
     let served = draft(ops::OP_MESSAGE_SEND);
     assert!(served.has_upstream());
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Client, true)).0,
+        default_fee(&fee_evidence(&served, OriginKind::Client, true)).0,
         1
     );
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Provider, true)).0,
+        default_fee(&fee_evidence(&served, OriginKind::Provider, true)).0,
         0
     );
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Client, false)).0,
+        default_fee(&fee_evidence(&served, OriginKind::Client, false)).0,
         0
     );
 
     // A RELAYED ANSWER THE PLANE THEN CALLS AN ERROR IS THE CONTRADICTION, not a free request.
     // The client was handed a frame that said the task was accepted; the plane says the unit
     // failed. Those are the fee's two readings disagreeing, and the kernel decides it the way it
-    // decides it for every plane — the frame the client saw counts, and the posting is marked so
-    // the disagreement is visible rather than absorbed. This assertion used to read 0, which was
-    // the plane's finish deciding alone because this leg told the kernel there was no status leg
-    // to reconcile it against.
+    // decides it for every plane — through the schedule the unit is charged under, with the posting
+    // marked so the disagreement is visible rather than absorbed. The shipped schedule charges the
+    // visit and what was delivered; the reach is what this leg gained, and it is what makes the
+    // mark appear at all.
     let mut failed = served.clone();
     failed.finish = FinishClass::Error;
-    let (fee, flags) = fee_count(&fee_evidence(&failed, OriginKind::Client, true));
-    assert_eq!(fee, 1);
+    let (fee, flags) = default_fee(&fee_evidence(&failed, OriginKind::Client, true));
+    assert_eq!(fee, 0);
     assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
 
     let mut records_only = served.clone();
@@ -718,7 +718,7 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
     records_only.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
     assert!(!records_only.has_upstream());
     assert_eq!(
-        fee_count(&fee_evidence(&records_only, OriginKind::Client, true)).0,
+        default_fee(&fee_evidence(&records_only, OriginKind::Client, true)).0,
         0
     );
 }
@@ -1987,10 +1987,11 @@ fn a_task_lost_mid_stream_is_disputed() {
     draft.streaming = true;
     draft.finish = FinishClass::Error;
     let evidence = fee_evidence(&draft, busbar_caps::OriginKind::Client, true);
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    let (fee, flags) = crate::root::kernel::default_fee(&evidence);
     assert_eq!(
-        fee, 1,
-        "the frame the client saw decides the fee, on this plane and on every other"
+        fee, 0,
+        "the shipped schedule charges the visit and what was delivered, and nothing for an \
+         exchange that did not complete — the same answer on this plane as on every other"
     );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),

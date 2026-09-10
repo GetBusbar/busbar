@@ -583,7 +583,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         busbar_kernel::teller::requests_drawn(ctx.origin, evidence.upstream_candidate),
         0
     );
-    assert_eq!(busbar_kernel::teller::fee_count(&evidence.fee).0, 0);
+    assert_eq!(crate::root::kernel::default_fee(&evidence.fee).0, 0);
 }
 
 /// The nonce is drawn, not derived. Two draws over the same unit must not agree, or a one-time
@@ -2910,7 +2910,7 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         "and this surface still selects no upstream, which is what makes its fee zero"
     );
     assert_eq!(
-        busbar_kernel::teller::fee_count(&fee).0,
+        crate::root::kernel::default_fee(&fee).0,
         0,
         "a control surface posts no fee, and it posts none for the reason it always did"
     );
@@ -2927,7 +2927,9 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
 fn the_declared_leg_reaches_the_dispute_arm_once_a_unit_is_eligible() {
     let declared =
         <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG;
-    let (fee, flags) = busbar_kernel::teller::fee_count(&busbar_kernel::teller::FeeEvidence {
+    let (fee, flags) = crate::root::kernel::default_fee(&busbar_kernel::teller::FeeEvidence {
+        admitted: true,
+        chargeable_local: false,
         client_open_or_one_shot: true,
         selected_upstream: true,
         relayed_first_response_frame: true,
@@ -2935,7 +2937,11 @@ fn the_declared_leg_reaches_the_dispute_arm_once_a_unit_is_eligible() {
         status: Some(busbar_contract::StatusClass::Success),
         finish: Some(busbar_contract::FinishClass::Error),
     });
-    assert_eq!(fee, 1, "the frame the client saw decides the fee");
+    assert_eq!(
+        fee, 0,
+        "the shipped schedule charges nothing for an exchange that did not \
+                        complete, and the arm is reached, which is what this cell is about"
+    );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
         "the declared leg and the plane's finish contradict each other"

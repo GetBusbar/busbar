@@ -742,7 +742,7 @@ fn fold_report(
 /// unit the node has ever run.
 /// **THE FEE'S EVIDENCE, BUILT ONCE.** What the kernel's one decider is handed for this plane.
 ///
-/// The flat per-request fee is decided by `busbar_kernel::teller::fee_count` and by nothing else.
+/// The fee is decided by `busbar_kernel::teller::charge` and by nothing else.
 /// This function is the whole of what this plane contributes to it: the facts, read off the unit's
 /// carry and the origin the kernel sealed. It is called from exactly two places — the `evidence()`
 /// the exit path settles from, and the late accrual arm that prices what the body reported after the
@@ -802,8 +802,14 @@ fn fee_facts(
         // which read the same field off the same context, would price the same traffic differently.
         // The origin the kernel sealed is the one fact that answers this, so it is the one thing
         // read.
+        // Filled by the kernel's exit, which is the only place that holds it. A record is not the
+        // door: it reports what the exchange contained, and the visit was counted where it happened.
+        admitted: false,
         client_open_or_one_shot: origin == OriginKind::Client,
         selected_upstream: upstream_candidate,
+        // READ OFF THE PLANE'S DECLARATION. Whether work this plane does without a destination is
+        // something somebody bought is the plane's to declare and this leg's to relay.
+        chargeable_local: <LlmPlane as PlaneMeta>::CHARGEABLE_LOCAL,
         relayed_first_response_frame: status.is_some(),
         // WHERE THE STATUS IS, READ OFF THE PLANE. Not decided here, and not `None` because this
         // leg found it convenient: the plane declares which frame its dialect reports a status on,
@@ -983,12 +989,16 @@ impl LateAccrual {
         // finish the plane gives after the body. Where they contradict — a stream that died after a
         // good head — the kernel's one policy answers and marks the posting; the count is the count
         // the previous release billed either way.
-        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_facts(
-            walk.served_status(),
-            walk.upstream_candidate(),
-            Some(report.finish),
-            origin,
-        ));
+        let fee = busbar_kernel::teller::charge(
+            &fee_facts(
+                walk.served_status(),
+                walk.upstream_candidate(),
+                Some(report.finish),
+                origin,
+            ),
+            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
+        )
+        .transaction;
         let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
             return;
@@ -1533,7 +1543,11 @@ impl Units for LlmUnit<'_> {
         // of one unit, so they are answered off one decision: the same `fee_evidence` the exit path
         // settles from. The step used to hand its own count in on the report and this closure used
         // to spend it, which is how a plane that could not see the origin came to decide money.
-        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_evidence(&self.walk, ctx.origin));
+        let fee = busbar_kernel::teller::charge(
+            &fee_evidence(&self.walk, ctx.origin),
+            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
+        )
+        .transaction;
         self.walk.meter(token, usage, &|report| {
             self.history
                 .as_ref()
@@ -1626,6 +1640,7 @@ impl Units for LlmUnit<'_> {
             // from it and the late pricing arm prices from it, so a row that says one fee and a
             // posting that says none cannot both be true of one unit.
             fee: fee_evidence(&self.walk, ctx.origin),
+            tariff: crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
         }
     }
 }

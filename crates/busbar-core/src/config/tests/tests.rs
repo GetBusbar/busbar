@@ -41,6 +41,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 /// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
+        tariff: None,
         tools: Default::default(),
         agents: Default::default(),
         streams: Default::default(),

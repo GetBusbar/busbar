@@ -299,6 +299,79 @@ impl RootHistory {
 /// report arriving that early should be priced in — it isn't.
 pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default);
 
+/// **THE PROCESS'S FEE SCHEDULE**, installed once at boot from the deployment's `tariff:` section.
+///
+/// It sits beside the card holder for the same reason and with the same shape: the seam a unit is
+/// driven through is a bare `fn`, so what a unit is charged under has to be reachable by name. The
+/// two are deliberately separate objects — the card holds AMOUNTS and is DATED, because a price
+/// edit must not re-price what already happened; the schedule holds COUNTS and is not, because how
+/// many entries and transactions a unit owes was settled when the unit ran and is never recomputed.
+///
+/// **WHAT IS HELD IS A RESOLVER, NOT A SECTION.** The composition root does not learn the
+/// configuration's grammar to hold its answer: boot reads the section, closes over it, and hands
+/// this an object that answers the only question the loop asks — what is this plane's cell. So the
+/// scopes, the inheritance and the spelling of every knob stay in the crate that owns the grammar,
+/// and the root carries no second copy of them to drift from the first.
+///
+/// Before boot has installed one it answers the default cell for every plane, which is exactly what
+/// a unit that ran before anybody said otherwise should be charged under.
+pub static ROOT_TARIFF: LazyLock<RootTariff> = LazyLock::new(RootTariff::default);
+
+/// What answers "what is this plane's cell" — a plane's registry key in, a schedule out.
+pub type TariffResolver =
+    Box<dyn Fn(&str) -> busbar_kernel::teller::TariffCell + Send + Sync + 'static>;
+
+/// The holder: one resolver, swapped whole.
+#[derive(Default)]
+pub struct RootTariff {
+    resolver: arc_swap::ArcSwapOption<TariffResolver>,
+}
+
+impl std::fmt::Debug for RootTariff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A resolver has no readable value, and printing the schedule it would answer for some
+        // plane this holder had to invent would be a figure with no unit behind it.
+        f.debug_struct("RootTariff")
+            .field("installed", &self.resolver.load().is_some())
+            .finish()
+    }
+}
+
+impl RootTariff {
+    /// Install the deployment's schedule. Boot only, once.
+    pub fn install(&self, resolver: TariffResolver) {
+        self.resolver.store(Some(Arc::new(resolver)));
+    }
+}
+
+/// **THE SCHEDULE ONE PLANE'S UNITS ARE CHARGED UNDER.**
+///
+/// Read by every leg, through the plane's own declared registry key and through nothing else. There
+/// is no branch here on which plane it is: the key is a lookup, the lookup misses into the default,
+/// and every plugin of a kind is charged identically to every other of that kind because there is
+/// nowhere in this path for them to differ.
+#[must_use]
+pub fn tariff_cell(plane: &str) -> busbar_kernel::teller::TariffCell {
+    match ROOT_TARIFF.resolver.load().as_ref() {
+        Some(resolve) => resolve(plane),
+        None => busbar_kernel::teller::TariffCell::default(),
+    }
+}
+
+/// **WHAT ONE EXCHANGE COSTS UNDER A NODE THAT HAS CONFIGURED NOTHING.** Cells only.
+///
+/// The transaction count and the mark, which is what every fee case in this tree asks for. It reads
+/// the DEFAULT cell rather than a hand-written one so that a change to what a node ships with is a
+/// change every one of those cases sees, instead of a change they were all insulated from.
+#[cfg(test)]
+pub(crate) fn default_fee(
+    evidence: &busbar_kernel::teller::FeeEvidence,
+) -> (u32, busbar_caps::PostingFlags) {
+    let charged =
+        busbar_kernel::teller::charge(evidence, &busbar_kernel::teller::TariffCell::default());
+    (charged.transaction, charged.flags)
+}
+
 /// The configured rates, in the cost unit's own card.
 ///
 /// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the root's;

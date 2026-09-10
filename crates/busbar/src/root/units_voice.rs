@@ -1786,6 +1786,9 @@ impl Units for VoiceUnit<'_> {
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
             fee: self.fee(ctx, finish),
+            tariff: crate::root::kernel::tariff_cell(
+                <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+            ),
         }
     }
 }
@@ -1894,7 +1897,13 @@ impl VoiceUnit<'_> {
     ) -> busbar_unit_audit::record::AuditInputs {
         // The record does not decide the fee a second time: it reads the same evidence the exit
         // path settles from, through the same function.
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx, Some(finish)));
+        let fee_count = busbar_kernel::teller::charge(
+            &self.fee(ctx, Some(finish)),
+            &crate::root::kernel::tariff_cell(
+                <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+            ),
+        )
+        .transaction;
         busbar_unit_audit::record::AuditInputs {
             // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
             // as being handed one. `Arrival` is the honest answer for a unit that was refused before
@@ -1986,8 +1995,13 @@ fn fee_evidence(
     finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
+        // Filled by the kernel's exit, which is the only place that holds it. A record is not the
+        // door: it reports what the exchange contained, and the visit was counted where it happened.
+        admitted: false,
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
         selected_upstream,
+        // READ OFF THE PLANE'S DECLARATION, not decided by this leg.
+        chargeable_local: <VoicePlane as busbar_contract::plane::PlaneMeta>::CHARGEABLE_LOCAL,
         relayed_first_response_frame,
         status_at: <VoicePlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
         status: relayed_first_response_frame.then_some(busbar_contract::StatusClass::Success),

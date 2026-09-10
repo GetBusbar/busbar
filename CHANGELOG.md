@@ -133,6 +133,25 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   recorded cell of the shadow oracle's 1.5.5 golden and agree on all of them, and the check is kept
   as a test so they cannot drift apart again.
 
+- **A `tariff:` section says what a deployment charges for, per scope.** A tariff has three nouns:
+  a **visit** is an admitted unit, a **transaction** is a completed exchange with a destination or a
+  service a plane declared it performs locally, and **units** are quantities in a dimension the
+  plane itself declared. `tariff:` carries `entry_fee.enabled` — whether a visit is charged for at
+  the door, independently of what it went on to contain — and `dispute_policy`, at four scopes
+  resolved most-specific first: `tier`, `pool`, `plane`, `default`, field by field, so an unset
+  field inherits rather than resetting. Nothing in the grammar names a dialect, a provider or a
+  model: every plugin of a kind is billed identically to every other of that kind. Absent, a
+  deployment is charged exactly as it was; `per_request_fee:` and `rate_card:` are unchanged and
+  still carry the amounts.
+
+- **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
+  "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,
+  so a task for which no agent was configured resolved to an upstream-shaped destination with no
+  lane behind it and was charged as though an exchange had happened. Reachability is now the lane:
+  no lane is no leg, and no leg is no exchange. A plane that legitimately serves work out of its own
+  state declares so — `PlaneMeta::CHARGEABLE_LOCAL` — rather than claiming an upstream it never
+  dialled; no shipped plane declares it today, so no billed count moves.
+
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
@@ -364,6 +383,27 @@ degrades to an empty key.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
+
+- **What a half-delivered exchange costs changed, and it changed to one answer for every dialect.**
+  A stream that dies after a good first frame is a unit whose two endings disagree: the client was
+  handed the start of an answer, and the plane afterwards says it failed. 1.5.5 billed the flat
+  per-request fee for it — the frame the client saw decided — and it billed the delivery unevenly
+  besides: of the twelve recorded mid-stream faults, eleven charged for no tokens at all and one
+  charged for eighteen, because whether a half-delivered answer happens to carry a complete usage
+  block is a property of the wire format and not a decision anybody made. 1.6.0 charges the visit
+  and what was delivered: no per-request fee for an exchange that did not complete, and the units
+  the customer actually received, identically on every dialect. The posting is still marked
+  disputed, as it was.
+
+  **Migration:** a deployment with a non-zero `per_request_fee` bills one fee fewer per
+  mid-stream failure. To keep 1.5.5's rule, write `tariff: { default: { dispute_policy: full } }`;
+  the three policies are `entry_only`, `entry_plus_units` (the new default) and `full`.
+
+  This break carries no accepted-differences register entry, and cannot: the shadow oracle's 1.5.5
+  golden sets no per-request fee, so `effects.usage.spend_cents` on every recorded cell is token
+  cost and only token cost, and no recording in the corpus can tell a fee count of one from a fee
+  count of zero. It is proven in-tree instead, over the twelve recorded mid-stream cells, in
+  `crates/busbar/tests/fee_one_decision.rs`.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a

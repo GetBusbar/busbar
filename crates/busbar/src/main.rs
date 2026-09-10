@@ -1336,6 +1336,28 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::kernel::install_card_repricer();
 
+    // THE FEE SCHEDULE, installed beside the card and from the same configuration. The card carries
+    // the AMOUNTS and is dated so a price edit cannot re-price what already happened; the schedule
+    // carries the COUNTS, which were settled when the unit ran and are never recomputed.
+    //
+    // WHAT IS INSTALLED IS THE SECTION'S OWN ANSWER, closed over here. The section keeps its
+    // scopes, its inheritance and its spelling in the crate that owns the grammar; what crosses is
+    // one question and its answer. A deployment with no `tariff:` block closes over the empty
+    // section, which answers the default cell at every scope.
+    {
+        let schedule = cfg.tariff.clone().unwrap_or_default();
+        root::kernel::ROOT_TARIFF.install(Box::new(move |plane| {
+            let resolved = schedule.cell(plane, None, None);
+            busbar_kernel::teller::TariffCell {
+                entry_fee_enabled: resolved.entry_enabled,
+                dispute_policy: busbar_kernel::teller::DisputePolicy::charging(
+                    resolved.disputed_charges_transaction,
+                    resolved.disputed_charges_units,
+                ),
+            }
+        }));
+    }
+
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here

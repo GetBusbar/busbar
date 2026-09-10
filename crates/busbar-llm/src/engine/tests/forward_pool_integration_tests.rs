@@ -3570,6 +3570,7 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
+                tariff: None,
                 tool_defs: busbar_core::plane::config::ToolsSection::default().0,
                 // No endpoint plane configured.
                 endpoint_resources: Default::default(),

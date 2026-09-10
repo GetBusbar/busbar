@@ -160,6 +160,7 @@ impl PlaneMeta for FixturePlane {
     const EGRESS_PACING_FACT: Option<&'static str> = None;
     // The fixture speaks over the fixture transport, which reports its status on the first frame.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = "{}";
 }
 

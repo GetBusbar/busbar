@@ -1138,14 +1138,14 @@ fn the_shape_reads_the_hop_off_the_plan() {
 /// cannot happen, and every unit of this plane over-reserves for the life of the deployment.
 #[test]
 fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
+    use crate::root::kernel::default_fee;
     use busbar_caps::OriginKind as CameFrom;
-    use busbar_kernel::teller::fee_count;
 
     let called = Shape {
         op: ops::OP_TOOL_CALL,
         hops_upstream: true,
     };
-    let fee = |origin, answered| fee_count(&evidence(&ended(called, origin, answered)).fee).0;
+    let fee = |origin, answered| default_fee(&evidence(&ended(called, origin, answered)).fee).0;
     assert_eq!(fee(CameFrom::Client, true), 1, "a delivered call pays once");
     assert_eq!(
         fee(CameFrom::Client, false),
@@ -1163,7 +1163,7 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
         hops_upstream: false,
     };
     assert_eq!(
-        fee_count(&evidence(&ended(listed, CameFrom::Client, true)).fee).0,
+        default_fee(&evidence(&ended(listed, CameFrom::Client, true)).fee).0,
         0,
         "a listing answered from this node's own records reaches no server and pays no hop"
     );
@@ -1175,8 +1175,8 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
 /// unrepresentable rather than merely unlikely.
 #[test]
 fn the_settlement_and_the_record_read_one_fee_decision() {
+    use crate::root::kernel::default_fee;
     use busbar_caps::OriginKind as CameFrom;
-    use busbar_kernel::teller::fee_count;
     let origin = busbar_kernel::teller::Kernel::new().origin(CameFrom::Client);
     let at = Clocks {
         wall: 1_700_000_000,
@@ -1196,7 +1196,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
         let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
         assert_eq!(
             record.amount.fee_count,
-            fee_count(&evidence(&unit).fee).0,
+            default_fee(&evidence(&unit).fee).0,
             "the row and the posting agree about the fee"
         );
     }
@@ -1653,10 +1653,11 @@ fn a_tool_call_that_dies_mid_frame_is_disputed() {
         true,
         busbar_contract::unit::FinishClass::Error,
     );
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    let (fee, flags) = crate::root::kernel::default_fee(&evidence);
     assert_eq!(
-        fee, 1,
-        "the frame the client saw decides the fee, on this plane and on every other"
+        fee, 0,
+        "the shipped schedule charges the visit and what was delivered, and nothing for an \
+         exchange that did not complete — the same answer on this plane as on every other"
     );
     assert!(
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),

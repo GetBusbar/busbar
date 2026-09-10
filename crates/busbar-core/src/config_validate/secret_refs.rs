@@ -174,6 +174,8 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // `CandidatePoolCfg` grows a field that holds a `SecretRef`.
         tool_pools: _,
         agent_pools: _,
+        // The fee schedule carries figures, never a credential.
+        tariff: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();

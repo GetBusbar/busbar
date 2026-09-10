@@ -162,6 +162,9 @@ impl PlaneMeta for McpPlane {
     // part-way through its stream contradicts a first frame that already said otherwise, and that
     // contradiction is the kernel's to settle, not this plane's to hide.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    /// A TOOL CALL IS THE SERVER'S WORK, and this plane is not the server. It relays a call to the
+    /// tool host that answers it, so a call with no destination reached nothing and bought nothing.
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
 

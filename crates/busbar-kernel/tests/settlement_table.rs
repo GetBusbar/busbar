@@ -10,8 +10,8 @@ use busbar_caps::OriginKind;
 use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_amount, DisputePolicy, Evidence,
-    FeeEvidence, FinishClass, StatusAt, StatusClass,
+    charge, requests_drawn, requests_settled, settle_amount, DisputePolicy, Evidence, FeeEvidence,
+    FinishClass, StatusAt, StatusClass, TariffCell,
 };
 
 fn live_end() -> Outcome {
@@ -207,8 +207,22 @@ fn no_row_ever_resolves_upward() {
 
 // ── the fee ──────────────────────────────────────────────────────────────────────────────────────
 
+/// **THE TRANSACTION COUNT AND THE MARK, UNDER THE DEPLOYMENT'S DEFAULT SCHEDULE.**
+///
+/// Every case below asks what one exchange costs, so every case is driven through the one site a
+/// tariff is applied at, with the cell a node that has configured nothing is charged under. The
+/// entry is read separately, by the cases that are about the door.
+fn transaction_fee(evidence: &FeeEvidence) -> (u32, PostingFlags) {
+    let charged = charge(evidence, &TariffCell::default());
+    (charged.transaction, charged.flags)
+}
+
 fn billable() -> FeeEvidence {
     FeeEvidence {
+        // A billable exchange happened inside a visit, and the kernel's exit is what writes that
+        // fact on. These cases are about the exchange; the door has cases of its own below.
+        admitted: true,
+        chargeable_local: false,
         client_open_or_one_shot: true,
         selected_upstream: true,
         relayed_first_response_frame: true,
@@ -220,7 +234,7 @@ fn billable() -> FeeEvidence {
 
 #[test]
 fn the_fee_posts_once_on_a_relayed_success() {
-    assert_eq!(fee_count(&billable()), (1, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&billable()), (1, PostingFlags::NONE));
 }
 
 #[test]
@@ -229,7 +243,7 @@ fn a_provider_push_posts_no_fee() {
         client_open_or_one_shot: false,
         ..billable()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&evidence), (0, PostingFlags::NONE));
 }
 
 #[test]
@@ -238,7 +252,7 @@ fn a_unit_that_never_relayed_a_response_frame_posts_no_fee() {
         relayed_first_response_frame: false,
         ..billable()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&evidence), (0, PostingFlags::NONE));
 }
 
 #[test]
@@ -248,7 +262,7 @@ fn a_non_success_status_posts_no_fee() {
         finish: Some(FinishClass::Error),
         ..billable()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&evidence), (0, PostingFlags::NONE));
 }
 
 #[test]
@@ -259,14 +273,14 @@ fn with_no_transport_status_the_planes_finish_decides_alone() {
         ..billable()
     };
     // A partial answer is still an answer: only an error finish posts nothing.
-    assert_eq!(fee_count(&evidence), (1, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&evidence), (1, PostingFlags::NONE));
 
     let errored = FeeEvidence {
         status: None,
         finish: Some(FinishClass::Error),
         ..billable()
     };
-    assert_eq!(fee_count(&errored), (0, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&errored), (0, PostingFlags::NONE));
 }
 
 #[test]
@@ -278,7 +292,7 @@ fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
         finish: Some(FinishClass::Partial),
         ..billable()
     };
-    assert_eq!(fee_count(&no_trailer), (0, PostingFlags::NONE));
+    assert_eq!(transaction_fee(&no_trailer), (0, PostingFlags::NONE));
 
     // The plane says the answer was whole against a status that never arrived. That is the second
     // source disagreeing with the first, so it is the lower figure and a dispute.
@@ -289,7 +303,7 @@ fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
         ..billable()
     };
     assert_eq!(
-        fee_count(&claiming_complete),
+        transaction_fee(&claiming_complete),
         (0, PostingFlags::METER_DISPUTED)
     );
 
@@ -300,7 +314,7 @@ fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
             status: Some(StatusClass::Success),
             ..billable()
         };
-        assert_eq!(fee_count(&arrived), (1, PostingFlags::NONE));
+        assert_eq!(transaction_fee(&arrived), (1, PostingFlags::NONE));
     }
 }
 
@@ -796,10 +810,29 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
         } else {
             PostingFlags::NONE
         };
+        // THE TABLE IS WRITTEN UNDER THE PREVIOUS RELEASE'S DISPUTE RULE, and stays that way on
+        // purpose: it is the exhaustive map of what the evidence MEANS, and the map is only useful
+        // if one schedule is holding still across all seventy-five rows. What the shipped default
+        // does to it is one row, checked below, and a reader can see exactly which one.
+        let previous_release = TariffCell {
+            dispute_policy: DisputePolicy::Full,
+            ..TariffCell::default()
+        };
+        let under_previous = charge(&evidence, &previous_release);
         assert_eq!(
-            fee_count(&evidence),
+            (under_previous.transaction, under_previous.flags),
             (fee, expected),
             "at {status_at:?} / {status:?} / {finish:?}"
+        );
+        // The shipped default differs on exactly the contradicted rows, and there it charges no
+        // transaction. Everywhere else the two schedules answer the same, because everywhere else
+        // there is no contradiction for a dispute policy to have an opinion about.
+        let under_default = charge(&evidence, &TariffCell::default());
+        let contradicted = expected == PostingFlags::METER_DISPUTED && fee == 1;
+        assert_eq!(
+            (under_default.transaction, under_default.flags),
+            (if contradicted { 0 } else { fee }, expected),
+            "the shipped default at {status_at:?} / {status:?} / {finish:?}"
         );
         // The three preconditions dominate the whole table: fail any one and the row posts nothing,
         // undisputed, whatever the evidence says.
@@ -818,7 +851,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             },
         ] {
             assert_eq!(
-                fee_count(&ineligible),
+                transaction_fee(&ineligible),
                 (0, PostingFlags::NONE),
                 "ineligible at {status_at:?} / {status:?} / {finish:?}"
             );
@@ -832,7 +865,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
 #[test]
 fn the_upstream_leg_of_the_fee_is_the_destination_kinds_answer() {
     let posts = |dest: DestinationFacts| {
-        fee_count(&FeeEvidence {
+        transaction_fee(&FeeEvidence {
             selected_upstream: dest.is_upstream_kind(),
             ..billable()
         })
@@ -900,12 +933,13 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
 /// plane that is not telling the truth about its own finish — and the fee cannot wait to find out
 /// which.
 ///
-/// The rule is the one the previous release already billed by, stated here as a rule rather than
-/// left implicit in six providers' worth of stream handling: **the fee is decided at the first
-/// frame the client actually saw, and no later abort reverses it.** A response that was good at the
-/// moment it started was a response. What the contradiction changes is not the count — it is that
-/// the posting is MARKED, so a plane whose finishes routinely disagree with its own wire shows up
-/// on the disputes report instead of quietly billing like everyone else.
+/// The rule is the deployment's, stated as a rule rather than left implicit in six providers'
+/// worth of stream handling: **what a half-happened exchange costs is a pricing decision, and the
+/// schedule the unit is charged under is what answers it.** The previous release answered it one
+/// way for every deployment, at the first frame the client actually saw; that answer is still
+/// available, by name, and it is no longer the only one. What the contradiction changes under all
+/// of them is that the posting is MARKED, so a plane whose finishes routinely disagree with its own
+/// wire shows up on the disputes report instead of quietly billing like everyone else.
 ///
 /// The other direction is the same rule and a different answer: a status that says the request
 /// failed, against a plane claiming a whole answer, posts NOTHING. The client saw a failure; a
@@ -915,9 +949,12 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
 /// site — a pricing decision somebody makes on purpose — and not a structural gap that has to be
 /// found first.
 #[test]
-fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
+fn a_contradicted_fee_is_decided_by_the_schedule_the_unit_is_charged_under() {
     for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
-        // The client saw an answered request; the plane says it ended badly. Billed, and disputed.
+        // The client saw an answered request; the plane says it ended badly. Under the SHIPPED
+        // schedule the exchange did not complete, so no transaction is charged and what was
+        // delivered is; under the previous release's rule the good first frame decided and the
+        // transaction was charged. Both mark the posting, and which one is in force is a knob.
         let died_after_a_good_frame = FeeEvidence {
             status_at: Some(at),
             status: Some(StatusClass::Success),
@@ -925,10 +962,27 @@ fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
             ..billable()
         };
         assert_eq!(
-            fee_count(&died_after_a_good_frame),
-            (1, PostingFlags::METER_DISPUTED),
-            "a stream that dies halfway through a good response was still a good response at the \
-             moment it started, on every transport that reports a status at all"
+            transaction_fee(&died_after_a_good_frame),
+            (0, PostingFlags::METER_DISPUTED),
+            "the shipped schedule charges the visit and what was delivered, and nothing for an \
+             exchange that did not complete — on every transport that reports a status at all"
+        );
+        assert!(
+            charge(&died_after_a_good_frame, &TariffCell::default()).units_allowed,
+            "the customer received something and pays for it; a policy that refunded the delivery \
+             would be `entry_only`, which is a choice and not the default"
+        );
+        assert_eq!(
+            charge(
+                &died_after_a_good_frame,
+                &TariffCell {
+                    dispute_policy: DisputePolicy::Full,
+                    ..TariffCell::default()
+                }
+            )
+            .transaction,
+            1,
+            "a deployment that wants the previous release's rule back names it and has it"
         );
 
         // The client saw a failure; the plane claims a whole answer. Not billed, and disputed.
@@ -945,7 +999,7 @@ fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
                     ..billable()
                 };
                 assert_eq!(
-                    fee_count(&claiming_over_a_failure),
+                    transaction_fee(&claiming_over_a_failure),
                     (0, PostingFlags::METER_DISPUTED),
                     "a plane cannot bill over the top of a failure the client was handed"
                 );
@@ -975,7 +1029,7 @@ fn a_plane_that_declares_no_status_leg_is_decided_by_its_finish_alone() {
         };
         let expected = u32::from(finish != FinishClass::Error);
         assert_eq!(
-            fee_count(&no_leg),
+            transaction_fee(&no_leg),
             (expected, PostingFlags::NONE),
             "no second reading exists, so there is nothing to contradict and nothing to dispute"
         );
@@ -993,33 +1047,126 @@ fn a_plane_that_declares_no_status_leg_is_decided_by_its_finish_alone() {
 /// fee costs is a pricing decision and a pricing decision that can only be observed by running the
 /// thing that uses it is a pricing decision nobody can quote.
 #[test]
-fn the_dispute_policy_is_a_value_whose_default_is_the_frame_the_client_saw() {
+fn the_dispute_policy_is_a_value_whose_default_is_the_visit_and_what_was_delivered() {
     assert_eq!(
         DisputePolicy::default(),
-        DisputePolicy::TheFrameTheClientSaw,
-        "the shipped default is the rule the recorded corpus was billed under; changing it is a \
-         pricing decision somebody makes on purpose, and this line is where they see it"
+        DisputePolicy::EntryPlusUnits,
+        "the shipped default charges the visit and the units the customer actually received, and \
+         nothing for the exchange that did not complete; it is the only one of the three under \
+         which the same fault costs the same money on every dialect, and this line is where a \
+         deployment changing it sees that it has"
     );
 
-    // The two readings, both ways round, under all three variants.
+    // The two readings, both ways round, under all three variants. What the readings SAY changes
+    // nothing except under `Full`: the other two are answers about the money, not about the wire.
     for (status_says_answered, finish_says_answered) in [(true, false), (false, true)] {
         assert_eq!(
-            DisputePolicy::TheFrameTheClientSaw.decide(status_says_answered, finish_says_answered),
-            (
-                u32::from(status_says_answered),
-                PostingFlags::METER_DISPUTED
-            ),
+            DisputePolicy::EntryOnly.decide(status_says_answered, finish_says_answered),
+            (0, false),
+            "the visit only: no transaction, and not the units either"
         );
         assert_eq!(
-            DisputePolicy::ThePlanesFinish.decide(status_says_answered, finish_says_answered),
-            (
-                u32::from(finish_says_answered),
-                PostingFlags::METER_DISPUTED
-            ),
+            DisputePolicy::EntryPlusUnits.decide(status_says_answered, finish_says_answered),
+            (0, true),
+            "the visit and what was delivered, whichever reading was the optimistic one"
         );
         assert_eq!(
-            DisputePolicy::NeitherReading.decide(status_says_answered, finish_says_answered),
-            (0, PostingFlags::METER_DISPUTED),
+            DisputePolicy::Full.decide(status_says_answered, finish_says_answered),
+            (u32::from(status_says_answered), true),
+            "everything, as though the exchange had completed: the previous release's rule"
+        );
+    }
+}
+
+/// **THE UNIFORM RULE, OVER THE FAULT THAT EXPOSED IT.**
+///
+/// A stream cut after a good head is one fault. Under the previous release's rule it cost the
+/// transaction fee on every dialect, and the units on whichever dialect's partial frame happened to
+/// carry a locatable usage figure — which is an accident of the wire format, not a decision anybody
+/// made. The default replaces it with one answer: the customer pays for what was delivered.
+///
+/// Driven over both orders of the contradiction, because a fault that reads one way on one dialect
+/// and the other way on the next must still cost the same.
+#[test]
+fn one_fault_costs_the_same_under_the_default_whichever_way_the_readings_contradict() {
+    let mut answers = std::collections::BTreeSet::new();
+    for (status, finish) in [
+        (StatusClass::Success, FinishClass::Error),
+        (StatusClass::ServerError, FinishClass::Complete),
+    ] {
+        let contradicted = FeeEvidence {
+            status_at: Some(StatusAt::FirstFrame),
+            status: Some(status),
+            finish: Some(finish),
+            ..billable()
+        };
+        let charged = charge(&contradicted, &TariffCell::default());
+        answers.insert((charged.transaction, charged.units_allowed));
+        assert_eq!(charged.flags, PostingFlags::METER_DISPUTED);
+    }
+    assert_eq!(
+        answers.len(),
+        1,
+        "the default charges one fault one way; two answers here is the non-uniformity coming back"
+    );
+    assert_eq!(answers.into_iter().next(), Some((0, true)));
+}
+
+/// **THE VISIT IS CHARGED AT THE DOOR, AND ONLY THE DOOR DECIDES IT.**
+///
+/// Four cases over two facts: a deployment that charges for the door and one that does not, each
+/// against a unit that was admitted and one that was not. The entry count moves with both and with
+/// nothing else — not with the status, not with the finish, not with whether an upstream was ever
+/// selected — because a visit is what the caller was let in for, not what came of it.
+#[test]
+fn the_entry_fee_counts_the_visit_and_nothing_about_the_exchange() {
+    for enabled in [false, true] {
+        let tariff = TariffCell {
+            entry_fee_enabled: enabled,
+            ..TariffCell::default()
+        };
+        for admitted in [false, true] {
+            for refused_shape in [
+                FeeEvidence {
+                    admitted,
+                    ..billable()
+                },
+                FeeEvidence {
+                    admitted,
+                    selected_upstream: false,
+                    relayed_first_response_frame: false,
+                    status: None,
+                    finish: Some(FinishClass::Error),
+                    ..billable()
+                },
+            ] {
+                assert_eq!(
+                    charge(&refused_shape, &tariff).entry,
+                    u32::from(enabled && admitted),
+                    "the door's count, and the door's count only"
+                );
+            }
+        }
+    }
+}
+
+/// **A VISIT WITH NO TRANSACTION CHARGES NOTHING FOR THE TRANSACTION.**
+///
+/// A unit that selected no upstream, on a plane that declares no chargeable local service, held no
+/// exchange — whatever shape the document the caller was handed took. There is no arm that bills
+/// one, and a plane that declares its local work chargeable is the only way the count comes back.
+#[test]
+fn a_visit_with_no_destination_charges_no_transaction_unless_the_plane_declared_one() {
+    for chargeable_local in [false, true] {
+        let local_only = FeeEvidence {
+            selected_upstream: false,
+            chargeable_local,
+            ..billable()
+        };
+        assert_eq!(
+            charge(&local_only, &TariffCell::default()).transaction,
+            u32::from(chargeable_local),
+            "the declaration is the whole of the difference"
         );
     }
 }
@@ -1049,9 +1196,12 @@ fn the_fee_applies_the_dispute_policy_and_the_policy_alone() {
                     finish: Some(finish),
                     ..billable()
                 };
+                let (count, units) =
+                    DisputePolicy::default().decide(status_says_answered, finish_says_answered);
+                let charged = charge(&contradicted, &TariffCell::default());
                 assert_eq!(
-                    fee_count(&contradicted),
-                    DisputePolicy::default().decide(status_says_answered, finish_says_answered),
+                    (charged.transaction, charged.units_allowed, charged.flags),
+                    (count, units, PostingFlags::METER_DISPUTED),
                 );
             }
         }

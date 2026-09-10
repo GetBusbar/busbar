@@ -212,5 +212,9 @@ impl PlaneMeta for LlmPlane {
     // frame the client SAW is the status leg, and the plane's own finish is the second reading the
     // kernel reconciles it against.
     const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    /// A COMPLETION IS SOMEBODY ELSE'S WORK. This plane's whole job is to carry a caller's turn to
+    /// a model and the model's answer back; there is no unit of it the node performs on its own
+    /// account, and a completion with no upstream is a completion that did not happen.
+    const CHARGEABLE_LOCAL: bool = false;
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
