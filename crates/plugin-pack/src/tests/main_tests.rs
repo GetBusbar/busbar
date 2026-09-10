@@ -841,7 +841,7 @@ fn x_busbar_ref_passes_pack_time_validation_untouched() {
 /// it, since `literal` was never a `SecretRef` shape to begin with.
 #[test]
 fn derives_secret_ref_oneof_from_the_shared_type() {
-    let oneof = busbar_secret_ref::oneof_schema();
+    let oneof = busbar_secret_grammar::oneof_schema();
     let alts = oneof["oneOf"].as_array().expect("oneOf array");
     assert_eq!(
         alts.len(),
@@ -849,7 +849,7 @@ fn derives_secret_ref_oneof_from_the_shared_type() {
         "the `none` scalar + module/settings + env + file, nothing else"
     );
     // Sanity: the derived fragment is a valid JSON Schema (full round-trip fidelity against
-    // SecretRef::deserialize is asserted in busbar-secret-ref's own test suite, the single
+    // SecretRef::deserialize is asserted in busbar-secret-grammar's own test suite, the single
     // source of truth for the derivation). No `type` constraint of our own: one alternative is a
     // scalar (`none`), the rest are objects.
     let mut full = serde_json::json!({});

@@ -14,7 +14,7 @@ async-trait = { workspace = true }
 # The SecretRef reference type ({ module, settings } + env/file sugar). Re-exported so a plane crate
 # (or any consumer that already depends on busbar-api) can name `busbar_api::SecretRef` without a
 # separate path dep. This crate depends only on serde/serde_json, so no dependency cycle.
-busbar-secret-ref = { path = "../secret-ref" }
+busbar-secret-grammar = { path = "../secret-grammar" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }

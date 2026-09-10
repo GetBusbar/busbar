@@ -409,7 +409,7 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
- "busbar-secret-ref",
+ "busbar-secret-grammar",
  "busbar-store-memory",
  "busbar-substrate",
  "bytes",
@@ -454,7 +454,7 @@ name = "busbar-api"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "busbar-secret-ref",
+ "busbar-secret-grammar",
  "hex",
  "serde",
  "serde_json",
@@ -524,7 +524,7 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
- "busbar-secret-ref",
+ "busbar-secret-grammar",
  "busbar-store-example-plugin",
  "busbar-store-memory",
  "busbar-substrate",
@@ -702,7 +702,7 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
- "busbar-secret-ref",
+ "busbar-secret-grammar",
  "busbar-store-memory",
  "busbar-substrate",
  "bytes",
@@ -828,7 +828,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
- "busbar-secret-ref",
+ "busbar-secret-grammar",
  "getrandom 0.3.4",
  "hex",
  "jsonschema",
@@ -878,7 +878,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-secret-ref"
+name = "busbar-secret-grammar"
 version = "1.5.0"
 dependencies = [
  "jsonschema",

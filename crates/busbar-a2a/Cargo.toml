@@ -152,5 +152,5 @@ rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
-busbar-secret-ref = { path = "../secret-ref" }
+busbar-secret-grammar = { path = "../secret-grammar" }
 busbar-plugin-sign = { path = "../plugin-sign" }

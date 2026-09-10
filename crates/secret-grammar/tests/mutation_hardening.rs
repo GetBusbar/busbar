@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening additions for `busbar-secret-ref`, born of a `cargo mutants` pass over the
-//! crate (`cargo mutants -p busbar-secret-ref`): that pass found ZERO surviving mutants (13
+//! Mutation-hardening additions for `busbar-secret-grammar`, born of a `cargo mutants` pass over the
+//! crate (`cargo mutants -p busbar-secret-grammar`): that pass found ZERO surviving mutants (13
 //! caught, 11 unviable/non-compiling) against the crate's existing suite in
 //! `src/tests/lib_tests.rs` — so nothing here is closing a mutation gap. This file instead locks
 //! in the one invariant the task explicitly requires regardless of mutation results: `SecretRef`
@@ -32,7 +32,7 @@
 //! No real defect was found: there is no code path where a `SecretRef` holds, and then echoes,
 //! actual secret material.
 
-use busbar_secret_ref::SecretRef;
+use busbar_secret_grammar::SecretRef;
 
 /// A `SecretRef` build from a distinctive "looks like a secret" string in its `settings` is
 /// EXPECTED to show that string in `Debug` — the string is a reference name (the env var to read,
