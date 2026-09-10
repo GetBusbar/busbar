@@ -2327,3 +2327,11 @@ teller|exit-terminal	PASS	script teller-exit-terminal.sh: status 0
 teller|meter-row	PASS	script teller-meter-row.sh: status 0	
 teller|route-failover	PASS	script teller-route-failover.sh: status 0	
 teller|verify-refusal	PASS	script teller-verify-refusal.sh: status 0	
+voice.mount|VOICE-M-streams-section|validate	PASS	exit 1; 	
+voice.mount|gemini	PASS	HTTP 404; usage Δ {}	
+voice.mount|gemini-live-declared	PASS	HTTP 404; usage Δ {}	
+voice.mount|realtime-root	PASS	HTTP 404; usage Δ {}	
+voice.mount|sessions-mint	PASS	HTTP 404; usage Δ {}	
+voice.mount|sideband	PASS	HTTP 404; usage Δ {}	
+voice.mount|telephony	PASS	HTTP 404; usage Δ {}	
+voice.mount|twilio-declared	PASS	HTTP 404; usage Δ {}	
