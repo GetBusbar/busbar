@@ -14,10 +14,12 @@ pub mod bounded;
 pub mod dest;
 pub mod error;
 pub mod grammar;
+pub mod hooks;
 pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod signal;
 pub mod spans;
 pub mod surface;
 pub mod transport;
@@ -62,7 +64,13 @@ pub use plane::{
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
+pub use hooks::{
+    BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
+    PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
+    TransformOutcome,
+};
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,

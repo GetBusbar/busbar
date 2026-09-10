@@ -18,21 +18,27 @@ pub struct RoutingRequest<'a> {
     /// decision to the request's eventual OUTCOME on the completion-tap notification, which carries
     /// the identical value for the same request.
     pub request_id: u64,
+    /// The pool the request resolved to.
     pub pool: &'a str,
+    /// The ingress dialect's wire name, as the plane that admitted the request reports it.
     pub ingress_protocol: &'a str,
     /// The model the caller asked for (may be a pool name or a member model), if any. RESERVED for
     /// the gate/rewrite hook projections — the shared webhook/socket wire omits it today, so it has
     /// no reader yet.
     pub requested_model: Option<&'a str>,
+    /// Number of messages on the request.
     pub message_count: usize,
     /// Number of tool definitions on the request. RESERVED for the hook seam (no reader yet).
     pub tool_count: usize,
+    /// Whether the request carries any tool definition.
     pub has_tools: bool,
     /// Sum of all text-block chars across system + messages. A v1 SIZE signal (NOT a token count).
     pub total_chars: usize,
     /// System-prompt text chars only. RESERVED for the hook seam (no reader yet).
     pub system_chars: usize,
+    /// The caller's output-token cap, if any.
     pub max_tokens: Option<u32>,
+    /// Whether the caller asked for a streamed reply.
     pub stream: bool,
     /// The request's prompt content — `Some` ONLY when the hook was granted `prompt: ro` or `rw`
     /// (default `no`). The default projection is shape-only; this is the operator-granted exception
@@ -132,6 +138,7 @@ impl std::fmt::Debug for CallerIdentity {
 pub struct Candidate<'a> {
     /// Index into the engine's lane table — the failover loop's lingua franca.
     pub idx: usize,
+    /// The member model this lane dispatches to.
     pub model: &'a str,
     /// Upstream provider name. Projected to the hook wire so a hook can implement a
     /// provider-preference strategy.
@@ -142,7 +149,9 @@ pub struct Candidate<'a> {
     /// Member context-window ceiling. Projected to the hook wire so a hook can route by context-fit.
     pub context_max: Option<usize>,
     // ── operator-declared member metadata (config) ───────────────────────────────────────────────
+    /// Operator-declared tier label, when configured.
     pub tier: Option<&'a str>,
+    /// Operator-declared cost per million tokens, when configured.
     pub cost_per_mtok: Option<f64>,
     /// Free-form operator tags. Projected to the hook wire (omitted when empty).
     pub tags: &'a [String],
@@ -201,6 +210,7 @@ pub struct BudgetBucketState {
 /// Read-only context a policy may consult beyond the request + candidates themselves.
 #[derive(Debug, Clone)]
 pub struct RoutingContext<'a> {
+    /// The pool the decision is for.
     pub pool: &'a str,
     /// Per-KEY governance budget remaining for this request, when known/plumbed. `None` when
     /// governance is disabled or per-key budget is not visible at the seam (v1 default).
@@ -239,12 +249,20 @@ pub enum RoutingDecision {
     /// this only via their fail-closed normalizer (status clamped to 4xx, message sanitized), and
     /// the forward seam RE-CLAMPS the status regardless — so no policy impl, shipped or future, can
     /// mint a 5xx, a success, or a header-injecting message through this path.
-    Reject { status: u16, message: String },
+    Reject {
+        /// The status code the caller receives (clamped to 4xx by the seam).
+        status: u16,
+        /// The sanitized message the caller receives.
+        message: String,
+    },
     /// RESTRICT the candidate set to members carrying ANY of these `tags` — a compliance gate ("only
     /// BAA-covered lanes"). Unlike `Prefer` (deprioritize-not-exclude), restrict EXCLUDES every
     /// non-matching member from the failover set entirely and persists across hops. An empty
     /// intersection is the gate's `on_empty` (default fail-closed reject), never allow-all.
-    Restrict { tags_any: Vec<String> },
+    Restrict {
+        /// A member survives when it carries ANY of these tags.
+        tags_any: Vec<String>,
+    },
 }
 
 impl RoutingDecision {
@@ -276,7 +294,9 @@ impl RoutingDecision {
 /// ORIGINAL body, never a corrupted one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RewriteReply {
+    /// The replacement message list, dialect-agnostic JSON.
     pub messages: Vec<serde_json::Value>,
+    /// The replacement tool list, dialect-agnostic JSON.
     pub tools: Vec<serde_json::Value>,
 }
 
@@ -291,7 +311,12 @@ pub enum TransformOutcome {
     /// Replace the request body (the rewrite arm; fail-closed parsed).
     Rewrite(RewriteReply),
     /// Reject the request outright — same clamped/sanitized semantics as a decide-path reject.
-    Reject { status: u16, message: String },
+    Reject {
+        /// The status code the caller receives (clamped to 4xx by the seam).
+        status: u16,
+        /// The sanitized message the caller receives.
+        message: String,
+    },
     /// No opinion / unsupported (proceed with the ORIGINAL body). A genuine "nothing to say".
     Abstain,
     /// The hook COULD NOT ANSWER: its own dependency failed, timed out, or it refuses to act on what
@@ -305,7 +330,10 @@ pub enum TransformOutcome {
     /// rewrite pass simply had no arm to carry it into.
     ///
     /// The message is for the operator's log. It must not carry request content.
-    Failed { message: String },
+    Failed {
+        /// The operator-facing reason; never request content.
+        message: String,
+    },
 }
 
 /// A hook's self-reported OBSERVED state — the `status` management reply (control plane): the
@@ -314,14 +342,16 @@ pub enum TransformOutcome {
 /// optional; a hook that doesn't implement `status` simply never produces one.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HookStatus {
+    /// The settings version the hook reports it is running.
     pub settings_version: Option<u64>,
     // settings-leak-lint: allow — NON-PROJECTION engine type. This struct derives no `Serialize`:
     // it is the parsed INBOUND `status` reply (the twin of `hooks::wire::StatusReply`, which
     // carries the same marker for the same reason), held so the engine can compare key names. The
-    // one admin read behind it, `GET /hooks/{name}/status`, serves `HookStatusView`, whose
+    // one control-plane read behind it, `GET /hooks/{name}/status`, serves `HookStatusView`, whose
     // `reported` side is `HookReportedStatus { settings_keys, settings_version }` — key names only,
-    // projected through `admin::v1::service::settings_keys`, with drift computed by
+    // projected through the control surface's `settings_keys`, with drift computed by
     // `hooks::settings_drift_keys`, which also compares names. No wire member carries this bag.
+    /// The settings the hook reports it is running (key names are what the engine compares).
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
     /// validates + bounds entries before exposing them.
@@ -361,7 +391,7 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         TransformOutcome::Abstain
     }
 
-    /// PUSH a settings map to the hook (`PATCH /admin/v1/hooks/{name}/settings`): send the
+    /// PUSH a settings map to the hook (the control surface's `PATCH .../hooks/{name}/settings`): send the
     /// `configure` message and wait for the ack, bounded by `budget`. `Ok(())` = the hook
     /// acknowledged (the caller commits); any error/nack/timeout = NOT committed. Default: this
     /// transport cannot be configured (in-process natives have no settings).
@@ -375,14 +405,14 @@ pub trait RoutingPolicy: Send + Sync + 'static {
         Err("this hook transport does not support configure".into())
     }
 
-    /// Ask the hook to DESCRIBE its settings schema (`GET /admin/v1/hooks/{name}/schema`).
+    /// Ask the hook to DESCRIBE its settings schema (the control surface's `GET .../hooks/{name}/schema`).
     /// `None` = the transport/hook doesn't answer describe. Proxied verbatim.
     async fn describe(&self, _budget: std::time::Duration) -> Option<serde_json::Value> {
         None
     }
 
     /// Ask the hook for its STATUS (observed settings + self-reported metrics — the control-plane
-    /// read behind `GET /api/v1/admin/hooks/{name}/status`). `None` = the transport/hook doesn't
+    /// read behind the control surface's `GET .../hooks/{name}/status`). `None` = the transport/hook doesn't
     /// answer (fail-open: never affects any request). Default: in-process natives have no status.
     async fn status(&self, _budget: std::time::Duration) -> Option<HookStatus> {
         None

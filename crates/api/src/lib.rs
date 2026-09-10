@@ -9,7 +9,8 @@
 //! - **auth** — the [`AuthModule`] trait and its verdict types ([`AuthOutcome`], [`Principal`]),
 //!   plus the constant-time credential primitives every module compares with.
 //! - **hooks** — the [`RoutingPolicy`] trait (decide/transform/notify + configure/describe) and
-//!   the read-only projections it is invoked with.
+//!   the read-only projections it is invoked with — owned by `busbar-contract` now and re-exported
+//!   here while this crate drains.
 //! - **store** — the [`Store`] trait a `db` plugin implements, plus the durable-store records
 //!   ([`VirtualKey`], [`UsageLedger`], [`CredentialMeta`], [`CredentialSecret`], …) it reads and
 //!   writes.
@@ -22,11 +23,9 @@
 
 mod auth;
 pub mod durable;
-mod hooks;
 pub mod operation;
 mod redacted;
 mod secret;
-mod signal;
 mod store;
 pub mod usage_migration;
 
@@ -38,7 +37,12 @@ pub use auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,
 };
-pub use hooks::{
+// THE HOOKS-KIND FACE IS THE CONTRACT'S (`busbar-contract::hooks` / `::signal`). This crate is
+// being deleted (Track 4); until the last reader of these paths is repointed it re-exports the
+// face verbatim so nothing compiles against two definitions of one trait. The drain line is the
+// reader: every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`, and
+// this block goes with the crate.
+pub use busbar_contract::{
     BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
@@ -51,7 +55,9 @@ pub use secret::{
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
 pub use busbar_secret_grammar::SecretRef;
-pub use signal::{Signal, SignalBag, SignalValue};
+// The signal catalog is the CONTRACT's now (it moved with the hooks-kind face); re-exported here
+// while busbar-api drains, so every reader keeps its spelling and resolves to one definition.
+pub use busbar_contract::{Signal, SignalBag, SignalValue};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,

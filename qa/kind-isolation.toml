@@ -3466,6 +3466,16 @@ why     = "busbar names busbar-voice: declared normal, optional in the shipped g
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
+from    = "busbar-api"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "the busbar-api drain (Track 4): each face of the retiring contract crate moves into busbar-contract first and busbar-api re-exports it until its last reader is repointed. PENDING_EDGES (api, contract) is that statement in the gate."
+why     = "busbar-api names busbar-contract: the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now and busbar-api re-exports it, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete busbar-api. Every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`; the re-export block and this row go with the crate."
+
+[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-a2a-codec"
 half    = "shipped"
