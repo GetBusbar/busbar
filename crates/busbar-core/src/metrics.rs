@@ -92,11 +92,15 @@ pub use busbar_substrate::metrics::{
     BILLING_TRUNCATED_TOTAL, HOOK_CONTENT_TRUNCATED_TOTAL, ROUTE_POLICY_REJECTIONS_TOTAL,
     ROUTE_POLICY_SELECTIONS_TOTAL, UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL,
 };
-// The maintenance drain and the retention decision are driven from PRODUCTION down in the substrate
-// (the maintenance thread and `HistogramSlot::record`); core names them only from the batteries that
-// pin the drain-on-a-timer and the three-state retention truth table, so the re-export is test-only.
+// The maintenance drain is driven by the composition root's maintenance-tick task, which reaches it
+// at this historical path off the `use busbar_core::{..., metrics, ...}` the root already carries —
+// so the tick's driver moving out of the substrate's detached thread costs the root no new reach
+// into a retiring crate. The retention decision is driven from PRODUCTION down in the substrate
+// (`HistogramSlot::record`); core names it only from the battery that pins the three-state truth
+// table, so that half of the re-export stays test-only.
+pub use busbar_substrate::metrics::drain_pending;
 #[cfg(test)]
-pub(crate) use busbar_substrate::metrics::{drain_pending, retaining, retaining_from};
+pub(crate) use busbar_substrate::metrics::{retaining, retaining_from};
 // The scrape-time gauge NAMES: `describe()` registers them down in the substrate and
 // `refresh_scrape_gauges`/`emit_lane_gauges` below emit them here, so this is a module-private
 // `use` — core's own surface gains nothing, exactly as when they were private consts here.

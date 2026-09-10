@@ -1196,7 +1196,12 @@ async fn run(data_workers: usize) {
     // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
     // the same lowering; discarding the error list here just avoids reporting it twice.
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    metrics::configure(
+    // The return is the MAINTENANCE TICK'S CADENCE — one rolling bucket of the operator's declared
+    // retention window — and `None` when the operator did not opt in. It is carried down to the
+    // shutdown broadcast below, where the tick's loop is spawned beside every other background task
+    // of this process. It used to be a detached OS thread inside the recorder install, with no way
+    // to stop it and no final fold.
+    let drain_cadence = metrics::configure(
         resolved_export
             .prometheus
             .as_ref()
@@ -1562,6 +1567,19 @@ async fn run(data_workers: usize) {
             gov,
             shutdown_tx.subscribe(),
         ));
+    }
+
+    // THE MAINTENANCE TICK. The drain that keeps a buffered observation from costing unbounded
+    // memory runs here, on the clock's own `maintenance_tick` decision and on the same shutdown
+    // broadcast as the flusher above, so the last interval before a stop is FOLDED and not dropped.
+    // Only when the operator opted in: with no recorder there is nothing to fold.
+    if let Some(cadence) = drain_cadence {
+        // Handle intentionally dropped, as the flusher's is: the loop returns on the broadcast.
+        std::mem::drop(tokio::spawn(root::metrics_drain::run(
+            cadence,
+            shutdown_tx.subscribe(),
+            metrics::drain_pending,
+        )));
     }
 
     // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
