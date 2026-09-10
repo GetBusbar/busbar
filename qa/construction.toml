@@ -163,8 +163,8 @@ because = "busbar_contract::error -- the one structured error every plugin kind 
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 205
-because = "The same seam seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14606, unmoved): the plugin structured-error seam lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the +206 here is the caps/contract +206 by arithmetic."
+by = 189
+because = "The same seam seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units: the plugin structured-error seam lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the seam alone is the caps/contract +206 by arithmetic. On THIS branch the union rose 23465 -> 23654 = 189: the contract pair +205 (seam +206, face +20, Unit-counts deletion -21) and the units -16 (the unit-auth ResolvedKey/KeyVerifier/RevocationView deletion, 14606 -> 14590), and a `by` is what the tree actually rose by."
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
