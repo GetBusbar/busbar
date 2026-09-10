@@ -96,6 +96,10 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 # and this line is the root spending it. `src/root/dialects.rs` is the only file that names the
 # crate; every other line of the boot iterates what the table there declares.
 busbar-plane-llm-openai = { path = "../busbar-plane-llm-openai" }
+# The second dialect, and the line that shows what adding one costs: a dependency and a row. It is
+# a sibling of the line above, not a feature of it — one vendor's two request surfaces are two
+# dialects, and the boot seals them the same way it would seal two vendors'.
+busbar-plane-llm-responses = { path = "../busbar-plane-llm-responses" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }
