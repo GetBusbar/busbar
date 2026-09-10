@@ -772,6 +772,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-llm-anthropic"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-llm",
+]
+
+[[package]]
+name = "busbar-plane-llm-gemini"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-llm",
+]
+
+[[package]]
 name = "busbar-plane-llm-openai"
 version = "1.6.0"
 dependencies = [
