@@ -103,6 +103,17 @@ pub trait Diagnostics {
     /// Called at most once per distinct unrecognized value in a process's lifetime (dedup is the
     /// caller's job in the reference `WarnOnceDiagnostics`, mirroring 1.5.5's warn-once-per-value).
     fn unrecognized_error_map_value(&self, value: &str);
+
+    /// Called when a destination is hard-downed, with what the upstream said — 1.5.5's
+    /// `diag_warn!(LANE_HARD_DOWN_ALL_CELLS, ...)`
+    /// (`busbar-core/src/store/in_memory/availability.rs:545-551`).
+    ///
+    /// Defaulted to nothing, because a sink wired for the `error_map` diagnostic alone is still a
+    /// valid sink and this must not break it. A hard-down is recoverable — a sticky cooldown, not a
+    /// death — so this is a diagnostic and never an error return.
+    fn destination_hard_down(&self, reason: &str) {
+        let _ = reason;
+    }
 }
 
 /// A [`Diagnostics`] sink that does nothing. The default when a caller has not wired one in.

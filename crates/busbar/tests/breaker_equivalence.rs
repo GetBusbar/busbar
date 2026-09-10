@@ -879,25 +879,28 @@ mod shim {
 
     /// The lane-global availability the best-of fold produces.
     ///
-    /// GAP (difference 8): there is no fold — the unit answers per cell only.
     pub fn lane_availability(
-        _u: &BreakerUnit,
-        _dest: DestinationId,
-        _now: u64,
+        u: &BreakerUnit,
+        dest: DestinationId,
+        now: u64,
     ) -> Option<super::Avail> {
-        None
+        Some(super::from_unit(u.lane_state(dest, now)))
     }
 
     /// Record a client fault — the caller's own bad input, counted apart from upstream errors.
-    ///
-    /// GAP (difference 8): no unit verb.
-    pub fn client_fault(_u: &BreakerUnit, _dest: DestinationId) {}
+    pub fn client_fault(u: &BreakerUnit, dest: DestinationId) {
+        u.record_client_fault(dest);
+    }
 
     /// The lane-global counters.
-    ///
-    /// GAP (difference 8): the unit carries none of them.
-    pub fn lane_counters(_u: &BreakerUnit, _dest: DestinationId) -> Option<Counters> {
-        None
+    pub fn lane_counters(u: &BreakerUnit, dest: DestinationId) -> Option<Counters> {
+        let c = u.destination_counters(dest);
+        Some(Counters {
+            ok: c.ok,
+            err: c.err,
+            client_fault: c.client_fault,
+            trips: c.trips,
+        })
     }
 
     /// The unit's own name for a legacy `Unavailable` variant. Asked by NAME, so the two taxonomies
@@ -924,16 +927,12 @@ mod shim {
     }
 
     /// Hard-down every cell for the destination, recording why.
-    ///
-    /// GAP (difference 10): `hard_down_all` takes no reason.
-    pub fn hard_down_all(u: &BreakerUnit, dest: DestinationId, _reason: &str, now: u64) -> bool {
-        u.hard_down_all(dest, now)
+    pub fn hard_down_all(u: &BreakerUnit, dest: DestinationId, reason: &str, now: u64) -> bool {
+        u.hard_down_all_with_reason(dest, reason, now)
     }
 
     /// Why this destination was hard-downed.
-    ///
-    /// GAP (difference 10): nothing recorded it.
-    pub fn hard_down_reason(_u: &BreakerUnit, _dest: DestinationId) -> Option<String> {
-        None
+    pub fn hard_down_reason(u: &BreakerUnit, dest: DestinationId) -> Option<String> {
+        u.hard_down_reason(dest)
     }
 }

@@ -40,6 +40,7 @@ pub mod journal;
 pub mod port;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
@@ -245,6 +246,52 @@ pub trait Breaker: sealed::Sealed {
     ) -> LaneState;
 }
 
+/// The destination-GLOBAL counters, as `/stats` renders them — 1.5.5's
+/// `LaneState.{ok, err, client_fault, trips, last_trip_at}`.
+///
+/// Destination-global and not per cell: they are what an operator reads about an UPSTREAM, and a
+/// destination fronted by three pools is still one upstream. The per-cell error count stays where
+/// it is (`BreakerCell::err_count`), a per-pool diagnostic and a different question.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DestinationCounters {
+    /// Successes recorded against this destination.
+    pub ok: u64,
+    /// Upstream failures recorded against this destination.
+    pub err: u64,
+    /// The CALLER's own faults — counted apart, because they say nothing about the upstream.
+    pub client_fault: u64,
+    /// Monotonic count of genuine Closed→Open trips.
+    pub trips: u64,
+    /// When the most recent trip happened, in Unix seconds. `0` means never.
+    pub last_trip_at: u64,
+}
+
+#[derive(Default)]
+struct CounterCell {
+    ok: AtomicU64,
+    err: AtomicU64,
+    client_fault: AtomicU64,
+    trips: AtomicU64,
+    last_trip_at: AtomicU64,
+}
+
+impl CounterCell {
+    fn snapshot(&self) -> DestinationCounters {
+        DestinationCounters {
+            ok: self.ok.load(Ordering::Relaxed),
+            err: self.err.load(Ordering::Relaxed),
+            client_fault: self.client_fault.load(Ordering::Relaxed),
+            trips: self.trips.load(Ordering::Relaxed),
+            last_trip_at: self.last_trip_at.load(Ordering::Relaxed),
+        }
+    }
+
+    fn trip(&self, now: u64) {
+        self.trips.fetch_add(1, Ordering::Relaxed);
+        self.last_trip_at.store(now, Ordering::Relaxed);
+    }
+}
+
 /// Every `(pool, destination)` cell, nested pool-first. The default cell (direct/ad-hoc routes)
 /// lives under pool `""`, exactly as 1.5.5's `LaneState`-embedded default cell did.
 ///
@@ -274,6 +321,10 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::
     /// Which destinations an operator has declared administratively down (see [`Self::set_dead`]).
     /// Absent is alive, which is 1.5.5's default for a lane nobody said anything about.
     dead: RwLock<HashMap<DestinationId, bool>>,
+    /// Each destination's own counters (see [`DestinationCounters`]).
+    counters: RwLock<HashMap<DestinationId, Arc<CounterCell>>>,
+    /// What an upstream last said when it was hard-downed (see [`Self::hard_down_all_with_reason`]).
+    hard_down_reasons: RwLock<HashMap<DestinationId, String>>,
     /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
     /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
     /// 1.5.5's "empty error_map is valid".
@@ -333,6 +384,8 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
             dead: RwLock::new(HashMap::new()),
+            counters: RwLock::new(HashMap::new()),
+            hard_down_reasons: RwLock::new(HashMap::new()),
             error_maps: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -512,7 +565,131 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         for (_, cell) in cells {
             let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
         }
+        // The same seam a transient trip counts at: one LOGICAL trip, counted once, so a
+        // persistently dead destination does not re-count on every recovery-probe cycle.
+        if default_was_fresh {
+            self.counters(destination).trip(now);
+        }
         default_was_fresh
+    }
+
+    /// [`Self::hard_down_all`], recording WHY — 1.5.5's `record_hard_down_all_cells(lane, reason)`
+    /// (`busbar-core/src/store/in_memory/availability.rs:535-593`), which records the reason
+    /// lane-wide and emits an operator diagnostic before it trips anything.
+    ///
+    /// The reason is the whole value of the event to whoever has to explain it. "This destination
+    /// went dark" is a fact an operator can already see; "and here is what it said when it went" is
+    /// the part that exists only at this instant, and discarding it at the call site — as this unit
+    /// did — leaves the one question the page will ask with no answer anywhere.
+    ///
+    /// [`Self::hard_down_all`] leaves any recorded reason alone rather than blanking it, because
+    /// the classifier holds the reason and `Outcome::HardDown` does not carry one across yet; that
+    /// widening belongs to the landing that serves the route step, not to this one.
+    pub fn hard_down_all_with_reason(
+        &self,
+        destination: DestinationId,
+        reason: &str,
+        now: u64,
+    ) -> bool {
+        self.hard_down_reasons
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(destination, reason.to_string());
+        self.diagnostics.destination_hard_down(reason);
+        self.hard_down_all(destination, now)
+    }
+
+    /// What the upstream said the last time this destination was hard-downed, if anything did.
+    #[must_use]
+    pub fn hard_down_reason(&self, destination: DestinationId) -> Option<String> {
+        self.hard_down_reasons
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .cloned()
+    }
+
+    fn counters(&self, destination: DestinationId) -> Arc<CounterCell> {
+        if let Some(c) = self
+            .counters
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+        {
+            return c.clone();
+        }
+        self.counters
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(destination)
+            .or_default()
+            .clone()
+    }
+
+    /// This destination's counters (see [`DestinationCounters`]).
+    #[must_use]
+    pub fn destination_counters(&self, destination: DestinationId) -> DestinationCounters {
+        self.counters(destination).snapshot()
+    }
+
+    /// Record one CLIENT fault against this destination — 1.5.5's `record_client_fault`
+    /// (`availability.rs:479`). It touches no breaker state and never the error counter: the
+    /// caller's own bad input says nothing about the upstream's health, and folding it into `err`
+    /// would trip destinations on the strength of requests they answered correctly.
+    pub fn record_client_fault(&self, destination: DestinationId) {
+        self.counters(destination)
+            .client_fault
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The destination-GLOBAL availability: the BEST verdict across the cells traffic is actually
+    /// routed through, folded into one — 1.5.5's `lane_breaker_verdict` (`availability.rs:14-43`)
+    /// under `classify_lane`, which is what `/stats` renders from.
+    ///
+    /// Best wins, so the aggregate matches "would this destination serve at all": `Ready` beats
+    /// `ProbeWinnable` beats `HalfOpen` beats `Open`, and among Open cells the SOONEST deadline is
+    /// kept, because that is when the destination could next serve. The cell set is 1.5.5's own: the
+    /// per-pool cells where there are any, else the default cell, which IS the routed cell for a
+    /// destination reached only directly. Read-only — no probe CAS, no Open→HalfOpen transition.
+    ///
+    /// Capacity is not folded in, exactly as it is not folded into [`Breaker::state`]: this unit
+    /// holds no permits, and the caller that peeks them for [`Self::try_admit_gated`] is the one
+    /// that can answer that axis. Breaker-first either way, as 1.5.5 is.
+    #[must_use]
+    pub fn lane_state(&self, destination: DestinationId, now: u64) -> LaneState {
+        if self.is_dead(destination) {
+            return LaneState::Dead;
+        }
+        if self.budget_exhausted(destination) {
+            return LaneState::BudgetExhausted;
+        }
+        // Rank two verdicts, keeping the more available and — among Opens — the sooner.
+        fn better(a: BreakerVerdict, b: BreakerVerdict) -> BreakerVerdict {
+            fn rank(v: BreakerVerdict) -> u8 {
+                match v {
+                    BreakerVerdict::Ready => 3,
+                    BreakerVerdict::ProbeWinnable => 2,
+                    BreakerVerdict::HalfOpen => 1,
+                    BreakerVerdict::Open { .. } => 0,
+                }
+            }
+            match (a, b) {
+                (BreakerVerdict::Open { until: ua }, BreakerVerdict::Open { until: ub }) => {
+                    BreakerVerdict::Open { until: ua.min(ub) }
+                }
+                _ if rank(a) >= rank(b) => a,
+                _ => b,
+            }
+        }
+        let cells = self.cells_for(destination);
+        let folded = cells
+            .iter()
+            .filter(|(pool, _)| !pool.is_empty())
+            .map(|(_, cell)| cell.verdict(now))
+            .reduce(better)
+            // A destination with no named pool: the default cell IS the routed cell.
+            .unwrap_or_else(|| self.cell("", destination).verdict(now));
+        lane_state_from_verdict(folded)
     }
 
     /// EVERY existing cell naming this destination — the default `""` cell first, then each named
@@ -577,6 +754,11 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             // probe between the close above and this push still gets its terminal record.
             recovered |= cell.record_success(now);
         }
+        // EXACTLY ONCE per probe, not once per cell: a destination in N pools would otherwise count
+        // one probe as N successes and dilute its own error rate by its pool count.
+        self.counters(destination)
+            .ok
+            .fetch_add(1, Ordering::Relaxed);
         if recovered {
             self.journal.record(ProbeEvent::Succeeded {
                 pool: String::new(),
@@ -606,6 +788,10 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
         retry_after: Option<u64>,
     ) {
+        // The mirror of the success fan-out: one destination-global failure per PROBE.
+        self.counters(destination)
+            .err
+            .fetch_add(1, Ordering::Relaxed);
         for (pool, cell) in self.cells_for(destination) {
             let cfg = resolve_cfg(&pool);
             let _ = cell.record_failure(
@@ -814,6 +1000,10 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         _token: &UnitToken<Route>,
     ) -> bool {
         match outcome {
+            // Deliberately touches no counter: a client fault is counted through
+            // `record_client_fault`, which the caller reaches directly because only the caller can
+            // tell a client fault from a context-length answer, and 1.5.5 counts the one not the
+            // other.
             Outcome::RecordNothing => false,
             Outcome::HardDown => self.hard_down_all(destination, now),
             Outcome::Success => {
@@ -825,6 +1015,9 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                 // CAS left this call closing a HalfOpen cell while believing it had been Closed,
                 // and the won probe got no terminal record at all.
                 let closed = cell.record_success(now);
+                self.counters(destination)
+                    .ok
+                    .fetch_add(1, Ordering::Relaxed);
                 if closed {
                     self.journal.record(ProbeEvent::Succeeded {
                         pool: pool.to_string(),
@@ -847,6 +1040,15 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                     retry_after,
                     self.max_honored_retry_after_secs,
                 );
+                // ONE bump per recorded failure, whichever cell it landed in. 1.5.5 reaches the
+                // same count by two routes — the default cell IS the lane, so its own `err` is the
+                // lane's, and a named pool's cell has its own — and the guard at
+                // `store/in_memory/mod.rs:797` exists so the default path is not counted twice.
+                let counters = self.counters(destination);
+                counters.err.fetch_add(1, Ordering::Relaxed);
+                if effect.tripped() {
+                    counters.trip(now);
+                }
                 if effect.reopened() {
                     let cooldown_until = match cell.state() {
                         CellState::Open { until } => until,
