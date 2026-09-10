@@ -4087,3 +4087,30 @@ fn content_block_start_carries_seed_fields() {
         "a thinking content_block_start must seed `thinking:\"\"`: {out}"
     );
 }
+
+// ── GOLDEN PARITY CELL: the (class -> `error.type` word) column this dialect renders, pinned as
+//    bytes. The nine classes are spelled out by hand rather than walked off the enum on purpose:
+//    the cell must survive the class enum changing owner (it is one-owner'd in the contract) and
+//    say the same nine words on both sides, so it names nothing about where the enum lives.
+#[test]
+fn status_word_golden_anthropic() {
+    let golden: [(StatusClass, &str); 9] = [
+        (StatusClass::RateLimit, "rate_limit_error"),
+        (StatusClass::Overloaded, "overloaded_error"),
+        (StatusClass::ServerError, "api_error"),
+        (StatusClass::Timeout, "timeout_error"),
+        (StatusClass::Network, "api_error"),
+        (StatusClass::Auth, "authentication_error"),
+        (StatusClass::Billing, "billing_error"),
+        (StatusClass::ClientError, "invalid_request_error"),
+        (StatusClass::ContextLength, "invalid_request_error"),
+    ];
+    for (class, word) in golden {
+        let err = CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        };
+        assert_eq!(stream_error_type(&err), word, "class={class:?}");
+    }
+}

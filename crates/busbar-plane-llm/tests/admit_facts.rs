@@ -15,7 +15,6 @@ use busbar_contract::plane::{Ingress, Plane};
 use busbar_contract::unit::AdmitFacts;
 use busbar_contract::wire::FrameCursor;
 use busbar_plane_llm::dialect::{self, Dialect};
-use busbar_plane_llm::LlmPlane;
 
 /// The ceiling every fixture below asks for, so one expected value serves every row.
 const CEILING: &[u8] = b"64";
@@ -90,7 +89,7 @@ fn admitting(
     request: &Request,
     check: impl FnOnce(&Dialect, &busbar_contract::unit::Unit<'_>, &AdmitFacts),
 ) {
-    let plane = LlmPlane::new(&[]);
+    let plane = harness::plane(&[]);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(request.dialect), &[]);
@@ -107,7 +106,12 @@ fn admitting(
         ),
     };
     let unit = harness::unit(draft.op, draft.body_ir, draft.facts);
-    let d = dialect::dialect(request.dialect).expect("the fixture names a declared dialect");
+    // ASKED OF THE PLANE, not of the plane's own table. A dialect this crate carved out answers
+    // through the registry and not through `dialect::DIALECTS`, and a case that consulted only the
+    // closed table would be green for the five that have not moved and red for every one that has.
+    let d = plane
+        .locations(request.dialect)
+        .expect("the fixture names a dialect this plane speaks");
     let facts = plane.admit(&unit, &ctx);
     check(d, &unit, &facts);
 }

@@ -344,6 +344,8 @@ dependencies = [
  "busbar-plane-a2a",
  "busbar-plane-admin",
  "busbar-plane-llm",
+ "busbar-plane-llm-openai",
+ "busbar-plane-llm-responses",
  "busbar-plane-mcp",
  "busbar-plane-voice",
  "busbar-plugin-loader",
@@ -769,6 +771,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-llm-openai"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-llm",
+]
+
+[[package]]
+name = "busbar-plane-llm-responses"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-llm",
+]
+
+[[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
@@ -864,6 +882,7 @@ name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "serde",
  "serde_json",
 ]
@@ -964,6 +983,7 @@ name = "busbar-substrate-values"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin",
  "busbar-timing",
  "bytes",

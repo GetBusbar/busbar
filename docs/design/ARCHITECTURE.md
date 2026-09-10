@@ -68,22 +68,38 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
-  non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
-  `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
-  compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
-  in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3684`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. **The plugin structured-error seam** (owner ruling, 2026-09-09;
-  `busbar_contract::error`) is inside that number: every plugin kind's face fails with ONE
-  `PluginError { class, code, params, developer_message, advisory }` — `class` the contract's
-  CLOSED ten-class taxonomy the kernel keys status, retry, audit severity and client visibility
-  off; `code` the plugin's own stable namespaced identifier; `params` structured values;
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,802** **of plugin-visible SURFACE**
+  (3,800 as `scripts/loc-surface.py` counts it, 3,802 as `loc-ceilings:caps-contract` does; the two
+  differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
+  2026-09-09, and each face below is pinned at its MEASURED size with zero slack. (1) THE DIALECT
+  KIND'S CONTRACT FACE, 51 lines: `Kind::{Dialect, Control}` with their sealed markers and
+  `DIALECT_ABI`/`CONTROL_ABI` (the two kinds §1.1 names crates for and the closed set could not
+  spell), `DialectMeta` (the dialect row's declaration column of PLUGIN-TREE.md §1, constant for
+  constant) and `Dialect` (the kind's four codec methods at the span-`Ir` seam) — none of them a
+  plane's or a dialect's convenience. (2) THE UPSTREAM STATUS TABLE, 65 lines:
+  `busbar_contract::upstream::{StatusClass, Disposition}`, the nine-way reading of an upstream's
+  answer a dialect reads off vendor bytes and renders back in its own words, and the four-way
+  disposition the egress walk and the breaker act on — one owner as a table (rows are data; token,
+  label and disposition are columns; one match site each), where three crates had each declared
+  it, because a unit may name only the contract and the capabilities and a plane or dialect only
+  the contract, so this is the one crate both sides can point at. (3) **THE PLUGIN STRUCTURED-ERROR
+  SEAM** (owner ruling, 2026-09-09; `busbar_contract::error`), 206 lines: every plugin kind's face
+  fails with ONE `PluginError { class, code, params, developer_message, advisory }` — `class` the
+  contract's CLOSED ten-class taxonomy the kernel keys status, retry, audit severity and client
+  visibility off; `code` the plugin's own stable namespaced identifier; `params` structured values;
   `developer_message` the plugin's rendered text for the log only; `advisory` hints — and each
   plugin ships a CATALOG AS DATA (`Catalog`: code → template per locale, a default locale every
   code is templated in, a missing locale falling back to the default and never to the developer
   message) beside its claims, which the kernel reads and never calls into. The per-kind
-  `StoreError`/`SecretError` enums are gone; the surface measured 3479 → 3684 for it. Two crates carry their own surface ceilings beside it, because
+  `StoreError`/`SecretError` enums are gone. A future face raises this figure by its own declared,
+  measured amount (`[gate.ceiling_raises]` in `qa/construction.toml`) and amends this sentence;
+  nothing else moves
+  it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
+  `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
+  pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
+  tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
+  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3800`), which the construction
+  gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
@@ -543,7 +559,7 @@ Type index (definitions in `busbar-contract`): `ArrivalRecord { source, port, al
 Option<CertFacts>, transport_chain }` · `Refusal { step, reason (closed code), retry_after, stream:
 Option<StreamId>, correlates: Option<CorrelationRef> }` (client-rendered reasons are opaque codes) ·
 `Unit0Trigger`, `HandshakeTrigger`, `Handoff` · `SelectorForm` · `FinishClass { Complete, TurnComplete,
-Partial, Error }` · `OpClassId`, `AdminVerbId`, `MeterClassId`, `RecordSchemaId`, `TransportId` (a registry id, never key material — `TransportKeyHandle` is the key) ·
+Partial, Error }` · `OpClassId`, `AdminVerbId`, `MeterClassId`, `RecordSchemaId` (a transport is named by the `&'static str` key on `Plugin`; its key material is the opaque `TransportKeyHandle`, and there is no interned id between them) ·
 `PlaneFacts`, `ContentFacts`, `HookFacts { permutation, restrict, veto, rewrite, tap }`, `IrPatch`, `HookView` ·
 `CredentialLocator { narrowing: Option<SchemeAlt>, from_session: bool }` · `CredentialFacts { principal,
 issuer, expiry, session_bindable }` · `Challenge { bytes, state, rounds_left }` · `ScopeFacts
@@ -1140,10 +1156,10 @@ export plugins; every hook/export content access is an `Access` entry.
 | `tcp-line` | line-delimited duplex | `tcp` | true / false / first line | `tls`; no `HANDSHAKE_TRIGGER` — the plane opens its handshake units | non-HTTP litmus |
 | `tls` | framed over TLS | `tcp` | inherits / true | — | keys via the transport-key unit |
 | `dtls` | datagrams over DTLS | `udp` | true / true / first handshake | — | |
-| `http` | request; response frames | `tcp`/`tls` | false / n/a / none | — | no session; carries the per-frame `StatusClass` at `FirstFrame` (the fee's kernel-derived leg); the egress client is 1.5.5's verbatim — `redirect: Policy::none()`, `connect_timeout` 10 s, `tcp_keepalive` 60 s, `tcp_nodelay`, the HTTP/2 keep-alive and adaptive-window settings, `pool_max_idle_per_host` / `pool_idle_timeout`, `advanced.upstream_http1_only` / `upstream_h2_prior_knowledge` (PB-56); active health probers per `health.mode` run as a kernel Tick (PB-55) |
-| `sse` | request + N response frames | `http` | false / n/a / none | — | inherits `http`'s per-frame `StatusClass` at `FirstFrame` (composed transports inherit the lower layer's status leg; `ws` frames after the upgrade carry none, so the plane's `finish` is the sole source there — stated) |
+| `http` | request; response frames | `tcp`/`tls` | false / n/a / none | — | no session; carries the per-frame `WireStatusClass` at `FirstFrame` (the fee's kernel-derived leg); the egress client is 1.5.5's verbatim — `redirect: Policy::none()`, `connect_timeout` 10 s, `tcp_keepalive` 60 s, `tcp_nodelay`, the HTTP/2 keep-alive and adaptive-window settings, `pool_max_idle_per_host` / `pool_idle_timeout`, `advanced.upstream_http1_only` / `upstream_h2_prior_knowledge` (PB-56); active health probers per `health.mode` run as a kernel Tick (PB-55) |
+| `sse` | request + N response frames | `http` | false / n/a / none | — | inherits `http`'s per-frame `WireStatusClass` at `FirstFrame` (composed transports inherit the lower layer's status leg; `ws` frames after the upgrade carry none, so the plane's `finish` is the sole source there — stated) |
 | `ws` | duplex message frames | `http` over `tls` | true / true / the upgrade | — | |
-| `grpc` | unary + multiplexed streams | `http` | true (streams) / true / first message | — | carries the per-frame `StatusClass` at `Terminal` (the `grpc-status` trailer) |
+| `grpc` | unary + multiplexed streams | `http` | true (streams) / true / first message | — | carries the per-frame `WireStatusClass` at `Terminal` (the `grpc-status` trailer) |
 | `stdio` | duplex framed | — | true / true / first message | — | |
 | `udp` | datagrams | — | true / false / first datagram | — | flow = open unit; decode failure is `Discard` |
 | `webrtc` | SDP over `http` (one-shot) with **handoff** to RTP media + SCTP data over `dtls`/`udp`, bound by the DTLS fingerprint in `TransportFacts`; ICE endpoints allow-listed; `DECODES_PAYLOAD = true` for RTP (units from timestamp deltas ÷ clock rate) | `http` → `dtls` | true / true after handoff / the SDP offer | — | a sans-I/O WebRTC crate (str0m-class) under `deny` |
@@ -1699,9 +1715,37 @@ about a kind boundary, this register and that spec win.)*
   service/method descriptor, refusal→wire-code mapping) are specified kind-agnostically in
   `PLUGIN-TREE.md` §5; none of them names a transport or a plane.
 
-**Proposal awaiting the owner (not a decision):** the admin "plane" is a codec for the admin wire
-whose only destination is core (`busbar-unit-verbs` executes; scope always checked; admin listener
-only) — renaming it "admin surface" would make that plain.
+### Decisions 2026-09-08 (owner) — THE CONTROL KIND, AND THE TWO KINDS THE CONTRACT COULD NOT NAME
+
+*(Answers the proposal left open above, and closes the conformance finding that the contract's
+closed kind set had eight members while both design documents said nine.)*
+
+- **CONTROL is a full plugin KIND.** The admin "plane" is not a plane: it is an UNMETERED SERVED
+  SURFACE, and the metering is the whole of the split. A control surface answers on the control path
+  only — verified by the auth kind, admitted, audited, answered — declares its ROUTES AS DATA the way
+  a plane declares claims, owns its own request and response bodies, reads node state through
+  contract traits, changes node state only through the verbs unit, mints credentials only through the
+  auth unit's signer, and carries its own UI data. It NEVER names money, fee, rate or posting
+  vocabulary (the `plane-no-money` list, verbatim), reaches an upstream, appears in a plane's step
+  list or is called by one (no plane→control and no control→plane edge), depends on a transport,
+  plane, dialect, unit or another control crate, owns key material or process-global state, or serves
+  a route absent from its claim table. First members: `busbar-control-admin` (`busbar-plane-admin`
+  until R7 renames it) and `busbar-control-oauth2`. The AUTH kind is unchanged — a verifier answers a
+  question about a credential, a control surface serves a route.
+- **`Kind::Control` and `Kind::Dialect` are members of the contract's closed kind set,** with their
+  sealed markers, `CONTROL_ABI` and `DIALECT_ABI`, and `dialect::Dialect` + `DialectMeta` as the
+  dialect kind's ONE trait. Before this the set had eight members and both documents said the tree had
+  nine kinds, so the only kind a dialect or a control crate could DECLARE was `Plane` — the one kind
+  each is explicitly not — and the isolation gate would then have checked it against the plane
+  skeleton. The gate now reads the contract's variants and cross-checks each crate's declaration
+  against the kind its NAME resolves to (per push) and against the kind it is REGISTERED as (ship).
+- **The dialect trait carries no associated IR type.** The kernel holds every plugin behind a
+  pointer, so the trait must be object-safe; the seam is the span IR both halves already share, and
+  the semantic IR stays owned by the plane.
+- **`loc-ceilings:caps-contract` is raised once, 3500 → 3650,** to pay for the dialect trait, after a
+  measurement of every `pub` item in `busbar-contract` and `busbar-caps` found one unclaimed item
+  (`ids::TransportId`, deleted) and found every other zero-implementor item claimed by a queued branch
+  or by a dated migration row. The next kind's trait is paid for out of surface or by a second ruling.
 
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 

@@ -18,7 +18,7 @@ use busbar_contract::plane::{Plane, PlaneSessionState, Progress};
 use busbar_contract::unit::FinishClass;
 use busbar_contract::wire::FrameCursor;
 use busbar_plane_llm::codec::LlmSessionState;
-use busbar_plane_llm::{LlmPlane, Upstream};
+use busbar_plane_llm::Upstream;
 
 /// One configured upstream, speaking the dialect whose stream carries state between frames.
 const UPSTREAMS: &[Upstream] = &[Upstream {
@@ -49,7 +49,7 @@ fn event(name: &str, data: &str) -> Vec<u8> {
 /// naturally settles as a partial one.
 #[test]
 fn a_stop_reason_buffered_on_one_frame_is_read_on_the_next() {
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("bedrock"), &[]);
@@ -99,7 +99,7 @@ fn a_stop_reason_buffered_on_one_frame_is_read_on_the_next() {
 /// seen no opening frame, so each delta is dropped as an orphan and the client is written nothing.
 #[test]
 fn the_deltas_after_the_opening_frame_are_written_to_the_client() {
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     // The client speaks a different dialect from the upstream, so the frames are rewritten rather

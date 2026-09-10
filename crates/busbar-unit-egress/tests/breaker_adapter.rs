@@ -14,7 +14,7 @@
 //! is gone: both units now name `busbar_contract::DestinationId`, so there is nothing to narrow and
 //! no width at which a locator could be truncated on the way between them.
 //! - The upstream status: this crate's `UpstreamStatus` carries the transport's own COARSE
-//!   `busbar_contract_transport::wire::StatusClass` (`Success` / `ClientError` / `ServerError` / `Other`) as a
+//!   `busbar_contract_transport::wire::WireStatusClass` (`Success` / `ClientError` / `ServerError` / `Other`) as a
 //!   fallback leg for when no numeric `code` is known; the breaker unit takes no dependency on
 //!   `busbar-contract` at all (its `Cargo.toml` allows only `busbar-caps`), so its own
 //!   `port::UpstreamStatus` carries its own `port::UpstreamCode`. Both sides carry the NUMBERING
@@ -23,8 +23,8 @@
 
 use busbar_caps::{KernelSeal, Route, UnitToken};
 use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::WireStatus;
+use busbar_contract_transport::wire::WireStatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit};
 use busbar_unit_egress::ports::{
@@ -59,22 +59,12 @@ impl BreakerAdapter {
     /// non-arbitrary HTTP number for either, and the breaker's own `code: None` fallback (record
     /// nothing, relay as-is) is the same answer 1.5.5 gave an unexpected 2xx/3xx reaching the error
     /// path.
-    fn fold_class(class: Option<StatusClass>) -> Option<u16> {
+    fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
         match class {
-            Some(StatusClass::ClientError) => Some(400),
-            Some(StatusClass::ServerError) => Some(500),
-            Some(StatusClass::Success) | Some(StatusClass::Other) | None => None,
+            Some(WireStatusClass::ClientError) => Some(400),
+            Some(WireStatusClass::ServerError) => Some(500),
+            Some(WireStatusClass::Success) | Some(WireStatusClass::Other) | None => None,
         }
-    }
-}
-
-fn map_disposition(d: busbar_unit_breaker::classify::Disposition) -> Disposition {
-    use busbar_unit_breaker::classify::Disposition as BD;
-    match d {
-        BD::ClientFault => Disposition::ClientFault,
-        BD::TransientUpstream => Disposition::TransientUpstream,
-        BD::HardDown => Disposition::HardDown,
-        BD::ContextLength => Disposition::ContextLength,
     }
 }
 
@@ -187,7 +177,7 @@ impl Breaker for BreakerAdapter {
             },
         );
         Classified {
-            disposition: map_disposition(classified.disposition),
+            disposition: classified.disposition,
             outcome: map_outcome_from_breaker(classified.outcome),
             label: classified.label,
         }
@@ -269,7 +259,7 @@ fn classify_falls_back_to_the_coarse_transport_class_when_no_code_is_known() {
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
-            class: Some(StatusClass::ServerError),
+            class: Some(WireStatusClass::ServerError),
             code: None,
             retry_after: Some(5),
         },
@@ -321,7 +311,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(StatusClass::ClientError),
+            class: Some(WireStatusClass::ClientError),
             code: Some(WireStatus::new(status_ns::HTTP, 403)),
             retry_after: None,
         },
@@ -361,7 +351,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(StatusClass::ClientError),
+            class: Some(WireStatusClass::ClientError),
             code: Some(WireStatus::new(status_ns::HTTP, 429)),
             retry_after: Some(7),
         },
@@ -395,7 +385,7 @@ fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
     let out = breaker.classify(
         destination,
         UpstreamStatus {
-            class: Some(StatusClass::ServerError),
+            class: Some(WireStatusClass::ServerError),
             code: Some(WireStatus::new(status_ns::HTTP, 503)),
             retry_after: None,
         },

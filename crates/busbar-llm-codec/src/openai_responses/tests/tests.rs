@@ -7708,3 +7708,29 @@ fn responses_url_citation_survives_a_responses_round_trip() {
         "{citations:?}"
     );
 }
+
+// ── GOLDEN PARITY CELL: the (class -> `error.code` word) column this dialect renders, pinned as
+//    bytes; the nine classes are spelled by hand so the cell says the same thing whichever crate
+//    owns the enum.
+#[test]
+fn status_word_golden_responses() {
+    let golden: [(StatusClass, &str); 9] = [
+        (StatusClass::RateLimit, "rate_limit_error"),
+        (StatusClass::Overloaded, "server_error"),
+        (StatusClass::ServerError, "server_error"),
+        (StatusClass::Timeout, "server_error"),
+        (StatusClass::Network, "server_error"),
+        (StatusClass::Auth, "authentication_error"),
+        (StatusClass::Billing, "insufficient_quota"),
+        (StatusClass::ClientError, "invalid_request_error"),
+        (StatusClass::ContextLength, "invalid_request_error"),
+    ];
+    for (class, word) in golden {
+        let err = CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        };
+        assert_eq!(responses_error_code(&err), word, "class={class:?}");
+    }
+}

@@ -12,7 +12,7 @@
 pub use busbar_contract_transport::wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, StatusClass, TransportError, Unit0Trigger, WireStatus,
+    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };
 
 use crate::bounded::{ArenaBytes, BoundedVec, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};

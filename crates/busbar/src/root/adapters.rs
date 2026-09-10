@@ -46,14 +46,12 @@
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
 use busbar_caps::{Route, UnitToken};
-use busbar_contract::StatusClass;
+use busbar_contract::WireStatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
-use busbar_unit_egress::ports::{
-    Admit, Breaker, Classified, Disposition, Outcome, Unavailable, UpstreamStatus,
-};
+use busbar_unit_egress::ports::{Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -195,11 +193,11 @@ impl BreakerAdapter {
     /// Success and the catch-all fold to nothing: there is no non-arbitrary number for either, and
     /// the breaker's own "no code" answer — record nothing, relay as-is — is exactly what the
     /// previous release did with an unexpected success reaching the error path.
-    fn fold_class(class: Option<StatusClass>) -> Option<u16> {
+    fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
         match class {
-            Some(StatusClass::ClientError) => Some(400),
-            Some(StatusClass::ServerError) => Some(500),
-            Some(StatusClass::Success | StatusClass::Other) | None => None,
+            Some(WireStatusClass::ClientError) => Some(400),
+            Some(WireStatusClass::ServerError) => Some(500),
+            Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
         }
     }
 
@@ -252,18 +250,6 @@ fn from_breaker_outcome(outcome: busbar_unit_breaker::Outcome) -> Outcome {
         B::Transient { retry_after } => Outcome::Transient { retry_after },
         B::HardDown => Outcome::HardDown,
         B::RecordNothing => Outcome::RecordNothing,
-    }
-}
-
-fn from_breaker_disposition(
-    disposition: busbar_unit_breaker::classify::Disposition,
-) -> Disposition {
-    use busbar_unit_breaker::classify::Disposition as B;
-    match disposition {
-        B::ClientFault => Disposition::ClientFault,
-        B::TransientUpstream => Disposition::TransientUpstream,
-        B::HardDown => Disposition::HardDown,
-        B::ContextLength => Disposition::ContextLength,
     }
 }
 
@@ -337,7 +323,7 @@ impl Breaker for BreakerAdapter {
             },
         );
         Classified {
-            disposition: from_breaker_disposition(classified.disposition),
+            disposition: classified.disposition,
             outcome: from_breaker_outcome(classified.outcome),
             label: classified.label,
         }

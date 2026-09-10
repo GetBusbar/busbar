@@ -14,6 +14,7 @@ use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
 };
+use busbar_contract::dialect::{Dialect, DialectMeta};
 use busbar_contract::grammar::ArrivalLocation;
 use busbar_contract::ids::{
     AdminVerbId, LaneId, MeterClassDecl, OpClassId, PrincipalId, RecordSchemaId, SchemeKey,
@@ -43,6 +44,7 @@ use busbar_contract::{ErrorClass, PluginError};
 // ── the fixture per kind: each of these only compiles if the trait is object-safe ─────────────
 
 const _PLANE: Option<&dyn Plane> = None;
+const _DIALECT: Option<&dyn Dialect> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _TRANSPORT: Option<&dyn Transport> = None;
 const _AUTH: Option<&dyn AuthScheme> = None;
@@ -513,18 +515,111 @@ impl AuthScheme for FixtureAuth {
     }
 }
 
+// ── a dialect, implemented in full ────────────────────────────────────────────────────────────
+
+/// The smallest dialect that answers every question its plane asks of it.
+///
+/// It is implemented in full for the reason the plane and the transport are: the assertion above
+/// only says the trait can be held behind a pointer, and what a new kind most needs proven is that
+/// its signatures are IMPLEMENTABLE — four codec methods, the same borrow story as the plane's, and
+/// no associated type, because an associated type is what would have made it unusable behind the
+/// pointer the registry holds it by.
+struct FixtureDialect;
+
+impl Plugin for FixtureDialect {
+    fn key(&self) -> &'static str {
+        <Self as DialectMeta>::KEY
+    }
+    fn kind(&self) -> Kind {
+        Kind::Dialect
+    }
+    fn abi(&self) -> AbiVersion {
+        busbar_contract::DIALECT_ABI
+    }
+}
+
+impl DialectMeta for FixtureDialect {
+    const KEY: &'static str = "fixture-dialect";
+    const PLANE: &'static str = "fixture";
+    const CLAIMS: &'static [busbar_contract::grammar::Claim] = &[];
+    const LOCATIONS: &'static [ArrivalLocation] = &[];
+    const SCHEME_ALT: Option<busbar_contract::ids::SchemeAlt> = None;
+    const EGRESS_SCHEME: Option<&'static str> = None;
+    const STREAMING_CONTENT_TYPE: Option<&'static str> = None;
+    const HEAD_KEYS: &'static [&'static str] = &[];
+    const VERBS: &'static [&'static str] = &[];
+    const METER_LOCATORS: &'static [&'static str] = &[];
+}
+
+impl Dialect for FixtureDialect {
+    fn decode_ingress<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Ingress<'u>, Decode> {
+        match frames.next_frame() {
+            None => Ok(Ingress::NeedMore),
+            Some(_) => Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            }),
+        }
+    }
+
+    fn encode_egress<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<EgressBody<'u>, Encode> {
+        Ok(EgressBody {
+            envelope: busbar_contract::wire::TransportEnvelope::default(),
+            body: ArenaBytes::new(&[]),
+            auth: SchemeKey::new("none"),
+        })
+    }
+
+    fn decode_response<'u>(
+        &self,
+        _frames: &mut FrameCursor<'u>,
+        _dest: &VerifiedDestination,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<Progress<'u>, Decode> {
+        Ok(Progress::Discard {
+            reason: DiscardCode::Unsupported,
+        })
+    }
+
+    fn encode_response<'u>(
+        &self,
+        _r: &Response<'u>,
+        _st: Option<&mut PlaneSessionState>,
+        _ctx: &Ctx<'u>,
+    ) -> Result<ArenaBytes<'u>, Encode> {
+        Ok(ArenaBytes::new(&[]))
+    }
+}
+
 // ── the tests ─────────────────────────────────────────────────────────────────────────────────
 
 /// Every kind can be held behind a pointer, which is how the registry holds one.
 #[test]
 fn every_kind_is_object_safe() {
     let plane: &dyn Plane = &FixturePlane;
+    let dialect: &dyn Dialect = &FixtureDialect;
     let session_plane: &dyn SessionPlane = &FixturePlane;
     let transport: &dyn Transport = &FixtureTransport;
     let hook: &dyn Hook = &FixtureHook;
     let auth: &dyn AuthScheme = &FixtureAuth;
 
     assert_eq!(plane.kind(), Kind::Plane);
+    // The kind a dialect declares is its OWN, not its plane's — the whole reason the variant
+    // exists — and the plane it translates for is a declared key, never a linked type.
+    assert_eq!(dialect.kind(), Kind::Dialect);
+    assert_eq!(<FixtureDialect as DialectMeta>::PLANE, "fixture");
+    assert_eq!(dialect.abi(), busbar_contract::DIALECT_ABI);
     assert_eq!(session_plane.key(), "fixture");
     assert_eq!(transport.kind(), Kind::Transport);
     assert_eq!(hook.on_failure(), OnFailure::Closed);

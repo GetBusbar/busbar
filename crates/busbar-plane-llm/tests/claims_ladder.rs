@@ -4,24 +4,60 @@
 //! not a compile error and not a crash — it is a request quietly read as the wrong dialect. So the
 //! order is asserted, rung by rung, and every rung is asserted to route what it claims to route.
 
+mod harness;
+
 use busbar_contract::grammar::Selector;
 use busbar_contract::plane::PlaneMeta;
-use busbar_plane_llm::claims::{dialect_for, CLAIMS, LADDER};
+use busbar_plane_llm::claims::{CLAIMS, LADDER};
 use busbar_plane_llm::LlmPlane;
 
-/// The ladder has fourteen rungs, numbered without a gap.
+/// THE LADDER THE PLANE WALKS IS EVERY SOURCE'S, AND IT IS STILL ONE THROUGH FOURTEEN.
+///
+/// This case used to read `LADDER` — the constant in this crate — because every rung was in it.
+/// Rungs 7 and 14 are one carved-out dialect's now and rung 10 is a second one's, declared in
+/// `busbar-plane-llm-openai` and `busbar-plane-llm-responses` and merged back in at registration,
+/// so reading the constant would assert about part of the ladder and call the gaps it found
+/// correct.
+///
+/// So the subject is the WALK, which is the thing that actually decides a request. It is asserted
+/// to be exactly what it was before the split: ascending, and one through fourteen without a gap.
+/// A carved-out rung that came back at the wrong number, or did not come back at all, fails here.
 #[test]
-fn the_ladder_has_fourteen_rungs_in_ascending_order() {
+fn the_walked_ladder_is_fourteen_rungs_in_ascending_order() {
+    let plane = harness::plane(&[]);
+    let mut seen: Vec<u16> = Vec::new();
+    plane.walk_ladder(|c| seen.push(c.rung));
+    assert!(
+        seen.windows(2).all(|w| w[0] <= w[1]),
+        "the merged ladder is not in rung order: {seen:?}"
+    );
+    seen.dedup();
+    assert_eq!(
+        seen,
+        (1..=14).collect::<Vec<u16>>(),
+        "the walked rungs are not one through fourteen without a gap"
+    );
+}
+
+/// THE RUNGS THIS CRATE STILL DECLARES ASCEND, AND THE GAPS ARE THE CARVED-OUT DIALECTS'.
+///
+/// The plane's own constant is no longer contiguous, and that is the split rather than a defect —
+/// but "no longer contiguous" is not a licence for any shape at all. Ascending is still required,
+/// because the merge only walks an ordered source correctly, and a gap is only allowed where a
+/// dialect crate took the rung.
+#[test]
+fn the_planes_own_rungs_ascend_and_gap_only_where_a_dialect_left() {
     let mut seen: Vec<u16> = LADDER.iter().map(|c| c.rung).collect();
     assert!(
         seen.windows(2).all(|w| w[0] <= w[1]),
         "the claims are not in rung order: {seen:?}"
     );
     seen.dedup();
+    let missing: Vec<u16> = (1..=14).filter(|r| !seen.contains(r)).collect();
     assert_eq!(
-        seen,
-        (1..=14).collect::<Vec<u16>>(),
-        "the rungs are not one through fourteen without a gap"
+        missing,
+        vec![7, 10, 14],
+        "the rungs this crate no longer declares are not the ones a dialect crate took"
     );
 }
 
@@ -65,8 +101,14 @@ type LadderCase = (
 ///
 /// The cases are the rungs themselves: one request per rung, built to satisfy that rung and nothing
 /// tighter, with the dialect the rung names as the expected answer.
+///
+/// ASKED OF THE PLANE, not of this crate's own constant: three of the rungs below are a registered
+/// dialect's, and the answer a request gets is the merged walk's answer. That the answers are
+/// UNCHANGED — every one of the twenty-six requests routes where it routed before the split — is
+/// the case that says the carve-out moved a declaration and not a behaviour.
 #[test]
 fn each_rung_routes_its_own_dialect() {
+    let plane = harness::plane(&[]);
     let cases: &[LadderCase] = &[
         (
             "/anything",
@@ -108,10 +150,12 @@ fn each_rung_routes_its_own_dialect() {
         // plane's one-shot operations, and this plane's audio claim is the path it leaves behind.
         ("/v1/audio/translations", &[], "openai"),
     ];
+    let mut walked = 0usize;
+    plane.walk_ladder(|_| walked += 1);
     assert_eq!(
         cases.len(),
-        LADDER.len(),
-        "every claim needs a request that exercises it"
+        walked,
+        "every claim the plane walks needs a request that exercises it"
     );
     for (path, headers, expected) in cases {
         let header = |name: &str| {
@@ -121,7 +165,7 @@ fn each_rung_routes_its_own_dialect() {
                 .map(|(_, v)| *v)
         };
         assert_eq!(
-            dialect_for(path, &header),
+            plane.dialect_for(path, &header),
             Some(*expected),
             "the request target {path} with headers {headers:?} routed to the wrong dialect"
         );
@@ -131,10 +175,11 @@ fn each_rung_routes_its_own_dialect() {
 /// A request that matches no rung names no dialect.
 #[test]
 fn an_unclaimed_request_names_no_dialect() {
+    let plane = harness::plane(&[]);
     let none = |_: &str| None;
-    assert_eq!(dialect_for("/healthz", &none), None);
-    assert_eq!(dialect_for("/", &none), None);
-    assert_eq!(dialect_for("/api/status", &none), None);
+    assert_eq!(plane.dialect_for("/healthz", &none), None);
+    assert_eq!(plane.dialect_for("/", &none), None);
+    assert_eq!(plane.dialect_for("/api/status", &none), None);
 }
 
 /// A header rung beats a path rung, whichever way the request is built.
@@ -144,9 +189,10 @@ fn an_unclaimed_request_names_no_dialect() {
 /// evidence than a path shape several dialects share.
 #[test]
 fn a_header_rung_wins_over_a_path_rung() {
+    let plane = harness::plane(&[]);
     let goog = |name: &str| (name == "x-goog-api-key").then_some("k");
     assert_eq!(
-        dialect_for("/v1/chat/completions", &goog),
+        plane.dialect_for("/v1/chat/completions", &goog),
         Some("gemini"),
         "a vendor key header must outrank a shared path shape"
     );
@@ -185,34 +231,44 @@ fn the_ladder_uses_only_the_forms_it_needs() {
 #[test]
 fn the_two_target_carried_dialects_name_a_path_segment() {
     use busbar_contract::grammar::{ArrivalLocation, Location};
-    use busbar_plane_llm::dialect::{dialect, DIALECTS};
+
+    // ASKED OF THE PLANE, so a carved-out dialect is asked through its registration and the six are
+    // still six. Reading `DIALECTS` here would have counted the five that remain and called the
+    // total correct.
+    let plane = harness::plane(&[]);
+    let row = |name: &str| {
+        plane
+            .locations(name)
+            .expect("the dialect is one this plane speaks")
+    };
 
     for name in ["gemini", "bedrock"] {
-        let d = dialect(name).expect("the dialect is in the table");
         assert_eq!(
-            d.model_location,
+            row(name).model_location,
             Location::Arrival(ArrivalLocation::PathSegment(0)),
             "{name} does not name the path segment its model is in"
         );
     }
     for name in ["anthropic", "openai", "responses", "cohere"] {
-        let d = dialect(name).expect("the dialect is in the table");
         assert_eq!(
-            d.model_location,
+            row(name).model_location,
             Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model")),
             "{name} does not name the body member its model is in"
         );
     }
 
     // Exactly two of the six, so a seventh dialect added on either side is a visible change here.
-    let carried = DIALECTS
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.model_location,
-                Location::Arrival(ArrivalLocation::PathSegment(_))
-            )
-        })
-        .count();
+    let mut carried = 0usize;
+    let mut total = 0usize;
+    plane.walk_dialects(|d| {
+        total += 1;
+        if matches!(
+            d.model_location,
+            Location::Arrival(ArrivalLocation::PathSegment(_))
+        ) {
+            carried += 1;
+        }
+    });
+    assert_eq!(total, 6, "the plane no longer speaks all six dialects");
     assert_eq!(carried, 2);
 }

@@ -13,6 +13,7 @@
 pub mod bounded;
 pub mod dest;
 pub mod error;
+pub mod dialect;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -22,6 +23,7 @@ pub mod spans;
 pub mod surface;
 pub mod transport;
 pub mod unit;
+pub mod upstream;
 pub mod wire;
 
 pub use bounded::{
@@ -39,6 +41,7 @@ pub use error::{
     Advisory, Catalog, CatalogEntry, CatalogFault, ErrorClass, Param, ParamValue, Params,
     PluginError, Template, MAX_CATALOG_CODES, MAX_CATALOG_LOCALES, MAX_ERROR_PARAMS,
 };
+pub use dialect::{Dialect, DialectMeta};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,
@@ -47,7 +50,7 @@ pub use ids::{
     AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
     ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
     MeterClassId, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt, SchemeKey,
-    SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
+    SessionId, StreamId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
@@ -62,7 +65,7 @@ pub use plane::{
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
-pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, CONTROL_ABI, DIALECT_ABI, STORE_ABI};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
@@ -75,6 +78,6 @@ pub use unit::{
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
-    Listener, ListenerHandle, RawIo, RawStream, StatusAt, StatusClass, TransportEnvelope,
-    TransportError, Unit0Trigger, WireStatus,
+    Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
+    Unit0Trigger, WireStatus, WireStatusClass,
 };

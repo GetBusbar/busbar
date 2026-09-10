@@ -80,6 +80,7 @@
 
 use std::sync::Arc;
 
+use super::dialects;
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
 use busbar_contract::{
@@ -88,6 +89,7 @@ use busbar_contract::{
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
+use busbar_plane_llm::registry::{DialectEntry, DialectRegistry};
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
@@ -233,10 +235,29 @@ pub struct BootRegistry {
     pub transports: ComposedTransports,
 }
 
+/// The `llm` plane, with every dialect this build registered sealed into it.
+///
+/// SEALING IS THE WHOLE OF REGISTRATION. The plane holds the table as data — a location row and a
+/// ladder per dialect — and never a value of a dialect's type, because holding the value would be
+/// the plane naming the dialect. The table is [`dialects::LLM`], and this function does not know
+/// what is in it.
+#[must_use]
+fn llm_plane() -> LlmPlane {
+    LlmPlane::EMPTY.with_dialects(DialectRegistry::sealed(dialects::LLM))
+}
+
 /// Every plane's claims, paired with the key that names the plane.
 ///
 /// This is the pairing nothing else in the tree can do: `<LlmPlane as PlaneMeta>::CLAIMS` needs the
 /// type and `"llm"` needs the string, and only a composition root holds both.
+///
+/// A PLANE'S SERVED SURFACE IS ITS OWN CLAIMS UNIONED WITH ITS REGISTERED DIALECTS'. The claims a
+/// dialect declares are claims ON ITS PLANE — the rung numbers are the plane's scale and the
+/// transport, scheme and alternative set are the plane's builder's — so they carry the plane's key
+/// here exactly as the plane's own do. A boot that unioned only the plane's half would seal a
+/// surface that answers on fewer paths than the binary can decode, and the request that arrived on
+/// the difference would be refused as claimed by nothing while the dialect that speaks it sat
+/// registered in the same process.
 #[must_use]
 pub fn plane_claims() -> Vec<PlaneClaim> {
     fn claims_of<P: PlaneMeta>() -> impl Iterator<Item = PlaneClaim> {
@@ -246,11 +267,29 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         })
     }
 
+    /// One plane's registered dialects' claims, under that plane's key.
+    ///
+    /// Generic over the plane and blind to the dialect: it reads `ladder`, which every entry has,
+    /// and the plane's `KEY`, which the plane has. Adding the next dialect adds a row to
+    /// [`dialects`] and changes nothing here.
+    fn dialect_claims_of<P: PlaneMeta>(
+        entries: &'static [DialectEntry],
+    ) -> impl Iterator<Item = PlaneClaim> {
+        entries
+            .iter()
+            .flat_map(|entry| entry.ladder.iter())
+            .map(|rung| PlaneClaim {
+                plane: P::KEY,
+                claim: rung.claim,
+            })
+    }
+
     // Declaration order is what breaks precedence ties, so the planes are appended in the order the
     // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
     // crate edge is — a claim from a plane this build does not register would name a plane, and a
     // transport, that no request could ever reach.
     let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()
+        .chain(dialect_claims_of::<LlmPlane>(dialects::LLM))
         .chain(claims_of::<McpPlane>())
         .chain(claims_of::<A2aPlane>())
         .collect();
@@ -452,7 +491,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     }
 
     let mut planes = vec![
-        Arc::new(LlmPlane::EMPTY) as Arc<dyn Plugin>,
+        Arc::new(llm_plane()) as Arc<dyn Plugin>,
         Arc::new(McpPlane::EMPTY) as Arc<dyn Plugin>,
         Arc::new(A2aPlane::EMPTY) as Arc<dyn Plugin>,
     ];

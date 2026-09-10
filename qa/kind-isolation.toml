@@ -1347,7 +1347,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1835"
 
 [[cell]]
 crate = "busbar"
@@ -1377,7 +1377,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1179"
+count = "1176"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1562,7 +1562,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "24"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1582,7 +1582,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "43"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1782,7 +1782,7 @@ count = "79"
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "298"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1822,7 +1822,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "284"
+count = "281"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -1967,7 +1967,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "17"
+count = "15"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -2037,7 +2037,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-count = "5"
+count = "4"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2072,7 +2072,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "plane"
-count = "15"
+count = "13"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2102,7 +2102,7 @@ count = "13"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "plane"
-count = "43"
+count = "31"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -2267,7 +2267,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin-testkit"
 kind = "api"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
@@ -2447,7 +2447,7 @@ count = "134"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "162"
+count = "161"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2762,7 +2762,7 @@ count = "59"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "51"
+count = "47"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -3043,6 +3043,171 @@ note = "segment scanner 54, window scanner 59. The two read the brand and acrony
 crate = "busbar-unit-transport-key"
 kind = "transport"
 note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+
+# ── THE DIALECT COLUMN, MINTED AT ITS MEASUREMENT ─────────────────────────────────────────────────
+# The dialect kind's instance vocabulary (`openai`, `responses`) became countable when R6 registered
+# the first two dialect crates, and every cell below is that column (plus the two R6 crates' own
+# `plane` cell and plugin-testkit's `control`/`legacy` cells from the kinds battery R6 extended).
+# None of these rows existed at the base, so `ceiling-rose` compares nothing for them; each is the
+# number the matrix measured on keep-status-table, which names no file the matrix lists for any of
+# them. They are minted by hand because `--write` refuses to write while the matrix is red, and the
+# matrix was red for exactly the rows it would have written.
+
+[[cell]]
+crate = "busbar"
+kind = "dialect"
+count = "417"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "dialect"
+count = "22"
+
+[[cell]]
+crate = "busbar-api"
+kind = "dialect"
+count = "17"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-core"
+kind = "dialect"
+count = "579"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "dialect"
+count = "216"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "dialect"
+count = "97"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "dialect"
+count = "87"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "dialect"
+count = "10"
+
+[[cell]]
+crate = "busbar-plane-llm-openai"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm-openai"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-llm-responses"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "dialect"
+count = "12"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "dialect"
+count = "173"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "dialect"
+count = "50"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "dialect"
+count = "17"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "dialect"
+count = "14"
 
 
 # ------------------------------------------------------------------------------------------------
@@ -3466,6 +3631,26 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-voice: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm-openai"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: it publishes one const and a composition root seals it into the plane it declares. The root is the only place this edge may exist; the reverse, a plane naming a dialect, is what the kind refuses."
+why     = "busbar names busbar-plane-llm-openai: declared normal in the shipped graph, 1 declaration(s) at this commit. The whole of the naming is one line of crates/busbar/Cargo.toml and one row of crates/busbar/src/root/dialects.rs; nothing in the boot's logic spells a dialect. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm-responses"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: it publishes one const and a composition root seals it into the plane it declares. The root is the only place this edge may exist; the reverse, a plane naming a dialect, is what the kind refuses."
+why     = "busbar names busbar-plane-llm-responses: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the SECOND dialect the root seals, and the row is here to record what the second one cost: one line of crates/busbar/Cargo.toml and one row of crates/busbar/src/root/dialects.rs, with not one line of the boot's logic changed. A root that had to grow a branch per dialect would show it as a rising count on this row rather than as a second row of the same shape. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -4029,6 +4214,46 @@ why     = "busbar-plane-llm names busbar-llm-codec: declared normal in the shipp
 drain   = "delete the busbar-llm-codec dependency from busbar-plane-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
+from    = "busbar-plane-llm-openai"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm-openai names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-openai"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
+why     = "busbar-plane-llm-openai names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the whole sink set of the dialect kind's first crate — two dependencies and no dev-dependencies — so the pair of rows is not a budget it is spending down but the shape every later dialect crate is copied from. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-responses"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm-responses names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-responses"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
+why     = "busbar-plane-llm-responses names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. Together with the row above this is the whole sink set of the dialect kind's SECOND crate — two dependencies and no dev-dependencies, identical to the first — and that identity is the point of the pair: the sink set is the kind's rule rather than the first crate's habit, and a third dialect that needed a third dependency would have to add a row here and say why. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
 from    = "busbar-plane-mcp"
 to      = "busbar-contract"
 half    = "shipped"
@@ -4239,6 +4464,16 @@ why     = "busbar-plugin-testkit names busbar-api: declared normal, optional in 
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]
+from    = "busbar-plugin-testkit"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-testkit names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The conformance kit asserts things about the contract's own CLOSED SETS — that the kind table and the contract's `Kind` enum name the same kinds, and that every kind's entry face is object-safe — and neither statement can be made without naming the crate the sets live in. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
 from    = "busbar-secret-example-plugin"
 to      = "busbar-plugin-sdk"
 half    = "shipped"
@@ -4306,6 +4541,21 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
 why     = "busbar-substrate names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+# NEW ON keep-status-table, and declared by identity (`dep.busbar-substrate-values.busbar-contract.shipped`)
+# rather than by slot: the pure half of the substrate names the contract for ONE reason — the upstream
+# status class and its disposition now have a single owner, `busbar_contract::upstream`, and this
+# crate's `breaker` module re-exports the rows it used to declare a second copy of. The edge class
+# (`substrate -> contract`) is already granted; what this row adds is the NUMBER, 1.
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
