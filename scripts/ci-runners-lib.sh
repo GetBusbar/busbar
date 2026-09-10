@@ -463,11 +463,23 @@ _runners_lib_selftest() {
   _t "the prove Name is not the fleet Name"  differ \
      "$([ "$PROVE_FLEET" = "$FLEET" ] && echo same || echo differ)"
   _t "  ...and it is the fleet name plus -prove" "$FLEET-prove" "$PROVE_FLEET"
-  # The launch itself, dry: the tag it writes, and the type it writes it for.
-  local dryout; dryout="$(DRY_RUN=1 launch_prove_box c7a.16xlarge 2>&1)"
-  _t "the dry launch names the prove tag"    1 "$(printf '%s\n' "$dryout" | grep -c "Name=$PROVE_FLEET")"
-  _t "  ...and never the runner tag"         0 "$(printf '%s\n' "$dryout" | grep -c "Name=$FLEET,")"
-  _t "  ...and honours the type it was given" 1 "$(printf '%s\n' "$dryout" | grep -c 'instance-type c7a.16xlarge')"
+  # THE TAGS THE LAUNCH WRITES, read out of the launch function itself. NOT by running it, even
+  # dry: land.sh's gatefiles leg runs every touched script's `--selftest` on a PROVE BOX, and a
+  # prove box has no AWS credentials — a case that reaches for `describe-subnets` there is a case
+  # that hangs a landing on a timeout and reports it as a broken gate script.
+  local lf; lf="$(sed -n '/^launch_prove_box() {/,/^}/p' "${BASH_SOURCE[0]}")"
+  _t "the launch writes the prove Name tag"  1 "$(printf '%s\n' "$lf" | grep -c 'Key=Name,Value=\$PROVE_FLEET')"
+  _t "  ...and never the runner Name tag"    0 "$(printf '%s\n' "$lf" | grep -c 'Key=Name,Value=\$FLEET}')"
+  _t "  ...and marks the capacity as prove"  1 "$(printf '%s\n' "$lf" | grep -c 'Key=busbar-ci-capacity,Value=prove')"
+  _t "  ...and launches the type it is given" 1 "$(printf '%s\n' "$lf" | grep -c -- '--count 1 --instance-type "\$t"')"
+  # …and the DRY launch really does print the prove tag, when there are credentials to ask with.
+  if aws sts get-caller-identity >/dev/null 2>&1; then
+    local dryout; dryout="$(DRY_RUN=1 launch_prove_box c7a.16xlarge 2>&1)"
+    _t "the dry launch names the prove tag"    1 "$(printf '%s\n' "$dryout" | grep -c "Name=$PROVE_FLEET")"
+    _t "  ...and honours the type it was given" 1 "$(printf '%s\n' "$dryout" | grep -c 'instance-type c7a.16xlarge')"
+  else
+    printf '  ok   %-54s\n' "(no AWS credentials here: the dry launch is not run)"
+  fi
   # The three queries the fleet's arithmetic is made of, read from THIS FILE: each must filter on
   # Values=$FLEET and nothing wider. A `Values=$FLEET*` in any of them puts the prove box back in.
   _t "no fleet query globs the Name tag"     0 "$(grep -c 'Name=tag:Name,Values=\$FLEET\*' "${BASH_SOURCE[0]}")"
