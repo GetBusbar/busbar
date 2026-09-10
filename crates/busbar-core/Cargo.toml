@@ -35,7 +35,7 @@ busbar-substrate = { path = "../busbar-substrate" }
 # `appbuild`, `admin::v1::service` and the test fixture reach it through `crate::hooks`, which is a
 # re-export. The edge points core -> hooks and never back, which is what makes it checkable that the
 # engine names no plane, no dialect and no transport.
-busbar-core-hooks = { path = "../busbar-core-hooks", default-features = false }
+busbar-core-policy = { path = "../busbar-core-policy", default-features = false }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
@@ -134,7 +134,7 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-core-hooks/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-core-policy/hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -239,7 +239,7 @@ timing = ["busbar-timing/timing"]
 busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
 # The hook engine's transport-publish READINESS signal, which this crate's admin battery waits on
 # rather than betting a wall clock on the dynamic linker. Dev-only: production never links it.
-busbar-core-hooks = { path = "../busbar-core-hooks", features = ["test-support"] }
+busbar-core-policy = { path = "../busbar-core-policy", features = ["test-support"] }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /

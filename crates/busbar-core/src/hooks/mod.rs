@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `hooks` — THE SPELLING. The hook policy ENGINE is [`busbar_core_hooks`]; this module is the name
+//! `hooks` — THE SPELLING. The hook policy ENGINE is [`busbar_core_policy`]; this module is the name
 //! roughly thirty in-core call sites already write, kept so none of them moved.
 //!
 //! # What left, and why
@@ -26,13 +26,13 @@
 /// Everything the engine exposes, at the paths this crate's callers already write:
 /// `crate::hooks::{HookEnv, resolve_policy, resolve_pool_gates, push_configure, fetch_status, …}`
 /// and the `gate` / `wire` / `plugin` submodules.
-pub use busbar_core_hooks::*;
+pub use busbar_core_policy::*;
 
 /// The hook-metrics scrape. The engine owns the cache, the stale-while-revalidate refresh and the
 /// Prometheus rendering; this shadows the engine's `scrape` with the same name plus the one thing
 /// that could not go — the route handler.
 pub mod scrape {
-    pub use busbar_core_hooks::scrape::*;
+    pub use busbar_core_policy::scrape::*;
 
     /// `GET /metrics/hooks` — the Prometheus scrape of hook-reported metrics. Standard text
     /// exposition, governed by the auth chain exactly like busbar's own `/metrics` (both carry
@@ -50,7 +50,7 @@ pub mod scrape {
                 axum::http::header::CONTENT_TYPE,
                 "text/plain; version=0.0.4; charset=utf-8",
             )],
-            busbar_core_hooks::scrape::render(
+            busbar_core_policy::scrape::render(
                 &app.hook_registry,
                 app.config_version,
                 &app.hook_env,

@@ -139,7 +139,7 @@ pub(crate) fn default_probe_timeout_secs() -> u64 {
 }
 
 // `default_policy_timeout_ms` went with its only reader: the hook engine's `policy_timeout`, now in
-// `busbar_core_hooks::limits`. It reads the SAME process-global slot this module reads
+// `busbar_core_policy::limits`. It reads the SAME process-global slot this module reads
 // (`busbar_substrate::config::limits::installed()`) and falls back to the same
 // `DEFAULT_POLICY_TIMEOUT_MS` const, so an operator who raises the knob does not find that half the
 // process observed it. Keeping an accessor here with no caller would be a second place to change it.

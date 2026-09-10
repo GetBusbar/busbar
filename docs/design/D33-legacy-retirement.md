@@ -380,7 +380,7 @@ then the mechanical remainder; then the plugin signature/loader block leaves `co
 Movable the day the crate exists, with zero outbound edges: `config/secret.rs` (130) and
 `config/groups.rs` (83).
 
-### 7.3 The hooks engine has no home — `busbar-core-hooks`
+### 7.3 The hooks engine has no home — `busbar-core-policy`
 
 `hooks/` is **1,662** surface lines (`mod.rs` 879, `gate.rs` 236, `scrape.rs` 255, `wire.rs` 250,
 `plugin.rs` 42). The substrate's `hooks` module is 254 lines and says of itself that it is *only the
@@ -390,8 +390,16 @@ and land nowhere. The destination this plan named — a hooks module in the root
 a file**, and creating it costs +8 `legacy-reach` against a headroom of 2 and breaches the root's own
 reach rule.
 
-**Owner ruling, 2026-09-08: a new crate, `busbar-core-hooks`.** The kind model already says why: the
+**Owner ruling, 2026-09-08: a new crate, kind `core`.** The kind model already says why: the
 kernel seats hook PLUGINS after Admit; the policy ENGINE that resolves what those seats mean is core.
+
+**Plan ruling ([M4], 2026-09-09): the crate is `busbar-core-policy`, and it is RESUMED, not
+re-created.** `busbar-core-hooks` (branch `keep-core-hooks-recut`) was a core-kind MOVE that landed
+on a waiver: `hooks` is the hook-plugin kind's marker word, and a core crate wearing it is the
+fusion `kind-isolation:name` refuses. Renamed by what it is — the POLICY engine — with a
+`[[renamed]]` row so every history-reading rule translates. Its edges are the neutral spine only:
+contract + substrate + substrate-values + timing. It may NOT name `busbar-api` (Track 4 deletes
+it); the hooks-kind face moved `busbar-api -> busbar-contract` first, as a [SEAM].
 
 ### 7.4 The scoped chained-record journal → `busbar-unit-audit::journal`
 

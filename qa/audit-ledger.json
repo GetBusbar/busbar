@@ -746,10 +746,10 @@
    ]
   },
   {
-   "id": "crates/busbar-core-hooks/src",
+   "id": "crates/busbar-core-policy/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-core-hooks/src"
+    "crates/busbar-core-policy/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -760,7 +760,7 @@
    "auditor": null,
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-core-hooks/src/tests"
+    "crates/busbar-core-policy/src/tests"
    ]
   },
   {
@@ -4200,10 +4200,10 @@
    ]
   },
   {
-   "id": "crates/busbar-core-hooks/src/tests",
+   "id": "crates/busbar-core-policy/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-core-hooks/src/tests"
+    "crates/busbar-core-policy/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

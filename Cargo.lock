@@ -521,7 +521,7 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
- "busbar-core-hooks",
+ "busbar-core-policy",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
@@ -589,7 +589,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-hooks"
+name = "busbar-core-policy"
 version = "1.6.0"
 dependencies = [
  "async-trait",
