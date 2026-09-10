@@ -3575,6 +3575,11 @@ mod disposition_matrix_tests {
                 endpoint_resources: Default::default(),
                 oauth_as: None,
                 agent_defs: busbar_core::plane::config::AgentsSection::default().0,
+                plane_sections: busbar_core::plane::config::plane_sections_of(
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                ),
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
                 upstream_credentials: busbar_api::UpstreamCreds::Own,

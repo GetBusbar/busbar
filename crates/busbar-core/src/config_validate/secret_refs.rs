@@ -153,19 +153,22 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // rather than declined here. It is the one secret on that plane, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.
         oauth_as,
-        // `tool_defs` (the MCP `tools:` plane) DOES carry credentials — the RFC 8693 token-exchange
-        // subject token and a stdio child's `env:` references — but they are NO LONGER walked here.
-        // The exhaustive destructure that forces the secret/not-secret decision on every MCP field
-        // now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl, beside the fields it guards, and
-        // this binding is handed to that impl by the plane loop below. It stays NAMED (not `_`) so a
+        // EVERY PLANE'S OWN PARSED SECTION, and some of them DO carry credentials — the MCP `tools:`
+        // plane's RFC 8693 token-exchange subject token and a stdio child's `env:` references, the A2A
+        // `agents:` plane's leased outbound delegation secret and both halves of its outbound client
+        // identity. None is walked HERE: the exhaustive destructure that forces the secret/not-secret
+        // decision on every field of a plane's grammar lives in that plane's own
+        // `PlaneCfg::secret_refs` impl, beside the fields it guards, and this map is handed to those
+        // impls by the plane loop below. Section-keyed, so a plane that declares a section this walk
+        // has never heard of is asked for its secrets by the same loop — which is what makes the
+        // coverage a rule rather than a list somebody remembers to extend.
+        plane_sections,
+        // The DEFINITION twins of two of those sections, carried verbatim for the admin API's
+        // definition surface. Not walked: they are the SAME parsed sections the loop below already
+        // asks, and asking twice would report one credential as two. They stay NAMED (not `_`) so a
         // new TOP-LEVEL `RootCfg` field is still a compile error somebody has to answer.
-        tool_defs,
-        // `agent_defs` (the A2A `agents:` plane) DOES carry credentials — each agent's leased outbound
-        // delegation secret and both halves of its outbound client identity — but, like `tool_defs`,
-        // they are gathered by the plane's own `AgentsCfg::secret_refs` impl through the loop below,
-        // not walked here. Bound by name for the same reason: the RootCfg destructure keeps forcing a
-        // decision on a new top-level field.
-        agent_defs,
+        tool_defs: _,
+        agent_defs: _,
         // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
         // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
         // references INTO sections this walk already covers, so a credential could only appear here
@@ -329,12 +332,12 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // guards (`ToolsCfg`, `AgentsCfg`). Core no longer names the plane's credential-bearing types —
     // `McpServerDefCfg`, `TokenExchangeCfg`, `AgentDefCfg`, `OutboundCredential`, `ClientIdentityCfg`
     // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
-    // above already forced a decision on. Each impl returns FULLY-QUALIFIED paths
+    // above already forced a decision on, section-keyed. Each impl returns FULLY-QUALIFIED paths
     // (`tools.<name>.…`, `agents.<name>.…`), so nothing is prefixed here. Order within the returned
     // list is not observed: every consumer (`validate`, `validate_secret_refs`,
     // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
     // SET.
-    for plane_cfg in [tool_defs.as_ref(), agent_defs.as_ref()] {
+    for plane_cfg in plane_sections.values() {
         refs.extend(plane_cfg.secret_refs());
     }
 

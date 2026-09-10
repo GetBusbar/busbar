@@ -120,10 +120,9 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
 
 /// The plane's real dispatch slot, built the way `appbuild` does — a `BuildCtx` over a `public_url`.
 fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
-    let unit = ();
     let ctx = busbar_substrate::plane::registry::BuildCtx {
         mcp_slot: None,
-        agent_defs: &unit,
+        sections: &[],
         public_url: Some("https://voice.example"),
         prior: None,
     };

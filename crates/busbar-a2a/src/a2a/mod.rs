@@ -126,12 +126,14 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // condition as `admission().is_none()` (a delegation-only plane has a slot but claims/admits
         // nothing).
         build: |ctx| {
-            // The registry crosses `BuildCtx` type-erased; downcast it back HERE, inside the plane.
+            // The plane's OWN section, looked up by the key THIS declaration carries and downcast back
+            // HERE, inside the plane — the only place that key has a type.
             let agent_defs = ctx
-                .agent_defs
-                .downcast_ref::<crate::a2a::config::AgentsCfg>()
+                .section(busbar_a2a_codec::CONFIG_SECTION)
+                .and_then(<dyn std::any::Any>::downcast_ref::<crate::a2a::config::AgentsCfg>)
                 .expect(
-                    "BuildCtx::agent_defs carries an AgentsCfg when the A2A plane is compiled in",
+                    "BuildCtx::sections carries this plane's section as an AgentsCfg when the A2A \
+                     plane is compiled in",
                 );
             // CARRY the verify-on-call gate and the boot-resolved card transports off the PRIOR
             // generation's plane (the same accumulated coordination the MCP runtime carries via

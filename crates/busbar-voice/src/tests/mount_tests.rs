@@ -143,12 +143,13 @@ impl PlaneBootCtx for FakeBootCtx {
 }
 
 /// Build the voice dispatch slot the way `appbuild` does — a `BuildCtx` carrying the deployment's
-/// `public_url`. The other `BuildCtx` fields are the neutral absences the voice plane never reads.
+/// `public_url` and NO written `streams:` section (the plane then reads its own defaults, which is
+/// what a deployment that writes nothing already got). The other `BuildCtx` fields are the neutral
+/// absences the voice plane never reads.
 fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-    let unit = ();
     let ctx = BuildCtx {
         mcp_slot: None,
-        agent_defs: &unit,
+        sections: &[],
         public_url,
         prior: None,
     };
@@ -531,3 +532,4 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
         "wss://h/p?key=<redacted>&alt=sse"
     );
 }
+

@@ -10,6 +10,11 @@ fn make_root_cfg(
     config::RootCfg {
         tool_defs: crate::plane::config::ToolsSection::default().0,
         agent_defs: crate::plane::config::AgentsSection::default().0,
+        plane_sections: crate::plane::config::plane_sections_of(
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        ),
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),

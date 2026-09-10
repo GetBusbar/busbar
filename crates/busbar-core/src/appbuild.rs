@@ -1394,6 +1394,16 @@ pub fn build_app_from_config(
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
+        // THE PLANE SECTIONS, borrowed out of the resolved config and erased through the neutral
+        // `PlaneCfg::as_any` — one `(config_section, &dyn Any)` pair per section the grammar carries,
+        // in the map's own key order. Built here rather than inside the fold so every plane's `build`
+        // reads the SAME borrow of the SAME resolved config, which is the whole point of the seam: a
+        // plane's own posture reaches its `build` through the composition rather than around it.
+        let plane_sections: Vec<(&'static str, &dyn std::any::Any)> = cfg
+            .plane_sections
+            .iter()
+            .map(|(section, parsed)| (*section, parsed.as_any()))
+            .collect();
         let ctx = crate::plane::registry::BuildCtx {
             // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
             // plane's `build` fn — so the `BuildCtx` seam carries an opaque slot and names no
@@ -1409,9 +1419,7 @@ pub fn build_app_from_config(
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),
-            // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
-            // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
-            agent_defs: cfg.agent_defs.as_any(),
+            sections: &plane_sections,
             public_url: cfg.public_url.as_deref(),
             // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
             // off its own prior runtime object across this apply (the A2A plane carries its

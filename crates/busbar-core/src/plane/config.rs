@@ -269,11 +269,15 @@ where
 #[derive(Debug)]
 pub struct ToolsSection(pub Box<dyn PlaneCfg>);
 
+impl ToolsSection {
+    /// The config-section KEY this carrier deserializes, defaults and folds through — read off the
+    /// frozen named-map mirror rather than spelled, so this crate names no plane noun for it.
+    pub(crate) const SECTION: &'static str = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2];
+}
+
 impl Default for ToolsSection {
     fn default() -> Self {
-        ToolsSection(default_plane_section(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
-        ))
+        ToolsSection(default_plane_section(ToolsSection::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for ToolsSection {
@@ -281,11 +285,7 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
-            deserializer,
-        )
-        .map(ToolsSection)
+        deserialize_plane_section(ToolsSection::SECTION, deserializer).map(ToolsSection)
     }
 }
 
@@ -294,11 +294,15 @@ impl<'de> serde::Deserialize<'de> for ToolsSection {
 #[derive(Debug)]
 pub struct AgentsSection(pub Box<dyn PlaneCfg>);
 
+impl AgentsSection {
+    /// The config-section KEY this carrier deserializes, defaults and folds through — read off the
+    /// frozen named-map mirror rather than spelled, exactly as [`ToolsSection::SECTION`] is.
+    pub(crate) const SECTION: &'static str = busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3];
+}
+
 impl Default for AgentsSection {
     fn default() -> Self {
-        AgentsSection(default_plane_section(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
-        ))
+        AgentsSection(default_plane_section(AgentsSection::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for AgentsSection {
@@ -306,11 +310,7 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section(
-            busbar_substrate::plane::config::NAMED_MAP_SECTIONS[3],
-            deserializer,
-        )
-        .map(AgentsSection)
+        deserialize_plane_section(AgentsSection::SECTION, deserializer).map(AgentsSection)
     }
 }
 
@@ -326,9 +326,16 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
 #[derive(Debug)]
 pub struct StreamsSection(pub Box<dyn PlaneCfg>);
 
+impl StreamsSection {
+    /// The config-section KEY this carrier deserializes and defaults through, spelled ONCE — the same
+    /// frozen-wire literal the snapshot records, read back by the section-keyed fold `resolve` carries
+    /// onto `RootCfg` so the key a plane looks its own section up by has one spelling in this crate.
+    pub(crate) const SECTION: &'static str = "streams";
+}
+
 impl Default for StreamsSection {
     fn default() -> Self {
-        StreamsSection(default_plane_section("streams"))
+        StreamsSection(default_plane_section(StreamsSection::SECTION))
     }
 }
 impl<'de> serde::Deserialize<'de> for StreamsSection {
@@ -336,8 +343,27 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_plane_section("streams", deserializer).map(StreamsSection)
+        deserialize_plane_section(StreamsSection::SECTION, deserializer).map(StreamsSection)
     }
+}
+
+/// EVERY PLANE-OWNED CONFIG SECTION, keyed by the section key its own carrier declares — the ONE fold
+/// `RootCfg::plane_sections` is built by, so the map a plane's `build` reads its own posture out of and
+/// the map a scratch config carries have one definition rather than two opinions. Each carrier is
+/// cloned rather than moved because the definition twins beside it (`tool_defs`, `agent_defs`) are
+/// still read by the admin definition surface off the same document.
+pub fn plane_sections_of(
+    tools: &ToolsSection,
+    agents: &AgentsSection,
+    streams: &StreamsSection,
+) -> std::collections::BTreeMap<&'static str, Box<dyn PlaneCfg>> {
+    [
+        (ToolsSection::SECTION, tools.0.clone_box()),
+        (AgentsSection::SECTION, agents.0.clone_box()),
+        (StreamsSection::SECTION, streams.0.clone_box()),
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the

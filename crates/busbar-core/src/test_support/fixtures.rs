@@ -43,6 +43,13 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         endpoint_resources: Default::default(),
         oauth_as: None,
         agent_defs: crate::plane::config::AgentsSection::default().0,
+        // The section-keyed map at every plane's own default, through the SAME fold `resolve` uses —
+        // so a fixture's key set is the grammar's key set and not a second opinion about it.
+        plane_sections: crate::plane::config::plane_sections_of(
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        ),
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,

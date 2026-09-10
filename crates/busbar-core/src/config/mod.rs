@@ -502,6 +502,23 @@ pub struct RootCfg {
     // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
     // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
     pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    /// EVERY PLANE-OWNED CONFIG SECTION this deployment parsed, keyed by the DECLARING PLANE'S
+    /// `config_section` and type-erased behind the neutral [`crate::plane::config::PlaneCfg`] — the
+    /// section-keyed read a plane's own `build` is handed its own operator posture through
+    /// (`BuildCtx::section`), so a plane that owns a section does not have to keep a second copy of it
+    /// in process-global state to read it back at build time. Carried through `resolve` VERBATIM, for
+    /// the same reason `identity_providers` and `export_defs` are: this is operator INTENT, and the
+    /// plane is the only thing that knows how to lower it.
+    ///
+    /// A key is present iff the grammar carries that section, whether or not the operator wrote a
+    /// block for it (an unwritten section is the owning plane's own default, which is what the plane
+    /// would have answered anyway) — so a plane's `build` reads absence as its defaults rather than as
+    /// a missing map entry. The named-definition twins beside this (`tool_defs`, `agent_defs`) are the
+    /// SAME sections under the DEFINITION surface the admin API serves and re-writes; they are a
+    /// different reader, not a second parse, and they drain into this map when that surface is
+    /// declaration-driven.
+    pub plane_sections:
+        std::collections::BTreeMap<&'static str, Box<dyn crate::plane::config::PlaneCfg>>,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
@@ -2688,6 +2705,11 @@ pub fn resolve(
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
             agent_defs: deploy.agents.0.clone_box(),
+            plane_sections: crate::plane::config::plane_sections_of(
+                &deploy.tools,
+                &deploy.agents,
+                &deploy.streams,
+            ),
         })
     } else {
         Err(errors)

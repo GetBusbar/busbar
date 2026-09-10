@@ -1781,10 +1781,9 @@ fn declared_base(name: &str) -> Option<&'static str> {
 }
 
 fn probe_gemini_live_route() -> (&'static str, String) {
-    let unit = ();
     let ctx = busbar_substrate::plane::registry::BuildCtx {
         mcp_slot: None,
-        agent_defs: &unit,
+        sections: &[],
         public_url: Some("https://gw.conform.example.com"),
         prior: None,
     };

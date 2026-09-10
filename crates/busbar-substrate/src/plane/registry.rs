@@ -44,12 +44,17 @@ pub struct BuildCtx<'a> {
     /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
     pub mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
-    // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
-    // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
-    // back inside its own module; no other plane reads it, and it is built and consumed synchronously
-    // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
-    pub agent_defs: &'a dyn std::any::Any,
+    /// EVERY REGISTERED PLANE'S OWN PARSED CONFIG SECTION, keyed by the section key that plane's
+    /// declaration carries in [`PlaneDecl::config_section`] and TYPE-ERASED as `&dyn Any` — the seam a
+    /// plane reads ITS OWN operator posture across, so the composition root hands a plane what the
+    /// root already parsed instead of the plane parking it in process-global state and reading it back
+    /// behind the composition's back. A plane looks up its own key (which it owns and may spell) and
+    /// downcasts inside its own module; no plane can name another's, because a key it did not declare
+    /// is a key it has no type for. Read through [`BuildCtx::section`], never by index: the order here
+    /// is the root's fold order and is not a fact about any plane. Erased without `Send + Sync`
+    /// because every entry is borrowed from the resolved config and consumed synchronously in this
+    /// one fold.
+    pub sections: &'a [(&'static str, &'a dyn std::any::Any)],
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
     /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
@@ -60,6 +65,20 @@ pub struct BuildCtx<'a> {
     /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
     /// carry-over ignores it.
     pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
+}
+
+impl<'a> BuildCtx<'a> {
+    /// THIS PLANE'S OWN PARSED SECTION, by the key its declaration carries — the one read of
+    /// [`Self::sections`]. `None` when the deployment's grammar carries no such section (the plane is
+    /// compiled out of the config layer, or the key is not a declared section), which a plane reads as
+    /// "nothing was written for me" and answers with its own defaults.
+    #[must_use]
+    pub fn section(&self, config_section: &str) -> Option<&'a dyn std::any::Any> {
+        self.sections
+            .iter()
+            .find(|(key, _)| *key == config_section)
+            .map(|(_, section)| *section)
+    }
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
