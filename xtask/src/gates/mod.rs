@@ -34,6 +34,7 @@ pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
 pub mod no_deferral;
 pub mod no_self_filed_issues;
+pub mod no_tracked_ignored;
 pub mod plane_abi_neutrality;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
@@ -1536,6 +1537,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(audit_ledger::AuditLedgerGate),
         summary: "every tracked file is in a scope, and no audit result outlives the tree it read",
+    },
+    Registration {
+        name: "no-tracked-ignored",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_tracked_ignored::NoTrackedIgnoredGate),
+        summary: "no tracked path matches a .gitignore rule of this tree (git ls-files -ci \
+                  --exclude-standard)",
     },
 ];
 

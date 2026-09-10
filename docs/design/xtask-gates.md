@@ -897,6 +897,36 @@ also has. Recorded so a green parity run is not read as a wider claim than it is
 * `release-order`'s graph proof (`PROVE`) is answered by the legacy under a different flag. A probe
   whose two sides are asking different questions is not a parity probe, so it is excluded.
 
+### 6.5 A rule added after the conversion, with no legacy half at all: `no-tracked-ignored`
+
+Every gate above ports a script; this one has none to port against, and it is recorded here for the
+same reason 6.1 is — introduced, not inherited, so a reader will not go looking for a shell twin that
+never existed.
+
+The finding it answers: `.fix/kernel.rs.orig` (1,430 lines) and `.fix/units_llm.rs.orig` (4,096
+lines) were `git add`ed into a money commit as a pre-money-as-a-lookup snapshot of the llm root leg,
+even though `/.fix/` is a `.gitignore` rule of this tree — reversing the earlier rule that the
+scratch directory is scratch, not source. Git's own precedence is what let it happen: once a path is
+tracked, every ignore rule that would otherwise exclude it stops applying, so the file stayed live,
+reviewed and shipped while `loc-surface`, `census`, `structure-lint`, `legacy-reach` and
+`forbid-unsafe` walked straight past it — each of those either skips ignored paths outright or skips
+a directory `.gitignore` names, on the working assumption that "ignored" and "not source" are the
+same fact. They are not, once a path is tracked.
+
+It is the git-native twin of a hazard `kind-isolation` already carries in its own selftest's words:
+"a compiled source in a walker-skipped, gitignored directory is source no rule has read" — there, a
+file the WALKER never lists, reached by a `#[path]` the compiler still resolves; here, a path GIT
+ITSELF tracks despite one of the tree's own `.gitignore` rules naming it. Two different mechanisms
+produce the same blind spot — a scanner that trusts `.gitignore` to bound what it reads — so the rule
+is a gate of its own rather than a row folded into either existing family.
+
+`git ls-files -ci --exclude-standard` is the exact test: cached (tracked) paths, intersected with the
+ones `--exclude-standard`'s ignore rules would otherwise exclude. `no-tracked-ignored:tracked` is RED
+whenever that command names anything, and its selftest plants a tracked path under an ignored
+directory through the same overlay-command mechanism `cargo_tree`/`cargo_metadata` already use for a
+derived input a `Ctx` cannot read as a file — planting it for real would mean committing the exact
+hazard the rule exists to refuse.
+
 ---
 
 ## 7. Batch-1 gate list and sizing
