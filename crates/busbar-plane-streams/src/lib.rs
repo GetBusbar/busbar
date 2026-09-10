@@ -50,7 +50,6 @@ pub mod claims;
 pub mod dialect;
 pub mod governed;
 pub mod meta;
-pub mod oneshot;
 pub mod plane;
 pub mod session;
 pub mod surface;
@@ -75,8 +74,8 @@ pub struct Upstream {
     /// The host to dial.
     pub host: &'static str,
     /// Which dialect the upstream speaks — a row of [`dialect`]'s table, never a variant. Always
-    /// one whose [`Dialect::duplex_upstream`] is true: a carrier or one-shot claim is ingress only,
-    /// and a unit that arrives on one is routed to one of these upstreams, never dialed as one.
+    /// one whose [`Dialect::duplex_upstream`] is true: the carrier is ingress only, and a session
+    /// that arrives on it is routed to one of these upstreams, never dialed as one.
     pub dialect: &'static Dialect,
 }
 

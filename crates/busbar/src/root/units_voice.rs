@@ -2230,9 +2230,10 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
 
 /// A scope policy that declares what this plane's operation classes require.
 ///
-/// Built here rather than left to a deployment's own table because the five classes are the plane's
-/// own declaration and a deployment that had to restate them could restate one of them wrong. What a
-/// deployment decides is which principals hold which scope; what the classes need is structure.
+/// Built here rather than left to a deployment's own table because the three classes are the
+/// plane's own declaration and a deployment that had to restate them could restate one of them
+/// wrong. What a deployment decides is which principals hold which scope; what the classes need is
+/// structure.
 #[must_use]
 pub fn scope_policy() -> crate::root::policy::ScopePolicy {
     let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
@@ -2242,8 +2243,6 @@ pub fn scope_policy() -> crate::root::policy::ScopePolicy {
         .declaring(claim, meta::OP_SESSION_OPEN, Scope::Full)
         .declaring(claim, OpClassId::new(OP_DUPLEX_TURN), Scope::Full)
         .declaring(claim, OpClassId::new(OP_TOOL_CALL), Scope::Full)
-        .declaring(claim, OpClassId::new("transcribe"), Scope::Full)
-        .declaring(claim, OpClassId::new("tts"), Scope::Full)
 }
 
 /// The kernel-granted scope a handshake unit runs under, named so the approve arm above can be read

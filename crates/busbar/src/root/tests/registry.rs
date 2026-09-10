@@ -42,13 +42,13 @@ const SEALED_ORDER: &[&str] = &[
     "llm HeaderPresent(\"anthropic-beta\")",
     "llm HeaderPresent(\"x-goog-api-key\")",
     "llm HeaderPresent(\"x-api-key\")",
-    "voice PathSuffix(\"/v1/audio/transcriptions\")",
+    "llm PathSuffix(\"/v1/audio/transcriptions\")",
     "llm PathSuffix(\"/v1/audio/translations\")",
     "llm PathContains(\":streamGenerateContent\")",
     "llm PathSuffix(\"/v1/chat/completions\")",
     "llm PathContains(\":batchEmbedContents\")",
     "voice PathContains(\"BidiGenerateContent\")",
-    "voice PathSuffix(\"/v1/audio/speech\")",
+    "llm PathSuffix(\"/v1/audio/speech\")",
     "llm PathContains(\":generateContent\")",
     "llm PathSuffix(\"/v1/moderations\")",
     "llm PathSuffix(\"/v1/embeddings\")",
@@ -67,7 +67,7 @@ const SEALED_ORDER: &[&str] = &[
 ];
 
 /// Whether this build carries the voice plane — and therefore its WS transport, its registry row
-/// and its four claims. Every pinned number below is a statement about ONE composition, and the
+/// and its three claims. Every pinned number below is a statement about ONE composition, and the
 /// shipped one (voice on, since `plane-voice` is in `default`) is the one they are pinned
 /// against; a build that compiled voice out is a different composition, not a smaller one.
 const VOICE: bool = cfg!(feature = "plane-voice");
@@ -117,12 +117,14 @@ fn seven_transports_and_five_planes_register() {
 fn the_planes_declare_forty_nine_claims() {
     let claims = plane_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
-    assert_eq!(count("llm"), 25);
+    assert_eq!(count("llm"), 27);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
-    // Five, not four: the carrier claim is back. It was dropped when it named a wire no crate
-    // provided, and the one it was waiting for was already registered.
-    assert_eq!(count("voice"), 5);
+    // Three: the three duplex-session dialects, and nothing else. The carrier claim is one of
+    // them — it was dropped when it named a wire no crate provided, and the one it was waiting for
+    // was already registered. The two one-shot HTTP routes that used to sit beside them are in
+    // llm's twenty-seven now: a request that opens no session was never this plane's.
+    assert_eq!(count("voice"), 3);
     assert_eq!(count("admin"), 1);
     assert_eq!(claims.len(), 49);
 }
@@ -134,14 +136,19 @@ fn the_planes_declare_forty_nine_claims() {
 /// the totality rule: a request has both a path and a header, so nothing proves a header claim
 /// and a path claim cannot coincide. The same-family pairs are the substantive half, and they
 /// are the half a tighter grammar moves: reading a suffix and a substring as the segment
-/// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
+/// constraints they are, rather than as fragments that overlap anything, took them from 119 to
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
 /// surface one path at a time rather than as a prefix took it from 65 to 63.
+///
+/// 63 to 43 is not a grammar change at all: it is the two one-shot audio routes leaving the
+/// streams plane for llm, which owns them on the wire. Two claims that were CROSS-plane became
+/// two claims of one plane, and a pair inside one plane is not an overlap this count is about —
+/// precedence settles it, which is what the ordered-set rule has always said.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-voice")]
 #[test]
-fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
+fn one_hundred_and_twenty_three_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = plane_claims();
@@ -159,8 +166,8 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
             }
         }
     }
-    assert_eq!(cross_family, 90);
-    assert_eq!(same_family, 63);
+    assert_eq!(cross_family, 80);
+    assert_eq!(same_family, 43);
 }
 
 /// What the 63 path-family overlaps that remain actually ARE, one class at a time.
@@ -175,6 +182,14 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
 ///   variable takes any single segment, and a fragment with no slash of its own is one;
 /// * two FRAGMENT forms — a suffix and a substring — which are satisfied together by writing a
 ///   path that ends the one way and contains the other.
+///
+/// The third class is EMPTY as of the speech-route move, and the count is pinned at zero rather
+/// than the arm being deleted. Sixteen fragment-against-fragment pairs used to sit in it, and
+/// every one of them was an audio path claimed by the streams plane against a path claimed by
+/// llm; with all three audio routes on llm they are pairs inside one plane, which precedence
+/// settles and this count does not see. The arm stays because it is the classifier's third
+/// exhaustive case: a fragment pair that appears later must land somewhere named, not in the
+/// panic below.
 ///
 /// A pair that fits none of these would be the interesting one: a conservative answer with no
 /// account of itself. There is none, and the assertion is that there is none.
@@ -213,12 +228,12 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             }
         }
     }
-    assert_eq!(tail, 23);
+    assert_eq!(tail, 19);
     assert_eq!(variable, 24);
-    assert_eq!(fragments, 16);
+    assert_eq!(fragments, 0);
 }
 
-/// **The finding, answered.** Every one of those 153 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 123 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -233,7 +248,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 153);
+    assert_eq!(sealed.resolved.len(), 123);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -241,7 +256,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     );
 
     // The winner of a resolved pair is one of its two sides, and it is the side the order puts
-    // first. Said as a property rather than as 209 assertions.
+    // first. Said as a property rather than as one assertion per pair.
     let rank = |i: usize| {
         sealed
             .order

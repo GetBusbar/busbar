@@ -1,13 +1,12 @@
-//! The claims this plane makes over arriving bytes, and the four dialects they name.
+//! The claims this plane makes over arriving bytes, and the three dialects they name.
 //!
-//! `docs/design/ARCHITECTURE.md`'s protocol-inventory table (the row keyed `voice`) names the
+//! `docs/design/ARCHITECTURE.md`'s protocol-inventory table (the row keyed `streams`) names the
 //! dialect roster this plane speaks and the transports it claims them on:
 //!
-//! `openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts` over
-//! `ws, webrtc, twilio-media, http`.
+//! `openai-realtime, gemini-live, twilio-media-streams` over `ws, webrtc`.
 //!
-//! This module claims TWO transports today: `ws` (both duplex JSON dialects and the carrier) and
-//! `http` (the two one-shot operations). One is deliberately unclaimed:
+//! This module claims ONE transport: `ws`, which carries all three dialects — both duplex JSON
+//! wires and the carrier. One transport is deliberately unclaimed:
 //!
 //! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
 //!   (the legacy WebRTC topology is `runtime`-gated and, per its own module documentation, is a
@@ -23,10 +22,10 @@
 //! that was always underneath it, and the invented row it used to name is deleted from the
 //! architecture's own table rather than filled in.
 //!
-//! Leaving either unclaimed is an honest, documented gap, not a silent one: a future pass that gives
-//! this crate an RTP data-channel reader, or the tree a telephony transport, can add the claim
-//! without touching any other one, because claims are declared independently and the boot's own
-//! overlap check is what proves they stay disjoint.
+//! Leaving it unclaimed is an honest, documented gap, not a silent one: a future pass that gives
+//! this crate an RTP data-channel reader can add the claim without touching any other one, because
+//! claims are declared independently and the boot's own overlap check is what proves they stay
+//! disjoint.
 //!
 //! ## A DIALECT IS A NAME HERE, NEVER A VARIANT
 //!
@@ -36,17 +35,21 @@
 //! `&'static str` the session fact carries and the same one a dialect crate is named for — and
 //! [`crate::dialect`] is the table it resolves in.
 //!
-//! The two one-shot names below are STRINGS AND NOTHING ELSE, and deliberately have no row in that
-//! table: `transcribe` and `tts` are HTTP operations, not streaming dialects, and they leave this
-//! plane in a later pass.
+//! ## EVERY CLAIM HERE OPENS A SESSION
+//!
+//! Two more claims used to sit at the bottom of this table, on `http`: `transcribe` on
+//! `/v1/audio/transcriptions` and `tts` on `/v1/audio/speech`. They were STRINGS with no row in
+//! the dialect table, because they were never dialects — they are one vendor's HTTP
+//! request-and-answer operations, and this plane's subject is the duplex SESSION. They are gone,
+//! to `busbar-plane-llm`'s rung 14, beside `/v1/audio/translations`, which that plane had claimed
+//! all along. What is left is the invariant: EVERY row below names a dialect that has a row in
+//! [`crate::dialect`], on a transport that holds a connection open. A claim in this table that
+//! did not would be this plane owning something that is not a session again.
 
 use busbar_contract::grammar::{one_level_under, Claim, Selector};
 
 /// The transport both JSON duplex dialects (`openai-realtime`, `gemini-live`) are claimed against.
 pub const WS_TRANSPORT: &str = "ws";
-
-/// The transport the two one-shot operations (`transcribe`, `tts`) are claimed against.
-pub const HTTP_TRANSPORT: &str = "http";
 
 /// The credential scheme every one of this plane's claims authenticates under.
 ///
@@ -63,18 +66,6 @@ const WS_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
 /// a bearer token or a vendor API key, and offering either would be this plane admitting a
 /// credential shape no client of that dialect ever sends.
 const CARRIER_SCHEME_ALTS: &[&str] = &["twilio-signature"];
-
-/// The alternatives a one-shot HTTP unit may narrow to — the same two an ordinary API caller uses.
-const HTTP_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
-
-/// The names this plane's declared claims carry, in declaration order.
-///
-/// The three STREAMING dialects have rows in [`crate::dialect`]; the two one-shot operations do
-/// not, for the reason this module's header states.
-pub const TRANSCRIBE: &str = "transcribe";
-
-/// See [`TRANSCRIBE`].
-pub const TTS: &str = "tts";
 
 /// The carrier dialect's name — the same `&'static str` its own crate declares as `NAME`, and the
 /// same one the session fact carries.
@@ -112,9 +103,9 @@ const fn claim(
         selector,
         scheme: Some(SCHEME),
         scheme_alternatives: alts,
-        // None of the four dialects' claims declares an idempotency location: a duplex session has
-        // no single request body to key a replay on, and the two one-shot operations are read
-        // straight through rather than replay-cached, matching the previous release's behaviour.
+        // None of the three dialects' claims declares an idempotency location: a duplex session
+        // has no single request body to key a replay on, which is what an idempotency key would
+        // have to name — and matches the previous release's behaviour.
         idempotency: None,
     }
 }
@@ -148,22 +139,6 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
             CARRIER_SCHEME_ALTS,
         ),
     },
-    DialectClaim {
-        dialect: TRANSCRIBE,
-        claim: claim(
-            HTTP_TRANSPORT,
-            Selector::PathSuffix("/v1/audio/transcriptions"),
-            HTTP_SCHEME_ALTS,
-        ),
-    },
-    DialectClaim {
-        dialect: TTS,
-        claim: claim(
-            HTTP_TRANSPORT,
-            Selector::PathSuffix("/v1/audio/speech"),
-            HTTP_SCHEME_ALTS,
-        ),
-    },
 ];
 
 /// The claims, one field narrower, as [`busbar_contract::plane::PlaneMeta::CLAIMS`] wants them.
@@ -174,8 +149,6 @@ pub const CLAIMS: &[Claim] = &[
     DIALECT_CLAIMS[0].claim,
     DIALECT_CLAIMS[1].claim,
     DIALECT_CLAIMS[2].claim,
-    DIALECT_CLAIMS[3].claim,
-    DIALECT_CLAIMS[4].claim,
 ];
 
 /// The two lists cannot drift: one is the other with a field dropped, and a constant cannot loop

@@ -151,18 +151,28 @@ busbar_contract::claims_from_ladder! {
     // Rung 13: the same vendor's model-scoped invoke path.
     13 => "bedrock", Selector::PathPattern(MODEL_INVOKE),
 
-    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
+    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect, the whole
+    // audio surface among them.
     //
-    // The audio surface is named one path at a time rather than as the whole `/v1/audio/` prefix.
-    // Two of that prefix's three paths — `transcriptions` and `speech` — are the one-shot operations
-    // the architecture's plane inventory gives to the voice plane, and the voice plane claims them
-    // by name. A prefix claim here claimed them too, so the two planes' claims overlapped on the
-    // request rather than dividing it, and which one answered rested on the boot ordering agreeing
-    // with the inventory rather than on either plane saying what it owns. What is left is the path
-    // no other plane claims.
+    // THE AUDIO SURFACE IS WHOLE AGAIN, AND IT IS THIS PLANE'S. Two of its three paths —
+    // `speech` and `transcriptions` — used to be missing from this rung, because the streams
+    // plane claimed them by name and a claim here would have overlapped rather than divided.
+    // That was never a statement about the wire: all three are one vendor's HTTP
+    // request-and-answer routes, in this dialect, priced by this plane's own op classes
+    // (`op_class_for` has resolved `speech` and `transcription` for them the whole time, and
+    // `meta`'s `OP_CLASSES` has declared both). What owned them was a plane whose subject is the
+    // duplex SESSION, and a request that opens no session is not that plane's business. The
+    // owner's 09:0x ruling says so — one-shot TTS and transcribe are REQUEST/RESPONSE, not
+    // streaming dialects — so the two routes are here, beside the third they were always
+    // siblings of.
+    //
+    // Still one path at a time and not the `/v1/audio/` prefix: naming a prefix would claim
+    // paths under it this plane cannot read, and a plane may only claim what it can decode.
     14 => "openai", Selector::PathSuffix("/v1/embeddings"),
     14 => "openai", Selector::PathSuffix("/v1/moderations"),
     14 => "openai", Selector::PathContains("/v1/images/"),
+    14 => "openai", Selector::PathSuffix("/v1/audio/speech"),
+    14 => "openai", Selector::PathSuffix("/v1/audio/transcriptions"),
     14 => "openai", Selector::PathSuffix("/v1/audio/translations"),
 }
 

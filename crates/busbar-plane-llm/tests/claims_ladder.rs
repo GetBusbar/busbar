@@ -104,8 +104,11 @@ fn each_rung_routes_its_own_dialect() {
         ("/v1/embeddings", &[], "openai"),
         ("/v1/moderations", &[], "openai"),
         ("/v1/images/generations", &[], "openai"),
-        // Not `/v1/audio/speech` and not `/v1/audio/transcriptions`: those two are the voice
-        // plane's one-shot operations, and this plane's audio claim is the path it leaves behind.
+        // The whole audio surface, all three paths: they are one vendor's HTTP request-and-answer
+        // routes and they are this plane's. Two of them used to be the streams plane's, back when
+        // that plane's claim table still held operations that open no session.
+        ("/v1/audio/speech", &[], "openai"),
+        ("/v1/audio/transcriptions", &[], "openai"),
         ("/v1/audio/translations", &[], "openai"),
     ];
     assert_eq!(

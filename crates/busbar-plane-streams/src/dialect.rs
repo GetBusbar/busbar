@@ -38,9 +38,11 @@
 //! table through [`register`], which is what the direction rule requires and what lets the delete
 //! test remove it and get an honest absence.
 //!
-// The two one-shot operations are NOT rows here and are not dialects of this plane's duplex
-// sessions: they are single request/response operations that leave this crate in a later pass.
-// They stay where they are, named as strings by `crate::claims` alone, until that pass.
+//! The table is EXHAUSTIVE of what this plane claims: three dialects, three claims, one transport.
+//! Two one-shot HTTP operations used to be claimed without rows here, on the grounds that they were
+//! not dialects of a duplex session — which was true, and is why they are now `busbar-plane-llm`'s
+//! speech routes rather than a footnote in this file. A claim of this plane with no row in this
+//! table is a defect, not an exception.
 //!
 //! Nothing in this module parses, writes, allocates or reads a clock. A row is data and three
 //! function pointers, and the functions belong to whoever declared the row.

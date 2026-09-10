@@ -38,9 +38,12 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// whatever that class was worth and nothing anywhere says so. Four count-shaped and duration-shaped
 /// classes used to sit below the four token ones for the non-chat operations, and not one of them
 /// was ever emitted: this plane reads its quantities through the codec's own usage figures, which
-/// carry token counts and nothing else — no image count, no character count, no audio duration —
-/// and the surfaces two of them named (spoken audio, transcription) belong to the voice plane and
-/// are not on this plane's claim ladder at all. The fourth named a flat per-request charge, which
+/// carry token counts and nothing else — no image count, no character count, no audio duration.
+/// Two of them named the spoken-audio and transcription surfaces, which are on this plane's claim
+/// ladder now (rung 14) and were not when those classes were struck; that does not bring them
+/// back, because the reason they went was that NOTHING EMITS THEM, and owning the route did not
+/// give this plane a character count or an audio duration to read. The fourth named a flat
+/// per-request charge, which
 /// the rate card already posts by itself as its own `fee` line whatever a plane declares; a second
 /// spelling of it here could only ever bill the same request twice or nothing.
 ///

@@ -39,17 +39,6 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// its own unit (see [`audio_seconds_in`]), not in bytes a divisor would have to convert.
 const SECONDS_PER_UNIT: u32 = 1;
 
-/// The `text_tokens` figure a span of text estimates to, through the class's own declared divisor.
-///
-/// A one-shot text-to-speech request is priced on the text it asks to be spoken, and no upstream
-/// reports a token count for it before the audio comes back. So the figure is an estimate, and it
-/// is the class's OWN default divisor that produces it rather than a second constant invented at
-/// the call site: what the class says a token costs in bytes is what a token costs here.
-#[must_use]
-pub const fn text_tokens_of(byte_len: usize) -> u64 {
-    (byte_len as u64).div_ceil(BYTES_PER_TOKEN as u64)
-}
-
 /// Milliseconds in the second the `audio_seconds_in` class is denominated in.
 const MS_PER_SECOND: u64 = 1_000;
 
@@ -188,16 +177,19 @@ pub const OP_SESSION_OPEN: OpClassId = OpClassId::new("voice.session.open");
 
 /// The operation classes a unit of this plane can be.
 ///
-/// Five classes: the unit that opens a session, a duplex turn (the unit shape for the two duplex
-/// dialects and for telephony, which is ingress-only into one), the two one-shot operations, and a
-/// provider tool call — the last one is what a `Progress::OneShot` a provider pushes mid-session is
-/// priced as (see `crate::plane`'s `decode_response` for the mapping this plane makes from
-/// `IrDuplexTool::CallOpen` onto it).
+/// Three classes, and every one of them is a thing that happens INSIDE A SESSION: the unit that
+/// opens one, a duplex turn (the unit shape for the two duplex dialects and for the carrier, which
+/// is ingress-only into one), and a provider tool call — the last is what a `Progress::OneShot` a
+/// provider pushes mid-session is priced as (see `crate::plane`'s `decode_response` for the mapping
+/// this plane makes from `IrDuplexTool::CallOpen` onto it).
+///
+/// `transcribe` and `tts` used to sit between the second and the third. They were the two one-shot
+/// HTTP operations, and a request that opens no session is not this plane's; they price as
+/// `speech` and `transcription` on `busbar-plane-llm`, which claims their routes and has declared
+/// both classes all along.
 const OP_CLASSES: &[OpClassId] = &[
     OP_SESSION_OPEN,
     OpClassId::new("duplex_turn"),
-    OpClassId::new("transcribe"),
-    OpClassId::new("tts"),
     OpClassId::new("tool_call"),
 ];
 

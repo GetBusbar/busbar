@@ -152,24 +152,19 @@ impl Plane for VoicePlane {
     ) -> Result<Ingress<'u>, Decode> {
         // Dispatch on the SESSION's own bound dialect, not the literal transport key: a claim's
         // selector (`claims::dialect_for`) is what names the dialect, and more than one dialect can
-        // share a transport key in principle (the two WS dialects already do). A one-shot HTTP
-        // operation carries no session state at all, which is how the two shapes are told apart here.
-        match st {
-            None => decode_one_shot(frames, ctx),
-            Some(halfbox) => {
-                let state = halfbox
-                    .get_mut::<VoiceSessionState>()
-                    .ok_or(Decode::MissingDeclaredFact)?;
-                let dialect = state.dialect.ok_or(Decode::MissingDeclaredFact)?;
-                // ONE LOOKUP, NO BRANCH ON A NAME. A dialect that brings its own envelope reads its
-                // own frames; one that does not rides the shared duplex codec. A claim that is not
-                // a streaming dialect at all has no row and no envelope, and there is nothing here
-                // for it to be read as.
-                match dialect.envelope {
-                    Some(envelope) => (envelope.decode_ingress)(frames, state, ctx),
-                    None => decode_ws_frame(frames, state, dialect, ctx),
-                }
-            }
+        // share a transport key in principle (all three of this plane's do). EVERY claim this plane
+        // declares opens a session, so a frame that arrives without one is a frame that arrived
+        // before its own handshake bound it — a missing declared fact, not a second shape to read.
+        let state = st
+            .ok_or(Decode::MissingDeclaredFact)?
+            .get_mut::<VoiceSessionState>()
+            .ok_or(Decode::MissingDeclaredFact)?;
+        let dialect = state.dialect.ok_or(Decode::MissingDeclaredFact)?;
+        // ONE LOOKUP, NO BRANCH ON A NAME. A dialect that brings its own envelope reads its own
+        // frames; one that does not rides the shared duplex codec.
+        match dialect.envelope {
+            Some(envelope) => (envelope.decode_ingress)(frames, state, ctx),
+            None => decode_ws_frame(frames, state, dialect, ctx),
         }
     }
 
@@ -277,14 +272,12 @@ impl Plane for VoicePlane {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
-        // A one-shot operation has no session, by construction: `decode_one_shot` admitted it
-        // without one and there is none to hand back here. Requiring one turned every transcribe
-        // and every text-to-speech answer into a decode refusal, so the unit that WAS admitted
-        // never saw its own answer and never metered anything at all.
-        let Some(halfbox) = st else {
-            return decode_one_shot_response(frames, ctx);
-        };
-        let state = halfbox
+        // Every unit this plane admits was admitted on a session, so every answer it reads has one
+        // to be read against: the codec state that parsed the request's frames is the state that
+        // parses the reply's. An answer with no session is an answer to a unit this plane never
+        // opened.
+        let state = st
+            .ok_or(Decode::MissingDeclaredFact)?
             .get_mut::<VoiceSessionState>()
             .ok_or(Decode::MissingDeclaredFact)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
@@ -727,106 +720,6 @@ fn view<'u>(body: &'u [u8], ctx: &Ctx<'u>) -> Result<Ir<'u>, Decode> {
     let spans = busbar_contract::spans::resolve(body, BODY_PTRS, ctx.arena())
         .map_err(|_| Decode::Oversize)?;
     Ok(Ir::new(body, spans))
-}
-
-/// Decode a one-shot (`http`) transcribe/tts request: no session, a single `OneShot` unit.
-fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<Ingress<'u>, Decode> {
-    let path = ctx
-        .transport()
-        .fact(FACT_PATH)
-        .ok_or(Decode::MissingDeclaredFact)?;
-    let dialect = claims::dialect_for(path).ok_or(Decode::UnsupportedOperation)?;
-    // The two one-shot names are strings and have no dialect row: they are HTTP operations, not
-    // streaming dialects (see `claims`'s own header).
-    let op = match dialect {
-        claims::TRANSCRIBE => OpClassId::new(claims::TRANSCRIBE),
-        claims::TTS => OpClassId::new(claims::TTS),
-        _ => return Err(Decode::UnsupportedOperation),
-    };
-    let frame = frames.next_frame();
-    let body: &'u [u8] = frame.map(|f| f.bytes.as_slice()).unwrap_or(&[]);
-    let mut facts = Facts::new();
-    facts
-        .set(meta::FACT_DIALECT, FactValue::Str(dialect))
-        .map_err(|_| Decode::Oversize)?;
-    // What a text-to-speech request is priced on is the text it asks to be spoken, and that text is
-    // in the request rather than in the answer. Decode is the step that reads the request's bytes,
-    // so the figure is taken here and travels on the unit; the metering step reads it back off the
-    // draft rather than opening the body a second time.
-    if dialect == claims::TTS {
-        if let Some(text) = crate::oneshot::tts_input_text(body) {
-            facts
-                .set(
-                    meta::FACT_TEXT_TOKENS_IN,
-                    FactValue::Int(
-                        i64::try_from(meta::text_tokens_of(text.len())).unwrap_or(i64::MAX),
-                    ),
-                )
-                .map_err(|_| Decode::Oversize)?;
-        }
-    }
-    Ok(Ingress::OneShot(Box::new(UnitDraft {
-        op,
-        body_ir: view(body, ctx)?,
-        correlates: None,
-        correlation_out: None,
-        facts,
-    })))
-}
-
-/// Decode the answer to a one-shot transcribe or text-to-speech request.
-///
-/// There is no session and no codec state: the operation is one request and one answer, and the
-/// answer ends the unit. What the answer states is what is stamped — a transcription's own text,
-/// under the class the emitted text prices at. A speech answer is audio bytes whose duration this
-/// plane cannot read without knowing the format the upstream chose, so it states nothing about
-/// them: the request's own text estimate, taken at decode, is what that unit is priced on.
-fn decode_one_shot_response<'u>(
-    frames: &mut FrameCursor<'u>,
-    ctx: &Ctx<'u>,
-) -> Result<Progress<'u>, Decode> {
-    let path = ctx
-        .transport()
-        .fact(FACT_PATH)
-        .ok_or(Decode::MissingDeclaredFact)?;
-    let dialect = claims::dialect_for(path).ok_or(Decode::UnsupportedOperation)?;
-    if !matches!(dialect, claims::TRANSCRIBE | claims::TTS) {
-        return Err(Decode::UnsupportedOperation);
-    }
-    let frame = frames.next_frame();
-    let body: &'u [u8] = frame.map(|f| f.bytes.as_slice()).unwrap_or(&[]);
-    let mut facts = Facts::new();
-    if dialect == claims::TRANSCRIBE {
-        if let Some(text) = transcript_text(body) {
-            facts
-                .set(
-                    meta::FACT_TEXT_TOKENS_OUT,
-                    FactValue::Int(
-                        i64::try_from(meta::text_tokens_of(text.len())).unwrap_or(i64::MAX),
-                    ),
-                )
-                .map_err(|_| Decode::Oversize)?;
-        }
-    }
-    Ok(Progress::Terminal {
-        for_: None,
-        r: Box::new(Response {
-            ir: view(body, ctx)?,
-            finish: FinishClass::TurnComplete,
-            facts,
-        }),
-    })
-}
-
-/// The text a one-shot transcription answered with, in the provisional wire shape this plane
-/// documents (`{"text": "..."}`). `None` for anything else, which states nothing rather than
-/// guessing a figure.
-fn transcript_text(body: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    value
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
 }
 
 /// Decode one frame of a duplex session bound to one of the two WS dialects (OpenAI Realtime or

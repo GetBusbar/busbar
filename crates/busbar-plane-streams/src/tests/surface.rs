@@ -23,8 +23,8 @@ use crate::surface::{
 
 /// The dialect a binding name belongs to, by the dialect's own word for itself.
 ///
-/// A NAME, not a row: two of the five names this plane claims are one-shot operations with no
-/// dialect row at all, and a binding is matched against the claim table, which is keyed by name.
+/// A NAME, not a row: the carrier's row arrives at boot from its own crate and is not linked in
+/// this test process, and a binding is matched against the claim table, which is keyed by name.
 fn dialect_of(binding: &str) -> &'static str {
     claims::DIALECT_CLAIMS
         .iter()
@@ -47,10 +47,10 @@ fn the_declared_surface_passes_the_boot_check() {
 /// THIS PLANE DECLARES A DUPLEX ROUTE, AND DECLARES NOTHING ELSE.
 ///
 /// Two halves, and the second is the one that keeps the declaration from quietly growing a wire
-/// shape nobody chose. Every row here opens a SESSION: this plane's one-shot pair has no wire shape
-/// written down to take a request or a response media type from (`surface.rs` says so at length),
-/// and a row that appeared for one would be a media type invented in a declaration and answered to
-/// conformant clients.
+/// shape nobody chose. Every row here opens a SESSION, because a session is the only thing this
+/// plane serves: a [`Dispatch::Target`] row would be a request-and-answer route with a request and
+/// a response media type, and this plane claims no such route — the two it used to claim are
+/// `busbar-plane-llm`'s speech routes now.
 ///
 /// The first half is that the generic walk a duplex wire addresses with — the same
 /// `duplex_binding_at` the mount calls, given this plane's own registry key — reaches every mount
@@ -141,9 +141,8 @@ fn every_binding_is_carried_on_the_transport_its_claim_is_declared_against() {
 
 /// THE THREE DUPLEX DIALECTS, AND ONLY THEY, HAVE A BINDING.
 ///
-/// The one-shot pair is deliberately absent — see the module header for what it is waiting on.
-/// Stating the set here is what makes a later addition a decision somebody took rather than a row
-/// that appeared.
+/// Three dialects, three bindings, three claims: the set is closed and stating it here is what
+/// makes a later addition a decision somebody took rather than a row that appeared.
 ///
 /// The membership test is against the CLAIM TABLE and not against `dialect`'s registry, and that is
 /// the shape rather than a convenience: two of the three rows are declared by this crate and the

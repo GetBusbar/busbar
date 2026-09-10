@@ -47,12 +47,6 @@
 //!
 //! ## What is deliberately NOT declared
 //!
-//! * **The two one-shot HTTP operations.** `transcribe` and `tts` are claimed
-//!   ([`crate::claims::DIALECT_CLAIMS`]) and are not rows here. A [`Dispatch::Target`] row carries a
-//!   request and a response media type, and this plane has no one-shot wire shape written down to
-//!   take either from — `claims.rs`'s own header says the real one-shot wire is scheduled with the
-//!   `webrtc` leg. Two media types invented here would be two media types a conformant client is
-//!   answered with and nobody chose. The absence is declared, not forgotten.
 //! * **`duplex_turn` and `tool_call`.** These are the operation classes the frames INSIDE an open
 //!   session carry, and a frame is not addressed: which operation it is, is what the plane reads
 //!   out of it. A row for either would be a dispatch nothing could ever match.
