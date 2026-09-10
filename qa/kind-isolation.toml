@@ -1379,7 +1379,7 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "964"
+count = "982"
 
 [[cell]]
 crate = "busbar"
@@ -2514,7 +2514,7 @@ count = "47"
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "transport"
-count = "132"
+count = "138"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2544,7 +2544,7 @@ count = "35"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "93"
+count = "95"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2569,7 +2569,7 @@ count = "3"
 [[cell]]
 crate = "busbar-transport-sse"
 kind = "transport"
-count = "126"
+count = "123"
 
 [[cell]]
 crate = "busbar-transport-stdio"
@@ -2644,7 +2644,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "165"
+count = "169"
 
 [[cell]]
 crate = "busbar-unit-admission"
@@ -5733,3 +5733,32 @@ crate = "busbar-voice-codec"
 kind = "dialect"
 note = "segment scanner 175, window scanner 257. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
+[[dep]]
+from    = "busbar-transport-sse"
+to      = "busbar-transport-http"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-sse names busbar-transport-http a SECOND time, in its dev half: declared dev in the test graph, 1 declaration(s) at this commit. The lower wire no longer builds a client of its own — it dials only through the client it was COMPOSED OVER — so a battery that dials through it has to compose one, and the fixture client that lets it is reached through the lower wire's `test-support` feature. The shipped half of this edge is unchanged and this half is absent from every build that does not compile tests. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the composition root's own binding. Once the root hands the composed client to the lower wire at boot, a battery over this wire takes the same object the served path takes and needs no fixture client of its own; this row falls with the dev-dependency line that reaches the fixture."
+
+[[dep]]
+from    = "busbar-transport-ws"
+to      = "busbar-transport-http"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-ws names busbar-transport-http a SECOND time, in its dev half: declared dev in the test graph, 1 declaration(s) at this commit. The lower wire no longer builds a client of its own — it dials only through the client it was COMPOSED OVER — so a battery that dials through it has to compose one, and the fixture client that lets it is reached through the lower wire's `test-support` feature. The shipped half of this edge is unchanged and this half is absent from every build that does not compile tests. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the composition root's own binding. Once the root hands the composed client to the lower wire at boot, a battery over this wire takes the same object the served path takes and needs no fixture client of its own; this row falls with the dev-dependency line that reaches the fixture."
+
+[[dep]]
+from    = "busbar-transport-grpc"
+to      = "busbar-transport-http"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-grpc names busbar-transport-http a SECOND time, in its dev half: declared dev in the test graph, 1 declaration(s) at this commit. The lower wire no longer builds a client of its own — it dials only through the client it was COMPOSED OVER — so a battery that dials through it has to compose one, and the fixture client that lets it is reached through the lower wire's `test-support` feature. The shipped half of this edge is unchanged and this half is absent from every build that does not compile tests. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the composition root's own binding. Once the root hands the composed client to the lower wire at boot, a battery over this wire takes the same object the served path takes and needs no fixture client of its own; this row falls with the dev-dependency line that reaches the fixture."
