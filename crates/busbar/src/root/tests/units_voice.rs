@@ -270,7 +270,8 @@ fn unit_zero_runs_every_station_and_settles_exactly_once() {
 /// same directory, the same chain, the plane's own audience, and the unit runs to its end.
 #[test]
 fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
-    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use crate::root::kernel::auth_bindings::AuthBindings;
+    use busbar_contract::{KeyFacts, VirtualKeyDirectory};
 
     /// One issued key, accepted only under the audience this plane declares — and a record of
     /// the audience it was asked under, so the boundary is measured and not merely stated.
@@ -280,6 +281,10 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
     }
 
     impl VirtualKeyDirectory for OneKey {
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+
         fn verify(
             &self,
             credential: &str,
@@ -295,10 +300,14 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             })
         }
 
-        fn revoked(&self, _credential: &str) -> bool {
+        fn is_revoked(&self, _credential: &str) -> bool {
             false
         }
     }
@@ -1491,7 +1500,8 @@ fn a_text_only_turn_settles_the_text_it_metered() {
 #[test]
 fn a_paid_turns_record_names_its_principal() {
     crate::open_record!(unit_record, &ctx(1));
-    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use crate::root::kernel::auth_bindings::AuthBindings;
+    use busbar_contract::{KeyFacts, VirtualKeyDirectory};
     use busbar_unit_audit::record::Subject;
 
     // A door the fixture must actually pass, with a directory that resolves the credential to a
@@ -1501,6 +1511,10 @@ fn a_paid_turns_record_names_its_principal() {
     // only caught if the record is checked against the exact id the door issued.
     struct OneKey;
     impl VirtualKeyDirectory for OneKey {
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+
         fn verify(
             &self,
             credential: &str,
@@ -1512,10 +1526,14 @@ fn a_paid_turns_record_names_its_principal() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             })
         }
 
-        fn revoked(&self, _credential: &str) -> bool {
+        fn is_revoked(&self, _credential: &str) -> bool {
             false
         }
     }
@@ -2149,13 +2167,18 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
 #[test]
 fn a_credential_is_resolved_against_this_planes_own_audience() {
     crate::open_record!(unit_record, &ctx(1));
-    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use crate::root::kernel::auth_bindings::AuthBindings;
     use busbar_caps::{Authenticated, KernelSeal};
+    use busbar_contract::{KeyFacts, VirtualKeyDirectory};
 
     /// One key, minted for one audience.
     struct Directory;
 
     impl VirtualKeyDirectory for Directory {
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+
         fn verify(
             &self,
             credential: &str,
@@ -2172,10 +2195,14 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
             (expected_aud == Some(minted_for)).then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             })
         }
 
-        fn revoked(&self, _credential: &str) -> bool {
+        fn is_revoked(&self, _credential: &str) -> bool {
             false
         }
     }

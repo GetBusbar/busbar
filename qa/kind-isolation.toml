@@ -1357,6 +1357,7 @@ kind = "control"
 # place a LOCALLY SERVED plane sees one. One line, and it is what keeps "every plane fills the same
 # face" true rather than true of four.
 count = "1078"
+count = "1062"
 
 [[cell]]
 crate = "busbar"
