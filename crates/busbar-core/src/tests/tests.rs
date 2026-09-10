@@ -556,6 +556,7 @@ async fn split_admin_listener_no_double_exposure() {
         limits::translate_body_max_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        |data, _| data,
     );
 
     async fn get(router: Router, path: &str, token: Option<&str>) -> u16 {

@@ -364,100 +364,127 @@ fn registered_rows() -> Vec<Registered> {
 //   THE MOUNT ROWS — one per plane, declared by the plane, read by the boot
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// WHAT THE BOOT HOLDS at the instant it composes a mount, offered to every plane alike.
+/// The row kind, gated exactly as the mount it describes is.
 ///
-/// Three values, and not one of them names a protocol: the deployment's ingress source (the engine
-/// host and this node's own credential resolution, sealed once — see
-/// [`crate::root::mount_ingress::BootIngress`]), the process's ONE book, and the operator's ingress
-/// cap. A plane that needs more than these has a source the boot has not resolved yet, and the way
-/// it says so is [`MountAbsent`] rather than a field added here for one plane's benefit.
-pub struct MountInputs {
-    /// The deployment's own ingress source, shared by every mounted leg on this node.
-    pub ingress: Arc<dyn crate::root::mount_ingress::ArrivalSource>,
-    /// The process's one book. A leg whose walk settles postings binds ITS node to this one, so the
-    /// administrative views read the same money the mounted path posts.
-    pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
-    /// The operator's configured ingress cap, the same figure the mounted router was built with.
-    pub request_body_max_bytes: usize,
-}
+/// A module rather than the switch repeated over each item: the row names
+/// [`crate::root::plane_mount::MountedLeg`], whose whole file carries this same three-way switch, so
+/// a build with no plane mounted has no mount to describe. One boundary, stated once, and the items
+/// come back out below under the names a reader already knows.
+#[cfg(any(
+    feature = "root-a2a-serve",
+    feature = "root-mcp-serve",
+    feature = "root-llm-serve"
+))]
+mod mounts {
+    use super::Arc;
 
-impl std::fmt::Debug for MountInputs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MountInputs")
-            .field("request_body_max_bytes", &self.request_body_max_bytes)
-            .finish_non_exhaustive()
-    }
-}
-
-/// WHY A PLANE THAT DECLARED A MOUNT HAS NONE ON THIS DEPLOYMENT.
-///
-/// A refusal rather than a bare `None`, for the reason the two legs that assemble field by field
-/// refuse by name: "this plane is not mounted" and "this plane is not mounted BECAUSE its auth chain
-/// has no boot-resolved source" are two different statements, and only the second one tells an
-/// operator — or the deletion slot reading the boot's own report — what would have to exist for the
-/// mounted path to be the shipped path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MountAbsent {
-    /// The plane whose mount is absent, by its own registry key.
-    pub plane: &'static str,
-    /// The source that has no boot answer, named as the plane's own assembly names it.
-    pub source: &'static str,
-}
-
-impl std::fmt::Display for MountAbsent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let MountAbsent { plane, source } = self;
-        write!(
-            f,
-            "plane `{plane}` declares a mount, but the boot resolves no `{source}` for it"
-        )
-    }
-}
-
-/// The leg a row hands back, or the source that has no boot answer.
-type Composed = Result<Arc<dyn crate::root::plane_mount::MountedLeg>, MountAbsent>;
-
-/// ONE PLANE'S DECLARED SURFACE, as a row the boot reads.
-///
-/// The shape is the one the transport rows above already have — a key, and the facts about it — and
-/// it is a row for the same reason: a composition step that named planes would have to be edited for
-/// every plane added, and the thing being added is always data. The row's `compose` lives in that
-/// plane's own `units_<plane>_mount.rs`, beside the leg it assembles.
-pub struct MountRow {
-    /// The plane this row is about, by the key its `PlaneMeta` declares.
-    pub plane: &'static str,
-    /// Assemble this plane's leg over what the boot holds, or name the source that is absent.
+    /// WHAT THE BOOT HOLDS at the instant it composes a mount, offered to every plane alike.
     ///
-    /// A bare `fn` and not a closure: a row is DATA, and a row that captured would be a row that
-    /// carried a piece of one boot around with it.
-    pub compose: fn(&MountInputs) -> Composed,
-}
+    /// Three values, and not one of them names a protocol: the deployment's ingress source (the engine
+    /// host and this node's own credential resolution, sealed once — see
+    /// [`crate::root::mount_ingress::BootIngress`]), the process's ONE book, and the operator's ingress
+    /// cap. A plane that needs more than these has a source the boot has not resolved yet, and the way
+    /// it says so is [`MountAbsent`] rather than a field added here for one plane's benefit.
+    pub struct MountInputs {
+        /// The deployment's own ingress source, shared by every mounted leg on this node.
+        pub ingress: Arc<dyn crate::root::mount_ingress::ArrivalSource>,
+        /// The process's one book. A leg whose walk settles postings binds ITS node to this one, so the
+        /// administrative views read the same money the mounted path posts.
+        pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+        /// The operator's configured ingress cap, the same figure the mounted router was built with.
+        pub request_body_max_bytes: usize,
+    }
 
-impl std::fmt::Debug for MountRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MountRow")
-            .field("plane", &self.plane)
-            .finish_non_exhaustive()
+    impl std::fmt::Debug for MountInputs {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MountInputs")
+                .field("request_body_max_bytes", &self.request_body_max_bytes)
+                .finish_non_exhaustive()
+        }
+    }
+
+    /// WHY A PLANE THAT DECLARED A MOUNT HAS NONE ON THIS DEPLOYMENT.
+    ///
+    /// A refusal rather than a bare `None`, for the reason the two legs that assemble field by field
+    /// refuse by name: "this plane is not mounted" and "this plane is not mounted BECAUSE its auth chain
+    /// has no boot-resolved source" are two different statements, and only the second one tells an
+    /// operator — or the deletion slot reading the boot's own report — what would have to exist for the
+    /// mounted path to be the shipped path.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct MountAbsent {
+        /// The plane whose mount is absent, by its own registry key.
+        pub plane: &'static str,
+        /// The source that has no boot answer, named as the plane's own assembly names it.
+        pub source: &'static str,
+    }
+
+    impl std::fmt::Display for MountAbsent {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let MountAbsent { plane, source } = self;
+            write!(
+                f,
+                "plane `{plane}` declares a mount, but the boot resolves no `{source}` for it"
+            )
+        }
+    }
+
+    /// The leg a row hands back, or the source that has no boot answer.
+    type Composed = Result<Arc<dyn crate::root::plane_mount::MountedLeg>, MountAbsent>;
+
+    /// ONE PLANE'S DECLARED SURFACE, as a row the boot reads.
+    ///
+    /// The shape is the one the transport rows above already have — a key, and the facts about it — and
+    /// it is a row for the same reason: a composition step that named planes would have to be edited for
+    /// every plane added, and the thing being added is always data. The row's `compose` lives in that
+    /// plane's own `units_<plane>_mount.rs`, beside the leg it assembles.
+    pub struct MountRow {
+        /// The plane this row is about, by the key its `PlaneMeta` declares.
+        pub plane: &'static str,
+        /// Assemble this plane's leg over what the boot holds, or name the source that is absent.
+        ///
+        /// A bare `fn` and not a closure: a row is DATA, and a row that captured would be a row that
+        /// carried a piece of one boot around with it.
+        pub compose: fn(&MountInputs) -> Composed,
+    }
+
+    impl std::fmt::Debug for MountRow {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MountRow")
+                .field("plane", &self.plane)
+                .finish_non_exhaustive()
+        }
+    }
+
+    /// EVERY MOUNT THIS BUILD CARRIES, in the order the planes are declared above.
+    ///
+    /// A row is present exactly when that plane's serving switch is on, for the reason a transport row
+    /// is present exactly when its crate edge is: a row for a mount this binary does not compile would
+    /// be the root declaring a surface no request could reach.
+    #[must_use]
+    pub fn mount_rows() -> Vec<MountRow> {
+        #[allow(unused_mut)]
+        let mut rows: Vec<MountRow> = Vec::new();
+        // BOTH SWITCHES ON EVERY ROW, not just the serving one. A serving switch implies its plane's —
+        // `root-llm-serve = ["root-llm", …]` — so one of the two would compile identically; it is spelled
+        // out because the root's own escape lint reads the gate over the LINE, and a module declared
+        // under `root-llm` that is named under `root-llm-serve` alone is exactly the shape that lint
+        // exists to catch. A gate that is true by implication is still a gate a reader has to derive.
+        #[cfg(all(feature = "root-llm", feature = "root-llm-serve"))]
+        rows.push(crate::root::units_llm_mount::MOUNT_ROW);
+        #[cfg(all(feature = "root-mcp", feature = "root-mcp-serve"))]
+        rows.push(crate::root::units_mcp_mount::MOUNT_ROW);
+        #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
+        rows.push(crate::root::units_a2a_mount::MOUNT_ROW);
+        rows
     }
 }
 
-/// EVERY MOUNT THIS BUILD CARRIES, in the order the planes are declared above.
-///
-/// A row is present exactly when that plane's serving switch is on, for the reason a transport row
-/// is present exactly when its crate edge is: a row for a mount this binary does not compile would
-/// be the root declaring a surface no request could reach.
-#[must_use]
-pub fn mount_rows() -> Vec<MountRow> {
-    #[allow(unused_mut)]
-    let mut rows: Vec<MountRow> = Vec::new();
-    #[cfg(feature = "root-llm-serve")]
-    rows.push(crate::root::units_llm_mount::MOUNT_ROW);
-    #[cfg(feature = "root-mcp-serve")]
-    rows.push(crate::root::units_mcp_mount::MOUNT_ROW);
-    #[cfg(feature = "root-a2a-serve")]
-    rows.push(crate::root::units_a2a_mount::MOUNT_ROW);
-    rows
-}
+#[cfg(any(
+    feature = "root-a2a-serve",
+    feature = "root-mcp-serve",
+    feature = "root-llm-serve"
+))]
+pub use mounts::{mount_rows, MountAbsent, MountInputs, MountRow};
 
 /// Register every axis and answer both boot checks.
 ///

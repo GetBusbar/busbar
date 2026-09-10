@@ -741,11 +741,21 @@ pub(crate) fn apply_common_layers(
 /// Both planes carry the identical middleware stack; the inbound-concurrency cap applies to the DATA
 /// plane only (the low-volume admin plane is uncapped, matching today's default). Returns
 /// `(data_router, admin_router, shared_handle)`.
+///
+/// `compose_data` is THE COMPOSITION ROOT'S OWN STEP over the data surface, and WHERE it runs is the
+/// whole reason it is a parameter rather than something the caller does to the returned router. A
+/// composition root that wraps a plane's surface in front of what this function hands back sits
+/// OUTSIDE the operator's inbound-concurrency cap: the cap is the outermost layer here, so every
+/// address that wrap answers is admitted without being counted, and a node configured to shed at N
+/// serves an unbounded number of them. Applied here, between the common layers and the cap, whatever
+/// the root composes is inside the operator's bound and outside nothing. A root with nothing to
+/// compose passes the identity and the stack is what it was.
 pub fn build_split_routers_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
+    compose_data: impl FnOnce(Router, &std::sync::Arc<state::AppHandle>) -> Router,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
@@ -763,6 +773,10 @@ pub fn build_split_routers_with_limits(
         request_body_max_bytes,
         server_timing_enabled,
     );
+    // THE ROOT'S OWN COMPOSITION, INSIDE THE OPERATOR'S BOUND. See the parameter's note: a wrap
+    // applied to the returned router would answer its addresses outside the cap below, and a node
+    // told to shed at N would serve them without limit.
+    let data = compose_data(data, &handle);
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
