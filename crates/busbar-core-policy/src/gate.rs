@@ -94,12 +94,6 @@ pub struct GateSubject<'a> {
     pub container: &'a str,
     /// The dialect label, verbatim onto the wire. DATA: no code here compares it.
     pub ingress_protocol: &'a str,
-    /// WHAT IS BEING ASKED FOR, in the plane's own nouns — the answer to `Plane::hook_subject`,
-    /// read against the bytes that plane decoded. This module cannot derive it: `IrFacts` is the
-    /// family-blind view and a family has no opinion about which of its members is the target. The
-    /// firing site, which decoded the request, supplies it — the same relationship, and for the same
-    /// reason, that `container` above already has. `None` = this operation names no target.
-    pub subject: Option<&'a str>,
     /// The request-spine correlation id, so a hook can join this decision to the request's other
     /// records.
     pub request_id: u64,
@@ -357,30 +351,20 @@ fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> O
 fn project<'a>(
     subject: &'a GateSubject<'a>,
     items: &'a ScreenedContent<'a>,
-    send_prompt: bool,
-    send_user: bool,
+    argument: bool,
+    identity: bool,
 ) -> RoutingRequest<'a> {
     let shape = subject.facts.shape();
     RoutingRequest {
         request_id: subject.request_id,
         pool: subject.container,
         ingress_protocol: subject.ingress_protocol,
-        // THE PLANE'S OWN ANSWER, not a stand-in: whichever noun this dialect gives the thing being
-        // asked for — a tool, a skill, a model, a session mode — named by the plane that decoded the
-        // request. This member was `None` for the whole life of this seam, with a comment pointing a
-        // reader at the content projection's item label instead, which no wire has ever carried; the
-        // field is still RESERVED on the shared wire, so filling it moves no byte a hook can see and
-        // gives the value a home for the first time.
-        requested_model: subject.subject,
         message_count: shape.turn_count,
-        tool_count: 0,
         has_tools: shape.has_tools,
         total_chars: shape.text_chars,
-        // The system slot's chars, summed over the SAME items the projection shows.
-        system_chars: items.counts().1,
         max_tokens: shape.max_tokens,
         stream: subject.facts.wants_stream(),
-        prompt: send_prompt.then(|| crate::PromptProjection {
+        argument: argument.then(|| crate::ArgumentProjection {
             system: join_system(items),
             messages: items
                 .iter()
@@ -388,7 +372,7 @@ fn project<'a>(
                 .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
                 .collect(),
         }),
-        identity: send_user.then(|| crate::CallerIdentity {
+        identity: identity.then(|| crate::CallerIdentity {
             key_id: subject.key.map(|k| k.id.clone()),
             key_name: subject.key.map(|k| k.name.clone()),
             // The BODY's end-user field, which is a different fact from the key: a protocol whose

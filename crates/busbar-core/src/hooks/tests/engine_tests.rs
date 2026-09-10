@@ -1477,7 +1477,7 @@ fn from_ranked_never_produces_reject() {
 /// stream (the VirtualKey key-hash precedent).
 #[test]
 fn opt_in_projections_redact_debug() {
-    let p = PromptProjection {
+    let p = ArgumentProjection {
         system: Some("SECRET-SYSTEM-PROMPT".into()),
         messages: vec![("user".into(), "SECRET-MESSAGE-TEXT".into())],
     };
@@ -1528,15 +1528,12 @@ fn dreq(text: &str) -> RoutingRequest<'static> {
         request_id: 1,
         pool: "p",
         ingress_protocol: "anthropic",
-        requested_model: None,
         message_count: 1,
-        tool_count: 0,
         has_tools: false,
         total_chars: text.len(),
-        system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(PromptProjection {
+        argument: Some(ArgumentProjection {
             system: None,
             messages: vec![("user".into(), text.to_string().into())],
         }),
@@ -1950,7 +1947,7 @@ async fn dlopen_prompt_no_grant_withholds_content() {
     // The prompt carries the token, but with send_prompt=false the CORE would not project it. Here we
     // simulate the firing site: a `prompt: no` gate gets a request with NO prompt projection.
     let mut req = dreq("please BLOCKME");
-    req.prompt = None; // the core withholds content for a no-grant hook
+    req.argument = None; // the core withholds content for a no-grant hook
     let d = policy
         .decide(
             &req,

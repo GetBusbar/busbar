@@ -1467,7 +1467,7 @@ pub fn transform_over_over(
             arguments: arguments.clone(),
             extra: Default::default(),
         };
-        let req = build_invoke_rewrite_request(&facts, ingress, request_id, subject.subject);
+        let req = build_invoke_rewrite_request(&facts, ingress, request_id);
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {
@@ -1521,7 +1521,6 @@ fn build_invoke_rewrite_request<'a>(
     facts: &'a dyn busbar_substrate::ir::facts::IrFacts,
     ingress_protocol: &'a str,
     request_id: u64,
-    subject: Option<&'a str>,
 ) -> busbar_api::RoutingRequest<'a> {
     use busbar_substrate::ir::facts::Slot;
     use std::borrow::Cow;
@@ -1541,24 +1540,19 @@ fn build_invoke_rewrite_request<'a>(
     } else {
         Some(Cow::Owned(system_pieces.join("\n")))
     };
-    let prompt = enforce_invoke_content_cap(busbar_api::PromptProjection { system, messages });
+    let argument = enforce_invoke_content_cap(busbar_api::ArgumentProjection { system, messages });
     busbar_api::RoutingRequest {
         request_id,
         // A rewrite over a plane payload has no LLM routing pool; the wire omits it for the rewrite
         // projection (RESERVED field, no reader), so the empty label is neutral.
         pool: "",
         ingress_protocol,
-        // The firing plane's own answer, exactly as the gate twin carries it — the transform pass
-        // must be told the same thing about the same request the gate was told.
-        requested_model: subject,
         message_count: shape.turn_count,
-        tool_count: shape.tool_count,
         has_tools: shape.has_tools,
         total_chars: shape.text_chars,
-        system_chars: shape.system_chars,
         max_tokens: shape.max_tokens,
         stream: facts.wants_stream(),
-        prompt: Some(prompt),
+        argument: Some(argument),
         identity: None,
         signals: Default::default(),
     }
@@ -1568,8 +1562,8 @@ fn build_invoke_rewrite_request<'a>(
 /// call — the same rule the LLM seam's `enforce_content_cap` applies: over-cap content is OMITTED
 /// WHOLE (the hook is sent an empty projection), never truncated mid-value.
 fn enforce_invoke_content_cap(
-    p: busbar_api::PromptProjection<'_>,
-) -> busbar_api::PromptProjection<'_> {
+    p: busbar_api::ArgumentProjection<'_>,
+) -> busbar_api::ArgumentProjection<'_> {
     let cap = busbar_substrate::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly UNLIMITED — the operator turned the ceiling off (`0 = unlimited`), exactly as the
@@ -1586,7 +1580,7 @@ fn enforce_invoke_content_cap(
         return p;
     }
     metrics::counter!(busbar_substrate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
-    busbar_api::PromptProjection {
+    busbar_api::ArgumentProjection {
         system: None,
         messages: Vec::new(),
     }

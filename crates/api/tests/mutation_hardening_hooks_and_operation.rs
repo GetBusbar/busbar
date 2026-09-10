@@ -11,7 +11,7 @@
 
 use busbar_api::operation::{OpShape, Operation};
 use busbar_api::{
-    CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection, RoutingContext,
+    ArgumentProjection, CallerIdentity, HookStatus, PolicyError, PolicyResult, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 use std::collections::HashSet;
@@ -192,13 +192,17 @@ fn operation_all_excludes_the_llm_verbs() {
 
 // ── `hooks.rs`'s redacting `Debug` impls ─────────────────────────────────────────────────────────
 
-/// `PromptProjection`'s `Debug` must actually WRITE the shape summary (system char count, message
+/// `ArgumentProjection`'s `Debug` must actually WRITE the shape summary (system char count, message
 /// count) — a mutant that turned the whole `fmt` body into a no-op `Ok(())` would produce an EMPTY
-/// debug string, which this catches, while still never emitting the operator-opted-in prompt text
-/// itself.
+/// debug string, which this catches, while still never emitting the operator-opted-in argument
+/// payload itself.
+///
+/// The two labels it asserts are this projection's OWN members (`system`, `messages`) and stay; the
+/// `RoutingRequest::system_chars` member that shared one of those words is gone, so this is now the
+/// only `system_chars` in the hook contract and the pin is the only thing holding it.
 #[test]
-fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
-    let proj = PromptProjection {
+fn argument_projection_debug_writes_shape_not_empty_and_never_the_text() {
+    let proj = ArgumentProjection {
         system: Some(std::borrow::Cow::Borrowed("you are a helpful assistant")),
         messages: vec![
             (
@@ -221,12 +225,12 @@ fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
     );
     assert!(
         !dbg.contains("capital of France") && !dbg.contains("Paris"),
-        "prompt text must never appear in Debug: {dbg}"
+        "the argument payload must never appear in Debug: {dbg}"
     );
 }
 
 /// `CallerIdentity`'s `Debug` shows the operator-facing key fields but redacts the end-user PII —
-/// same "must not be a no-op" pin as `PromptProjection`, plus the redaction split.
+/// same "must not be a no-op" pin as `ArgumentProjection`, plus the redaction split.
 #[test]
 fn caller_identity_debug_writes_key_fields_and_redacts_user() {
     let id = CallerIdentity {

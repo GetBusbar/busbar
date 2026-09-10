@@ -140,7 +140,7 @@ use super::*;
 // `RoutingRequest`/`RoutingContext` are the api projection types the request-side `build` takes; with
 // that builder now homed in `busbar_substrate::hooks::wire` they are no longer imported into the
 // reply-side `wire` module `super::*` re-exports, so name them at their (core-re-exported) home.
-use crate::{CallerIdentity, PromptProjection, RoutingContext, RoutingRequest};
+use crate::{ArgumentProjection, CallerIdentity, RoutingContext, RoutingRequest};
 
 fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
     Candidate {
@@ -165,15 +165,12 @@ fn req() -> RoutingRequest<'static> {
         request_id: 7,
         pool: "p",
         ingress_protocol: "anthropic",
-        requested_model: None,
         message_count: 2,
-        tool_count: 0,
         has_tools: false,
         total_chars: 10,
-        system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: None,
+        argument: None,
         identity: None,
         signals: Default::default(),
     }
@@ -208,7 +205,7 @@ fn opt_in_payload_carries_prompt_identity_tags() {
     static TAGS: std::sync::LazyLock<Vec<String>> =
         std::sync::LazyLock::new(|| vec!["team-a".into(), "eu".into()]);
     let mut r = req();
-    r.prompt = Some(PromptProjection {
+    r.argument = Some(ArgumentProjection {
         system: Some("be brief".into()),
         messages: vec![("user".into(), "hello world".into())],
     });
@@ -240,7 +237,7 @@ fn opt_in_payload_carries_prompt_identity_tags() {
 #[test]
 fn opt_in_prompt_without_system_still_sends_messages() {
     let mut r = req();
-    r.prompt = Some(PromptProjection {
+    r.argument = Some(ArgumentProjection {
         system: None,
         messages: vec![],
     });
@@ -421,7 +418,7 @@ fn anonymous_identity_emits_empty_user_object() {
 #[test]
 fn opt_in_content_with_newlines_stays_one_line() {
     let mut r = req();
-    r.prompt = Some(PromptProjection {
+    r.argument = Some(ArgumentProjection {
         system: Some("line1\nline2".into()),
         messages: vec![("user".into(), "a\nb\rc\u{2028}d".into())],
     });

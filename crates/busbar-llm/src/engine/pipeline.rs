@@ -1456,7 +1456,6 @@ fn fire_global_taps(
     let build_proj = |with_prompt: bool| {
         let req = build_rewrite_request(
             &facts,
-            body.get("model").and_then(serde_json::Value::as_str),
             pool_name,
             ingress_protocol,
             wants_stream,

@@ -41,7 +41,7 @@ impl RoutingPolicy for CapturingPolicy {
         _budget: std::time::Duration,
     ) -> PolicyResult {
         *self.seen.lock().unwrap() = Some(CapturedReq {
-            prompt: req.prompt.as_ref().map(|p| {
+            prompt: req.argument.as_ref().map(|p| {
                 (
                     p.system.as_deref().map(str::to_string),
                     p.messages

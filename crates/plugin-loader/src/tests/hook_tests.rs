@@ -56,7 +56,7 @@ fn test_projectors() -> Arc<HookProjectors> {
             serde_json::json!({
                 "request": {
                     "pool": req.pool,
-                    "messages": req.prompt.as_ref().map(|p| {
+                    "messages": req.argument.as_ref().map(|p| {
                         p.messages.iter().map(|(r, t)| {
                             serde_json::json!({"role": r.as_ref(), "text": t.as_ref()})
                         }).collect::<Vec<_>>()
@@ -68,7 +68,7 @@ fn test_projectors() -> Arc<HookProjectors> {
         transform: Box::new(|req| {
             serde_json::json!({
                 "request": {
-                    "messages": req.prompt.as_ref().map(|p| {
+                    "messages": req.argument.as_ref().map(|p| {
                         p.messages.iter().map(|(r, t)| {
                             serde_json::json!({"role": r.as_ref(), "text": t.as_ref()})
                         }).collect::<Vec<_>>()
@@ -159,15 +159,12 @@ pub(crate) fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
         request_id: 1,
         pool: "p",
         ingress_protocol: "anthropic",
-        requested_model: None,
         message_count: 1,
-        tool_count: 0,
         has_tools: false,
         total_chars: text.len(),
-        system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        argument: Some(busbar_api::ArgumentProjection {
             system: None,
             messages: vec![("user".into(), text.to_string().into())],
         }),

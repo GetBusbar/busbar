@@ -205,11 +205,11 @@ impl HookFacts {
     /// instructions on the dialects that carry the system prompt inside the turns array. A turn that
     /// yields no items still yields an entry with empty text: a screening hook must never see fewer
     /// turns than the provider does.
-    pub(crate) fn prompt(&self) -> busbar_api::PromptProjection<'_> {
+    pub(crate) fn prompt(&self) -> busbar_api::ArgumentProjection<'_> {
         use busbar_substrate::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let HookFacts::Facts(ir) = self else {
-            return busbar_api::PromptProjection {
+            return busbar_api::ArgumentProjection {
                 system: None,
                 messages: Vec::new(),
             };
@@ -243,7 +243,7 @@ impl HookFacts {
                 }
             }
         }
-        busbar_api::PromptProjection {
+        busbar_api::ArgumentProjection {
             system: join_pieces(system).filter(|s| !s.is_empty()),
             messages: turns
                 .into_iter()
@@ -290,9 +290,9 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 /// allowed to look like an empty request. `busbar_hook_content_truncated_total` counts it, so the
 /// default ceiling can be chosen by a metric rather than by a guess.
 pub(crate) fn enforce_content_cap(
-    prompt: Option<busbar_api::PromptProjection<'_>>,
-) -> Option<busbar_api::PromptProjection<'_>> {
-    let p = prompt?;
+    argument: Option<busbar_api::ArgumentProjection<'_>>,
+) -> Option<busbar_api::ArgumentProjection<'_>> {
+    let p = argument?;
     let cap = busbar_substrate::proxy::hook_content_max_bytes();
     if cap == 0 {
         // Explicitly unlimited — the operator turned the ceiling off.
@@ -315,7 +315,7 @@ pub(crate) fn enforce_content_cap(
         "hook content projection exceeded limits.hook_content_max_bytes; the content is OMITTED \
          whole (never truncated mid-value) and the hook is sent an empty content projection"
     );
-    Some(busbar_api::PromptProjection {
+    Some(busbar_api::ArgumentProjection {
         system: None,
         messages: Vec::new(),
     })
@@ -326,7 +326,6 @@ pub(crate) fn enforce_content_cap(
 /// identity — the `user` grant projection for rewrite hooks is a follow-up). Borrows from `facts`.
 pub(crate) fn build_rewrite_request<'a>(
     facts: &'a HookFacts,
-    requested_model: Option<&'a str>,
     pool_name: &'a str,
     ingress_protocol: &'a str,
     wants_stream: bool,
@@ -338,18 +337,15 @@ pub(crate) fn build_rewrite_request<'a>(
         request_id,
         pool: pool_name,
         ingress_protocol,
-        requested_model,
         message_count: shape.turn_count,
-        tool_count: shape.tool_count,
         has_tools: shape.has_tools,
         total_chars: shape.text_chars,
-        system_chars: shape.system_chars,
         max_tokens: shape.max_tokens,
         stream: wants_stream,
         // A `prompt: rw` rewrite gate needs the prompt content (`with_prompt`). A TAP gets the
         // shape-only default bucket (`with_prompt == false`) — a per-grant prompt projection for
         // `prompt: ro` taps is a follow-up; shape-only never OVER-shares, so the grant holds.
-        prompt: enforce_content_cap(with_prompt.then(|| facts.prompt())),
+        argument: enforce_content_cap(with_prompt.then(|| facts.prompt())),
         identity: None,
         // The rewrite (transform) pass is a content seam, not a decide seam — it has no candidate
         // set to read candidate-phase catalog signals from, and no request-phase compute fn is
@@ -404,7 +400,6 @@ pub(crate) async fn apply_global_rewrites(
         // this slice on effective `rw`, which implies read.
         let req = build_rewrite_request(
             &facts,
-            v.get("model").and_then(Value::as_str),
             pool_name,
             ingress_protocol,
             wants_stream,
@@ -627,9 +622,11 @@ pub(crate) async fn decide_policy_order(
         None
     };
 
-    // `policy.send_prompt` opt-in (default off): project the prompt content for the hook. The
-    // allocation cost lives entirely behind the flag — a shape-only pool never runs this.
-    let prompt = enforce_content_cap(send_prompt.then(|| facts.prompt()));
+    // The ARGUMENT-axis opt-in (default off): project the subject's argument payload for the hook,
+    // which on this plane is the conversation. The allocation cost lives entirely behind the flag —
+    // a shape-only pool never runs this. (The carrier still spells the flag `send_prompt`; that
+    // frozen substrate name is the drain the next line takes.)
+    let argument = enforce_content_cap(send_prompt.then(|| facts.prompt()));
 
     let member_meta = EngineTables::new(rt)
         .pool_runtime()
@@ -640,21 +637,15 @@ pub(crate) async fn decide_policy_order(
         request_id: request_ctx.request_id,
         pool: pool_name,
         ingress_protocol,
-        // The one scalar still read off the pristine body: the requested model is a ROUTING noun
-        // rather than a conversation fact, and the chat IR does not model it (a path-model dialect
-        // never carries it in the body at all, and reads `None` here exactly as it did before).
-        requested_model: v.get("model").and_then(|m| m.as_str()),
         message_count: shape.turn_count,
-        tool_count: shape.tool_count,
         has_tools: shape.has_tools,
         total_chars: shape.text_chars,
-        system_chars: shape.system_chars,
         // Normalized by the reader from whichever field its dialect spells the cap in — including
         // the nested config object one dialect uses, which the raw-body projection could not see.
         // A SIZE signal, not a limit.
         max_tokens: shape.max_tokens,
         stream: wants_stream,
-        prompt,
+        argument,
         identity,
         // Request-phase catalog signals: none wired to the decide path in this pass (the existing
         // core fields above already cover every request-shape signal a route policy reads today).
@@ -847,8 +838,8 @@ pub(crate) async fn run_on_error_chain(
         // built AND its own grants allow (never over-shares; a fallback with a grant the primary
         // lacked gets shape-only — the projection was never built).
         let fb_req = busbar_api::RoutingRequest {
-            prompt: if fb.send_prompt {
-                req.prompt.clone()
+            argument: if fb.send_prompt {
+                req.argument.clone()
             } else {
                 None
             },

@@ -27,7 +27,7 @@ pub const OP_NOTIFY: &str = "notify";
 /// The stable request schema sent to a hook: the request projection, every candidate, and context.
 /// The request-side wire structs deliberately do NOT derive `Debug`: behind the opt-ins they
 /// borrow prompt text and end-user identity, and a derived Debug would bypass the redacting
-/// impls on `PromptProjection`/`CallerIdentity`.
+/// impls on `ArgumentProjection`/`CallerIdentity`.
 #[derive(Serialize)]
 pub struct HookRequest<'a> {
     /// The message kind: `decide` (a gate's blocking decision), `transform` (a rewrite pass), or
@@ -284,8 +284,8 @@ pub fn build<'a>(
             // The opt-in projections: `None` (and thus ABSENT from the JSON) unless the pool set
             // `policy.send_prompt` / `policy.send_user` — `forward` only populates the source
             // fields behind those flags, so absence here is enforced upstream by construction.
-            system: req.prompt.as_ref().and_then(|p| p.system.as_deref()),
-            messages: req.prompt.as_ref().map(|p| {
+            system: req.argument.as_ref().and_then(|p| p.system.as_deref()),
+            messages: req.argument.as_ref().map(|p| {
                 p.messages
                     .iter()
                     .map(|(role, text)| HookMessage {

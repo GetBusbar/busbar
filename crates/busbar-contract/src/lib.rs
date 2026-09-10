@@ -69,8 +69,8 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use hooks::{
-    BudgetBucketState, CallerIdentity, Candidate, HookStatus, HookSubject, PolicyError,
-    PolicyResult, PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
+    ArgumentProjection, BudgetBucketState, CallerIdentity, Candidate, HookStatus, HookSubject,
+    PolicyError, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, SubjectFacts, TransformOutcome,
 };
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};

@@ -40,8 +40,8 @@ pub use auth::{
 // reader: every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`, and
 // this block goes with the crate.
 pub use busbar_contract::{
-    BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
-    PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
+    ArgumentProjection, BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError,
+    PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
 // THE RESIDUE IS THE CONTRACT'S TOO: the `Operation` axis (`operation`), the secret carrier

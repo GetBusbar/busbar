@@ -22,31 +22,28 @@ pub struct RoutingRequest<'a> {
     pub pool: &'a str,
     /// The ingress dialect's wire name, as the plane that admitted the request reports it.
     pub ingress_protocol: &'a str,
-    /// The model the caller asked for (may be a pool name or a member model), if any. RESERVED for
-    /// the gate/rewrite hook projections — the shared webhook/socket wire omits it today, so it has
-    /// no reader yet.
-    pub requested_model: Option<&'a str>,
     /// Number of messages on the request.
     pub message_count: usize,
-    /// Number of tool definitions on the request. RESERVED for the hook seam (no reader yet).
-    pub tool_count: usize,
     /// Whether the request carries any tool definition.
     pub has_tools: bool,
     /// Sum of all text-block chars across system + messages. A v1 SIZE signal (NOT a token count).
     pub total_chars: usize,
-    /// System-prompt text chars only. RESERVED for the hook seam (no reader yet).
-    pub system_chars: usize,
     /// The caller's output-token cap, if any.
     pub max_tokens: Option<u32>,
     /// Whether the caller asked for a streamed reply.
     pub stream: bool,
-    /// The request's prompt content — `Some` ONLY when the hook was granted `prompt: ro` or `rw`
-    /// (default `no`). The default projection is shape-only; this is the operator-granted exception
-    /// that lets a trusted hook screen content (PII, guardrails, audit) or rewrite it (`rw`). Borrows
-    /// from the parsed body where it can (bare-string content); only block-array flattening
-    /// allocates, and that cost is paid only behind the grant.
-    pub prompt: Option<PromptProjection<'a>>,
-    /// Caller identity — `Some` ONLY when the hook was granted `user: ro` (default `no`). Carries the
+    /// THE SUBJECT'S ARGUMENT PAYLOAD — the span [`HookSubject::argument_span`] names, projected.
+    /// `Some` ONLY when the engine's effective ARGUMENT access is `ro` or `rw` (default `no`). The
+    /// default projection is shape-only; this is the operator-granted exception that lets a trusted
+    /// hook screen content (PII, guardrails, audit) or rewrite it (`rw`). Borrows from the parsed
+    /// body where it can; only block-array flattening allocates, and that cost is paid only behind
+    /// the grant.
+    ///
+    /// One plane projects that payload as a conversation, another as a call's arguments, a third as
+    /// a session configuration. They are the same thing to a gate, which is why the axis is the
+    /// subject's and not one plane's.
+    pub argument: Option<ArgumentProjection<'a>>,
+    /// Caller identity — `Some` ONLY when the effective IDENTITY access is `ro` (default `no`). Carries the
     /// governance virtual-key `id`/`name` and the body's end-user field. NEVER the caller's
     /// secret/token, regardless of configuration.
     pub identity: Option<CallerIdentity>,
@@ -59,7 +56,8 @@ pub struct RoutingRequest<'a> {
     pub signals: crate::SignalBag,
 }
 
-/// The prompt content projection (the hook's `prompt: ro|rw` grant), read from the normalized IR.
+/// THE ARGUMENT-PAYLOAD projection (the engine's `argument: ro|rw` access), read from the
+/// normalized IR — the reading of [`HookSubject::argument_span`].
 ///
 /// Text only: every content block that carries screenable text is flattened, including reasoning
 /// text, tool-call arguments and tool-result content. Content busbar cannot read (provider-encrypted
@@ -83,19 +81,19 @@ pub struct RoutingRequest<'a> {
 /// `Cow`: a single-block turn borrows straight from the normalized request (the common case, zero
 /// copies); only a multi-block turn allocates a joined string.
 #[derive(Clone)]
-pub struct PromptProjection<'a> {
+pub struct ArgumentProjection<'a> {
     /// The system prompt's text, flattened (bare string, or text blocks concatenated).
     pub system: Option<std::borrow::Cow<'a, str>>,
     /// Every message as `(role, flattened text)`, in request order.
     pub messages: Vec<(std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>)>,
 }
 
-/// Debug REDACTS the content: this struct exists precisely because the operator opted prompt text
-/// into the hook payload, and a stray `{:?}` on the routing path (a debug log while chasing a hook
-/// issue) must not fan that text out into log aggregators. Shapes only.
-impl std::fmt::Debug for PromptProjection<'_> {
+/// Debug REDACTS the content: this struct exists precisely because the operator opted the subject's
+/// argument payload into the hook payload, and a stray `{:?}` on the routing path (a debug log while
+/// chasing a hook issue) must not fan that text out into log aggregators. Shapes only.
+impl std::fmt::Debug for ArgumentProjection<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PromptProjection")
+        f.debug_struct("ArgumentProjection")
             .field(
                 "system_chars",
                 &self.system.as_deref().map(|s| s.chars().count()),

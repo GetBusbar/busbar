@@ -39,10 +39,12 @@ use std::borrow::Cow;
 #[serde(rename_all = "snake_case")]
 pub enum Signal {
     // ── Request phase (available from the pristine ingress body, pre-forward) ──────────────────
-    /// The model the caller asked for. Catalog form of the RESERVED `RoutingRequest::requested_model`
-    /// core field — still projected as a core field today (this design does not migrate any
-    /// existing core field, see the module doc); listed here so a future outcome/log consumer can
-    /// declare it without a struct change.
+    /// The model the caller asked for. THE ONLY form: the `RoutingRequest::requested_model` core
+    /// field this entry was the catalog twin of is gone — it was projected by no transport, so it
+    /// was a member no hook could ever read, and a reserved member with no reader is a promise the
+    /// wire never kept. Declaring this entry is how a consumer asks for the value, and the day a
+    /// request-phase compute fn is wired to the neutral gate seam the subject the PLANE names
+    /// (`Plane::hook_subject`) is what fills it.
     RequestedModel,
     /// Total prompt chars (system + every turn). Catalog form of `RoutingRequest::total_chars` —
     /// still a CORE field today; listed for completeness (a consumer that gets the request
@@ -50,9 +52,11 @@ pub enum Signal {
     RequestTotalChars,
     /// Conversation-turn count. Catalog form of `RoutingRequest::message_count` (still CORE today).
     RequestMessageCount,
-    /// Tool-definition count. Catalog form of the RESERVED `RoutingRequest::tool_count` core field.
+    /// Tool-definition count. THE ONLY form, for the same reason as [`Signal::RequestedModel`]: the
+    /// reserved core field it was the twin of had no reader on any transport and is gone.
     RequestToolCount,
-    /// System-prompt-only chars. Catalog form of the RESERVED `RoutingRequest::system_chars` field.
+    /// System-prompt-only chars. THE ONLY form, on the same reasoning; `has_tools` and `total_chars`
+    /// stay core fields because the wire does project those.
     RequestSystemChars,
 
     // ── Candidate phase (per-candidate, read from already-maintained store state) ───────────────

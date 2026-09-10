@@ -235,30 +235,27 @@ because = "the plane-neutral hook-subject face is proven by a cell that decodes 
 # a duplex mode fixed by which route was mounted). So the plane reads its own answer in its own bytes
 # and hands the seam the two values, and the request-admission host ABI stops taking `tool: &str` +
 # `args_json: &[u8]` -- one plane's word for a callable and one for its arguments, on a seam an agent
-# plane and a duplex plane both reach without having callables at all. Five lines in
-# busbar-contract by scripts/loc-surface.py (3609 -> 3614, busbar-caps 1151 unmoved), counted three
-# times below because three ceilings sum the same crate. The fourth entry is a different crate and a
-# different fact: ONE line in busbar-core-policy, the `GateSubject::subject` member that the
-# projection's `requested_model` reads instead of the `None` it has written since the seam existed.
+# plane and a duplex plane both reach without having callables at all. FIVE lines for the face and
+# THREE straight back in the same line, because the three reserved members of the routing projection
+# (`requested_model`, `tool_count`, `system_chars`) turned out to be members no transport projects
+# and no hook can read, and they went with the field that fed them: busbar-contract 3609 -> 3611 by
+# scripts/loc-surface.py, busbar-caps 1151 unmoved. Net 2, counted three times below because three
+# ceilings sum the same crate. busbar-core-policy needs no entry at all: 1,732 -> 1,726, a ratchet
+# that only goes down going down.
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 5
-because = "the hook subject's READING (`SubjectFacts`, with its `subject`/`arguments` members) in busbar-contract/src/hooks.rs: 5 surface lines measured by scripts/loc-surface.py, which is what lets `AdmissionHost::gate_decide` and `transform_over` take the plane's own answer instead of `tool: &str` + `args_json: &[u8]` -- MCP's word for a callable and for its arguments, into which the agent plane spelled a task operation and the duplex plane a literal method name, neither having callables at all"
+by = 2
+because = "the hook subject's READING (`SubjectFacts`, with its `subject`/`arguments` members) in busbar-contract/src/hooks.rs, NET of the three reserved routing-projection members deleted in the same line: 5 lines for the face, 3 back for `RoutingRequest::requested_model`/`tool_count`/`system_chars`, so 2 by scripts/loc-surface.py (3609 -> 3611, busbar-caps 1151 unmoved). The face is what lets `AdmissionHost::gate_decide` and `transform_over` take the plane's own answer instead of `tool: &str` + `args_json: &[u8]` -- MCP's word for a callable and for its arguments, into which the agent plane spelled a task operation and the duplex plane a literal method name, neither having callables at all"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 5
-because = "the hook subject's READING (`SubjectFacts`) in busbar-contract/src/hooks.rs: the same 5 lines as the surface-ceiling raise, as the loc-ceilings rule's own counter measures them. Gathered into one type rather than passed as a pair for the reason every other bundle on this path is gathered -- two adjacent parameters of a request that a caller can silently transpose is a gate that screens the arguments and admits on the name"
+by = 2
+because = "the hook subject's READING (`SubjectFacts`) in busbar-contract/src/hooks.rs less the three deleted reserved members: the same net 2 lines as the surface-ceiling raise, as the loc-ceilings rule's own counter measures them. Gathered into one type rather than passed as a pair for the reason every other bundle on this path is gathered -- two adjacent parameters of a request that a caller can silently transpose is a gate that screens the arguments and admits on the name"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 5
-because = "the hook subject's READING in busbar-contract/src/hooks.rs: the same 5 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms -- kernel 5379 and unit-* 14590 are both unchanged by this line, which adds no kernel and no unit code at all"
-
-[[gate.ceiling_raises]]
-key = "gate.surface_ceilings.core_policy"
-by = 1
-because = "ONE line in busbar-core-policy/src/gate.rs: the `GateSubject::subject` member, which the gate's projection reads into `requested_model` instead of the `None` that member has carried since this seam existed. This module CANNOT derive it -- `IrFacts` is the family-blind view and a family has no opinion about which of its members is the target -- so the firing site that decoded the request supplies it, the same relationship the `container` member beside it already had. A ratchet that only goes down moves up by one here, and the line it buys deletes a four-line comment that pointed a reader at a content-projection label no hook wire has ever carried"
+by = 2
+because = "the hook subject's READING in busbar-contract/src/hooks.rs less the three deleted reserved members: the same net 2 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms -- kernel 5379 and unit-* 14590 are both unchanged by this line, which adds no kernel and no unit code at all"
 
 # THE VIRTUAL-KEY DIRECTORY FACE (`busbar_contract::kinds::{KeyScope, KeyFacts,
 # VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
@@ -367,16 +364,16 @@ because = "busbar-contract x plane. operation.rs's header is the table that deri
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 4765
+contract_caps = 4762
 grammar = 388
 contract_transport = 845
 # THE HOOK POLICY ENGINE (`busbar-core-policy`, kind core) — not a plugin-author budget but the
 # ratchet ARCHITECTURE.md 1.1 puts on a core crate whose whole claim is that it stayed one thing:
-# owner ceiling 2k, PINNED at the measurement (1,730 with the grant ladder written over the hook
-# subject's ARGUMENT axis and the subject itself named on the gate's own facts, 2026-09-10 — that
-# ladder took it 1,732 -> 1,729 and the subject member put one line back; 1,732 at [M4c]; 1,672 the
-# day it was extracted) so it can only go down. `--write` re-pins it like every other ratchet.
-core_policy = 1730
+# owner ceiling 2k, PINNED at the measurement (1,726 the day the grant ladder was written over the
+# hook subject's ARGUMENT axis and the routing projection's three reader-less reserved members went
+# with the field that fed them, 2026-09-10; 1,732 at [M4c]; 1,672 the day it was extracted) so it
+# can only go down. `--write` re-pins it like every other ratchet.
+core_policy = 1726
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -595,12 +592,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4768
+caps_contract_ceiling = 4765
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24737
+union_ceiling = 24734
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

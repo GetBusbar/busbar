@@ -209,10 +209,10 @@ fn prompt_projection_reads_gemini_contents() {
     assert_eq!(shape.turn_count, 2);
     assert_eq!(shape.text_chars, 8 + 5 + 16);
     // And the rewrite-request projection (the gate's view) is POPULATED, not blind.
-    let req = build_rewrite_request(&f, None, "p", "gemini", false, true, 1);
+    let req = build_rewrite_request(&f, "p", "gemini", false, true, 1);
     assert_eq!(req.message_count, 2);
     assert!(req.total_chars > 0);
-    assert_eq!(req.prompt.as_ref().unwrap().messages.len(), 2);
+    assert_eq!(req.argument.as_ref().unwrap().messages.len(), 2);
 }
 
 /// Responses-API half: `input` (list OR bare string) and `instructions` must project.
@@ -252,7 +252,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(f.shape().turn_count, 1);
     assert_eq!(f.shape().text_chars, 15);
 
-    let req = build_rewrite_request(&f, None, "p", "responses", false, true, 1);
+    let req = build_rewrite_request(&f, "p", "responses", false, true, 1);
     assert_eq!(req.message_count, 1);
     assert_eq!(req.total_chars, 15);
 
@@ -280,7 +280,7 @@ fn prompt_projection_reads_responses_input() {
         5 + 7,
         "top-level item text must count toward the size signal, not read as 0"
     );
-    let req = build_rewrite_request(&f, None, "p", "responses", false, true, 1);
+    let req = build_rewrite_request(&f, "p", "responses", false, true, 1);
     assert_eq!(req.message_count, 2);
     assert_eq!(req.total_chars, 12);
 }
@@ -298,7 +298,7 @@ fn max_tokens_signal_is_dialect_aware_for_responses() {
     assert_eq!(facts(&resp, "responses").shape().max_tokens, Some(4096));
     // The routing projection is populated for a responses request.
     let f = facts(&resp, "responses");
-    let req = build_rewrite_request(&f, None, "p", "responses", false, true, 1);
+    let req = build_rewrite_request(&f, "p", "responses", false, true, 1);
     assert_eq!(req.max_tokens, Some(4096));
 
     // Every other dialect keeps reading its own spelling.
@@ -803,9 +803,9 @@ fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
         0,
         "the LLM prompt projection default is UNLIMITED (0); anything else is fail-open regression"
     );
-    let req = build_rewrite_request(&f, None, "p", "openai", false, true, 1);
+    let req = build_rewrite_request(&f, "p", "openai", false, true, 1);
     let prompt = req
-        .prompt
+        .argument
         .as_ref()
         .expect("a rewrite gate always gets the prompt projection");
     assert_eq!(
@@ -818,8 +818,8 @@ fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
 
     // 2. OPT-IN ceiling: over-cap content is omitted WHOLE, grant stays visible (present-but-empty).
     crate::engine::set_hook_content_max_bytes(64 * 1024);
-    let req = build_rewrite_request(&f, None, "p", "openai", false, true, 1);
-    let prompt = req.prompt.as_ref().expect(
+    let req = build_rewrite_request(&f, "p", "openai", false, true, 1);
+    let prompt = req.argument.as_ref().expect(
         "the grant is honoured: an over-cap projection is EMPTY, never absent — absence is what an \
          UNGRANTED hook sees, and the two must stay distinguishable",
     );

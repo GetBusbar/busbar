@@ -343,9 +343,6 @@ fn run_content_gate(
         container: "",
         ingress_protocol: "plane",
         request_id: 0,
-        // A stream chunk is not an operation and names nothing; `None` is the honest answer and the
-        // one the shipped EMPTY gate set never reads (see this fn's note).
-        subject: None,
         key: None,
         incremental: None,
     };
@@ -535,7 +532,6 @@ pub(crate) extern "C-unwind" fn gate_decide(
             container,
             ingress_protocol: ingress,
             request_id: s.request_id,
-            subject: subject_name,
             key: key_facts.as_ref(),
             incremental,
         };

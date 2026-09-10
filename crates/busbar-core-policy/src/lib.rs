@@ -89,7 +89,7 @@ pub mod wire;
 // implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
 pub use busbar_contract::{
-    CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
+    ArgumentProjection, CallerIdentity, Candidate, PolicyError, PolicyResult, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
 // The "decision observability" signal catalog — `Signal`/`SignalValue`/
