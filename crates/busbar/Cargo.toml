@@ -103,6 +103,8 @@ busbar-plane-llm-responses = { path = "../busbar-plane-llm-responses" }
 # The third dialect, and the first the boot seals whose rungs are HEADERS: the same one line, and
 # not one line of the boot's logic changed for a rung shape the first two dialects did not have.
 busbar-plane-llm-anthropic = { path = "../busbar-plane-llm-anthropic" }
+# The fourth dialect, and the first the boot seals whose rungs are path PATTERNS: the same one line.
+busbar-plane-llm-gemini = { path = "../busbar-plane-llm-gemini" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }

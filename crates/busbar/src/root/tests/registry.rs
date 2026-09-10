@@ -748,13 +748,14 @@ fn the_boot_serves_the_registered_dialects_rungs() {
     // of the same vendor, carved out separately because it is a different vocabulary; rung 14 is
     // the loosest rung the plane has, and the one four separate non-chat paths sit on. Rungs 2 and
     // 4 are the first HEADER rungs a dialect crate has declared — above every path rung — and 11
-    // is that dialect's path, reached only when no header claimed the request first.
+    // is that dialect's path, reached only when no header claimed the request first. Rungs 3, 5
+    // and 6 are a fourth dialect's key header, action suffixes and model-scoped path PATTERNS.
     let rungs: Vec<u16> = entries
         .iter()
         .flat_map(|e| e.ladder.iter())
         .map(|c| c.rung)
         .collect();
-    for rung in [2u16, 4, 7, 10, 11, 14] {
+    for rung in [2u16, 3, 4, 5, 6, 7, 10, 11, 14] {
         assert!(rungs.contains(&rung), "rung {rung} is not registered");
     }
 }
@@ -792,21 +793,33 @@ fn the_merged_ladder_answers_for_every_registered_dialect() {
             // it, so the tightest honest request target for a rung is the rung's own text and no
             // header is sent. For a header form, the request target is one no path rung claims and
             // the ONE header the rung names is sent with the value the rung asks for — present,
-            // prefixed, or exact — so the header is the only evidence the walk has. Every form a
-            // registered dialect has declared is answered here; a form none has declared yet is
-            // where the next dialect says so rather than being silently skipped.
-            let (path, header): (&str, Option<(&str, &str)>) = match rung.claim.selector {
-                Selector::PathSuffix(s) | Selector::PathContains(s) => (s, None),
-                Selector::HeaderPresent(name) => ("/unclaimed", Some((name, "present"))),
-                Selector::HeaderPrefix(name, prefix) => ("/unclaimed", Some((name, prefix))),
-                Selector::HeaderExact(name, value) => ("/unclaimed", Some((name, value))),
+            // prefixed, or exact — so the header is the only evidence the walk has. For a PATTERN,
+            // the target is the pattern spelled out with one segment per variable and per tail.
+            // Every form a registered dialect has declared is answered here; a form none has
+            // declared yet is where the next dialect says so rather than being silently skipped.
+            let (path, header): (String, Option<(&str, &str)>) = match rung.claim.selector {
+                Selector::PathSuffix(s) | Selector::PathContains(s) => (s.to_string(), None),
+                Selector::PathPattern(segments) => {
+                    use busbar_contract::grammar::PathSeg;
+                    let spelled: Vec<&str> = segments
+                        .iter()
+                        .map(|seg| match seg {
+                            PathSeg::Lit(lit) => *lit,
+                            PathSeg::Var | PathSeg::Tail => "x",
+                        })
+                        .collect();
+                    (format!("/{}", spelled.join("/")), None)
+                }
+                Selector::HeaderPresent(name) => ("/unclaimed".into(), Some((name, "present"))),
+                Selector::HeaderPrefix(name, prefix) => ("/unclaimed".into(), Some((name, prefix))),
+                Selector::HeaderExact(name, value) => ("/unclaimed".into(), Some((name, value))),
                 _ => continue,
             };
             let header_fn =
                 |name: &str| -> Option<&str> { header.and_then(|(n, v)| (n == name).then_some(v)) };
             asked += 1;
             assert_eq!(
-                plane.dialect_for(path, &header_fn),
+                plane.dialect_for(&path, &header_fn),
                 Some(declared),
                 "the request target {path} with header {header:?} is a rung of the registered \
                  dialect `{declared}` and the merged ladder resolved it elsewhere"
