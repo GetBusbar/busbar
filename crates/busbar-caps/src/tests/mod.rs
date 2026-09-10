@@ -31,6 +31,9 @@ mod the_posting_arithmetic;
 /// Where a reported quantity came from, and the three questions the crate asks about it.
 mod what_the_usage_report_says;
 
+/// The settlement column: every reason's money consequence, walked over the closed vocabulary.
+mod what_a_refusal_settles;
+
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
 /// seal on its own.
 struct Kernel {

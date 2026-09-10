@@ -12,8 +12,8 @@
 
 pub mod bounded;
 pub mod dest;
-pub mod error;
 pub mod dialect;
+pub mod error;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -37,11 +37,11 @@ pub use dest::{
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };
+pub use dialect::{Dialect, DialectMeta};
 pub use error::{
     Advisory, Catalog, CatalogEntry, CatalogFault, ErrorClass, Param, ParamValue, Params,
     PluginError, Template, MAX_CATALOG_CODES, MAX_CATALOG_LOCALES, MAX_ERROR_PARAMS,
 };
-pub use dialect::{Dialect, DialectMeta};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,
@@ -72,8 +72,8 @@ pub use transport::{
 };
 pub use unit::{
     AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
-    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Settlement, Step,
+    TransportView, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,

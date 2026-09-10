@@ -267,6 +267,26 @@ impl Refusal {
     pub fn under_hold(&self) -> bool {
         self.at.is_some_and(StepName::under_hold)
     }
+
+    /// What this refusal means for the money, given whether the fee landed.
+    ///
+    /// The one place the settlement of an actual refusal is decided, so no caller re-derives "did
+    /// this get past the door" from a boolean it was handed. `charged` is the admission's own
+    /// answer, and it is a separate question from the hold: a unit admitted with governance off or
+    /// on a store-error fail-open is past the door and was never charged.
+    pub fn settlement(&self, charged: bool) -> busbar_contract::unit::Settlement {
+        let settled = busbar_contract::unit::Settlement::of(self.under_hold(), charged);
+        debug_assert!(
+            busbar_contract::unit::RefusalReason::from(self.reason).settles_within(settled),
+            "reason {} is declared as settling {} but this refusal settles {}",
+            self.reason.as_str(),
+            busbar_contract::unit::RefusalReason::from(self.reason)
+                .settlement()
+                .label(),
+            settled.label(),
+        );
+        settled
+    }
 }
 
 /// A step's answer: proceed with the facts the next step reads, or refuse.

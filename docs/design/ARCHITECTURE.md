@@ -68,8 +68,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,802** **of plugin-visible SURFACE**
-  (3,800 as `scripts/loc-surface.py` counts it, 3,802 as `loc-ceilings:caps-contract` does; the two
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,902** **of plugin-visible SURFACE**
+  (3,900 as `scripts/loc-surface.py` counts it, 3,902 as `loc-ceilings:caps-contract` does; the two
   differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
   2026-09-09, and each face below is pinned at its MEASURED size with zero slack. (1) THE DIALECT
   KIND'S CONTRACT FACE, 51 lines: `Kind::{Dialect, Control}` with their sealed markers and
@@ -91,14 +91,28 @@ them). Each axis is blind to the other two; only the kernel composes them.
   plugin ships a CATALOG AS DATA (`Catalog`: code → template per locale, a default locale every
   code is templated in, a missing locale falling back to the default and never to the developer
   message) beside its claims, which the kernel reads and never calls into. The per-kind
-  `StoreError`/`SecretError` enums are gone. A future face raises this figure by its own declared,
+  `StoreError`/`SecretError` enums are gone. (4) **THE SETTLEMENT COLUMN** (Track 5, 2026-09-10;
+  `busbar_contract::unit::Settlement`), 100 lines: what a refusal means for the money, which this
+  vocabulary has promised since it was written — *"adding one is a kernel change, because every code
+  has to have a settlement row"* — and never carried. THREE rows, because a unit can be past the
+  door and still never have been charged: `NeverCharged` (refused at or before the door),
+  `AdmittedUncharged` (past the door, governance off or a store error failed open, so no fee landed)
+  and `ChargedRefundable` (the only row that refunds, and it refunds the fee only — the `requests`
+  slot is retained and never released, §2.2). The derivation is `Settlement::of(under_hold, charged)`
+  where `under_hold` is `StepName::under_hold`, strictly past the door; `RefusalReason::settlement`
+  carries the per-reason bound, exhaustive over all 42 rows with no fallback arm, and
+  `settles_within` keeps that bound a CHECKED claim rather than a second source of truth. The rule
+  existed in prose in two places and in code as two hand-kept booleans threaded through
+  `busbar-core`'s `finish_inner`; because `refund_request` is a blind decrement, the two spellings
+  drifting is how a refund lands on a request that was never charged and erodes another principal's
+  window. A future face raises this figure by its own declared,
   measured amount (`[gate.ceiling_raises]` in `qa/construction.toml`) and amends this sentence;
   nothing else moves
   it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
   `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
   pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
   tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
-  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3800`), which the construction
+  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3900`), which the construction
   gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,

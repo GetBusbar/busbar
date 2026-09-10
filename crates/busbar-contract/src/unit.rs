@@ -181,6 +181,154 @@ pub enum RefusalReason {
     DeadlineExceeded,
 }
 
+/// What a refusal means for the money — the settlement row this vocabulary has always promised and
+/// never carried.
+///
+/// `RefusalReason`'s own doc says adding a code "is a kernel change, because every code has to have
+/// a settlement row". There was no settlement row. The rule was written in prose in two places —
+/// here, and on the capability crate's `StepName::under_hold` ("a refusal here is audited WITH the hold:
+/// the admission stands and the caller was charged") — and decided in code by two booleans threaded
+/// through one function in the legacy money path. Two hand-kept spellings of one fact is how a
+/// refund lands on a request that was never charged, and `refund_request` is a blind decrement: a
+/// spurious one erodes ANOTHER principal's budget in the same window. So the rule becomes data here,
+/// where both a unit and a plane may name it.
+///
+/// Three rows and not two, because a unit can be past the door and still never have been charged:
+/// governance off, no resolved key, or a store error that failed open. That case is the one
+/// `StepName::under_hold`'s prose does not cover — it says the caller "was charged", and sometimes
+/// the caller was not — so the hold and the charge are two questions here rather than one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Settlement {
+    /// Refused at or before the door. No hold was opened and no fee landed, so there is nothing to
+    /// give back and giving something back is the defect.
+    NeverCharged,
+    /// Past the door, but the fee never landed. The hold is real; the refund is not owed and
+    /// issuing it would decrement a stranger's window.
+    AdmittedUncharged,
+    /// Past the door and charged. The fee is refunded when the unit produced no usable result; the
+    /// `requests` slot is retained and is never released.
+    ChargedRefundable,
+}
+
+impl Settlement {
+    /// Every settlement, in declaration order.
+    pub const ALL: &'static [Settlement] = &[
+        Settlement::NeverCharged,
+        Settlement::AdmittedUncharged,
+        Settlement::ChargedRefundable,
+    ];
+
+    /// The settlement as the journal and the exceptions report spell it. A dashboard dimension, so
+    /// it is reworded only with the dashboards that read it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Settlement::NeverCharged => "never_charged",
+            Settlement::AdmittedUncharged => "admitted_uncharged",
+            Settlement::ChargedRefundable => "charged_refundable",
+        }
+    }
+
+    /// Whether a fee may be given back at all. The only row that refunds is the only row that was
+    /// charged; the other two answer `false` for the same reason, which is that a refund against
+    /// them is a decrement of somebody else's budget.
+    #[must_use]
+    pub const fn refunds(self) -> bool {
+        matches!(self, Settlement::ChargedRefundable)
+    }
+
+    /// The settlement a refusal carries, from the two facts that decide it: whether a hold was open
+    /// (`Refusal::under_hold`, which is `StepName::under_hold`, which is strictly past the door) and
+    /// whether the fee actually landed.
+    ///
+    /// An unstamped refusal is `under_hold == false` and therefore `NeverCharged`, which is both
+    /// what the capability crate already says an unstamped refusal means and the fail-safe
+    /// direction: the failure mode of the other choice is the spurious refund.
+    #[must_use]
+    pub const fn of(under_hold: bool, charged: bool) -> Settlement {
+        match (under_hold, charged) {
+            (false, _) => Settlement::NeverCharged,
+            (true, false) => Settlement::AdmittedUncharged,
+            (true, true) => Settlement::ChargedRefundable,
+        }
+    }
+}
+
+impl RefusalReason {
+    /// The settlement this reason is CAPABLE of — the bound its own position in the loop implies,
+    /// not the settlement of any particular refusal.
+    ///
+    /// A reason that can only ever be raised at or before the door can only ever be `NeverCharged`,
+    /// and saying so here lets a reader see the money consequence of a reason without tracing every
+    /// site that raises it. The settlement of an ACTUAL refusal is always `Settlement::of`, because
+    /// only the refusal knows whether the fee landed; this is the ceiling, and `settles_within`
+    /// checks the two never disagree.
+    ///
+    /// Exhaustive and no fallback arm, exactly as the reason vocabulary itself is: a reason added
+    /// later must be given a money consequence here before it compiles.
+    #[must_use]
+    pub const fn settlement(self) -> Settlement {
+        match self {
+            // Raised past the door, under an open hold, so the fee may have landed.
+            RefusalReason::MeterDisputed
+            | RefusalReason::DurabilityUnavailable
+            | RefusalReason::TaskLost
+            | RefusalReason::Stalled
+            | RefusalReason::DeadlineExceeded
+            | RefusalReason::ArenaBudget
+            | RefusalReason::PlanePanic
+            | RefusalReason::SecretPlaceholder
+            | RefusalReason::BreakerOpen
+            | RefusalReason::DestinationUnreachable
+            | RefusalReason::DestinationBudgetExhausted
+            | RefusalReason::HandoffMismatch
+            | RefusalReason::ClientGone
+            | RefusalReason::Superseded => Settlement::ChargedRefundable,
+            // Raised at or before the door. Nothing was charged, so nothing is given back — the
+            // five money reasons are all here, which is the whole of "money refuses at the door".
+            RefusalReason::OverBudget
+            | RefusalReason::GroupFrozen
+            | RefusalReason::Unpriced
+            | RefusalReason::OverdraftCeiling
+            | RefusalReason::StaleSlice
+            | RefusalReason::NoRate
+            | RefusalReason::TierMismatch
+            | RefusalReason::InFlightCap
+            | RefusalReason::CursorBudget
+            | RefusalReason::CredentialBudget
+            | RefusalReason::SessionBudget
+            | RefusalReason::SpillBudget
+            | RefusalReason::BodyTooLarge
+            | RefusalReason::OpenSlotBusy
+            | RefusalReason::RateLimited
+            | RefusalReason::DecodeFailed
+            | RefusalReason::SchemeNotDeclared
+            | RefusalReason::CredentialRejected
+            | RefusalReason::SessionUnbound
+            | RefusalReason::ChallengeExhausted
+            | RefusalReason::Revoked
+            | RefusalReason::ScopeMissing
+            | RefusalReason::PoolNotPermitted
+            | RefusalReason::Vetoed
+            | RefusalReason::NoDestination
+            | RefusalReason::Replayed
+            | RefusalReason::InFlight
+            | RefusalReason::Drain => Settlement::NeverCharged,
+        }
+    }
+
+    /// Whether an actual settlement is one this reason admits.
+    ///
+    /// `NeverCharged` is admitted by every reason, because any reason can be raised before a hold
+    /// opens; a reason bounded at `NeverCharged` admits nothing else. This is what makes the
+    /// declared column above a checked claim rather than a second source of truth.
+    #[must_use]
+    pub const fn settles_within(self, actual: Settlement) -> bool {
+        matches!(actual, Settlement::NeverCharged)
+            || !matches!(self.settlement(), Settlement::NeverCharged)
+    }
+}
+
 /// The closed reason codes a failure may carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum FailureReason {
