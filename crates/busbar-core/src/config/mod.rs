@@ -31,10 +31,11 @@ pub use secret::SecretRef;
 
 // Re-export status_class_from_str for config validation
 pub(crate) use crate::breaker::status_class_from_str;
-use crate::diagnostics::{
-    diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
-};
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
+}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a

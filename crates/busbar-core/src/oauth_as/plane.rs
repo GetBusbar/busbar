@@ -24,7 +24,8 @@ use std::sync::Arc;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
 use oauth_as::store::MemoryStorage;
 
-use crate::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+use busbar_substrate::diagnostics::OAUTH_AS_SWEEP_FAILED;
+use busbar_substrate::{diag_debug, diag_warn};
 
 use super::config::AsIdentity;
 use super::signer::{RingEs256Key, RingEs256Verifier};

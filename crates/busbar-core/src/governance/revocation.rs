@@ -49,8 +49,9 @@
 //! applied to the set synchronously by [`RevocationSync::insert`] (zero window), and the durable
 //! write still fails loud.
 
-use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
 use busbar_api::Store;
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
