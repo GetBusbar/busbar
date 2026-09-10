@@ -19,8 +19,9 @@ use serde_json::{Map, Value};
 use super::scan;
 use crate::ctx::{Ctx, WalkSpec};
 
-/// Every tracked grammar source lives in the engine library crate root.
-const CORE: &str = "crates/busbar-core/src";
+/// THE LEGACY ENGINE CRATE, still one of the core-kind roots and named here only so
+/// [`core_roots`] can put it first. It is NOT the tracked root any more: see [`core_roots`].
+const CORE: &str = "crates/busbar-core";
 
 /// The committed fingerprint. DATA: it stays where the config module keeps it.
 pub const SNAPSHOT: &str = "crates/busbar-core/src/config/config-schema.snapshot.json";
@@ -88,6 +89,140 @@ pub fn plane_dir(cx: &Ctx, root: &str, plane: &str, grammar: &str) -> Result<Str
     }
 }
 
+/// EVERY CORE-KIND CRATE'S `src/`, DERIVED FROM THE MANIFEST CENSUS RATHER THAN HARDCODED.
+///
+/// This used to be one constant path, `crates/busbar-core/src`, and that was correct for exactly as
+/// long as there was one core crate. The config layer is being carved out of `busbar-core` into
+/// `busbar-core-config` (D33 legacy-retirement, the config-layer ruling), and under a hardcoded
+/// root every file that leaves takes its grammar out of the fingerprint with it: the fresh render
+/// loses the types, and the additive rule reads the loss as a BREAK. That is a MOVE being reported
+/// as a deletion, and it is the one thing this gate must not say — nothing an operator writes
+/// changed by a byte.
+///
+/// So the root is a CENSUS. A crate is core-kind BY NAME (`busbar-core`, or the `busbar-core-`
+/// prefix `kind-isolation`'s own kind table uses), and membership is read from the workspace
+/// manifest rather than from the directory listing, so a crate that is on disk but not in the
+/// workspace is not silently tracked. `busbar-core` sorts first while it exists; the order is
+/// cosmetic (`resolve_sources` sorts the file set) and is only there so a report reads in the
+/// direction the drain runs.
+///
+/// AN EMPTY CENSUS IS A HARD ERROR, for the same reason a missing tracked source is: a set with no
+/// roots renders no types, and "no delta" is the passing answer to every question this gate asks.
+pub fn core_roots(cx: &Ctx) -> Result<Vec<String>, String> {
+    let manifest = cx
+        .read("Cargo.toml")
+        .map_err(|e| format!("config-schema: the workspace manifest could not be read: {e}"))?;
+    let mut roots: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        let Some(dir) = line
+            .trim()
+            .trim_end_matches(',')
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+        else {
+            continue;
+        };
+        if !dir.starts_with("crates/") {
+            continue;
+        }
+        let member_manifest = format!("{dir}/Cargo.toml");
+        let Ok(text) = cx.read(&member_manifest) else {
+            continue;
+        };
+        let Some(name) = package_name(&text) else {
+            continue;
+        };
+        if name == "busbar-core" || name.starts_with("busbar-core-") {
+            roots.push(format!("{dir}/src"));
+        }
+    }
+    roots.sort_by_key(|r| (r != &format!("{CORE}/src"), r.clone()));
+    roots.dedup();
+    if roots.is_empty() {
+        return Err(
+            "config-schema: the workspace manifest names no core-kind crate (`busbar-core` or a \
+             `busbar-core-*`). The config grammar lives in the core kind; a census that finds none \
+             renders no types, and a render of no types answers every question this gate asks with \
+             \"no delta\"."
+                .to_string(),
+        );
+    }
+    Ok(roots)
+}
+
+/// The `[package] name` of a manifest, or `None` if it declares none (a virtual manifest).
+fn package_name(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_package = t == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("name") {
+            let rest = rest.trim_start().strip_prefix('=')?.trim();
+            return rest
+                .strip_prefix('"')
+                .and_then(|s| s.split('"').next())
+                .map(str::to_string);
+        }
+    }
+    None
+}
+
+/// THE GRAMMAR DIRECTORY OF ONE CORE ROOT — its `config/` module, or the crate's own `src/` when it
+/// has none.
+///
+/// A core crate that keeps its grammar in a `config` module is tracked there, exactly as
+/// `busbar-core` always was. A core crate that IS the config layer has no `config/` module to point
+/// at — its grammar sits at its root — so the root is what is tracked. Either way the directory
+/// walk is NON-RECURSIVE (see [`resolve_sources`]), so a crate's `src/tests/**` is not grammar and
+/// does not join the fingerprint.
+///
+/// THE HAZARD, STATED. A core crate with no `config/` module whose `src/` root also carries
+/// NON-grammar `Deserialize` types would pull them into the fingerprint. That does not fail
+/// silently: `config-schema:snapshot-drift` goes red and NAMES the type it did not expect. The
+/// answer is the one the drain wants anyway — give that crate's grammar its own `config` module.
+fn grammar_dir(cx: &Ctx, root: &str) -> String {
+    let sub = format!("{root}/config");
+    if cx.exists(&sub) {
+        sub
+    } else {
+        root.to_string()
+    }
+}
+
+/// A TRACKED LEAF FILE, WHEREVER THE CORE KIND CURRENTLY KEEPS IT.
+///
+/// Same rule, and the same refusals, as [`plane_dir`]: zero homes is a coverage hole and two homes
+/// means the gate cannot say whose grammar it froze. Between those, a file that moves from one
+/// core-kind crate to another is found at its new home and its types stay in the render — which is
+/// what makes the move additive rather than a deletion.
+fn core_file(cx: &Ctx, roots: &[String], rel: &str) -> Result<String, String> {
+    let homes: Vec<String> = roots
+        .iter()
+        .map(|r| format!("{r}/{rel}"))
+        .filter(|p| cx.exists(p))
+        .collect();
+    match homes.len() {
+        1 => Ok(homes[0].clone()),
+        0 => Err(format!(
+            "config-schema: no core-kind crate carries '{rel}'. That file's serde surface is config \
+             grammar and it has just left the tracked set entirely — a coverage hole, not a move. \
+             Searched: {}.",
+            roots.join(", ")
+        )),
+        n => Err(format!(
+            "config-schema: '{rel}' resolves to {n} core-kind homes ({}). Two homes for one grammar \
+             file means this gate cannot say whose shapes it froze.",
+            homes.join(", ")
+        )),
+    }
+}
+
 /// THE TRACKED SOURCE SET — every file whose serde surface IS config grammar.
 ///
 /// A path is a directory (every `*.rs` directly inside it) or a single file, and a path that does
@@ -96,8 +231,12 @@ pub fn plane_dir(cx: &Ctx, root: &str, plane: &str, grammar: &str) -> Result<Str
 pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     let mcp = plane_dir(cx, "crates", "mcp", "config.rs")?;
     let a2a = plane_dir(cx, "crates", "a2a", "config.rs")?;
-    Ok(vec![
-        format!("{CORE}/config"),
+    // THE CORE KIND, BY CENSUS. Each core-kind crate contributes its grammar directory; the three
+    // leaf files below are resolved ACROSS the census rather than under one hardcoded crate.
+    let core = core_roots(cx)?;
+    let mut out: Vec<String> = core.iter().map(|r| grammar_dir(cx, r)).collect();
+    out.dedup();
+    out.extend([
         // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
         // 1.6.0 config-seam migration; the loaders and resolvers that consume them stayed in
         // `busbar-core`, which re-exports every moved item at its historical `config::` path.
@@ -107,20 +246,21 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
         "crates/api/src/auth.rs".to_string(),
-        format!("{CORE}/auth/mod.rs"),
+        core_file(cx, &core, "auth/mod.rs")?,
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered
         // client may ever hold.
-        format!("{CORE}/oauth_as/config.rs"),
+        core_file(cx, &core, "oauth_as/config.rs")?,
         format!("{a2a}/creds.rs"),
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
         // declaration that decides whether an operation with effects may be performed twice.
-        format!("{CORE}/failover/mod.rs"),
+        core_file(cx, &core, "failover/mod.rs")?,
         // `streams:` — the voice plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-voice/src/config.rs".to_string(),
-    ])
+    ]);
+    Ok(out)
 }
 
 /// Expand the tracked source set to a deduplicated, sorted list of `.rs` files.
