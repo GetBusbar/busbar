@@ -586,6 +586,38 @@ lq_queue_rewrite() { # $1 = candidate file, $2 = stamp taken at the read
 # …` — and dropping the one that is satisfied leaves the others holding it: the line goes live only
 # when nothing is left in front of the `--`. A tag that is not a sha, and a sha the tree has never
 # heard of (merge-base fails), are both left exactly as they were found.
+# WHAT "LANDED" MEANS ON A TREE THAT LANDS BY CHERRY-PICK. `merge-base --is-ancestor <sha> HEAD`
+# is the obvious question and it is almost always the WRONG one here: land.sh lands with
+# `cherry-pick -x`, so every landed commit is a NEW sha and the sha the queue names is an ancestor
+# of nothing. Audit 15 measured it — 30 of 30 commits on the tip carry `(cherry picked from commit
+# <40-hex>)` and 0 of the batch's picks are ancestors of HEAD — which means the first form of this
+# rule could never have released a single line.
+#
+# So EITHER answer lands it: the sha is an ancestor (it was merged, or the tree is the one it was
+# written on), OR some commit since the last landed tip carries its cherry-pick trailer. The queue
+# writes short shas and the trailer is 40 hex, so the trailer is matched by prefix.
+lq_landed_range() { # $1 = tree; prints the rev range to search for cherry-pick trailers
+  local tipf="${LANDQ_TIPFILE:-$1/target/gate/landq4.tip}" t
+  t="$(tr -d '[:space:]' <"$tipf" 2>/dev/null || true)"
+  if [ -n "$t" ] && git -C "$1" rev-parse -q --verify "$t^{commit}" >/dev/null 2>&1 \
+     && [ "$(git -C "$1" rev-parse "$t")" != "$(git -C "$1" rev-parse HEAD)" ]; then
+    printf '%s..HEAD\n' "$t"; return 0
+  fi
+  # No usable last-tip — and the usual case is that it IS HEAD, because it is written after every
+  # batch. Then the range is the whole of this branch since the integration base, and failing that
+  # (a scratch repo, a detached tree) the whole log.
+  if git -C "$1" rev-parse -q --verify "origin/$BR^{commit}" >/dev/null 2>&1; then
+    printf 'origin/%s..HEAD\n' "$BR"
+  else printf 'HEAD\n'; fi
+}
+lq_landed_here() { # $1 = tree, $2 = sha; 0 when that commit is on this tree, as itself or as a pick
+  git -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null && return 0
+  # NOT A PIPELINE. `git log … | grep -q` hands git a SIGPIPE the moment grep has its answer, and
+  # under `set -o pipefail` the whole thing then reports 141 — a "yes" that reads as an error.
+  local body
+  body="$(git -C "$1" log --format=%b $(lq_landed_range "$1") 2>/dev/null || true)"
+  grep -qE "cherry picked from commit $2[0-9a-f]*\)" <<<"$body"
+}
 lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per release
   local line rest tok out sha tmp released=0 stamp log=""
   [ -f "$Q" ] || return 0
@@ -604,7 +636,7 @@ lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per re
       sha=""
       case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; esac
       if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' \
-         && git -C "$1" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+         && lq_landed_here "$1" "$sha"; then
         log="$log""released $tok: landed
 "; released=$((released + 1))
       else
@@ -1424,6 +1456,29 @@ lq_selftest() {
   lq_release_holds "$repo" >"$root/rel2.txt"
   _t "nothing to release: the queue is untouched" "$before" "$(cksum <"$Q")"
   _t "  ...and nothing is logged"              0 "$(grep -c . "$root/rel2.txt" || true)"
+  # ── THE WAY THIS TREE ACTUALLY LANDS: `cherry-pick -x` ────────────────────────────────────────
+  # `merge-base --is-ancestor` is the obvious question and it is the wrong one. land.sh lands with
+  # `cherry-pick -x`, so the landed commit is a NEW sha and the sha the queue names is an ancestor
+  # of nothing: audit 15 measured 30 of 30 commits on the tip carrying a cherry-pick trailer and 0
+  # of the batch's picks being ancestors. The fixture lands the held commit the way the engine does.
+  local hpick hpicked mainbr
+  mainbr="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
+  git -C "$repo" checkout -q -b hold-pick-src
+  printf 'picked\n' >"$repo/picked.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm picked
+  hpick="$(git -C "$repo" rev-parse --short=9 HEAD)"
+  git -C "$repo" checkout -q "$mainbr"
+  git -C "$repo" cherry-pick -x "$hpick" >"$root/pick.log" 2>&1 || _t "the fixture's cherry-pick took" 0 1
+  hpicked="$(git -C "$repo" rev-parse --short=9 HEAD)"
+  _t "the landing made a NEW sha"              1 "$( [ "$hpick" != "$hpicked" ] && echo 1 || echo 0)"
+  _t "  ...and the picked sha is an ancestor of nothing" 1 "$(git -C "$repo" merge-base --is-ancestor "$hpick" HEAD 2>/dev/null; echo $?)"
+  _t "  ...but the trailer names it"           1 "$(git -C "$repo" log --format=%b -1 | grep -c "cherry picked from commit " || true)"
+  _t "a hold on a cherry-PICKED sha is landed" 0 "$(lq_landed_here "$repo" "$hpick"; echo $?)"
+  _t "  ...and one on a sha nobody picked is not" 1 "$(lq_landed_here "$repo" "$hside"; echo $?)"
+  printf '#HOLD-after-%s --prove picked\n#HOLD-after-%s --prove stillheld\n' "$hpick" "$hside" >"$Q"
+  lq_release_holds "$repo" >"$root/rel3.txt"
+  _t "the cherry-picked hold is released"      1 "$(grep -cx -- '--prove picked' "$Q" || true)"
+  _t "  ...and logged"                         1 "$(grep -cx "released #HOLD-after-$hpick: landed" "$root/rel3.txt" || true)"
+  _t "  ...while the unpicked one still holds" 1 "$(grep -cx -- "#HOLD-after-$hside --prove stillheld" "$Q" || true)"
   _t "the main flow releases holds before it reads the head" 1 "$(grep -c '^  lq_release_holds "\$W" | while' "$0")"
 
   # ── THE QUEUE IS REWRITTEN BY ITS READER, ONLY IF IT MOVED, AND ONLY IF NOBODY ELSE MOVED IT ───
