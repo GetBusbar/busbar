@@ -412,13 +412,6 @@ drain = "delete the transport name from the contract-transport crate: a contract
 
 [[edge]]
 from = "control"
-to = "contract-transport"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind control naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW control -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "control"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind control naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1334,7 +1327,7 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+count = "1064"
 
 [[cell]]
 crate = "busbar"
@@ -1983,18 +1976,13 @@ count = "103"
 
 [[cell]]
 crate = "busbar-plane-admin"
-kind = "contract-transport"
-count = "1"
-
-[[cell]]
-crate = "busbar-plane-admin"
 kind = "legacy"
 count = "8"
 
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "plane"
-count = "3"
+count = "2"
 
 [[cell]]
 crate = "busbar-plane-admin"
@@ -2004,12 +1992,12 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "transport"
-count = "24"
+count = "21"
 
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "unit"
-count = "16"
+count = "10"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -5434,7 +5422,7 @@ question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no 
 # `impl Plane for Wire` in a transport and `impl Transport for P` in a plane left that row
 # byte-identical in both directions: it never asked whether a crate implements SOMEBODY ELSE'S face.
 #
-# Four crates do today. Each row is the exact number, exact in both directions, with the line that
+# Three crates do today. Each row is the exact number, exact in both directions, with the line that
 # deletes it. The SHIP twin owes zero: at the tag there is no such thing as a reviewed one.
 #
 #   crate — the package that implements it.
@@ -5444,13 +5432,11 @@ question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no 
 #   why   — what the number is made of.
 #   drain — the line that deletes it.
 
-[[face]]
-crate = "busbar-plane-admin"
-face = "Plane"
-count = "1"
-cite = "none. ARCHITECTURE.md 1.4 makes `control` a kind of its own, and a control surface is not a metered plane; this crate is registered `control` by the [[registered]] row above and still carries the plane face."
-why = "the admin surface predates the control kind: it was written as a plane, it is registered as control, and the trait it implements has not moved yet. One implementation, in shipped source."
-drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
+# THE ADMIN SURFACE'S PLANE FACE IS GONE. It carried a `[[face]]` row here for one release -- it was
+# written as a plane, registered as control, and implemented the seven-step plane face because that
+# was the only face there was. The control seat landed and it re-declared through it: `Kind::Control`
+# and the four-call control face, thirteen plane methods deleted against four. The row went with the
+# implementation, which is the terms every ratchet here lives under. What is left of R7 is the RENAME.
 
 [[face]]
 crate = "busbar-a2a"

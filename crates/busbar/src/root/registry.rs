@@ -87,7 +87,7 @@ use busbar_contract::{
 };
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
-use busbar_plane_admin::AdminPlane;
+use busbar_plane_admin::AdminControl;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
@@ -256,7 +256,20 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         .collect();
     #[cfg(feature = "plane-voice")]
     claims.extend(claims_of::<VoicePlane>());
-    claims.extend(claims_of::<AdminPlane>());
+    // THE CONTROL SURFACE'S CLAIM SITS IN THE SAME TABLE, and it has to: the overlap check is about
+    // which surface a request routes to, and a served surface that declared its claim somewhere else
+    // would be a surface the check never compared against. What differs is the face it is read
+    // through — a control surface has no metering vocabulary to declare — so it is read off
+    // `ControlMeta` and paired with its key exactly as every plane's is. Last, so declaration order
+    // still breaks precedence ties the way the table has always read.
+    claims.extend(
+        <AdminControl as busbar_contract::control::ControlMeta>::CLAIMS
+            .iter()
+            .map(|claim| PlaneClaim {
+                plane: <AdminControl as busbar_contract::control::ControlMeta>::KEY,
+                claim: *claim,
+            }),
+    );
     claims
 }
 
@@ -461,7 +474,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // mounting a plane whose claims name a layer this binary does not carry.
     #[cfg(feature = "plane-voice")]
     planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
-    planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
+    planes.push(Arc::new(AdminControl::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;
     }

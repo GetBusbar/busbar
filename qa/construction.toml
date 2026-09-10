@@ -317,6 +317,18 @@ because = "busbar-core/src/admin/v1/contract's Scope, Grants and required_scope 
 # is nothing left for a decode to decide. The three rows below are the same 46 lines measured under
 # the three ceilings that count them; `busbar-plane-admin` re-declares through the face in the
 # commit that follows, deleting 13 plane methods against these 4.
+# ROOT COMPOSITION. The composition root reads the admin surface's claim off `ControlMeta` instead
+# of off `PlaneMeta`, because that is the face the surface now carries, and pairing a claim with the
+# key that made it is the one thing only a composition root can do. One more `control` word in
+# root/registry.rs and nothing else moves: the surface's own cells all FALL on this landing
+# (busbar-plane-admin x plane 3 -> 2, x transport 24 -> 21, x unit 16 -> 10, and its
+# x contract-transport cell and the whole control -> contract-transport class are struck as dead).
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the composition root reads the admin control surface's claim through busbar_contract::control::ControlMeta rather than through PlaneMeta: one more spelling of the control face in crates/busbar/src/root/registry.rs, and the pairing of a claim with the key that made it is root composition, which is the one thing no other crate may do."
+
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
 by = 46

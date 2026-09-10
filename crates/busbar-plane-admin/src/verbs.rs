@@ -18,119 +18,111 @@
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
 use crate::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
+use busbar_contract::control::ControlRoute;
 use busbar_contract::ids::OpClassId;
 
-/// One row of the closed verb table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct VerbEntry {
-    pub(crate) method: &'static str,
-    pub(crate) path: &'static str,
-    pub(crate) verb: &'static str,
-    pub(crate) read_only: bool,
-}
-
 /// The 17 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
-const NEW_VERBS_1_6_0: &[VerbEntry] = &[
-    VerbEntry {
+const NEW_VERBS_1_6_0: &[ControlRoute] = &[
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/verify",
-        verb: "verify",
+        operation: "verify",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/plane-facts",
-        verb: "plane_facts",
+        operation: "plane_facts",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/plane-record-write",
-        verb: "plane_record_write",
+        operation: "plane_record_write",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/operator-key",
-        verb: "set_operator_key",
+        operation: "set_operator_key",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/escrow",
-        verb: "set_escrow",
+        operation: "set_escrow",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/chain-break",
-        verb: "chain_break",
+        operation: "chain_break",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/store-restore",
-        verb: "store_restore",
+        operation: "store_restore",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/reseal-epoch-floor",
-        verb: "reseal_epoch_floor",
+        operation: "reseal_epoch_floor",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/dual-control",
-        verb: "set_dual_control",
+        operation: "set_dual_control",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/overdraft-ceiling",
-        verb: "set_overdraft_ceiling",
+        operation: "set_overdraft_ceiling",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/dispute-max-age",
-        verb: "set_dispute_max_age",
+        operation: "set_dispute_max_age",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/commit-upgrade",
-        verb: "commit_upgrade",
+        operation: "commit_upgrade",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/disputes/resolve",
-        verb: "resolve_dispute",
+        operation: "resolve_dispute",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/slices/resolve",
-        verb: "resolve_slice",
+        operation: "resolve_slice",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/adjust",
-        verb: "adjust",
+        operation: "adjust",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/export-keyset",
-        verb: "export_keyset",
+        operation: "export_keyset",
         read_only: false,
     },
-    VerbEntry {
+    ControlRoute {
         method: "POST",
         path: "/api/v1/admin/approve",
-        verb: "approve",
+        operation: "approve",
         read_only: false,
     },
 ];
@@ -145,35 +137,35 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
 /// Every one is a `GET` and every one is read-only, which is what puts them on the same rung as the
 /// legacy `GET /usage`: the same credential that may read what a bucket spent may read what the
 /// ledger posted for it, and neither may write anything.
-const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
-    VerbEntry {
+const LEDGER_VERBS_1_6_0: &[ControlRoute] = &[
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/ledger/totals",
-        verb: "get_ledger_totals",
+        operation: "get_ledger_totals",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/ledger/checkpoints",
-        verb: "get_ledger_checkpoints",
+        operation: "get_ledger_checkpoints",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/ledger/reconciliation",
-        verb: "get_ledger_reconciliation",
+        operation: "get_ledger_reconciliation",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/ledger/migration",
-        verb: "get_ledger_migration",
+        operation: "get_ledger_migration",
         read_only: true,
     },
-    VerbEntry {
+    ControlRoute {
         method: "GET",
         path: "/api/v1/admin/ledger/openapi.json",
-        verb: "get_ledger_openapi_json",
+        operation: "get_ledger_openapi_json",
         read_only: true,
     },
 ];
@@ -196,38 +188,76 @@ pub(crate) const OP_READ: OpClassId = OpClassId::new("admin_read");
 /// The operation class every mutating verb prices under. See [`OP_READ`].
 pub(crate) const OP_WRITE: OpClassId = OpClassId::new("admin_write");
 
-/// Every verb this plane decodes, generated rows first, then the 1.6.0 additions.
+/// THE ONE DECLARED CLAIM: every operation this surface answers, in one static table.
 ///
-/// A `const fn`-free concatenation would need `[T; N]` const generics arithmetic this table does not
-/// need to pay for: the table is built once, at first use, by `std::sync::LazyLock`, which keeps the
-/// combined list a single flat slice for every lookup while declaring its true source in one place.
-pub(crate) fn all_verbs() -> &'static [VerbEntry] {
-    static TABLE: std::sync::OnceLock<Vec<VerbEntry>> = std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut v = Vec::with_capacity(VERB_COUNT);
-        v.extend(
-            VERB_TABLE_1_5_5
-                .iter()
-                .map(|&(method, path, verb, ro)| VerbEntry {
-                    method,
-                    path,
-                    verb,
-                    read_only: ro,
-                }),
-        );
-        v.extend_from_slice(NEW_VERBS_1_6_0);
-        v.extend_from_slice(LEDGER_VERBS_1_6_0);
-        v
-    })
+/// The generated 1.5.5 rows first, then the 17 money-governance verbs, then the 5 ledger views.
+/// It is a `const` rather than a lazily-concatenated `Vec` because it is what
+/// [`ControlMeta::ROUTES`](busbar_contract::control::ControlMeta::ROUTES) hands back, and a
+/// declaration a surface builds at first use is a declaration that is not a declaration: the kind's
+/// open vocabulary is read ONCE, at registration, and sealed. The concatenation runs in a `const fn`
+/// so the three sources stay three sources — the generated artefact is never edited to hold rows it
+/// was not generated with.
+const fn declared_routes() -> [ControlRoute; VERB_COUNT] {
+    // A filler row, overwritten by every one of the `VERB_COUNT` writes below. The array has to be
+    // initialised before it can be indexed, and a `const fn` has no `MaybeUninit` this crate would
+    // be allowed to use anyway (`#![forbid(unsafe_code)]`).
+    let mut out = [ControlRoute {
+        method: "",
+        path: "",
+        operation: "",
+        read_only: true,
+    }; VERB_COUNT];
+    let mut n = 0;
+    let mut i = 0;
+    while i < VERB_TABLE_1_5_5.len() {
+        let (method, path, operation, read_only) = VERB_TABLE_1_5_5[i];
+        out[n] = ControlRoute {
+            method,
+            path,
+            operation,
+            read_only,
+        };
+        i += 1;
+        n += 1;
+    }
+    i = 0;
+    while i < NEW_VERBS_1_6_0.len() {
+        out[n] = NEW_VERBS_1_6_0[i];
+        i += 1;
+        n += 1;
+    }
+    i = 0;
+    while i < LEDGER_VERBS_1_6_0.len() {
+        out[n] = LEDGER_VERBS_1_6_0[i];
+        i += 1;
+        n += 1;
+    }
+    // The count is the declaration's own arithmetic, and this is where it is checked: a table that
+    // does not fill its own array is a table whose count and whose rows disagree.
+    assert!(n == VERB_COUNT);
+    out
+}
+
+/// The declared table, as one static value the face hands back by reference.
+static ROUTES: [ControlRoute; VERB_COUNT] = declared_routes();
+
+/// The declaration, by reference — what `ControlMeta::ROUTES` is.
+pub(crate) const fn declared() -> &'static [ControlRoute] {
+    &ROUTES
+}
+
+/// Every operation this surface answers. One reading of the one declaration.
+pub(crate) fn all_verbs() -> &'static [ControlRoute] {
+    declared()
 }
 
 /// The table row a verb NAME belongs to.
 ///
-/// This is how a step after `decode_ingress` gets back to the static row: the draft's fact map
-/// carries the verb the decode step resolved, and this turns that name into the one row that owns
-/// it. A lookup in one closed table, not a second reading of the body's bytes.
-pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
-    all_verbs().iter().find(|e| e.verb == verb)
+/// This is how a step after the loop's resolve gets back to the static row: the draft's fact map
+/// carries the operation the loop resolved, and this turns that name into the one row that owns it.
+/// A lookup in one closed table, not a second reading of the body's bytes.
+pub(crate) fn verb_named(verb: &str) -> Option<&'static ControlRoute> {
+    all_verbs().iter().find(|e| e.operation == verb)
 }
 
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
@@ -296,7 +326,7 @@ fn operation_target(target: &str) -> &str {
 pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
-) -> Option<(&'static VerbEntry, Vec<(&'static str, &'p str)>)> {
+) -> Option<(&'static ControlRoute, Vec<(&'static str, &'p str)>)> {
     let path = operation_target(path);
     all_verbs().iter().find_map(|entry| {
         if entry.method != method {
@@ -308,8 +338,8 @@ pub(crate) fn find_verb<'p>(
 
 /// One row of the closed table, as the composition root reads it.
 ///
-/// The plane's own [`VerbEntry`] stays crate-private because the plane is entitled to change how it
-/// stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
+/// The declared [`ControlRoute`] carries the surface's own spelling of a row; what a root binds
+/// against is what a row MEANS. Four fields, all `&'static`: the
 /// operation's name, the method and templated path it was extracted under, and which side of the
 /// closed read-only/full split it falls on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,7 +381,7 @@ impl ResolvedVerb {
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
     find_verb(method, path).map(|(entry, _params)| ResolvedVerb {
-        verb: entry.verb,
+        verb: entry.operation,
         method: entry.method,
         template: entry.path,
         read_only: entry.read_only,
@@ -367,48 +397,12 @@ pub fn table() -> Vec<ResolvedVerb> {
     all_verbs()
         .iter()
         .map(|entry| ResolvedVerb {
-            verb: entry.verb,
+            verb: entry.operation,
             method: entry.method,
             template: entry.path,
             read_only: entry.read_only,
         })
         .collect()
-}
-
-/// The representative body fields this plane extracts into `Facts` for the documented subset of
-/// mutation verbs — key-management, group, config, hook, identity-provider and export operations.
-/// See the crate-root doc comment for the honest boundary: this is ONE representative field per
-/// listed verb, not full per-field schema validation of every body every operation accepts. Any
-/// verb absent from this table still decodes correctly (method+path -> verb+path-params always
-/// works); it simply carries no extra body-derived fact, which is a safe, visible omission rather
-/// than a silently wrong one — nothing downstream trusts a body fact that decode did not set.
-///
-/// Every field named here is a member the pinned `openapi-1.5.5.json` request schema for that
-/// operation actually declares, and the test below reads the fixture to say so. Seven rows used to
-/// name a member no schema had (`parent` on `PutGroupsName`, `url` on `PutHooksName`, `issuer`,
-/// `sink`, `module`, `filename`, and `settings` on a body that is a free-form object): a fact key
-/// that can never be populated is a promise decode cannot keep, so those rows are either corrected
-/// to the member the schema does declare or dropped where the schema declares no named member at
-/// all (`PutConfigSettings`, `PutIdentityProvidersName`, `PutExportName` all take an open object).
-pub(crate) fn documented_body_field(verb: &str) -> Option<&'static str> {
-    Some(match verb {
-        "post_keys" => "name",
-        "patch_keys_id" => "group",
-        "post_groups" => "name",
-        "put_groups_name" => "config",
-        "patch_groups_name" => "parent",
-        "post_config_apply" => "config",
-        "post_config_rollback" => "version",
-        "post_hooks" => "name",
-        "put_hooks_name" => "config",
-        "patch_hooks_name_settings" => "settings",
-        "patch_identity_providers_name_settings" => "settings",
-        "patch_export_name_settings" => "settings",
-        "put_admin_auth" => "admin_auth",
-        "post_plugins" => "file",
-        "post_plugins_rollback" => "file",
-        _ => return None,
-    })
 }
 
 #[cfg(test)]

@@ -4,16 +4,15 @@
 //! crate, because the table-driven test below needs the crate's own `pub(crate)` verb table and
 //! `find_verb` to state its expectations without hand-duplicating either.
 
-use std::sync::Arc;
-
+use busbar_contract::bounded::Span;
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels};
-use busbar_contract::bounded::{SlabBytes, Span};
-use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
+use busbar_contract::control::{Control, ControlMeta, Rendering};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
-use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
+use busbar_contract::wire::Direction;
 
+use crate::meta::FACT_VERB;
 use crate::verbs::{self, VERB_COUNT};
-use crate::AdminPlane;
+use crate::AdminControl;
 
 // ── a minimal, leak-based test arena ─────────────────────────────────────────────────────────────
 //
@@ -81,17 +80,6 @@ impl TransportView for TestTransport {
 }
 
 /// Build a one-frame cursor over a synthetic admin envelope: `{"method":..,"path":..,"body":{..}}`.
-fn frame_cursor_for(envelope: &str) -> (Vec<Frame>, ()) {
-    let bytes: Arc<[u8]> = Arc::from(envelope.as_bytes());
-    let frame = Frame {
-        direction: Direction::Inbound,
-        stream: busbar_contract::ids::StreamId(0),
-        bytes: SlabBytes::new(bytes),
-        meta: FrameMeta::default(),
-    };
-    (vec![frame], ())
-}
-
 fn test_ctx<'u>(
     config: &'u TestConfig,
     transport: &'u TestTransport,
@@ -132,12 +120,16 @@ fn concretize_path(template: &str) -> String {
 
 // ── requirement 1: the closed-loop table test against the pinned fixture ───────────────────────
 
-/// For every one of the 66 operations the pinned `openapi-1.5.5.json` fixture declares,
-/// `decode_ingress` resolves the SAME `(verb, read_only)` pair this crate's own generated table
-/// says it should, and `approve`'s resource locator names that same verb — so the fixture, the
-/// generated table and the running codec cannot silently drift apart from one another.
+/// For every one of the 66 operations the pinned `openapi-1.5.5.json` fixture declares, the ONE
+/// DECLARED CLAIM — `ControlMeta::ROUTES` — carries a row for it with the same `(operation,
+/// read_only)` pair, the loop's resolve finds that row, and `verify` names that same operation. So
+/// the fixture, the declaration and the running face cannot silently drift apart.
+///
+/// It reads the DECLARATION and not a crate-private table on purpose: the declaration is what a
+/// composition root binds against and what every other reader of the matrix reads, so a proof that
+/// walked the private side would be proving something nobody uses.
 #[test]
-fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
+fn the_declared_claim_matches_the_pinned_1_5_5_fixture_for_every_operation() {
     let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
     let text = std::fs::read_to_string(&fixture_path)
@@ -147,11 +139,12 @@ fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
         .as_object()
         .expect("fixture has a paths object");
 
-    let plane = AdminPlane::new();
+    let surface = AdminControl::new();
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
     let arena = TestArena;
+    let declared = <AdminControl as ControlMeta>::ROUTES;
 
     let mut seen = 0usize;
     let mut read_only_count = 0usize;
@@ -171,65 +164,55 @@ fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
             seen += 1;
 
             let concrete_path = concretize_path(path_template);
-            // Every method's fixture body is empty here: this test asserts the (method, path) ->
-            // verb/scope mapping, not per-operation body-field extraction (covered separately by
-            // `codec::tests::identify_resolves_every_documented_body_field_verb`).
-            let body = "{}";
-            let text = envelope(method, &concrete_path, body);
-            let (frames, ()) = frame_cursor_for(&text);
-            let mut cursor = FrameCursor::new(&frames);
-            let ctx = test_ctx(&config, &transport, &labels, &arena);
+            let resolved = verbs::resolve(method, &concrete_path).unwrap_or_else(|| {
+                panic!("the declaration carries no row for {method} {path_template} (as {concrete_path})")
+            });
+            // The row the loop resolved is a row of the DECLARATION, by identity.
+            let row = declared
+                .iter()
+                .find(|r| r.method == method && r.path == path_template)
+                .unwrap_or_else(|| panic!("{method} {path_template} is not a declared row"));
+            assert_eq!(resolved.verb, row.operation);
+            assert_eq!(resolved.read_only, row.read_only);
 
-            let ingress = plane
-                .decode_ingress(&mut cursor, None, &ctx)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "decode_ingress refused {method} {path_template} (as {concrete_path}): {e}"
-                    )
-                });
-            let draft = match ingress {
-                Ingress::OneShot(draft) => draft,
-                other => panic!("expected OneShot for {method} {path_template}, got {other:?}"),
-            };
-
-            // Cross-check against this crate's own closed table: the fixture-driven expectation
-            // and the generated-table expectation must be the SAME row.
-            let (expected_entry, _) = verbs::find_verb(method, &concrete_path)
-                .unwrap_or_else(|| panic!("no table row for {method} {concrete_path}"));
-
-            if expected_entry.read_only {
+            if row.read_only {
                 read_only_count += 1;
                 assert_eq!(
-                    draft.op,
+                    resolved.op_class(),
                     verbs::OP_READ,
                     "{method} {path_template} should price as read-only"
                 );
             } else {
                 full_count += 1;
                 assert_eq!(
-                    draft.op,
+                    resolved.op_class(),
                     verbs::OP_WRITE,
                     "{method} {path_template} should price as full"
                 );
             }
 
-            // `approve`'s resource locator names the same verb `decode_ingress` resolved.
-            let unit = build_unit(&text, draft.op, draft.facts);
-            let scope = plane.approve(&unit, &ctx);
-            let resource = scope.resources.as_slice().first().unwrap_or_else(|| {
-                panic!("approve named no resource for {method} {path_template}")
-            });
-            assert_eq!(resource.name, expected_entry.verb);
-            assert_eq!(resource.kind, "admin_verb");
-
-            // `verify` names the same `KernelVerb`.
-            let dest = plane.verify(&unit, &ctx);
-            match dest {
+            // The loop stamps the operation it resolved onto the unit, and `verify` names it back.
+            let text = envelope(method, &concrete_path, "{}");
+            let mut facts = busbar_contract::bounded::Facts::new();
+            facts
+                .set(
+                    FACT_VERB,
+                    busbar_contract::bounded::FactValue::Str(row.operation),
+                )
+                .expect("one fact fits");
+            let unit = build_unit(&text, resolved.op_class(), facts);
+            let ctx = test_ctx(&config, &transport, &labels, &arena);
+            match surface.verify(&unit, &ctx) {
                 busbar_contract::dest::DestinationFacts::KernelVerb { verb } => {
-                    assert_eq!(verb, expected_entry.verb);
+                    assert_eq!(verb, row.operation);
                 }
                 other => panic!("expected KernelVerb for {method} {path_template}, got {other:?}"),
             }
+            // A control unit draws no priced dimension, for every one of the 66.
+            assert_eq!(
+                surface.admit(&unit, &ctx),
+                busbar_contract::unit::AdmitFacts::default()
+            );
         }
     }
 
@@ -264,7 +247,7 @@ fn generated_table_has_the_pinned_read_only_full_split() {
 fn combined_table_has_unique_verb_names() {
     let all = verbs::all_verbs();
     assert_eq!(all.len(), VERB_COUNT);
-    let mut names: Vec<&str> = all.iter().map(|e| e.verb).collect();
+    let mut names: Vec<&str> = all.iter().map(|e| e.operation).collect();
     names.sort_unstable();
     let before = names.len();
     names.dedup();
@@ -310,8 +293,8 @@ fn build_unit<'u>(
 // ── requirement 2: the refusal envelope's error codes ──────────────────────────────────────────
 
 #[test]
-fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
-    let plane = AdminPlane::new();
+fn answering_a_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
+    let surface = AdminControl::new();
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
@@ -360,8 +343,14 @@ fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
             stream: None,
             correlates: None,
         };
-        let rendered = plane
-            .encode_refusal(&refusal, None, None, &ctx)
+        let text = envelope("GET", "/api/v1/admin/audit", "{}");
+        let unit = build_unit(
+            &text,
+            verbs::OP_READ,
+            busbar_contract::bounded::Facts::new(),
+        );
+        let rendered = surface
+            .answer(&unit, Rendering::Refused(&refusal), &ctx)
             .expect("refusal renders");
         let text = core::str::from_utf8(rendered.as_slice()).expect("utf8");
         let parsed: serde_json::Value = serde_json::from_str(text).expect("valid json");
@@ -372,114 +361,37 @@ fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
     }
 }
 
-// ── requirement 3: purity / determinism ─────────────────────────────────────────────────────────
-
-/// A request still arriving asks for the next frame; it is not ended as a caller's mistake.
-///
-/// Two shapes reach this: a cursor with nothing left in it (every byte that has arrived is already
-/// handed over) and a frame whose envelope object has not closed. Both used to end the unit — the
-/// first as `Malformed`, the second as `UnsupportedOperation` — so a caller whose body was merely
-/// still on the wire was answered as though they had sent a bad one.
+/// `AdminControl` has no fields — asserted structurally, not just by comment. Every answer this
+/// surface gives is a pure function of the declaration and the unit; a field here would be state
+/// that survives between two units the loop believes are unrelated.
 #[test]
-fn a_request_still_arriving_asks_for_the_next_frame() {
-    let plane = AdminPlane::new();
-    let config = TestConfig;
-    let transport = TestTransport;
-    let labels = Labels::new();
-    let arena = TestArena;
-    let ctx = test_ctx(&config, &transport, &labels, &arena);
-
-    let empty: Vec<Frame> = Vec::new();
-    let mut cursor = FrameCursor::new(&empty);
-    assert_eq!(
-        plane.decode_ingress(&mut cursor, None, &ctx),
-        Ok(Ingress::NeedMore),
-        "a cursor with no frame left has nothing yet to decode"
-    );
-
-    let whole = envelope("POST", "/api/v1/admin/keys", r#"{"name":"k1"}"#);
-    let half = &whole[..whole.len() - 4];
-    let (frames, ()) = frame_cursor_for(half);
-    let mut cursor = FrameCursor::new(&frames);
-    assert_eq!(
-        plane.decode_ingress(&mut cursor, None, &ctx),
-        Ok(Ingress::NeedMore),
-        "an envelope that has not closed is not yet an envelope"
-    );
-
-    // and the whole thing still decodes, so the check above is a filter and not a wall
-    let (frames, ()) = frame_cursor_for(&whole);
-    let mut cursor = FrameCursor::new(&frames);
-    assert!(matches!(
-        plane.decode_ingress(&mut cursor, None, &ctx),
-        Ok(Ingress::OneShot(_))
-    ));
+fn the_admin_control_surface_carries_no_fields() {
+    assert_eq!(std::mem::size_of::<AdminControl>(), 0);
 }
 
-/// Calling `decode_ingress` twice on the same bytes yields the same verb, the same op class and the
-/// same path-parameter facts: the plane keeps no interior state that could make the second call
-/// disagree with the first.
-#[test]
-fn decode_ingress_is_deterministic_over_repeated_calls() {
-    let plane = AdminPlane::new();
-    let config = TestConfig;
-    let transport = TestTransport;
-    let labels = Labels::new();
-    let arena = TestArena;
-    let ctx = test_ctx(&config, &transport, &labels, &arena);
-
-    let text = envelope("GET", "/api/v1/admin/keys/abc", "{}");
-    let mut results = Vec::new();
-    for _ in 0..3 {
-        let (frames, ()) = frame_cursor_for(&text);
-        let mut cursor = FrameCursor::new(&frames);
-        let ingress = plane
-            .decode_ingress(&mut cursor, None, &ctx)
-            .expect("decodes");
-        let draft = match ingress {
-            Ingress::OneShot(d) => d,
-            other => panic!("expected OneShot, got {other:?}"),
-        };
-        // EVERY fact the draft carries, not just the verb: the path parameters this target names
-        // are facts too, and a call that agreed about the verb while disagreeing about which key it
-        // was for would have passed a test that only read the verb.
-        let mut facts: Vec<String> = draft
-            .facts
-            .iter()
-            .map(|(key, value)| format!("{key}={value:?}"))
-            .collect();
-        facts.sort();
-        results.push(format!("{facts:?}|{:?}", draft.op));
-    }
-    // The path parameter is one of the facts being compared, so the target above has to name one or
-    // this test is back to comparing the verb alone.
-    assert!(
-        results[0].contains("abc"),
-        "the target names a path parameter and the draft did not carry it: {}",
-        results[0]
-    );
-    assert!(
-        results.windows(2).all(|w| w[0] == w[1]),
-        "decode_ingress disagreed across identical calls: {results:?}"
-    );
-}
-
-/// `AdminPlane` has no fields — asserted structurally, not just by comment, matching the plugin
-/// contract's rule that a plane's only cross-frame state lives in the kernel-held
-/// `PlaneSessionState`, never in the plane value itself.
-#[test]
-fn admin_plane_carries_no_fields() {
-    assert_eq!(std::mem::size_of::<AdminPlane>(), 0);
-}
-
-/// The registry only requires `SessionPlane` when a claimed transport declares itself session
-/// shaped; this plane's one claim is over `"http"`, and it implements `PlaneMeta` with a `CLAIMS`
-/// slice of length one, matching `claims::CLAIMS`.
+/// One claim, over plain HTTP request/response. A control surface declares what it answers for as
+/// data, and this is the transport half of that declaration; `ROUTES` is the other half.
 #[test]
 fn declares_exactly_one_claim_over_http() {
-    let claims = <AdminPlane as PlaneMeta>::CLAIMS;
+    let claims = <AdminControl as ControlMeta>::CLAIMS;
     assert_eq!(claims.len(), 1);
     assert_eq!(claims[0].transport, "http");
+}
+
+/// The declaration is the whole table: 66 pinned rows, 17 money-governance verbs, 5 ledger views,
+/// and nothing built at first use. `ROUTES` is what the kind's open vocabulary IS, so a surface
+/// whose declaration and whose lookup were two values would be a surface that answers one table and
+/// declares another.
+#[test]
+fn the_declaration_is_the_table_the_lookup_reads() {
+    let declared = <AdminControl as ControlMeta>::ROUTES;
+    assert_eq!(declared.len(), VERB_COUNT);
+    assert!(std::ptr::eq(declared, verbs::all_verbs()));
+    for row in declared {
+        let resolved = verbs::resolve(row.method, &concretize_path(row.path))
+            .unwrap_or_else(|| panic!("{} {} declared and not resolvable", row.method, row.path));
+        assert_eq!(resolved.verb, row.operation);
+    }
 }
 
 // ── requirement 4: no section-sign or parity-binding literals anywhere in this crate ────────────
@@ -587,15 +499,15 @@ impl Arena for TinyArena {
     }
 }
 
-/// A response bigger than the whole arena still encodes, byte for byte.
+/// An answer bigger than the whole arena still renders, byte for byte.
 ///
-/// The admin surface's own `openapi.json` is over 350 KB and the arena is 4 KiB, so a codec that
-/// COPIED the response into the arena refused the single largest document the surface serves — and
+/// The admin surface's own `openapi.json` is over 350 KB and the arena is 4 KiB, so a rendering that
+/// COPIED the body into the arena refused the single largest document the surface serves — and
 /// every other answer over 4 KiB with it (a key listing, a config dump, an audit page). The body
-/// already lives for the unit, so the encode borrows it and there is no budget left to exhaust.
+/// already lives for the unit, so the answer borrows it and there is no budget left to exhaust.
 #[test]
-fn a_response_larger_than_the_arena_encodes_verbatim() {
-    let plane = AdminPlane::new();
+fn an_answer_larger_than_the_arena_renders_verbatim() {
+    let surface = AdminControl::new();
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
@@ -610,13 +522,22 @@ fn a_response_larger_than_the_arena_encodes_verbatim() {
     let ctx = Ctx::new(clock, &config, session, &transport, &labels, &arena);
 
     let big = vec![b'x'; busbar_contract::ARENA_BYTES * 4];
-    let response = busbar_contract::plane::Response {
-        ir: busbar_contract::bounded::Ir::new(&big, &[]),
-        finish: busbar_contract::unit::FinishClass::Complete,
-        facts: busbar_contract::bounded::Facts::new(),
-    };
-    let encoded = plane
-        .encode_response(&response, None, &ctx)
+    let text = envelope("GET", "/api/v1/admin/audit", "{}");
+    let unit = build_unit(
+        &text,
+        verbs::OP_READ,
+        busbar_contract::bounded::Facts::new(),
+    );
+    let facts = busbar_contract::bounded::Facts::new();
+    let encoded = surface
+        .answer(
+            &unit,
+            Rendering::Served {
+                body: ArenaBytes::new(&big),
+                facts: &facts,
+            },
+            &ctx,
+        )
         .expect("a body the unit already owns needs no room in the arena");
     assert_eq!(encoded.as_slice(), big.as_slice());
     assert_eq!(

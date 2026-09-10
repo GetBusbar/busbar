@@ -11,7 +11,7 @@ fn the_public_table_is_the_same_table_the_codec_decodes_against() {
     let public = table();
     assert_eq!(public.len(), VERB_COUNT);
     for (row, entry) in public.iter().zip(all_verbs().iter()) {
-        assert_eq!(row.verb, entry.verb);
+        assert_eq!(row.verb, entry.operation);
         assert_eq!(row.method, entry.method);
         assert_eq!(row.template, entry.path);
         assert_eq!(row.read_only, entry.read_only);
@@ -79,7 +79,7 @@ fn an_empty_segment_never_normalises_onto_a_row() {
 #[test]
 fn find_verb_resolves_a_concrete_request() {
     let (entry, params) = find_verb("GET", "/api/v1/admin/keys/xyz").expect("matches");
-    assert_eq!(entry.verb, "get_keys_id");
+    assert_eq!(entry.operation, "get_keys_id");
     assert_eq!(params, vec![("id", "xyz")]);
 }
 
@@ -90,56 +90,6 @@ fn fixture() -> serde_json::Value {
         "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
     ));
     serde_json::from_str(text).expect("fixture is valid JSON")
-}
-
-/// Follow a document-local `$ref` chain to the schema it names.
-fn deref<'d>(doc: &'d serde_json::Value, mut node: &'d serde_json::Value) -> &'d serde_json::Value {
-    while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
-        node = doc
-            .pointer(pointer.trim_start_matches('#'))
-            .expect("a document-local $ref resolves");
-    }
-    node
-}
-
-/// Every representative body field this plane extracts is a member the pinned schema declares.
-///
-/// The extraction writes a decode-time fact under the field's own name, so a field the schema
-/// has no member for is a fact key that can never be set — a documented promise the wire cannot
-/// keep, and one nobody would notice, because an absent fact and an unpopulated one look the
-/// same downstream. This reads the fixture rather than a second transcription of it.
-#[test]
-fn every_documented_body_field_is_a_member_the_pinned_schema_declares() {
-    let doc = fixture();
-    let mut checked = 0usize;
-    for (path, item) in doc["paths"].as_object().expect("paths is an object") {
-        for (method, op) in item.as_object().expect("path item is an object") {
-            let verb = snake_case(op["operationId"].as_str().expect("an operationId"));
-            let Some(field) = documented_body_field(&verb) else {
-                continue;
-            };
-            let body = op.get("requestBody").unwrap_or_else(|| {
-                panic!("{verb}: a documented body field on an operation with no request body")
-            });
-            let schema = deref(&doc, body)["content"]["application/json"]["schema"].clone();
-            let properties = deref(&doc, &schema)
-                .get("properties")
-                .and_then(serde_json::Value::as_object)
-                .unwrap_or_else(|| {
-                    panic!("{verb}: {} {path} takes a body with no named members, so no field of it can be documented", method.to_uppercase())
-                });
-            assert!(
-                properties.contains_key(field),
-                "{verb}: the documented field `{field}` is not a member of the pinned schema (it declares {:?})",
-                properties.keys().collect::<Vec<_>>()
-            );
-            checked += 1;
-        }
-    }
-    assert_eq!(
-        checked, 15,
-        "every documented body field belongs to a 1.5.5 operation the fixture declares"
-    );
 }
 
 /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own
@@ -199,7 +149,7 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
                 panic!("no table row matches fixture operation {method} {path}")
             });
             assert_eq!(
-                entry.verb, expected_verb,
+                entry.operation, expected_verb,
                 "{method} {path}: table verb does not match the fixture's operationId"
             );
             assert_eq!(
