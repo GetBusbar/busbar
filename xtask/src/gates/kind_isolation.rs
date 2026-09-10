@@ -84,12 +84,15 @@
 //! is a dialect half of `llm`), which is why the plane-to-codec edge is in the measured graph and
 //! the plane-to-dialect edge never can be: the split is what the rename is FOR.
 //!
-//! ## VOICE IS THE STREAMS PLANE
+//! ## THE STREAMS PLANE STILL HAS CRATES THAT SPELL IT `voice`
 //!
-//! The plane the tree spells `voice` is the STREAMS plane (config section `streams:`). Until
-//! `busbar-plane-voice` and `busbar-voice-codec` are renamed, [`PLANE_ALIASES`] holds the two
-//! spellings together so both are one instance for every rule here — and holds them on a ratchet:
-//! the alias is RED once the crate it translates is gone.
+//! Owner ruling, 2026-09-10: VOICE IS A MODALITY, NOT A KIND. The plane owns duplex SESSIONS of any
+//! media type, so `busbar-plane-voice` is `busbar-plane-streams`, named for what it does, and the
+//! plane's instance word is the one its config section already carried. `busbar-voice` KEEPS its
+//! name — it is the retiring 1.5.x crate, and a legacy name says what it retires from — and
+//! `busbar-voice-codec` still waits on its own rename, so [`PLANE_ALIASES`] holds the two spellings
+//! together for every rule here. The entry is on a ratchet: it is RED the day `busbar-voice` is
+//! deleted.
 //!
 //! ## THE LEGACY CRATES ARE EXEMPT UNTIL THEY ARE DELETED, AND THE EXEMPTION RATCHETS
 //!
@@ -378,10 +381,19 @@ static KINDS: &[KindDef] = &[
 /// is a name that has stopped saying what the crate IS.
 const MAX_NAME_SEGMENTS: usize = 4;
 
-/// PLANE SPELLINGS HELD TOGETHER UNTIL THE RENAME LANDS. `voice` is the STREAMS plane (config
-/// section `streams:`); both spellings are one instance for every rule here, both are banned
-/// vocabulary in every other kind, and the entry is RED once the crate it translates is gone.
-const PLANE_ALIASES: &[(&str, &str, &str)] = &[("voice", "streams", "busbar-plane-voice")];
+/// PLANE SPELLINGS HELD TOGETHER UNTIL THE LAST CRATE THAT CARRIES THE OLD ONE IS DELETED. The
+/// plane crate now says `streams`, which is what the config section always said; `busbar-voice`,
+/// the retiring 1.5.x half, still says `voice`. Both spellings are one instance for every rule
+/// here, both are banned vocabulary in every other kind, and the entry is RED once the crate it
+/// translates is gone.
+///
+/// THE DIRECTION IS THE LEGACY SPELLING, AND THAT IS DELIBERATE. The alias is read SYMMETRICALLY
+/// (`matrix::vocabulary` pushes the other spelling for a crate whose id is either end), so which
+/// name is written first decides only the canonical LABEL — and writing it this way keeps `voice`
+/// in the plane vocabulary while a crate still spells the plane that way, which is what makes a
+/// rename that moves no code move no number either. The day `busbar-voice` is deleted this row is
+/// RED, and the count movement is declared on the DELETION line, where the tree actually changed.
+const PLANE_ALIASES: &[(&str, &str, &str)] = &[("streams", "voice", "busbar-voice")];
 
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
@@ -6182,14 +6194,14 @@ impl Gate for KindIsolationGate {
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-voice/Cargo.toml");
+        ov.remove("crates/busbar-voice/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "a plane alias that outlived the crate it translates",
             &[ROW_REGISTRY],
             ov,
-            &["alias-retired", "busbar-plane-voice"],
+            &["alias-retired", "busbar-voice"],
         ));
 
         // THE SECOND KIND VOCABULARY, GONE. `qa/construction.toml`'s `[gate.plugin_kinds]` renamed
@@ -7141,13 +7153,13 @@ impl Gate for KindIsolationGate {
             "a plane crate depending on a wire crate",
             &[ROW_WIRES],
             manifest_plant(
-                "crates/busbar-plane-voice",
-                "busbar-plane-voice",
+                "crates/busbar-plane-streams",
+                "busbar-plane-streams",
                 &["busbar-contract", "busbar-transport-ws"],
             ),
             &[
                 "wire-dependency",
-                "busbar-plane-voice",
+                "busbar-plane-streams",
                 "busbar-transport-ws",
             ],
         ));

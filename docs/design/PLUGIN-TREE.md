@@ -183,7 +183,7 @@ Two rules that are not edges and must be checked as vocabulary, not manifests:
   `plane-voice` feature pulling `dep:busbar-transport-ws` is one compile switch shared by a plane and
   a transport and is RED under this rule.
 - **A plane is dialect-neutral.** A plane crate carries no vendor name, no wire-format reader, no
-  per-dialect branch. `busbar-plane-voice/src/twilio.rs` (a named vendor's wire format in a shipping
+  per-dialect branch. `busbar-plane-streams/src/twilio.rs` (a named vendor's wire format in a shipping
   plane crate) is the sharpest first red row; `src/ulaw.rs`, `busbar-plane-llm/src/{dialect,claims,codec}.rs`
   and `busbar-plane-{mcp,a2a}/src/jsonrpc.rs` are the rest of the first output.
 
@@ -260,12 +260,12 @@ kind from segment two, so directory name and `package.name` must agree.
 | `busbar-contract-transport` | `busbar-core-contract-transport` | |
 | `busbar-grammar` | `busbar-core-grammar` | |
 | `busbar-timing` | `busbar-core-timing` | |
-| `busbar-plane-voice` | `busbar-plane-streams` | §9 row 10 |
+| `busbar-plane-voice` | `busbar-plane-streams` | **DONE.** §9 row 10, and the owner ruling of 2026-09-10: voice is a MODALITY, not a kind — the plane owns duplex sessions of any media type, so it is named for what it does. Its config section already said `streams:` |
 | `busbar-plane-admin` | `busbar-control-admin` | kind `control`, not `plane`; R7. Registered as control by `qa/kind-isolation.toml`'s `[[registered]]` row until the rename lands, and that row is RED the moment the name says `control` on its own |
 | `busbar-llm-codec` | `busbar-plane-llm-{anthropic,openai,gemini,bedrock,responses,cohere}` + residue | kind-last → kind-first; D36/R6 |
 | `busbar-mcp-codec` | `busbar-plane-mcp-mcpv2` | |
 | `busbar-a2a-codec` | `busbar-plane-a2a-a2a` | |
-| `busbar-voice-codec` | `busbar-plane-streams-voice` | |
+| `busbar-voice-codec` | `busbar-streams-codec`, then `busbar-plane-streams-{openai-realtime,gemini-live,twilio-media-streams}` | the codec crate is renamed with its plane; the D36 split is into the streams plane's three DIALECTS, which are wire vocabularies. `busbar-plane-streams-voice` is struck: voice is a modality, not a dialect. **The codec rename is BLOCKED** — see the ST-1 hand-back: dropping the name `busbar-voice-codec` un-masks the `legacy` needle `busbar-voice` in `matrix::vocabulary`'s prefix strike, which mints three `[[cell]]` rows this base has no door to admit |
 | `store-memory` | `busbar-store-memory` | dir only; `package.name` already correct |
 | `store-example-plugin` | `busbar-store-example` | dir only |
 | `auth-static-plugin` | `busbar-auth-static` | dir only |

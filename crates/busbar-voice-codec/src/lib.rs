@@ -8,7 +8,7 @@
 //! shared duplex reader/writer over it, the Gemini Live dialect and the Twilio Media Streams
 //! grammar — and the runtime that carries them over a live socket (the axum mount, the WebSocket
 //! accept, the tokio session tasks, the telephony dial, the HTTPS token minter). The plane crate
-//! `busbar-plane-voice` adapts the codecs and must not link the runtime: a plane is a PURE kind
+//! `busbar-plane-streams` adapts the codecs and must not link the runtime: a plane is a PURE kind
 //! whose whole transitive closure is scanned, and the runtime put `hyper`, `reqwest`, `axum`,
 //! `tokio-tungstenite` and a socket-capable `tokio` in it.
 //!

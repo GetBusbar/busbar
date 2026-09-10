@@ -29,7 +29,7 @@
 ///
 /// The plane-4 session intermediate representation (media, control, events, tools, session config,
 /// usage), the shared duplex reader/writer and the Gemini Live dialect live in `busbar-voice-codec`
-/// now — the pure half of this plugin, split out so `busbar-plane-voice` can name the IR without
+/// now — the pure half of this plugin, split out so `busbar-plane-streams` can name the IR without
 /// linking this crate's axum mount, WebSocket accept, tokio session tasks and telephony dial. They
 /// are re-exported HERE, under their old name, so every caller that spells `busbar_voice::ir::…`
 /// resolves exactly what it always did. The split is a MOVE: no item changed shape crossing it.

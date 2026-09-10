@@ -39,7 +39,7 @@
 //! (`tokio`, `async-trait`, `futures`), is ever part of this crate's build. What this crate DOES use
 //! is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate representation and both dialect
 //! codecs — which is unconditional in `busbar-voice`'s own manifest (no feature gate at all) and is
-//! pure, sync, and free of any async surface. `cargo tree -p busbar-plane-voice` is the proof.
+//! pure, sync, and free of any async surface. `cargo tree -p busbar-plane-streams` is the proof.
 //!
 //! ## What it holds across calls
 //!

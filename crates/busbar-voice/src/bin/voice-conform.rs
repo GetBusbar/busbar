@@ -1366,7 +1366,7 @@ struct ProbeCall {
 /// of thirty seconds would let this leg keep passing after the figure it is meant to be pinning had
 /// moved.
 fn tool_reply_deadline_ms() -> u64 {
-    u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
+    u64::from(busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
 }
 
 impl ProbeCalls {
@@ -1619,7 +1619,7 @@ fn probe_tool_reply() -> (&'static str, String) {
              beside the pump ends a call nobody answered at exactly the {} s its leg declares — not \
              one millisecond early — so its unit exits under that deadline rather than settling as \
              though the answer had arrived",
-            busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS
+            busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS
         ),
     )
 }

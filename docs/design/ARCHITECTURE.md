@@ -1683,15 +1683,24 @@ about a kind boundary, this register and that spec win.)*
   measurement — a declared raise moves the ratchet, it does not loosen it.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
-  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
+  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-openai-realtime`) — which is the "dialect → own plane only"
   edge expressed in the name. The gate reads the kind from segment two, so directory name and
   `package.name` must agree.
 - **DIALECT is its own kind.** One crate per wire vocabulary, under its plane. The plane owns the
   IR and is dialect-neutral; a dialect's only workspace dependencies are `busbar-contract` and its
   own plane. This SUPERSEDES the 2026-09-06 row "one crate per plane: the codec folds into its
   plane" — **D36 becomes the SPLIT of each codec into dialect crates, not a fold.**
-- **The voice plane is renamed `streams`** (its config section is already `streams:`). The
-  1.5.5-frozen `export.<n>.streams` field is a different key, coexists unchanged, and never moves.
+- **The voice plane is renamed `streams`** (its config section is already `streams:`) —
+  `busbar-plane-voice` → `busbar-plane-streams`, and `busbar-voice-codec` → `busbar-streams-codec`
+  behind it. Owner ruling, 2026-09-10: **voice is a MODALITY, not a kind.** The plane owns duplex
+  SESSIONS of any media type, and G.711 is one codec among them. `busbar-voice` KEEPS its name
+  until it is deleted — it is the retiring 1.5.x crate, and a legacy name says what it retires
+  from. **The streams plane's dialects are `openai-realtime`, `gemini-live` and
+  `twilio-media-streams`;** one-shot TTS and transcribe are REQUEST/RESPONSE, not duplex sessions,
+  and leave this plane for the `llm` plane's speech routes in a later line. Non-voice dialects are
+  expected — Gemini Live video and screen frames, the Realtime text modality, live transcription
+  and translation, streaming TTS, realtime tool sessions. The 1.5.5-frozen `export.<n>.streams`
+  field is a different key, coexists unchanged, and never moves.
 - **`busbar-caps` → `busbar-core-capabilities`**, with the rest of the core rename table in
   `PLUGIN-TREE.md` §7.
 - **The token signer lands in `busbar-unit-auth`** — not in the capability crate and not in a

@@ -23,7 +23,7 @@
 #     DECLARES, so its unit exits under that deadline rather than settling as though the answer had
 #     arrived.
 #
-# The deadline is `busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS`, read from the plane crate the
+# The deadline is `busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS`, read from the plane crate the
 # composition root builds its own reply leg out of — one declaration and two readers, so a change to
 # the figure moves this leg with it. Both edges are judged: nothing is ended one millisecond before
 # that wall, and the unanswered call IS ended at it. What the ending then does to a unit — the exit

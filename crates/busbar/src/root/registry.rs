@@ -91,7 +91,7 @@ use busbar_plane_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
-use busbar_plane_voice::VoicePlane;
+use busbar_plane_streams::VoicePlane;
 use busbar_transport_grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
 use busbar_transport_sse::SseTransport;

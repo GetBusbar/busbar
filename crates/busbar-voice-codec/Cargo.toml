@@ -5,10 +5,10 @@
 # plane-4 duplex/session intermediate representation and the dialect readers/writers that map a
 # provider's realtime wire onto it — and the runtime that carries them over a live socket (the axum
 # mount, the WebSocket accept, the tokio session tasks, the telephony dial, the HTTPS token minter).
-# The VOICE PLANE CRATE (`busbar-plane-voice`) adapts the first and must never link the second — a
+# The VOICE PLANE CRATE (`busbar-plane-streams`) adapts the first and must never link the second — a
 # plane is a pure kind, and the runtime put `hyper`, `reqwest`, `axum`, `tokio-tungstenite` and a
 # socket-capable `tokio` in the pure kind's transitive closure. This crate is the first half, so
-# `busbar-plane-voice` can name the IR and the grammars without naming the runtime.
+# `busbar-plane-streams` can name the IR and the grammars without naming the runtime.
 #
 # THE RULE THIS CRATE KEEPS. No `hyper`, no `reqwest`, no `axum`, no `tokio` (and no
 # `tokio-tungstenite`), and no `std::{net,fs,process,env}` in its own dependencies or its own source.

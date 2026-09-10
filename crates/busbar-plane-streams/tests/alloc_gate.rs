@@ -12,7 +12,7 @@
 //! allowed to fall on the far side of a byte-for-byte comparison against the serializer that used
 //! to produce it.
 
-use busbar_plane_voice::twilio;
+use busbar_plane_streams::twilio;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 

@@ -23,7 +23,7 @@ use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{MeteringLease, TurnMeter};
 use crate::runtime::tools::ToolExecutor;
-use busbar_plane_voice::governed::GovernedSession;
+use busbar_plane_streams::governed::GovernedSession;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

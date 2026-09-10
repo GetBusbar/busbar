@@ -92,7 +92,7 @@ busbar-unit-wal = { path = "../busbar-unit-wal" }
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
-busbar-plane-voice = { path = "../busbar-plane-voice" }
+busbar-plane-streams = { path = "../busbar-plane-streams" }
 busbar-plane-admin = { path = "../busbar-plane-admin" }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its

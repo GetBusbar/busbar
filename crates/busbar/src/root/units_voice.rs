@@ -134,8 +134,8 @@ use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
-use busbar_plane_voice::claims::Dialect;
-use busbar_plane_voice::{meta, Upstream, VoicePlane};
+use busbar_plane_streams::claims::Dialect;
+use busbar_plane_streams::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, BucketChain, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
@@ -432,8 +432,8 @@ impl std::fmt::Debug for VoiceIo {
 /// second spelling of either here would be a wait entered under one key and answered under another,
 /// with both files looking correct on their own.
 const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
-    correlation_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
-    deadline_secs: busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS,
+    correlation_key: busbar_plane_streams::plane::FACT_TOOL_CORRELATION,
+    deadline_secs: busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS,
 };
 
 /// Why a client's tool reply woke nothing.
@@ -661,7 +661,7 @@ impl busbar_voice::runtime::GovernedCalls for NodeCalls {
         // minted the wait under. Spelling either differently here would be a wait entered under one
         // key and answered under another, with both sides looking correct on their own.
         let correlates = CorrelationRef {
-            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            fact_key: busbar_plane_streams::plane::FACT_TOOL_CORRELATION,
             value: CorrelationValue::Str(call_id),
         };
         match self.node.tool_calls.replied(session, correlates) {
@@ -1314,7 +1314,7 @@ impl<'n> VoiceUnit<'n> {
     /// is what lets a wait outlive the frame that planned it.
     fn correlation_out(&self) -> Option<CorrelationRef<'_>> {
         self.call_id.as_deref().map(|id| CorrelationRef {
-            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            fact_key: busbar_plane_streams::plane::FACT_TOOL_CORRELATION,
             value: CorrelationValue::Str(id),
         })
     }
@@ -2182,7 +2182,7 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
         let dialect = bound.as_ref().map_or_else(
             || {
                 read.path()
-                    .and_then(busbar_plane_voice::claims::dialect_for)
+                    .and_then(busbar_plane_streams::claims::dialect_for)
                     .unwrap_or(Dialect::OpenaiRealtime)
             },
             |binding| binding.dialect,

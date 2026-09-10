@@ -855,7 +855,7 @@ fn compose_voice_governed_calls() {
         }
     };
     let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_voice::VoicePlane::new(&[]),
+        plane: busbar_plane_streams::VoicePlane::new(&[]),
         // No group reaches this node's door: the table's two answers read no cap, and the served
         // sessions' admissions are the sealed root's, not this stub's.
         groups: root::policy::group_table(

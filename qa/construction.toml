@@ -173,16 +173,16 @@ because = "FACE busbar_contract::plane::{SessionParams, SessionPlane::session_pa
 # Both are the projector and its cells naming the codec crate the session shape lives in, and the
 # harness stack a plane's context is built over. Each expires when the base carries the number.
 [[gate.ceiling_raises]]
-key = "cell.busbar-plane-voice.codec.count"
+key = "cell.busbar-plane-streams.codec.count"
 file = "qa/kind-isolation.toml"
 by = 4
-because = "busbar-plane-voice \u00d7 codec (busbar-plane-voice, codec): the session-parameter projector renders the deployment's locked posture as the SAME session shape the dialect codecs already read and write, so the projector and its cells name `busbar_voice_codec::ir::config` \u2014 the type, the \u00b5-law lock and the section default \u2014 rather than inventing a second spelling of a posture an operator's configured gate is matched against. Use-lines and declarations of that shape, not a wire in a plane (24 -> 28)"
+because = "busbar-plane-streams \u00d7 codec (busbar-plane-streams, codec): the session-parameter projector renders the deployment's locked posture as the SAME session shape the dialect codecs already read and write, so the projector and its cells name `busbar_voice_codec::ir::config` \u2014 the type, the \u00b5-law lock and the section default \u2014 rather than inventing a second spelling of a posture an operator's configured gate is matched against. Use-lines and declarations of that shape, not a wire in a plane (24 -> 28)"
 
 [[gate.ceiling_raises]]
-key = "cell.busbar-plane-voice.transport.count"
+key = "cell.busbar-plane-streams.transport.count"
 file = "qa/kind-isolation.toml"
 by = 4
-because = "busbar-plane-voice \u00d7 transport (busbar-plane-voice, transport): the projector's own cells build a plane context the way every other cell in this crate builds one \u2014 over the crate's existing test harness stack, whose key names the session wire. A second, differently-named stack written to keep this number still would be a second opinion about what a session's context looks like, in the file that is supposed to prove the projection. Harness use-lines in a test, not a wire in a plane (108 -> 112)"
+because = "busbar-plane-streams \u00d7 transport (busbar-plane-streams, transport): the projector's own cells build a plane context the way every other cell in this crate builds one \u2014 over the crate's existing test harness stack, whose key names the session wire. A second, differently-named stack written to keep this number still would be a second opinion about what a session's context looks like, in the file that is supposed to prove the projection. Harness use-lines in a test, not a wire in a plane (108 -> 112)"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
@@ -209,7 +209,7 @@ by = 182
 because = "FACE busbar-contract-transport::session::EgressLease extends this by 5 (1,022 -> 1,027, measured): the upstream half of one session as a SYNCHRONOUS driver may reach it \u2014 `offer` (bounded, refusing: Backpressure at depth, Closed when the leg is over) and `finish` \u2014 plus `EGRESS_DEPTH`, the composition's one number for how deep a relayed leg may queue, spelled beside `SessionBudgets` for the reason the deadline is. No dial, no address, no close code and no media: where the leg goes is the wire's, decided once when the lease was minted. FACE busbar-contract-transport::session + surface::Dispatch::Duplex — the seam a duplex wire hands a session across (SessionDriver open/drive/close; SessionOpen, SessionHandle, SessionFrame, SessionReply and its three constructors, Cut, SessionEnd, SessionBudgets) and the face an acceptor reaches a wire through (DuplexWire serve_upgrade/pump_session): session.rs 94 surface lines; the Duplex dispatch kind a plane declares a session as data with, its bar, its two boot-check refusals (NoDuplexMount, DuplexNotStreaming) and their Display, the address sentinel, the check_surface arm, and the one walk every duplex wire addresses an upgrade with (duplex_binding_at over duplex_bar): surface.rs +77; the three reserved fact keys a session's upgrade and a request carry about themselves (CREDENTIAL, ACCEPTS, MEDIA), published by the wires and read by no header: registry.rs +5; `pub mod session`: lib.rs +1. 94+77+5+1 = 177, measured by scripts/loc-surface.py at 1022 against 845 at the base"
 
 # ── declared raises: the streams line — a plane and a wire DECLARE a duplex surface as data. The
-# plane (busbar-plane-voice) writes its duplex route in the transport contract's vocabulary, the wire
+# plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
 # (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport
 # face for the Duplex dispatch kind. Every hit is a use-line or a declaration of that face; ws × plane
 # stayed at 2 throughout. Each entry expires when the base carries the number.
@@ -226,16 +226,16 @@ by = 1
 because = "busbar-contract-transport × transport (busbar-contract-transport, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
 [[gate.ceiling_raises]]
-key = "cell.busbar-plane-voice.contract-transport.count"
+key = "cell.busbar-plane-streams.contract-transport.count"
 file = "qa/kind-isolation.toml"
 by = 4
-because = "busbar-plane-voice × contract-transport (busbar-plane-voice, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+because = "busbar-plane-streams × contract-transport (busbar-plane-streams, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
 [[gate.ceiling_raises]]
-key = "cell.busbar-plane-voice.transport.count"
+key = "cell.busbar-plane-streams.transport.count"
 file = "qa/kind-isolation.toml"
 by = 6
-because = "busbar-plane-voice × transport (busbar-plane-voice, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+because = "busbar-plane-streams × transport (busbar-plane-streams, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-transport-ws.contract-transport.count"
@@ -647,7 +647,7 @@ store-example-plugin = ["libc"]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
 busbar-plane-mcp = ["busbar-mcp"]
-busbar-plane-voice = ["busbar-voice"]
+busbar-plane-streams = ["busbar-voice"]
 
 # ── 16. source-denylist (ARCHITECTURE.md section 1.2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
@@ -790,13 +790,13 @@ allowed_root = "crates/busbar-caps/src"
 max_sites = 0
 # Ratchet, NOT a review: each file below forges a seal today with a private type, and each is owned
 # by a change that is not this one. A new site anywhere else is held to the rule immediately.
-# busbar-plane-admin and busbar-plane-voice are the awkward two: a PLANE crate may not name
+# busbar-plane-admin and busbar-plane-streams are the awkward two: a PLANE crate may not name
 # busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
 known_sites = [
   "crates/busbar-plane-admin/src/tests/mod.rs",
-  "crates/busbar-plane-voice/src/tests/harness.rs",
+  "crates/busbar-plane-streams/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",

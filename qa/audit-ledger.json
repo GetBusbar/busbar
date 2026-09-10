@@ -1428,10 +1428,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-voice/src",
+   "id": "crates/busbar-plane-streams/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-plane-voice/src"
+    "crates/busbar-plane-streams/src"
    ],
    "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
    "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
@@ -1446,7 +1446,7 @@
    "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-plane-voice/src/tests"
+    "crates/busbar-plane-streams/src/tests"
    ],
    "rounds": [
     {
@@ -4579,10 +4579,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-voice/src/tests",
+   "id": "crates/busbar-plane-streams/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-voice/src/tests"
+    "crates/busbar-plane-streams/src/tests"
    ],
    "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
    "audited_at": "64b54387c4f177667ba688f7680877455579b293",
@@ -4605,10 +4605,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-voice/tests",
+   "id": "crates/busbar-plane-streams/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-voice/tests"
+    "crates/busbar-plane-streams/tests"
    ],
    "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
    "audited_at": "64b54387c4f177667ba688f7680877455579b293",

@@ -13,22 +13,22 @@ pub mod carrier;
 pub mod metering;
 pub mod scope;
 pub mod session;
-/// THE SERVER-SIDE TOOL EXECUTOR PORT, RE-EXPORTED FROM `busbar-plane-voice`. `ToolExecutor` and
+/// THE SERVER-SIDE TOOL EXECUTOR PORT, RE-EXPORTED FROM `busbar-plane-streams`. `ToolExecutor` and
 /// `EchoToolExecutor` moved to the plane crate for the same reason the governed-call port below did:
 /// the port is what a tool call MEANS to this plane, and it names nothing this crate owns. Re-exported
 /// as a MODULE, not just its items, so `crate::runtime::tools::EchoToolExecutor` — the spelling the
 /// topology and governed-binding cells use — resolves exactly what it always did.
-pub use busbar_plane_voice::tools;
+pub use busbar_plane_streams::tools;
 
 pub use carrier::Carrier;
-// THE GOVERNED-CALL PORT, RE-EXPORTED FROM `busbar-plane-voice`. `GovernedCalls` / `ReplyRefusal` /
+// THE GOVERNED-CALL PORT, RE-EXPORTED FROM `busbar-plane-streams`. `GovernedCalls` / `ReplyRefusal` /
 // `GovernedSession` moved to the plane crate, beside the two declarations the composition root
-// already pairs them with (`busbar_plane_voice::plane::{FACT_TOOL_CORRELATION,
+// already pairs them with (`busbar_plane_streams::plane::{FACT_TOOL_CORRELATION,
 // TOOL_REPLY_DEADLINE_SECS}`) — the port and the key a wait is entered under are now one crate, so
 // they cannot drift apart in silence. Re-exported HERE under the old name so every caller that
 // spells `busbar_voice::runtime::GovernedCalls` resolves exactly what it always did. The split is a
 // MOVE: no item changed shape crossing it.
-pub use busbar_plane_voice::governed::{GovernedCalls, GovernedSession, ReplyRefusal};
+pub use busbar_plane_streams::governed::{GovernedCalls, GovernedSession, ReplyRefusal};
 pub use metering::{
     cap_nanos_from_buckets, principal_cap_nanos, HostLease, HostMeteringPort, LeaseCloseGuard,
     LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,

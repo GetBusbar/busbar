@@ -345,7 +345,7 @@ dependencies = [
  "busbar-plane-admin",
  "busbar-plane-llm",
  "busbar-plane-mcp",
- "busbar-plane-voice",
+ "busbar-plane-streams",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
@@ -778,7 +778,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plane-voice"
+name = "busbar-plane-streams"
 version = "1.6.0"
 dependencies = [
  "async-trait",
@@ -1239,7 +1239,7 @@ dependencies = [
  "async-trait",
  "axum",
  "busbar-api",
- "busbar-plane-voice",
+ "busbar-plane-streams",
  "busbar-plugin",
  "busbar-substrate",
  "busbar-voice-codec",

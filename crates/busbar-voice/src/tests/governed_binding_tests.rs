@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 /// from the plane crate the composition root builds its own reply leg from — one declaration, two
 /// readers, so a change to it cannot leave this cell asserting the old number.
 fn deadline_ms() -> u64 {
-    u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
+    u64::from(busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
 }
 
 /// One open call, as the node's table holds it.

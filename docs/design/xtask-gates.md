@@ -1120,7 +1120,7 @@ line rather than re-deriving it.
 **The self-test opens with the incident.** The head of the real `crates/busbar/src/root/voice_serve.rs`
 (from `keep-streams-3` `dd96a04f3`) is planted back into the root — the plane named in the path, in
 the `#![cfg(feature = "root-voice-serve")]`, in the module header's prose and in the
-`use busbar_plane_voice::…` — and the row goes RED; its green twin is the same tree with the file
+`use busbar_plane_streams::…` — and the row goes RED; its green twin is the same tree with the file
 absent. Then: the root held to the zero a registry-driven root would measure (the finding names
 `root/units_voice.rs` and the other heaviest files by hit count), a ceiling left with slack, a plane
 named in a transport, the same name in that transport's own TESTS, a transport named in a plane, a

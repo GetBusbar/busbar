@@ -1,4 +1,4 @@
-# busbar-plane-voice — THE VOICE PLANE, as a CODEC and nothing else.
+# busbar-plane-streams — THE VOICE PLANE, as a CODEC and nothing else.
 #
 # WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind (and its session
 # extension) for busbar's duplex/live-voice surface (§6 of ARCHITECTURE.md): the openai-realtime,
@@ -15,7 +15,7 @@
 # transform, the tool-call and interrupt/pacing vocabulary) and never touches `PlaneDecl` or the T2
 # session runtime, which stay behind `busbar-voice`'s own `runtime` feature and its own mount path.
 [package]
-name = "busbar-plane-voice"
+name = "busbar-plane-streams"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
@@ -25,7 +25,7 @@ description = "The voice plane for busbar: the plugin contract's plane and sessi
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_plane_voice"
+name = "busbar_plane_streams"
 path = "src/lib.rs"
 
 # NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way

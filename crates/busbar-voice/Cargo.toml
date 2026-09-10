@@ -52,7 +52,7 @@ required-features = ["runtime", "test-support"]
 # and protocol registry descriptors (`PlaneDecl`, `ProtocolDecl`), the diagnostics namespace, the
 # proxy/egress constants the `ProtocolDecl` fields carry.
 busbar-substrate = { path = "../busbar-substrate" }
-# THE CODECS. The pure half of this plugin, split out so `busbar-plane-voice` can name the duplex IR
+# THE CODECS. The pure half of this plugin, split out so `busbar-plane-streams` can name the duplex IR
 # and the dialect grammars without pulling this crate's axum mount, WebSocket accept, tokio session
 # tasks and telephony dial into a pure kind's closure. Every module that moved is re-exported from
 # this crate under its old name.
@@ -122,16 +122,16 @@ hyper = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 # THE PURE HALF OF THIS PLANE. Named for two things now, which is why it is NO LONGER OPTIONAL.
 # (1) The conformance harness and the governed-binding cells pin the tool-reply deadline
-# (`busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS`) against the one declaration the composition
+# (`busbar_plane_streams::plane::TOOL_REPLY_DEADLINE_SECS`) against the one declaration the composition
 # root's own leg is built from, rather than restating thirty seconds in a second place where the two
 # could drift apart in silence. (2) The GOVERNED-CALL PORT itself
-# (`busbar_plane_voice::governed::{GovernedCalls, GovernedSession, ReplyRefusal}`) now lives there,
+# (`busbar_plane_streams::governed::{GovernedCalls, GovernedSession, ReplyRefusal}`) now lives there,
 # beside the correlation key a wait is entered under, and `crate::runtime` re-exports it under its
 # old name — so the port is unconditional and the dep cannot be feature-gated behind `test-support`.
 # The closure this adds to the shipped build is `busbar-contract` + `busbar-voice-codec` + `bytes`,
-# all of which this crate already links. No cycle: `busbar-plane-voice` names `busbar-contract` +
+# all of which this crate already links. No cycle: `busbar-plane-streams` names `busbar-contract` +
 # `busbar-voice-codec` and never this crate.
-busbar-plane-voice = { path = "../busbar-plane-voice" }
+busbar-plane-streams = { path = "../busbar-plane-streams" }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
