@@ -52,6 +52,12 @@ use crate::root::session_driver::{SessionLoopDriver, SessionUnits};
 /// Two values because they are owned in two places: the lease goes to the driver, where a
 /// synchronous `drive` can reach it, and the drain is spawned by whoever is running the session. A
 /// dialler that spawned the drain itself would be choosing the composition's runtime.
+///
+/// The leg's INBOUND half is deliberately not here, and that is the one asymmetry in this face. It
+/// has to be READ in a loop for as long as the session lives, which means a task, which means
+/// something that outlives this call and holds the driver — and this module's driver is a BORROW.
+/// The composition's is not: it composed the driver and can keep it for the process. So the
+/// inbound half is the dialler's to pump, which is why the dial is handed the session it is for.
 pub type DialledLeg = (
     Box<dyn EgressLease>,
     Pin<Box<dyn Future<Output = ()> + Send>>,
@@ -64,7 +70,12 @@ pub type DialledLeg = (
 /// would be a second registration in everything but the word. It is also what makes the decorator
 /// exercisable — the cells beside this file drive it with a lease that is nobody's.
 pub trait LegDialer: Send + Sync {
-    /// Dial the leg this destination names, and hand back its two halves.
+    /// Dial the leg this destination names, and hand back the two halves this side owns.
+    ///
+    /// The SESSION comes with it, and for one reason: the leg's inbound half has to be read in a
+    /// loop for as long as the session lives, and the thing that reads it must be told which
+    /// session's driver the replies go through. It is the dialler that starts that read, because it
+    /// is the composition — the one party here whose driver outlives a session.
     ///
     /// # Errors
     ///
@@ -72,6 +83,7 @@ pub trait LegDialer: Send + Sync {
     /// to own.
     fn dial<'a>(
         &'a self,
+        session: SessionHandle,
         dest: &'a PlaneDestination,
     ) -> Pin<Box<dyn Future<Output = Result<DialledLeg, TransportError>> + Send + 'a>>;
 }
@@ -130,7 +142,7 @@ async fn dial_pending<U: SessionUnits + ?Sized + Sync>(
     let Some(dest) = driver.pending_leg(session) else {
         return Ok(());
     };
-    let (lease, drain) = dialler.dial(&dest).await?;
+    let (lease, drain) = dialler.dial(session, &dest).await?;
     // A driver that will not take the leg is one whose session has gone, or one somebody else
     // attached to first. Either way this lease is nobody's, and dropping it here is what closes the
     // socket rather than leaving it open with no owner.

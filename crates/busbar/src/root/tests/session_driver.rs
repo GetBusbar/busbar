@@ -1272,11 +1272,15 @@ struct FakeDialler {
     /// What the DIAL itself answers, where it refuses.
     dial_answer: Option<busbar_contract::TransportError>,
     dials: Arc<Mutex<usize>>,
+    /// WHICH SESSION each dial was for. The composition pumps the leg's inbound half, and it cannot
+    /// pump it into the right driver slot unless the dial says whose leg this is.
+    dialled_for: Arc<Mutex<Vec<SessionHandle>>>,
 }
 
 impl crate::root::leg_dial::LegDialer for FakeDialler {
     fn dial<'a>(
         &'a self,
+        session: busbar_contract::transport::session::SessionHandle,
         _dest: &'a PlaneDestination,
     ) -> std::pin::Pin<
         Box<
@@ -1291,6 +1295,7 @@ impl crate::root::leg_dial::LegDialer for FakeDialler {
     > {
         Box::pin(async move {
             *self.dials.lock().expect("the log") += 1;
+            self.dialled_for.lock().expect("the log").push(session);
             if let Some(error) = self.dial_answer {
                 return Err(error);
             }
@@ -1366,6 +1371,7 @@ async fn a_relayed_frame_goes_out_under_the_open_units_own_view() {
         lease_answer: None,
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
     };
 
     // The unit that seals the leg.
@@ -1404,6 +1410,12 @@ async fn a_relayed_frame_goes_out_under_the_open_units_own_view() {
          steps again would price one exchange twice"
     );
     let written = offers.lock().expect("the log").clone();
+    assert_eq!(
+        dialler.dialled_for.lock().expect("the log").clone(),
+        vec![session],
+        "the dial is told WHICH session's leg it is opening, because the composition is what reads \
+         the leg's inbound half and it has to read it into this session's slot"
+    );
     assert_eq!(
         written,
         vec![b"up:2:-:1:relay".to_vec()],
@@ -1449,6 +1461,7 @@ async fn a_refusing_lease_ends_the_session() {
         lease_answer: Some(busbar_contract::TransportError::Backpressure),
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
 
@@ -1490,6 +1503,7 @@ async fn a_failed_dial_ends_the_session_before_the_next_frame_is_read() {
         lease_answer: None,
         dial_answer: Some(busbar_contract::TransportError::AddressRefused),
         dials: Arc::clone(&dials),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
 
@@ -1526,6 +1540,7 @@ async fn relayed(
         lease_answer: None,
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
     };
     assert_eq!(
         driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
@@ -1724,6 +1739,7 @@ async fn the_legs_view_names_the_principal_the_composition_resolved() {
         lease_answer: None,
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
     let mut source = crate::root::leg_dial::LegDialing::new(
