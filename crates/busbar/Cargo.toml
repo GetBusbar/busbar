@@ -153,7 +153,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
 # `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
 # bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm", "root-llm-serve"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -283,16 +283,25 @@ root-mcp = []
 # `root-admin` is in `default` and already carries the same edge — and a build with none of the
 # three drops it.
 root-mcp-serve = ["dep:tower"]
-# THE LLM PLANE'S OWN LEG AND MOUNT, DEFAULT OFF. The third of the same shape, and it is the same
+# THE LLM PLANE'S OWN LEG AND MOUNT, NOW DEFAULT ON. The third of the same shape, and it is the same
 # three switches: `proto-llm` decides whether this binary speaks the protocol, `root-llm` decides
 # whether the plane's units are compiled and driven, and this one decides whether the plane is
 # SERVED through the generic root mount — one claim table, one leg, one media type — rather than
 # through the per-dialect ingress table `root-llm` installs today.
 #
-# Default-off for the reason the other two are: with the switch off the serving path is exactly the
-# one that shipped, so the feature-off binary is byte-identical by construction rather than by
-# measurement, and the mount is proven against the plane's own tables in the meantime. It carries no
-# config key, no environment variable and no boot line; off, it costs one uncompiled module.
+# DEFAULT-OFF WAS THE ORDERING, AND THE ORDERING IS DONE. With the switch off the serving path was
+# exactly the one that shipped, which is what made the feature-off binary byte-identical by
+# construction rather than by measurement while the mount was proven against the plane's own tables.
+# What that left, once the boot grew a composition step, was a leg every rig could judge and no
+# binary could reach: this plane's mount, leg and boot-composition cells are `#![cfg]` files, so
+# `cargo test -p busbar` ran a battery that never compiled them, and anything built with
+# `cargo build --bin busbar` served the legacy per-dialect ingress table every time. A switch nothing
+# retires is indistinguishable from a leg that was never finished, which is what
+# `plane_isomorphism::every_serving_switch_is_in_the_shipped_default_feature_set` refuses.
+#
+# It carries no config key, no environment variable and no boot line, which is what keeps the
+# neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
+# uncompiled module, the boot reads no row for this plane, and the binary is what it was.
 #
 # `tower` is the same edge for the same reason as above, and is already carried by `root-admin` in
 # the default set.
