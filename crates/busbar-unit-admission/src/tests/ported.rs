@@ -1043,7 +1043,7 @@ fn budget_block_carries_downgrade_target() {
     let d = door();
     let p = no_card(10);
     let mut teach = pooled(LimitMetric::Budget, 25, DAY, "frontier");
-    teach.downgrade_to = Some("value".to_string());
+    teach.downgrade_to = Some(pool("value"));
     let t = table(&[("team", group_cfg(None, true, vec![teach]))]);
     let c = chain(&t, "vk_dg", Some("team"));
     let now = 1_700_000_000;
@@ -1065,7 +1065,7 @@ fn budget_block_carries_downgrade_target() {
     // looser does not; the tighter cap is the one that blocks, so its downgrade governs.
     let d2 = door();
     let mut tight = pooled(LimitMetric::Budget, 25, DAY, "frontier");
-    tight.downgrade_to = Some("value".to_string());
+    tight.downgrade_to = Some(pool("value"));
     let loose = pooled(LimitMetric::Budget, 100, DAY, "frontier");
     let t2 = table(&[("team", group_cfg(None, true, vec![loose, tight]))]);
     let c2 = chain(&t2, "vk_dg", Some("team"));

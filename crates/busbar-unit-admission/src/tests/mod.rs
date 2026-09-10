@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Test support: the small config projection the tests build chains from, plus the assertions
-//! every test shares.
+//! Test support: the spec values the tests resolve chains from, plus the assertions every test
+//! shares.
 //!
-//! The projection here mirrors the one the resolver runs at boot — a limit materialises a bucket
-//! per (window, pool) on first use, a metric repeated for the same window and pool keeps the most
-//! restrictive amount, and for a spend cap the most restrictive one's exhaustion behaviour governs
-//! because it is the cap that actually blocks. It lives in the tests rather than the library
-//! because the door is handed a chain already resolved; it is here so the ported cases read the
-//! way they read at the tag.
+//! The projection is the cost unit's own `GroupTable::resolve`, driven from the same spec values the
+//! composition root relays at boot. It used to be a third copy of that projection, kept here so the
+//! ported cases read the way they read at the tag; a copy of the money topology's projection in a
+//! test is a copy that can agree with itself and disagree with the one that ships, so the cases now
+//! walk the buckets the shipped resolver materialises.
 
 use std::collections::BTreeMap;
 
-use crate::chain::{ChainWalk, GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use busbar_unit_cost::{GroupSpec, LimitMetric, LimitSpec, ScopeSpec};
+
+use crate::chain::{ChainWalk, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 use crate::decide::{Blocked, Door, Metric};
 use crate::price::{Pricer, RateNanos};
 use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL};
@@ -25,155 +26,79 @@ mod leases;
 mod ported;
 mod price;
 
-/// Which counter a limit caps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LimitMetric {
-    Requests,
-    Tokens,
-    TokensInput,
-    TokensOutput,
-    TokensCacheRead,
-    TokensCacheWrite,
-    Budget,
-    Concurrent,
-}
-
-/// One configured limit.
-#[derive(Debug, Clone)]
-pub(crate) struct LimitCfg {
-    pub metric: LimitMetric,
-    pub amount: u64,
-    pub per: Option<&'static str>,
-    pub scope: Option<String>,
-    pub downgrade_to: Option<String>,
-}
-
-/// One configured group.
-#[derive(Debug, Clone)]
-pub(crate) struct GroupCfg {
-    pub parent: Option<String>,
-    pub enabled: bool,
-    pub tier_bp: u32,
-    pub limits: Vec<LimitCfg>,
+/// A pool-kind scope reference, the only kind the configuration grammar produces.
+pub(crate) fn pool(name: &str) -> ScopeSpec {
+    ScopeSpec {
+        kind: "pool".to_string(),
+        value: name.to_string(),
+    }
 }
 
 /// A windowed limit with no pool scope.
-pub(crate) fn limit(metric: LimitMetric, amount: u64, per: Option<&'static str>) -> LimitCfg {
-    LimitCfg {
+pub(crate) fn limit(metric: LimitMetric, amount: u64, per: Option<&'static str>) -> LimitSpec {
+    LimitSpec {
         metric,
         amount,
-        per,
+        window: per,
         scope: None,
         downgrade_to: None,
     }
 }
 
 /// A windowed limit qualified to a pool.
-pub(crate) fn pooled(metric: LimitMetric, amount: u64, per: &'static str, pool: &str) -> LimitCfg {
-    LimitCfg {
+pub(crate) fn pooled(
+    metric: LimitMetric,
+    amount: u64,
+    per: &'static str,
+    scope: &str,
+) -> LimitSpec {
+    LimitSpec {
         metric,
         amount,
-        per: Some(per),
-        scope: Some(pool.to_string()),
+        window: Some(per),
+        scope: Some(pool(scope)),
         downgrade_to: None,
     }
 }
 
+/// One configured group: the cost unit's spec, plus the tier multiplier the resolver does not read
+/// from configuration and these tests set by hand.
+#[derive(Debug, Clone)]
+pub(crate) struct GroupCfg {
+    pub spec: GroupSpec,
+    pub tier_bp: u32,
+}
+
 /// A group with a parent, a freeze flag and a set of limits.
-pub(crate) fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitCfg>) -> GroupCfg {
+pub(crate) fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitSpec>) -> GroupCfg {
     GroupCfg {
-        parent: parent.map(str::to_string),
-        enabled,
+        spec: GroupSpec {
+            lease_id: None,
+            parent: parent.map(str::to_string),
+            enabled,
+            limits,
+        },
         tier_bp: STANDARD_TIER_BP,
-        limits,
     }
 }
 
-/// Project a set of configured groups into the resolved table the chain walk chases.
+/// The configured groups, resolved by the COST UNIT into the table the chain walk chases — the one
+/// projection in the tree, so every decision below is judged over the buckets the resolver really
+/// materialises. The tier multiplier is the one field the resolver does not take from
+/// configuration; it is written onto the resolved group afterwards, per test.
 pub(crate) fn table(groups: &[(&str, GroupCfg)]) -> GroupTable {
-    let mut names: Vec<&str> = groups.iter().map(|(n, _)| *n).collect();
-    names.sort_unstable();
-    let idx: BTreeMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
-    let resolved: Vec<GroupRuntime> = names
+    let specs: BTreeMap<String, GroupSpec> = groups
         .iter()
-        .map(|name| {
-            let cfg = &groups
-                .iter()
-                .find(|(n, _)| n == name)
-                .expect("named group exists")
-                .1;
-            let mut buckets: Vec<GroupBucket> = Vec::new();
-            let mut concurrent_cap: Option<u64> = None;
-            for l in &cfg.limits {
-                match (l.metric, l.per) {
-                    (LimitMetric::Concurrent, _) => {
-                        concurrent_cap =
-                            Some(concurrent_cap.map_or(l.amount, |c: u64| c.min(l.amount)));
-                    }
-                    (metric, Some(w)) => {
-                        let pos = buckets
-                            .iter()
-                            .position(|b| b.window == w && b.scope == l.scope);
-                        let bucket = match pos {
-                            Some(i) => &mut buckets[i],
-                            None => {
-                                let bucket_id = match &l.scope {
-                                    Some(s) => format!("group:{name}@{w}#pool:{s}"),
-                                    None => format!("group:{name}@{w}"),
-                                };
-                                let mut b = GroupBucket::new(bucket_id, w);
-                                b.scope = l.scope.clone();
-                                buckets.push(b);
-                                buckets.last_mut().expect("just pushed")
-                            }
-                        };
-                        let min_u =
-                            |cur: Option<u64>| Some(cur.map_or(l.amount, |c: u64| c.min(l.amount)));
-                        match metric {
-                            LimitMetric::Requests => {
-                                bucket.requests_cap = min_u(bucket.requests_cap)
-                            }
-                            LimitMetric::Tokens => bucket.tokens_cap = min_u(bucket.tokens_cap),
-                            LimitMetric::TokensInput => {
-                                bucket.tokens_input_cap = min_u(bucket.tokens_input_cap)
-                            }
-                            LimitMetric::TokensOutput => {
-                                bucket.tokens_output_cap = min_u(bucket.tokens_output_cap)
-                            }
-                            LimitMetric::TokensCacheRead => {
-                                bucket.tokens_cache_read_cap = min_u(bucket.tokens_cache_read_cap)
-                            }
-                            LimitMetric::TokensCacheWrite => {
-                                bucket.tokens_cache_write_cap = min_u(bucket.tokens_cache_write_cap)
-                            }
-                            LimitMetric::Budget => {
-                                let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
-                                if bucket.budget_cap.is_none_or(|c| amount < c) {
-                                    bucket.downgrade_to = l.downgrade_to.clone();
-                                }
-                                bucket.budget_cap =
-                                    Some(bucket.budget_cap.map_or(amount, |c: i64| c.min(amount)));
-                            }
-                            LimitMetric::Concurrent => unreachable!("matched above"),
-                        }
-                    }
-                    (_, None) => {}
-                }
-            }
-            GroupRuntime {
-                name: (*name).to_string(),
-                // The interned name is the composition root's to hand over, and this harness is
-                // not the root: a table built here names no lease, which is the shape every
-                // decision test below is written against.
-                lease_id: None,
-                enabled: cfg.enabled,
-                concurrent_cap,
-                tier_bp: cfg.tier_bp,
-                buckets,
-                parent: cfg.parent.as_deref().and_then(|p| idx.get(p).copied()),
-            }
-        })
+        .map(|(n, c)| (n.to_string(), c.spec.clone()))
         .collect();
+    let mut resolved: Vec<GroupRuntime> = GroupTable::resolve(&specs).groups().to_vec();
+    for g in &mut resolved {
+        let (_, cfg) = groups
+            .iter()
+            .find(|(n, _)| *n == g.name)
+            .expect("resolved from this set");
+        g.tier_bp = cfg.tier_bp;
+    }
     GroupTable::new(resolved)
 }
 
