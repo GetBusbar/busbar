@@ -3,8 +3,6 @@
 
 //! The AUTH contract: one module, one verdict.
 
-use sha2::{Digest, Sha256};
-
 use crate::redacted::Redacted;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
@@ -298,7 +296,7 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 /// follow when comparing a caller-supplied credential against configured secret material — compare
 /// raw only when the material's length is not itself sensitive.
 pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
+    hex::encode(crate::sha256::sha256(data))
 }
 
 #[cfg(test)]
