@@ -1354,20 +1354,23 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
 }
 
+/// The ledger with one `[[cell]]` count raised by `by` from whatever it reads TODAY — never from a
+/// literal, because a fixture pinned to a number goes red the day the cell it re-pins is drained.
+fn bumped(text: &str, krate: &str, kind: &str, by: i64) -> String {
+    let head = format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
+    let Some(at) = text.find(&head) else {
+        return text.to_string();
+    };
+    let rest = &text[at + head.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let now: i64 = digits.parse().unwrap_or(0);
+    format!("{}{head}{}{}", &text[..at], now + by, &rest[digits.len()..])
+}
+
 /// The ledger with rows APPENDED, for the cases whose subject is a row that does not exist yet.
 fn ledger_plus(cx: &Ctx, rows: &str) -> crate::ctx::Overlay {
     let text = cx.read(LEDGER).unwrap_or_default();
     plant(LEDGER, &format!("{}\n\n{}\n", text.trim_end(), rows.trim()))
-}
-
-/// One `[[edge]]` class row, with the three sentences its reader owes.
-fn edge_row(from: &str, to: &str) -> String {
-    format!(
-        "[[edge]]\nfrom = \"{from}\"\nto = \"{to}\"\ncite = \"ARCHITECTURE.md 1.1 — the \
-         composition root names every axis\"\nwhy = \"crates of kind {from} naming {to} \
-         vocabulary\"\ndrain = \"the class falls when the root mounts the crate off the registry \
-         rather than by name\"\n"
-    )
 }
 
 /// One `[[minted]]` row, with or without its carve-out ceiling.
@@ -1495,19 +1498,17 @@ pub fn selftest(
             // ordinary `[[cell]]` rows at the base, so the fixture re-pins them to what the planted
             // tree measures; leaving them stale would red this case on a claim it is not about,
             // and — worse — would let a reader think the mint had been refused.
-            let text = cx
-                .read(LEDGER)
-                .unwrap_or_default()
-                .replacen(
-                    &cell_row("busbar-core", "control", "5200"),
-                    &cell_row("busbar-core", "control", "5203"),
-                    1,
-                )
-                .replacen(
-                    &cell_row("busbar-substrate", "control", "352"),
-                    &cell_row("busbar-substrate", "control", "361"),
-                    1,
-                );
+            let text = bumped(
+                &bumped(
+                    &cx.read(LEDGER).unwrap_or_default(),
+                    "busbar-core",
+                    "control",
+                    3,
+                ),
+                "busbar-substrate",
+                "control",
+                9,
+            );
             ov.set(
                 LEDGER,
                 format!(
@@ -1522,27 +1523,30 @@ pub fn selftest(
     ));
 
     // …AND THE `[[edge]]` HALF OF THE SAME LANDING, which is the one a FIRST-of-its-kind crate
-    // needs: `busbar-core-config` is the first `core` crate, so the class rows naming `core` are in
-    // no base either. They are admitted through the KIND the base announced the crate as, and the
-    // class is not scored DEAD while that kind has no crate — the same window `[[announced]]`
-    // already opens for the dead-kind ratchet, with the same expiry.
-    //
-    // This is `root -> core`: the composition root names every axis, and `core` is the carve-out of
-    // the crate it already names as `legacy`. `PENDING_EDGES` grants the dependency class; this row
-    // is the vocabulary class beside it.
+    // needs: the class rows naming its kind are in no base either, and they are admitted through
+    // the KIND the base announced the crate as. On this tree that landing is REAL — the hook
+    // policy engine is the first `core` crate, and `core -> control/hooks/plane/secret/transport`
+    // are its classes — so the green arm is the tree and the red arm is the tree without the
+    // `[[minted]]` row that admits them. (The window in which such a class is not scored DEAD
+    // because its kind has no crate yet cannot be planted here any more: `core` has a crate.)
     report.push(prove_rows_green(
         cx,
         gate,
-        "the first crate of a kind mints its [[edge]] class too, and the class is not scored dead",
+        "the first crate of a kind mints its [[edge]] classes too, through the kind the base announced it as",
         &[ROW_MATRIX],
-        ledger_plus(
+        crate::ctx::Overlay::new(),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "without the [[minted]] row, the first core crate's [[edge]] classes are minted rows",
+        &[ROW_MATRIX],
+        ledger_with(
             cx,
-            &format!(
-                "{}\n{}",
-                edge_row("root", "core"),
-                minted_row("busbar-core-config", 0, None),
-            ),
+            "[[minted]]\ncrate = \"busbar-core-policy\"\ncommit = \"5fe28f82a\"\ncells = \"5\"\nmoved_from = \"busbar-core\"\n",
+            "",
         ),
+        &["minted-row", "[[edge]] core \u{d7} control"],
     ));
 
     // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger

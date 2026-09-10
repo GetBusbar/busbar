@@ -7216,17 +7216,21 @@ impl Gate for KindIsolationGate {
             &["announced-edge-class", "core -> unit"],
         ));
 
-        // THE ANNOUNCEMENT IS WHAT HOLDS THE KIND ROW OPEN, not silence. Strike the rows while the
-        // crates are still absent and the `core` kind is a dead row in the table — which is what
-        // the dead-kind rule is for, and what it would have said the day the kind was added if the
-        // announcement had not been made with it.
+        // THE ANNOUNCEMENT IS WHAT HOLDS THE KIND ROW OPEN, not silence. Strike every row and a
+        // kind with no crate on disk is a dead row in the table — which is what the dead-kind rule
+        // is for, and what it would have said the day the kind was added if the announcement had
+        // not been made with it. The kind that is dead on THIS tree is `control`: its one member
+        // is registered (`busbar-plane-admin`, a name that says plane) and its other is announced
+        // (`busbar-control-oauth2`), and the empty registry strikes both. `core` was the kind this
+        // case named until the hook policy engine landed as its first crate; a crate on disk holds
+        // the row open with no registry at all, which is the rule reading correctly.
         report.push(prove_rows_red(
             cx,
             self,
-            "the `core` kind row with neither a crate nor an announcement is a dead kind",
+            "a kind row with neither a crate on disk nor a registry row holding it open is a dead kind",
             &[ROW_REGISTRY],
             registry_plant(""),
-            &["dead-kind", "core"],
+            &["dead-kind", "control"],
         ));
 
         // …and the waiver side has no case any more, on purpose: `dead-waiver` fires for an

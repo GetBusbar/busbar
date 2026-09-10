@@ -764,6 +764,13 @@ fn declared_raise_cases(
     cfg: &Cfg,
 ) -> Report {
     let mut r = Report::new();
+    // THE REAL ENTRIES ARE STRUCK FROM THE FIXTURE FIRST. Every arm below counts its planted
+    // entries by ordinal (`#1 +10`, `#2 +5`) and expects `--write` to strike exactly the two it
+    // planted at the base; a tree that carries declared raises of its own — the first was T0-E's
+    // hooks-face shape, and every face since — would push the planted ones to `#7`/`#8` and hand
+    // `--write` six more to strike. The arms are about the planted entries and nothing else, so the
+    // text they plant carries nothing else. Measured: six arms red on a tree with eight real entries.
+    let text = &without_raises(text);
     let (table, key) = ("rules.legacy-reach", "ceiling");
     let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
         r.note_infra_failure(format!(
@@ -788,10 +795,20 @@ fn declared_raise_cases(
              declared raise, and nothing else on this tree is\"\n"
         )
     };
-    // The base's copy and the tree's copy, both planted.
+    // The base's copy and the tree's copy, both planted. THE LEDGER'S BASE COPY IS THE TREE'S COPY:
+    // `ceiling-rose` reads qa/kind-isolation.toml too, and a cell the real tree raised — declared
+    // through this file in the `file =` form (the MOVE-by-identity cells of the hook policy engine's
+    // landing were the first) — is not what these arms are about. Left in the fixture it would be an
+    // undeclared rise the moment the plant makes every REAL entry "carried" by the planted base, and
+    // the arm would be red for a face it never planted. Measured: three arms red for exactly that.
+    let ledger_now = cx.read(ceilings::KIND_CEILINGS).unwrap_or_default();
     let plant = |at_base: String, tree: String| -> Overlay {
         let mut ov = on(base);
         ov.set_command(format!("git-show:{based}:{CEILINGS}"), at_base);
+        ov.set_command(
+            format!("git-show:{based}:{}", ceilings::KIND_CEILINGS),
+            ledger_now.clone(),
+        );
         ov.set(CEILINGS, tree);
         ov
     };
@@ -1032,6 +1049,8 @@ fn kind_row_identity_cases(
     ceilings_text: &str,
 ) -> Report {
     let mut r = Report::new();
+    // The planted declaration is the only one the fixture carries — see `declared_raise_cases`.
+    let ceilings_text = &without_raises(ceilings_text);
     let file = ceilings::KIND_CEILINGS;
     let Ok(kinds) = cx.read(file) else {
         r.note_infra_failure(format!(
@@ -1068,6 +1087,13 @@ fn kind_row_identity_cases(
         let mut ov = on(base);
         ov.set_command(format!("git-show:{based}:{file}"), base_kinds.clone());
         ov.set(file, struck.clone());
+        // The ceilings file's base copy is its (entry-less) tree copy: with the real entries
+        // struck from the fixture, the real tree's own declared rises would otherwise be
+        // undeclared here, and the arm is about the one cell it lowers and nothing else.
+        ov.set_command(
+            format!("git-show:{based}:{CEILINGS}"),
+            ceilings_text.clone(),
+        );
         ov.set(CEILINGS, format!("{ceilings_text}{declaration}"));
         ov
     };
@@ -1583,4 +1609,14 @@ fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         }),
     ));
     r
+}
+
+/// The ceilings-file text with EVERY `[[gate.ceiling_raises]]` entry struck, for the fixtures
+/// whose subject is the entries they plant themselves.
+fn without_raises(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(next) = ceilings::strike(&out, 1) {
+        out = next;
+    }
+    out
 }
