@@ -4716,6 +4716,12 @@ fn rewrite_counts(text: &str, repins: &[Repin]) -> String {
 /// fell and complains about the rest". A run that grew a coupling is a landing that has to be read,
 /// and a tool that quietly re-pinned the falls in the same breath would hand it a file that looks
 /// reviewed. The refusal names every row that would rise.
+///
+/// AND IT REFUSES IF THE GATE WOULD STILL BE RED ONCE IT HAD WRITTEN — which is a different tree
+/// from the one on disk, and the only one the question is about. Measuring the disk was a
+/// CATCH-22 with a laundering path at the end of it: every deletion reds the ordinary run on
+/// exactly the stale slack this flag exists to drain, so the flag refused every landing it was
+/// built for and the drainers edited the ledger by hand instead. See the note in the body.
 fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
     let repins = match repins(cx, crates, reg) {
         Ok(r) => r,
@@ -4760,7 +4766,44 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
     // keeps its own message; everything else that is red is reported here, wholesale, and nothing
     // is written. The twin is `check()` rather than the write build, which would ask this branch
     // again.
-    let ordinary = KindIsolationGate::check().run(cx);
+    //
+    // THE CATCH-22 THIS ARM USED TO BE, AND THE LAUNDERING PATH IT OPENED. The refusal measured the
+    // tree AS IT STANDS ON DISK — and every DELETION makes that tree red on exactly the stale slack
+    // `--write` exists to drain. The ratchet is exact in BOTH directions, so a cut that removes two
+    // of a crate's plane hits leaves the row two too high and `:matrix` says so, by name, as
+    // "STALE SLACK". The flag built to lower that number refused to run because the number was not
+    // lowered yet. So `--write` refused every landing it was built for, and the drainers reached
+    // for the ledger by hand instead — which is the laundering path this gate closed at the front
+    // door and left standing at the back.
+    //
+    // So the measurement is taken against the RE-PINNED FILE, in memory, before a byte reaches the
+    // disk. The question a re-pin has to answer was never "is the tree clean?" — it is "is the tree
+    // this write would produce clean?", and only the second one can be answered before the write.
+    //
+    // NOTHING IS LOOSENED BY THAT, and the exactness of the ratchet is what guarantees it. The
+    // overlay carries one edit and one only: each EXISTING row's count set to what this same run
+    // measured, downward (a rise returned above). A row whose only finding is that slack is green
+    // against it and stops refusing. Everything else is untouched and still red there — a raise, an
+    // UNLISTED cell (`repins` never invents a row, so a cell with no `[[cell]]` is not re-pinned
+    // and stays unlisted), a minted row, a dead allowance, an unlisted edge, a measurement
+    // disagreement, a plane word in a transport — and any one of them still refuses WHOLESALE.
+    //
+    // The overlay is layered ON the context's own, so a planted tree in the self-test is measured
+    // as the plant left it and not as the disk stands.
+    let text = match cx.read(REGISTRY_FILE) {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_WRITE,
+                "the registry file could not be read",
+                format!("{e} — there is nothing to re-pin."),
+            )
+        }
+    };
+    let rewritten = rewrite_counts(&text, &repins);
+    let mut overlay = cx.overlay().cloned().unwrap_or_default();
+    overlay.set(REGISTRY_FILE, rewritten.clone());
+    let ordinary = KindIsolationGate::check().run(&cx.with_overlay(overlay));
     let red: Vec<String> = ordinary
         .rows
         .iter()
@@ -4772,11 +4815,11 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
             ROW_WRITE,
             "--write refuses: the gate is RED, and this flag does not re-pin a red tree",
             format!(
-                "{} row(s) of the ordinary run are red; NOTHING was written. A count re-pinned \
-                 while another rule is failing is a ledger that LOOKS reviewed and is not — and \
-                 the row that would be lowered is not necessarily the row that is wrong. Fix the \
-                 tree, then re-pin. Red: {}. Run `cargo xtask gate kind-isolation` for the \
-                 findings themselves.",
+                "{} row(s) would STILL be red once every count this run would lower had been \
+                 lowered; NOTHING was written. A count re-pinned while another rule is failing is \
+                 a ledger that LOOKS reviewed and is not — and the row that would be lowered is \
+                 not necessarily the row that is wrong. Fix the tree, then re-pin. Red: {}. Run \
+                 `cargo xtask gate kind-isolation` for the findings themselves.",
                 red.len(),
                 red.join(", ")
             ),
@@ -4789,17 +4832,27 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
             format!("{REGISTRY_FILE} is at the measurement; nothing to re-pin"),
         );
     }
-    let text = match cx.read(REGISTRY_FILE) {
-        Ok(t) => t,
-        Err(e) => {
-            return Row::fail(
-                ROW_WRITE,
-                "the registry file could not be read",
-                format!("{e} — there is nothing to re-pin."),
-            )
-        }
-    };
-    let rewritten = rewrite_counts(&text, &repins);
+    // A MEASUREMENT TAKEN THROUGH AN OVERLAY DESCRIBES NO TREE ON DISK, so it is never written to
+    // one. The self-test plants its trees that way, and a `--write` that committed a planted
+    // tree's counts to the real `qa/kind-isolation.toml` would be a battery that edits the ledger
+    // it is proving — the exact thing the arm's own note says a self-test must not do. The re-pin
+    // is measured, reported in full, and left in memory.
+    if cx.overlay().is_some() {
+        return Row::pass(
+            ROW_WRITE,
+            "every count that fell is re-pinned to what the tree measures",
+            format!(
+                "{} row(s) would be lowered in {REGISTRY_FILE} and the gate is green once they \
+                 are; the tree was read through an overlay, which describes no file on disk, so \
+                 nothing was written: {}",
+                down.len(),
+                down.iter()
+                    .map(|r| format!("{} {} -> {}", r.label, r.was, r.now))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     match std::fs::write(cx.abs(REGISTRY_FILE), &rewritten) {
         Ok(()) => Row::pass(
             ROW_WRITE,
@@ -5024,13 +5077,12 @@ impl Gate for KindIsolationGate {
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
 
-        // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise: the
-        // two claims it makes are exactly the two paths that write nothing. "Already at the
-        // measurement" returns before the file is opened, and "a count would RISE" is a REFUSAL —
-        // wholesale, so a run that grew a coupling cannot be handed back a file that looks
-        // reviewed. The third path, the one that lowers, is the one a self-test must not take over
-        // the real tree, because a battery that edits the ledger it is proving is a battery that
-        // makes itself pass.
+        // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise:
+        // every case here is planted through an overlay, and a measurement taken through an
+        // overlay describes no file on disk, so `rule_write` reports the re-pin and declines to
+        // commit it. A battery that edited the ledger it is proving would be a battery that makes
+        // itself pass; the refusal to write a planted tree's counts is in the rule, not in the
+        // restraint of the cases.
         if self.write {
             report.push(prove_rows_green(
                 cx,
@@ -5075,6 +5127,83 @@ impl Gate for KindIsolationGate {
                     "the gate is RED",
                     "NOTHING was written",
                     "kind-isolation:deps",
+                ],
+            ));
+
+            // …AND THE TREE IT MEASURES IS THE ONE THIS WRITE WOULD PRODUCE, NOT THE ONE ON DISK.
+            //
+            // The refusal above measured the disk, and that made this flag refuse every landing it
+            // was built for. The ratchet is exact in BOTH directions, so a DELETION — the landing
+            // the whole mechanism exists to make cheap — leaves the row it drained too high and
+            // `:matrix` reds on it as STALE SLACK. `--write` then declined to lower the number
+            // because the number was not lowered yet, and the drainers reached for the ledger by
+            // hand instead: the laundering path this gate closed at the front door.
+            //
+            // THE PLANT IS A DRAINED CELL. A count above its measurement is what a cut leaves
+            // behind, and it is the one finding the re-pin itself answers, so the tree this write
+            // would produce is green and the write goes through.
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "--write re-pins a tree whose ONLY finding is the stale slack it would lower",
+                &[ROW_WRITE],
+                registry_with(
+                    cx,
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"222\"",
+                ),
+            ));
+
+            // AND NOTHING ELSE IS LET THROUGH WITH IT. These two are the exclusion's own edges: a
+            // finding the re-pin does NOT answer still refuses wholesale, whether it is a cell the
+            // ledger never listed — `repins` visits rows that already exist, so an unlisted cell is
+            // not re-pinned and is exactly as red against the re-pinned file as against the disk —
+            // or a cell that ROSE, which is the landing that grew the coupling and is read by a
+            // person.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "--write still refuses wholesale on an UNLISTED cell, which no re-pin answers",
+                &[ROW_WRITE],
+                registry_with(
+                    cx,
+                    "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"122\"\n",
+                    "",
+                ),
+                &[
+                    "the gate is RED",
+                    "NOTHING was written",
+                    "kind-isolation:matrix",
+                ],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "--write still refuses wholesale on a RAISED cell, even beside slack it would lower",
+                &[ROW_WRITE],
+                {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        REGISTRY_FILE,
+                        cx.read(REGISTRY_FILE)
+                            .unwrap_or_default()
+                            .replacen(
+                                "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                                "crate = \"busbar\"\nkind = \"api\"\ncount = \"222\"",
+                                1,
+                            )
+                            .replacen(
+                                "crate = \"busbar\"\nkind = \"caps\"\ncount = \"302\"",
+                                "crate = \"busbar\"\nkind = \"caps\"\ncount = \"3\"",
+                                1,
+                            ),
+                    );
+                    ov
+                },
+                &[
+                    "would RISE",
+                    "NOTHING was written",
+                    "busbar × caps 3 -> 302",
                 ],
             ));
             return report;
