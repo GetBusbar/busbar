@@ -512,8 +512,9 @@ fn is_alternate_loopback_v4(host: &str) -> bool {
 // that live in different crates — the OTLP credential split at boot, and the protocol catch-all's
 // raw-path dispatch on the request path — and a decoder that both call is either in one place both
 // can name or it is two decoders. It was already the latter twice over: two further hand-copies of
-// this exact function exist in the retiring engine, at `ingress/mod.rs` and `oauth_as/routes.rs`.
-// Those are the next two deletions this move makes possible; it does not make them here.
+// this exact function sat in the retiring engine, at `ingress/mod.rs` (test-support only, one
+// reader) and `oauth_as/routes.rs` (the form-urlencoded variant: this decoder plus `+` → space).
+// Both are DELETED against this one; the form reader folds `+` on the raw bytes and calls here.
 
 /// Percent-decode a URL component to its raw UTF-8 string, leaving any byte that is not a valid
 /// `%XX` escape (or invalid UTF-8) untouched so a credential is never silently corrupted. Also used

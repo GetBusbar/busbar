@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use busbar_core::ingress::{
     admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
-    not_found_message, percent_decode, pool_authorized, pool_label,
+    not_found_message, pool_authorized, pool_label,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -3198,48 +3198,6 @@ async fn test_gemini_model_with_colon_splits_on_last_colon() {
     server.shutdown().await;
 }
 
-// ---- percent_decode unit tests ---------------------------
-
-/// `%3A` decodes to a literal colon.
-#[test]
-fn test_percent_decode_colon() {
-    crate::testkit::install_test_seams();
-    assert_eq!(percent_decode("%3A"), ":");
-    assert_eq!(
-        percent_decode("anthropic.claude-3%3A0"),
-        "anthropic.claude-3:0"
-    );
-}
-
-/// `%2E` decodes to a literal period, and an undecoded id passes through unchanged.
-#[test]
-fn test_percent_decode_period_and_plain() {
-    crate::testkit::install_test_seams();
-    assert_eq!(percent_decode("a%2Eb"), "a.b");
-    assert_eq!(
-        percent_decode("anthropic.claude-3-sonnet"),
-        "anthropic.claude-3-sonnet"
-    );
-}
-
-/// A malformed escape (`%` followed by non-hex digits) is left verbatim rather than dropped or
-/// panicking.
-#[test]
-fn test_percent_decode_malformed_escape_passes_through() {
-    crate::testkit::install_test_seams();
-    assert_eq!(percent_decode("%XY"), "%XY");
-    assert_eq!(percent_decode("a%ZZb"), "a%ZZb");
-}
-
-/// A trailing `%` (or a `%` with too few following bytes) at end-of-string is safe — no
-/// out-of-bounds index, the bytes pass through.
-#[test]
-fn test_percent_decode_trailing_percent_is_safe() {
-    crate::testkit::install_test_seams();
-    assert_eq!(percent_decode("abc%"), "abc%");
-    assert_eq!(percent_decode("abc%3"), "abc%3");
-}
-
 /// Conformance regression: a 404 from `forward_resolved` (unknown model) carries the
 /// canonical `not_found_error` type for an OpenAI-ingress client, not the old non-canonical
 /// `not_found`. Drives the real router so the body-model ingress → resolution-miss path runs.
@@ -4514,7 +4472,7 @@ async fn test_responses_ingress_stream_emits_native_responses_events() {
 /// A percent-encoded Bedrock model id (`anthropic.claude-3%3Ahaiku` → `anthropic.claude-3:haiku`)
 /// must be decoded by axum, resolved, and the converse-stream response re-encoded as a binary
 /// AWS eventstream. This exercises the real HTTP decode + routing + binary re-encode end-to-end
-/// (the unit `percent_decode` tests bypass axum's own first decode).
+/// (the decoder's own unit tests, beside the decoder, bypass axum's own first decode).
 #[tokio::test]
 async fn test_bedrock_percent_encoded_model_id_converse_stream() {
     crate::testkit::install_test_seams();

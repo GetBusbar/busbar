@@ -29,6 +29,7 @@ use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
 use busbar_plugin_loader::{RouteAuth, RouteMethod};
+use busbar_unit_egress::sink_guard::percent_decode;
 
 use crate::core_routes::CoreRouter;
 use crate::state::AppHandle;
@@ -354,46 +355,17 @@ fn host_of(redirect_uri: &str) -> String {
 
 /// `a=b&c=d` with `+` and `%xx` decoded. Hand-written because the one caller reads two names out of
 /// a query this server itself produced, and a general-purpose parser here would be a dependency
-/// bought for eight lines.
+/// bought for eight lines. The `%xx` half is the ONE URL-component decoder the tree carries (the
+/// egress unit's sink guard owns it, with the other URL-shaped atoms); the `+` → space fold is
+/// form-urlencoded's own rule and is applied to the raw bytes first, so a `%2B` still decodes to a
+/// literal plus.
 fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
+    let decode = |s: &str| percent_decode(&s.replace('+', " "));
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
-        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .map(|(k, v)| (decode(k), decode(v)))
         .collect()
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    // A stray `%` is kept verbatim rather than dropped: dropping it would let two
-                    // different query strings decode to one value.
-                    Err(_) => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An unguessable session id. 256 bits from the platform RNG, hex — or `None`.

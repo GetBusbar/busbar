@@ -755,34 +755,6 @@ pub use path_ingress::PathIngress;
 // every core `crate::ingress::not_found_message` call site resolves unchanged.
 pub use busbar_substrate::ingress::not_found_message;
 
-/// Minimal percent-decoding for a single path segment (no external dependency). Decodes `%XX`
-/// escapes as UTF-8; on any malformed escape it leaves the bytes as-is.
-///
-/// No longer on the request path: axum percent-decodes `Path` params before the handler runs, so
-/// `bedrock_ingress` uses the already-decoded segment directly (decoding twice corrupts ids whose
-/// first decode yields a literal `%XX`). Retained as a `#[cfg(test)]` helper documenting the
-/// decode semantics and guarding against accidental reintroduction of a double-decode.
-#[cfg(any(test, feature = "test-support"))]
-pub fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 // POST /<name>/v1/messages — name resolves to a pool (weighted) or a single model. The pool/model
 // routing + chat forward reads the LLM routing tables and RELOCATED into the LLM plane; this core
 // shell mints the neutral arrival (reconstructing the URL the convenience route pinned) and hands it

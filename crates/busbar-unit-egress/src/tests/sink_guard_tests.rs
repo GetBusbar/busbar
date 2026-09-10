@@ -755,3 +755,55 @@ fn test_validate_otlp_endpoint_requires_https_for_remote_collector() {
         );
     }
 }
+
+// ── the URL-component decoder ────────────────────────────────────────────────────────────────────
+//
+// PORTED from the retiring engine's ingress battery, where they tested the `ingress::percent_decode`
+// hand-copy that is now deleted against this one. Same inputs, same expected strings; the only
+// adaptation is that the engine's test-seam install is gone, because a pure decoder needs no seam.
+
+/// `%3A` decodes to a literal colon.
+#[test]
+fn test_percent_decode_colon() {
+    assert_eq!(percent_decode("%3A"), ":");
+    assert_eq!(
+        percent_decode("anthropic.claude-3%3A0"),
+        "anthropic.claude-3:0"
+    );
+}
+
+/// `%2E` decodes to a literal period, and an undecoded id passes through unchanged.
+#[test]
+fn test_percent_decode_period_and_plain() {
+    assert_eq!(percent_decode("a%2Eb"), "a.b");
+    assert_eq!(
+        percent_decode("anthropic.claude-3-sonnet"),
+        "anthropic.claude-3-sonnet"
+    );
+}
+
+/// A malformed escape (`%` followed by non-hex digits) is left verbatim rather than dropped or
+/// panicking.
+#[test]
+fn test_percent_decode_malformed_escape_passes_through() {
+    assert_eq!(percent_decode("%XY"), "%XY");
+    assert_eq!(percent_decode("a%ZZb"), "a%ZZb");
+}
+
+/// A trailing `%` (or a `%` with too few following bytes) at end-of-string is safe — no
+/// out-of-bounds index, the bytes pass through.
+#[test]
+fn test_percent_decode_trailing_percent_is_safe() {
+    assert_eq!(percent_decode("abc%"), "abc%");
+    assert_eq!(percent_decode("abc%3"), "abc%3");
+}
+
+/// The form-urlencoded reader's contract, pinned at the decoder: a `+` folded to a space on the RAW
+/// bytes before decoding leaves a `%2B` to decode to a literal plus, and a `%` followed by a
+/// multi-byte character is left verbatim rather than sliced mid-character.
+#[test]
+fn test_percent_decode_form_fold_and_multibyte_are_safe() {
+    assert_eq!(percent_decode(&"a+b%2Bc".replace('+', " ")), "a b+c");
+    assert_eq!(percent_decode("%\u{e9}x"), "%\u{e9}x");
+    assert_eq!(percent_decode("caf%C3%A9"), "caf\u{e9}");
+}

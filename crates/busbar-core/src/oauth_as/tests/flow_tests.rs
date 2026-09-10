@@ -25,6 +25,8 @@ use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
+use busbar_unit_egress::sink_guard::percent_decode;
+
 use crate::oauth_as::config::OauthAsCfg;
 use crate::test_support::TestApp;
 
@@ -799,32 +801,6 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
         "the URL is the client's identity, verbatim"
     );
     assert_eq!(record.scope.to_string(), SCOPE);
-}
-
-/// Percent-decoding for the one value this file reads back out of a URL it was handed.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                Ok(b) => {
-                    out.push(b);
-                    i += 3;
-                }
-                Err(_) => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).expect("the server produced UTF-8")
 }
 
 // ── the consent screen itself ────────────────────────────────────────────────────────────────────

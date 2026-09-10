@@ -1641,3 +1641,21 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "MOVE, the same logging install as the transport row above: the root now names busbar_unit_egress::sink_guard for the three URL-shaped things the install needs (mask_userinfo, percent_decode, validate_otlp_endpoint) where busbar-core used to, and busbar-core x unit falls 46 -> 45 in the same commit. The root already carried the busbar-unit-egress dependency, so the edge itself costs nothing new"
+
+# THE TWO PERCENT_DECODE HAND-COPIES, DELETED (keep-core-delete-10b). The sink-guard move above
+# said it made these deletions possible and did not make them; this is them. busbar-core carried the
+# URL-component decoder three times over: the body that left with the URL atoms, a test-support-gated
+# copy at ingress/mod.rs (one reader, the LLM engine's test battery, whose four decoder tests are
+# PORTED to the decoder's own battery), and the form-urlencoded variant at oauth_as/routes.rs (the
+# same decoder plus `+` -> space; the reader now folds `+` on the raw bytes and calls the one home).
+# A third, test-only copy at oauth_as/tests/flow_tests.rs went with them. Nothing was added on the
+# destination side but the ported tests, which are under src/tests/ and outside every LOC union.
+#
+#   busbar-core x unit   45 -> 47   (+2)   two `use busbar_unit_egress::sink_guard::percent_decode;`
+#                                          lines in place of three deleted bodies: busbar-core falls
+#                                          eighty lines net (-56 prod, -24 test) on the same commit
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "MOVE by identity, the readers' half: the two hand-copies of the URL-component decoder at busbar-core/src/ingress/mod.rs and busbar-core/src/oauth_as/routes.rs are DELETED against busbar_unit_egress::sink_guard::percent_decode (already the one home), and the two `use` lines that replace them are these two spellings - one in the oauth routes module, one in its flow battery, which also loses its own third copy. busbar-core falls by eighty lines net on the commit that spends these two - fifty-six of them production; the unit side gains only the four ported decoder tests, under src/tests/ and outside the unions"
