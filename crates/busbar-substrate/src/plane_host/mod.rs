@@ -710,58 +710,15 @@ pub trait ClockHost: Send + Sync {
     fn clock_now_ms(&self) -> u64;
 }
 
-/// The TELEMETRY slice: the plane-labelled metric emits a plane fires to close a request out and to
-/// count its dispatch/failover/translation events, plus the `pool_label` cardinality bound every emit
-/// path runs first. Split off `EngineHost` as a supertrait; each emit is snapshot-scoped, no `HostCtx`.
-pub trait TelemetryHost: Send + Sync {
-    /// Stamp the plane-labelled request-completion metric family for a MOUNTED plane through the host.
-    /// A neutral trait seam: the plane hands its own `(plane, ingress_protocol, pool, outcome, seconds)`
-    /// and the host records the completion, so the plane never names core's engine snapshot to close a
-    /// request out. Identical to `busbar_core::telemetry::request_finished` over the bound snapshot.
-    fn request_finished(
-        &self,
-        plane: &str,
-        ingress_protocol: &str,
-        pool: &str,
-        outcome: &'static str,
-        seconds: f64,
-    );
-
-    /// Count ONE dispatch ATTEMPT on `(pool_label, lane)` — the `busbar_upstream_attempts_total`
-    /// upstream-attempt metric — through the host, so the engine emits it without naming core's
-    /// telemetry module. `pool_label` is the bounded metric label (a named pool, or the routed model
-    /// name for the default `""` cell); `lane` is the lane index the host resolves the `lane` label
-    /// from off the bound snapshot. A pure snapshot-scoped metric emit, no `HostCtx`; identical to
-    /// `busbar_core::telemetry::upstream_attempt` over the bound snapshot.
-    fn telemetry_upstream_attempt(&self, pool_label: &str, lane: usize);
-
-    /// Count ONE classified upstream FAILURE on `(pool_label, lane)` by `disposition` — the
-    /// `busbar_upstream_failures_total` metric — through the host. The telemetry twin of
-    /// [`telemetry_upstream_attempt`](Self::telemetry_upstream_attempt); identical to
-    /// `busbar_core::telemetry::upstream_failure` over the bound snapshot.
-    fn telemetry_upstream_failure(&self, pool_label: &str, lane: usize, disposition: &'static str);
-
-    /// Count ONE logical Closed→Open breaker TRIP on `(pool_label, lane)` — the
-    /// `busbar_breaker_trips_total` metric — through the host. Identical to
-    /// `busbar_core::telemetry::breaker_trip` over the bound snapshot.
-    fn telemetry_breaker_trip(&self, pool_label: &str, lane: usize);
-
-    /// Count ONE FAILOVER event on `pool_label` by `reason` — the `busbar_failovers_total` metric —
-    /// through the host. Identical to `busbar_core::telemetry::failover` over the bound snapshot.
-    fn telemetry_failover(&self, pool_label: &str, reason: &'static str);
-
-    /// Count ONE cross-protocol TRANSLATION hop `from → to` — the `busbar_translations_total`
-    /// metric — through the host. Both names come from the fixed protocol vocabulary, so the emit is
-    /// snapshot-independent; identical to `busbar_core::telemetry::translation`.
-    fn telemetry_translation(&self, from: &str, to: &str);
-
-    /// Map a client-supplied model/name string to the BOUNDED `pool` metric label through the host:
-    /// the string verbatim when it names a configured pool or by-model lane, else the fixed
-    /// `"unresolved"` sentinel. Bounds the Prometheus label cardinality on every finish/webhook path.
-    /// Identical to `busbar_core::ingress::pool_label` over the bound snapshot; the returned slice
-    /// borrows `model` (or a `'static` sentinel), independent of the host.
-    fn pool_label<'a>(&self, model: &'a str) -> &'a str;
-}
+// THE TELEMETRY FACE MOVED TO `busbar_contract::telemetry::Telemetry`. It is declared there, in
+// the crate a plugin already reads, because this one is FROZEN: nothing moves into busbar-substrate
+// and a face declared on it cannot outlive it. The seven methods went by identity — same names,
+// same signatures, same bounds — with the doc text de-cored (the contract may not name the retiring
+// crate). This alias is the historical spelling, kept for exactly as long as its readers cannot
+// name the contract directly: busbar-core carries no busbar-contract Cargo edge today, and taking
+// it mints a `busbar-core x contract` kind-isolation cell that does not exist, which is a raise
+// that belongs to the core->contract move and not to this seam.
+pub use busbar_contract::telemetry::Telemetry as TelemetryHost;
 
 /// The JOURNAL slice: the durable admin-audit / call-log emits a plane writes as a side effect of the
 /// mutation it records. All fire-and-forget (a store miss never fails the recorded action). Split off

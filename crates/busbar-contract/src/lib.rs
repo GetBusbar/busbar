@@ -20,6 +20,7 @@ pub mod plane;
 pub mod plugin;
 pub mod spans;
 pub mod surface;
+pub mod telemetry;
 pub mod transport;
 pub mod unit;
 pub mod wire;
