@@ -140,20 +140,14 @@ contract_transport = 845
 [gate.ceiling_raises."cell.busbar-core.api.count"]
 file = "qa/kind-isolation.toml"
 from = 603
-to = 610
+to = 608
 because = "busbar-core × api: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 7 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
 [gate.ceiling_raises."cell.busbar-core.control.count"]
 file = "qa/kind-isolation.toml"
 from = 5200
-to = 5517
+to = 5513
 because = "busbar-core × control: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 321 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
-
-[gate.ceiling_raises."cell.busbar-core.plane.count"]
-file = "qa/kind-isolation.toml"
-from = 3033
-to = 3057
-because = "busbar-core × plane: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 34 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
 [gate.ceiling_raises."cell.busbar-core.plugin-tooling.count"]
 file = "qa/kind-isolation.toml"

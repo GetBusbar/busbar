@@ -22,7 +22,7 @@ use crate::{
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
     observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    telemetry, tls, transport,
 };
 use busbar_substrate::diagnostics::{
     DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
