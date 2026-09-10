@@ -22,7 +22,7 @@ const WINDOWS: [&str; 5] = [MINUTE, HOUR, DAY, MONTH, TOTAL];
 
 /// Build a chain of `depth` nested groups with the cap on the OUTERMOST one, so the test walks the
 /// whole chain before it reaches the bucket that blocks. The principal is bound to the innermost.
-fn nested(depth: usize, cap: LimitCfg) -> (crate::chain::GroupTable, String) {
+fn nested(depth: usize, cap: LimitSpec) -> (crate::chain::GroupTable, String) {
     assert!(depth >= 1);
     let mut cfgs: Vec<(String, GroupCfg)> = Vec::new();
     // `g0` is the outermost (it carries the cap); each next one names the previous as parent.
@@ -99,7 +99,7 @@ fn cap_kind_by_window_by_scope_by_depth() {
                         None => limit(kind.limit_metric(), kind.amount(), Some(window)),
                         Some(pool) => pooled(kind.limit_metric(), kind.amount(), window, pool),
                     };
-                    cap.per = Some(window);
+                    cap.window = Some(window);
                     let (t, blocking) = nested(depth, cap);
                     let c = chain(&t, "vk_cell", Some(&format!("g{}", depth - 1)));
                     let d = door();
@@ -343,7 +343,8 @@ fn frozen_group_refuses_and_charges_nothing_at_every_depth() {
                 i != 0, // the OUTERMOST group is the frozen one
                 vec![limit(LimitMetric::Concurrent, 8, None)],
             );
-            g.limits
+            g.spec
+                .limits
                 .push(limit(LimitMetric::Requests, 100, Some(MINUTE)));
             cfgs.push((format!("g{i}"), g));
         }
@@ -373,9 +374,9 @@ fn downgrade_cascade_charges_the_attempted_pool_only() {
     let d = door();
     let p = no_card(10);
     let mut frontier = pooled(LimitMetric::Budget, 25, DAY, "frontier");
-    frontier.downgrade_to = Some("middle".to_string());
+    frontier.downgrade_to = Some(pool("middle"));
     let mut middle = pooled(LimitMetric::Budget, 25, DAY, "middle");
-    middle.downgrade_to = Some("value".to_string());
+    middle.downgrade_to = Some(pool("value"));
     let t = table(&[(
         "team",
         group_cfg(
@@ -821,7 +822,7 @@ fn a_unit_the_cascade_narrowed_is_posted_as_downgraded() {
     let d = door();
     let p = no_card(10);
     let mut frontier = pooled(LimitMetric::Budget, 25, DAY, "frontier");
-    frontier.downgrade_to = Some("value".to_string());
+    frontier.downgrade_to = Some(pool("value"));
     let t = table(&[(
         "team",
         group_cfg(

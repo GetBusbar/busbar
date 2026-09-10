@@ -1202,8 +1202,8 @@ because = "FACE busbar-unit-cost::CostModel: the composition root now names the 
 [[gate.ceiling_raises]]
 key = "cell.busbar-unit-admission.unit.count"
 file = "qa/kind-isolation.toml"
-by = 2
-because = "FACE busbar-unit-cost::CostModel: busbar-unit-admission re-exports the resolved topology it used to declare (GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP) from busbar_unit_cost, the crate that resolves it, on the one line of chain.rs that says so; the walk over that table stays here as ChainWalk"
+by = 4
+because = "FACE busbar-unit-cost::CostModel: busbar-unit-admission re-exports the resolved topology it used to declare (GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP) from busbar_unit_cost, the crate that resolves it, on the one line of chain.rs that says so, and its tests resolve their chains through the unit's GroupTable::resolve over the unit's spec values on one import line, in place of a third copy of the projection; the walk over that table stays here as ChainWalk"
 
 # ------------------------------------------------------------------------------------------------
 # [gate.census] — THE RATCHET ON THE RATCHETS
