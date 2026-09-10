@@ -122,8 +122,18 @@ if [ -n "$NEEDY" ]; then
   REACHABLE="$(ssm_online "$NEEDY")"
   if [ -n "$REACHABLE" ]; then
     log "registering: $REACHABLE"
+    # THE REGISTRATION IS A LIBRARY CALL, NOT AN EXEC OF A SIBLING SCRIPT, AND ITS STATUS IS KEPT.
+    # This used to be `"$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1 || true`, and on
+    # 2026-09-10 the timer was running from a scripts directory that had every file it needed
+    # except that one. The exec failed 127 into /dev/null, `|| true` swallowed it, and the pass
+    # went on to print "still no agents online on those boxes — bootstrap is not finished" — a true
+    # sentence about a fleet that had finished bootstrapping an hour earlier and would never
+    # register, because nothing was ever dispatched. Eight boxes, thirty-two agents, silent.
+    # register_agents lives in the library this script cannot start without, so a partial copy of
+    # scripts/ now fails at `source` rather than in a summary line that reads healthy.
+    REG_RC=0
     # shellcheck disable=SC2086  # a whitespace-separated id list, passed as separate arguments
-    "$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1 || true
+    register_agents $REACHABLE || REG_RC=$?
 
     # THE COUNT IS RE-DERIVED FROM GITHUB, NOT FROM THE EXIT CODE. THE SSM AGENT COMES UP LONG
     # BEFORE THE RUNNERS DO — a box answered SSM roughly a minute after launch while it was still
@@ -147,7 +157,14 @@ if [ -n "$NEEDY" ]; then
     done
     REGISTERED="$(printf '%s' "$REGISTERED" | sed -e 's/^ //' -e 's/ $//')"
     if [ -z "$REGISTERED" ]; then
-      log "  (still no agents online on those boxes — bootstrap is not finished; the next pass retries)"
+      # THE TWO CAUSES ARE NOT THE SAME EVENT AND MUST NOT SHARE A LINE. "The dispatch worked and
+      # the agents have not surfaced yet" is a pass that will fix itself; "the dispatch failed" is a
+      # fleet that stays at its current size until someone reads this log.
+      if [ "$REG_RC" != 0 ]; then
+        log "  REGISTRATION STEP FAILED (rc=$REG_RC) — these boxes will NOT come online on their own"
+      else
+        log "  (still no agents online on those boxes — bootstrap is not finished; the next pass retries)"
+      fi
     fi
   else
     log "short of agents but not SSM-reachable yet: $NEEDY"
