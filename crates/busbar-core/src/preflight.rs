@@ -17,8 +17,8 @@ use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this

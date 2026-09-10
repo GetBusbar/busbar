@@ -131,6 +131,18 @@ axum = { workspace = true }
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
 tracing = { workspace = true }
+# THE LOGGING INSTALL, moved out of the retiring engine (root/logging.rs). A process installs its
+# process-global subscriber exactly once, which is a thing only a composition root can do; these are
+# the crates that install do it with, and they are here rather than in a library for that reason.
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-http = { workspace = true }
+hyper-rustls = { workspace = true }
+http = { workspace = true }
+url = { workspace = true }
 metrics = { workspace = true }
 # The export fan-out's payload type. The projection grammar builds a `serde_json::Value` per
 # distinct projection (`root::units_export`), and each sink is handed it by reference — the root

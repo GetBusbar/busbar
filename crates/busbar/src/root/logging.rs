@@ -1,28 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Observability sinks beyond Prometheus `/metrics`: a best-effort request-log webhook and
-//! OTLP trace export. Both are opt-in via the `observability` config section; with no
-//! config they are no-ops. State lives in process-wide `OnceLock`s (set once at startup) so the
-//! request path can reach it without threading new fields through `App` and its many constructors.
+//! The process's logging: the subscriber install, the two level filters, the OTLP trace export and
+//! the tracer shutdown.
+//!
+//! MOVED HERE, not written here. This is the retiring engine's `observability` module minus the
+//! sink guard (which went to the egress unit) and minus `percent_decode` (whose reader is still on
+//! the request path). It is here because it is BOOT, by definition and by measurement: three call
+//! sites, all three in `main`, and a process installs its logging exactly once. A library crate
+//! that installs a process-global subscriber is a library that cannot be linked twice.
+//!
+//! THE TWO FILTERS ARE NOT THE SAME FILTER, and that is the design rather than an oversight. stderr
+//! takes `RUST_LOG`, default `info`. OTLP FLOORS at DEBUG, because every request-path span is
+//! emitted at debug so it costs nothing on the stderr path at the default level; exporting at the
+//! stderr level meant an operator who configured a collector received no request trace at all. Both
+//! are attached PER LAYER — a bare `LevelFilter` on the registry is a GLOBAL filter that gates
+//! callsite enablement for every layer, so an OTLP-specific filter underneath one is inert.
+//!
+//! THE ORDERING IS LOAD-BEARING. The exporter and provider are built BEFORE the subscriber is
+//! installed, but the global side effect (`set_tracer_provider`) is deferred until `try_init()`
+//! actually succeeds — a repeated call must not leave a new provider behind an old subscriber.
 
 use std::sync::OnceLock;
 
-// THE SINK GUARD MOVED OUT. `mask_userinfo`, `validate_webhook_url`, `validate_otlp_endpoint` and
-// every URL-shaped atom under them are now `busbar_unit_egress::sink_guard`, because the question
-// they answer — may this deployment send there at all? — is the egress unit's question and no
-// other's. What is left here is the two things that are genuinely this module's: the OTLP
-// credential split (an `Authorization` header, not an address predicate) and the subscriber
-// install. The shared internal-address predicates the guard calls did not move with it and were
-// never copied: they are `busbar_unit_trust::net`'s, and the guard calls them from there.
-use busbar_unit_egress::sink_guard::{mask_userinfo, validate_otlp_endpoint};
-
-// 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
-// `AdmissionGate` machinery, `configure_webhook`, `fire_request_log`, `build_request_log`) moved OUT
-// of this module into the built-in `request-log-webhook` EXPORTER. Only distribution moved then;
-// validation stayed, and the note that recorded that has been overtaken: 1.6.0 moved the VALIDATOR
-// out too, to the unit that owns the question of whether a destination may be dialled at all. The
-// exporter now calls it there, and so does the subscriber install below.
+use busbar_unit_egress::sink_guard::{mask_userinfo, percent_decode, validate_otlp_endpoint};
 
 /// The HTTP Basic auth scheme prefix (RFC 7617). Includes the trailing space so callers can
 /// write `format!("{OTLP_AUTH_SCHEME}{token}")` without hard-coding the space.
@@ -108,60 +109,10 @@ fn split_otlp_credentials(endpoint: &str) -> (String, Option<http::header::Heade
     (clean, auth)
 }
 
-/// Percent-decode a URL component to its raw UTF-8 string, leaving any byte that is not a valid
-/// `%XX` escape (or invalid UTF-8) untouched so a credential is never silently corrupted. Also used
-/// by the protocol catch-all to decode path-model segments (axum's `Path` extractor decoded them
-/// before the collapse; the raw-path dispatch must match).
-pub(crate) fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 /// Retained `SdkTracerProvider` handle so its batched span buffer can be flushed/shut down on
 /// process exit (`shutdown_tracing`). Set at most once, only after the subscriber installs
 /// successfully — see `init_logging`.
 static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
-
-/// THE TRACING SEAM — the one-spot level policy for every per-request span/event.
-///
-/// Every per-request span or event MUST be bound to a level, and that level MUST be set in exactly
-/// one place. This constant is that one place: every hot-path `#[tracing::instrument]`
-/// and every per-request `tracing::debug!`/`trace!` call references `HOTPATH_LEVEL` (or the literal
-/// it is set to) rather than picking its own level ad hoc, so raising or lowering the hot-path
-/// verbosity for the WHOLE request path is a one-line change here, and `scripts/tracing-lint.sh`
-/// fails CI on any `#[instrument]` that skips the reference and hand-picks a level instead (a
-/// "rogue trace").
-///
-/// Deliberately `DEBUG`, not the `tracing::Level::TRACE` variant: `log_levels()` below is the other
-/// half of the one-spot policy — it floors the OTLP export filter at DEBUG specifically so an
-/// operator who points `observability.otlp_endpoint` at a collector gets the request-path spans
-/// (`forward`, `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`, ...) WITHOUT also having to
-/// set `RUST_LOG=debug` and flood stderr with every debug line in the process (see the doc comment
-/// on `log_levels`). If `HOTPATH_LEVEL` were `TRACE` instead, that OTLP floor would need to move to
-/// TRACE too — losing the "OTLP get the hot path, stderr stays at its own level" split the two-filter
-/// design exists for. Both stay OFF at the default `RUST_LOG=info` filter either way: `DEBUG` is
-/// less verbose than `TRACE`, so nothing about the "off by default" contract changes with this
-/// choice.
-// A′ (ABI-purity P4): the hot-path tracing floor relocated DOWN to busbar-substrate so the
-// busbar-llm engine names it via the ABI (`busbar_substrate::observability::HOTPATH_LEVEL`). A pure
-// compile-time `const` (no registry, no dual-compile concern). Re-exported here so `crate::
-// observability::HOTPATH_LEVEL` and every in-core reference stay unchanged and byte-identical.
-pub use busbar_substrate::observability::HOTPATH_LEVEL;
 
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus an
@@ -177,7 +128,8 @@ pub use busbar_substrate::observability::HOTPATH_LEVEL;
 /// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
 /// directive syntax (`busbar=debug,hyper=warn`) would require the `env-filter` feature.
 ///
-/// OTLP floors at DEBUG (== `HOTPATH_LEVEL` above), because every request-path span (`forward`,
+/// OTLP floors at DEBUG (== `busbar_substrate::observability::HOTPATH_LEVEL`, the one-spot hot-path
+/// tracing seam), because every request-path span (`forward`,
 /// `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
 /// at the default level. Exporting at the stderr level meant an operator who configured a collector
 /// received no request trace at all — only the one span that happens to default to INFO, orphaned
@@ -355,5 +307,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "tests/observability_tests.rs"]
+#[path = "tests/logging.rs"]
 mod tests;

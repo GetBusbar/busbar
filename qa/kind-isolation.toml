@@ -1371,7 +1371,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1801"
 
 [[cell]]
 crate = "busbar"
@@ -1396,12 +1396,12 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+count = "964"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1177"
+count = "1179"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1661,7 +1661,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "2989"
+count = "2985"
 
 [[cell]]
 crate = "busbar-core"
@@ -1691,12 +1691,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2032"
+count = "2009"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "46"
+count = "45"
 
 [[cell]]
 crate = "busbar-export-example-plugin"

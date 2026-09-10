@@ -1759,7 +1759,7 @@ fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
 /// trick (backslash, userinfo flip, percent-encoded dots, trailing dot) that only one of them
 /// normalized away.
 /// `url`'s scheme equals `scheme`, compared CASE-INSENSITIVELY per RFC 3986 §3.1 — the same guard
-/// `observability::scheme_is` uses for webhook URLs. A raw `starts_with("https://")` rejects the
+/// `busbar_unit_trust::net::scheme_is` uses for webhook URLs. A raw `starts_with("https://")` rejects the
 /// valid uppercase spelling `HTTPS://host/` that reqwest's `Url::parse` lowercases and accepts, so
 /// the provider base_url scheme check must match the webhook guard's case-insensitivity.
 /// Validate the top-level `public_url:` — busbar's public origin. Rules (see call site): absolute

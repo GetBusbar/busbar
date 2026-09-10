@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/observability.rs`.
+//! Tests for `crates/busbar/src/root/logging.rs`, PORTED and not rewritten.
 //!
-//! The SSRF/URL guard suite's tests are not here any more: they moved with the guard, to
-//! `busbar-unit-egress/src/tests/sink_guard_tests.rs`, ported and not rewritten. What is left is
-//! what is still this module's — the OTLP credential split and its base64, the tracer shutdown, and
-//! the two-filter level policy of the subscriber install.
+//! These are the retiring engine's `observability_tests.rs`, carried over with the code they prove:
+//! the OTLP credential split and its base64 vectors, the tracer shutdown's idempotence when OTLP was
+//! never configured, and the two-filter level policy — that the OTLP filter floors at DEBUG without
+//! dragging stderr down with it, and that a registry-level filter would silently gate the OTLP layer
+//! if one were ever added. The SSRF/URL guard suite's tests are not here: they moved to
+//! `busbar-unit-egress/src/tests/sink_guard_tests.rs` with the guard.
 
 use super::*;
 

@@ -437,10 +437,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3528
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15146
+unit_total_ceiling = 15165
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24072
+union_ceiling = 24091
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1070,7 +1070,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 90
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1082,7 +1082,7 @@ ceiling = 91
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 25
+figure = 24
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1574,8 +1574,8 @@ because = "the EDGE the sink-guard move needs, not the move: busbar-unit-egress 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 9
-because = "the EDGE the sink-guard move needs: the busbar-unit-egress Cargo dependency name and the two `use busbar_unit_egress::sink_guard::{...}` lines that replace the deleted bodies in observability.rs and export/webhook.rs. The same commit takes busbar-core DOWN by 82 across x transport (2117 -> 2037) and x plane (3031 -> 3029), so this crate's total coupling falls by 73 on the commit that spends these nine"
+by = 8
+because = "the EDGE the sink-guard move needs: the busbar-unit-egress Cargo dependency name and the `use busbar_unit_egress::sink_guard::{...}` lines that replace the deleted bodies. Declared at eight and not nine because the LATER commit on this branch - the one that deletes the observability module outright - takes one of them back with it, and a `by` is what the tree rose by and not room for it. Across the branch busbar-core falls 2117 -> 2014 on x transport and 3031 -> 3022 on x plane, so this crate's total coupling falls by more than a hundred on the commits that spend these eight"
 
 # THE SINK GUARD, measured: 213 surface lines in busbar-unit-egress/src/sink_guard.rs against 454
 # RAW production lines deleted from busbar-core/src/observability.rs (819 -> 365). The engine is in
@@ -1619,3 +1619,61 @@ because = "the same SINK GUARD as the unit_total_ceiling raise: its 213 surface 
 key = "rules.loc-ceilings.kernel_ceiling"
 by = 1
 because = "the same SINK GUARD as the unit_total_ceiling raise, and ONE line of it: the kernel's reachability set is a conservative NAME-MATCH approximation, not a true call graph, so a busbar-unit-egress file that defines a function sharing a name with something the Teller loop calls is counted whether or not the call reaches it. The rule's own why states that it over-counts rather than under-counts; this is that, by one line"
+
+# `percent_decode` travelling with the URL-shaped atoms (19 surface lines in
+# busbar-unit-egress/src/sink_guard.rs). Not a new function: the retiring engine's own, moved. It has
+# TWO readers now and they are in different crates — the OTLP credential split, which went to the
+# composition root with the rest of the logging install, and the protocol catch-all's raw-path
+# dispatch, which is still on the request path in busbar-core. A decoder both call is either in one
+# place both can name or it is two decoders, and the tree already had it as three: two further
+# hand-copies of this exact body sit at busbar-core/src/ingress/mod.rs and
+# busbar-core/src/oauth_as/routes.rs. This move is what makes deleting those two possible.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 19
+because = "`busbar_unit_egress::sink_guard::percent_decode` (19 surface lines), moved out of busbar-core/src/observability.rs with the rest of the URL-shaped atoms rather than left behind when that module was deleted. Two readers in two crates - the OTLP credential split now in the composition root, and the protocol catch-all's raw-path dispatch still in busbar-core - so it is either in one place both can name or it is two decoders. The tree already carried it as three; the two hand-copies at ingress/mod.rs and oauth_as/routes.rs are the deletions this makes possible"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 19
+because = "the same nineteen lines as the unit_total_ceiling raise, `busbar_unit_egress::sink_guard::percent_decode`: +19 in busbar-unit-egress and nothing in busbar-caps, busbar-contract or busbar-kernel, so the union rises by exactly the unit rise. The 359 raw lines busbar-core loses on this commit - the whole observability module, deleted - are in neither union"
+
+# THE LOGGING INSTALL MOVING TO THE COMPOSITION ROOT (keep-core-delete-10). busbar-core's
+# `observability` module is DELETED - the file is gone and `pub mod observability;` with it. The
+# subscriber install, the two-filter level policy, the retained tracer provider, the tracer shutdown
+# and the OTLP exporter with its credential split are crates/busbar/src/root/logging.rs; the
+# URL-component decoder went to busbar-unit-egress with the URL atoms; the HOTPATH_LEVEL re-export
+# was a `pub use` with ZERO readers repo-wide and was struck rather than moved.
+#
+# It is a MOVE and the ledger reads as one:
+#
+#   busbar-core x transport  2037 -> 2014   (-23)      busbar x transport   939 -> 964  (+25)
+#   busbar-core x plane      3026 -> 3022    (-4)      busbar x plane      1798 -> 1801  (+3)
+#   busbar-core x unit         46 ->   45    (-1)      busbar x unit       1177 -> 1179  (+2)
+#
+# The destination side is two hits larger than the source side across the three rows, and both are
+# Cargo dependency NAMES the root did not carry before: it now names the client stack the exporter
+# is built on. That is the composition root composing what it installs, which is the one thing a
+# composition root is for.
+#
+# AND THE RATCHET THIS PAYS: legacy-reach falls 91 -> 90 and its busbar_core sub-row 25 -> 24, in
+# this same commit, re-pinned downward. The owner's ruling of 2026-09-10 was "SEQUENCE deletions
+# first, no raise" - this is that sequence arriving: the module is deleted, and the root's reach into
+# the retiring crate falls because there is no longer anything there to reach.
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 25
+because = "MOVE: the logging install (subscriber, two-filter level policy, tracer provider, tracer shutdown, OTLP exporter and credential split) left busbar-core/src/observability.rs - which is DELETED - for crates/busbar/src/root/logging.rs, three call sites all in main. busbar-core x transport falls 2037 -> 2014 by twenty-three of these twenty-five; the other two are Cargo dependency names the root did not carry (the hyper/rustls client stack the exporter is built on), which is the composition root composing what it installs"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "MOVE, the same logging install as the transport row above: three plane-vocabulary words travelled with the module's text into crates/busbar/src/root/logging.rs, against busbar-core x plane falling 3026 -> 3022 in the same commit. Nothing was added on either side; the fourth hit died with the `pub mod observability;` line"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "MOVE, the same logging install as the transport row above: the root now names busbar_unit_egress::sink_guard for the three URL-shaped things the install needs (mask_userinfo, percent_decode, validate_otlp_endpoint) where busbar-core used to, and busbar-core x unit falls 46 -> 45 in the same commit. The root already carried the busbar-unit-egress dependency, so the edge itself costs nothing new"

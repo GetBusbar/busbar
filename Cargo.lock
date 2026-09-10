@@ -380,9 +380,15 @@ dependencies = [
  "criterion",
  "futures",
  "hex",
+ "http",
  "http-body",
  "http-body-util",
+ "hyper-rustls",
  "metrics",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
@@ -394,6 +400,9 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
