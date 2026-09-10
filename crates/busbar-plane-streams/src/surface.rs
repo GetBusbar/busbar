@@ -25,7 +25,7 @@
 //! the one that answered nothing. This crate names no transport CRATE and reaches no transport code;
 //! the word is data on both sides of the seam.
 //!
-//! ## Two bindings, one per duplex dialect
+//! ## Three bindings, one per duplex dialect
 //!
 //! * **[`BINDING_OPENAI_REALTIME`]** — the OpenAI Realtime shape. Its mount is `/v1/realtime`.
 //! * **[`BINDING_GEMINI_LIVE`]** — the Gemini Live (`BidiGenerateContent`) shape. Its mount is the
@@ -53,10 +53,12 @@
 //!   take either from — `claims.rs`'s own header says the real one-shot wire is scheduled with the
 //!   `webrtc` leg. Two media types invented here would be two media types a conformant client is
 //!   answered with and nobody chose. The absence is declared, not forgotten.
-//! * **`duplex_turn`, `tool_call` and the telephony dialect.** The first two are the operation
-//!   classes the frames INSIDE an open session carry, and a frame is not addressed: which operation
-//!   it is, is what the plane reads out of it. A row for either would be a dispatch nothing could
-//!   ever match. The third has no claim and no transport crate, for the reasons `claims.rs` states.
+//! * **`duplex_turn` and `tool_call`.** These are the operation classes the frames INSIDE an open
+//!   session carry, and a frame is not addressed: which operation it is, is what the plane reads
+//!   out of it. A row for either would be a dispatch nothing could ever match.
+//!
+//! The carrier used to be listed here too, as a dialect with no claim and no wire crate. It has a
+//! claim now and a binding below: the wire it was waiting for was already registered.
 
 use busbar_contract::transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
@@ -67,6 +69,10 @@ pub const BINDING_OPENAI_REALTIME: &str = crate::dialect::NAME_OPENAI_REALTIME;
 
 /// The Gemini Live binding's name — the dialect's own word for itself.
 pub const BINDING_GEMINI_LIVE: &str = crate::dialect::NAME_GEMINI_LIVE;
+
+/// The carrier binding's name — the dialect's own word for itself, borrowed from the claim table
+/// rather than re-spelled here.
+pub const BINDING_CARRIER: &str = crate::claims::CARRIER;
 
 /// The media type every frame of both duplex dialects is in, in both directions.
 ///
@@ -88,6 +94,14 @@ const UPGRADE: &str = "GET";
 /// The base every route of that dialect sits under, and the exact string
 /// [`crate::claims::DIALECT_CLAIMS`]'s `PathSuffix` selector for this dialect matches.
 const MOUNT_OPENAI_REALTIME: &str = "/v1/realtime";
+
+/// Where a carrier session is opened.
+///
+/// The one level under `/twilio` this plane's own claim selector admits, and the mount the carrier
+/// is configured to post its stream to. It is a mount and not a pattern: the carrier resolves one
+/// URL per configured stream, so a deeper or wilder shape would be this plane declaring routes
+/// nobody dials.
+const MOUNT_CARRIER: &str = "/twilio/stream";
 
 /// Where a Gemini Live session is opened.
 ///
@@ -127,6 +141,14 @@ const D_SESSION_OPEN: &[Dispatch] = &[
         method: UPGRADE,
         bar: Bar::Credential,
     },
+    // The carrier, behind a credential like the other two: its clients present a signature over the
+    // upgrade, once, and never again. A bar declared open here would be a session that could never
+    // be resolved to a principal at any later frame either.
+    Dispatch::Duplex {
+        binding: BINDING_CARRIER,
+        method: UPGRADE,
+        bar: Bar::Credential,
+    },
 ];
 
 /// THE SURFACE.
@@ -145,6 +167,11 @@ pub const SURFACE: WireSurface = WireSurface {
             name: BINDING_GEMINI_LIVE,
             transport: crate::claims::WS_TRANSPORT,
             mounts: &[MOUNT_GEMINI_LIVE],
+        },
+        BindingDecl {
+            name: BINDING_CARRIER,
+            transport: crate::claims::WS_TRANSPORT,
+            mounts: &[MOUNT_CARRIER],
         },
     ],
     operations: &[Operation {

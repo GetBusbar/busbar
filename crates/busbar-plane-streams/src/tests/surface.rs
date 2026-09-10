@@ -17,7 +17,9 @@ use busbar_contract::transport::surface::{check_surface, Answering, Bar, Dispatc
 
 use crate::claims;
 use crate::dialect;
-use crate::surface::{BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, MEDIA_JSON, SURFACE};
+use crate::surface::{
+    BINDING_CARRIER, BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, MEDIA_JSON, SURFACE,
+};
 
 /// The dialect a binding name belongs to, by the dialect's own word for itself.
 ///
@@ -137,20 +139,38 @@ fn every_binding_is_carried_on_the_transport_its_claim_is_declared_against() {
     }
 }
 
-/// THE TWO DUPLEX DIALECTS, AND ONLY THEY, HAVE A BINDING.
+/// THE THREE DUPLEX DIALECTS, AND ONLY THEY, HAVE A BINDING.
 ///
-/// The one-shot pair and the telephony dialect are deliberately absent — see the module header for
-/// what each is waiting on. Stating the set here is what makes a later addition a decision somebody
-/// took rather than a row that appeared.
+/// The one-shot pair is deliberately absent — see the module header for what it is waiting on.
+/// Stating the set here is what makes a later addition a decision somebody took rather than a row
+/// that appeared.
+///
+/// The membership test is against the CLAIM TABLE and not against `dialect`'s registry, and that is
+/// the shape rather than a convenience: two of the three rows are declared by this crate and the
+/// third arrives at boot from its own crate, so a registry lookup in this crate's own test process
+/// answers `None` for the carrier — correctly, because the carrier's reader is not linked here. A
+/// binding is a declaration about what this plane SERVES, and what it serves is what it claims.
 #[test]
-fn exactly_the_two_duplex_dialects_are_bound() {
+fn exactly_the_duplex_dialects_are_bound() {
     let mut bound: Vec<&str> = SURFACE.bindings.iter().map(|b| b.name).collect();
     bound.sort_unstable();
-    assert_eq!(bound, vec![BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME]);
+    let mut expected = vec![
+        BINDING_CARRIER,
+        BINDING_GEMINI_LIVE,
+        BINDING_OPENAI_REALTIME,
+    ];
+    expected.sort_unstable();
+    assert_eq!(bound, expected);
     for binding in SURFACE.bindings {
-        assert!(
-            dialect::dialect(dialect_of(binding.name)).is_some_and(|d| d.duplex_upstream),
-            "only a duplex dialect has a session binding"
+        let claimed = claims::DIALECT_CLAIMS
+            .iter()
+            .find(|c| c.dialect == binding.name)
+            .expect("a bound dialect is a claimed dialect");
+        assert_eq!(
+            claimed.claim.transport,
+            claims::WS_TRANSPORT,
+            "a session binding is a duplex binding, and every duplex dialect of this plane is \
+             claimed on the one duplex transport it declares"
         );
     }
 }
@@ -189,11 +209,15 @@ fn both_bindings_demand_a_credential_at_the_upgrade() {
             "every row of `{}` must demand a credential",
             binding.name
         );
-        assert!(
-            dialect::dialect(dialect_of(binding.name))
-                .is_some_and(|d| d.authenticates_from_session),
-            "a bound session's dialect authenticates once at the open"
-        );
+        // A bound session presents its credential ONCE, at the upgrade, and the declaration says
+        // so on the dialect's own row. Asserted only where the row is reachable: the carrier's row
+        // is in its own crate, which is not linked here, and that crate asserts its own.
+        if let Some(row) = dialect::dialect(dialect_of(binding.name)) {
+            assert!(
+                row.authenticates_from_session,
+                "a bound session's dialect authenticates once at the open"
+            );
+        }
     }
 }
 

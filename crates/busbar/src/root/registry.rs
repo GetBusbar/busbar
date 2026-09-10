@@ -464,6 +464,10 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // mounting a plane whose claims name a layer this binary does not carry.
     #[cfg(feature = "plane-voice")]
     planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
+    // THE ONE PLACE A DIALECT INSTANCE IS NAMED. Linking instances is what a composition root is
+    // for, and a registration rather than a manifest edge is what keeps the delete test honest.
+    #[cfg(feature = "plane-voice")]
+    busbar_plane_streams::dialect::register(&busbar_plane_streams_twilio::TWILIO_MEDIA_STREAMS);
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;

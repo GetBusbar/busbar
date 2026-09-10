@@ -572,6 +572,11 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "caps"),
     ("root", "contract"),
     ("root", "control"),
+    // THE ROOT IS THE ONLY PLACE A DIALECT INSTANCE MAY BE NAMED. The plane declares a dialect FACE
+    // and a registry and never names a dialect; the dialect names its plane; and the two are linked
+    // by the composition root, which is what a composition root is for. The class was missing for
+    // the same reason `dialect -> contract` was: no crate of the kind existed to need it.
+    ("root", "dialect"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),

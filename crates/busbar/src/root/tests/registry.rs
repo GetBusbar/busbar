@@ -6,7 +6,7 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-/// The sealed walk over the forty-eight declared claims, most specific first.
+/// The sealed walk over the forty-nine declared claims, most specific first.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this array means.
@@ -33,6 +33,10 @@ const SEALED_ORDER: &[&str] = &[
     "llm PathPattern([Lit(\"v1\"), Lit(\"models\"), Tail])",
     "llm PathPattern([Lit(\"v1beta\"), Lit(\"models\"), Tail])",
     "a2a PathPattern([Lit(\"lf.a2a.v1.A2AService\"), Var])",
+    // The carrier, restored. A one-level prefix outranks every header and suffix selector below it
+    // and is outranked by every exact path and pattern above it, which is where a mount that serves
+    // one carrier's stream belongs.
+    "voice PrefixOneLevel(\"/twilio\")",
     "llm HeaderPrefix(\"authorization\", \"AWS4-HMAC-SHA256\")",
     "llm HeaderPresent(\"anthropic-version\")",
     "llm HeaderPresent(\"anthropic-beta\")",
@@ -110,15 +114,17 @@ fn seven_transports_and_five_planes_register() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-voice")]
 #[test]
-fn the_planes_declare_forty_eight_claims() {
+fn the_planes_declare_forty_nine_claims() {
     let claims = plane_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     assert_eq!(count("llm"), 25);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
-    assert_eq!(count("voice"), 4);
+    // Five, not four: the carrier claim is back. It was dropped when it named a wire no crate
+    // provided, and the one it was waiting for was already registered.
+    assert_eq!(count("voice"), 5);
     assert_eq!(count("admin"), 1);
-    assert_eq!(claims.len(), 48);
+    assert_eq!(claims.len(), 49);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -253,7 +259,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the forty-eight, written out.
+/// The sealed order of the forty-nine, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -264,7 +270,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-voice")]
 #[test]
-fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
+fn the_sealed_order_of_the_forty_nine_claims_is_pinned() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -498,37 +504,36 @@ fn every_claimed_plane_key_is_a_registered_plane() {
     }
 }
 
-/// **The second finding, now closed on the declaration side and kept alive on the check side.**
-/// The other side of the pairing above: a claim on a transport no crate provides. The design
-/// lists thirteen transports and seven exist, and the voice plane used to claim its telephony
-/// dialect on one of the six that do not — which made the seal refuse, so no node built on this
-/// root could boot at all.
+/// **The second finding, CLOSED — and the check kept alive against a claim built for the purpose.**
 ///
-/// The claim is gone (the plane's own claim table says why, and what has to land before it comes
-/// back). The CHECK is not: it is the only thing in the tree that reads a claim and a registered
-/// transport at the same time, and a check deleted along with the one claim that tripped it
-/// would leave the next such claim to be discovered as a request that matched nothing. So it is
-/// exercised here against a claim built for the purpose, on a transport deliberately not one of
-/// the seven.
+/// The carrier claim used to name a wire the design listed and nothing provided, which made the
+/// seal refuse so no node built on this root could boot at all. It is back, and it names the wire
+/// that was always underneath it; the invented row is deleted from the architecture rather than
+/// filled in.
+///
+/// The CHECK is not deleted with the claim that tripped it. It is the only thing in the tree that
+/// reads a claim and a registered wire at the same time, and deleting it would leave the next such
+/// claim to be discovered as a request that matched nothing. So it is exercised here against a
+/// claim built for the purpose, on a key deliberately not one of the seven.
 #[test]
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
-    let telephony = vec![PlaneClaim {
+    let unregistered = vec![PlaneClaim {
         plane: "voice",
         claim: Claim {
-            transport: "twilio-media",
+            transport: "no-such-wire",
             selector: Selector::PrefixOneLevel("/twilio"),
             scheme: Some("voice-key"),
             scheme_alternatives: &["twilio-signature"],
             idempotency: None,
         },
     }];
-    let refusal = check_claim_transports(&telephony, &registered_rows())
-        .expect_err("`twilio-media` has no crate");
+    let refusal = check_claim_transports(&unregistered, &registered_rows())
+        .expect_err("`no-such-wire` has no crate");
     assert!(matches!(
         refusal,
         BootRefusal::UnregisteredClaimTransport {
             plane: "voice",
-            transport: "twilio-media",
+            transport: "no-such-wire",
         }
     ));
 }
@@ -543,8 +548,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 48);
-    assert_eq!(sealed.precedence.len(), 48);
+    assert_eq!(sealed.claims.len(), 49);
+    assert_eq!(sealed.precedence.len(), 49);
 }
 
 /// The operator's request-body cap reaches every mounted plane's transport.
@@ -670,7 +675,7 @@ fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
         sealed
             .transports
             .dialer(
-                "twilio-media",
+                "no-such-wire",
                 &UpstreamAddress::socket("wss://example.invalid")
             )
             .is_none(),
@@ -678,8 +683,8 @@ fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
     );
 }
 
-/// And the same check over every declared claim, voice included now that its telephony row is
-/// gone: nothing anywhere names a transport the root did not register.
+/// And the same check over every declared claim, the carrier's included now that it names `ws`:
+/// nothing anywhere names a transport the root did not register.
 #[test]
 fn every_planes_claims_name_a_registered_transport() {
     let registered = registered_rows();

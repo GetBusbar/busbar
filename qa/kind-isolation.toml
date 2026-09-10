@@ -1502,7 +1502,7 @@ count = "1068"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "566"
+count = "576"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1762"
+count = "1774"
 
 [[cell]]
 crate = "busbar"
@@ -1547,7 +1547,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "1021"
+count = "1022"
 
 [[cell]]
 crate = "busbar"
@@ -2342,7 +2342,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "transport"
-count = "101"
+count = "106"
 
 [[cell]]
 crate = "busbar-plane-streams-twilio"
@@ -3522,6 +3522,16 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-streams-twilio"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and the only place a plugin INSTANCE may be named."
+why     = "the root links the plane to its dialect: 1 declaration(s) at this commit, one `register` call behind the same feature the plane itself is behind. The plane declares a dialect FACE and a registry and never names a dialect, and the dialect names its plane — so the ONLY party that can put the two together is the one that knows both, which is what a composition root is. The class `root -> dialect` was missing from the granted table for the same reason `dialect -> contract` was: no crate of the kind existed to need it."
+drain   = "none: ARCHITECTURE.md grants this class, and a registration is the shape a composition root's knowledge is supposed to take. What this row holds is the NUMBER — a second dialect is a second declaration and has to say so."
 
 [[dep]]
 from    = "busbar-plane-streams-twilio"

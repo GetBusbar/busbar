@@ -346,6 +346,7 @@ dependencies = [
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streams",
+ "busbar-plane-streams-twilio",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-example-plugin",

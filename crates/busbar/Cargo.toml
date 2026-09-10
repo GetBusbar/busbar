@@ -93,6 +93,10 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-streams = { path = "../busbar-plane-streams" }
+# THE ONE DIALECT CRATE THE ROOT LINKS. Only the root names both ends of a dialect registration,
+# which is what a composition root is for; a registration rather than a manifest edge from the other
+# end is what keeps the delete test honest.
+busbar-plane-streams-twilio = { path = "../busbar-plane-streams-twilio", optional = true }
 busbar-plane-admin = { path = "../busbar-plane-admin" }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
@@ -193,7 +197,7 @@ plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 # had to be re-argued the day a second plane declared a session on it. Nothing about the wire
 # changes with this name; what changes is that the condition is now the wire's own.
 duplex-wire = ["dep:busbar-transport-ws"]
-plane-voice = ["dep:busbar-voice", "duplex-wire", "busbar-voice?/runtime", "busbar-core/plane-voice"]
+plane-voice = ["dep:busbar-voice", "dep:busbar-plane-streams-twilio", "duplex-wire", "busbar-voice?/runtime", "busbar-core/plane-voice"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED

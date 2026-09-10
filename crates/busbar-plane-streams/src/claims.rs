@@ -6,23 +6,22 @@
 //! `openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts` over
 //! `ws, webrtc, twilio-media, http`.
 //!
-//! This module claims two of those four transports today: `ws` (both duplex JSON dialects) and
-//! `http` (the two one-shot operations). Two are deliberately unclaimed, for the same reason stated
-//! twice:
+//! This module claims TWO transports today: `ws` (both duplex JSON dialects and the carrier) and
+//! `http` (the two one-shot operations). One is deliberately unclaimed:
 //!
 //! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
-//!   (busbar-voice's WebRTC topology is `runtime`-gated and, per its own module documentation, is a
+//!   (the legacy WebRTC topology is `runtime`-gated and, per its own module documentation, is a
 //!   browser-sideband ferry over the same JSON event vocabulary rather than a distinct wire format —
 //!   but a plane cannot claim a transport it cannot decode frames from without lying about what it
 //!   reads).
-//! * **`twilio-media`** — the telephony transport has **no crate in the tree**. The architecture's
-//!   transport table lists thirteen and seven exist; `twilio-media` is one of the six that do not,
-//!   and a claim on a transport nothing registers is a boot refusal, not a silent 404. Until that
-//!   transport crate lands (the same phase the `webrtc` leg and the real one-shot wire shape are
-//!   scheduled for) the claim is dropped rather than declared and refused: a node whose composition
-//!   root cannot seal is a node that does not boot, and the carrier's own codec below
-//!   ([`crate::twilio`], [`crate::ulaw`]) is complete and untouched — it is the arrival path, not
-//!   the reader, that is missing. Restoring the claim is one entry in [`DIALECT_CLAIMS`].
+//!
+//! **THE CARRIER CLAIM IS BACK, ON [`WS_TRANSPORT`].** It was dropped because it named a wire with
+//! no crate, and a claim nothing registers is a boot refusal that stops the whole node rather than
+//! one plane. What was missing was never a wire: the carrier arrives as an upgrade and duplex
+//! message frames, and the wire named below carries every byte of that. The missing thing was a
+//! home for the VOCABULARY, and that home is a dialect crate. So the claim comes back on the wire
+//! that was always underneath it, and the invented row it used to name is deleted from the
+//! architecture's own table rather than filled in.
 //!
 //! Leaving either unclaimed is an honest, documented gap, not a silent one: a future pass that gives
 //! this crate an RTP data-channel reader, or the tree a telephony transport, can add the claim
@@ -46,14 +45,6 @@ use busbar_contract::grammar::{one_level_under, Claim, Selector};
 /// The transport both JSON duplex dialects (`openai-realtime`, `gemini-live`) are claimed against.
 pub const WS_TRANSPORT: &str = "ws";
 
-/// The transport the telephony dialect (`twilio-media-streams`) *would* be claimed against, kept as
-/// the name the restored claim will use rather than as a live one.
-///
-/// No claim in [`DIALECT_CLAIMS`] names it: see this module's own header for why, and for what has
-/// to exist before one does. It is a `&'static str` and nothing else — naming a transport is not
-/// claiming it.
-pub const TWILIO_TRANSPORT: &str = "twilio-media";
-
 /// The transport the two one-shot operations (`transcribe`, `tts`) are claimed against.
 pub const HTTP_TRANSPORT: &str = "http";
 
@@ -67,6 +58,12 @@ pub(crate) const SCHEME: &str = "voice-key";
 /// header, presented once at session open and cached for the life of the session.
 const WS_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
 
+/// The alternative the carrier's own clients present: a signature over the request, computed by the
+/// carrier with the account's own secret. One alternative and not two — a carrier leg never carries
+/// a bearer token or a vendor API key, and offering either would be this plane admitting a
+/// credential shape no client of that dialect ever sends.
+const CARRIER_SCHEME_ALTS: &[&str] = &["twilio-signature"];
+
 /// The alternatives a one-shot HTTP unit may narrow to — the same two an ordinary API caller uses.
 const HTTP_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
 
@@ -78,6 +75,21 @@ pub const TRANSCRIBE: &str = "transcribe";
 
 /// See [`TRANSCRIBE`].
 pub const TTS: &str = "tts";
+
+/// The carrier dialect's name — the same `&'static str` its own crate declares as `NAME`, and the
+/// same one the session fact carries.
+///
+/// A NAME AND NOTHING ELSE. Naming a dialect is not depending on one: no crate is reached, no code
+/// is linked, and `scripts/plane-delete-test.sh` still removes the dialect crate and gets an honest
+/// absence. What a claim table says is which arriving bytes are this plane's and under what name it
+/// will look the reader up; the reader itself arrives through `crate::dialect::register`.
+///
+/// STATED, NOT SMUGGLED: `ARCHITECTURE.md` 1.1 says a plane's `CLAIMS` is "the union of its own and
+/// its registered dialects'", which would put this row on the dialect's side and union it at
+/// registration. `PlaneMeta::CLAIMS` is an associated CONSTANT, so a union computed at boot cannot
+/// reach it, and the kernel reads the constant. Moving the claim to the dialect is the next finding
+/// on this line and needs the constant to become a declaration the root can fill.
+pub const CARRIER: &str = "twilio-media-streams";
 
 /// One claim with the dialect it names recorded beside it, the same pairing
 /// `busbar_plane_llm::claims::LadderClaim` uses for its ladder.
@@ -125,12 +137,17 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
             WS_SCHEME_ALTS,
         ),
     },
-    // The telephony claim used to sit here, on `twilio-media` over `PrefixOneLevel("/twilio")`,
-    // under a `twilio-signature` alternative. It is dropped, not commented out for later: the
-    // transport it named has no crate, and a claim whose transport nothing registers is a boot
-    // refusal that stops the whole node rather than one plane. The header says what has to exist
-    // before it comes back, and the carrier's own codec is untouched so the reader that reads the
-    // wire is still here when it does.
+    // THE CARRIER, on `ws` — the transport that was always underneath it. One level under
+    // `/twilio` and no deeper: the carrier posts its stream to a single mount, and a claim that
+    // admitted arbitrary depth would be this plane claiming a subtree it does not serve.
+    DialectClaim {
+        dialect: CARRIER,
+        claim: claim(
+            WS_TRANSPORT,
+            Selector::PrefixOneLevel("/twilio"),
+            CARRIER_SCHEME_ALTS,
+        ),
+    },
     DialectClaim {
         dialect: TRANSCRIBE,
         claim: claim(
@@ -158,6 +175,7 @@ pub const CLAIMS: &[Claim] = &[
     DIALECT_CLAIMS[1].claim,
     DIALECT_CLAIMS[2].claim,
     DIALECT_CLAIMS[3].claim,
+    DIALECT_CLAIMS[4].claim,
 ];
 
 /// The two lists cannot drift: one is the other with a field dropped, and a constant cannot loop
