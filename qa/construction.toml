@@ -1501,3 +1501,43 @@ key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 51
 because = "THE PRINCIPAL ON THE LEG'S VIEW extends this by 3 (1018 -> 1021): the cell that reads the published principal back does it the only way it can be read \u2014 through the plane, over a relay, which means through the duplex mount's `FrameSource` and the decorator that dials in front of it. THE LEG'S INBOUND HALF extends this by 9 (1009 -> 1018): the leg is READ through the duplex mount's own `FrameSource`, the same face the client is read through and the same one the decorator beside it wraps, plus the one mapping from a carrier failure to a close reason that every pump in this tree shares. No wire is named: the pump is handed a frame source and could not say whose. THE UPSTREAM LEG ON THE DRIVER'S SLOT extends this by 23 (986 -> 1009): the dial happens in the gap between two frames, which means it happens inside a `FrameSource`, which is the duplex mount's own face \u2014 named by the decorator, by the battery's scripted source and by the cells that drive both. No wire is named: what dials is a seam (`LegDialer`) the composition supplies. THE PLANE CALL extends this by 6 (980 -> 986): the transport view the driver hands the plane is built over the upgrade's own key, chain and published facts, and the served-session cell names the wire the row is carried on. cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs what it accepts through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. Neither names a wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, the manifest switch that says this build carries a duplex wire, and, for the driver, the declared wire surface a session's row is read off, the registry key an upgrade arrived on and the published transport facts the credential bar is resolved against. All of that is data the plane declared, and none of it is a wire's type."
+
+# ── declared raises: THE PLANE-SECTION SEAM and the door it opened. `BuildCtx` gained one field — every
+# plane's own parsed config section, keyed by the key that plane's own declaration spells — and the
+# streams plane's process-wide latch was deleted against it. Each entry expires when the base carries
+# the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar-core x plane (busbar-core, plane): the resolved config gained the section-keyed map every plane's `build` reads its own operator posture out of, and the composition root gained the borrow it hands across the seam. Before this, `resolve` lowered two plane sections onto typed fields and carried a third nowhere at all, so the config a plane was built from did not contain the section that declares that plane — which is why one of them kept a second copy in process-global state and read it back. The lines are the map field, the one fold every construction of it goes through, and the erasing borrow at the call site; the same landing DELETED the one plane-named field the seam used to carry, so what is here is the neutral read that replaced a named one (3,033 -> 3,037)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.control.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar-core x control (busbar-core, control): the secret-reference walk stopped asking two NAMED bindings for their credentials and started looping the section map, so a plane that declares a section this walk has never heard of is asked for its secrets by the same loop rather than by somebody remembering to add it. That is the coverage rule the exhaustive no-`..` destructure exists to force, finally written as a fold instead of a list; the destructure still fails to compile on a new top-level field, which is what made the decision unavoidable here (5,200 -> 5,203)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-a2a x plane (busbar-a2a, plane): the A2A plane's `build` stopped reading the seam field that carried its registry BY NAME and now asks the seam for its own section by its own declared config-section key, downcasting inside its own module where that key is the only place with a type. One line, and it is the MOVE that let the named field be deleted from the neutral seam entirely: what was one plane's privilege on a shared context is now every plane's read (2,758 -> 2,759)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-llm x legacy (busbar-llm, legacy): one forward-pool integration fixture constructs the resolved config by struct literal with no `..`, so the new section-keyed field is a compile error until that fixture answers for it. It answers through the SAME fold every other construction goes through rather than by hand-rolling a map, which is the whole reason the fold is a function: a fixture's key set is then the grammar's key set and not a second opinion about it (79 -> 80)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = "busbar-voice x plane (busbar-voice, plane): the plane that had the defect pays for reading its own section off the composition and for the door that read opened. Two things are here and neither is prose: the build seam now takes the section it was handed (its own key, downcast where the key has a type) and threads it into the per-generation runtime, replacing a process-wide latch written from a deserializer and read back at build time; and `build` stopped answering the absence of a receiving origin with silence. A declared section with no origin now MOUNTS, claims its paths and binds no audience, which is the pair the composition's R2 ratchet ends a boot on by name — so the two cells that pin it have to name the mount, the claim, the admission and the slot, because those four are exactly what the ratchet reads and a cell that named fewer could not say which of them moved. The price was measured first and then made smaller: prose that only restated the landing was cut from both cells and from the seam doc before this number was written down, and it fell by 3 for it (811 -> 840, of which 7 is already declared for the gemini-live route)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar x plane (busbar, plane): the third answer, driven against the SHIPPED BINARY. A section written here with no receiving origin used to boot and then answer 404 on every URL it had just been configured to serve; it now ends before a listener is bound, and the appended cell reads the log for both halves of why — the field an operator has to fix and the rule the composition refused under. It is one cell and a spawn-without-waiting split of the harness this file already had, in the ROOT, which is the only place a session on a socket can be asked what the shipped door did; the fixture of the ordering cell beside it was re-pointed rather than raised, because the shape it stood on is the shape this landing deleted (1,798 -> 1,799)"
