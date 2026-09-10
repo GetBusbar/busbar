@@ -65,7 +65,7 @@ type may be declared anywhere in the engine. `hooks/wire.rs`'s `StatusReply`,
 the hook's echo of the *resolved* bag, is exactly such a type and was the third
 of the four leaks. The **boundary is the engine crate**: an admin projection is
 built here. The sibling wire/ABI crates (`busbar-api`, `plugin-abi`,
-`secret-ref`) define the ABI-level bag types themselves, have no admin surface,
+`secret-grammar`) define the ABI-level bag types themselves, have no admin surface,
 and cannot serve an HTTP read, so they are out of scope by construction.
 
 If you are adding a `settings`-shaped field or JSON member, either project

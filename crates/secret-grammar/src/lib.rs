@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
-//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate.
+//! **The SECRET REFERENCE GRAMMAR** — what a secret reference MEANS, declared once. It carries the
+//! [`SecretRef`] type, the built-in module names, the two sugar spellings and the schema derivation,
+//! and it was extracted out of `busbar`'s crate-private `crates/busbar-core/src/config/secret.rs`
+//! into its own tiny crate.
+//!
+//! **It resolves nothing, and the name says so.** This crate answers "what is a reference and what
+//! shapes are legal"; turning one into BYTES is a `kind: secret` plugin's job, behind
+//! `busbar_contract::Secret`, whose own `ref_grammar()` names exactly the thing declared here. The
+//! crate used to be called `busbar-secret-ref`, which said what it CONTAINS; the
+//! `busbar-<kind>-<name>` scheme asks what it DOES, and `grammar` is the answer. (The rename also
+//! ended a collision that was not cosmetic: `kind-isolation:matrix` derives a kind's vocabulary
+//! from its members' kind-qualified ids, so the old id `secret-ref` made the contract's face type
+//! `SecretRef` read as naming THIS crate in every plugin that implements the secret face. The face
+//! type is 1.5.5 config vocabulary and was not renamed; the crate was.)
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in

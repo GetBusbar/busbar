@@ -551,7 +551,7 @@ fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
 
     let mut reg = crate::a2a::registry::AgentRegistration::registered("payments", OTHER_BACKEND);
     reg.outbound_cred = Some(crate::a2a::creds::OutboundCredential {
-        secret: busbar_secret_ref::SecretRef::file(secret_file().to_string_lossy().to_string()),
+        secret: busbar_secret_grammar::SecretRef::file(secret_file().to_string_lossy().to_string()),
         placement: crate::a2a::creds::CredentialPlacement::Bearer,
         lease_ttl_ms: 600_000,
     });
@@ -687,7 +687,7 @@ fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
     crate::a2a::creds::mint_from(
         &grant,
         &crate::a2a::creds::OutboundCredential {
-            secret: busbar_secret_ref::SecretRef::file(path.to_string_lossy().to_string()),
+            secret: busbar_secret_grammar::SecretRef::file(path.to_string_lossy().to_string()),
             placement: crate::a2a::creds::CredentialPlacement::Bearer,
             lease_ttl_ms: 600_000,
         },

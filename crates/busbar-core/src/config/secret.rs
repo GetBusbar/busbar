@@ -20,19 +20,21 @@
 //! an unknown module or a failed resolution is a hard error, never an empty secret.
 
 /// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
-/// live in the standalone `busbar-secret-ref` crate — it used to be defined here `pub(crate)`,
+/// live in the standalone `busbar-secret-grammar` crate — it used to be defined here `pub(crate)`,
 /// unreachable from `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so
 /// every call site in this crate is unchanged; `busbar` still owns
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
+pub use busbar_secret_grammar::{
+    SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE,
+};
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
 /// genuinely ambiguous case where a plugin's own config happens to be shaped like a reference (a
 /// `{ file: … }` path, an `{ env: … }` variable name the plugin reads itself) — see
-/// [`resolve_settings`]. NOT part of `SecretRef` (see `busbar_secret_ref`'s crate docs): this key is
+/// [`resolve_settings`]. NOT part of `SecretRef` (see `busbar_secret_grammar`'s crate docs): this key is
 /// interpreted one layer above `SecretRef` parsing, here, not inside the shared type.
 pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
 
@@ -265,7 +267,7 @@ impl busbar_api::SecretResolve for SecretResolver {
 
 /// BUILT-IN resolution of a secret reference to its raw bytes (`env` / `file`) and its UTF-8-string
 /// twin now live in the dependency-light `busbar-api` contract crate — they are pure
-/// `std::env`/`std::fs` + `busbar_secret_ref::SecretRef`, with no engine coupling, so a plane crate
+/// `std::env`/`std::fs` + `busbar_secret_grammar::SecretRef`, with no engine coupling, so a plane crate
 /// can resolve a built-in ref without reaching into `busbar`. Re-exported so every in-crate call
 /// site (the [`SecretResolver`] built-in fallback below) is unchanged.
 pub(crate) use busbar_api::resolve_builtin;

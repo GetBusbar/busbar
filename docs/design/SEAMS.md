@@ -213,7 +213,7 @@ SDK / packaging seams: `plugin-sdk` `SecretHandle` `crates/plugin-sdk/src/lib.rs
 | A12 | `usage_migration::fold_v1_*` | — | `crates/api/src/usage_migration.rs:103,121` | migration | — | legacy port |
 
 `crates/api` is named `busbar-api` and depends only on serde/serde_json/async-trait/sha2/hex/zeroize
-plus `busbar-secret-ref`.
+plus `busbar-secret-grammar`.
 
 ### 1.7 The config seam — one file, four verbs, one frozen grammar
 
@@ -229,14 +229,14 @@ plus `busbar-secret-ref`.
 | G8 | overlay merge | in | `config/overlay.rs`: `apply_root_to_deploy :1038`, `apply_plugin_versions_to_deploy :1062`, `apply_named_maps_to_deploy :1087`, `apply_pre_resolve_sections :1179`, `merge_into :1232`; per-section `config/patch.rs:64` + `section_patch!` `:99` | identical order in all four rebuild paths (boot / validate / reload / apply) |
 | G9 | `config-schema` | — | `cargo xtask gate config-schema` (`xtask/src/gates/config_schema/`: `schema.rs` the generator and its tracked source set, `classify.rs` the additive rule and the waiver register, `scan.rs` the Rust scrape); snapshot `crates/busbar-core/src/config/config-schema.snapshot.json`; waivers `config-schema.waivers`; CI `.github/workflows/ci.yml` job `config-stability` | five reconciled rows: `:tracked-sources` (the set resolved and every source was read), `:snapshot-drift` (snapshot byte-equals a fresh render; `--write` regenerates), `:baseline` (the ref resolves, carries the snapshot, and that snapshot has types in it), `:additive-only` (against a **git ref, never the working tree**, so a refresh cannot launder a break), `:waivers` (exact paths, reasons, no stale entry). Field removed/retyped/newly-required, enum variant dropped, or a hand-written impl's refusal added *or* removed = RED. Frozen at 1.5.3. |
 | G10 | the frozen grammar | — | snapshot | **122 types: 83 structs, 23 enums, 10 manual, 6 aliases.** The brief said 63; the measured number is 83 structs / 122 types. |
-| G11 | config source spread | — | `crates/busbar-core/src/config/` (30 structs) + `crates/busbar-substrate/src/config/` (50 structs) + grammar files in `crates/api/src/auth.rs`, `crates/secret-ref/src/lib.rs`, `busbar-a2a/src/a2a/{config,creds}.rs`, `busbar-mcp/src/mcp/config.rs`, `busbar-core/src/oauth_as/config.rs`, `busbar-core/src/failover/mod.rs`, `busbar-voice/src/config.rs` | one grammar, nine homes |
+| G11 | config source spread | — | `crates/busbar-core/src/config/` (30 structs) + `crates/busbar-substrate/src/config/` (50 structs) + grammar files in `crates/api/src/auth.rs`, `crates/secret-grammar/src/lib.rs`, `busbar-a2a/src/a2a/{config,creds}.rs`, `busbar-mcp/src/mcp/config.rs`, `busbar-core/src/oauth_as/config.rs`, `busbar-core/src/failover/mod.rs`, `busbar-voice/src/config.rs` | one grammar, nine homes |
 | G12 | migration corpus | — | `.github/workflows/ci.yml:699`; corpus `tests/migration-corpus/from-tags` | every shipped tag's config must still migrate |
 
 ### 1.8 The secret-ref seam
 
 | # | Name | Dir | Where | Notes |
 |---|---|---|---|---|
-| R1 | `SecretRef { module, settings }` | in | `crates/secret-ref/src/lib.rs:63`; hand-written `Deserialize` visitor `:131` | rejects every inline scalar spelling **without echoing the value** (`visit_str :161`, `visit_u64 :172`, `visit_i64/f64/bool/bytes :178-201`); map form + `{env:}` / `{file:}` sugar `:204`; schema `oneof_schema :328` |
+| R1 | `SecretRef { module, settings }` | in | `crates/secret-grammar/src/lib.rs:63`; hand-written `Deserialize` visitor `:131` | rejects every inline scalar spelling **without echoing the value** (`visit_str :161`, `visit_u64 :172`, `visit_i64/f64/bool/bytes :178-201`); map form + `{env:}` / `{file:}` sugar `:204`; schema `oneof_schema :328` |
 | R2 | `SecretModule` (the provider seam) | out | `crates/api/src/secret.rs:94` | `resolve(settings) -> Vec<u8>` + `resolve_with_deadline :117` |
 | R3 | built-ins | out | `resolve_builtin` `crates/api/src/secret.rs:131`; string form `:213` | `env` and `file` only; anything else fail-closed |
 | R4 | `SecretResolver` | out | `crates/busbar-core/src/config/secret.rs:49`; `builtins_only :66`; `with_plugin :72`; `resolve :79`; `impl SecretResolve` `:253` | built-ins inline, else delegate; empty result is a hard error |
@@ -683,7 +683,7 @@ Not twenty — but one owner unit each, and every one of them installed.
 5. Also do not touch, though the brief did not name them: the 66 legacy admin operations pinned by
    git object hash (§4.7); the `Redacted` non-`Serialize` property (`crates/api/src/redacted.rs`),
    which the `secret-carrier-debug` gate enforces; and the `SecretRef` visitor's
-   never-echo-the-value property (`secret-ref/src/lib.rs:161-201`).
+   never-echo-the-value property (`secret-grammar/src/lib.rs:161-201`).
 
 ---
 

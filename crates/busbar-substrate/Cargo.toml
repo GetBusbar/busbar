@@ -16,7 +16,7 @@ license = "Apache-2.0"
 [dependencies]
 # Phase-B B1: the trust/egress/failover/catalogue value families name the plugin CONTRACTS
 # (`busbar-api`'s `VirtualKey`) and the plugin ABI (`busbar-plugin`'s `hot::VerifyDecision`). Both are
-# leaves — `busbar-api` depends only on `busbar-secret-ref`, `busbar-plugin` only on `busbar-api` — so
+# leaves — `busbar-api` depends only on `busbar-secret-grammar`, `busbar-plugin` only on `busbar-api` — so
 # there is no path back to core and no cycle: core -> substrate -> {api, plugin}.
 busbar-api = { path = "../api" }
 busbar-contract = { path = "../busbar-contract" }

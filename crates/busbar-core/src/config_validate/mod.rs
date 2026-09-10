@@ -1541,7 +1541,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
         // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
         // `{ file: "" }` sugar already rejects an empty value in the deserializer
-        // (secret-ref/src/lib.rs), but the CANONICAL `{ module: env, settings: { key: "" } }` form
+        // (secret-grammar/src/lib.rs), but the CANONICAL `{ module: env, settings: { key: "" } }` form
         // bypasses that arm — `env_var()`/`file_path()` return `Some("")`, not `None`. Left
         // unchecked, such a config passes `--validate` as "ok" then fail-closes at boot
         // (`std::env::var("")` → Err), so a clean validate would no longer imply a clean boot.
