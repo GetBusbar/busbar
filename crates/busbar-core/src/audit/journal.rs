@@ -7,14 +7,14 @@
 //! ## What this is, and why it is here and not in a plane
 //!
 //! Two of busbar's evidence streams — the MCP per-call log and the A2A per-task provenance chain —
-//! each grew their OWN copy of the same durable-log machinery around [`crate::audit::Chain`]: an
+//! each grew their OWN copy of the same durable-log machinery around [`Chain`]: an
 //! in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume of an evicted tail, a
 //! write-through SINK, and the WRITE-ORDERING invariant that a position is committed only after the
 //! durable append succeeds. That machinery is not MCP's and it is not A2A's — it is the same answer
 //! to "make a hash-chained stream survive a restart" that [`crate::admin::audit`] gives for admin
 //! mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So it lives here,
 //! once, generic over the record type, and a plane supplies only its RECORD (which fields, which
-//! framing — [`crate::audit::ChainedRecord`]) plus the OPAQUE pre-framed content suffix its rows carry
+//! framing — [`ChainedRecord`]) plus the OPAQUE pre-framed content suffix its rows carry
 //! ([`NeutralRecord::content`]).
 //!
 //! It names no plane noun: the type parameter is `R`, the scope is a `&str`, the store `kind` is a
@@ -53,9 +53,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
 use crate::plane::store::{encode, PlaneStore};
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_unit_audit::legacy::{verify_chain, Chain, ChainBreak, ChainedRecord};
 
 /// Why a journal write could not be made durable. ONE variant today: the durable append failed. It is
 /// SURFACED rather than swallowed — an evidence record that is not durable is one a restart will lose,

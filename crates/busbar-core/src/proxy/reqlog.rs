@@ -76,7 +76,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use crate::audit::{verify_window, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
+use busbar_unit_audit::legacy::{
+    verify_window, Chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing,
+};
 
 /// The outcome and reason tokens this stream uses, from the ONE audit vocabulary. Re-exported so the
 /// call site keeps one import path; the definitions, and the argument for each word, live in core.
@@ -87,7 +89,7 @@ pub use crate::audit::vocab::{
 
 /// This stream's chain: one per principal. A type alias over the core mechanism — there is no second
 /// implementation behind it.
-pub(crate) type RequestChain = crate::audit::Chain<RequestRecord>;
+pub(crate) type RequestChain = Chain<RequestRecord>;
 
 /// The scope an UNGOVERNED request is chained under. A fixed engine-chosen string, never anything a
 /// caller can influence, so no request can be steered into a governed principal's chain.
@@ -106,7 +108,7 @@ pub const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 /// Eviction is oldest-first GLOBALLY, so what is retained for any one principal is a contiguous
 /// SUFFIX of that principal's chain — which is exactly the shape [`verify_window`] verifies, and the
 /// reason [`RequestLog::verify_principal_chain`] uses the window verifier rather than
-/// [`crate::audit::verify_chain`]: the head has legitimately been pruned, and a caller holding a
+/// `verify_chain`: the head has legitimately been pruned, and a caller holding a
 /// whole chain that used the lenient entry point would be silently excusing a missing head.
 const MAX_RETAINED_REQUESTS: usize = 2048;
 
@@ -129,10 +131,13 @@ const MAX_RETAINED_REQUESTS: usize = 2048;
 const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 
 /// The fields a caller supplies for one request record. `seq`, `prev_hash` and `hash` are NOT here:
-/// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
+/// they are the chain's own business and are supplied by [`Chain::append`], so no call
 /// site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestInput {
+/// `pub` rather than `pub(crate)` ONLY because it is the `Input` associated type of the audit
+/// unit's public `ChainedRecord`; nothing outside this crate names it, and this crate publishes no
+/// semver contract (see Cargo.toml's note on the public surface).
+pub struct RequestInput {
     pub(crate) ts: u64,
     /// The dialect the request ARRIVED on (`anthropic`, `openai`, `gemini`, …). The plane speaks
     /// six, so which one a caller used is a fact about the request rather than about the build.
@@ -172,7 +177,7 @@ impl ChainedRecord for RequestRecord {
         scope: "principal",
     };
 
-    /// LENGTH-PREFIXED, which is what [`crate::audit::Framing`] requires of a NEW record type and is
+    /// LENGTH-PREFIXED, which is what [`Framing`] requires of a NEW record type and is
     /// not merely inherited style here: `ingress_protocol` and `pool` are engine-bounded today, but
     /// relying on that is the classic digest-collision-by-framing bug — a caller who can choose one
     /// field's bytes could otherwise forge the same byte stream under a different split. Length
@@ -340,7 +345,7 @@ impl RequestLog {
         let mut state = self.state();
         // `RequestChain::default()` IS SAFE HERE, and it is worth saying why because it is the
         // same line that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
-        // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
+        // give `next_seq: 0`, which is not a valid sequence; `Chain` therefore
         // hand-writes its `Default` to be its `new`, and pins the two against each other
         // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
         // hazard is closed once, in core, for every stream — which is the whole argument for

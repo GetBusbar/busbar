@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/plane/auditlog.rs`.
 
 use super::*;
-use crate::audit::{digest, frame_prelude, Framing};
+use busbar_unit_audit::legacy::{digest, frame_prelude, Framing};
 
 /// THE BYTE-IDENTITY GATE: the plane's pre-framed suffix, appended RAW after the host prelude
 /// framed with `digests_scope = false`, reproduces the legacy [`AuditEntry`] digest byte-for-byte.

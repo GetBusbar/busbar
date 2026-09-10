@@ -412,10 +412,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14933
+unit_total_ceiling = 14947
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23825
+union_ceiling = 23839
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1219,13 +1219,13 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.unit_total_ceiling"
-by = 119
-because = "149 less the 30 lines busbar-unit-cost gave back when the four configured-limit spec types left it for busbar_contract::limits (the face declared on the caps_contract line beneath this one), leaving one re-export at their historical paths: 149 - 30 = 119. FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union, less the 16 lines the unit-auth deletion (ResolvedKey/KeyVerifier/RevocationView, funded by the VirtualKeyDirectory face) took back on this line: 165 - 16 = 149, declared rather than absorbed"
+by = 133
+because = "149 less the 30 lines busbar-unit-cost gave back when the four configured-limit spec types left it for busbar_contract::limits (the face declared on the caps_contract line beneath this one), leaving one re-export at their historical paths: 149 - 30 = 119. FACE busbar-unit-cost::CostModel — the card, the groups: topology and the flat fee as one resolved value (resolve_parts, pricing_enabled, model_unpriced) and GroupTable::resolve, the one projection of the money topology, measured at +222 surface lines in busbar-unit-cost against -57 in busbar-unit-admission (GroupBucket, GroupRuntime, GroupTable and STANDARD_TIER_BP moved down to the crate that owns them): net +165 on the busbar-unit-* union, less the 16 lines the unit-auth deletion (ResolvedKey/KeyVerifier/RevocationView, funded by the VirtualKeyDirectory face) took back on this line: 165 - 16 = 149, declared rather than absorbed. Plus 14 for FACE busbar-unit-audit::legacy (keep-core-delete-6): the two primitives D33 7.4 authorised into that crate's legacy chain — Digest::raw, the verbatim join the host-side journal cleave needs (5 lines), and frame_prelude, the prelude framer that preserves the pipe-separated genesis landmine by construction (9 lines) — land in the unit so that core's 465-line SECOND implementation of the same tamper-evidence chain can be deleted outright. 119 + 14 = 133, a 33-to-1 trade against the busbar-core surface"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 147
-because = "the same FACE as the unit_total_ceiling raise, busbar-unit-cost::CostModel and the group projection it owns: +165 net busbar-unit-* lines; the composition root gave up 39 lines of projection to the unit and root lines are not in this union, so the union rises by the unit rise less the 2 lines the contract fell by on this line (the VirtualKeyDirectory face +19, the Unit::{byte_counts, frame_counts, set_counts} deletion -21) and the 16 lines the unit-auth ResolvedKey/KeyVerifier/RevocationView deletion took out of the unit sum: 165 - 2 - 16 = 147"
+by = 161
+because = "the same TWO faces as the unit_total_ceiling raise, busbar-unit-cost::CostModel and the group projection it owns: +165 net busbar-unit-* lines; the composition root gave up 39 lines of projection to the unit and root lines are not in this union, so the union rises by the unit rise less the 2 lines the contract fell by on this line (the VirtualKeyDirectory face +19, the Unit::{byte_counts, frame_counts, set_counts} deletion -21) and the 16 lines the unit-auth ResolvedKey/KeyVerifier/RevocationView deletion took out of the unit sum: 165 - 2 - 16 = 147. Plus the same 14 busbar-unit-audit lines (Digest::raw and frame_prelude, authorised by D33 7.4), which are unit lines and so rise on this union too, against 465 busbar-core lines that are not in it: 147 + 14 = 161"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
@@ -1422,3 +1422,23 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: cost.rs adds derive_spend_minor_units and derive_spend_micros_units to the one pub(crate) use line that is the engine's seam onto the cost unit, and deletes its own reserved-four fold, its own divide to cents, its own fee multiply, its own floor and the private lane helper with them. Four spellings on one seam line in place of a second answer to what a bucket has spent, with every reader inside the crate going through that seam rather than naming the unit itself; the edge dies with busbar-core"
+
+# DELETION funded by the FACE busbar-unit-audit::legacy (keep-core-delete-6). Core kept its own copy
+# of THE APPEND-ONLY HASH CHAIN — `Framing`, `Digest`, `ChainLabels`, `ChainedRecord`, `digest`,
+# `seal`, `Chain`, `ChainBreak`/`ChainBreakKind`, `verify_chain`/`verify_window` and the walk, 465
+# lines — beside the identical mechanism the audit unit already holds. Two implementations of a
+# tamper-evidence chain means two answers to "what happened", which is the one defect this mechanism
+# exists to make impossible. The copy is deleted and the seven in-core streams and their tests read
+# the unit's face DIRECTLY: there is deliberately no re-export in core, because a spelling in core is
+# how a second mechanism grows back, and that choice is what the cell is paying for. Naming the unit
+# costs spellings the matrix counts — the manifest line (eight: the dependency name and its path,
+# each seen by both needles) plus one import or path spelling in each of the twelve reader files and
+# two in the module header — so the cell rises by exactly thirty-two. Nothing else rises: the edge is
+# the drain the `[[transitional]] busbar-core -> busbar-unit-*` row names, recorded as a `[[dep]]`
+# row at count 1. Three cells FELL on the same commit and are re-pinned by `--write`
+# (busbar-core x api 603 -> 601, x control 5200 -> 5197, x plane 3033 -> 3027).
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 32
+because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"

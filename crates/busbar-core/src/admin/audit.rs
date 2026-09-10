@@ -36,7 +36,7 @@
 
 use serde::Serialize;
 
-use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
+use busbar_unit_audit::legacy::{seal, ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
@@ -82,9 +82,12 @@ pub struct AuditEntry {
 
 /// The fields a caller supplies for one admin audit entry. `seq`, `prev_hash` and `hash` are NOT
 /// here: they are the chain's own business, allocated under the ring lock and sealed by
-/// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
+/// [`seal`], so no call site can supply a sequence number or a link of its own
 /// choosing.
-pub(crate) struct AuditInput {
+/// `pub` rather than `pub(crate)` ONLY because it is the `Input` associated type of the audit
+/// unit's public `ChainedRecord`; nothing outside this crate names it, and this crate publishes no
+/// semver contract (see Cargo.toml's note on the public surface).
+pub struct AuditInput {
     pub(crate) ts: u64,
     pub(crate) action: String,
     pub(crate) resource: String,
@@ -108,7 +111,7 @@ impl ChainedRecord for AuditEntry {
     };
     /// PIPE-SEPARATED because that is how the entries already on disk were written, and
     /// `busbar_api::AuditRecord`'s own doc publishes the formula. A new record type takes
-    /// [`Framing::LengthPrefixed`] instead — see [`crate::audit::Framing`].
+    /// [`Framing::LengthPrefixed`] instead — see [`Framing`].
     const FRAMING: Framing = Framing::PipeSeparated;
 
     fn scope_of(&self) -> &str {
@@ -213,10 +216,10 @@ impl AuditLog {
             // Chain to the most recent entry (the back), before any prune.
             let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
             // The ring allocates the POSITION (it must, under this lock, to match insertion order);
-            // `crate::audit::seal` builds and digests the record. The caller's payload and the
+            // `seal` builds and digests the record. The caller's payload and the
             // chain's position arrive through different arguments, so no call site can supply a seq
             // or a link of its own choosing.
-            let entry: AuditEntry = crate::audit::seal(
+            let entry: AuditEntry = seal(
                 ADMIN_LOG,
                 seq,
                 prev_hash,
@@ -279,7 +282,7 @@ impl AuditLog {
     pub(crate) fn verify(&self) -> bool {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let window: Vec<AuditEntry> = q.iter().cloned().collect();
-        crate::audit::verify_window(&window).is_ok()
+        busbar_unit_audit::legacy::verify_window(&window).is_ok()
     }
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
