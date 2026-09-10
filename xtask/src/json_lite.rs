@@ -493,12 +493,19 @@ impl Parser {
 /// `json.dump(value, fh, indent=1, ensure_ascii=False, sort_keys=False)`, byte for byte. The
 /// caller appends the trailing newline Python's callers append separately.
 pub fn dump_python(value: &Json) -> String {
+    dump_python_indent(value, 1)
+}
+
+/// The same, with the indent WIDTH parameterized — `json.dump(..., indent=N, ...)` for an `N`
+/// other than 1. `inventory-coverage.py` writes with `indent=2`; the shape (order, escaping, empty
+/// containers inline) is otherwise identical, so only the per-level column count differs.
+pub fn dump_python_indent(value: &Json, unit: usize) -> String {
     let mut out = String::new();
-    write_value(&mut out, value, 0);
+    write_value(&mut out, value, 0, unit);
     out
 }
 
-fn write_value(out: &mut String, v: &Json, level: usize) {
+fn write_value(out: &mut String, v: &Json, level: usize, unit: usize) {
     match v {
         Json::Null => out.push_str("null"),
         Json::Bool(true) => out.push_str("true"),
@@ -521,11 +528,11 @@ fn write_value(out: &mut String, v: &Json, level: usize) {
                     out.push(',');
                 }
                 out.push('\n');
-                indent(out, level + 1);
-                write_value(out, item, level + 1);
+                indent(out, level + 1, unit);
+                write_value(out, item, level + 1, unit);
             }
             out.push('\n');
-            indent(out, level);
+            indent(out, level, unit);
             out.push(']');
         }
         Json::Object(o) => {
@@ -539,20 +546,20 @@ fn write_value(out: &mut String, v: &Json, level: usize) {
                     out.push(',');
                 }
                 out.push('\n');
-                indent(out, level + 1);
+                indent(out, level + 1, unit);
                 write_string(out, k);
                 out.push_str(": ");
-                write_value(out, val, level + 1);
+                write_value(out, val, level + 1, unit);
             }
             out.push('\n');
-            indent(out, level);
+            indent(out, level, unit);
             out.push('}');
         }
     }
 }
 
-fn indent(out: &mut String, level: usize) {
-    for _ in 0..level {
+fn indent(out: &mut String, level: usize, unit: usize) {
+    for _ in 0..(level * unit) {
         out.push(' ');
     }
 }

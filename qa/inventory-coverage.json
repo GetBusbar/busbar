@@ -4,7 +4,7 @@
     "Answers, for every row id in docs/design/inventory/*.md, whether an oracle cell",
     "(testing/shadow-oracle/cells.json, checked against the golden ledger) covers it."
   ],
-  "generated_at": "2026-09-06",
+  "generated_at": "2026-09-10",
   "family_summary": {
     "ADM": {
       "covered": 66,
@@ -19,9 +19,9 @@
       "total": 227
     },
     "CONF": {
-      "covered": 0,
+      "covered": 1,
       "partial": 0,
-      "none": 205,
+      "none": 204,
       "total": 205
     },
     "LST": {
@@ -1105,8 +1105,12 @@
       "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 369,
-      "status": "none",
-      "citers": []
+      "status": "covered",
+      "citers": [
+        "admin.ops|PutHooksName|if-match-malformed",
+        "admin.ops|PutHooksName|if-match-stale",
+        "admin.ops|PutHooksName|ok"
+      ]
     },
     "CONF-221": {
       "family": "CONF",
@@ -4434,6 +4438,7 @@
         "admin.ops|DeleteKeysId|if-match-stale",
         "admin.ops|DeleteKeysId|not-found",
         "admin.ops|DeleteKeysId|ok",
+        "admin.ops|DeleteKeysId|overlong-id",
         "admin.ops|DeleteKeysId|unauth"
       ]
     },
@@ -4445,6 +4450,7 @@
       "citers": [
         "admin.ops|GetKeysId|not-found",
         "admin.ops|GetKeysId|ok",
+        "admin.ops|GetKeysId|overlong-id",
         "admin.ops|GetKeysId|unauth"
       ]
     },
@@ -4459,6 +4465,7 @@
         "admin.ops|PatchKeysId|if-match-stale",
         "admin.ops|PatchKeysId|not-found",
         "admin.ops|PatchKeysId|ok",
+        "admin.ops|PatchKeysId|overlong-id",
         "admin.ops|PatchKeysId|unauth"
       ]
     },
@@ -4470,6 +4477,7 @@
       "citers": [
         "admin.ops|PostKeysIdRevoke|not-found",
         "admin.ops|PostKeysIdRevoke|ok",
+        "admin.ops|PostKeysIdRevoke|overlong-id",
         "admin.ops|PostKeysIdRevoke|unauth"
       ]
     },
@@ -4482,6 +4490,7 @@
         "admin.ops|PostKeysIdRotate|idempotent-replay",
         "admin.ops|PostKeysIdRotate|not-found",
         "admin.ops|PostKeysIdRotate|ok",
+        "admin.ops|PostKeysIdRotate|overlong-id",
         "admin.ops|PostKeysIdRotate|unauth"
       ]
     },
@@ -4493,6 +4502,7 @@
       "citers": [
         "admin.ops|GetKeysIdUsage|not-found",
         "admin.ops|GetKeysIdUsage|ok",
+        "admin.ops|GetKeysIdUsage|overlong-id",
         "admin.ops|GetKeysIdUsage|unauth"
       ]
     },
@@ -4677,7 +4687,7 @@
       "families": [
         "CONF"
       ],
-      "status": "UNMAPPED"
+      "status": "PARTIAL"
     },
     {
       "row": "C2",
