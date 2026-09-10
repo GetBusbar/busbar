@@ -11,7 +11,7 @@
 //!
 //! ## What is deliberately NOT durable, said here rather than discovered
 //!
-//! The store is `oauth_as::store::MemoryStorage`. Authorization codes, tokens, refresh tokens and
+//! The backing state is the protocol library's IN-PROCESS one. Authorization codes, tokens, refresh tokens and
 //! registered clients therefore live in this process and are lost on restart. That is a REAL
 //! limitation and not a placeholder pretending otherwise: a restarted deployment invalidates every
 //! outstanding token and every dynamically registered client, and an agent connected to it has to
@@ -22,8 +22,9 @@
 
 use std::sync::Arc;
 
+use backing::MemoryStorage;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
-use oauth_as::store::MemoryStorage;
+use oauth_as::store as backing;
 
 use busbar_contract::error::{ErrorClass, ParamValue, PluginError};
 
@@ -87,7 +88,7 @@ impl std::fmt::Display for AsBuildError {
 impl TokenIssuer {
     /// Build the plane. Called ONCE, from the boot path, only when `oauth_as:` is present.
     ///
-    /// `key_material` is the resolved secret, already read from wherever the `SecretRef` pointed;
+    /// `key_material` is the resolved secret, already read from wherever the reference pointed;
     /// `None` means the operator configured no key and accepts an ephemeral one. This function does
     /// not resolve secrets itself, so it stays testable without a secret module and so the one
     /// place that reads operator secrets remains the config layer.
@@ -167,7 +168,7 @@ impl TokenIssuer {
             oauth_as::jwt::JwtConfig::new(key, audience).with_jwks_uri(identity.jwks_uri()),
         ));
 
-        // The store: `MemoryStorage` behind the CIMD read. The ceiling handed to it is the SAME
+        // The state: the in-process backing behind the CIMD read. The ceiling handed to it is the SAME
         // `default_grant_scopes` the registration config above is built from, so a client arriving
         // by document and one arriving by registration land under one ceiling by construction.
         let store = crate::cimd::CimdStore::new(

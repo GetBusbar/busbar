@@ -13,8 +13,8 @@
 //! 1. **The ceiling is configuration, not request content.** `oauth_as.default_grant` is the whole
 //!    of what a self-registered client may ever hold, and it defaults to EMPTY. `oauth-as` enforces
 //!    it as a REFUSAL (`invalid_client_metadata`) rather than a narrowing, which is the stronger of
-//!    the two behaviours: a client that asked for `admin` is told no, rather than quietly issued a
-//!    lesser client it then believes is an `admin` one.
+//!    the two behaviours: a client that asked for a scope outside the ceiling is told no, rather
+//!    than quietly issued a lesser client it then believes carries that scope.
 //! 2. **The policy is a decision somebody wrote.** `oauth-as` refuses every registration when no
 //!    [`RegistrationPolicy`] is installed, so an open endpoint cannot be reached by setting a config
 //!    field and moving on. [`OpenRegistration`] below is that decision, and it is deliberately the

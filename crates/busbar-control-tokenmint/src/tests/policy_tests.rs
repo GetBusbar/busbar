@@ -61,10 +61,10 @@ async fn a_self_registered_client_cannot_ask_for_more_than_the_default_grant() {
     let plane = plane(&["mcp:read"]);
     let refusal = plane
         .server()
-        .register_dynamic_client(&attempt(Some("mcp:read mcp:write admin"), None), None)
+        .register_dynamic_client(&attempt(Some("mcp:read mcp:write elevated"), None), None)
         .await
         .expect_err(
-            "registering with `admin` succeeded. A client that can name its own scope at \
+            "registering with `elevated` succeeded. A client that can name its own scope at \
              registration has converted \"I exist\" into \"I am authorised\", which is the whole \
              defect this plane was built not to have.",
         );

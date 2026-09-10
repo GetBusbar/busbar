@@ -24,7 +24,8 @@ path = "src/lib.rs"
 [dependencies]
 # THE ONE BUSBAR EDGE. The structured error every refusal is (`PluginError`), the catalog shape the
 # crate ships beside its claims (`Catalog`), and the path grammar the route table is written in
-# (`PathSeg`). No `busbar-caps`: this crate builds no kernel view and holds no capability token.
+# (`PathSeg`). This crate builds no kernel view and holds no capability token, so it takes no edge
+# on the capability crate — the manifest below is the whole of what it names.
 busbar-contract = { path = "../busbar-contract" }
 # THE PROTOCOL. `oauth-as` is the RFC 6749/8414/7591/9068/9207 implementation this crate serves;
 # the crate is the deployment's policy around it, not a second copy of it.
