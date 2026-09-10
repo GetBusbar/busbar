@@ -113,6 +113,40 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3543
+because = """The SURFACE-measured twin of the one owner ruling that raises \
+`rules.loc-ceilings.caps_contract_ceiling`, pinned at the figure `scripts/loc-surface.py` MEASURES on \
+this tree and not at a round number above it: 3478 + 65 surface lines, every one of them the upstream \
+status table — `upstream.rs` (64: the nine-row `StatusClass` and four-row `Disposition` tables and the \
+two macros that make them data) and one `lib.rs` module line. The two rows are one decision counted \
+two ways, and raising one without the other leaves the pair capped at whichever is smaller."""
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3545
+because = """THE UPSTREAM STATUS TABLE, at its MEASURED size. \
+`busbar_contract::upstream::{StatusClass, Disposition}` (65 lines): the nine-way reading of an \
+upstream's answer, which a plane's dialect reads off vendor bytes and renders back in its own words, \
+and the four-way disposition the egress walk and the breaker act on. A unit may name only the \
+contract and the capabilities, and a plane or a dialect only the contract, so the one crate both \
+sides can point at is this one — and the table was being declared THREE times \
+(busbar-substrate-values, busbar-unit-breaker, and the transport wire's own four-way copy) because \
+it had no owner both could name. It is a TABLE: rows are data, the token, the label and the \
+disposition are columns, one match site each, so a tenth class fails to compile at every renderer at \
+once. Zero slack; the next face declares its own raise."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23530
+because = """The same 65 lines, counted a third time: the union row is kernel + caps/contract + \
+unit-*, and the caps/contract term is the only one that moved here (5379 + 3545 + 14606 = 23530). \
+No kernel and no unit line changes in this commit — the commit that deletes the three copies lowers \
+the unit term, and lowers this one with it, by measurement. Declared separately because it is a \
+separate integer `ceiling-rose` compares, and pinned at the measurement for the same reason the \
+pair is."""
+
 [gate.ceiling_raises."cell.338.count"]
 file = "qa/kind-isolation.toml"
 from = 11200
@@ -150,7 +184,16 @@ at which point this entry describes no rise and is deleted. Pinned at the measur
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+# 3478 -> 3543 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
+# the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
+# the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
+# ceiling that has been raised in name only. 3543 is what `scripts/loc-surface.py` measures with the
+# upstream status table in the tree, and the audit of what that face is lives beside the other
+# number; see `[rules.loc-ceilings]`. `grammar` and `contract_transport` are NOT part of the ruling
+# and keep the figures the integration line measured them at: the status table is contract surface,
+# and nothing it adds is grammar or transport surface, so raising those two would be spending a
+# ruling on rows it was not written for.
+contract_caps = 3543
 grammar = 388
 contract_transport = 845
 
@@ -371,12 +414,19 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+# RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
+# rather than at a round number above it: `ceiling-slack` says a ceiling above its measurement is
+# room nobody voted for. What the 65 lines are — the one owner of the upstream status class and its
+# disposition, which three crates had each declared — is written in the declared raise above. The
+# next face comes with its own declared raise naming its own measured lines, never out of this one.
+caps_contract_ceiling = 3545
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+# 23465 -> 23530: the caps/contract term above rose by 65 (the upstream status table) and nothing
+# else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
+union_ceiling = 23530
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
