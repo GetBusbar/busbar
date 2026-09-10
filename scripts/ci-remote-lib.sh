@@ -94,6 +94,63 @@ fleet_pick_host() {
   printf '%s\n' "$best"
 }
 
+# N DISTINCT BOXES, LEAST LOADED FIRST, NEVER ONE OF THE EXCLUDED — for the shard fan-out, which
+# hands one self-test shard to each of them while the primary runs its own. One probe pass over the
+# fleet (the same probe fleet_pick_host makes), sorted by 1-minute load; a box that does not answer
+# or is not prepared is skipped, not chosen; the excluded boxes (the primary, and anything the caller
+# already holds) are never returned. Prints up to $1 hosts, one per line — FEWER when the fleet is
+# short, and the caller decides what a short fleet means (land-remote.sh degrades to an unsharded
+# landing and says so; it does not launch three shards and call it four).
+fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
+  local want="$1"; shift
+  local hosts h probe ex skip rows=""
+  hosts="$(fleet_hosts)"
+  for h in $hosts; do
+    skip=0; for ex in "$@"; do [ "$h" = "$ex" ] && skip=1; done; [ "$skip" = 1 ] && continue
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove && cut -d" " -f1 /proc/loadavg' </dev/null 2>/dev/null || true)"
+    case "$probe" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    rows="$rows$probe $h
+"
+  done
+  printf '%s' "$rows" | sort -n | head -n "$want" | awk '{print $2}'
+}
+
+# Push ONE NAMED COMMIT (not HEAD) into a box's bare repo under a ref of the caller's choosing. The
+# fan-out needs it because the tree a shard must prove is the primary box's cherry-picked tip, which
+# this repository only holds after fetching it from the primary — it is nobody's HEAD here.
+remote_push_sha() { # $1 = host  $2 = local repo  $3 = ref name  $4 = sha
+  local host="$1" repo="$2" ref="$3" sha="$4"
+  GIT_SSH_COMMAND="$SSH_WRAP" git -C "$repo" push -q --force \
+    "ssh://$REMOTE_USER@$host/~/$REMOTE_BARE" "+$sha:refs/heads/$ref"
+}
+
+# A REQUEST LINE, as the primary's land.sh writes it (`land_shard_request`): `gate=G n=N sha=S ref=R
+# ceil=VAR=SECS`. Parsed into R_gate R_n R_sha R_ref R_ceil, and REFUSED — return 1 — when any field
+# is missing or malformed, because a request the laptop half-understood would launch shards of the
+# wrong tree or the wrong count, and the union check would then be RED for a reason nobody could name.
+fanout_parse_request() { # $1 = the line
+  local f
+  R_gate=""; R_n=""; R_sha=""; R_ref=""; R_ceil=""
+  for f in $1; do
+    case "$f" in
+      gate=*) R_gate="${f#gate=}" ;;
+      n=*)    R_n="${f#n=}" ;;
+      sha=*)  R_sha="${f#sha=}" ;;
+      ref=*)  R_ref="${f#ref=}" ;;
+      ceil=*) R_ceil="${f#ceil=}" ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -n "$R_gate" ] && [ -n "$R_ref" ] || return 1
+  case "$R_n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$R_n" -ge 2 ] && [ "$R_n" -le 4 ] || return 1
+  case "$R_sha" in *[!0-9a-f]*|'') return 1 ;; esac
+  [ "${#R_sha}" -eq 40 ] || return 1
+  case "$R_ceil" in *=*) ;; *) return 1 ;; esac
+  case "${R_ceil#*=}" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
+}
+
 # EVERY ARGUMENT IS QUOTED FOR THE REMOTE SHELL. ssh does not exec an argv; it concatenates what it
 # is given and hands the STRING to the login shell, which then re-splits and re-globs it. An oracle
 # id-filter is a regex — `^(billing|ledger)([|.]|$)` — and unquoted that is a subshell, a pipeline
@@ -179,3 +236,50 @@ remote_push_tree() { # $1 = host  $2 = local repo  $3 = ref name  $4.. = extra c
     "ssh://$REMOTE_USER@$host/~/$REMOTE_BARE" "${specs[@]}" \
     || rdie "push to $host failed — prepare the box with ./scripts/prove-remote.sh --setup $host"
 }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --selftest, when this file is EXECUTED rather than sourced: the allocator's choices against a
+# stub fleet, and the request parser's refusals. The stub wrapper stands in for ~/.busbar-fleet-ssh
+# and answers per host from a table, so "least loaded", "unprepared", "silent" and "excluded" are
+# each a box in the table rather than a fact about the live fleet.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+_lib_selftest() {
+  local root fails=0
+  root="$(mktemp -d "${TMPDIR:-/tmp}/ci-remote-lib-selftest.XXXXXX")"
+  _t() { if [ "$2" = "$3" ]; then printf '  ok   %-52s\n' "$1"; else printf '  FAIL %-52s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\n# a comment\n' >"$root/fleet"
+  # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0.
+  cat >"$root/ssh" <<'STUB'
+#!/bin/sh
+for a in "$@"; do case "$a" in ubuntu@*) h="${a#ubuntu@}" ;; esac; done
+case "$h" in
+  box-a) echo 4.50 ;;
+  box-b) exit 1 ;;
+  box-c) echo 1.00 ;;
+  box-d) sleep 60 ;;
+  box-e) echo 2.00 ;;
+esac
+STUB
+  chmod +x "$root/ssh"
+  FLEET_FILE="$root/fleet"; SSH_WRAP="$root/ssh"
+  _fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
+  echo "ci-remote-lib selftest: the allocator (distinct, least loaded, prepared, never the excluded)"
+  _t "three boxes, least loaded first"  "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; [ "$1" = "$SSH_WRAP" ] && { case "$*" in *box-d*) return 1 ;; esac; }; "$@"; }; fleet_pick_hosts 3 2>/dev/null)"
+  _t "the primary is never chosen"      "$(printf 'box-c\nbox-a')"        "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 2 box-e 2>/dev/null)"
+  _t "a short fleet returns FEWER, not a repeat" "$(printf 'box-c')"      "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 3 box-a box-e 2>/dev/null)"
+  _t "the silent box is skipped, and named" 1 "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 4 2>&1 >/dev/null | grep -c 'box-d skipped')"
+  echo "ci-remote-lib selftest: the request parser (a request half-understood is refused)"
+  local sha; sha="$(printf '%040d' 7)"
+  _t "a well-formed request parses"     0 "$(fanout_parse_request "gate=kind-isolation n=4 sha=$sha ref=shardreq-1 ceil=X=3600"; echo $?)"
+  _t "  ...and yields its fields"       "kind-isolation 4 shardreq-1 3600" "$(fanout_parse_request "gate=kind-isolation n=4 sha=$sha ref=shardreq-1 ceil=X=3600"; echo "$R_gate $R_n $R_ref ${R_ceil#*=}")"
+  _t "a short sha is refused"           1 "$(fanout_parse_request "gate=g n=4 sha=abc ref=r ceil=X=1"; echo $?)"
+  _t "n above four is refused"          1 "$(fanout_parse_request "gate=g n=5 sha=$sha ref=r ceil=X=1"; echo $?)"
+  _t "n of one is refused"              1 "$(fanout_parse_request "gate=g n=1 sha=$sha ref=r ceil=X=1"; echo $?)"
+  _t "a missing gate is refused"        1 "$(fanout_parse_request "n=4 sha=$sha ref=r ceil=X=1"; echo $?)"
+  _t "an unknown field is refused"      1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=1 extra=1"; echo $?)"
+  _t "a ceiling that is not seconds is refused" 1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=soon"; echo $?)"
+  rm -rf "$root"
+  if [ "$fails" -eq 0 ]; then echo "ci-remote-lib selftest: GREEN (allocator, request parser)"; return 0; fi
+  echo "ci-remote-lib selftest: RED ($fails failure(s))" >&2; return 1
+}
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _lib_selftest; exit $?; fi
