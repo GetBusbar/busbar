@@ -517,6 +517,25 @@ fn register_stream(
     .unwrap_or(StatusClass::Fault)
 }
 
+/// THE RETENTION STAMP one durable journal append carries — the node's wall clock, in Unix seconds.
+///
+/// The neutral durable body is opaque to core (its `content` is the plane's own pre-framed suffix),
+/// so whatever timestamp a plane wrote INSIDE it is a timestamp the store cannot read: the store
+/// keys, orders and sweeps on the typed sidecar columns and never decodes a body. `PlaneRecord::ts`
+/// is therefore the only age this row has, and `purge_plane_records_before` drops every row older
+/// than its cutoff for every kind except `task`. A row stamped with anything but a real reading is a
+/// row that reads as infinitely old and goes on the first sweep at any cutoff — evidence lost, and
+/// lost silently, because the sweep counts a purge as success.
+///
+/// The reading is `busbar_substrate::store::now`, which is the node's ONE production wall clock and
+/// the same implementation the `clock_now` host slot scales its nanoseconds from. Naming it directly
+/// rather than driving the slot is what lets the HOSTLESS append site
+/// ([`journal_append_scoped_full_hostless`], which has no `HostCtx` to open) stamp the same clock as
+/// the two host-driven ones — the three sites agree by construction rather than by coincidence.
+fn stamp_now() -> u64 {
+    busbar_substrate::store::now()
+}
+
 /// APPEND one record and return its MINTED chain fields `(seq, prev_hash, hash)` — the WITHIN-CORE
 /// analogue of [`journal_append_scoped`] for a seam user that must reconstruct the TYPED record it
 /// returns to its caller (the MCP call log hands back an `McpCallRecord` carrying `prev_hash`/`hash`,
@@ -549,7 +568,10 @@ pub(crate) fn journal_append_scoped_full(
         };
         let reframe =
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+        match h
+            .journal
+            .append_scoped(&h.kind, scope, stamp_now(), input, &reframe)
+        {
             Ok(record) => Ok((
                 record.seq(),
                 record.prev_hash().to_string(),
@@ -601,7 +623,10 @@ pub(crate) fn journal_append_scoped_full_hostless(
         let reframe = |sc: &str, body: &[u8]| {
             call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
         };
-        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+        match h
+            .journal
+            .append_scoped(&h.kind, scope, stamp_now(), input, &reframe)
+        {
             Ok(record) => Ok((
                 record.seq(),
                 record.prev_hash().to_string(),
@@ -659,7 +684,10 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
         };
         let reframe =
             |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        match h.journal.append_scoped(&h.kind, &scope, input, &reframe) {
+        match h
+            .journal
+            .append_scoped(&h.kind, &scope, stamp_now(), input, &reframe)
+        {
             Ok(record) => Seq(record.seq()),
             Err(_) => Seq::NONE,
         }
