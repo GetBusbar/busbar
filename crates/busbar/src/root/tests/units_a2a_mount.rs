@@ -270,9 +270,7 @@ fn a_node() -> Arc<crate::root::data_plane::NodeParts> {
 fn rates_of(flat: i64) -> Arc<crate::root::kernel::RootRates> {
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(busbar_unit_cost::RateCard::absent(flat), 0);
-    holder
-        .pin_rates(0)
-        .expect("the apply put rates in place")
+    holder.pin_rates(0).expect("the apply put rates in place")
 }
 
 fn sources_with_chain(

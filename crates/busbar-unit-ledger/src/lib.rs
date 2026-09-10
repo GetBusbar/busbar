@@ -106,13 +106,13 @@ pub use recompute::{
     Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
+pub use rows::{
+    attribution_bucket, group_bucket, group_bucket_scoped, is_bucket_of_group, GROUP_BUCKET_PREFIX,
+};
 pub use settle::{adjusting_entries, Booked, Ledger, Overdraft, Repricing, Settlement};
 pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
     TotalsKey, Unpriced, WindowStart,
-};
-pub use rows::{
-    attribution_bucket, group_bucket, group_bucket_scoped, is_bucket_of_group, GROUP_BUCKET_PREFIX,
 };
 pub use verify::{
     sequences_are_monotonic, verify, AllWindowsOpen, Finding as VerifyFinding, WindowState,

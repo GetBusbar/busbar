@@ -12,8 +12,8 @@ use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
 use crate::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
 
-mod currency_tests;
 mod budget_tests;
+mod currency_tests;
 mod derive_tests;
 mod history_tests;
 mod identity_tests;

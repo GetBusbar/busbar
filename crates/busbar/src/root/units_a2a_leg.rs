@@ -69,9 +69,7 @@ use crate::root::durability::Durability;
 use crate::root::kernel::auth_bindings::AuthBindings;
 use crate::root::policy::{MeterPolicyHandle, ScopePolicy};
 use crate::root::registrations::{KindRules, Kinds, NetSeam, Pools};
-use crate::root::units_a2a::{
-    A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES,
-};
+use crate::root::units_a2a::{A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE FIELD → SOURCE TABLE
@@ -966,9 +964,7 @@ impl A2aLeg {
         // reason: a unit admitted against one resolution and settled against another is a request
         // priced by how long it took.
         let rates = self.rates(now_ms);
-        let bytes_nanos = rates
-            .with_card(|card| self.bytes_nanos(card))
-            .unwrap_or(0);
+        let bytes_nanos = rates.with_card(|card| self.bytes_nanos(card)).unwrap_or(0);
 
         let bindings = self.bindings(
             &pools,

@@ -133,9 +133,7 @@ const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
 fn rates_of(flat: i64) -> Arc<crate::root::kernel::RootRates> {
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(busbar_unit_cost::RateCard::absent(flat), 0);
-    holder
-        .pin_rates(0)
-        .expect("the apply put rates in place")
+    holder.pin_rates(0).expect("the apply put rates in place")
 }
 
 /// One deployment's rates WITH a card, so a lane's own class price can be read back.
@@ -151,9 +149,7 @@ fn rates_with_card(lane: &str, per_input_unit: f64) -> Arc<crate::root::kernel::
         ),
         0,
     );
-    holder
-        .pin_rates(0)
-        .expect("the apply put rates in place")
+    holder.pin_rates(0).expect("the apply put rates in place")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -199,7 +195,9 @@ fn the_price_a_unit_is_admitted_against_follows_the_apply() {
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(busbar_unit_cost::RateCard::absent(41), 0);
     assert_eq!(
-        leg.rates_from(&holder, 0).pricer().price_per_request_cents(),
+        leg.rates_from(&holder, 0)
+            .pricer()
+            .price_per_request_cents(),
         41,
         "the apply did not reach the door this leg admits against"
     );
@@ -265,10 +263,7 @@ fn the_byte_price_estimated_against_is_the_dearest_configured_lane() {
 fn a_deployment_with_no_agents_estimates_no_byte_price() {
     let kernel = a_kernel();
     let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
-    assert_eq!(
-        rates_of(0).with_card(|card| leg.bytes_nanos(card)),
-        Some(0)
-    );
+    assert_eq!(rates_of(0).with_card(|card| leg.bytes_nanos(card)), Some(0));
 }
 
 /// A breaker that benches nothing, so a cell about assembly is not also a cell about readiness.

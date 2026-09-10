@@ -69,6 +69,7 @@ mod posting;
 mod project;
 mod rate;
 
+pub use budget::KeyBudgetView;
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
@@ -79,7 +80,6 @@ pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in, derive_spend_minor,
     micros_of, minor_of,
 };
-pub use budget::KeyBudgetView;
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
