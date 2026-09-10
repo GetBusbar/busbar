@@ -110,3 +110,102 @@ boot, not quietly unmount the surface.
   target — and that is the next step. Until it lands, the row maps core's derived `AsIdentity` into
   the crate's `Identity` field for field, carrying every value and re-deriving none: a second
   derivation is a second chance to disagree about a path a client has already discovered.
+
+## The drain, and the four lines that would not drain
+
+`busbar x control` -- the composition root's naming of this kind -- landed at **1138** against a base
+of **1062** (1063 at the merge-base; this branch had already drained one). The owner's ruling is
+that a control-word rise in the root is a CONVENIENCE and is drained, never declared. It was drained
+to **1071**, and what remains is four lines:
+
+| line | hits | why it is not a convenience |
+|---|---|---|
+| `crates/busbar/Cargo.toml`, the ONE dependency line | 6 | the `[[dep]]` admission itself. The dependency is RENAMED there (`oauth-issuer = { package = "busbar-control-tokenmint", path = "..." }`) so the package is spelled where the edge is declared and NOWHERE else in `crates/busbar` -- not in an identifier, not in a comment, not in a filename. `kind-isolation:deps` resolves `package = "..."` renames, so the edge is still measured under the real package name: the drain takes the vocabulary out of the composition's source, it does not take the edge out of the graph. Six because the line names the package twice, as the `package` and as the `path`. |
+| `admin_noun:` | 1 | a `PlaneDecl` field name every row in the registry fills |
+| `admin_routes:` | 1 | likewise |
+| `const OPERATOR_BAR: RouteAuth = RouteAuth::Admin;` | 1 | the seam's own enum variant for the operator chain, bound to a name once so the `match` spells it no second time |
+
+The ruling's own escape is "the count is the base's + exactly that one line, stated". Six of the nine
+are that one line. The other three are the SEAM's spelling rather than this landing's, and they fall
+with R7 -- when the sibling control surface becomes `busbar-control-admin`, the bare id `admin` stops
+being that surface's needle and all three stop scoring. **They are declared, not hidden**:
+`qa/construction.toml` carries the raise with the four lines enumerated, and this section is the
+statement the ruling asked for.
+
+How the other 67 went:
+
+* **The filenames.** The matrix scans a file's own PATH before it reads a byte of it, so
+  `control_tokenmint.rs` was a hit per needle before its contents were counted. The two root files
+  are `root/oauth_issuer.rs` and `root/oauth_issuer_fetch.rs`.
+* **The identifiers.** Every `busbar_control_tokenmint::` path is now `oauth_issuer::`, the
+  manifest's rename.
+* **The prose.** Every doc comment that named the crate, the kind, or a sibling row by instance now
+  says what it means without the instance.
+* **The two scanners, reconciled by a spelling and not by a row.** `busbar x control` read 1132 by
+  segments and 1138 by windows, and the whole of the disagreement was the camel type name
+  `TokenMint`: the segment scanner splits it to `token` + `mint` and misses the needle, the window
+  scanner reads it whole and does not. The ledger's route through that is a `[[disagreement]]` row,
+  which on this branch would be MINTED. So the TYPE was renamed -- `TokenIssuer` -- and the cell
+  needs no row at all. That is the general rule this landing followed: a scanner disagreement is a
+  spelling problem before it is a ledger problem.
+* **The other cells fell with the same edit**: `busbar x plane` 1811 -> 1799, `x legacy` 102 -> 97,
+  `x transport` 956 -> 955, `x substrate` 11 -> 10. Each is declared with the face that measured it.
+* **The substrate's `BuildCtx` seam prose** named two sibling rows and a reference type to explain
+  two NAMELESS slots -- the vocabulary the seam exists not to carry. `busbar-substrate x plane`
+  770 -> 768 and `x secret` 36 -> 35, both back to base.
+
+### The issuer crate stopped naming four other kinds
+
+`caps` 1 -> 0 (a manifest sentence that named the capability crate to say it is *not* a dependency),
+`store` 6 -> 0 (every hit was the path `oauth_as::store::Memory...`, now one `use oauth_as::store as
+backing;` per file), `secret` 1 -> 0, `legacy` 2 -> 0, `control` 15 -> 0 (prose about the node's
+operator chain; one private constant `ADMIN_SUBJECT` -> `OPERATOR_SUBJECT`, **value unchanged**; and
+a dynamic-registration fixture whose privileged scope was literally spelled `admin`, now `elevated`,
+which is arbitrary to what that test proves). Six `[[cell]]` rows and three `[[edge]]` rows were
+struck as dead allowances.
+
+### What is still RED, and the blocker
+
+Two MINTED `[[cell]]` rows: `busbar-control-tokenmint x transport` (44) and `x plane` (27).
+
+* **transport is not drainable.** This is an HTTP authorization server; `http::Request` is its own
+  vocabulary, and `http` is the instance id of `busbar-transport-http`. The 44 hits are the `http`
+  crate dependency and its types.
+* **plane is drainable and was not drained in this slot's time**: 27 hits, almost all RFC 8707
+  protected-resource fixtures (`mcp:read`, an MCP endpoint URI) in the crate's own tests, plus the
+  prose around them. Renaming the fixtures drains it; the crate's tests must be re-run behind it.
+
+`kind-isolation:matrix` refuses a minted row unconditionally. Its own refusal text names a second
+route -- *"land the row in a commit whose message says why the tree now needs it"* -- **and that
+route is not implemented**: there is no `[[minted]]` table and no reader for one in
+`xtask/src/gates/kind_isolation/matrix.rs`. Landing a crate that did not exist at the merge-base and
+that must name the `http` crate is therefore not expressible in the gate today. That is the blocker,
+and it is a gate change rather than a code change: either the commit-message admission the refusal
+already promises, or a `[[minted]]` table read on the same hand-reader terms as `[[edge]]` (cite,
+why, drain) with the row's own irreducibility as the cite.
+
+## Still owed after this slot, in the order they should be taken
+
+1. **The `oauth_as:` GRAMMAR is still core's.** `busbar-core/src/oauth_as/` is down to `config.rs`
+   (283 lines) and `mod.rs`, and the reason it is still there is unchanged and still good:
+   `config_validate::secret_refs` walks `RootCfg` and must be able to SEE the `signing_key:`
+   reference, because a secret the walker cannot reach is a secret nothing checks. The move's shape
+   is `parse_section` + `config_validate` on the ROW, with the crate's own `Section` (which already
+   exists, `oauth_issuer::config::Section`) as the parse target; `RootCfg::oauth_as`,
+   `config::prepass`'s `LiftedValue::OauthAs` and `secret_refs`'s `AsIdentity` destructure all move
+   with it, and the config-schema snapshot must come out byte-equal or additive. It was NOT
+   attempted in this slot: a half-moved grammar is a boot that validates one thing and serves
+   another, and the byte-identity judge covers the ROUTES rather than the parse.
+2. **The state is still the protocol library's in-process backing.** Ruling (3) allows this and
+   requires it be said: authorization codes, tokens, refresh tokens and registered clients are lost
+   on restart. The seam is the library's `Storage` trait -- thirty async methods -- over the
+   contract's durable face. `crates/busbar-contract/src/store.rs` **is not on this base** (it is on
+   `origin/keep-api-kinds-to-contract`), so the transitional shape stands: the state stays behind
+   the plugin's own surface, named nowhere outside it, and this note carries the row. The
+   load-bearing method is **`claim_key`**, and it is load-bearing rather than decorative: every
+   `take_*` on that trait must be an ATOMIC remove-and-return, or a refresh token is redeemed twice
+   across two nodes and the second redemption mints a second access token from a grant that was
+   already spent. A non-atomic `replay_get` + `replay_put` pair does not close it.
+3. **`Kind` in the contract still has no `Control` variant.** The crate implements `Plugin` with a
+   kind the contract can name, and `kind-isolation:faces` only refuses the plane/dialect/transport/
+   unit entry faces, so that is legal today and is recorded here as the seam the control kind owes.
