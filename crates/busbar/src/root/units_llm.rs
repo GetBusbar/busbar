@@ -753,7 +753,16 @@ fn fold_report(
 /// that retired it: both answers over every recorded cell of the two families the golden has, and
 /// the golden's own billed count beside them.
 fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
-    let status = walk.served_status();
+    fee_facts(walk.served_status(), walk.upstream_candidate(), origin)
+}
+
+/// The same evidence, over the two facts the carry supplies rather than over the carry.
+///
+/// Split out for one reason: a cell that wants to check what this leg decides has to be able to
+/// drive THIS function, and the carry it used to take is a live per-request object with a runtime
+/// table behind it. A proof that drives a transcription of the rule instead of the rule is a proof
+/// about the transcription, and the transcription is what drifts.
+fn fee_facts(status: Option<u16>, upstream_candidate: bool, origin: OriginKind) -> FeeEvidence {
     FeeEvidence {
         // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is what a
         // caller pays for a request the node carried on its behalf, and a unit the node runs for any
@@ -763,7 +772,7 @@ fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
         // The origin the kernel sealed is the one fact that answers this, so it is the one thing
         // read.
         client_open_or_one_shot: origin == OriginKind::Client,
-        selected_upstream: walk.upstream_candidate(),
+        selected_upstream: upstream_candidate,
         relayed_first_response_frame: status.is_some(),
         // This transport reports no status leg of its own: the response IS the status, and the
         // plane's finish is decided from the frame the client saw. Both `None` is also what makes
