@@ -380,13 +380,28 @@ lq_ancestry() { # $1 = pid, $2 = listing; prints $1 and every ancestor of it up 
 # on its own merits; nothing deeper is unwrapped, because a shell that builds another shell's
 # command line is not something to be clever about.
 lq_shell_payload() { # $1 = args; prints the command a `-c`/`-lc` shell will run, else the args unchanged
-  local a="$1" s
+  local a="$1" s head
   case "$a" in
     *" -lc "*) s="${a#*" -lc "}" ;;
     *" -c "*)  s="${a#*" -c "}" ;;
     *) s="$a" ;;
   esac
   s="${s#\'}"; s="${s#\"}"
+  # THE HARNESS'S OWN PROLOGUE. Every shell this agent fleet runs is
+  #   /bin/zsh -c 'source ~/.claude/shell-snapshots/snapshot-zsh-<n>.sh 2>/dev/null; <cmd>'
+  # and the `;` and the `>` in that prologue made EVERY such shell a stranger — which is precisely
+  # the string the census killed at 03:24. A leading `source <file>`/`. <file>` with nothing on it
+  # but redirections is dropped, and the command after it is judged exactly as before. Only that
+  # shape: a prologue carrying `&&`, a pipe, or a second word is not a prologue and is not stripped,
+  # so `sh -c 'source x && rm -rf <W>'` is still read for what it is.
+  while : ; do
+    case "$s" in 'source '*|'. '*) ;; *) break ;; esac
+    head="${s%%;*}"
+    [ "$head" != "$s" ] || break
+    printf '%s' "$head" | grep -qE '^(source|\.) +[^ ;|&]+( +[0-9]?>[^ ;|&]+| +[0-9]?>&[0-9])* *$' || break
+    s="${s#*;}"
+    while : ; do case "$s" in ' '*) s="${s# }" ;; *) break ;; esac; done
+  done
   printf '%s' "$s"
 }
 # THE ONE EXEMPTION THAT IS NOT ANCESTRY: A READER. Not "anything behind a -c string" — a mutator
@@ -1183,6 +1198,17 @@ lq_selftest() {
   _t "a redirection out of a reader: not a reader" 1 "$(lq_is_reader "cat $fake/x > $fake/y"; echo $?)"
   _t "tee is not on the list"                    1 "$(lq_is_reader "tail -f $fake/x | tee $fake/y"; echo $?)"
   _t "nor is anything the list does not name"    1 "$(lq_is_reader "/bin/zsh -c git -C $fake reset --hard"; echo $?)"
+  # THE HARNESS'S OWN WRAPPER, VERBATIM. Every shell in this fleet is launched as
+  # `/bin/zsh -c 'source …/shell-snapshots/snapshot-zsh-<n>.sh 2>/dev/null; <cmd>'`; the `;` and the
+  # `>` in that prologue made every one of them a stranger, and this is the exact string the census
+  # killed at 03:24. Judged on what comes AFTER the prologue, and on nothing else.
+  local snap="/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1757.sh 2>/dev/null;"
+  _t "the harness's wrapper around a reader is a reader" 0 "$(lq_is_reader "$snap tail -f $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...around grep too"                      0 "$(lq_is_reader "$snap grep -c RED $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...but around a mutator it is a stranger" 1 "$(lq_is_reader "$snap git -C $fake reset --hard"; echo $?)"
+  _t "  ...and a dot-file prologue is the same"  0 "$(lq_is_reader "/bin/sh -c . /tmp/snap.sh; cat $fake/x"; echo $?)"
+  _t "a prologue that does something else is not stripped" 1 "$(lq_is_reader "/bin/zsh -c source /tmp/s.sh && rm -rf $fake; cat $fake/x"; echo $?)"
+  _t "  ...nor is one that pipes"                1 "$(lq_is_reader "/bin/zsh -c source /tmp/s.sh | tee $fake/y; cat $fake/x"; echo $?)"
   _t "the pre-rule test (argv begins with tail) misses it" 0 "$(printf '%s' "$largs" | grep -cE '^tail( |$)' || true)"
   _t "a monitor wrapped in a shell is a reader, kept" 1 "$(grep -c "^reader pid $monpid (kept) " "$root/census4.txt" || true)"
   _t "  ...and is ALIVE afterwards"             0 "$(kill -0 "$monpid" 2>/dev/null; echo $?)"
