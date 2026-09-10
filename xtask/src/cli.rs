@@ -14,11 +14,11 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--jobs N] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
-  cargo xtask selftest [<name>]
+  cargo xtask selftest [<name>] [--jobs N]
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed} | --check
@@ -165,7 +165,14 @@ fn gate(args: &[String]) -> i32 {
         return 1;
     }
 
-    let Some(name) = args.iter().find(|a| !a.starts_with("--")) else {
+    // `--jobs N` takes a value, so the N after it is NOT the gate name. Without this,
+    // `cargo xtask gate --selftest --jobs 8 construction` would look for a gate called `8`.
+    let Some(name) = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
+        .map(|(_, a)| a)
+    else {
         eprintln!("xtask gate: no gate named");
         eprintln!("{USAGE}");
         return 2;
@@ -224,6 +231,9 @@ fn gate(args: &[String]) -> i32 {
         (reg.build)()
     };
     if want_selftest {
+        if let Some(n) = jobs_arg(args) {
+            gates::set_selftest_jobs(n);
+        }
         return run_selftest(gate.as_ref(), &cx);
     }
 
@@ -391,6 +401,34 @@ fn gate(args: &[String]) -> i32 {
     i32::from(verdict.red)
 }
 
+/// `--jobs N` / `--jobs=N`: how many of a battery's cases are taken at once. Unknown or absent
+/// leaves the default, which is the box's own parallelism.
+fn jobs_arg(args: &[String]) -> Option<usize> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let raw = if let Some(v) = a.strip_prefix("--jobs=") {
+            Some(v.to_string())
+        } else if a == "--jobs" {
+            it.next().cloned()
+        } else {
+            None
+        };
+        if let Some(raw) = raw {
+            return raw.trim().parse::<usize>().ok().filter(|n| *n > 0);
+        }
+    }
+    None
+}
+
+/// ONE BATTERY, AND A RED ONE RE-TAKEN SERIALLY BEFORE IT IS BELIEVED.
+///
+/// The cases are taken across the cores, and a case is isolated by construction — an [`Overlay`]
+/// is per-plant and `with_overlay` never touches the base context. That is an argument, and the
+/// harness's own `two_cases_planted_at_the_same_path_never_see_each_other` is the proof of it. But
+/// a runner reading a red row cannot re-derive either, and "it only fails when the box is busy" is
+/// how a gate earns a `|| true`. So a battery that goes red at more than one job is TAKEN AGAIN AT
+/// ONE, and BOTH answers are printed: a finding that survives the serial run is the gate's, and a
+/// finding that does not is named as what it is — a defect in this harness, not in the gate.
 fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     println!("xtask selftest {}", gate.name());
     // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
@@ -402,6 +440,7 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
         gates::ceiling_from_env(gate.name()),
     );
     let report = gate.selftest(cx);
+    let jobs = report.jobs();
     drop(watchdog);
     for case in report.cases() {
         let got = match &case.got {
@@ -431,18 +470,51 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             for e in &errs {
                 println!("  - {e}");
             }
+            if jobs > 1 {
+                println!(
+                    "  ...re-taking the battery at --jobs 1, to tell a real RED from a race in \
+                     the harness:"
+                );
+                gates::set_selftest_jobs(1);
+                let serial = gate.selftest(cx);
+                let again = gates::verify_report(gate, &serial)
+                    .err()
+                    .unwrap_or_default();
+                gates::set_selftest_jobs(jobs);
+                if again.is_empty() {
+                    println!(
+                        "  - EVERY finding above went away at --jobs 1 over {} case(s). That is a \
+                         defect in the SELFTEST HARNESS, not in `{}`: the cases are supposed to be \
+                         isolated by construction and one of them is not.",
+                        serial.cases().len(),
+                        gate.name()
+                    );
+                } else {
+                    for e in &again {
+                        println!("  - (also at --jobs 1) {e}");
+                    }
+                }
+            }
             1
         }
     }
 }
 
 fn selftest_cmd(args: &[String]) -> i32 {
+    if let Some(n) = jobs_arg(args) {
+        gates::set_selftest_jobs(n);
+    }
     let cx = match open_ctx() {
         Ok(cx) => cx,
         Err(code) => return code,
     };
 
-    if let Some(name) = args.iter().find(|a| !a.starts_with("--")) {
+    let named = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--jobs"))
+        .map(|(_, a)| a);
+    if let Some(name) = named {
         let Some(reg) = gates::find(name) else {
             eprintln!("xtask selftest: no registered gate `{name}`");
             eprintln!("registered gates: {}", gates::names().join(", "));
