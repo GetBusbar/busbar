@@ -337,8 +337,9 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
 /// prove nothing about egress.
 #[test]
 fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
-    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use crate::root::kernel::auth_bindings::AuthBindings;
     use busbar_caps::{Authenticated, KernelSeal};
+    use busbar_contract::{KeyFacts, VirtualKeyDirectory};
     use busbar_unit_auth::{AuthChain, ChainVerdict};
 
     /// The audience this plane's ingress requires of a signed token.
@@ -347,6 +348,10 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
     struct OneKey;
 
     impl VirtualKeyDirectory for OneKey {
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+
         fn verify(
             &self,
             credential: &str,
@@ -363,16 +368,24 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
                 "tok" => Some(KeyFacts {
                     id: "key-a2a-1".to_string(),
                     name: "an approved key".to_string(),
+                    scopes: None,
+                    enabled: true,
+                    expires_at: None,
+                    deleted_at: None,
                 }),
                 "burned" => Some(KeyFacts {
                     id: "key-a2a-burned".to_string(),
                     name: "a key that was minted and then burned".to_string(),
+                    scopes: None,
+                    enabled: true,
+                    expires_at: None,
+                    deleted_at: None,
                 }),
                 _ => None,
             }
         }
 
-        fn revoked(&self, credential: &str) -> bool {
+        fn is_revoked(&self, credential: &str) -> bool {
             credential == "burned"
         }
     }
