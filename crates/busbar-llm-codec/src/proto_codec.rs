@@ -856,6 +856,23 @@ impl Protocol {
 /// whole of what the registry bought: this function used to be the only way to ask, and asking it a
 /// `&'static` question cost two `Box`es.
 ///
+/// [`protocol_for`], with the creation time the caller read stamped onto the resolved WRITER.
+///
+/// Same registry resolution, same fresh-instance-per-call contract, same `None` for a name that
+/// declares no codec. The only difference is that a dialect whose wire carries a creation time is
+/// built with the reading instead of `UNSTAMPED_CREATED_AT` — see `openai_responses::protocol_stamped`
+/// for why the value is an argument and not a clock read. Reached by the stream-open path, which is
+/// the one place that holds both the node's clock and a translator it will keep for the life of the
+/// stream; every other resolution is a stateless question and keeps using [`protocol_for`].
+pub fn protocol_for_stamped(name: &str, created_at_unix: u64) -> Option<Protocol> {
+    #[cfg(any(test, feature = "test-support"))]
+    crate::ensure_test_protocols_registered();
+    match name {
+        PROTO_RESPONSES => Some(super::openai_responses::protocol_stamped(created_at_unix)),
+        _ => protocol_for(name),
+    }
+}
+
 /// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP).
 pub fn protocol_for(name: &str) -> Option<Protocol> {
     // The codec-resolution entry both the fixture suites and `StreamTranslate::new` reach first;
@@ -928,6 +945,36 @@ pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> O
             Some(f(&w))
         }
         _ => None,
+    }
+}
+
+/// [`with_writer`], with the CREATION TIME the caller read handed to the dialect writer.
+///
+/// The creation time a streaming writer stamps is an INPUT, never a clock read of its own (see the
+/// block comment above `build_responses_usage`): the buffered path carries it on the answer, and the
+/// streaming path rides it on the writer instance. A caller that asks a FRESH writer for a frame
+/// that carries a creation time — the fabricated terminal a door writes when the upstream dies
+/// mid-stream, which has no answer object and no live stream state to inherit — must therefore
+/// supply the reading, or the writer stamps `UNSTAMPED_CREATED_AT` and the frame says the response
+/// was created at the epoch.
+///
+/// Same dispatch, same stack-allocated writers and same `None`-for-an-unknown-name contract as
+/// [`with_writer`]; the ONLY difference is that a dialect whose wire carries a creation time is
+/// built stamped with `created_at_unix`. The other five dialects' terminal error frames carry no
+/// creation time at all, so their writers are the same pristine values [`with_writer`] builds and
+/// the reading is simply unused — this is not a per-dialect branch on behaviour, it is one dialect
+/// having a field to fill.
+pub fn with_writer_stamped<T>(
+    name: &str,
+    created_at_unix: u64,
+    f: impl FnOnce(&dyn ProtocolWriter) -> T,
+) -> Option<T> {
+    match name {
+        PROTO_RESPONSES => {
+            let w = super::openai_responses::ResponsesWriter::stamped_at(created_at_unix);
+            Some(f(&w))
+        }
+        _ => with_writer(name, f),
     }
 }
 

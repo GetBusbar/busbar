@@ -14,7 +14,9 @@ use busbar_substrate_values::proto::{
 };
 // G6 A4b: the wire-codec surface relocated to this plugin's `proto_codec`; reach it RELATIVELY so it
 // resolves both standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
-use super::proto_codec::{protocol_for, Protocol, StreamFraming, ToolIdRemap};
+use super::proto_codec::{
+    protocol_for, protocol_for_stamped, Protocol, StreamFraming, ToolIdRemap,
+};
 
 /// pure cross-protocol response-stream translator. Feed EGRESS-protocol SSE bytes,
 /// get the equivalent INGRESS-protocol SSE bytes — composing `egress.reader().read_response_events`
@@ -158,10 +160,23 @@ impl StreamTranslate {
     /// callers that want the universal-translate verbatim path use [`new_same_proto`] explicitly, so
     /// the legacy `ingress == egress → None` contract (and every caller relying on it) is preserved.
     pub fn new(ingress: &str, egress: &str) -> Option<Self> {
+        Self::new_stamped(
+            ingress,
+            egress,
+            crate::openai_responses::UNSTAMPED_CREATED_AT,
+        )
+    }
+
+    /// [`new`], with the creation time the stream-opener read stamped onto the INGRESS writer — the
+    /// one that produces the client-facing wire, and the one whose dialect may have a `created_at`
+    /// to fill on a stream the upstream carried none for (a cross-protocol reframe strips it, and a
+    /// fabricated terminal has no upstream event at all). Unstamped, that writer dates the response
+    /// to the epoch; the reading is an argument because a codec must not read a clock.
+    pub fn new_stamped(ingress: &str, egress: &str, created_at_unix: u64) -> Option<Self> {
         if ingress == egress {
             return None;
         }
-        Self::build(ingress, egress, false)
+        Self::build(ingress, egress, false, created_at_unix)
     }
 
     /// Build a SAME-PROTOCOL universal translator (Change B step 2). Unlike [`new`], this returns
@@ -172,13 +187,21 @@ impl StreamTranslate {
     /// (`proxy::ENABLE_UNIVERSAL_SAME_PROTO_TRANSLATE`); when the flag is off the caller passes
     /// `None` and falls back to the legacy raw-chunk passthrough.
     pub fn new_same_proto(proto: &str) -> Option<Self> {
-        Self::build(proto, proto, true)
+        Self::new_same_proto_stamped(proto, crate::openai_responses::UNSTAMPED_CREATED_AT)
+    }
+
+    /// [`new_same_proto`], with the stream-opener's clock reading — see [`new_stamped`].
+    pub fn new_same_proto_stamped(proto: &str, created_at_unix: u64) -> Option<Self> {
+        Self::build(proto, proto, true, created_at_unix)
     }
 
     /// Shared constructor body for [`new`] and [`new_same_proto`]. `same_proto` selects the verbatim
     /// re-emit path in `feed`.
-    fn build(ingress: &str, egress: &str, same_proto: bool) -> Option<Self> {
-        let ingress_proto = protocol_for(ingress)?;
+    fn build(ingress: &str, egress: &str, same_proto: bool, created_at_unix: u64) -> Option<Self> {
+        // The INGRESS writer is the one that frames every byte the client sees, so it is the one
+        // that carries this stream's creation time; the EGRESS side only ever READS, and a reading
+        // stamped there could never reach the wire.
+        let ingress_proto = protocol_for_stamped(ingress, created_at_unix)?;
         let egress_proto = protocol_for(egress)?;
         // Derive the framing flags from the protocol vtable rather than re-comparing the name
         // strings: `ingress_eventstream`/`egress_eventstream` reuse the SAME `ingress_is_eventstream()`
@@ -562,7 +585,16 @@ impl StreamTranslate {
         // Built with the ingress on both sides: the egress reader is never consulted (the events come
         // from the IR, not from wire frames), and `same_proto = false` keeps the writer path live —
         // the verbatim re-emit needs original bytes this path does not have.
-        let mut st = Self::build(ingress, ingress, false)?;
+        // The creation time comes off the ANSWER here — this path has one, and it is the value the
+        // ingress preparation pass already stamped on it — so the synthesized stream carries the
+        // same second the buffered body would have, and no arm of it falls back to the epoch.
+        let mut st = Self::build(
+            ingress,
+            ingress,
+            false,
+            ir.created
+                .unwrap_or(crate::openai_responses::UNSTAMPED_CREATED_AT),
+        )?;
         if st.ingress_eventstream {
             return None;
         }
@@ -1298,6 +1330,29 @@ pub fn new_stream_translator(
     egress: &str,
     is_sse: bool,
 ) -> Option<Box<dyn StreamTranslator>> {
+    new_stream_translator_stamped(
+        ingress,
+        egress,
+        is_sse,
+        crate::openai_responses::UNSTAMPED_CREATED_AT,
+    )
+}
+
+/// [`new_stream_translator`], with the creation time the stream-opener read.
+///
+/// THE FOUR-ARGUMENT FORM IS THE PRODUCTION ONE. A dialect writer does not read a clock — the
+/// creation time is an input, on the buffered path (`chat_prepare_for_ingress`'s `now_epoch`) and on
+/// the streaming path alike — and the streaming path has no answer object to carry it, so it rides
+/// the writer the translator holds for the life of the stream. The forward path calls this directly
+/// with the node's clock; the three-argument [`new_stream_translator`] remains for the neutral
+/// fn-pointer seam, whose signature carries no clock, and stamps `UNSTAMPED_CREATED_AT` — the same
+/// "the caller offered no time" value an unstamped writer has always held.
+pub fn new_stream_translator_stamped(
+    ingress: &str,
+    egress: &str,
+    is_sse: bool,
+    created_at_unix: u64,
+) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
         // and translates it before building a stream wrapper); same-protocol is a verbatim relay
@@ -1311,9 +1366,9 @@ pub fn new_stream_translator(
         return None;
     }
     let st = if ingress == egress {
-        StreamTranslate::new_same_proto(ingress)
+        StreamTranslate::new_same_proto_stamped(ingress, created_at_unix)
     } else {
-        StreamTranslate::new(ingress, egress)
+        StreamTranslate::new_stamped(ingress, egress, created_at_unix)
     }?;
     Some(Box::new(st))
 }

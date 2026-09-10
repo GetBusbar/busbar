@@ -109,3 +109,34 @@ pub fn tier_usage(
     }
     busbar_substrate_values::billing::Usage { usage_units }
 }
+
+/// THE FABRICATED TERMINAL A DOOR WRITES WHEN THE UPSTREAM DIES MID-STREAM, framed in the INGRESS
+/// dialect — with the creation time the caller read handed in.
+///
+/// This is the same `(event_type, data)` pair `DialectCodec::write_error_frame` returns, and for
+/// five of the six dialects it IS that call, byte for byte. What the neutral seam cannot carry is a
+/// clock reading: its signature is `(&IrError)` and the substrate that declares it is frozen. One
+/// dialect's terminal frame has a `created_at` member to fill, and a FRESH writer — which is what
+/// this frame is written by, since a transport cut leaves no live stream state to inherit — has no
+/// answer object and no captured opening event to take that value from. Without a reading it stamps
+/// `UNSTAMPED_CREATED_AT` and the client is told the response was created at the epoch, which is
+/// both wrong and a distinguishability tell (no native stream carries `created_at: 0`).
+///
+/// So the engine, which holds the node's clock, reads it once at the moment it fabricates the
+/// terminal and passes the reading here. This function reads NO clock — it is as pure over the
+/// registry as everything else in this module; the time is an argument, exactly as the buffered
+/// path's `chat_prepare_for_ingress(…, now_epoch)` takes it as an argument.
+///
+/// `None` for a name that declares no codec, and for a writer that frames no in-band error — the
+/// caller's dialect-free fallback, unchanged.
+#[must_use]
+pub fn stream_error_frame(
+    ingress_protocol: &str,
+    err: &busbar_substrate_values::breaker::CanonicalSignal,
+    created_at_unix: u64,
+) -> Option<(String, Value)> {
+    crate::proto_codec::with_writer_stamped(ingress_protocol, created_at_unix, |w| {
+        w.write_error_frame(err)
+    })
+    .flatten()
+}

@@ -4727,6 +4727,75 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     server.shutdown().await;
 }
 
+/// THE FABRICATED TERMINAL SAYS WHEN IT WAS FABRICATED.
+///
+/// A mid-stream cut on the Responses door leaves the door holding a stream it must end itself: the
+/// upstream sent no terminal event, so busbar writes one. Every member of that frame is therefore
+/// invented, including `created_at` — and the invented value has to be a real unix second, because
+/// that is what the client's own SDK types as `Response.created_at` and what a native stream always
+/// carries. It read `1789065923` on the release before this one and `0` here: the writer's creation
+/// time became an INPUT (a codec must not read a clock) and this call site never supplied one, so
+/// the fresh writer stamped `UNSTAMPED_CREATED_AT` and told the client the response was created at
+/// the epoch.
+///
+/// The clock this pins against is the harness's own: the request is bracketed by two reads of the
+/// same wall clock every host port ultimately answers from, and the stamped second must lie between
+/// them. Non-zero is the regression; inside the bracket is the proof it is THIS node's clock and not
+/// a constant that happens to be non-zero.
+#[tokio::test]
+async fn test_responses_fabricated_terminal_stamps_the_nodes_clock_not_the_epoch() {
+    crate::testkit::install_test_seams();
+    busbar_substrate::metrics::init();
+    let state = StdArc::new(MockServerState::new());
+    state.push(MockResponse::SseTransportError {
+        ok_events: vec![r#"{"choices":[{"delta":{"content":"hi"}}]}"#.to_string()],
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("re", crate::proto_codec::PROTO_OPENAI, &server.base_url())
+                .provider("zai"),
+        )
+        .pool("re", &[(0, 1)])
+        .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
+    let (addr, handle) = serve(app).await;
+
+    let before = busbar_substrate::store::now();
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/responses"))
+        .bearer_auth("t")
+        .body(json!({ "model": "re", "stream": true, "input": "hi" }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200, "responses stream starts 2xx");
+    let body = resp.bytes().await.unwrap();
+    let after = busbar_substrate::store::now();
+    let text = String::from_utf8_lossy(&body);
+    let failed_data = sse_frames(&text)
+        .into_iter()
+        .find(|(ev, _)| ev == "response.failed")
+        .map(|(_, d)| d)
+        .expect("a response.failed data: frame");
+    let v: Value = serde_json::from_str(&failed_data).expect("native Responses JSON envelope");
+    let created_at = v["response"]["created_at"].as_u64().unwrap_or_else(|| {
+        panic!("the fabricated terminal carries an integer created_at; got {v}")
+    });
+    assert_ne!(
+        created_at, 0,
+        "the fabricated `response.failed` must stamp a real unix second, never the epoch \
+         (a `created_at: 0` is both wrong and a shape no native Responses stream emits); got {v}"
+    );
+    assert!(
+        (before..=after).contains(&created_at),
+        "the stamped second must be THIS node's clock, read while the request was in flight \
+         ({before}..={after}); got {created_at} in {v}"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
 // ---- Real end-to-end failover through the ACTUAL retry loop -------------------------------------
 //
 // Every prior breaker/failover-adjacent test either pre-trips a pool cell via `force_open_in(...)`

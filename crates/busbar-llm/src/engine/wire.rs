@@ -748,10 +748,20 @@ pub(crate) const GENERIC_RESPONSE_ERROR_DETAIL: &str =
 /// stream; resolving a fresh dialect writer here restarts all of that, and the client gets a
 /// `response.failed` numbered 0 for a response it never opened. The dialect seam stays as the
 /// fallback for a stream with no translator (and for a translator that frames no in-band error).
+///
+/// `created_at_unix` is THE NODE'S CLOCK, READ BY THE CALLER, for the one member a fabricated
+/// terminal has to invent: the creation time. A dialect writer does not read a clock — the creation
+/// time is an input on both the buffered path (`chat_prepare_for_ingress`'s `now_epoch`) and the
+/// streaming one — and the FRESH writer this function falls back to has no answer object and no
+/// captured opening event to take the value from, so with no reading it stamps the epoch. That is
+/// what a mid-stream cut on the Responses door recorded: `created_at: 0` on a frame the release
+/// before it stamped with the real unix second. So the reading is threaded from the call site that
+/// holds the clock, and the fabricated terminal says when it was fabricated.
 pub(crate) fn mid_stream_error_bytes(
     ingress_protocol: &str,
     ingress_eventstream: bool,
     message: &str,
+    created_at_unix: u64,
     // `+ 'static` explicitly: the streaming body holds a `Box<dyn StreamTranslator>` (whose object
     // lifetime is `'static`), and `&mut` is invariant in its pointee, so the elided `&'a mut (dyn _ +
     // 'a)` this would otherwise mean cannot accept that borrow.
@@ -803,9 +813,19 @@ pub(crate) fn mid_stream_error_bytes(
     // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
     // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
     // which case we still emit a decodable bare `data:` error.
+    //
+    // The FRESH-writer fallback goes through the codec's stamped entry point rather than the neutral
+    // `DialectCodec::write_error_frame`, for the single reason that the neutral seam's signature is
+    // `(&IrError)` and cannot carry the caller's clock reading. Same dispatch, same writers, same
+    // `None` contract — the only difference is that the dialect with a `created_at` member gets the
+    // reading instead of the epoch. The translator arm is untouched: a live stream's writer already
+    // holds the `created_at` its own opening event carried, which is the value a native stream
+    // replays, and inventing a second time there would be the bug this fixes in reverse.
     let frame = translate
         .and_then(|t| t.terminal_error_frame(&err))
-        .or_else(|| dialect.write_error_frame(&err));
+        .or_else(|| {
+            busbar_llm_codec::wire_shim::stream_error_frame(ingress_protocol, &err, created_at_unix)
+        });
     match frame {
         Some((event_type, data)) => {
             let data = busbar_substrate::json::to_string(&data).unwrap_or_else(|_| {

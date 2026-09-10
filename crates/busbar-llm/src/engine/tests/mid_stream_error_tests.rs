@@ -82,7 +82,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
     // `delta.finish_reason: "ERROR"` and NO free-text field — a native client never sees a
     // detail string, so the cause is logged server-side instead of placed on the wire.)
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let bytes = mid_stream_error_bytes(proto, false, MID_STREAM_GENERIC_DETAIL, None);
+        let bytes = mid_stream_error_bytes(proto, false, MID_STREAM_GENERIC_DETAIL, 0, None);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.contains(MID_STREAM_GENERIC_DETAIL),
@@ -90,7 +90,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
         );
     }
     // Cohere: native `message-end` with ERROR finish_reason, and NO leaked detail on the wire.
-    let cohere_bytes = mid_stream_error_bytes("cohere", false, MID_STREAM_GENERIC_DETAIL, None);
+    let cohere_bytes = mid_stream_error_bytes("cohere", false, MID_STREAM_GENERIC_DETAIL, 0, None);
     let cohere_text = String::from_utf8_lossy(&cohere_bytes);
     assert!(
         cohere_text.contains("message-end") && cohere_text.contains("ERROR"),
@@ -109,7 +109,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
 #[test]
 fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
     crate::testkit::install_test_seams();
-    let bytes = mid_stream_error_bytes("bedrock", true, "connection reset by peer", None);
+    let bytes = mid_stream_error_bytes("bedrock", true, "connection reset by peer", 0, None);
     // Must NOT be SSE text.
     assert!(
         !bytes.starts_with(b"event:") && !bytes.starts_with(b"data:"),
@@ -161,7 +161,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     // native streaming error is a bare `data:` frame — its writer returns an empty event name —
     // NOT `event: error`; emitting an event line for gemini was the pre-fix bug.)
     for proto in ["openai", "cohere", "gemini"] {
-        let bytes = mid_stream_error_bytes(proto, false, "boom", None);
+        let bytes = mid_stream_error_bytes(proto, false, "boom", 0, None);
         let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
         assert!(
             text.starts_with("data: "),
@@ -189,7 +189,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     }
 
     // anthropic: named `event: error`, payload `{"type":"error","error":{"type","message"}}`.
-    let bytes = mid_stream_error_bytes("anthropic", false, "boom", None);
+    let bytes = mid_stream_error_bytes("anthropic", false, "boom", 0, None);
     let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
     assert!(
         text.starts_with("event: error\n"),
@@ -210,7 +210,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     // responses: terminal error event is `response.failed`, and the payload MUST be the STREAM
     // shape `{"response":{...,"error":{...}}}` (the SDK reads `event.response`), NOT the
     // non-stream `{"error":{...}}` HTTP envelope.
-    let bytes = mid_stream_error_bytes("responses", false, "boom", None);
+    let bytes = mid_stream_error_bytes("responses", false, "boom", 1_789_065_923, None);
     let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
     assert!(
         text.starts_with("event: response.failed\n"),
@@ -412,4 +412,58 @@ fn test_shim_strip_ordering_cross_protocol_keeps_model() {
         v.get("stream").is_none(),
         "shim stream stripped for path-model (gemini) egress"
     );
+}
+
+/// THE CREATION TIME A FABRICATED TERMINAL STAMPS IS THE CALLER'S READING, VERBATIM.
+///
+/// The Responses terminal frame carries `created_at`, and on a mid-stream cut there is nothing to
+/// take it from: the upstream sent no terminal event, and the writer that frames this one is fresh
+/// (no opening event captured, no answer object). A codec must not read a clock — the creation time
+/// is an input on the buffered path (`chat_prepare_for_ingress`'s `now_epoch`) and on the streaming
+/// one alike — so the only place the value can come from is the caller, which holds the node's
+/// clock. This pins the wire: whatever second the caller read is the second on the frame.
+///
+/// The regression this guards: with no reading threaded through, the fresh writer stamped
+/// `UNSTAMPED_CREATED_AT` and every fabricated Responses terminal said the response was created at
+/// the epoch — a value the release before this one got right, and one no native stream emits.
+///
+/// The five other dialects' terminal frames carry no creation time, so the same reading passes
+/// through them unused: asserted here too, so a future dialect cannot start smuggling the clock in.
+#[test]
+fn test_fabricated_terminal_stamps_the_creation_time_the_caller_read() {
+    crate::testkit::install_test_seams();
+    // A fixed, unmistakable second: not a clock read, so the assertion is exact rather than a range.
+    const READING: u64 = 1_789_065_923;
+
+    let bytes = mid_stream_error_bytes("responses", false, "boom", READING, None);
+    let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
+    let data = text
+        .lines()
+        .find_map(|l| l.strip_prefix("data: "))
+        .expect("a data: line");
+    let v: Value = serde_json::from_str(data).expect("native Responses JSON envelope");
+    assert_eq!(
+        v["response"]["created_at"].as_u64(),
+        Some(READING),
+        "the fabricated terminal stamps the caller's reading verbatim; got {v}"
+    );
+
+    // ...and never the epoch, which is what an unsupplied reading produced.
+    assert_ne!(
+        v["response"]["created_at"].as_u64(),
+        Some(0),
+        "a supplied reading must not fall through to UNSTAMPED_CREATED_AT; got {v}"
+    );
+
+    // The other five dialects frame a terminal error with no creation time at all: the reading is
+    // accepted and unused, and none of them grows a timestamp member from it.
+    for proto in ["openai", "anthropic", "gemini", "cohere"] {
+        let bytes = mid_stream_error_bytes(proto, false, "boom", READING, None);
+        let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
+        assert!(
+            !text.contains(&READING.to_string()),
+            "{proto}: the creation time is a Responses member; no other dialect's terminal error \
+             frame carries one. Got: {text}"
+        );
+    }
 }

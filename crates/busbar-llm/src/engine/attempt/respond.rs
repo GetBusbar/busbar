@@ -136,10 +136,21 @@ pub(super) fn deliver<'a>(
         // usage tap, cross-protocol SSE the reframing translator, anything else `None` (raw passthrough).
         // Named directly from this crate rather than through the installable pointer: an uninstalled
         // pointer would silently drop both the reframing and the stream-end metering.
-        let translate = crate::proto_stream::new_stream_translator(
+        // THE STREAM'S CREATION TIME, READ ONCE, HERE, AT THE MOMENT THE STREAM IS OPENED. A codec
+        // must not read a clock, so a dialect whose wire carries `created_at` on every lifecycle
+        // event takes the value as an input: the buffered path reads it off the answer
+        // (`chat_prepare_for_ingress`'s `now_epoch`), and the streaming path — which has no answer
+        // object — rides it on the writer the translator holds for the life of the stream. Left
+        // unsupplied, that writer stamps the epoch on any event the upstream carried no time for: a
+        // cross-protocol reframe (where the translator strips it) and the fabricated terminal after
+        // a mid-stream cut both did exactly that. Read off the host's `clock_now` port, the same
+        // port the rest of this plane charges and stamps against.
+        let stream_created_at = host.clock_now_secs();
+        let translate = crate::proto_stream::new_stream_translator_stamped(
             hop.ingress_protocol,
             hop.egress_name,
             is_sse,
+            stream_created_at,
         );
         // The upstream stream always carries a trailing usage chunk (busbar injected the opt-in); the
         // framing surfaces it to the client ONLY when the client itself opted in.

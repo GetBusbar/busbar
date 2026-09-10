@@ -564,10 +564,23 @@ where
                         // protocol's native error envelope. Keying off `is_sse` (the upstream CT)
                         // alone would inject SSE text into a binary eventstream body on a
                         // bedrock-ingress → SSE-egress reframe — an undecodable frame for the SDK.
+                        // THE FABRICATED TERMINAL SAYS WHEN IT WAS FABRICATED. A dialect whose
+                        // terminal frame carries a creation time has no answer object and no live
+                        // stream state to take one from here — the socket died — so the reading is
+                        // this side's to supply, off the node's clock through the host's `clock_now`
+                        // port (the same port `native_ingress` charges against), falling back to the
+                        // shared wall clock on a degraded body that carries no host. Without it the
+                        // writer stamps the epoch and the client is told the response was created in
+                        // 1970: wrong, and a tell no native stream produces.
+                        let created_at_unix = this
+                            .host
+                            .as_ref()
+                            .map_or_else(busbar_substrate::store::now, |h| h.clock_now_secs());
                         let err_bytes = mid_stream_error_bytes(
                             this.ingress_protocol,
                             this.ingress_eventstream,
                             MID_STREAM_GENERIC_DETAIL,
+                            created_at_unix,
                             this.translate.as_deref_mut(),
                         );
                         return Poll::Ready(Some(Ok(Bytes::from(err_bytes))));

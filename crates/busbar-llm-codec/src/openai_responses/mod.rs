@@ -42,6 +42,26 @@ pub fn protocol() -> Protocol {
     Protocol::new("responses", ResponsesReader, ResponsesWriter)
 }
 
+/// [`protocol`], with the creation time the caller read stamped onto the writer.
+///
+/// This dialect's streaming wire carries `created_at` on the FULL response object of every lifecycle
+/// event, and the writer does not read a clock to fill it (see the block comment above
+/// `build_responses_usage`). The opening `response.created` takes the value from the upstream answer
+/// when there is one; a stream whose upstream carried none — a cross-protocol reframe, where
+/// `translate_event` strips it, or a fabricated terminal after the socket died — has nothing to take
+/// it from, and an unstamped writer then falls back to `UNSTAMPED_CREATED_AT` and dates the response
+/// to the epoch. So whoever OPENS the stream reads its own clock once and hands the reading here,
+/// and every event this protocol's writer emits for that stream stamps that one value — which is
+/// also what makes two runs of the same stream on the same reading byte-identical.
+#[must_use]
+pub fn protocol_stamped(created_at_unix: u64) -> Protocol {
+    Protocol::new(
+        "responses",
+        ResponsesReader,
+        ResponsesWriter::stamped_at(created_at_unix),
+    )
+}
+
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
