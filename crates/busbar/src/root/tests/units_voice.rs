@@ -1349,7 +1349,15 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
         )
     };
     assert_eq!(open(FinishClass::Complete).0, 1);
-    assert_eq!(open(FinishClass::Error).0, 0);
+    // AN OPEN THE CALLER SAW SUCCEED, THAT THE PLANE THEN CALLS AN ERROR, IS THE CONTRADICTION.
+    // The caller connected, the leg was dialled and the frame that opens the conversation went
+    // back; the session then died. The connection was really made, so the frame the caller saw
+    // counts and the posting is marked — the same policy, the same function, as every other plane.
+    // This assertion used to read 0, which was the plane's ending deciding alone because this leg
+    // told the kernel there was no status leg to reconcile it against.
+    let (fee, flags) = open(FinishClass::Error);
+    assert_eq!(fee, 1);
+    assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
     // A session that named no upstream, and one whose dial never opened: neither reached a leg,
     // and a fee is for a connection that was actually made.
     assert_eq!(
@@ -2460,16 +2468,10 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         declared.is_some(),
         "this dialect answers on a frame, so it has a status leg to declare"
     );
-    let evidence = fee_evidence(
-        UnitShape::SessionOpen,
-        busbar_caps::OriginKind::Client,
-        true,
-        true,
-        Some(busbar_contract::FinishClass::TurnComplete),
-    );
+    let head = served_head(true, Some(busbar_contract::FinishClass::TurnComplete));
     assert_eq!(
-        evidence.status_at, declared,
-        "the leg builds the kernel's evidence from what the plane declares"
+        head.at, declared,
+        "the leg builds the answer's head from what the plane declares"
     );
 }
 
@@ -2482,14 +2484,10 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
 /// every plane.
 #[test]
 fn a_session_that_dies_after_it_opened_is_disputed() {
-    let evidence = fee_evidence(
-        UnitShape::SessionOpen,
-        busbar_caps::OriginKind::Client,
-        true,
-        true,
-        Some(busbar_contract::FinishClass::Error),
+    let (fee, flags) = busbar_kernel::teller::fee_count(
+        &fee_identity(UnitShape::SessionOpen, busbar_caps::OriginKind::Client, true),
+        Some(&served_head(true, Some(busbar_contract::FinishClass::Error))),
     );
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
     assert_eq!(
         fee, 1,
         "the frame the caller saw decides the fee, on this plane and on every other"

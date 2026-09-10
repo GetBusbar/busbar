@@ -79,7 +79,7 @@ use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, Units};
-use busbar_plane_a2a::{ops, records};
+use busbar_plane_a2a::{ops, records, A2aPlane};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
 use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest};
@@ -1532,8 +1532,15 @@ pub(crate) fn fee_identity(
 /// only way to keep two readers from describing it differently is to have one of them.
 pub(crate) fn served_head(draft: &A2aDraft, delivered: bool) -> busbar_contract::StatusLeg {
     busbar_contract::StatusLeg {
-        at: None,
-        status: None,
+        // WHERE THE STATUS IS, READ OFF THE PLANE. Not decided here, and not `None` because this
+        // leg found it convenient: the plane declares which frame its dialect reports a status on,
+        // the declaration is sealed at registration, and this is the leg reading it. A leg that
+        // answered on the plane's behalf is how the kernel's contradiction arm came to be
+        // unreachable on every plane at once.
+        at: <A2aPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        // WHAT THE STATUS SAID, at the frame the plane just named: a unit that got far enough to
+        // relay an answer was answered there, and one that did not relayed no status either.
+        status: delivered.then_some(busbar_contract::StatusClass::Success),
         finish: Some(draft.finish),
         delivered,
         degraded: false,

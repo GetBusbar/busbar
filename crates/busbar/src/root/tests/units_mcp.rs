@@ -1570,15 +1570,11 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         op: ops::OP_TOOL_CALL,
         hops_upstream: true,
     };
-    let evidence = fee_evidence(
-        shape,
-        busbar_caps::OriginKind::Client,
-        true,
-        busbar_contract::unit::FinishClass::Complete,
-    );
+    let head = served_head(true, busbar_contract::unit::FinishClass::Complete);
+    let _ = shape;
     assert_eq!(
-        evidence.status_at, declared,
-        "the leg builds the kernel's evidence from what the plane declares"
+        head.at, declared,
+        "the leg builds the answer's head from what the plane declares"
     );
 }
 
@@ -1594,13 +1590,10 @@ fn a_tool_call_that_dies_mid_frame_is_disputed() {
         op: ops::OP_TOOL_CALL,
         hops_upstream: true,
     };
-    let evidence = fee_evidence(
-        shape,
-        busbar_caps::OriginKind::Client,
-        true,
-        busbar_contract::unit::FinishClass::Error,
+    let (fee, flags) = busbar_kernel::teller::fee_count(
+        &fee_identity(shape, busbar_caps::OriginKind::Client),
+        Some(&served_head(true, busbar_contract::unit::FinishClass::Error)),
     );
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
     assert_eq!(
         fee, 1,
         "the frame the client saw decides the fee, on this plane and on every other"

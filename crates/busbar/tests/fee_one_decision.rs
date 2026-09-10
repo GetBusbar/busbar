@@ -28,19 +28,30 @@
 //! never reaches the combinations where they part. This arm drives the full boolean cube of the
 //! facts and names those combinations. It is the honest statement of what arm 1 does not cover.
 //!
-//! # The gap this cell cannot close
+//! **Arm 3 — the mid-stream family (`recorded_stream_faults_agree`).** The twelve
+//! `llm.stream|<dialect>|{cut,stream-error}` cells: the upstream fails AFTER the door has written
+//! 200 and the first frames have gone out. This is the case where the two readings of one unit
+//! genuinely disagree, and it was a named gap on the golden when the fee's landing went through.
+//! It is recorded now, and it is driven here.
 //!
-//! The six `llm|…|stream_upstream_error` cells are the family where a 200 head and a mid-stream
-//! error finish genuinely disagree — the one case the kernel's dispute arm exists for. They are
-//! **SKIP** on the golden: *"named gap: the fixture this cell needs is not in the tree yet"*. There
-//! is no recorded evidence of the disagreeing case, so no arm below drives it.
+//! # WHAT THE GOLDEN CAN AND CANNOT SAY ABOUT A FEE
 //!
-//! It does not block the MOVE, and the reason is structural rather than statistical: the root leg
-//! builds its `FeeEvidence` with `status_at: None` — this transport reports no status leg of its
-//! own, the response IS the status — so `by_status` is always `None` and the dispute arm is
-//! **unreachable on this plane** whatever the fixtures say. See `dispute_arm_is_unreachable`.
+//! Stated plainly because the `billed` column below reads like a recording and is not one. The
+//! oracle's own configuration — `oracle-config.sh`, quoted in the harness: *"prices every model at
+//! input 100000 / output 200000 micro-units per token and sets no per-request fee"* — means the
+//! flat fee is ZERO CENTS on every `llm` and `llm.stream` cell. So `effects.usage.spend_cents` on
+//! those cells is token cost and only token cost, and no recording in that family discriminates a
+//! fee COUNT of one from a fee count of zero. There is no fee-only cell anywhere in the golden to
+//! calibrate against either.
+//!
+//! What `billed` therefore is: **1.5.5's own rule evaluated over the recorded facts** — the rule
+//! `retired_plane_fee` holds verbatim, which is what the published binary ran. Its agreement with
+//! the presence of `spend_cents` across all 78 cells is a CROSS-CHECK on the transcription, not the
+//! source of the column. The money statement this cell supports is exactly: the kernel's decider
+//! answers what the shipped 1.5.5 decider answered, on every fact combination the node has
+//! recorded. It is not, and cannot be, a claim that the golden recorded a fee.
 
-use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
+use busbar_contract::{FinishClass, StatusLeg};
 use busbar_kernel::teller::{fee_count, FeeEvidence};
 
 /// One recorded cell, reduced to the facts the two deciders read.
@@ -67,49 +78,51 @@ struct Cell {
     billed: u32,
 }
 
-/// THE KERNEL'S DECIDER, reached over the evidence the root leg actually builds for this plane
-/// (`units_llm.rs`'s `evidence()`): no status leg, and a finish read off the client-facing status.
-fn kernel_fee(c: &Cell) -> u32 {
+/// THE KERNEL'S DECIDER, reached over what the root leg actually builds for this plane — the
+/// evidence (two facts about the UNIT) and the ANSWER'S HEAD: the status leg the plane DECLARES,
+/// the class the transport reads at that frame, and the finish the plane gives.
+///
+/// The finish is an argument because this plane has two moments and they do not have the same
+/// answer. At the exit the frame the client saw is the only reading that exists, and the leg
+/// derives the finish from it; after the body has drained the tap knows how the stream really
+/// ended, and the leg carries that instead. Arm 1's cells are driven at the first; arm 3's at the
+/// second.
+fn kernel_fee(c: &Cell, finish: FinishClass) -> (u32, busbar_caps::PostingFlags) {
     fee_count(
         &FeeEvidence {
             client_open_or_one_shot: c.client_origin,
             selected_upstream: c.upstream_candidate,
         },
-        Some(&llm_head(c.status)),
+        Some(&llm_head(c.status, finish)),
     )
-    .0
 }
 
 /// THE ANSWER'S HEAD this leg records, transcribed from `units_llm.rs`'s `head_facts`.
 ///
 /// The status half of the old evidence did not disappear, it MOVED: what the transport reported is
 /// the head, the head is recorded once by the step that saw the answer, and the kernel reads it
-/// from the record. Both readings come off ONE number here, which is why they can never contradict
-/// each other and why the dispute arm stays unreachable for this plane — see
-/// `dispute_arm_is_unreachable_for_the_llm_plane`.
-fn llm_head(status: u16) -> StatusLeg {
-    let ok = (200..300).contains(&status);
+/// from the record. `at` is not a literal here either — it is the plane's own declaration, sealed
+/// at registration, which is what makes the two readings capable of disagreeing at all.
+fn llm_head(status: u16, finish: FinishClass) -> StatusLeg {
     StatusLeg {
-        at: Some(StatusAt::FirstFrame),
-        status: Some(if ok {
-            StatusClass::Success
-        } else if (400..500).contains(&status) {
-            StatusClass::ClientError
-        } else if (500..600).contains(&status) {
-            StatusClass::ServerError
-        } else {
-            StatusClass::Other
-        }),
-        finish: Some(if ok {
-            FinishClass::Complete
-        } else {
-            FinishClass::Error
-        }),
+        at: <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        status: Some(busbar_transport_http::status_class(status)),
+        finish: Some(finish),
         delivered: true,
         degraded: false,
         relayed_error: None,
     }
 }
+
+/// The finish the EXIT arm derives, when the frame the client saw is all there is to read.
+fn finish_at_the_exit(c: &Cell) -> FinishClass {
+    if (200..300).contains(&c.status) {
+        FinishClass::Complete
+    } else {
+        FinishClass::Error
+    }
+}
+
 
 /// THE PLANE'S SECOND DECIDER, verbatim as `busbar-llm/src/unit/meter.rs` answered it:
 /// `u32::from(delivered && ctx.upstream_leg)`, where `delivered` is `matches!(status, 200..=299)`.
@@ -657,6 +670,120 @@ const RECORDED: &[Cell] = &[
     },
 ];
 
+/// **THE MID-STREAM FAMILY**, `llm.stream|<dialect>|{cut,stream-error}`: the door writes 200, the
+/// first frames go out, and the upstream then fails — announced in the dialect's own error shape
+/// (`stream-error`) or not announced at all (`cut`).
+///
+/// Transcribed from `golden/1.5.5/cells/llm.stream__*.json`. Every one of the twelve records
+/// `status: 200`, a single `busbar_upstream_attempts_total` metric (the dial happened, the lane
+/// answered), `effects.usage.requests: 1` — the slot, drawn and never released — and NO
+/// `spend_cents` key at all, because the tokens seen before the failure bill nothing and the flat
+/// fee is configured to zero in this harness. See the module header on what that last fact does and
+/// does not license: `billed` here is 1.5.5's own rule over the recorded facts, which is 1, and the
+/// recording neither confirms nor contradicts it.
+///
+/// The PLANE's finish on all twelve is an error — the tap saw a cut or a terminal error, which is
+/// the same fact `billing_failed` carries — while the frame the client saw said 200. That is the
+/// contradiction, and this is the family the kernel's dispute arm exists for.
+const RECORDED_STREAM_FAULTS: &[Cell] = &[
+    Cell {
+        name: "anthropic|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "anthropic|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "bedrock|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "bedrock|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "cohere|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "cohere|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "gemini|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "gemini|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "openai|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "openai|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "responses|cut",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+    Cell {
+        name: "responses|stream-error",
+        status: 200,
+        upstream_leg: true,
+        upstream_candidate: true,
+        client_origin: true,
+        billed: 1,
+    },
+];
+
 /// **ARM 1 — THE MONEY GUARANTEE.** Both deciders, over every recorded cell, against the golden.
 ///
 /// A divergence here is a money finding and stops the MOVE: it would mean retiring the plane's
@@ -665,7 +792,7 @@ const RECORDED: &[Cell] = &[
 fn recorded_cells_agree_with_each_other_and_with_the_golden() {
     let mut diverged = Vec::new();
     for cell in RECORDED {
-        let kernel = kernel_fee(cell);
+        let (kernel, _) = kernel_fee(cell, finish_at_the_exit(cell));
         let plane = retired_plane_fee(cell);
         if kernel != plane || kernel != cell.billed {
             diverged.push(format!(
@@ -718,7 +845,7 @@ fn the_two_rules_are_not_the_same_rule() {
                         client_origin,
                         billed: 0,
                     };
-                    if kernel_fee(&cell) != retired_plane_fee(&cell) {
+                    if kernel_fee(&cell, finish_at_the_exit(&cell)).0 != retired_plane_fee(&cell) {
                         parted.push((status, upstream_leg, upstream_candidate, client_origin));
                     }
                 }
@@ -749,37 +876,41 @@ fn the_two_rules_are_not_the_same_rule() {
     }
 }
 
-/// **THE DISPUTE ARM IS UNREACHABLE ON THIS PLANE**, and that is what makes the missing
-/// `stream_upstream_error` fixtures not a blocker.
+/// **ARM 3 — THE MID-STREAM FAMILY, WHERE THE TWO READINGS REALLY DO DISAGREE.**
 ///
-/// `fee_count` raises `METER_DISPUTED` only where a transport contributes a status leg — either by
-/// reporting a `StatusClass` that contradicts the plane's `FinishClass`, or by declaring a
-/// `status_at` and then losing the frame that carries it. The llm root leg builds neither: the
-/// response IS the status, so `status_at` and `status` are both `None` on every unit this plane
-/// runs. Whatever the unrecorded mid-stream failure would have looked like, it could not have
-/// reached the dispute arm.
+/// Driven at the LATE moment, which is the only moment this case exists at: the body has drained,
+/// the tap has said how the stream ended, and the leg carries that finish instead of the one it
+/// derived from the head. So the kernel is handed a 200 and an error about the same unit, which is
+/// exactly the input the dispute arm is for and exactly the input no other arm in this file
+/// produces.
+///
+/// Three things are asserted about each of the twelve, and the order matters.
+///
+/// 1. **The count does not move.** 1.5.5 keeps a mid-stream failure in its billable count and
+///    refunds nothing — `retired_plane_fee` is that rule, verbatim — and so does the kernel under
+///    the shipped policy. The structure changed; the money did not.
+/// 2. **The default policy is what decides it.** Checked against `DisputePolicy::default()`'s own
+///    answer rather than against the literal 1, so that the day somebody changes the shipped
+///    default this cell reports a POLICY change and not an arithmetic mystery.
+/// 3. **The posting is marked.** The count alone would say nothing was wrong. It was.
 #[test]
-fn dispute_arm_is_unreachable_for_the_llm_plane() {
-    // Every status class this leg can put on a head, and both the statuses either side of each
-    // boundary the derivation reads.
-    for &status in &[
-        100u16, 199, 200, 204, 299, 300, 399, 400, 404, 499, 500, 503, 599, 600,
-    ] {
-        for &client in &[false, true] {
-            for &upstream in &[false, true] {
-                let (_, flags) = fee_count(
-                    &FeeEvidence {
-                        client_open_or_one_shot: client,
-                        selected_upstream: upstream,
-                    },
-                    Some(&llm_head(status)),
-                );
-                assert!(
-                    !flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
-                    "a unit this plane can build raised METER_DISPUTED: \
-                     status={status} client={client} upstream={upstream}"
-                );
-            }
+fn recorded_stream_faults_are_disputed_and_bill_what_1_5_5_billed() {
+    assert_eq!(
+        RECORDED_STREAM_FAULTS.len(),
+        12,
+        "six dialects, two fault shapes; the golden's own count"
+    );
+    let mut diverged = Vec::new();
+    for cell in RECORDED_STREAM_FAULTS {
+        // The plane's own verdict after the body drained: the stream did not finish.
+        let (kernel, flags) = kernel_fee(cell, FinishClass::Error);
+        let plane = retired_plane_fee(cell);
+        let policy = busbar_kernel::teller::DisputePolicy::default().decide(true, false);
+        if (kernel, flags) != policy || kernel != plane || kernel != cell.billed {
+            diverged.push(format!(
+                "  {:<28} kernel={kernel} flags={flags:?} plane={plane} billed={} policy={policy:?}",
+                cell.name, cell.billed
+            ));
         }
     }
     // AND WITH NO HEAD AT ALL, which is what a unit that never got an answer records. A missing
@@ -799,5 +930,22 @@ fn dispute_arm_is_unreachable_for_the_llm_plane() {
                 "a unit with no head raised METER_DISPUTED"
             );
         }
+    }
+    assert!(
+        diverged.is_empty(),
+        "a mid-stream failure after a good head does not bill what 1.5.5 billed, or is not \
+         decided by the shipped dispute policy — either way it is a money finding and stops \
+         here:\n{}",
+        diverged.join("\n")
+    );
+    // And the mark is the point: without it the disagreement settles as though it never happened.
+    for cell in RECORDED_STREAM_FAULTS {
+        assert!(
+            kernel_fee(cell, FinishClass::Error)
+                .1
+                .contains(busbar_caps::PostingFlags::METER_DISPUTED),
+            "{} settles without saying its two readings disagreed",
+            cell.name
+        );
     }
 }

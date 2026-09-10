@@ -411,6 +411,10 @@ pub fn meter(
                 usage: tier,
                 lane: lane.model.clone(),
                 provider: lane.provider.clone(),
+                // This arm only runs where `bills` is true, and `bills` is `!billing_failed`: the
+                // stream neither cut nor carried a terminal error. That is the plane's verdict on
+                // this answer, and it is the same fact stated once at the top of this function.
+                finish: busbar_contract::FinishClass::Complete,
             });
         }
     }

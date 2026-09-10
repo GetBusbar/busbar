@@ -1326,7 +1326,7 @@ kind = "caps"
 # declared class each and share ONE spelling of "what a unit spent in one class", in the root's own
 # module rather than three times over; the fourth reads the completion straight off the record.
 count = "309"
-count = "301"
+count = "316"
 
 [[cell]]
 crate = "busbar"
@@ -1358,7 +1358,7 @@ kind = "control"
 # place a LOCALLY SERVED plane sees one. One line, and it is what keeps "every plane fills the same
 # face" true rather than true of four.
 count = "1078"
-count = "1062"
+count = "1076"
 
 [[cell]]
 crate = "busbar"
@@ -1372,7 +1372,7 @@ kind = "kernel"
 # answers with LINES rather than one amount, so the two cells that assert what a turn settles at add
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
 count = "159"
-count = "163"
+count = "173"
 
 [[cell]]
 crate = "busbar"
@@ -1389,7 +1389,7 @@ kind = "plane"
 # TOTALLED against one of them, which the shape now makes visible rather than hiding, and the
 # comment that says so names the plane's own declaration.
 count = "1807"
-count = "1815"
+count = "1852"
 
 [[cell]]
 crate = "busbar"
@@ -1419,6 +1419,7 @@ kind = "transport"
 # recorded status, and the head's first source is the TRANSPORT's reading of it — so the cell names
 # the transport's status class exactly where the leg it is proving does.
 count = "944"
+count = "945"
 
 [[cell]]
 crate = "busbar"

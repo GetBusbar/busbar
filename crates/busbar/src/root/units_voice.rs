@@ -2026,8 +2026,15 @@ fn served_head(
     finish: Option<busbar_contract::FinishClass>,
 ) -> busbar_contract::StatusLeg {
     busbar_contract::StatusLeg {
-        at: None,
-        status: None,
+        // WHERE THE STATUS IS, READ OFF THE PLANE. Not decided here, and not `None` because this
+        // leg found it convenient: the plane declares which frame its dialect reports a status on,
+        // the declaration is sealed at registration, and this is the leg reading it. A leg that
+        // answered on the plane's behalf is how the kernel's contradiction arm came to be
+        // unreachable on every plane at once.
+        at: <VoicePlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        // WHAT THE STATUS SAID, at the frame the plane just named: a unit that got far enough to
+        // relay an answer was answered there, and one that did not relayed no status either.
+        status: relayed_first_response_frame.then_some(busbar_contract::StatusClass::Success),
         finish,
         delivered: relayed_first_response_frame,
         degraded: false,

@@ -371,7 +371,14 @@ fn webpki_roots_store() -> rustls::RootCertStore {
     roots
 }
 
-fn status_class(status: u16) -> StatusClass {
+/// The class this wire's status code falls in.
+///
+/// The one reading of an HTTP status this transport has, and the one anything composing over it
+/// should use: the bands are the protocol's, not a caller's opinion of them, and a second copy of
+/// them somewhere else is how two parts of a node come to disagree about whether a request
+/// succeeded.
+#[must_use]
+pub fn status_class(status: u16) -> StatusClass {
     match status {
         200..=299 => StatusClass::Success,
         400..=499 => StatusClass::ClientError,

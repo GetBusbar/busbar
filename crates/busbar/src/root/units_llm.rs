@@ -86,13 +86,15 @@ use busbar_caps::{
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
+use busbar_contract::plane::PlaneMeta;
 use busbar_contract::{
-    FinishClass, LaneId, Registration, StatusAt, StatusClass, StatusLeg, UnitKey,
+    FinishClass, LaneId, Registration, StatusLeg, UnitKey,
 };
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
+use busbar_plane_llm::LlmPlane;
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
@@ -828,18 +830,17 @@ fn served_head_of(walk: &Walk) -> Option<StatusLeg> {
 /// recorded once, by whichever step actually saw the answer.
 fn head_facts(served_status: Option<u16>, finish: Option<FinishClass>) -> Option<StatusLeg> {
     served_status.map(|status| {
-        let ok = (200..300).contains(&status);
         StatusLeg {
-            at: Some(StatusAt::FirstFrame),
-            status: Some(if ok {
-                StatusClass::Success
-            } else if (400..500).contains(&status) {
-                StatusClass::ClientError
-            } else if (500..600).contains(&status) {
-                StatusClass::ServerError
-            } else {
-                StatusClass::Other
-            }),
+            // WHERE THE STATUS IS, READ OFF THE PLANE. Not decided here, and not a literal because
+            // this leg found one convenient: the plane declares which frame its dialect reports a
+            // status on, the declaration is sealed at registration, and this is the leg reading it.
+            // A leg that answered on the plane's behalf is how the kernel's contradiction arm came
+            // to be unreachable on every plane at once.
+            at: <LlmPlane as PlaneMeta>::STATUS_LEG,
+            // WHAT THE STATUS SAID, at the frame the plane just named. The class the transport
+            // reads off an answer's head, over the number the carry holds — the client's own
+            // reading, and the first of the fee's two.
+            status: Some(busbar_transport_http::status_class(status)),
             finish,
             delivered: true,
             degraded: false,
@@ -1006,7 +1007,16 @@ impl LateAccrual {
         // THE FEE, decided by the kernel over the same evidence the exit path settled from. This is
         // the line the MOVE exists for: the number that BILLS is now the kernel's, and the plane no
         // longer carries an answer of its own for it to disagree with.
-        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_evidence(&walk, origin), served_head_of(&walk).as_ref());
+        // THE LATE ARM HAS THE PLANE'S OWN VERDICT, and the exit arm did not. The tap has drained
+        // by now and the report says how the answer really ended, so the fee is decided here from
+        // the two readings a unit actually has: the status the client saw at the head, and the
+        // finish the plane gives after the body. Where they contradict — a stream that died after a
+        // good head — the kernel's one policy answers and marks the posting; the count is the count
+        // the previous release billed either way.
+        let (fee, _flags) = busbar_kernel::teller::fee_count(
+            &fee_evidence(&walk, origin),
+            head_facts(walk.served_status(), Some(report.finish)).as_ref(),
+        );
         let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
             return;

@@ -152,6 +152,18 @@ pub struct LateReport {
     pub lane: String,
     /// That lane's provider, as the legacy row carries it.
     pub provider: String,
+    /// **HOW THE PLANE SAYS THE ANSWER ENDED**, which is not knowable until here.
+    ///
+    /// The step that reads it runs while the body is still draining, so the verdict it could give
+    /// there is the head's and only the head's. This is the plane's OWN verdict: a stream the tap
+    /// saw finish is complete, and one it saw cut or carry a terminal error is an error — the same
+    /// three-way reading `audit.rs` seals, narrowed to the two ends a late report can be taken on.
+    ///
+    /// It is carried rather than derived by the reader because a reader that derived it would be
+    /// deriving it from the served status, which is the OTHER source: two readings that come from
+    /// one number are one reading wearing two hats, and the whole point of reporting this is that
+    /// the two can disagree.
+    pub finish: busbar_contract::FinishClass,
 }
 
 /// One request, as this plane's steps carry it.
@@ -498,6 +510,11 @@ impl Walk {
             usage,
             lane: lane.model.clone(),
             provider: lane.provider.clone(),
+            finish: if facts.billing_failed {
+                busbar_contract::FinishClass::Error
+            } else {
+                busbar_contract::FinishClass::Complete
+            },
         })
     }
 

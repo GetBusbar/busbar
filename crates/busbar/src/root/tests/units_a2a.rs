@@ -712,16 +712,26 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
         0
     );
 
+    // A RELAYED ANSWER THE PLANE THEN CALLS AN ERROR IS THE CONTRADICTION, not a free request.
+    // The client was handed a frame that said the task was accepted; the plane says the unit
+    // failed. Those are the fee's two readings disagreeing, and the kernel decides it the way it
+    // decides it for every plane — the frame the client saw counts, and the posting is marked so
+    // the disagreement is visible rather than absorbed. This assertion used to read 0, which was
+    // the plane's finish deciding alone because this leg told the kernel there was no status leg
+    // to reconcile it against.
     let mut failed = served.clone();
     failed.finish = FinishClass::Error;
-    assert_eq!(
-        fee_count(
-            &fee_identity(&failed, OriginKind::Client),
-            Some(&served_head(&failed, true))
-        )
-        .0,
-        0
+    // AN ANSWER THE CLIENT WAS HANDED, THAT THE PLANE THEN CALLS AN ERROR, IS THE CONTRADICTION.
+    // The draft was relayed, so the frame the client saw counts and the posting is marked — the
+    // same policy, the same function, as every other plane. This assertion used to read 0, which
+    // was the plane's finish deciding alone because this leg told the kernel there was no status
+    // leg to reconcile it against.
+    let (fee, flags) = fee_count(
+        &fee_identity(&failed, OriginKind::Client),
+        Some(&served_head(&failed, true)),
     );
+    assert_eq!(fee, 1);
+    assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
 
     let mut records_only = served.clone();
     records_only.destination = DestinationFacts::PlaneRecord {
@@ -1984,10 +1994,10 @@ fn the_leg_carries_the_status_leg_the_plane_declares() {
         "this dialect answers on a frame, so it has a status leg to declare"
     );
     let draft = draft(ops::OP_MESSAGE_SEND);
-    let evidence = fee_evidence(&draft, busbar_caps::OriginKind::Client, true);
+    let head = served_head(&draft, true);
     assert_eq!(
-        evidence.status_at, declared,
-        "the leg builds the kernel's evidence from what the plane declares"
+        head.at, declared,
+        "the leg builds the answer's head from what the plane declares"
     );
 }
 
@@ -2001,8 +2011,10 @@ fn a_task_lost_mid_stream_is_disputed() {
     let mut draft = draft(ops::OP_MESSAGE_SEND);
     draft.streaming = true;
     draft.finish = FinishClass::Error;
-    let evidence = fee_evidence(&draft, busbar_caps::OriginKind::Client, true);
-    let (fee, flags) = busbar_kernel::teller::fee_count(&evidence);
+    let (fee, flags) = busbar_kernel::teller::fee_count(
+        &fee_identity(&draft, busbar_caps::OriginKind::Client),
+        Some(&served_head(&draft, true)),
+    );
     assert_eq!(
         fee, 1,
         "the frame the client saw decides the fee, on this plane and on every other"

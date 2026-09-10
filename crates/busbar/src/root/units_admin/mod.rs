@@ -47,6 +47,7 @@ use busbar_caps::{
 };
 use busbar_contract::UnitKey;
 use busbar_plane_admin::verbs::ResolvedVerb;
+use busbar_plane_admin::AdminPlane;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
@@ -2101,14 +2102,23 @@ pub(crate) fn encode(
     // the same face; where the face is filled from is what differs, and "unreachable for this
     // plane" is not an answer any of them gets to give.
     //
-    // `at` is `None` — nothing relayed a transport's class — and the finish is the one the encoder
-    // just rendered. The fee this decides is zero either way, because an admin unit's destination
-    // is a kernel verb and `selected_upstream` is false, which is what makes the face free to fill
-    // here and what keeps this landing's byte-identity claim true on this plane by construction.
+    // WHERE THE STATUS IS, READ OFF THE PLANE, here too. This surface posts no fee — it selects no
+    // upstream, and the fee's eligibility gate answers zero before either reading of the ending is
+    // consulted — but that is a fact about what a control surface DOES, not a reason to leave the
+    // plane unasked. A zero that comes out of "nobody read the declaration" and a zero that comes
+    // out of "this surface dials nothing" look identical in the ledger and are not the same
+    // statement, and only the second one survives an upstream leg being wired onto this plane by
+    // somebody who did not read this comment.
+    //
+    // The CLASS at that frame is a reading this leg does not take, and it does not invent one:
+    // nothing downstream asks for it, and a status manufactured here would be a figure with no
+    // reader and no source. The finish is the one the encoder just rendered. The fee this decides
+    // is zero either way, which is what keeps this landing's byte-identity claim true on this plane
+    // by construction.
     let _ = ctx.record_head(
         token,
         busbar_contract::StatusLeg {
-            at: None,
+            at: <AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
             status: None,
             finish: Some(response.finish),
             delivered: true,
@@ -2148,6 +2158,12 @@ pub(crate) fn encode(
 pub(crate) fn evidence(_ctx: &UnitRecord<'_>) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
         upstream_candidate: false,
+        // THE PLANE'S DECLARATION IS READ WHERE THE HEAD IS WRITTEN, at the response encoder — see
+        // `record_head` above. It is not read twice: the evidence is what the UNIT is, the head is
+        // what the ANSWER was, and a second reading here is how a unit ends up with two heads.
+        fee: busbar_kernel::teller::FeeEvidence {
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
