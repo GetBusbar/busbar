@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "603"
+count = "602"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3033"
+count = "3032"
 
 [[cell]]
 crate = "busbar-core"
@@ -1679,7 +1679,7 @@ count = "2117"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "39"
+count = "47"
 
 [[cell]]
 crate = "busbar-export-example-plugin"

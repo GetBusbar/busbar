@@ -1366,3 +1366,19 @@ because = "FACE busbar_unit_cost::LaneRates::reserved_units_nanos plus derive_sp
 key = "rules.loc-ceilings.union_ceiling"
 by = 70
 because = "the same FACE as the unit_total_ceiling raise, busbar_unit_cost::LaneRates::reserved_units_nanos: +70 surface lines in busbar-unit-cost and nothing in busbar-caps, busbar-contract or busbar-kernel, so the union rises by exactly the unit rise. The lines the face funds come out of busbar-core, which this union does not carry"
+
+# RELAY onto the FACE busbar_unit_cost::LaneRates::reserved_units_nanos (keep-core-delete-7). The
+# retiring engine's cost model no longer DERIVES a spend: `reserved_nanos` is deleted and
+# `derive_spend_cents`, `derive_spend_micros` and `price_usage_nanos` are three relays onto the
+# unit's map-shaped derivation. What went with them is a second money fold — its own accumulation,
+# its own single divide, its own flat-fee multiply and its own floor at zero, four decisions that
+# had to match the unit's exactly with nothing making them match. Naming the unit's three symbols
+# where the engine used to restate the arithmetic costs the matrix eight spellings; the drain is
+# that all eight go with busbar-core, and the same edit takes `busbar_api::RESERVED_UNITS` out of
+# the file (× api 603 -> 602) and a plane spelling with it (× plane 3033 -> 3032), both lowered on
+# this commit rather than left as slack.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: cost.rs names busbar_unit_cost::derive_spend_minor_units, busbar_unit_cost::derive_spend_micros_units and LaneRates::reserved_units_nanos where it used to carry its own reserved-four fold, its own divide to cents, its own fee multiply and its own floor (-36 lines of production arithmetic). Eight spellings in the engine's mouth in place of a second answer to what a bucket has spent; the edge dies with busbar-core"
