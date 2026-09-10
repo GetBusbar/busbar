@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AWS Signature Version 4 request signing — hand-rolled with RustCrypto (sha2 + hmac), no
-//! AWS SDK. Used by the Bedrock protocol writer to sign Converse requests. The core algorithm is
-//! verified against AWS's published worked example (GET iam ListUsers, 20150830) in the tests, so
-//! the canonical-request → string-to-sign → signature chain is known-correct.
+//! AWS Signature Version 4 request signing — hand-rolled over the contract crate's own SHA-256 and
+//! HMAC-SHA256, no AWS SDK and no RustCrypto. Used by the Bedrock protocol
+//! writer to sign Converse requests. The core algorithm is verified against AWS's published worked
+//! example (GET iam ListUsers, 20150830) in the tests, so the canonical-request → string-to-sign →
+//! signature chain is known-correct; the primitives themselves are pinned against FIPS 180-4, RFC
+//! 4231 and RustCrypto byte-for-byte in the contract crate's own suite.
+//!
+//! WHY NOT `sha2`/`hmac` HERE. This crate is in the plane's and the dialect crates' transitive
+//! closure, which ARCHITECTURE.md section 1.2 says reaches no `libc`; `sha2` carries `cpufeatures`
+//! unconditionally on aarch64/x86 and `cpufeatures` reaches `libc` for runtime detection. The
+//! contract crate's implementation has no feature detection, so it is the one this signer names.
 
-use crate::diag_error;
-use crate::diagnostics::SIGV4_HMAC_INIT_FAILED;
-use hmac::digest::KeyInit;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
+use busbar_api::sha256::hmac_sha256;
 
 /// Seconds in a UTC day / hour, for the epoch↔civil-time conversions below. Named rather than bare
 /// literals so the time arithmetic reads in canonical units. (`store` and `governance` keep their
@@ -36,32 +37,18 @@ pub const X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 /// The canonical lowercase name of the `x-amz-security-token` header (STS session credentials).
 pub const X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 
-/// Lowercase hex SHA-256 of `data` — re-exported from the `busbar-api` contract crate (plugins
-/// hash credentials under the SAME digest facility).
+/// Lowercase hex SHA-256 of `data` — re-exported from the contract crate (plugins hash credentials
+/// under the SAME digest facility).
 pub use busbar_api::sha256_hex;
 
-/// HMAC-SHA256 of `data` under `key`. `Hmac::new_from_slice` is infallible for HMAC — the spec
-/// accepts a key of ANY length — so the `Err` arm is unreachable. We still avoid `expect()`/panic
-/// here because this runs transitively on the Bedrock request hot path (via `sign_v4` →
-/// `sign_request`), where the project rule forbids a panic surface: a future refactor that swaps the
-/// HMAC impl or key type must not turn a signing-init failure into a task abort. On the unreachable
-/// error we return an empty digest, which yields a wrong signature → AWS responds 403 → the caller's
-/// existing "misconfigured key" fallback surfaces it as an upstream auth failure, exactly the same
-/// graceful path it already takes for an unparseable credential.
+/// HMAC-SHA256 of `data` under `key`. Infallible: HMAC accepts a key of ANY length and
+/// the contract crate's `hmac_sha256` has no init step to fail, so the "documented unreachable"
+/// error arm the RustCrypto `Hmac::new_from_slice` signature forced on this function (and the
+/// `SIGV4_HMAC_INIT_FAILED` diagnostic it emitted, now retired) is gone with it. This runs on the
+/// Bedrock request hot path (via `sign_v4` -> `sign_request`), where the project rule forbids a
+/// panic surface, and there is none here.
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    match HmacSha256::new_from_slice(key) {
-        Ok(mut mac) => {
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        Err(e) => {
-            diag_error!(
-                SIGV4_HMAC_INIT_FAILED,
-                "HMAC-SHA256 init failed (unreachable: HMAC accepts any key length): {e}"
-            );
-            Vec::new()
-        }
-    }
+    hmac_sha256(key, data).to_vec()
 }
 
 /// Derive the SigV4 signing key: HMAC chain over date → region → service → "aws4_request".

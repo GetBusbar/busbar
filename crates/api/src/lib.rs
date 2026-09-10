@@ -26,6 +26,9 @@ mod hooks;
 pub mod operation;
 mod redacted;
 mod secret;
+/// SHA-256 and HMAC-SHA256 in plain Rust — the digest under every credential compare and the MAC
+/// the Bedrock SigV4 signer chains, with no OS primitive behind either.
+pub mod sha256;
 mod signal;
 mod store;
 pub mod usage_migration;

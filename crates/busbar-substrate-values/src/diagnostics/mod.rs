@@ -1041,21 +1041,24 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
+/// HMAC-SHA256 init failed during SigV4 signing — RETIRED. The arm that emitted it existed only
+/// because the RustCrypto `Hmac::new_from_slice` signature returned a `Result`; the signer now
+/// chains the contract crate's own infallible HMAC-SHA256, which has no init step, so there is nothing left to
+/// fail and no site emits this code. Kept for historical log resolution, per the catalog's
+/// append-only rule.
 pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
     slug: "sigv4-hmac-init-failed",
-    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    title: "SigV4 HMAC-SHA256 init failed (retired: the signer has no init step)",
     severity: Severity::Actionable,
-    summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
-              unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
-              serious crypto-library inconsistency. busbar returns an empty signature, which the \
-              upstream rejects.",
-    action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress fails to authenticate until it is resolved.",
+    summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. Retired in 1.6.0: the signer \
+              chains the contract crate's own infallible HMAC-SHA256 and no longer has an \
+              initialization that can fail, so no build after that emits this code.",
+    action: "Seen only in logs from a build before 1.6.0 retired it. If a current build logs it, \
+             file a bug: no code path can reach it.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// oauth_as has no configured signing_key, so an EPHEMERAL ES256 key was generated at boot.

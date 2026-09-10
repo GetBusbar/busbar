@@ -15,7 +15,9 @@ async-trait = { workspace = true }
 # (or any consumer that already depends on busbar-api) can name `busbar_api::SecretRef` without a
 # separate path dep. This crate depends only on serde/serde_json, so no dependency cycle.
 busbar-secret-ref = { path = "../secret-ref" }
-sha2 = { workspace = true }
+# NO `sha2`. The digest under every credential compare (`sha256_hex`) and the HMAC the SigV4 signer
+# chains are `src/sha256.rs`, plain Rust: `sha2` carries `cpufeatures` unconditionally on aarch64/x86
+# and `cpufeatures` reaches `libc`, and this crate's closure is every pure plugin kind's closure.
 hex = { workspace = true }
 zeroize = { workspace = true }
 # The decision-observability signal catalog's per-projection signal bag
@@ -23,3 +25,10 @@ zeroize = { workspace = true }
 # (nothing declared) path never touches the heap. Already a transitive dependency of the
 # workspace (pulled in via tokio et al.), so this adds no new crate to the tree.
 smallvec = { workspace = true }
+
+[dev-dependencies]
+# THE ORACLES `src/tests/sha256_tests.rs` compares `src/sha256.rs` against byte-for-byte: the
+# RustCrypto implementation this crate used to ship. DEV edges only — no shipped target, and no
+# dependent's closure, links either through this crate.
+sha2 = { workspace = true }
+hmac = { workspace = true }

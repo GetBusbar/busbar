@@ -748,12 +748,12 @@
     "number": 4024,
     "class": "auth",
     "slug": "sigv4-hmac-init-failed",
-    "title": "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    "title": "SigV4 HMAC-SHA256 init failed (retired: the signer has no init step)",
     "severity": "actionable",
-    "summary": "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.",
-    "action": "Capture the logged error and file a bug; this should not be possible. SigV4-signed egress fails to authenticate until it is resolved.",
+    "summary": "Initializing HMAC-SHA256 for AWS SigV4 signing failed. Retired in 1.6.0: the signer chains the contract crate's own infallible HMAC-SHA256 and no longer has an initialization that can fail, so no build after that emits this code.",
+    "action": "Seen only in logs from a build before 1.6.0 retired it. If a current build logs it, file a bug: no code path can reach it.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-4025",
