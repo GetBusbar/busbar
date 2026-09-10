@@ -283,6 +283,20 @@ root-mcp = []
 # `root-admin` is in `default` and already carries the same edge — and a build with none of the
 # three drops it.
 root-mcp-serve = ["dep:tower"]
+# THE LLM PLANE'S OWN LEG AND MOUNT, DEFAULT OFF. The third of the same shape, and it is the same
+# three switches: `proto-llm` decides whether this binary speaks the protocol, `root-llm` decides
+# whether the plane's units are compiled and driven, and this one decides whether the plane is
+# SERVED through the generic root mount — one claim table, one leg, one media type — rather than
+# through the per-dialect ingress table `root-llm` installs today.
+#
+# Default-off for the reason the other two are: with the switch off the serving path is exactly the
+# one that shipped, so the feature-off binary is byte-identical by construction rather than by
+# measurement, and the mount is proven against the plane's own tables in the meantime. It carries no
+# config key, no environment variable and no boot line; off, it costs one uncompiled module.
+#
+# `tower` is the same edge for the same reason as above, and is already carried by `root-admin` in
+# the default set.
+root-llm-serve = ["root-llm", "dep:tower"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed

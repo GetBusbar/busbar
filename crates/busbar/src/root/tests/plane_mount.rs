@@ -244,3 +244,74 @@ async fn a_chunked_body_and_its_extension_cross_the_seam_intact() {
         "and so did every chunk boundary it chose, rather than one buffer with the same bytes"
     );
 }
+
+/// **Every PATH-shaped selector of the closed grammar is walked, not only the two written first.**
+///
+/// The walk was written against the two shapes the first two mounted planes declare — an exact
+/// address and a segment pattern — and every other shape fell into one arm that answers "not a
+/// path". Two of the shapes it answered that way ARE paths: a suffix and a contained substring are
+/// declarations about the request target and nothing else. A plane that declares its surface that
+/// way was therefore mounted and never reached: every one of its addresses walked around the loop
+/// to the router underneath, silently and with nothing failing.
+///
+/// So the arm is narrowed to the shapes that genuinely are not addresses, and the two that are get
+/// the same normalisation the other two get. Asserted here rather than in a plane's own cell because
+/// the grammar is the grammar's and no plane's.
+#[test]
+fn a_suffix_and_a_contained_segment_are_addresses_this_walk_reads() {
+    static SUFFIX: &[Claim] = &[Claim {
+        transport: "http",
+        selector: Selector::PathSuffix("/v1/embeddings"),
+        scheme: None,
+        scheme_alternatives: &[],
+        idempotency: None,
+    }];
+    assert!(claims_a_path(SUFFIX, "/v1/embeddings"));
+    assert!(
+        claims_a_path(SUFFIX, "/v1/embeddings/"),
+        "the same address, by the one normalisation this file makes"
+    );
+    assert!(
+        claims_a_path(SUFFIX, "/openai/v1/embeddings"),
+        "a prefixed \
+        deployment of the same surface"
+    );
+    assert!(
+        !claims_a_path(SUFFIX, "/v1/embeddings/x"),
+        "deeper is elsewhere"
+    );
+    assert!(!claims_a_path(SUFFIX, "/v1/embed"));
+
+    static CONTAINS: &[Claim] = &[Claim {
+        transport: "http",
+        selector: Selector::PathContains("/v1/messages"),
+        scheme: None,
+        scheme_alternatives: &[],
+        idempotency: None,
+    }];
+    assert!(claims_a_path(CONTAINS, "/v1/messages"));
+    assert!(claims_a_path(
+        CONTAINS,
+        "/anthropic/v1/messages/count_tokens"
+    ));
+    assert!(!claims_a_path(CONTAINS, "/v1/models"));
+}
+
+/// **A selector about the CONNECTION is still not a path**, and the narrowing above did not widen
+/// into one.
+///
+/// The arm that answers "no path matches this" is now written over the shapes it means rather than
+/// as a wildcard, so a shape the grammar gains has to be considered here instead of quietly
+/// answering no.
+#[test]
+fn a_header_selector_is_not_an_address() {
+    static HEADER: &[Claim] = &[Claim {
+        transport: "http",
+        selector: Selector::HeaderPresent("anthropic-version"),
+        scheme: None,
+        scheme_alternatives: &[],
+        idempotency: None,
+    }];
+    assert!(!claims_a_path(HEADER, "/anthropic-version"));
+    assert!(!claims_a_path(HEADER, "/v1/messages"));
+}

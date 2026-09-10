@@ -3,7 +3,11 @@
 
 // COMPILED WHERE SOME PLANE HAS A MOUNT, and not otherwise. It names `tower` and `axum` and the
 // per-arrival dispatch seam, none of which a build with no mounted plane carries.
-#![cfg(any(feature = "root-a2a-serve", feature = "root-mcp-serve"))]
+#![cfg(any(
+    feature = "root-a2a-serve",
+    feature = "root-mcp-serve",
+    feature = "root-llm-serve"
+))]
 
 //! ONE MOUNT, FOR EVERY PLANE THAT HAS ONE: one HTTP surface, one loop, one answer.
 //!
@@ -219,14 +223,60 @@ pub fn normalise(path: &str) -> &str {
 
 /// Whether one selector of the closed grammar matches one path.
 ///
-/// Total over the selector shapes, so a shape the grammar gains does not silently match nothing.
+/// **EVERY PATH-SHAPED FORM, and not the two that happened to be declared first.** The grammar
+/// already says which forms read the request target — [`busbar_contract::grammar::SelectorFamily`]
+/// puts five of them in the `Path` family — and this walk used to read two of them and answer "not a
+/// path" for the other three. That is not a conservative default: a plane that declares its surface
+/// as a suffix or a contained literal was mounted and never reached, because every one of its
+/// addresses fell to the "does not claim this" arm and went straight to the router underneath. The
+/// mount was on and did nothing, and nothing failed to say so.
+///
+/// So the five are walked, and the arm that answers "no" is written over the forms that genuinely
+/// are not addresses — a header, a handshake, a stream, a port. It is spelled as arms rather than a
+/// wildcard so a form the grammar gains has to be CONSIDERED here rather than silently answering no,
+/// which is exactly the failure above.
+///
+/// The trailing-slash normalisation is the same one for all five, applied to the declaration as well
+/// as to the request, for the reason stated on [`normalise`].
 fn selector_matches(selector: &Selector, path: &str) -> bool {
     match selector {
         Selector::ExactPath(exact) => normalise(exact) == path,
         Selector::PathPattern(pattern) => pattern_matches(pattern, path),
-        // Every other way a plane can select bytes is not a path, so no path matches it. Written as
-        // an arm rather than a wildcard on the two above so a new shape has to be considered here.
-        _ => false,
+        // A prefix ONE SEGMENT DEEP: the declared prefix and at least one non-empty segment after
+        // it. Not a string prefix — `/v1x` is somebody else's address and always was.
+        Selector::PrefixOneLevel(prefix) => normalise(prefix)
+            .strip_suffix('/')
+            .or(Some(normalise(prefix)))
+            .and_then(|p| path.strip_prefix(p))
+            .is_some_and(|rest| rest.strip_prefix('/').is_some_and(|s| !s.is_empty())),
+        // A SUFFIX IS AN ADDRESS ENDING, and it ends at a segment boundary: `/v1/embeddings` claims
+        // `/openai/v1/embeddings`, which is the same surface behind a deployment prefix, and does
+        // not claim `/xv1/embeddings`, which is a different one.
+        Selector::PathSuffix(suffix) => {
+            let suffix = normalise(suffix);
+            path == suffix
+                || (suffix.starts_with('/') && path.ends_with(suffix))
+                || (!suffix.starts_with('/')
+                    && path.ends_with(suffix)
+                    && path.len() > suffix.len()
+                    && path.as_bytes()[path.len() - suffix.len() - 1] == b'/')
+        }
+        // AND A CONTAINED LITERAL IS THE DECLARATION AS WRITTEN. The plane said "a path with this in
+        // it", so that is what is asked — over the normalised path, so a trailing slash cannot be
+        // the difference between claimed and not.
+        Selector::PathContains(literal) => path.contains(normalise(literal)),
+        // The forms that read something other than the request target: a header, the handshake, a
+        // stream name, a local port. None of them is an address, so no path matches one — and a
+        // plane that declares one is not thereby unreachable, because a mount walks its WHOLE table
+        // and any one claim matching is enough.
+        Selector::HeaderExact(..)
+        | Selector::HeaderPresent(_)
+        | Selector::HeaderPrefix(..)
+        | Selector::Sni(_)
+        | Selector::ClientCertSubject(_)
+        | Selector::Alpn(_)
+        | Selector::StreamName(_)
+        | Selector::Port(_) => false,
     }
 }
 
