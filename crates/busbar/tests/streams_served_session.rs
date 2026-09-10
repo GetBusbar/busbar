@@ -16,9 +16,11 @@
 //! stands behind, and the one ordering 1.5.5 pins for every plane. (A deployment that DOES declare the
 //! section and gives it no `public_url` no longer reaches this cell's shape at all: it refuses to boot,
 //! because a declared region with no audience is a door with no lock.) (2) With one, the plane claims its region and the verifier demands a token carrying that
-//! RFC 8707 audience; nothing in a shipped build mints one, so the rig mints it against the
-//! deployment's own signing key to get past a door that was hiding the next one. (3) The socket
-//! upgrades, and what it does after that is `sideband_serves_a_session`.
+//! RFC 8707 audience. Nothing in a shipped build could mint one, so this file used to sign the
+//! claim by hand against the deployment's own key to get past a door that was hiding the next one;
+//! the mint verb now takes the `resource` indicator and the rig asks for the credential the way an
+//! operator does. (3) The socket upgrades, and what it does after that is
+//! `sideband_serves_a_session`.
 //!
 //! GATED ON `plane-voice` as a whole file: a build with the streams plane compiled out has no
 //! realtime surface to serve or to refuse, and the deletion gate builds exactly that binary.
@@ -74,9 +76,6 @@ struct Node {
     child: Child,
     data: u16,
     admin: u16,
-    /// The deployment's own ed25519 signing secret, read back so the rig can mint the
-    /// audience-bound token no production path mints.
-    signing_secret: [u8; 32],
     /// `Some(origin)` when this node was booted with a `public_url` (and therefore mounts the plane).
     public_url: Option<String>,
 }
@@ -107,10 +106,6 @@ impl Node {
             64,
             "--generate-signing-key must print 64 hex characters on stdout, got {hex_key:?}"
         );
-        let mut secret = [0u8; 32];
-        for (i, b) in secret.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&hex_key[i * 2..i * 2 + 2], 16).expect("hex");
-        }
         std::fs::write(dir.join("signing.key"), &hex_key).unwrap();
         std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
 
@@ -172,7 +167,6 @@ pools: {{}}
             child,
             data,
             admin,
-            signing_secret: secret,
             public_url,
         }
     }
@@ -270,41 +264,38 @@ pools: {{}}
             .to_string()
     }
 
-    /// THE AUDIENCE-BOUND TOKEN THIS DEPLOYMENT CANNOT MINT FOR ITSELF.
-    ///
-    /// The streams plane claims `<public_url>/v1/realtime` as its RFC 8707 resource, so the verifier
-    /// demands a token carrying exactly that `aud`. `TokenSigner::mint` is the only
-    /// constructor of that claim in the tree and it is `cfg(test)` / `test-support` — the admin
-    /// key-mint API has no audience field — so a `keys`-chain deployment has no way to reach its own
-    /// streams plane. That is a finding, recorded in the measurement note; here the rig mints the
-    /// token against the deployment's OWN signing key so the test can get past the door and ask the
-    /// question the door was hiding.
-    fn audience_bound(&self, plain: &str) -> String {
-        use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-        let audience = format!(
+    /// THE RFC 8707 RESOURCE this deployment's streams plane claims: its own origin plus the base
+    /// the plane answers on. Derived from the node's `public_url` because that is what the plane
+    /// derives it from; a rig that typed a literal here would pass while the two drifted apart.
+    fn audience(&self) -> String {
+        format!(
             "{}/v1/realtime",
-            self.public_url.as_ref().expect(
-                "an audience-bound token needs the public_url the audience is derived from"
-            )
-        );
-        let signer = TokenSigner::from_secret_bytes(&self.signing_secret, DEFAULT_KID);
-        let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        // The GENERATION the binding is currently on, read off the plain token rather than guessed:
-        // a token naming the wrong generation is refused by the verifier for a reason that has
-        // nothing to do with this plane.
-        let claims = verifier
-            .verify(plain, now, None)
-            .expect("the admin API just minted this token against this signing key");
-        signer.mint(
-            &claims.sub,
-            now + 3600,
-            claims.generation.as_deref(),
-            Some(&audience),
-            None,
+            self.public_url
+                .as_ref()
+                .expect("an audience is derived from the public_url a mounted plane was given")
+        )
+    }
+
+    /// MINT A KEY BOUND TO A RESOURCE, through the SHIPPED ADMIN SURFACE — the RFC 8707 `resource`
+    /// indicator on the one mint verb, and the whole of what an operator does to get a credential
+    /// for a plane door.
+    ///
+    /// This rig used to reach behind the admin API and sign the `aud` claim itself against the
+    /// deployment's own key, because the only constructor of that claim in the tree was test-only
+    /// and the mint endpoint had no field for it. A rig that mints its own credentials proves the
+    /// verifier accepts a token it likes the shape of; it cannot prove an OPERATOR can obtain one.
+    /// The hand mint is deleted and what is driven here is the door an operator actually has.
+    ///
+    /// Returns the whole answer, not just the token: the refusal cell reads the same one.
+    fn mint_for(&self, name: &str, resource: &str) -> Answer {
+        http(
+            self.admin,
+            "POST",
+            "/api/v1/admin/keys",
+            Some(ADMIN_TOKEN),
+            Some(&format!(
+                r#"{{"name":"{name}","group":"{GROUP}","resource":"{resource}"}}"#
+            )),
         )
     }
 }
@@ -543,8 +534,21 @@ fn event_type(frame: &str) -> String {
 #[test]
 fn sideband_serves_a_session() {
     let node = Node::boot("serves", true, true);
-    let plain = node.mint("vt7-session", None);
-    let token = node.audience_bound(&plain);
+    // THE MINTED KEY, not a hand-signed one: `resource` names the audience the plane declares, and
+    // what opens the door below is the token the shipped admin verb handed back.
+    let minted = node.mint_for("vt7-session", &node.audience());
+    assert_eq!(
+        minted.status, 201,
+        "the admin mint must issue a key bound to a resource this deployment serves; got {} {}\nlog:\n{}",
+        minted.status,
+        minted.body,
+        node.log()
+    );
+    let token = serde_json::from_str::<serde_json::Value>(&minted.body).expect("a key response")
+        ["token"]
+        .as_str()
+        .expect("a minted key carries its token once")
+        .to_string();
 
     let mut sock = upgrade(
         node.data,
@@ -664,5 +668,58 @@ fn a_declaration_with_no_receiving_origin_refuses_the_boot() {
     assert!(
         !log.contains("listening"),
         "and it must end BEFORE a listener is bound, not after; log:\n{log}"
+    );
+}
+
+/// A MINT FOR AN AUDIENCE NO PLANE DECLARES IS REFUSED — the other half of the door, and the reason
+/// the mintable set is read off the plane decls rather than taken from the caller's word.
+///
+/// A token bound to a resource this deployment does not serve has exactly one property: nothing
+/// accepts it. Issuing it would send an operator who mistyped their own canonical URI away with a
+/// credential that looks like every other one, to find out hours later from a `401` on the plane
+/// that the mint had known all along. The refusal is a `400` at the mint, and it names the field.
+#[test]
+fn a_mint_for_an_audience_no_plane_declares_is_refused() {
+    let node = Node::boot("undeclared", true, true);
+
+    // A near miss on purpose: this node's plane DOES declare an audience, and this is that audience
+    // with one segment changed. An RFC 8707 resource indicator is an opaque identifier compared for
+    // equality, never a namespace — a mint that admitted a prefix or a sibling would be the same
+    // confused-deputy hole the audience exists to close, moved from the door to the issuer.
+    let refused = node.mint_for(
+        "vt7-undeclared",
+        &format!("{}/v1/realtime-staging", node.public_url.as_ref().unwrap()),
+    );
+    assert_eq!(
+        refused.status,
+        400,
+        "a resource no mounted plane declares must be refused at the mint; got {} {}\nlog:\n{}",
+        refused.status,
+        refused.body,
+        node.log()
+    );
+    let body: serde_json::Value = serde_json::from_str(&refused.body).expect("an error envelope");
+    assert_eq!(
+        body["error"]["code"].as_str(),
+        Some("invalid_request"),
+        "the refusal rides the mint endpoint's declared 400 family; got {}",
+        refused.body
+    );
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some(
+            "`resource` is not an audience this deployment serves; a key may only be bound to a \
+             resource a mounted plane declares"
+        ),
+        "the refusal must name the field an operator has to fix; got {}",
+        refused.body
+    );
+
+    // AND THE 1.5.5 BODY IS UNTOUCHED: a mint that names no resource is the mint that has always
+    // been here, and it still mints. The field is additive on the wire in both directions.
+    let plain = node.mint("vt7-plain", None);
+    assert!(
+        plain.starts_with("bbk_"),
+        "a mint body with no `resource` must be the 1.5.5 mint, unchanged; got {plain:?}"
     );
 }

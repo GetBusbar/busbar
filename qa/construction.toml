@@ -264,6 +264,30 @@ because = "busbar × auth (busbar, auth): `crates/busbar/tests/streams_served_se
 # the ceiling these rows are ratcheted from and there is no raise to declare: the counts are re-pinned to
 # today's measurement, which is what `ceiling-slack` reads them for. A `by` written here anyway would be a
 # declaration of a rise that did not happen, and the gate says so by name.
+# ── declared raises: THE MINT AN OPERATOR CAN ACTUALLY REACH. A plane door that binds an RFC 8707
+# audience had no shipped credential to open it: the only constructor of the claim in the tree was
+# test-only and the mint verb had no field for one. The verb gained the RFC 8707 `resource`
+# indicator, and the cell that drives a session stopped signing its own token by hand. Each entry
+# below is that face or the cells that prove it, counted once per kind whose vocabulary a mint
+# through the admin surface unavoidably names, and each expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar × control (busbar, control): `crates/busbar/tests/streams_served_session.rs` — the cell that drives a session against the shipped binary stopped minting its own credential, and a second cell was added beside it for the refusal. The rig used to read the deployment's ed25519 secret back off disk and sign the RFC 8707 audience claim itself, because nothing shipped could issue one; a rig that mints its own credential proves the verifier likes the shape of a token and cannot prove an OPERATOR is able to obtain one, which is the whole question this file exists to ask of a shipped door. It now asks the admin mint verb for a key bound to the resource the plane declares, and the sibling cell asks for one bound to a near miss and pins the refusal bytes. Those are control-kind nouns — an admin surface, a key, a mint, an error envelope — and they are the rig asking what an operator asks. The hand mint, the signing-secret field it needed and the paragraph explaining why it existed are DELETED in the same change, which is why six is the NET of two cells against a helper, a field and its prose (1,091 -> 1,097)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar × transport (busbar, transport): the same two cells in `crates/busbar/tests/streams_served_session.rs`. ONE line — the resource a key is minted for is this deployment's own origin plus the base the plane answers on, derived from the node's `public_url` exactly as the plane derives it rather than typed as a literal the rig and the plane could then drift apart on. An RFC 8707 resource indicator is a URL and reads as transport vocabulary by construction; a cell that avoided the word would be a cell holding its own copy of the audience it is there to prove. The 1 line this row already carries undeclared at the base is not this landing's and is untouched by it (1,042 -> 1,043)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.control.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-core × control (busbar-core, control): the admin mint verb gains the optional RFC 8707 `resource` indicator and the refusal that holds it to what the mounted planes declare — two lines in `crates/busbar-core/src/admin/mod.rs`, the request field and the refusal it raises. This is the admin API's own kind naming the admin API's own nouns: a mint is a control-plane verb, and the whole of the face is that one verb learning the word the plane's own challenge already tells a refused client to send. It names no plane and no literal audience: the mintable set is read off `PlaneDispatch::mintable_audiences`, folded in from each plane's own decl at build, so the doors this deployment serves and the resources it will mint for cannot be two lists that drift. The refusal reuses a condition this endpoint already declares, so the frozen error taxonomy did not grow either (5,203 -> 5,205)"
+
 # ── declared raise: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
 # (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport
@@ -1536,8 +1560,10 @@ file = "qa/kind-isolation.toml"
 by = 22
 because = "busbar-voice x plane (busbar-voice, plane): the plane that had the defect pays for reading its own section off the composition and for the door that read opened. Two things are here and neither is prose: the build seam now takes the section it was handed (its own key, downcast where the key has a type) and threads it into the per-generation runtime, replacing a process-wide latch written from a deserializer and read back at build time; and `build` stopped answering the absence of a receiving origin with silence. A declared section with no origin now MOUNTS, claims its paths and binds no audience, which is the pair the composition's R2 ratchet ends a boot on by name — so the two cells that pin it have to name the mount, the claim, the admission and the slot, because those four are exactly what the ratchet reads and a cell that named fewer could not say which of them moved. The price was measured first and then made smaller: prose that only restated the landing was cut from both cells and from the seam doc before this number was written down, and it fell by 3 for it (811 -> 840, of which 7 is already declared for the gemini-live route)"
 
-[[gate.ceiling_raises]]
-key = "cell.busbar.plane.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "busbar x plane (busbar, plane): the third answer, driven against the SHIPPED BINARY. A section written here with no receiving origin used to boot and then answer 404 on every URL it had just been configured to serve; it now ends before a listener is bound, and the appended cell reads the log for both halves of why — the field an operator has to fix and the rule the composition refused under. It is one cell and a spawn-without-waiting split of the harness this file already had, in the ROOT, which is the only place a session on a socket can be asked what the shipped door did; the fixture of the ordering cell beside it was re-pointed rather than raised, because the shape it stood on is the shape this landing deleted (1,798 -> 1,799)"
+# ── STRUCK, and the strike IS the arithmetic. `cell.busbar.plane.count` carried a declared +1
+# (1,798 -> 1,799) for the boot-refusal cell in the composition root. This landing deleted the hand
+# mint that cell's file used to sign an audience claim with — the helper, the struct field that held
+# the deployment's own signing secret, and the paragraph explaining why a rig had to do that at all
+# — and the plane-kind words went with it. The count is back at 1,798, which is the base, so there
+# is no rise left for the entry to describe, and a `by` written here anyway would declare a rise
+# that did not happen. The face it was declared for is intact; what is gone is its price.
