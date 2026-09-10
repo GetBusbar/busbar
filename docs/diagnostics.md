@@ -695,15 +695,15 @@ The oauth_as authorization-server sweep of expired records failed for a tick —
 **What to do:** None if it clears on the next tick. Sustained failures indicate an oauth_as store problem worth investigating; expired records accumulate until a sweep succeeds.
 
 <a id="sigv4-hmac-init-failed"></a>
-### BUSBAR-4024 — SigV4 HMAC-SHA256 init failed (documented unreachable)
+### BUSBAR-4024 — SigV4 HMAC-SHA256 init failed (retired: the signer has no init step) *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `sigv4-hmac-init-failed`
 
-Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.
+Initializing HMAC-SHA256 for AWS SigV4 signing failed. Retired in 1.6.0: the signer chains the contract crate's own infallible HMAC-SHA256 and no longer has an initialization that can fail, so no build after that emits this code.
 
-**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress fails to authenticate until it is resolved.
+**What to do:** Seen only in logs from a build before 1.6.0 retired it. If a current build logs it, file a bug: no code path can reach it.
 
 <a id="oauth-as-ephemeral-signing-key"></a>
 ### BUSBAR-4025 — oauth_as generated an ephemeral ES256 signing key (tokens die on restart)

@@ -54,8 +54,10 @@ tracing = { workspace = true }
 # The breaker's `parse_retry_after` parses an HTTP-date `Retry-After`.
 httpdate = { workspace = true }
 # The SigV4 signer's HMAC-SHA256 chain and the hex encoding of its digests.
-hmac = { workspace = true }
-sha2 = { workspace = true }
+# NO `hmac`/`sha2`. The SigV4 signer (`sigv4.rs`) chains the contract crate's own `hmac_sha256`,
+# plain Rust in a crate this one already names: `sha2` carries `cpufeatures` unconditionally on
+# aarch64/x86, `cpufeatures` reaches `libc`, and this crate is in the plane's and the dialect
+# crates' closure, which reaches no `libc`.
 hex = { workspace = true }
 # The codec-cell counters the handler matrix emits: `metrics::counter!` writes over bounded labels.
 # Pure data path — the recorder lives elsewhere.
