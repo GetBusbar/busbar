@@ -28,11 +28,13 @@ const FIXTURE: Dialect = Dialect {
     requires_max_response: false,
 };
 
-/// The one path this fixture claims, on a rung between two the plane still declares itself.
+/// The one suffix this fixture claims, on a rung between two the plane still declares itself: the
+/// bedrock signature header at one above it, and the cohere chat suffixes at eight below it. The
+/// suffix is deliberately one a cohere path also ends in, so the contest at eight is real.
 const FIXTURE_LADDER: &[LadderClaim] = &[LadderClaim {
     rung: 7,
     dialect: "fixture",
-    claim: claim(Selector::PathSuffix("/fixture/chat")),
+    claim: claim(Selector::PathSuffix("/chat")),
 }];
 
 /// The fixture's whole contribution, as one registration.
@@ -63,19 +65,32 @@ fn a_registered_dialect_resolves_to_the_row_it_registered() {
 ///
 /// This is the whole of "registers by claim": the fixture's rung is not appended after the plane's
 /// own, it is INTERLEAVED at the number it declared — so a rung the plane declares above it still
-/// wins, and one below it still loses.
+/// wins, and one below it still loses. Both contests are asserted with a request that matches BOTH
+/// rungs, because a fixture that could win a contest it should lose — or lose one it should win —
+/// is the defect this test exists for. It used to lean on a plane-own rung 6 that has since been
+/// carved out; the plane's own rungs are 1, 8, 9, 12 and 13 now, and the contests below are
+/// written against those, so the case survives the next carve-out too.
 #[test]
 fn a_registered_rung_is_walked_at_the_number_it_declared() {
     let plane = LlmPlane::EMPTY.with_dialects(DialectRegistry::sealed(&[FIXTURE_ENTRY]));
     let none = |_: &str| None;
     assert_eq!(plane.dialect_for("/fixture/chat", &none), Some("fixture"));
 
-    // Rung 6 is the plane's own and sits above the fixture's 7, so a request that matches both is
-    // the plane's — asserted with a target that matches only the tighter rung, because a fixture
-    // that could win a contest it should lose is the defect this test exists for.
+    // Rung 8 is the plane's own and sits BELOW the fixture's 7: `/v2/chat` matches both, and the
+    // registered rung wins because it is the tighter number, not because it was walked first.
     assert_eq!(
-        plane.dialect_for("/v1beta/models/x", &none),
-        Some("gemini"),
+        plane.dialect_for("/v2/chat", &none),
+        Some("fixture"),
+        "a registered rung lost to a looser rung the plane declares itself"
+    );
+
+    // Rung 1 is the plane's own and sits ABOVE the fixture's 7: a request on the fixture's path
+    // that also carries the signature header is the plane's, because the header is the tighter
+    // evidence whatever the path spells.
+    let signed = |name: &str| (name == "authorization").then_some("AWS4-HMAC-SHA256 Credential=x");
+    assert_eq!(
+        plane.dialect_for("/fixture/chat", &signed),
+        Some("bedrock"),
         "a registered rung displaced a tighter rung the plane declares itself"
     );
 }

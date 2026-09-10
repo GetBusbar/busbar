@@ -15,7 +15,7 @@
 use busbar_contract::bounded::SlabBytes;
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
-use busbar_contract::grammar::{ArrivalLocation, Location, Selector};
+use busbar_contract::grammar::{ArrivalLocation, Location, PathSeg, Selector};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, Origin, TransportView, Unit};
@@ -359,6 +359,80 @@ pub const ANTHROPIC_LADDER: &[LadderClaim] = &[
     },
 ];
 
+/// The `gemini` row and rungs, AS A TEST FIXTURE, for the same reason the rows above are.
+///
+/// It is the first fixture whose row names a PATH SEGMENT for the model rather than a body pointer,
+/// and the first with pattern rungs, so the plane's cases that read a target-carried model and
+/// route a bare model-scoped path exercise both through a registered row. The fourth meter pointer
+/// is `None`: this vendor reports no written-to-cache quantity, and a fixture that invented one
+/// would meter a class the frozen cells never carry.
+pub const GEMINI: Dialect = Dialect {
+    name: "gemini",
+    model_location: Location::Arrival(ArrivalLocation::PathSegment(0)),
+    max_response_pointers: &["/generationConfig/maxOutputTokens"],
+    input_pointer: "/contents",
+    tokens_in_pointer: "/usageMetadata/promptTokenCount",
+    tokens_out_pointer: "/usageMetadata/candidatesTokenCount",
+    cache_read_pointer: Some("/usageMetadata/cachedContentTokenCount"),
+    cache_write_pointer: None,
+    scheme_alt: "api-key",
+    egress_scheme: "bearer",
+    requires_max_response: false,
+};
+
+/// The fixture's rungs, at the numbers the real crate declares them: a key header at three, the
+/// five action suffixes at five, and the two model-scoped patterns at six.
+pub const GEMINI_LADDER: &[LadderClaim] = &[
+    LadderClaim {
+        rung: 3,
+        dialect: "gemini",
+        claim: claim(Selector::HeaderPresent("x-goog-api-key")),
+    },
+    LadderClaim {
+        rung: 5,
+        dialect: "gemini",
+        claim: claim(Selector::PathContains(":generateContent")),
+    },
+    LadderClaim {
+        rung: 5,
+        dialect: "gemini",
+        claim: claim(Selector::PathContains(":streamGenerateContent")),
+    },
+    LadderClaim {
+        rung: 5,
+        dialect: "gemini",
+        claim: claim(Selector::PathContains(":embedContent")),
+    },
+    LadderClaim {
+        rung: 5,
+        dialect: "gemini",
+        claim: claim(Selector::PathContains(":batchEmbedContents")),
+    },
+    LadderClaim {
+        rung: 5,
+        dialect: "gemini",
+        claim: claim(Selector::PathContains(":predict")),
+    },
+    LadderClaim {
+        rung: 6,
+        dialect: "gemini",
+        claim: claim(Selector::PathPattern(&[
+            PathSeg::Lit("v1"),
+            PathSeg::Lit("models"),
+            PathSeg::Tail,
+        ])),
+    },
+    LadderClaim {
+        rung: 6,
+        dialect: "gemini",
+        claim: claim(Selector::PathPattern(&[
+            PathSeg::Lit("v1beta"),
+            PathSeg::Lit("models"),
+            PathSeg::Tail,
+        ])),
+    },
+];
+
 /// Every carved-out dialect this crate's battery registers, as a boot would.
 ///
 /// The order is the order the root's own table declares them in, because registration order is what
@@ -377,6 +451,10 @@ pub const REGISTERED: &[DialectEntry] = &[
     DialectEntry {
         locations: ANTHROPIC,
         ladder: ANTHROPIC_LADDER,
+    },
+    DialectEntry {
+        locations: GEMINI,
+        ladder: GEMINI_LADDER,
     },
 ];
 
