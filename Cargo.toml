@@ -31,6 +31,12 @@ members = [
     # workspace member list is flat; the edge that makes it a dialect of `llm` is its dependency on
     # `busbar-plane-llm`, and `kind-isolation:deps` is what refuses the reverse.
     "crates/busbar-plane-llm-openai",
+    # The SECOND crate of the dialect kind, and the first proof that the pattern copies: the same
+    # four-segment name, the same two dependencies, the same battery. It is a sibling of the crate
+    # above rather than a module of it, because this vendor's two request surfaces are two dialects
+    # — different rungs, different paths, a different conversation member, and four different meter
+    # pointers.
+    "crates/busbar-plane-llm-responses",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
