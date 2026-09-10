@@ -1008,6 +1008,79 @@ pub fn status_of(outcome: busbar_contract::transport::Outcome) -> u16 {
 /// document is the plane's and so is its type.
 pub const MEDIA_JSON: &str = "application/json";
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE BOOT'S ONE COMPOSITION STEP
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// WHAT ONE PLANE'S MOUNT DID AT BOOT, so the composition can be read back rather than guessed at.
+///
+/// The boot reports what it composed for the same reason it refuses a claim overlap out loud: a
+/// deployment where a plane's mount silently did not compose serves the surface underneath, looking
+/// exactly like a deployment where it did — and the difference is which code answers the money.
+#[derive(Debug)]
+pub struct Mounted {
+    /// The plane, by the key its row carries.
+    pub plane: &'static str,
+    /// The source that had no boot answer, where this plane's leg did not assemble.
+    pub absent: Option<crate::root::registry::MountAbsent>,
+}
+
+impl Mounted {
+    /// Whether this plane's declared surface is answered by its leg on this node.
+    #[must_use]
+    pub fn is_mounted(&self) -> bool {
+        self.absent.is_none()
+    }
+}
+
+/// **MOUNT EVERY PLANE THE SEALED REGISTRY CARRIES A ROW FOR, onto one shared listener.**
+///
+/// This is the whole composition step, and it names no plane. It folds the registry's mount rows —
+/// data, one per plane, each declared in that plane's own file — over the router the deployment
+/// already composed, so a plane joins the shipped serving path by adding a ROW and never by being
+/// named here, in `main.rs`, or in `transports.rs`.
+///
+/// **THE ORDER IS THE ROWS' ORDER AND IT IS NOT AN ACCIDENT.** Each wrap answers only the paths its
+/// own plane claims and hands everything else to what it wrapped, so the fold builds a chain that
+/// ends at the router the boot started with. The claims were sealed against each other before any of
+/// this ran (`registry::seal` refuses an unresolvable overlap at boot), which is what makes "only the
+/// paths its own plane claims" a statement about one plane rather than a race between two.
+///
+/// **THE LEGACY LEG IS WHAT IS LEFT.** A plane whose row cannot assemble a leg adds no wrap, so its
+/// claimed paths fall through to the surface underneath exactly as they did before — the released
+/// behaviour, unchanged, for exactly the deployments that cannot mount. The report says which.
+pub fn compose_mounts(
+    router: axum::Router,
+    inputs: &crate::root::registry::MountInputs,
+) -> (axum::Router, Vec<Mounted>) {
+    let mut composed = router;
+    let mut report = Vec::new();
+    for row in crate::root::registry::mount_rows() {
+        match (row.compose)(inputs) {
+            Ok(leg) => {
+                // ONE KERNEL PER MOUNT, minted here rather than shared: a kernel is the authority a
+                // leg's tokens are lent from, and two planes lending from one would be two planes
+                // holding one process's single seal.
+                composed = mount(
+                    composed,
+                    leg,
+                    crate::root::kernel::new_kernel(),
+                    inputs.request_body_max_bytes,
+                );
+                report.push(Mounted {
+                    plane: row.plane,
+                    absent: None,
+                });
+            }
+            Err(absent) => report.push(Mounted {
+                plane: row.plane,
+                absent: Some(absent),
+            }),
+        }
+    }
+    (composed, report)
+}
+
 #[cfg(test)]
 #[path = "tests/plane_mount.rs"]
 mod tests;
