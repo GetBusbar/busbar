@@ -7,10 +7,10 @@
 //! sequential compose), and none of it was exercised anywhere in the crate before this file: a
 //! backend that overrides the method is exercised by that backend's own test suite, but the
 //! DEFAULT itself — the fallback every lightweight test double and every backend that hasn't
-//! implemented the newer surface actually runs — had no direct test. That is exactly the gap
-//! mutation testing finds: a mutant that flips `Err(..)` to `Ok(())`, or `Ok(Vec::new())` to
-//! `Ok(vec![...])`, or drops a step out of a sequential default, produces no compile error and no
-//! existing test failure.
+//! implemented the newer surface actually runs — had no direct test. That is the gap this file
+//! closes: flipping a default's `Err(..)` to `Ok(())`, or its `Ok(Vec::new())` to `Ok(vec![...])`,
+//! or dropping a step out of a sequential default, produces no compile error and, without the
+//! cases below, no test failure either.
 //!
 //! This is an INTEGRATION test (crates/api/tests/, auto-discovered by Cargo — the crate's existing
 //! convention of `#[cfg(test)] #[path = "tests/x.rs"] mod tests;` inline unit tests is left

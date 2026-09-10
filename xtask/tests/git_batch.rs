@@ -102,8 +102,8 @@ fn hash_objects(repo: &Path, paths: &[PathBuf]) -> Vec<String> {
     oids
 }
 
-/// RED BEFORE GREEN: with the old `write_all(everything)` + `wait_with_output()` shape this call
-/// never returns.
+/// THE CALL RETURNS. A `write_all(everything)` + `wait_with_output()` shape does not: it deadlocks
+/// on this input, and the interleaved reader is what this case pins.
 ///
 /// BOTH SIDES have to overflow for the deadlock to bite, which is why the fixture is 4000 blobs
 /// and not four big ones. 4000 oids is ~164 KiB of REQUESTS, past the pipe buffer, so the parent
@@ -174,9 +174,9 @@ fn line_counts_answers_a_missing_oid_without_desyncing_the_rest() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-/// RED BEFORE GREEN: 60000 paths is ~1.3 MiB of requests and, because every one of them matches,
-/// ~1.3 MiB of answers. The old shape wrote all the requests before reading any answer and hung;
-/// this observed a 60-second watchdog timeout before the fix.
+/// 60000 paths is ~1.3 MiB of requests and, because every one of them matches, ~1.3 MiB of
+/// answers. A shape that writes every request before reading any answer does not return on this
+/// input at all — it sits until the 60-second watchdog below fires. The interleaved reader does.
 ///
 /// The scan set of a repository is smaller than that today, which is the whole hazard: the same
 /// call is one `.gitignore` rule and one generated directory away from the size that wedges it.

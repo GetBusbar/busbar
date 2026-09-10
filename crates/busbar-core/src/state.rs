@@ -22,8 +22,8 @@ use busbar_substrate::store::LaneRuntime;
 // `crate::state::…` path and keep the `pub(crate)` visibility they had before the move.
 //
 // R5-store: `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported.
-// D33 wave 0 cut 2 already retargeted the composition root's boot publish onto
-// `busbar_substrate::topology::…`, which left the three `busbar_core::state::…` spellings with no
+// The composition root's boot publish already names `busbar_substrate::topology::…` directly,
+// which leaves the three `busbar_core::state::…` spellings with no
 // caller at all bar one `engine_facade` re-export line, itself repointed here. Nothing outside core
 // names them.
 pub(crate) use busbar_substrate::topology::{worker_stripe, worker_stripes};
@@ -1045,8 +1045,8 @@ where
 // ── DETACHED-WORK DRAIN — RELOCATED to `busbar-substrate::detached` so the plane crates (which
 // deliberately never link busbar-core) reach the same seam.
 //
-// R5-store: the whole `crate::state::…` re-export block is DELETED. D33 wave 0 cut 2 retargeted the
-// composition root onto `busbar_substrate::detached::…`, after which four of the five names
+// R5-store: the whole `crate::state::…` re-export block is DELETED. The composition root names
+// `busbar_substrate::detached::…` directly, after which four of the five names
 // (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
 // caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
 // which now names the substrate directly.
