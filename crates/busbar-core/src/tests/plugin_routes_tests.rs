@@ -306,6 +306,7 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        |data, _| data,
     );
 
     let (code, body) = get(data_router.clone(), P).await;
@@ -405,6 +406,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        |data, _| data,
     );
 
     async fn get_tok(router: Router, path: &str, token: &str) -> u16 {
@@ -500,6 +502,7 @@ async fn head_dispatches_to_the_declared_get_route() {
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        |data, _| data,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

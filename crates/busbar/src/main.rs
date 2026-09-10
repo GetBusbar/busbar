@@ -1443,20 +1443,11 @@ async fn run(data_workers: usize) {
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
-        app,
-        req_body_max,
-        max_inbound,
-        response_headers_cfg.server_timing,
-    );
-    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
-    // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
-    // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
-    // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
-    // views read it, which is a property of there being ONE: a mount that opened its own would post
-    // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
+    // THE PROCESS'S ONE BOOK, built before the routers because the composition step below binds a
+    // mounted plane's node to it. Every plane's exit arm settles onto it and the administrative
+    // ledger views read it, which is a property of there being ONE: a mount that opened its own
+    // would post onto books nothing serves and serve books nothing posts to, and both halves of that
+    // would look healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
     // directory, so nothing appears beside a configuration that asked for none, and it is built
     // before either listener binds because the first accepted connection can settle.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
@@ -1468,73 +1459,99 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
-    // ═══════════════════════════════════════════════════════════════════════════════════════════
-    //   THE ONE COMPOSITION STEP: every plane the sealed registry carries a mount row for is
-    //   mounted onto the data listener, here, and NOT ONE OF THEM IS NAMED.
-    // ═══════════════════════════════════════════════════════════════════════════════════════════
-    //
-    // Before this line the three mounts had NO caller. A serving switch could be default-ON and the
-    // shipped binary still answered every one of that plane's addresses from the legacy router —
-    // the switch compiled a leg nothing composed, and the only thing that said so was a grep. A
-    // conformance rig pointed at this binary was therefore judging the legacy path while the tree
-    // read as though the mounted one had shipped.
-    //
-    // What fixes it is not a call per plane. It is that a mount is DATA now: `registry::mount_rows`
-    // carries one row per plane, each declared in that plane's own file beside the leg it builds,
-    // and `plane_mount::compose_mounts` folds them. A plane joins the shipped serving path by
-    // adding a row — never by a line here, in `plane_mount`, or in `transports`.
-    //
-    // A row that cannot assemble its leg composes NO WRAP, so that plane's claimed addresses stay
-    // on the surface underneath exactly as they are today, and the report says which source it had
-    // no boot answer for. That is the whole switch-over rule: the mounted path is the shipped path
-    // wherever a mount exists, and the legacy leg is what is left where one does not.
-    #[cfg(any(
-        feature = "root-llm-serve",
-        feature = "root-a2a-serve",
-        feature = "root-mcp-serve"
-    ))]
-    let data_router = {
-        let (mounted, report) = root::plane_mount::compose_mounts(
-            data_router,
-            &root::registry::MountInputs {
-                // THE DEPLOYMENT'S OWN INGRESS SOURCE, sealed once and shared by every mounted leg
-                // on this node. The engine host is the boot generation's — the same one the probers
-                // hold — and the credential resolution is the data plane's own, written in the file
-                // that owns what a mounted arrival is made of rather than here.
-                ingress: std::sync::Arc::new(root::mount_ingress::boot_ingress(
-                    busbar_core::plane_host::engine_host(&app_handle.load()),
-                    app_handle.load().governance.clone(),
-                )),
-                // THE PROCESS'S ONE BOOK, the same handle the administrative views read and the
-                // driven path's node was bound to one line above. A mount that opened its own would
-                // post onto books nothing serves.
-                book: std::sync::Arc::clone(&book.durability),
-                // The operator's own ingress cap — the SAME figure the router below the wrap was
-                // built with, because the wrap reads the body before that router's limit can.
-                request_body_max_bytes: req_body_max,
-            },
-        );
-        // WHAT THIS NODE ACTUALLY SERVES, said out loud at boot. A deployment where a plane's mount
-        // did not compose looks exactly like one where it did — same addresses, same answers, a
-        // different code path deciding the money — so the difference is stated rather than left to
-        // be discovered from a ledger that reconciles because it is empty.
-        for plane in &report {
-            match plane.absent {
-                None => tracing::info!(
-                    plane = plane.plane,
-                    "plane mounted: its declared surface is served through the kernel's loop"
-                ),
-                Some(absent) => tracing::warn!(
-                    plane = plane.plane,
-                    source = absent.source,
-                    "plane NOT mounted: the boot resolves no source for it, so its addresses are \
-                     served by the surface underneath"
-                ),
-            }
-        }
-        mounted
-    };
-
+    let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
+        app,
+        req_body_max,
+        max_inbound,
+        response_headers_cfg.server_timing,
+        // ═══════════════════════════════════════════════════════════════════════════════════════
+        //   THE ONE COMPOSITION STEP: every plane the sealed registry carries a mount row for is
+        //   mounted onto the data surface, here, and NOT ONE OF THEM IS NAMED.
+        // ═══════════════════════════════════════════════════════════════════════════════════════
+        //
+        // Before this the three mounts had NO caller. A serving switch could be default-ON and the
+        // shipped binary still answered every one of that plane's addresses from the legacy router
+        // — the switch compiled a leg nothing composed, and the only thing that said so was a grep.
+        // A conformance rig pointed at this binary was therefore judging the legacy path while the
+        // tree read as though the mounted one had shipped.
+        //
+        // What fixes it is not a call per plane. A mount is DATA: `registry::mount_rows` carries one
+        // row per plane, each declared in that plane's own file beside the leg it builds, and
+        // `plane_mount::compose_mounts` folds them. A plane joins the shipped serving path by adding
+        // a row — never by a line here, in `plane_mount`, or in `transports`.
+        //
+        // A row that cannot assemble its leg composes NO WRAP, so that plane's claimed addresses
+        // stay on the surface underneath exactly as they are today. That is the whole switch-over
+        // rule: the mounted path is the shipped path wherever a mount exists, and the legacy leg is
+        // what is left where one does not.
+        //
+        // **IT RUNS INSIDE THE OPERATOR'S INBOUND CAP, which is why it is a closure handed to the
+        // router build rather than a wrap applied to what that build returns.** The cap is the
+        // outermost layer of the data stack; a mount composed outside it answers its addresses
+        // without ever being counted, so a node configured to shed at N would serve an unbounded
+        // number of exactly the requests the mount claimed. The cell that says so is
+        // `tests/inbound_concurrency_shed.rs`, which failed the first time this step ran outside.
+        #[allow(unused_variables)]
+        |data, handle| {
+            #[cfg(any(
+                feature = "root-llm-serve",
+                feature = "root-a2a-serve",
+                feature = "root-mcp-serve"
+            ))]
+            let data = {
+                let (mounted, report) = root::plane_mount::compose_mounts(
+                    data,
+                    &root::registry::MountInputs {
+                        // THE DEPLOYMENT'S OWN INGRESS SOURCE, sealed once and shared by every
+                        // mounted leg on this node. The engine host is this boot generation's, and
+                        // the credential resolution is the data plane's own, written in the file
+                        // that owns what a mounted arrival is made of rather than here.
+                        ingress: std::sync::Arc::new(root::mount_ingress::boot_ingress(
+                            busbar_core::plane_host::engine_host(&handle.load()),
+                            handle.load().governance.clone(),
+                        )),
+                        // THE PROCESS'S ONE BOOK, the same handle the administrative views read and
+                        // the driven path's node was bound to. A mount that opened its own would
+                        // post onto books nothing serves.
+                        book: std::sync::Arc::clone(&book.durability),
+                        // The operator's own ingress cap — the SAME figure the router below the wrap
+                        // was built with, because the wrap reads the body before that limit can.
+                        request_body_max_bytes: req_body_max,
+                    },
+                );
+                // WHAT THIS NODE ACTUALLY SERVES, recorded at boot. A deployment where a plane's
+                // mount did not compose looks exactly like one where it did — same addresses, same
+                // answers, a different code path deciding the money — so the difference is stated
+                // rather than left to be discovered from a ledger that reconciles because it is
+                // empty.
+                //
+                // AT DEBUG AND NOT AT INFO, deliberately. A serving switch carries no boot line: the
+                // node's INFO+ boot output is pinned to the shape the previous release printed
+                // (`tests/boot_lines_neutrality.rs`), and that pin is what says the switch changed
+                // the path a request takes and not what an operator's log looks like.
+                for plane in &report {
+                    match plane.absent {
+                        None => tracing::debug!(
+                            plane = plane.plane,
+                            "plane mounted: its declared surface is served through the kernel's loop"
+                        ),
+                        Some(absent) => tracing::debug!(
+                            plane = plane.plane,
+                            source = absent.source,
+                            "plane NOT mounted: the boot resolves no source for it, so its \
+                             addresses are served by the surface underneath"
+                        ),
+                    }
+                }
+                mounted
+            };
+            data
+        },
+    );
+    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
+    // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
+    // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
+    // and out through the one exit. Off, this line does not exist and the surface is the one it was.
     // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
     // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
     // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend
