@@ -34,10 +34,10 @@
 //!
 //! The crate is dependency-free BY DEFAULT, so anything that would have pulled in an HTTP stack, a
 //! hash, or a clock arrives as a trait: [`HeaderView`] for the request's headers, [`CredentialDigest`]
-//! for the credential digest, [`KeyVerifier`] for the built-in signed-key arm, and [`RevocationView`]
-//! for the revocation set the kernel derives from the journal tail. The `sha256` feature adds a
-//! production [`cache::Sha256Digest`] for callers willing to take the `sha2`/`hex` dependency rather
-//! than supplying their own.
+//! for the credential digest, and the contract's `VirtualKeyDirectory` face for the built-in
+//! signed-key arm and the revocation set — one directory, so the verifier and the denylist cannot
+//! disagree. The `sha256` feature adds a production [`cache::Sha256Digest`] for callers willing to
+//! take the `sha2`/`hex` dependency rather than supplying their own.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -57,7 +57,7 @@ pub mod unit;
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
 pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
 pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
-pub use chain::{AuthChain, ChainEntry, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
+pub use chain::{AuthChain, ChainEntry, ChainVerdict};
 pub use challenge::{Challenge, ChallengeBounds};
 pub use detect::{protocol_id, Rung, LADDER};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};
