@@ -1543,7 +1543,7 @@ pub fn selftest(
         &[ROW_MATRIX],
         ledger_with(
             cx,
-            "[[minted]]\ncrate = \"busbar-core-policy\"\ncommit = \"5fe28f82a\"\ncells = \"5\"\nmoved_from = \"busbar-core\"\n",
+            "[[minted]]\ncrate = \"busbar-core-policy\"\ncommit = \"5fe28f82a\"\ncells = \"4\"\nmoved_from = \"busbar-core\"\n",
             "",
         ),
         &["minted-row", "[[edge]] core \u{d7} control"],
