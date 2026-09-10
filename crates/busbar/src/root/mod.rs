@@ -55,6 +55,7 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+pub mod arena;
 pub mod auth_bindings;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
