@@ -151,6 +151,10 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
         agent_defs: &unit,
         public_url,
         prior: None,
+        // The neutral section slots: no row this rig builds configures a section, so both are the
+        // absence the seam is written for.
+        resolved_section: None,
+        resolved_secret: None,
     };
     voice_build(&ctx)
 }

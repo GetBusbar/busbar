@@ -95,6 +95,17 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
+**The registry's section seam** (`busbar_substrate::plane::registry::BuildCtx`). A registry row's
+`build` is threaded the composition's already-resolved facts rather than a second parse of them, and
+the seam holds two NAMELESS slots beside the two named ones: `resolved_section`, the row's own
+validated section TYPE-ERASED as `&dyn Any`, and `resolved_secret`, the secret that section
+referenced ALREADY RESOLVED as an `Option<&str>`. Nameless is the point — `mcp_slot` and
+`agent_defs` are each spelled for the one row that reads them, so a third row meant a third field
+and a fourth row a fourth. These two are spelled for no row and carry no kind's vocabulary: the row
+that reads a slot is the row that filled it, and it downcasts inside its own module. `resolved_secret`
+is a `&str` and never a resolver, so a row that signs with the secret its section named cannot reach
+a second one — the one place that reads operator secrets stays the composition's config layer.
+
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
 `docs/design/D33-legacy-retirement.md` §7 carries the measurement):
 
