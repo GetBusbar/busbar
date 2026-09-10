@@ -80,22 +80,28 @@ fn the_cache_digests_with_the_nodes_own_hex_sha256() {
     );
 }
 
-/// The verifier the root binds resolves through the directory and hands back the unit's own
-/// shape, so the chain's signed-key arm has something to identify with.
+/// The directory the root binds is the one the unit is handed — the face itself, not a copy of it
+/// — so the chain's signed-key arm resolves through the deployment's own directory.
 #[test]
-fn the_bound_verifier_resolves_through_the_directory() {
+fn the_bound_directory_is_the_one_the_unit_is_handed() {
     let directory = a_directory();
     let bindings = AuthBindings::new(directory.clone() as Arc<dyn VirtualKeyDirectory>);
 
-    let keys = bindings.keys().expect("a bound directory is a verifier");
+    let keys = bindings
+        .directory()
+        .expect("a bound directory is a verifier");
     assert_eq!(
-        keys.verify_token("tok-live", 10, None),
-        Some(ResolvedKey {
+        keys.verify("tok-live", 10, None),
+        Some(KeyFacts {
             id: "vk_1".to_string(),
             name: "the operator's key".to_string(),
+            scopes: None,
+            enabled: true,
+            expires_at: None,
+            deleted_at: None,
         })
     );
-    assert_eq!(keys.verify_token("tok-unknown", 10, None), None);
+    assert_eq!(keys.verify("tok-unknown", 10, None), None);
     assert_eq!(
         directory.asked.lock().expect("asked").len(),
         2,
@@ -103,16 +109,16 @@ fn the_bound_verifier_resolves_through_the_directory() {
     );
 }
 
-/// The revocation view answers from the same directory the verifier does, which is the point of
-/// binding one value rather than two.
+/// The denylist answers from the same directory the verifier does, which is the point of binding
+/// one face rather than two traits.
 #[test]
-fn the_revocation_view_reads_the_same_directory() {
+fn the_denylist_reads_the_same_directory() {
     let bindings = AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>);
-    let revocations = bindings
-        .revocations()
+    let directory = bindings
+        .directory()
         .expect("a bound directory is a revocation view");
-    assert!(revocations.is_revoked("vk_gone"));
-    assert!(!revocations.is_revoked("vk_1"));
+    assert!(directory.is_revoked("vk_gone"));
+    assert!(!directory.is_revoked("vk_1"));
 }
 
 /// An unbound node binds a cache and no authority, which is a posture rather than a gap: the
@@ -122,6 +128,5 @@ fn the_revocation_view_reads_the_same_directory() {
 fn an_unbound_node_binds_a_cache_and_no_authority() {
     let bindings = AuthBindings::without_directory();
     assert!(bindings.cache().is_some());
-    assert!(bindings.keys().is_none());
-    assert!(bindings.revocations().is_none());
+    assert!(bindings.directory().is_none());
 }

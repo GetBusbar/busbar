@@ -56,6 +56,7 @@ use busbar_caps::{
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
+use busbar_contract::VirtualKeyDirectory;
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::Evidence;
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
@@ -66,7 +67,7 @@ use busbar_unit_admission::{
 };
 use busbar_unit_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
 use busbar_unit_audit::AuditInputs;
-use busbar_unit_auth::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
+use busbar_unit_auth::{Auth, AuthRequest, CredentialCache};
 use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_unit_trust::destination::{KindFacts, OriginKind};
@@ -338,8 +339,7 @@ pub fn authenticate(
     auth: &Auth,
     arriving: &Arriving<'_>,
     cache: Option<&CredentialCache>,
-    keys: Option<&dyn KeyVerifier>,
-    revocations: Option<&dyn RevocationView>,
+    directory: Option<&dyn VirtualKeyDirectory>,
     token: &UnitToken<Authenticate>,
 ) -> Decision<Authenticate> {
     let declared = declared_schemes();
@@ -363,17 +363,17 @@ pub fn authenticate(
         now: arriving.now,
         new_unit: arriving.new_unit,
     };
-    auth.resolve(&request, cache, keys, revocations, None, token)
+    auth.resolve(&request, cache, directory, None, token)
 }
 
 /// Ask the auth unit who is calling, over the node's own bindings.
 ///
-/// The form above takes the three seams one at a time because that is the shape the unit's own
-/// signature has, and a test that wants to state exactly one of them says so by handing two
-/// `None`s. This is the form a dispatch uses, and it is the one that closes the gap: the seams are
-/// not three arguments a caller has to remember to fill in, they are the node's one set, reached
+/// The form above takes the two seams one at a time because that is the shape the unit's own
+/// signature has, and a test that wants to state exactly one of them says so by handing one
+/// `None`. This is the form a dispatch uses, and it is the one that closes the gap: the seams are
+/// not two arguments a caller has to remember to fill in, they are the node's one set, reached
 /// through the value that holds them. A dispatch calling [`authenticate`] directly could pass
-/// `None` three times and compile; calling this one cannot.
+/// `None` twice and compile; calling this one cannot.
 pub fn authenticate_bound(
     auth: &Auth,
     arriving: &Arriving<'_>,
@@ -384,8 +384,7 @@ pub fn authenticate_bound(
         auth,
         arriving,
         bindings.cache(),
-        bindings.keys(),
-        bindings.revocations(),
+        bindings.directory(),
         token,
     )
 }

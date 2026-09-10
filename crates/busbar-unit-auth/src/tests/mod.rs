@@ -10,9 +10,10 @@ mod detect_tests;
 mod exchange_tests;
 mod unit_tests;
 
-use crate::chain::{ChainEntry, ResolvedKey};
+use crate::chain::ChainEntry;
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
+use busbar_contract::KeyFacts;
 
 /// A stand-in module with a canned answer and a declared cacheability, so a test can state exactly
 /// the chain shape it means and nothing else.
@@ -85,19 +86,24 @@ pub(crate) struct OneKey {
     pub(crate) aud: Option<&'static str>,
 }
 
-impl crate::chain::KeyVerifier for OneKey {
-    fn verify_token(
-        &self,
-        token: &str,
-        _now: u64,
-        expected_aud: Option<&str>,
-    ) -> Option<ResolvedKey> {
+impl busbar_contract::VirtualKeyDirectory for OneKey {
+    fn is_revoked(&self, _credential: &str) -> bool {
+        false
+    }
+    fn operator_token_hash(&self) -> Option<String> {
+        None
+    }
+    fn verify(&self, token: &str, _now: u64, expected_aud: Option<&str>) -> Option<KeyFacts> {
         if token != self.token || expected_aud != self.aud {
             return None;
         }
-        Some(ResolvedKey {
+        Some(KeyFacts {
             id: "vk_one".to_string(),
             name: "the one key".to_string(),
+            scopes: None,
+            enabled: true,
+            expires_at: None,
+            deleted_at: None,
         })
     }
 }
