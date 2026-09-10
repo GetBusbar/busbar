@@ -105,7 +105,7 @@ spelling change with no behavioural surface at all.
 | 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE, but blocked.** `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature, and its one true owner is the composition root (it *is* the process). But the module is a set of process **globals** that core's own legacy admin handler still writes — `crate::admin::restart::{supervisor_detected, can_restart, begin_drain}` at `busbar-core/src/admin/v1/json/handlers.rs:2494,2506,2517`. Moving the module to the root would split one static across two crates and silently break `POST /admin/restart` → drain-release. The move lands **with the admin plane**, when `busbar-plane-admin` owns the restart verb and core's handler is deleted. | `documented-admin-restart\|`, `admin.ops\|` | blocked on the admin plane owning the restart verb |
 | 1 | `admin::planeverbs::CorePlaneAdminEnvelope` | REPLACE by `busbar_substrate::admin_verbs::install_plane_admin_envelope` (root names both today) | `admin.ops\|` | cut 3 |
 | 1 | `egress::seam::CoreHostlessEgress` | REPLACE by `busbar_substrate::egress::seam::HostlessEgress` (root names both today) | `llm\|`, `mcp\|` | cut 3 |
-| 1 | `cost::CostModel::resolve_parts` | **REPLACE** by `busbar-unit-cost`. Money path — byte-identity required, so this rides the late-accrual landing, never ahead of it. | `billing\|`, `teller-meter-row\|` | blocked |
+| 1 | `cost::CostModel::resolve_parts` | **REPLACE** by `busbar-unit-cost`. Money path — byte-identity required, so this rides the late-accrual landing, never ahead of it. **Deletion-wave blocker, measured 2026-09-09 (slot R5-3): the replacement does not exist yet.** `busbar-core/src/cost.rs` is 848 lines and `CostModel` is declared nowhere else in the workspace — a symbol-by-symbol sweep of `busbar-unit-cost`, `busbar-caps` and `busbar-kernel` returns ZERO declarations of `CostModel`, `resolve_parts`, `ChainBucket`, `GroupBucket`, `GroupRuntime`, `RateNanos`, `is_bucket_of_group`, `GROUP_BUCKET_PREFIX`, `ExtraRates` or `model_unpriced`. `busbar-unit-cost` exports a rate-card/posting face (`RateCard`, `LaneRates`, `price`, `price_at_card`, `Posting`, `derive_spend_micros`) and `busbar-caps::hold` a hold/accrual state machine (`Hold`, `Accrual`, `Spend`, `HoldCell`) — neither carries the group-chain budget resolver the type IS. `busbar_unit_admission::RateNanos` is a same-named DIFFERENT type (`from_micros_per_token`, not `from_cfg(&RateEntryCfg)`), so it is not a re-point either. 19 non-test in-core sites name `crate::cost::CostModel` **as a type in a signature** — `governance/state.rs` 12, `plane_host/mod.rs` 6, plus `state.rs:490`, `appbuild.rs:589`, `governance/mod.rs:727`, `admin/v1/service.rs:101` — so there is no one-line re-point; deleting the module means WRITING the resolver into a unit crate, which the deletion wave forbids. No dead sub-item to cut either: every `fn` in `cost.rs` has an in-module caller. **Skipped, net-zero.** | `billing\|`, `teller-meter-row\|` | blocked — unblocks only when `busbar-unit-cost` actually declares the group-chain resolver, i.e. with the late-accrual landing |
 | 1 | `REQUEST_ACTIVITY_TICKS` | MOVE to the root (a drain-timing constant the root reads) | `admin.ops\|` | cut 3 |
 | 1 | `test_support` | KEEP as a leaf until the legacy test corpus retires; not production | — | last |
 | 2 | bare `busbar_core` | follows whatever the line above resolves to | — | — |
@@ -379,6 +379,26 @@ contract-level data before a config crate can exist, because a config crate must
 then the mechanical remainder; then the plugin signature/loader block leaves `config/` for the loader.
 Movable the day the crate exists, with zero outbound edges: `config/secret.rs` (130) and
 `config/groups.rs` (83).
+
+**Deletion-wave blocker for `config_validate/`, measured 2026-09-09 (slot R5-3).** The wave's premise
+for this module was `config_validate` → `busbar-substrate::config` validation. **That destination
+does not exist.** `crates/busbar-substrate/src/config/` (`mod.rs`, `auth.rs`, `groups.rs`, `hooks.rs`,
+`limits.rs`, `pools.rs`, `providers.rs`, `sections.rs`) contains ZERO validation code: no function
+named `validate*`, no function returning `Result<(), Vec<String>>`, no refusal-text producer at all.
+It is pure serde grammar. The substrate's only `secret_refs` is a **trait method** on the plane
+config-section trait (`plane/config.rs:41`), which enumerates a plane section's own refs — not the
+`RootCfg` walk that `config_validate/secret_refs.rs` is.
+
+So the refusal texts have exactly one producer today: `config_validate/mod.rs` (2,240 lines) +
+`secret_refs.rs` (457) = **2,697 production lines**, behind `validate`, `validate_with_unset` and
+`metadata_denylist_entries`. The single production reader outside core is the composition root —
+`crates/busbar/src/main.rs` at lines 62, 133, 334, 1277 — and it has nowhere to be re-pointed TO.
+Deleting the module means WRITING ~2.7 k lines of validation, with byte-identical 1.5.5 refusal
+texts, into the substrate; the deletion wave forbids that, and the config-corpus snaps and `BOOT-P*`
+cells would move the moment it were attempted by hand. No dead sub-item to cut either: every `fn` in
+`config_validate/mod.rs` has an in-module caller. **Skipped, net-zero.** This module is not residue —
+it is the enforcement half of the config grammar, and it travels with `busbar-core-config` on the
+sequence above, never ahead of it.
 
 ### 7.3 The hooks engine has no home — `busbar-core-hooks`
 
