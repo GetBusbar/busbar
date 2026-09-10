@@ -5490,7 +5490,7 @@ count = "3208"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11200"
+count = "11196"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -5681,7 +5681,7 @@ note = "segment scanner 2901, window scanner 3208. The two read the vendor spell
 [[disagreement]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-note = "segment scanner 9963, window scanner 11200. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+note = "segment scanner 9963 (as last measured, before this landing), window scanner 11196 — the scored count, and the one this cell is pinned to. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar-mcp"

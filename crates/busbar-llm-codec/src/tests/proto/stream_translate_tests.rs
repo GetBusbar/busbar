@@ -4917,24 +4917,26 @@ fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
 ///    forgetting the declaration costs a slower stream, never a wrong bill.
 #[test]
 fn decode_set_is_the_readers_declaration() {
+    let declaring = Protocol::anthropic();
     assert_eq!(
-        Protocol::anthropic().reader().same_proto_decoded_events(),
+        declaring.reader().same_proto_decoded_events(),
         Some(&["message_start", "message_delta", "error"][..]),
         "the opted-in dialect declares its own three A-tap event types"
     );
-    for p in [
-        Protocol::openai(),
-        Protocol::gemini(),
-        Protocol::cohere(),
-        Protocol::responses(),
-        Protocol::bedrock(),
-    ] {
+    // Every OTHER registered dialect, walked off the registry rather than listed by name: a
+    // seventh dialect landing tomorrow is covered by this cell on the commit that registers it,
+    // and it is covered SAFELY — the default is the one that decodes everything.
+    for decl in crate::DECLS {
+        if decl.name == declaring.name() {
+            continue;
+        }
+        let p = crate::proto_codec::protocol_for(decl.name).expect("registered dialect resolves");
         assert_eq!(
             p.reader().same_proto_decoded_events(),
             None,
             "{}: a dialect that has not declared a decode set must fall to the trait default, so \
              every frame is decoded",
-            p.name()
+            decl.name
         );
     }
 }

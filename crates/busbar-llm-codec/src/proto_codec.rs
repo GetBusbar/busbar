@@ -152,7 +152,7 @@ pub trait ProtocolReader: Send + Sync {
     /// can produce one of those three says so here, and the feed loop then skips the frame parse
     /// (event-type String, data-line Vec, joined-payload String), the DOM parse and the IR event
     /// Vec for the ~99% of frames that are pure content — decided on the borrowing
-    /// `sse_event_type` probe, before any of that runs.
+    /// borrowing event-type probe, before any of that runs.
     ///
     /// Two preconditions, and BOTH are the reader's to assert, which is exactly why this answer is
     /// the reader's rather than the translator's: the listed set must be closed over the three
