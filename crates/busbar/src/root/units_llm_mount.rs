@@ -36,7 +36,10 @@
 //! grammar's shapes and naming no protocol, and the cell at the bottom of this file is the
 //! plane-side proof that this plane's own declared surface is now claimed.
 
-use crate::root::plane_mount::{self, MEDIA_JSON};
+use std::sync::Arc;
+
+use crate::root::plane_mount::{self, MountedLeg, MEDIA_JSON};
+use crate::root::units_llm_leg::LlmLeg;
 
 /// Whether one path is an address THIS plane claims.
 ///
@@ -100,6 +103,85 @@ pub fn media_type() -> &'static str {
 /// set of four columns, and one chain head, which is what "identical ledger bytes" means.
 pub const WHY_NO_LEG_YET: &str =
     "the blocker is lifted: the plane's exit arm settles from a lend and the Ended survives it";
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE LEG, ON THE MOUNT
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+impl MountedLeg for LlmLeg {
+    fn claims(&self) -> &'static [busbar_contract::grammar::Claim] {
+        busbar_plane_llm::claims::CLAIMS
+    }
+
+    fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool {
+        LlmLeg::recognises(self, arrival)
+    }
+
+    fn serve<'a>(
+        &'a self,
+        arrival: &'a busbar_contract::transport::Arrival<'a>,
+        _kernel: &'a busbar_kernel::teller::Kernel,
+        _ctx: &'a busbar_kernel::teller::UnitCtx,
+        _run: busbar_kernel::teller::Run<'a>,
+        _dispatch: Option<&'a dyn crate::root::transports::MountDispatch>,
+    ) -> plane_mount::Walked<'a> {
+        // **THIS LEG'S WALK IS GENUINELY ASYNCHRONOUS**, and it is the first one that is. The two
+        // legs mounted before this step through the kernel's teller synchronously and take
+        // themselves off the reactor with `sync_leg`; this one AWAITS — its Route step dials an
+        // upstream and its answer may be a body that has not finished — so it simply awaits, which
+        // is exactly the case the mount widened its seam for.
+        //
+        // AND THE FOUR ARGUMENTS THE MOUNT OFFERS ARE UNREAD. Not ignored: refused, for a reason
+        // written out in the leg's own module note. This plane's walk already exists on the driven
+        // path, over a node that owns one in-flight table, one gauge, one canary, one door and one
+        // book. Running the same protocol against the mount's second set would give the node two of
+        // each for one plane, and which one a request was counted on would depend on whether an
+        // operator had composed a mount — a difference in the admission bound and in the money,
+        // arrived at silently. The dispatch seam is unread for a plainer reason still: this plane's
+        // Route dials its own destination, so there is no surface underneath to ask.
+        Box::pin(async move {
+            let (ended, response) = LlmLeg::serve(self, arrival).await;
+            // AND THE PLANE'S RESPONSE GOES BACK UNTOUCHED. No frame is built here and none is read:
+            // this plane's answer is already a response, its body may still be streaming, and the
+            // cell the late accrual reads rides on it as an extension. The two mounts beside this
+            // one build a frame because their legs hand back buffered bytes; that is the cost of
+            // their own choice and this plane does not pay it.
+            (ended, Some(response))
+        })
+    }
+
+    fn render_refusal(
+        &self,
+        _arrival: &busbar_contract::transport::Arrival<'_>,
+        _ended: &busbar_kernel::teller::Ended,
+    ) -> Option<Vec<u8>> {
+        // NOTHING FOR THE MOUNT TO RENDER, and that is a property of this plane rather than a gap.
+        // The mount renders a refusal only where the leg handed back NO answer, and this leg always
+        // has one: every way out of this plane's walk — the two audit doors, the veto, the
+        // pre-admission guard, the table declining — leaves the terminal's own response behind, in
+        // the caller's own dialect, already accounted. A document rendered here would be a second
+        // answer to a request that has one.
+        None
+    }
+
+    fn media_type(&self) -> &'static str {
+        media_type()
+    }
+}
+
+/// Wrap a mounted LLM surface so every unit of this plane on it travels through the kernel.
+///
+/// `request_body_max_bytes` is the operator's own ingress cap, the same figure the mounted router's
+/// body limit was built with. It is a parameter rather than a constant because the wrap reads the
+/// body BEFORE that limit gets a chance to.
+pub fn mount(
+    inner: axum::Router,
+    leg: Arc<LlmLeg>,
+    kernel: busbar_kernel::teller::Kernel,
+    request_body_max_bytes: usize,
+) -> axum::Router {
+    plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
+}
 
 #[cfg(test)]
 #[path = "tests/units_llm_mount.rs"]

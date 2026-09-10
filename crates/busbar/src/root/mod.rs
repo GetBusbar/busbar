@@ -91,6 +91,10 @@ pub mod units_a2a_mount;
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
+// Declared under `root-llm` with the serving switch on the FILE, for the reason the mount beside it
+// carries the same line.
+#[cfg(feature = "root-llm")]
+pub mod units_llm_leg;
 // Declared under `root-llm`, not under the serving switch, for the reason the other two planes'
 // mount modules carry the same line: everything inside reaches into this plane's units, and a
 // plane-gated module named from code under a different feature is what the root's own escape test
