@@ -12,16 +12,16 @@
 //! on. Written once per book, those three decisions drift, and two books that disagree about which
 //! classes survive are two different amounts for one request that nothing can reconcile.
 //!
-//! That is not hypothetical. Two copies of this walk existed on the llm path, they hard-coded the
-//! same four token class names, and they did not agree with the book beside them: the previous
-//! release's budget cell folds the report WHOLE (`GovState::record_usage` skips only the zeros),
-//! and the record builder walked a fixed list of four and dropped everything else.
+//! That is not hypothetical. Two copies of this walk existed on one served path alone, they
+//! hard-coded the same four token class names, and they did not agree with the book beside them:
+//! the previous release's budget cell folds the report WHOLE, skipping only the zeros, while the
+//! record builder walked a fixed list of four and dropped everything else.
 //!
 //! # The two models of a billable class, which is the actual divergence
 //!
 //! The previous release's book is keyed by an OPEN `String`: any name an operator or an upstream
 //! puts in the map is a billable class the moment it is accrued. The record this crate produces is
-//! keyed by [`MeterClassId`], which is a `&'static str` — **a class must be DECLARED, in a plane's
+//! keyed by [`MeterClassId`], which is a `&'static str` — **a class must be DECLARED, in a caller's
 //! own const meter-class table, before a line can exist for it at all.**
 //!
 //! Those are not two spellings of one book. They are two answers to "what is a billable class", and
@@ -47,8 +47,8 @@
 //! # What this crate does not name
 //!
 //! No class name and no unit of measure appears here. The declared table is the CALLER's, because
-//! which classes a deployment meters is a fact about the planes it hosts and about its rate card,
-//! and a unit that named four of them would be a unit that had to be edited to meter a fifth. The
+//! which classes a deployment meters is a fact about what it hosts and about its rate card, and a
+//! unit that named four of them would be a unit that had to be edited to meter a fifth. The
 //! only vocabulary this fold carries is the provenance the caller states per class, which is
 //! `busbar-contract`'s and travels on the line into the ledger's own digest.
 

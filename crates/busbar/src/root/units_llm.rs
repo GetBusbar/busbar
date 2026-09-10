@@ -668,14 +668,15 @@ fn reserved_classes() -> Vec<busbar_unit_usage::CanonicalClass> {
         .collect()
 }
 
-/// **The plane's neutral consumption report, in the record the cost unit prices** — and, beside it,
-/// whatever the record could not hold.
+/// **The neutral consumption report this leg was handed, in the record the cost unit prices** — and,
+/// beside it, whatever the record could not hold.
 ///
 /// A lift and nothing more: one line per reported class, at the quantity the tap read, counted
 /// rather than estimated because the figures came off the destination's own response. The class
-/// names are the neutral reserved-unit spellings — the same names the plane's own metering step
-/// reports its lines under and the same names a card entry is written against — so no name is
-/// translated on the way. A rename here would be this root deciding what a lane's rates apply to.
+/// names are the neutral reserved-unit spellings — the same names the metering step upstream of
+/// this one reports its lines under and the same names a card entry is written against — so no name
+/// is translated on the way. A rename here would be this root deciding what a lane's rates apply
+/// to.
 ///
 /// **THE WALK IS THE USAGE UNIT'S, AND THE FOUR NAMES ARE THE MONEY UNIT'S.** This root states which
 /// classes its card reserves and in what order they are written down; it does not decide which
@@ -695,7 +696,7 @@ fn reserved_classes() -> Vec<busbar_unit_usage::CanonicalClass> {
 /// place.
 ///
 /// A report wider than the record holds is not a reason to post nothing: the record's own limit is a
-/// bound on lines, and the tiers this plane reports are far inside it. An empty record with the
+/// bound on lines, and the tiers this leg reports are far inside it. An empty record with the
 /// whole report handed back undeclared is the honest fallback — it prices the fee and no tokens,
 /// which is what a response that reported nothing costs, and it says what it did not carry.
 fn fold_report(
@@ -747,7 +748,7 @@ fn priced_posting(
     // different day from the one the request was admitted in, and a fresh reading would price the
     // request against a card it never agreed to.
     // WHAT THE FOLD COULD NOT HOLD IS SAID OUT LOUD. The previous release's budget cell accrues
-    // every class the report carries; this record can only carry a class some plane DECLARED. A
+    // every class the report carries; this record can only carry a class somebody DECLARED. A
     // report that carried one nobody declared would otherwise settle here for less than it accrued
     // there, silently and by exactly that class's quantity — which is the dual book, and the one
     // direction a money defect must never go. Nothing on the llm path reports an undeclared class
@@ -759,7 +760,7 @@ fn priced_posting(
             lane = %report.lane,
             provider = %report.provider,
             undeclared = ?folded.undeclared,
-            "the delivered report carried meter classes no plane declares; they accrue on the \
+            "the delivered report carried meter classes nothing declares; they accrue on the \
              previous release's cell and cannot be carried on a posting"
         );
     }
