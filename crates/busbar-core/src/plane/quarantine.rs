@@ -5,7 +5,7 @@
 //!
 //! ## The hole this closes, stated exactly
 //!
-//! A drift quarantine is DERIVED, never stored: `crate::trust::Approval::state` compares the
+//! A drift quarantine is DERIVED, never stored: `busbar_substrate::trust::Approval::state` compares the
 //! operator's standing approval against the last observation, and a state nobody stores is a state
 //! nothing can leave stale. That is the right design and it has one consequence — the observation is
 //! in process memory, so a restarted process has none, and a server with no observation answers
@@ -24,7 +24,7 @@
 //! What is written is not "this server is quarantined". It is "a live observation of this server
 //! disagreed with the approval, at this time" — an OBSERVATION that outlives the process, in exactly
 //! the way the in-memory sighting was always meant to and could not. It is replayed at boot as
-//! [`crate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
+//! [`busbar_substrate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
 //! quarantine falls out of the same comparison it always did. Nothing acquires a stored trust state.
 //!
 //! The boot replay itself — `crate::mcp::demotion::hydrate` — stays in the MCP plane for now,
@@ -206,14 +206,18 @@ impl DemotionRecord {
 /// And ONLY `Approved` clears. Every other state leaves the row exactly as it is — an upstream that
 /// has stopped answering has not stopped drifting, and clearing on it would let a demoted upstream
 /// buy its approval back by going dark.
-pub(crate) fn settle(demotions: &DemotionRecord, server: &str, state: crate::trust::TrustState) {
+pub(crate) fn settle(
+    demotions: &DemotionRecord,
+    server: &str,
+    state: busbar_substrate::trust::TrustState,
+) {
     match state {
         // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
         // after a restart, and a tick would be meaningless to them.
-        crate::trust::TrustState::Quarantined => {
+        busbar_substrate::trust::TrustState::Quarantined => {
             demotions.record(server, state.word(), busbar_substrate::store::now())
         }
-        crate::trust::TrustState::Approved => demotions.clear(server),
+        busbar_substrate::trust::TrustState::Approved => demotions.clear(server),
         _ => {}
     }
 }
