@@ -1664,6 +1664,11 @@ about a kind boundary, this register and that spec win.)*
   warning, never red, and `--write` strikes it; an entry the base does not carry whose ceiling did
   not rise is a deleted face's leftover and red. The figure in the file is still pinned to the exact
   measurement — a declared raise moves the ratchet, it does not loosen it.
+  ratchet down only. **The ledger has one door, with two leaves, and both are data checked against
+  the merge-base:** a `[[minted]]` row admits ONE announced crate's own rows once, and a
+  `[[minted_kind]]` row admits ONE announced kind's whole COLUMN once — every other crate's
+  `<crate> × <kind>` cell at its measured count and every `[[edge]]` class naming the kind — on the
+  branch that lands the kind's first crate. Nothing else opens a row the base did not carry.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
