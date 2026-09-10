@@ -2154,7 +2154,7 @@ count = "13"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "api"
-count = "72"
+count = "65"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2199,7 +2199,7 @@ count = "19"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "secret"
-count = "19"
+count = "27"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -4112,6 +4112,16 @@ drain   = "none while the loader and the plugin tooling are outside the kind sys
 
 [[dep]]
 from    = "busbar-plugin-loader"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the 1.6.0 busbar-api retirement MOVES ONTO, not a new coupling — `DynSecret` implements busbar_contract::kinds::Secret so a dlopened kind:secret plugin reaches the engine through the face the contract declares, and the wire-token -> face-error map lives on this side of the ABI because this is the one crate that is on both sides of it. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number. Note the direction of travel: this row exists so `busbar-plugin-loader -> busbar-api` can eventually reach zero, which is the retirement's own ratchet rather than this one's."
+
+[[dep]]
+from    = "busbar-plugin-loader"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
@@ -5422,6 +5432,14 @@ count = "1"
 cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
 why = "the loader implements the store face to hand a dynamically loaded store plugin to the kernel. One implementation, in shipped source."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
+
+[[face]]
+crate = "busbar-plugin-loader"
+face = "Secret"
+count = "1"
+cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
+why = "THE SECOND FACE THE ROW ABOVE SAID WOULD HAVE TO SAY WHY, and this is why: the 1.6.0 busbar-api retirement moves the secret kind onto busbar_contract::kinds::Secret, and `DynSecret` is what hands a dynamically loaded kind:secret plugin to the engine through it. It is the Store row's claim, one kind over, and it appears now because secret is the first kind of the retirement to land. One implementation, in shipped source."
+drain = "none while the loader is outside the kind system, on the Store row's terms exactly. When the ruling gives the trusted base a kind of its own, both rows go together — and until then a THIRD face in the loader is again a landing that has to say why."
 
 [[face]]
 crate = "busbar"

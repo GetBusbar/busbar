@@ -858,12 +858,11 @@ pub(crate) fn build_secret_resolver(
                 .get(canonical)
                 .map(String::as_str)
                 .unwrap_or("{}");
-            let m = registry.open_secret(module, open_cfg)?;
-            m.resolve(
-                &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
-                    .map_err(|e| format!("secret settings are not a JSON object: {e}"))?,
-            )
-            .map_err(|e| e.to_string())
+            // The reference's `settings` JSON IS the cold lane's reference grammar, so it crosses
+            // verbatim. The loader owns the grammar, the wire, the plugin face and the taxonomy →
+            // message rendering; this side owns "a reference resolved to bytes, or it fail-closed",
+            // which is all a host resolver has ever needed from a secret plugin.
+            registry.resolve_secret(module, open_cfg, settings)
         },
     )))
 }
