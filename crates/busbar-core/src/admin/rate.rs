@@ -178,9 +178,15 @@ impl MutationLimiter {
         let window = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut guard = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let map = guard.get_or_insert_with(HashMap::new);
-        // Opportunistic sweep: drop every entry from a PAST window (each principal-class re-inserts
-        // on its next attempt), keeping the map proportional to currently-active principals.
-        map.retain(|_, (w, _, _)| *w == window);
+        // Opportunistic sweep: drop every entry from a window STRICTLY OLDER than this one, and
+        // only those. Written as `>=` rather than `==` so the sweep is safe on its own terms: wall
+        // clocks are not monotonic (an NTP correction or a VM restore can step `now` backwards),
+        // and `==` read as "drop every entry from a PAST window" but also dropped entries from a
+        // LATER one — so a single regressed-clock request, any principal, any class, cleared every
+        // live counter in the map and reset the spent mutation budget. `>=` keeps a later window's
+        // entry instead of discarding it, so a backwards clock step cannot buy back an
+        // already-spent budget.
+        map.retain(|_, (w, _, _)| *w >= window);
         let entry = map
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));
