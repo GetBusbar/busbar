@@ -1354,7 +1354,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1782"
+count = "1795"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1379,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "1021"
+count = "1026"
 
 [[cell]]
 crate = "busbar"
@@ -2094,7 +2094,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "codec"
-count = "28"
+count = "29"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -2114,7 +2114,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "transport"
-count = "112"
+count = "118"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2894,7 +2894,7 @@ count = "37"
 [[cell]]
 crate = "busbar-voice"
 kind = "api"
-count = "65"
+count = "66"
 
 [[cell]]
 crate = "busbar-voice"
@@ -2914,7 +2914,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+count = "826"
 
 [[cell]]
 crate = "busbar-voice"
@@ -2929,7 +2929,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "290"
+count = "294"
 
 [[cell]]
 crate = "busbar-voice-codec"
@@ -4879,6 +4879,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-voice names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-api dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-voice names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is named for ONE thing — `busbar_contract::plane::SessionDestinationFacts`, the facts a Verify step judges a session open's destination from and the rule it judges them with — so that the 1.5.x door's own Verify and the composition's session Verify ask ONE rule instead of two that agree until one is edited. The crate was ALREADY in this one's closure (busbar-plane-voice names it and this crate names that), so the edge adds nothing to the shipped build; what it adds is the honesty of naming what is used. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-voice"

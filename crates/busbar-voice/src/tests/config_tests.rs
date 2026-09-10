@@ -70,3 +70,49 @@ fn default_section_is_absent() {
     let s = streams_default_section();
     assert!(!s.is_present());
 }
+
+/// THE OPEN-PASS DENIAL SET IS A CONFIGURATION KEY, and it reaches the runtime the gate reads.
+///
+/// It was neither before this landing: the set lived on `VoiceRuntime` with a builder no
+/// configuration file could reach, so a policy the plane refused sessions with could only be turned
+/// on from inside the plane's own tests. This cell is the whole of the migration's operator half —
+/// the key parses, an absent key is an empty set, and `with_streams` carries it onto the runtime the
+/// open-pass gate is handed.
+#[test]
+fn the_denial_set_is_declared_in_the_section_and_carried_onto_the_runtime() {
+    let y: serde_yaml::Value =
+        serde_yaml::from_str("denied_destinations:\n  - blocked-model\n  - also-blocked\n")
+            .unwrap();
+    let cfg: StreamsCfg = serde_yaml::from_value(y).unwrap();
+    assert_eq!(
+        cfg.denied_destinations,
+        ["blocked-model".to_string(), "also-blocked".to_string()],
+        "the operator's list is what the section carries, in the order they wrote it"
+    );
+
+    // ABSENT is EMPTY, and empty is what every deployment that names nothing keeps.
+    assert!(
+        StreamsCfg::default().denied_destinations.is_empty(),
+        "an absent key refuses nothing — the byte-identical posture for every deployment today"
+    );
+
+    // AND IT REACHES THE RUNTIME the gate is built from. A key that parsed and went nowhere would
+    // be a policy an operator could write down and never have applied.
+    //
+    // Feature-gated for the same reason the runtime is: `crate::runtime` is behind `runtime`, and
+    // the default feature-off build has a config section and no session engine to carry it onto.
+    // The parse above is what that build can answer for, and it answers for it.
+    #[cfg(feature = "runtime")]
+    {
+        let rt = crate::runtime::VoiceRuntime::new(
+            std::sync::Arc::new(busbar_substrate::plane::handle_engine::DurableHandleEngine::new()),
+            std::sync::Arc::new(crate::runtime::metering::LocalMeteringPort),
+            std::sync::Arc::new(crate::runtime::tools::EchoToolExecutor),
+        )
+        .with_streams(&cfg);
+        assert_eq!(
+            rt.denied_destinations, cfg.denied_destinations,
+            "the section's list IS the runtime's list — one reading, carried, never re-derived"
+        );
+    }
+}

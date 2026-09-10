@@ -627,6 +627,48 @@ impl SessionPlane for VoicePlane {
             state.params = declared.to_vec();
         }
     }
+
+    /// THE DESTINATION FACTS, off this plane's own configuration view and this connection's own
+    /// locked posture.
+    ///
+    /// Read AFTER the projector and after anything a rewrite tap committed, deliberately: the mount
+    /// this migrates from judged the destination of the posture the tap had already replaced, and a
+    /// face that read the pre-rewrite posture would refuse a session on a destination the deployment
+    /// itself had just rewritten away from. So the declared destination is taken from the held
+    /// payload where one exists, and rendered the same way `session_params` renders it where none
+    /// does — one posture, two readers.
+    ///
+    /// This plane always answers `Some`: it HAS a destination policy key, and a deployment that
+    /// names none has named an empty denial set, which admits everything. That is a different
+    /// statement from the `None` the two neutral planes make, and the difference is the one the
+    /// Verify step needs.
+    fn session_destinations<'p, 'u>(
+        &self,
+        st: &'p mut PlaneSessionState,
+        ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::plane::SessionDestinationFacts<'p>> {
+        let state = st.get_mut::<VoiceSessionState>()?;
+        if state.destinations.is_none() {
+            let locked = if state.params.is_empty() {
+                match state.dialect {
+                    Some(Dialect::TwilioMediaStreams) => config::g711_config(),
+                    _ => declared_defaults(ctx),
+                }
+            } else {
+                serde_json::from_slice::<config::SessionConfig>(&state.params)
+                    .unwrap_or_else(|_| config::default_session())
+            };
+            state.destinations = Some(crate::session::SessionDestinations {
+                declared: locked.model.unwrap_or_default(),
+                denied: denied_destinations(ctx),
+            });
+        }
+        let held = state.destinations.as_ref()?;
+        Some(busbar_contract::plane::SessionDestinationFacts {
+            declared: &held.declared,
+            denied: &held.denied,
+        })
+    }
 }
 
 /// The container a deployment files this plane's session hooks under.
@@ -645,6 +687,23 @@ const SESSION_OPEN_METHOD: &str = "session.open";
 /// The configuration key a deployment's declared session defaults are carried under, as the dialect's
 /// own `session` object in the notation the wire is written in.
 const SESSION_DEFAULTS_KEY: &str = "session_defaults";
+
+/// The configuration key a deployment's refused session destinations are carried under, as the
+/// section's own list in the notation the wire is written in.
+const DENIED_DESTINATIONS_KEY: &str = "denied_destinations";
+
+/// The destinations this deployment refuses a session open for: the operator's list, or none.
+///
+/// A list that does not read back as a list of names is NOT half-adopted and is NOT treated as
+/// "deny everything" — the empty set stands. A malformed policy that failed closed would take a
+/// deployment's whole plane down on a typo, and a malformed policy is not a policy: what an
+/// operator wrote is unreadable, and the honest reading of unreadable is that nothing was named.
+fn denied_destinations<'u>(ctx: &Ctx<'u>) -> Vec<String> {
+    ctx.config()
+        .get_str(DENIED_DESTINATIONS_KEY)
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .unwrap_or_default()
+}
 
 /// The declared session defaults for this call: the deployment's, or the section default.
 ///

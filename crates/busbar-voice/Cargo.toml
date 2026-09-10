@@ -132,6 +132,13 @@ metrics = { workspace = true, optional = true }
 # all of which this crate already links. No cycle: `busbar-plane-voice` names `busbar-contract` +
 # `busbar-voice-codec` and never this crate.
 busbar-plane-voice = { path = "../busbar-plane-voice" }
+# THE PLANE-ROW FACES. Named directly for ONE of them: `busbar_contract::plane::SessionDestinationFacts`
+# — the destination facts a Verify step judges a session open from, and the rule it judges them with.
+# The 1.5.x door's own Verify (`topology::SessionGauntlet`) and the composition's session Verify are two
+# loops asking one question, and a rule spelled twice is two policies that agree until one is edited.
+# It is ALREADY in this crate's closure (`busbar-plane-voice` names it and this crate names that), so
+# the line adds no crate to the shipped build; what it adds is the honesty of naming what is used.
+busbar-contract = { path = "../busbar-contract" }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering

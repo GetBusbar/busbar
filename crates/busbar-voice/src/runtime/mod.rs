@@ -54,11 +54,16 @@ pub struct VoiceRuntime {
     pub metering: Arc<dyn MeteringPort>,
     /// The server-side tool executor (the tool moat) shared across sessions.
     pub tools: Arc<dyn ToolExecutor>,
-    /// The plane's OPEN-PASS destination denial set — upstream models (destinations) a session
-    /// `begin_session` refuses at the shared gauntlet gate BEFORE any lease/durable open (zero bytes,
-    /// zero charge). Empty by default (no denial policy yet); the pre-admission hook a real model
-    /// blocklist fills. Named by `session_gauntlet` through [`Self::destination_denied`].
-    pub denied_destinations: std::collections::BTreeSet<String>,
+    /// THE OPERATOR'S OPEN-PASS DENIAL SET, as this generation's `streams.denied_destinations:`
+    /// declared it — a FACT this runtime carries and does not judge.
+    ///
+    /// It used to be judged here, by `destination_denied`, and read at the two mount sites that
+    /// opened a session; that made the mount the place a policy question was answered. The answer
+    /// is the Verify step's ([`crate::topology::SessionGauntlet`]), which is where every other
+    /// pre-admission refusal is decided, so what crosses to it is this list and no verdict.
+    ///
+    /// Empty is the posture a deployment that names nothing keeps: every destination proceeds.
+    pub denied_destinations: Vec<String>,
     /// THE LOCKED SESSION DEFAULTS every session opens with, read from the operator's `streams.session:`
     /// (VAD/media/tool set). Seeded from [`crate::config::StreamsCfg`] at [`build_runtime`]; the pump
     /// re-applies it server-side so a client `session.update` is reconciled against it, never trusted
@@ -91,7 +96,7 @@ impl VoiceRuntime {
             engine,
             metering,
             tools,
-            denied_destinations: std::collections::BTreeSet::new(),
+            denied_destinations: Vec::new(),
             session_defaults: defaults.session,
             session_max_secs: defaults.session_max_secs,
             context_window_tokens: defaults.context_window_tokens,
@@ -110,11 +115,16 @@ impl VoiceRuntime {
         self.session_max_secs = cfg.session_max_secs;
         self.context_window_tokens = cfg.context_window_tokens;
         self.max_output_tokens = cfg.max_output_tokens;
+        self.denied_destinations = cfg.denied_destinations.clone();
         self
     }
 
-    /// Builder: DENY the given upstream destinations (models) at the session open-pass gate. A session
-    /// naming a denied destination is refused before any lease/durable open (zero bytes, zero charge).
+    /// Builder: carry the given upstream destinations as this runtime's denial set, for a caller
+    /// that assembles a runtime without a `streams:` section to read one from.
+    ///
+    /// It states a FACT and no longer implies a decision: what a denied destination MEANS is the
+    /// Verify step's, and the sibling that answered it here (`destination_denied`) is gone with the
+    /// two mount sites that read it.
     #[must_use]
     pub fn with_denied_destinations<I, S>(mut self, destinations: I) -> Self
     where
@@ -124,13 +134,6 @@ impl VoiceRuntime {
         self.denied_destinations
             .extend(destinations.into_iter().map(Into::into));
         self
-    }
-
-    /// Whether the open-pass gate must REFUSE a session targeting `destination` (an upstream model on
-    /// the plane's denial set).
-    #[must_use]
-    pub fn destination_denied(&self, destination: &str) -> bool {
-        self.denied_destinations.contains(destination)
     }
 
     /// Bind a fresh [`SessionHandle`] for `(owner, id)` into this runtime's durable engine.

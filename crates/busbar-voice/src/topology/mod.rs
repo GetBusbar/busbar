@@ -227,26 +227,51 @@ impl std::error::Error for StartError {}
 
 /// THE VOICE PLANE's [`GauntletPlane`] for a SESSION open — its contribution to the shared open-pass
 /// gauntlet gate. `verify_destination` (stage 2, the ONE shared pre-admission check) refuses a session
-/// whose upstream `destination` (model) is on the plane's denial set, so the refusal lands BEFORE the
-/// lease/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is UNREACHABLE on the
-/// session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it fails closed with a
-/// neutral 500 if a future refactor ever mis-routed a session opener through the one-shot path.
+/// whose upstream `destination` (model) the deployment's configuration named, so the refusal lands
+/// BEFORE the lease/durable open (zero bytes, zero charge). `drive` (the one-shot stages 4+5) is
+/// UNREACHABLE on the session path — [`run_gauntlet_session`] only runs the gate, never `drive` — so it
+/// fails closed with a neutral 500 if a future refactor ever mis-routed a session opener through the
+/// one-shot path.
+///
+/// ## THE DECISION IS THIS STEP'S, AND IT USED NOT TO BE
+///
+/// This carried a `deny: bool` that its two construction sites computed, each by reading the plane's
+/// configured denial set at the mount and asking whether it contained the destination. That made the
+/// MOUNT the place a pre-admission policy question was answered, in two places, on a value the step
+/// then merely spelled — and it meant the same question got a second answer the day a third door
+/// opened a session. What crosses now is the FACT (the operator's list); the comparison happens here,
+/// at Verify, over `busbar_contract::plane::SessionDestinationFacts` — the same face, and the same
+/// rule, the composition's own session Verify asks.
+///
+/// The destination judged is read off the `GauntletRequest` this step is judging rather than passed
+/// in beside the list, because the request is what the door already resolved and a second copy of it
+/// is a second chance for the two to disagree.
 pub(crate) struct SessionGauntlet {
-    pub(crate) deny: bool,
+    /// The deployment's refused destinations, as this generation's `streams:` section named them.
+    ///
+    /// Owned rather than borrowed from the runtime: the WS door hands the gate to `accept_gauntlet`
+    /// and then MOVES the runtime into the post-upgrade closure, so a gate holding a borrow of it
+    /// would be a gate that pinned the session's own runtime to the length of the handshake. One
+    /// small operator list, copied once per open.
+    pub(crate) denied: Vec<String>,
 }
 
 #[async_trait::async_trait]
 impl GauntletPlane for SessionGauntlet {
-    fn verify_destination(&self, _req: &GauntletRequest<'_>) -> VerifyOutcome {
-        if self.deny {
+    fn verify_destination(&self, req: &GauntletRequest<'_>) -> VerifyOutcome {
+        let facts = busbar_contract::plane::SessionDestinationFacts {
+            declared: req.destination,
+            denied: &self.denied,
+        };
+        if facts.admits() {
+            VerifyOutcome::Proceed
+        } else {
             VerifyOutcome::Refuse(
                 axum::response::Response::builder()
                     .status(axum::http::StatusCode::FORBIDDEN)
                     .body(axum::body::Body::from("voice session destination denied"))
                     .expect("static refusal response builds"),
             )
-        } else {
-            VerifyOutcome::Proceed
         }
     }
 
@@ -302,7 +327,7 @@ where
         started: std::time::Instant::now(),
     };
     let plane: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
+        denied: rt.denied_destinations.clone(),
     });
     // The call-site the D3 witness pins: begin_session ACTUALLY calls run_gauntlet_session here.
     run_gauntlet_session(gauntlet_req, plane).map_err(|_refusal| StartError::DestinationRefused)?;
@@ -406,3 +431,10 @@ where
     });
     Ok((core, handle, guard))
 }
+
+// THE PUBLISHED BYTES of the open-pass destination refusal, pinned against a recording of the base.
+// It drives the real gate (`run_gauntlet_session`), so it needs the async runtime the rest of the
+// topology's cells need.
+#[cfg(test)]
+#[path = "../tests/destination_denial_bytes.rs"]
+mod destination_denial_bytes;

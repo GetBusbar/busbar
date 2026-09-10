@@ -91,6 +91,27 @@ pub struct VoiceSessionState {
     /// so a fresh vector per frame is fifty allocations a second the renderer was written to
     /// remove. This is where the one buffer lives.
     pub render_buf: Vec<u8>,
+    /// THE DESTINATION FACTS THIS OPEN IS JUDGED ON, read once and held.
+    ///
+    /// `None` until the projector (`crate::plane`'s `session_destinations`) has read the
+    /// deployment's configuration for this connection. Held rather than re-read because a set that
+    /// could change under a session already admitted on it would mean two answers to one question
+    /// inside one session — and the second one arrives after the socket is bound, where there is no
+    /// status line left to say it in.
+    pub destinations: Option<SessionDestinations>,
+}
+
+/// The destination this open declared and the set the deployment refuses, as the plane holds them.
+///
+/// Owned, because they are read off a configuration view that does not outlive the call that
+/// rendered them, and borrowed back out as `busbar_contract::plane::SessionDestinationFacts` at
+/// every later ask.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SessionDestinations {
+    /// The upstream destination the locked posture named, or empty where it named none.
+    pub declared: String,
+    /// The destinations this deployment's `streams:` section refuses a session open for.
+    pub denied: Vec<String>,
 }
 
 impl VoiceSessionState {

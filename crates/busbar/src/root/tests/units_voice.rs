@@ -2483,6 +2483,97 @@ mod driven {
         }
     }
 
+    /// A deployment that declares a session posture AND the destinations it refuses — the two keys
+    /// the plane's own row reads to render what a Verify step judges an open on.
+    struct DeniedConfig {
+        session_defaults: String,
+        denied_destinations: String,
+    }
+
+    impl busbar_contract::unit::ConfigView for DeniedConfig {
+        fn get_str(&self, key: &str) -> Option<&str> {
+            match key {
+                "session_defaults" => Some(&self.session_defaults),
+                "denied_destinations" => Some(&self.denied_destinations),
+                _ => None,
+            }
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// A deployment's declared posture naming one upstream model.
+    ///
+    /// Written as the wire's own document rather than built from the plane's type, because the key
+    /// carries a deployment's YAML as the notation the dialect is written in — what is under test is
+    /// that the plane's row reads what an operator wrote, and building it from the type here would
+    /// test the type against itself.
+    fn declaring(model: &str) -> String {
+        format!("{{\"model\":\"{model}\"}}")
+    }
+
+    /// THE DESTINATION DENIAL, ON THE COMPOSITION'S OWN VERIFY.
+    ///
+    /// The same question the 1.5.x front door answers at its open-pass gate, answered here by the
+    /// opening unit's Verify over facts the plane's row rendered — no `streams:` key named in this
+    /// tree, no verdict computed by whoever opened the session. `SessionDriver::open` runs the
+    /// opening unit BEFORE the table is touched and BEFORE the upgrade, so a refused session leaves
+    /// nothing behind and the caller is answered while there is still a status line to answer in.
+    ///
+    /// `Forbidden` is the composition's spelling: `outcome_of` maps a Verify refusal onto it, and
+    /// every wire below spells that 403 — the same status the mount publishes for the same refusal.
+    #[test]
+    fn a_denied_destination_is_refused_by_the_opening_units_verify_before_the_upgrade() {
+        let node = std::sync::Arc::new(node(serviceable()));
+        let units = ComposedUnits::new(std::sync::Arc::clone(&node));
+        let kernel = Kernel::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+
+        let facts = [
+            (tfacts::PATH, "/v1/realtime"),
+            (tfacts::CREDENTIAL, "token"),
+        ];
+        let open = || SessionOpen {
+            facts: &facts,
+            transport: "ws",
+            chain: &["tcp", "http", "ws"],
+            binding: BINDING_OPENAI_REALTIME,
+            bar: Bar::Credential,
+        };
+
+        // THE REFUSAL: the deployment named this open's destination in its denial set.
+        let denied = DeniedConfig {
+            session_defaults: declaring("blocked-model"),
+            denied_destinations: r#"["blocked-model"]"#.to_string(),
+        };
+        let driver = SessionLoopDriver::new(&kernel, &units, &node.plane, &denied, &gauge, &canary);
+        assert_eq!(
+            driver.open(open(), &SURFACE).err(),
+            Some(Outcome::Forbidden),
+            "a session whose destination the deployment refuses is refused at Verify — the same              answer, and the same status spelling, the 1.5.x mount publishes for it"
+        );
+        assert!(
+            node.bound(0).is_none() && node.bound(1).is_none(),
+            "and NOTHING was settled: a refused open seals no leg and binds no session"
+        );
+
+        // THE CONTROL, on the same denial set: a destination the deployment did not name opens.
+        let allowed = DeniedConfig {
+            session_defaults: declaring("allowed-model"),
+            denied_destinations: r#"["blocked-model"]"#.to_string(),
+        };
+        let driver =
+            SessionLoopDriver::new(&kernel, &units, &node.plane, &allowed, &gauge, &canary);
+        driver
+            .open(open(), &SURFACE)
+            .expect("a destination outside the denial set opens exactly as it did before");
+    }
+
     #[test]
     fn a_served_session_runs_unit_zero_at_the_upgrade_and_a_turn_per_client_event() {
         let node = std::sync::Arc::new(node(serviceable()));

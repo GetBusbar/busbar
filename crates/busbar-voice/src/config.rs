@@ -76,6 +76,18 @@ pub struct StreamsCfg {
     /// Output-token ceiling per response. Default 4096.
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
+    /// THE UPSTREAM DESTINATIONS THIS DEPLOYMENT REFUSES A SESSION OPEN FOR — the open-pass denial
+    /// set, named by the operator rather than by a builder no configuration file can reach.
+    ///
+    /// The set was a `VoiceRuntime` field with no key and no production caller, which meant the
+    /// plane carried a refusal an operator could not switch on: the policy existed only in the
+    /// plane's own tests. This is the key it always needed.
+    ///
+    /// A DENY list and not an allow list: an allow list would mean a deployment that names nothing
+    /// admits nothing, and every deployment names nothing today. Absent ⇒ empty ⇒ every destination
+    /// proceeds, which is byte-for-byte the posture every deployment has now.
+    #[serde(default)]
+    pub denied_destinations: Vec<String>,
 }
 
 // MANUAL `Default`, not derived: the serde field defaults above are non-trivial (the three ceilings
@@ -89,6 +101,7 @@ impl Default for StreamsCfg {
             session_max_secs: default_session_max_secs(),
             context_window_tokens: default_context_window_tokens(),
             max_output_tokens: default_max_output_tokens(),
+            denied_destinations: Vec::new(),
         }
     }
 }
@@ -103,6 +116,7 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
             session_max_secs: _,
             context_window_tokens: _,
             max_output_tokens: _,
+            denied_destinations: _,
         } = self;
         Vec::new()
     }

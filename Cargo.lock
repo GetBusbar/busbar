@@ -1239,6 +1239,7 @@ dependencies = [
  "async-trait",
  "axum",
  "busbar-api",
+ "busbar-contract",
  "busbar-plane-voice",
  "busbar-plugin",
  "busbar-substrate",

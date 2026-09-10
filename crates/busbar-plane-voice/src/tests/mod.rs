@@ -5,6 +5,7 @@
 pub mod harness;
 
 mod codec;
+mod session_destinations;
 mod session_params;
 mod ulaw;
 

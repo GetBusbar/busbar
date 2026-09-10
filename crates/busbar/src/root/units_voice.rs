@@ -1184,6 +1184,19 @@ pub struct VoiceUnit<'n> {
     /// subject, and a paid unit whose subject is "an arrival" names nobody at all: a bill nobody
     /// can be shown, and a revocation nobody can be traced through.
     principal: Mutex<Option<PrincipalId>>,
+    /// WHERE THIS OPEN SAID IT WAS GOING, and where the deployment says a session may not go, as
+    /// THE PLANE'S OWN ROW rendered them.
+    ///
+    /// Owned, and only on the opening unit. Owned because the plane rendered them off a
+    /// configuration view that lives for the open call and this unit outlives it by a stack frame;
+    /// only on the opening unit because admitting a session is a question asked once, and a later
+    /// frame re-asking it would end a paying conversation mid-sentence for a policy that was
+    /// already answered.
+    ///
+    /// It is here rather than read at the step for the reason every other configured fact on this
+    /// unit is: a step that went looking would be a second place the deployment's policy is read,
+    /// and this one would be reading a `streams:` key the composition has no business naming.
+    destinations: Option<busbar_plane_voice::session::SessionDestinations>,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -1197,6 +1210,17 @@ impl std::fmt::Debug for VoiceUnit<'_> {
 }
 
 impl<'n> VoiceUnit<'n> {
+    /// Carry the plane's own reading of where this open is going and what the deployment refuses.
+    ///
+    /// A builder rather than a constructor argument because it applies to exactly one shape — the
+    /// opening unit — and every other moment of a session would have to pass a `None` that means
+    /// nothing to it.
+    #[must_use]
+    pub fn judging(mut self, dests: busbar_plane_voice::session::SessionDestinations) -> Self {
+        self.destinations = Some(dests);
+        self
+    }
+
     /// A unit of one shape, on one session.
     #[must_use]
     pub fn new(node: &'n VoiceNode, shape: UnitShape, session: u64, epoch: u64) -> Self {
@@ -1232,6 +1256,7 @@ impl<'n> VoiceUnit<'n> {
             dialed: Mutex::new(None),
             sealed_finish: Mutex::new(None),
             principal: Mutex::new(None),
+            destinations: None,
         }
     }
 
@@ -1551,6 +1576,27 @@ impl Units for VoiceUnit<'_> {
         // chain and nothing may open it there; here the loop has already opened it and hands over
         // who it named. Recorded once, on the unit, for the same reason the grants are.
         *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal.clone());
+        // THE DEPLOYMENT'S OPEN-PASS DESTINATION POLICY, judged HERE and nowhere else.
+        //
+        // This is the question the 1.5.x front door answered at the mount, by reading the plane's
+        // configured denial set at the two sites that opened a session and handing the loop a
+        // verdict. It is a Verify question — where may this go, asked once, before anything is
+        // charged — so it is answered at Verify, over facts the PLANE rendered off its own row.
+        // Nothing in this file names a `streams:` key, and the rule is the face's own, so the two
+        // loops that ask it cannot drift into two policies.
+        //
+        // Refused BEFORE the tool-call wait below and before any destination is sealed: a session
+        // the deployment refuses must not plan a leg or seal anything, and Verify's own refusal is
+        // the last moment on this path where an upgrade still has a status line to carry an answer.
+        if let Some(dests) = self.destinations.as_ref() {
+            let facts = busbar_contract::plane::SessionDestinationFacts {
+                declared: &dests.declared,
+                denied: &dests.denied,
+            };
+            if !facts.admits() {
+                return Decision::refuse(token, Refusal::new(ReasonCode::PoolNotPermitted));
+            }
+        }
         // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
         // the value it waits on is the identifier this unit's own draft minted, which lives no
         // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
@@ -2191,6 +2237,15 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
         let mut unit = VoiceUnit::new(node, shape, read.session, read.clock.unix_secs)
             .on_dialect(dialect)
             .at_ms(now_ms);
+        // The plane's own reading of this open's destination policy, carried onto the unit that is
+        // handed it — the opening one. `None` on every other moment and from a plane that declares
+        // no policy, and this composition does not look at either: it copies, and the unit judges.
+        if let Some(dests) = read.destinations.as_ref() {
+            unit = unit.judging(busbar_plane_voice::session::SessionDestinations {
+                declared: dests.declared.to_string(),
+                denied: dests.denied.to_vec(),
+            });
+        }
         if let Some(credential) = read.credential() {
             unit = unit.with_credential(credential);
         }

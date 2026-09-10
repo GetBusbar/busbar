@@ -144,7 +144,9 @@ use busbar_caps::{
 use busbar_contract::bounded::{Ir, Labels, SlabBytes};
 use busbar_contract::dest::VerifiedDestination as PlaneDestination;
 use busbar_contract::ids::{OpClassId, SessionId, StreamId};
-use busbar_contract::plane::{Ingress, PlaneSessionState, Progress, SessionPlane, UnitDraft};
+use busbar_contract::plane::{
+    Ingress, PlaneSessionState, Progress, SessionDestinationFacts, SessionPlane, UnitDraft,
+};
 use busbar_contract::transport::driver::Outcome;
 use busbar_contract::transport::facts as tfacts;
 use busbar_contract::transport::session::{
@@ -218,6 +220,17 @@ pub struct SessionRead<'a, 'u> {
     pub facts: &'a [(String, String)],
     /// The node's clock at this moment.
     pub clock: Clock,
+    /// WHERE THIS OPEN SAID IT WAS GOING, and where the deployment says a session may not go, as the
+    /// plane's own row rendered them ([`busbar_contract::plane::SessionPlane::session_destinations`]).
+    ///
+    /// `None` on every moment that is not the open — a denial is a question about admitting a
+    /// session, asked once, and a later frame re-asking it would be a session ended mid-sentence for
+    /// a policy that was already answered — and `None` from a plane that declares no such policy.
+    ///
+    /// It travels HERE rather than being read by the unit, because a unit reading a plane's
+    /// configuration section would be the composition naming what a plane's keys mean. What crosses
+    /// is the plane's own reading of them.
+    pub destinations: Option<SessionDestinationFacts<'a>>,
 }
 
 impl SessionRead<'_, '_> {
@@ -834,6 +847,8 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
                 draft: Some(&draft),
                 facts: at.facts,
                 clock: at.clock,
+                // Not the open: the destination question was answered when the session was admitted.
+                destinations: None,
             },
         );
         let outcome = outcome_of(&ended);
@@ -1078,6 +1093,8 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
                         draft: Some(&draft),
                         facts,
                         clock,
+                        // Not the open: answered once, when the session was admitted.
+                        destinations: None,
                     },
                 );
                 let outcome = outcome_of(&ended);
@@ -1195,7 +1212,12 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             &labels,
             &arena,
         );
-        let state = self.plane.open_session(&ctx);
+        let mut state = self.plane.open_session(&ctx);
+
+        // WHERE THIS OPEN SAID IT WAS GOING, off the plane's own row and this deployment's own
+        // configuration — read HERE, before the unit, because it is the plane's reading and not the
+        // unit's, and carried across as facts so nothing in the loop names a `streams:` key.
+        let destinations = self.plane.session_destinations(&mut state, &ctx);
 
         // THE OPENING UNIT: the unit that answers the arrival, and the upgrade's answer is its
         // ending. It runs BEFORE the table is touched, so a session whose opening unit did not
@@ -1208,6 +1230,7 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
                 draft: None,
                 facts: &facts,
                 clock,
+                destinations,
             },
         );
         let outcome = outcome_of(&ended);
@@ -1380,6 +1403,8 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
                 draft: Some(draft),
                 facts,
                 clock,
+                // Not the open: answered once, when the session was admitted.
+                destinations: None,
             },
         );
         let outcome = outcome_of(&ended);

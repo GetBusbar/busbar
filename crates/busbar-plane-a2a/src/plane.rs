@@ -913,6 +913,17 @@ impl SessionPlane for A2aPlane {
 
     /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
     fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
+
+    /// This plane declares no destination policy at a session open, so the Verify step judges
+    /// nothing here. `None` and not an empty denial set: an empty set is a deployment that named a
+    /// policy and left it blank, and this plane has no key an operator could have named one in.
+    fn session_destinations<'p, 'u>(
+        &self,
+        _st: &'p mut PlaneSessionState,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::plane::SessionDestinationFacts<'p>> {
+        None
+    }
 }
 
 /// The agent's own name for a task, where a record leg came back carrying one.

@@ -334,12 +334,49 @@ pub struct SessionParams<'p> {
     pub declared: &'p [u8],
 }
 
+/// WHERE ONE SESSION OPEN DECLARED IT WAS GOING, and where the deployment's configuration says a
+/// session may not go.
+///
+/// The facts a Verify step judges a session OPEN's destination from, and nothing more: the two are
+/// carried together because a set with no destination beside it and a destination with no set beside
+/// it are each half of one question, and a step handed half of it would have to go and read the
+/// other half itself — which is the plane-specific configuration read this face exists to end.
+///
+/// The plane renders them off its OWN configuration view ([`SessionPlane::session_destinations`]).
+/// It does not decide: [`Self::admits`] is the rule, asked at the step, so one reading of one set
+/// answers for every door the plane is reachable through instead of one reading per door.
+///
+/// `denied` is a DENY set and deliberately not an allow set: an empty allow set would mean a
+/// deployment that names nothing admits nothing, and every existing deployment names nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionDestinationFacts<'p> {
+    /// The upstream destination this open's locked configuration declared. Empty where it declared
+    /// none, which is a session going nowhere in particular and not a session going to `""`.
+    pub declared: &'p str,
+    /// The destinations the deployment's configuration REFUSES a session open on this plane.
+    pub denied: &'p [String],
+}
+
+impl SessionDestinationFacts<'_> {
+    /// THE RULE, asked at the Verify step and stated once.
+    ///
+    /// A destination the deployment named in its denial set is refused; everything else proceeds.
+    /// It lives beside the facts rather than in either loop because there are two loops that ask it
+    /// — the substrate teller the 1.5.x mount's open rides and the composition's own session driver
+    /// — and a rule spelled twice is two policies that agree until one of them is edited.
+    #[must_use]
+    pub fn admits(&self) -> bool {
+        !self.denied.iter().any(|d| d == self.declared)
+    }
+}
+
 /// A plane that can run over a session transport.
 ///
 /// The registry requires this trait exactly when any transport the plane claims declares itself a
 /// session transport. The first two methods are where the plane's per-connection codec state comes
 /// from: one half for the client connection, one per upstream the session dials. The second pair is
-/// the projector a composition screens an OPEN through ([`SessionParams`]).
+/// the projector a composition screens an OPEN through ([`SessionParams`]); the last is the one a
+/// Verify step judges the open's destination from ([`SessionDestinationFacts`]).
 pub trait SessionPlane: Plane {
     /// Open the client half of this session's codec state.
     fn open_session<'u>(&self, ctx: &Ctx<'u>) -> PlaneSessionState;
@@ -359,4 +396,17 @@ pub trait SessionPlane: Plane {
     /// Take back the payload a rewrite tap committed, in place of the one the projector rendered.
     /// A payload this plane cannot read is not adopted; the locked one stands.
     fn adopt_session_params(&self, st: &mut PlaneSessionState, declared: &[u8]);
+
+    /// What this open declared as its destination and what this deployment's configuration refuses,
+    /// or `None` where this plane declares no destination policy at all — which is the posture a
+    /// plane keeps by saying nothing, and is not the same as an empty denial set.
+    ///
+    /// Borrowed out of the plane's own half of the session state for the same reason the projector
+    /// above is: the set is the plane's configuration read once at the open and held, so the answer
+    /// cannot change under a session that has already been admitted on it.
+    fn session_destinations<'p, 'u>(
+        &self,
+        st: &'p mut PlaneSessionState,
+        ctx: &Ctx<'u>,
+    ) -> Option<SessionDestinationFacts<'p>>;
 }

@@ -375,6 +375,16 @@ impl SessionPlane for FixturePlane {
 
     /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
     fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
+
+    /// This plane declares no destination policy at a session open, so the Verify step judges
+    /// nothing here — the `None` a plane with no such key makes, and not an empty denial set.
+    fn session_destinations<'p, 'u>(
+        &self,
+        _st: &'p mut PlaneSessionState,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::plane::SessionDestinationFacts<'p>> {
+        None
+    }
 }
 
 // ── a transport, implemented in full ──────────────────────────────────────────────────────────

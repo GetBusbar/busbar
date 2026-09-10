@@ -151,7 +151,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3489
+contract_caps = 3505
 grammar = 388
 contract_transport = 1027
 
@@ -161,6 +161,62 @@ contract_transport = 1027
 # `DetachedSession` (a test double, now the ws battery's own), `SessionBudgets::within` and
 # `Dispatch::is_duplex` (sugar, spelled by their callers) are gone; what stands is what a plane
 # declares and a wire reads. Each entry expires when the base carries the number.
+# ── declared raises: the DESTINATION-FACT FACE's coupling, in the four crates that name it and the
+# cells that drive it. Each expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "busbar × transport (busbar, transport): the destination refusal is answered on the session driver's OPEN — the one moment an upgrade still has a status line to carry a refusal — so the cell that proves it drives `SessionDriver::open` over the session-transport vocabulary the driver already implements, in the file that already drives it. A second, differently-named way to open a session written to keep this number still would be a second opinion about what an upgrade is, in the cell that is supposed to prove the refusal reaches one (1,021 -> 1,026)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-voice.codec.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-plane-voice × codec (busbar-plane-voice, codec): the destination the face reports is read off the SAME session shape the projector renders and the dialect codecs read and write (`busbar_voice_codec::ir::config::SessionConfig`), so the face names that shape once rather than inventing a second spelling of where a session is going. One use-line of the crate's own session shape, not a wire in a plane (28 -> 29)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-voice.transport.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar-plane-voice × transport (busbar-plane-voice, transport): the face's own cells build a plane context the way every other cell in this crate builds one — over the crate's existing test harness stack, whose key names the session wire. A second, differently-named stack written to keep this number still would be a second opinion about what a session's context looks like, in the file that is supposed to prove the facts reach a step. Harness use-lines in a test, not a wire in a plane (112 -> 118)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-voice × api (busbar-voice, api): the cell that pins the refusal's published BYTES drives the REAL open-pass gate, and building the request that gate judges means naming the neutral per-request context the production door names at the same call (`busbar_api::PlaneRequestCtx`). A cell that hand-built a refusal instead would pin bytes nothing published (65 -> 66)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "busbar-voice × plane (busbar-voice, plane): the destination denial STOPS being decided at this crate's two session-opening sites and becomes a Verify-step decision over `busbar_contract::plane::SessionDestinationFacts`, and the set it judges becomes a `streams:` key with a cell that carries it onto the runtime. The hits are the face and the key — a plane's own configuration section and the contract face a step reads it through — replacing a `destination_denied` predicate this crate answered for itself. The coupling this grows is the one the migration is FOR: it is the plane naming a face instead of a mount naming a policy (811 -> 826)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar-voice × transport (busbar-voice, transport): the published-bytes cell drives the open-pass gate through the same substrate gauntlet vocabulary the WS door drives it through (`run_gauntlet_session`, `GauntletPlane`, `GauntletRequest`), because the bytes under test are the ones THAT path publishes and a cell that reached them another way would be pinning a different response. Gate use-lines in a test, not a wire in a plane (290 -> 294)"
+
+# ── declared raise: THE DESTINATION-FACT FACE — what a Verify step judges a session open's
+# destination from, so that no step reads a plane's own configuration section. Contract surface (a
+# plane declares it), so it is paid for here; it expires when the base carries 3,505.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 16
+because = "FACE busbar_contract::plane::{SessionDestinationFacts, SessionDestinationFacts::admits, SessionPlane::session_destinations} — the facts a Verify step judges a session OPEN's destination from, and the rule it judges them with. It is declared because the question had TWO answers and neither was a face: the 1.5.x front door read the plane's denial set at its two session-opening sites and handed its gate a pre-computed verdict (a policy decided at the mount, twice), and the composition's own session Verify decided nothing about destinations at all. What a face buys is that the config's allowed-destination facts reach a step WITHOUT any step reading a plane's `streams:` key, and that one rule answers for every door the plane is reachable through instead of one reading per door. `denied` is a DENY set and not an allow set, so a deployment that names nothing keeps admitting everything — byte-for-byte the posture every deployment has today. `None` is `this plane declares no destination policy`, which the two neutral planes (a2a, mcp) answer explicitly; no default bodies, as the crate's own rule requires. 6 surface lines for the struct and its two fields, 4 for the rule, 6 for the declaration = 16 measured by scripts/loc-surface.py (3,489 -> 3,505)"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 16
+because = "The SAME destination-fact face, counted again by the older call-graph LOC rule over the same pair (3,491 -> 3,507). The two rows count it with the same counting rule and differ only in which script measures it, so the face is declared to both rather than to the one that happened to be red first"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 16
+because = "The SAME destination-fact face again, counted in the union the caps/contract pair belongs to (23,490 -> 23,506). The kernel did not move and no reachable busbar-unit-* file moved: the face is spelled in the contract's own vocabulary and names nothing behind a unit's trait"
+
 # ── declared raise: THE SESSION-PARAMETER PROJECTOR PAIR — the face a composition screens a session
 # OPEN through without naming what the bytes mean. It is contract surface (a plane declares it), so it
 # is paid for here; it expires when the base carries 3,489.
@@ -531,12 +587,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5408
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3491
+caps_contract_ceiling = 3507
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23490
+union_ceiling = 23506
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

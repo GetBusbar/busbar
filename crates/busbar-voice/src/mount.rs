@@ -1340,7 +1340,7 @@ where
         started: std::time::Instant::now(),
     };
     let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
-        deny: rt.destination_denied(&destination),
+        denied: rt.denied_destinations.clone(),
     });
     // The session budget: the coarse over-estimate at reserve, no flat fee, and the presenting key's
     // REAL remaining budget as the ceiling — the SAME shape `open_governed` uses for the one-shot
