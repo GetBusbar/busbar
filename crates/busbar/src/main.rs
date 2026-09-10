@@ -1720,7 +1720,7 @@ async fn run(data_workers: usize) {
     // every row as out for the life of the deployment, so it refuses instead.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
     if let Some(adapter) = store_adapter.as_ref() {
-        let now = busbar_core::store::now();
+        let now = busbar_substrate::store::now();
         let migration = root::migration::at_boot(
             adapter,
             &book.durability,
@@ -1738,7 +1738,7 @@ async fn run(data_workers: usize) {
                 // The metering day this boot lands in. Earlier days are the observability view of
                 // consumption already counted in the enforcement ledger above, so reading them too
                 // would open every bucket at twice what it spent.
-                metering_days: vec![busbar_core::governance::metering_bucket(now)],
+                metering_days: vec![busbar_substrate::governance::metering_bucket(now)],
                 // The opening entries carry no card version: they are balances carried forward from
                 // a release that had no card version to record, not priced lines this node made.
                 rate_card_version: 0,

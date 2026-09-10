@@ -508,10 +508,9 @@ impl LlmNode {
             // The header-arrival epoch, pinned once and reused for every charge and every refund
             // this unit makes, exactly as the legacy entry point pins it: a request whose response
             // completes in a later window than its headers arrived must not split its charges
-            // across two windows. Spelled out of the ONE arrival reading below rather than read
+            // across two windows. Spelled out of the ONE arrival reading above rather than read
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
-            arrived,
             charged_at: arrived.secs(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
@@ -1035,13 +1034,21 @@ pub struct LlmUnit<'n> {
     model_hint: Option<String>,
     /// When the request started, for the terminal's finish-stage latency observation.
     started: Instant,
-    /// THE UNIT'S PINNED ARRIVAL, as the drive read it once at the top.
+    /// THE UNIT'S PINNED ARRIVAL, BOTH READINGS, as the drive read it once at the top.
     ///
     /// The epoch every charge and every refund lands in is spelled out of it, and so is the pair the
     /// posting a client that went away leaves behind is dated and ordered by. Held whole rather than
-    /// as the seconds alone, because the unit is the one thing that outlives the await: an abandoned
-    /// end is settled from here, and a settlement that had to re-read a clock would land in whatever
-    /// window the unwind happened to reach.
+    /// as the seconds alone, for two reasons that point the same way.
+    ///
+    /// The unit is the one thing that outlives the await: an abandoned end is settled from here, and
+    /// a settlement that had to re-read a clock would land in whatever window the unwind happened to
+    /// reach.
+    ///
+    /// And the pricing needs the INSTANT, not only the window. `charged_at` below is this reading
+    /// truncated to the second the balance is keyed by; a millisecond is what the history resolves
+    /// at, and truncating to a window first and multiplying back would place a unit that arrived in
+    /// the last millisecond of a second at the start of it — on the wrong side of an entry appended
+    /// in between.
     arrived: Arrived,
     /// The pinned header-arrival epoch every charge and every refund lands in. Spelled out of
     /// `arrived` above, so the two readings of one arrival cannot disagree.
@@ -1050,14 +1057,6 @@ pub struct LlmUnit<'n> {
     /// metering step resolves what the unit consumed through it, and the late accrual resolves
     /// through the same one, so a live apply mid-flight cannot price one unit two ways.
     history: Option<crate::root::kernel::PinnedHistory>,
-    /// THE UNIT'S ARRIVAL, both readings, kept because the pricing needs the INSTANT and not only
-    /// the window.
-    ///
-    /// `charged_at` above is this reading truncated to the second the balance is keyed by; a
-    /// millisecond is what the history resolves at, and truncating to a window first and multiplying
-    /// back would place a unit that arrived in the last millisecond of a second at the start of it —
-    /// on the wrong side of an entry appended in between.
-    arrived: Arrived,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1564,9 +1563,6 @@ impl Units for LlmUnit<'_> {
             // THE PINNED ARRIVAL, not a clock read on the unwind. The abandoned unit's row lands on
             // the same balance and in the same window every other charge this unit made landed in.
             self.arrived,
-            // And under the card this unit was ADMITTED under, for the same reason: a settlement
-            // written on the unwind still names the rates the request agreed to at the door.
-            self.card.as_ref().map_or(0, |in_force| in_force.generation),
             ended,
         );
     }
