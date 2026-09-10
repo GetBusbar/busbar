@@ -2063,6 +2063,11 @@ count = "27"
 
 [[cell]]
 crate = "busbar-plane-mcp"
+kind = "contract-transport"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-mcp"
 kind = "control"
 count = "10"
 
@@ -2739,7 +2744,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-cost"
 kind = "caps"
-count = "10"
+count = "9"
 
 [[cell]]
 crate = "busbar-unit-cost"
