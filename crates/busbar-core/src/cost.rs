@@ -414,6 +414,56 @@ impl<'a> Chain<'a> {
     }
 }
 
+/// One resolved group as plain, comparable data. See [`CostModel::resolved_view`].
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedGroupView {
+    /// The group's name.
+    pub name: String,
+    /// The freeze flag, verbatim from config.
+    pub enabled: bool,
+    /// The in-flight gauge, folded to the minimum across repeats.
+    pub concurrent_cap: Option<u64>,
+    /// The parent's index in the resolved order, or none.
+    pub parent: Option<usize>,
+    /// The group's windowed enforcement buckets, in the order the projection materialised them.
+    pub buckets: Vec<ResolvedBucketView>,
+}
+
+/// One resolved enforcement bucket as plain, comparable data. See [`CostModel::resolved_view`].
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBucketView {
+    /// The ledger cell this bucket reads and charges.
+    pub bucket_id: String,
+    /// The window word.
+    pub window: &'static str,
+    /// The request-count cap, folded to the most restrictive.
+    pub requests_cap: Option<u64>,
+    /// The total-token cap, folded to the most restrictive.
+    pub tokens_cap: Option<u64>,
+    /// The uncached-input token cap.
+    pub tokens_input_cap: Option<u64>,
+    /// The output token cap.
+    pub tokens_output_cap: Option<u64>,
+    /// The cache-read token cap.
+    pub tokens_cache_read_cap: Option<u64>,
+    /// The cache-write token cap.
+    pub tokens_cache_write_cap: Option<u64>,
+    /// The spend cap in abstract cents.
+    pub budget_cap: Option<i64>,
+    /// The bucket's scope as `(kind, value)`, or none for a group-wide bucket.
+    pub scope: Option<(String, String)>,
+    /// The governing budget limit's downgrade target as `(kind, value)`, or none for a block.
+    pub downgrade_to: Option<(String, String)>,
+}
+
+/// A scope reference as the `(kind, value)` pair the comparison is over.
+#[cfg(any(test, feature = "test-support"))]
+fn scope_pair(s: &ScopeRef) -> (String, String) {
+    (s.kind.to_string(), s.value.to_string())
+}
+
 /// The resolved cost model: the effective integer rate table + the group limit topology + the
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
 pub struct CostModel {
@@ -619,6 +669,58 @@ impl CostModel {
             })
             .collect();
         (groups, group_idx)
+    }
+
+    /// THE RESOLVED TOPOLOGY AS PLAIN DATA, for the byte-identity cell and nothing else.
+    ///
+    /// The `groups:` projection lives twice in the tree while the retirement is in flight: here, and
+    /// in the composition root's own resolution of the same section into the door's table. Two
+    /// projections of the money topology that must agree exactly is how a deployment comes to be
+    /// ADMITTED against one set of buckets and BILLED against another — silently, because both
+    /// answers are internally consistent and neither knows the other exists.
+    ///
+    /// Every field the projection decides is here, in the order it decides them, so the comparison
+    /// is over the whole resolved value rather than over a summary of it: a divergence this view
+    /// cannot express is a divergence the cell cannot catch. The scope and downgrade references
+    /// carry their KIND as well as their value, because the kind is the one field the two
+    /// projections do not both keep.
+    ///
+    /// Test-support only, and it dies with this module: nothing shipped reads it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_view(&self) -> Vec<ResolvedGroupView> {
+        self.groups
+            .iter()
+            .map(|g| ResolvedGroupView {
+                name: g.name.clone(),
+                enabled: g.enabled,
+                concurrent_cap: g.concurrent_cap,
+                parent: g.parent,
+                buckets: g
+                    .buckets
+                    .iter()
+                    .map(|b| ResolvedBucketView {
+                        bucket_id: b.bucket_id.clone(),
+                        window: b.window,
+                        requests_cap: b.requests_cap,
+                        tokens_cap: b.tokens_cap,
+                        tokens_input_cap: b.tokens_input_cap,
+                        tokens_output_cap: b.tokens_output_cap,
+                        tokens_cache_read_cap: b.tokens_cache_read_cap,
+                        tokens_cache_write_cap: b.tokens_cache_write_cap,
+                        budget_cap: b.budget_cap,
+                        scope: b.scope.as_ref().map(scope_pair),
+                        downgrade_to: b.downgrade_to.as_ref().map(scope_pair),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// The resolved flat per-request fee, for the same cell. The fee is a clamped projection of a
+    /// configured number and the clamp is part of what has to agree.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resolved_fee(&self) -> i64 {
+        self.price_per_request_cents
     }
 
     /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
