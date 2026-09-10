@@ -14,12 +14,13 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
-    PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
-    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT, USAGE_BLOCKING_TASK_JOIN_FAILED,
-};
 use crate::state::App;
+use busbar_substrate::diagnostics::{
+    ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED,
+    PLUGIN_CATALOG_BLOCKING_TASK_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+    USAGE_BLOCKING_TASK_JOIN_FAILED,
+};
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 use super::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
@@ -1207,8 +1208,8 @@ impl AdminService {
                     // budget, so operators saw more headroom than the enforcer actually allows.
                     .derived_bucket_usage(&self.app.cost, &b.bucket_id, b.window, true, now)
                     .map_err(|e| {
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::GROUP_USAGE_READ_FAILED,
+                        busbar_substrate::diag_error!(
+                            busbar_substrate::diagnostics::GROUP_USAGE_READ_FAILED,
                             group = name, bucket = %b.bucket_id, err = %e,
                             "group usage read failed"
                         );

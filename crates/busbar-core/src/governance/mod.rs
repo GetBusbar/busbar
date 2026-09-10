@@ -12,9 +12,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::diagnostics::{
-    diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
+use busbar_substrate::diagnostics::{
+    GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
 };
+use busbar_substrate::{diag_debug, diag_warn};
 
 /// Seconds in a UTC day, for `budget_window`'s day/month arithmetic.
 ///
@@ -1085,8 +1086,8 @@ pub(crate) fn accrue_pending(
     metrics::counter!(crate::metrics::METERING_PENDING_COALESCED_TOTAL).increment(1);
     // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
     // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
-    crate::diagnostics::diag_debug!(
-        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
+    busbar_substrate::diag_debug!(
+        busbar_substrate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
         overflow_bucket = key.1,
         "metering accumulator at cap ({cap}); coalesced a new cell into the per-bucket overflow \
          sentinel — totals preserved, per-key attribution collapsed until the store recovers"

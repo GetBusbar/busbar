@@ -22,8 +22,9 @@ use async_trait::async_trait;
 
 use super::{ChainVerdict, Principal};
 use crate::config::RoleBindings;
-use crate::diagnostics::{diag_debug, SELF_SUBJECT_UNSAFE};
 use crate::governance::GovState;
+use busbar_substrate::diag_debug;
+use busbar_substrate::diagnostics::SELF_SUBJECT_UNSAFE;
 
 /// One issued self-serve key. The `secret` is the full busbar token (shown to the caller once); it is
 /// held as [`Redacted`](busbar_api::Redacted) so the struct's derived `Debug` cannot leak a LIVE

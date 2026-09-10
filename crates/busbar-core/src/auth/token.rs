@@ -37,8 +37,9 @@ use busbar_api::{
 use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
-use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
 use crate::state::{App, AppHandle};
+use busbar_substrate::diagnostics::{LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
+use busbar_substrate::{diag_debug, diag_warn};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
 const LOGIN_COOKIE: &str = "busbar_login";

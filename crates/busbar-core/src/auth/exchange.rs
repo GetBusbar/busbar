@@ -26,7 +26,8 @@ use super::self_keys::{
     IssuedKey,
 };
 use super::AuthMiddleware;
-use crate::diagnostics::{diag_error, TOKEN_EXCHANGE_MINT_FAILED};
+use busbar_substrate::diag_error;
+use busbar_substrate::diagnostics::TOKEN_EXCHANGE_MINT_FAILED;
 
 /// The exact path the exchange is mounted at. The auth middleware bypasses this path so the handler
 /// can run the chain itself; the GET browser flow is mounted at the same path.

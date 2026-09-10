@@ -114,8 +114,8 @@ fn push_target(
             projection,
         }),
         Ok(None) => {}
-        Err(msg) => crate::diagnostics::diag_error!(
-            crate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
+        Err(msg) => busbar_substrate::diag_error!(
+            busbar_substrate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
             "{msg}; disabling this webhook exporter"
         ),
     }
@@ -190,16 +190,16 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 /// delivery it guards.
 pub(crate) fn warn_webhook_delivery_failed(url: &str, outcome: Result<http::StatusCode, String>) {
     match outcome {
-        Ok(status) => crate::diagnostics::diag_debug!(
-            crate::diagnostics::WEBHOOK_DELIVERY_NON_2XX,
+        Ok(status) => busbar_substrate::diag_debug!(
+            busbar_substrate::diagnostics::WEBHOOK_DELIVERY_NON_2XX,
             webhook_url = mask_userinfo(url),
             status = status.as_u16(),
             "request-log webhook delivery returned a non-2xx status; this log was dropped"
         ),
         // The cause string is URL-free by construction (hyper errors never carry the URL — the
         // `without_url()` this arm used to need was only ever stripping reqwest's addition).
-        Err(e) => crate::diagnostics::diag_debug!(
-            crate::diagnostics::WEBHOOK_DELIVERY_TRANSPORT_ERROR,
+        Err(e) => busbar_substrate::diag_debug!(
+            busbar_substrate::diagnostics::WEBHOOK_DELIVERY_TRANSPORT_ERROR,
             webhook_url = mask_userinfo(url),
             error_kind = %e,
             "request-log webhook delivery failed (transport error); this log was dropped"
