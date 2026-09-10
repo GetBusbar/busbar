@@ -1860,7 +1860,25 @@ pub fn selftest<'a>(
                 "busbar-control-oauth2",
                 "//! The tcp transport is named once here, so this crate has a cell to mint.\n",
             );
-            let text = cx.read(LEDGER).unwrap_or_default();
+            // A CRATE LANDING ADDS ITS OWN NAME TO ITS KIND'S VOCABULARY, and two cells that
+            // already exist measure higher for it — `busbar-core` and `busbar-substrate` both name
+            // the issuer this crate is being extracted from. Those are ORDINARY raises with
+            // ordinary `[[cell]]` rows at the base, so the fixture re-pins them to what the planted
+            // tree measures; leaving them stale would red this case on a claim it is not about,
+            // and — worse — would let a reader think the mint had been refused.
+            let text = cx
+                .read(LEDGER)
+                .unwrap_or_default()
+                .replacen(
+                    &cell_row("busbar-core", "control", "5521"),
+                    &cell_row("busbar-core", "control", "5524"),
+                    1,
+                )
+                .replacen(
+                    &cell_row("busbar-substrate", "control", "352"),
+                    &cell_row("busbar-substrate", "control", "361"),
+                    1,
+                );
             ov.set(
                 LEDGER,
                 format!(
