@@ -1673,6 +1673,32 @@ land_selftest() {
   _st "union: a case owned by no shard is RED"        1 land_shard_union g 4 "$sd/lost"
   _stgrep "union: the lost cases are COUNTED"         "$ST_OUT" 'own 144 of 152 case\(s\). 8 case\(s\) were proven by nobody'
 
+  # THE LEG ITSELF, ON A REAL GATE. Everything above tests the arithmetic over fabricated logs; this
+  # runs `cargo xtask gate <g> --selftest --shard k/n` for real and asserts the leg's own verdict,
+  # so a `--shard` flag that stopped being accepted, a summary line that changed shape, or a union
+  # check wired to nothing would be caught here rather than on a landing. `segregation` is the
+  # cheapest gate in the registry (about 6 s whole); the built runner is required, not built here,
+  # because a self-test that compiles the workspace is one nobody runs.
+  if [ -x "$here/target/debug/xtask" ]; then
+    echo "land.sh selftest: the sharded leg, on a real gate"
+    local lg="$root/leg.log"
+    # `env` cannot call a shell function; a subshell keeps the variable out of the cases below.
+    _leg() { local nn="$1"; shift; ( LAND_SELFTEST_SHARDS="$nn"; land_selftest_leg "$@" ); }
+    _st "leg: unsharded is the whole list"  0 _leg "" \
+        segregation "$lg" XTASK_GATE_CEILING_SECS_SEGREGATION=3600
+    _stgrep "leg: unsharded prints no shard line" "$lg" '[0-9]+ case\(s\), 0 skipped'
+    _stno   "leg: unsharded says nothing about shards" "$lg" '^ *shard [0-9]+/'
+    _st "leg: three shards, union complete"  0 _leg 3 \
+        segregation "$lg" XTASK_GATE_CEILING_SECS_SEGREGATION=3600
+    _stgrep "leg: it names the union it proved" "$ST_OUT" '3 shard\(s\) green, [0-9]+ of [0-9]+ case\(s\), union complete'
+    _stgrep "leg: every shard's own count is in the log" "$lg" '^ *shard 3/3: [0-9]+ of [0-9]+ case\(s\)'
+    # A SHARD COUNT THIS SCRIPT REFUSES stops the leg before a single case runs.
+    _st "leg: a nonsense shard count is RED"  1 _leg eleven \
+        segregation "$lg" XTASK_GATE_CEILING_SECS_SEGREGATION=3600
+  else
+    printf '  SKIP %-46s (no target/debug/xtask in this tree)\n' "the sharded leg on a real gate"
+  fi
+
   echo "land.sh selftest: the construction gate's standing reds"
   _stgrep "standing reds: the list is not empty" <(land_construction_standing_reds) '[^[:space:]]'
   _stno   "standing reds: ceiling-rose is NOT excused" <(land_construction_standing_reds) '^ceiling-rose$'
