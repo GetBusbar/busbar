@@ -278,11 +278,52 @@ pub const OPENAI_LADDER: &[LadderClaim] = &[
     },
 ];
 
-/// Every carved-out dialect this crate's battery registers, as a boot would.
-pub const REGISTERED: &[DialectEntry] = &[DialectEntry {
-    locations: OPENAI,
-    ladder: OPENAI_LADDER,
+/// The `responses` row and rung, AS A TEST FIXTURE, for the same reason the row above is one.
+///
+/// It is a SECOND fixture and not a variant of the first, because the two dialects differ in every
+/// field a row has to offer: the conversation is at `/input` rather than `/messages`, the client's
+/// ceiling is one member name rather than two, and the written-to-cache quantity is REPORTED here
+/// and not reported there. A fixture that shared a row with its sibling would be this file making
+/// the mistake the split exists to prevent.
+pub const RESPONSES: Dialect = Dialect {
+    name: "responses",
+    model_location: Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model")),
+    max_response_pointers: &["/max_output_tokens"],
+    input_pointer: "/input",
+    tokens_in_pointer: "/usage/input_tokens",
+    tokens_out_pointer: "/usage/output_tokens",
+    cache_read_pointer: Some("/usage/input_tokens_details/cached_tokens"),
+    cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
+    scheme_alt: "bearer",
+    egress_scheme: "bearer",
+};
+
+/// The fixture's rung, at the number the real crate declares it.
+///
+/// Ten, because a rung is a statement about a CONTEST and a fixture registered at the wrong number
+/// would have the plane's cases winning and losing contests the shipped tree does not.
+pub const RESPONSES_LADDER: &[LadderClaim] = &[LadderClaim {
+    rung: 10,
+    dialect: "responses",
+    claim: claim(Selector::PathSuffix("/v1/responses")),
 }];
+
+/// Every carved-out dialect this crate's battery registers, as a boot would.
+///
+/// The order is the order the root's own table declares them in, because registration order is what
+/// breaks a tie between two dialects that declare the SAME rung — and a battery whose fixtures were
+/// ordered differently from the boot would be answering a contest the shipped tree answers the
+/// other way.
+pub const REGISTERED: &[DialectEntry] = &[
+    DialectEntry {
+        locations: OPENAI,
+        ladder: OPENAI_LADDER,
+    },
+    DialectEntry {
+        locations: RESPONSES,
+        ladder: RESPONSES_LADDER,
+    },
+];
 
 /// A plane configured the way a boot configures one: upstreams, and the dialects that registered.
 ///

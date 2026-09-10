@@ -147,8 +147,11 @@ busbar_contract::claims_from_ladder! {
     9 => "cohere", Selector::PathSuffix("/v2/embed"),
     9 => "cohere", Selector::PathSuffix("/v2/rerank"),
 
-    // Rung 10: one vendor's second, newer request surface.
-    10 => "responses", Selector::PathSuffix("/v1/responses"),
+    // RUNG 10 IS NOT HERE. It was one vendor's second, newer request surface, and it belongs to the
+    // dialect crate that claims it — `busbar-plane-llm-responses` declares it and the registry's
+    // merged walk interleaves it back at ten, so a request that reached rung 10 before reaches it
+    // still. It is the second gap in this table, and a second gap is what says the split is a
+    // pattern rather than one carve-out.
 
     // Rung 11: a path that names a dialect only because nothing tighter claimed it.
     11 => "anthropic", Selector::PathContains("/v1/messages"),

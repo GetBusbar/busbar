@@ -24,10 +24,12 @@
 //!
 //! ## What it does not cover, said out loud
 //!
-//! The five dialects that have not been carved out yet are still declared here, so their keys are
-//! still in this source and this test says nothing about them. Each leaves on its own line, and the
-//! list below is what grows as each one does — a dialect that moved crates and left its key behind
-//! is exactly the case this file is for.
+//! The dialects that have not been carved out yet are still declared here, so their keys are still
+//! in this source and this test says nothing about them. Each leaves on its own line, and the list
+//! below is what grows as each one does — a dialect that moved crates and left its key behind is
+//! exactly the case this file is for. It has grown once already: `responses` joined `openai` when
+//! `busbar-plane-llm-responses` took rung 10, and the fact that the row was the only edit this file
+//! needed is the pattern being a pattern.
 
 use std::fs;
 use std::path::Path;
@@ -36,7 +38,7 @@ use std::path::Path;
 ///
 /// ONE ROW PER CARVED-OUT DIALECT. The row is added in the same commit that removes the dialect's
 /// declarations, so there is no window in which a key is gone from the tables and unguarded here.
-const CARVED_OUT: &[&str] = &["openai"];
+const CARVED_OUT: &[&str] = &["openai", "responses"];
 
 /// Every shipped `.rs` file of this crate, as (path, text).
 fn shipped_source() -> Vec<(String, String)> {
