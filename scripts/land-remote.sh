@@ -108,9 +108,13 @@ set +e
 # land.sh's own exit status. There is no "the session ended so it must have finished" path.
 RLOG="busbar-prove/target/land-remote-$REF.log"
 RRC="busbar-prove/target/land-remote-$REF.rc"
-rsh_script "$HOST" "$REF" "${RARGS[@]}" <<'RUN'
+# THE RUNNER'S CEILING TRAVELS WITH THE JOB. The block below is a quoted heredoc, so a
+# `${XTASK_GATE_CEILING_SECS:-1800}` inside it is expanded on the BOX, where nothing sets it: the
+# runner's 3600 never arrived and the box judged with 1800 (seen: a green tree reported "hung").
+# It goes across as a positional, the one channel this script already owns.
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; shift
+REF="$1"; CEIL="$2"; shift 2
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
@@ -120,7 +124,7 @@ export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=6
 # mid-compile — seen once, as `Connection reset by peer` inside rustc.
 export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4300}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}"
-export XTASK_GATE_CEILING_SECS="${XTASK_GATE_CEILING_SECS:-1800}"
+export XTASK_GATE_CEILING_SECS="$CEIL"
 # LAND_REMOTE_INNER is the loop-breaker: this copy of land.sh must run the engine, not delegate.
 export LAND_REMOTE_INNER=1
 # The box may be running four proofs at once; the recorder's fixed port block would collide.
