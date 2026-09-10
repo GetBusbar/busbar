@@ -1650,7 +1650,10 @@ about a kind boundary, this register and that spec win.)*
   twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
   how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
   included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
-  ratchet down only. **Every ceiling in `qa/construction.toml` and `qa/kind-isolation.toml` ratchets
+  ratchet down only. One exemption, ruled: **a comment is not a coupling; the root's prose does not
+  score** — under `crates/busbar/src/**` a wholly-comment line and a `#[doc = "…"]` string score 0 in
+  every `root × <kind>` cell, while code, string literals, the root's integration tests and every
+  other crate are unchanged. **Every ceiling in `qa/construction.toml` and `qa/kind-isolation.toml` ratchets
   the same way**: `cargo xtask gate construction` holds each figure EQUAL to its measurement
   (`ceiling-slack`; `--write` re-pins downward only) and refuses any figure higher than it is at the
   branch's base (`ceiling-rose`). The one way through `ceiling-rose` is a **declared raise**: a face
