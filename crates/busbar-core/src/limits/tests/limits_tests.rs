@@ -53,14 +53,9 @@ fn uninstalled_accessors_return_historical_defaults() {
     // 1.5.3: no `webhook_delivery_timeout_secs()` accessor exists any more — the deadline is PER
     // named `request-log-webhook` export instance (`export::webhook::Target::timeout`), so there is
     // no single process-global value an accessor could honestly return.
-    // Discharges the warning two paragraphs up: `tls.rs`'s body-read-timeout test now installs
-    // its NON-default value through `InstallGuard` (restores on drop) instead of the bare
-    // `install`, so this assertion is safe to add — if a future test regresses back to a bare
-    // install that leaks its value, this fails hard instead of silently depending on run order.
-    assert_eq!(
-        request_body_read_timeout_secs(),
-        crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS
-    );
+    // The listener bounds (`tls_handshake_timeout_secs`, `request_body_read_timeout_secs`) are
+    // pinned to their uninstalled defaults by the composition root's own `tls` tests
+    // (`server_posture_matches_the_1_5_5_defaults`), beside the module that reads them.
 }
 
 /// THE COMMIT PATH — a build that reaches its `Ok` KEEPS the limits it installed. The other half of

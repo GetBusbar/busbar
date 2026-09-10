@@ -67,6 +67,10 @@ pub mod policy;
 /// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
 pub mod proto_install;
 pub mod registry;
+/// The inbound listeners — handshake termination (+ optional client-certificate verification), the
+/// plain accept loop and the connection-placement balancer — moved verbatim out of the legacy
+/// engine crate: the root owns the listeners it binds.
+pub mod tls;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;

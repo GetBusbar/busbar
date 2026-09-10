@@ -222,7 +222,12 @@ pub mod store;
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod tls;
+// The inbound listener module (the accept-and-serve loops, the connection-placement balancer and
+// the server-config builder) MOVED VERBATIM to the composition root, under `crates/busbar/src/root/`
+// with its file name unchanged: its only readers were the root's own `serve_thread_per_core` /
+// `serve_listener`, and every name it reached is neutral (the substrate's config sections, PEM
+// reader and installed limits; the values leaf's diagnostics; the ABI's secret-resolver trait).
+// Nothing re-exports it here: no reader remains in this crate.
 pub use busbar_substrate::transport;
 
 #[cfg(test)]

@@ -126,10 +126,50 @@ busbar-voice = ["busbar-voice-codec"]
 # `busbar_substrate::ingress::arrival::install_path_ingress`. The same commit takes the root's reach
 # into the legacy core DOWN by two and its total legacy reach DOWN by one, so the retirement is net
 # forward and this single name is the sideways step that paid for it.
+#
+# 48 -> 50, the same shape one step later: the inbound listeners moved verbatim out of the legacy
+# core (busbar-core/src/tls.rs, 917 lines) into `crates/busbar/src/root/tls.rs`, and the two names
+# the move newly puts in the root's mouth are the neutral homes of what the legacy module reached
+# through its own crate's re-exports: `busbar_substrate::tls::read_pem` (the one PEM reader) and
+# `busbar_substrate::config::limits::installed` (the listener-timeout slot). The same commit takes
+# the root's reach into the legacy core DOWN by two (`busbar_core::tls`, `busbar_core::config::
+# secret::SecretResolver` -- the listeners take the ABI's `SecretResolve` now) and leaves the total
+# at 90. Both steps are declared against the one base this row compares to.
 [gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
 from = 47
-to = 48
-because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
+to = 50
+because = "two verbatim moves out of busbar-core into the composition root. 47 -> 48: proto/registry.rs's boot installer (52 lines) to crates/busbar/src/root/proto_install.rs, bringing busbar_substrate::ingress::arrival::install_path_ingress. 48 -> 50: tls.rs (917 lines) to crates/busbar/src/root/tls.rs, bringing busbar_substrate::tls::read_pem and busbar_substrate::config::limits::installed. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 -> 23 and its total legacy reach falls 91 -> 90 -> 90 across the two commits."
+
+# kind-isolation cells of crate `busbar`, four of them, all one landing: the inbound listeners moved
+# VERBATIM out of the legacy core (`busbar-core/src/tls.rs`, 917 lines, and its 953-line test file)
+# into `crates/busbar/src/root/tls.rs` and `root/tests/tls.rs`. The matrix scans every spelling in
+# the moved text, so the words the listener says -- its own transport, the instance ids of its
+# neighbours, the ABI's `SecretRef`/`SecretResolve` (whose segments spell the secret kind's
+# `secret-ref`) -- travel with it: `busbar-core`'s rows fall by what these rise by, and the `busbar x legacy` cell FALLS (97 -> 95) because the
+# listeners no longer spell the legacy resolver type. Keyed by identity, never ordinal.
+[gate.ceiling_raises."cell.busbar.transport.count"]
+file = "qa/kind-isolation.toml"
+from = 939
+to = 1143
+because = "moved verbatim from busbar-core/src/tls.rs (917 lines) + tests/tls_tests.rs (953 lines) to crates/busbar/src/root/tls.rs + root/tests/tls.rs: the listener's own transport words (the moved files measure 104 + 100). busbar-core x transport falls 2117 -> 1907 in the same commit."
+
+[gate.ceiling_raises."cell.busbar.secret.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 28
+because = "moved verbatim from busbar-core/src/tls.rs + tests/tls_tests.rs to crates/busbar/src/root/tls.rs + root/tests/tls.rs: the ABI's `SecretRef` spells the secret kind's `secret-ref` (segment scanner), and the listeners take `busbar_api::SecretResolve` in place of the legacy resolver. busbar-core x secret falls 319 -> 300 in the same commit."
+
+[gate.ceiling_raises."cell.busbar.api.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 129
+because = "moved verbatim from busbar-core/src/tls.rs + tests/tls_tests.rs to crates/busbar/src/root/tls.rs + root/tests/tls.rs: the listeners and their tests name the ABI (`busbar_api::{SecretRef, SecretResolve, resolve_builtin}`) where the legacy module named its own crate's re-exports -- the direction the retirement runs."
+
+[gate.ceiling_raises."cell.busbar.substrate.count"]
+file = "qa/kind-isolation.toml"
+from = 9
+to = 11
+because = "moved verbatim from busbar-core/src/tls.rs to crates/busbar/src/root/tls.rs: the two new spellings are the values leaf's crate name (`busbar_substrate_values`) on the `diag_warn!` import and on the translate-body cap (`proxy::max_translate_body_bytes`) -- the neutral homes, in place of the legacy crate's re-exports."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -1005,7 +1045,7 @@ ceiling = 90
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 25
+figure = 23
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1032,7 +1072,13 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
 # The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
 # this is the sideways step the per-crate rows exist to make visible, not a regression.
-figure = 48
+#
+# 48 -> 50 (declared in the same `[gate.ceiling_raises]` entry): the inbound listeners moved out of
+# the legacy core into `crates/busbar/src/root/tls.rs`, and the two names they brought that the root
+# had never spelled are `busbar_substrate::tls::read_pem` and `busbar_substrate::config::limits::
+# installed` -- the neutral homes the legacy module reached through its own re-exports. Core's prefix
+# fell 25 -> 23 in the same commit and the TOTAL held at 90.
+figure = 50
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

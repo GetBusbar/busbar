@@ -114,8 +114,6 @@ flate2 = { workspace = true }
 rmcp = { workspace = true, optional = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
-hyper-util = { workspace = true }
-tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 

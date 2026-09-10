@@ -880,6 +880,11 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
 /// deterministic way to seed a large key set.
 #[test]
 fn test_key_gauge_limit_truncation() {
+    // `key_gauge_limit()` reads the PROCESS-GLOBAL limits slot, and the `limits` tests in this
+    // binary install a DISTINCTIVE `key_gauge_limit` under `LIMITS_TEST_LOCK`; a reader that does
+    // not hold the same lock can see that value mid-test and fail for a reason that has nothing to
+    // do with the truncation it asserts. Held for the whole body, like every other reader.
+    let _limits = crate::limits::LIMITS_TEST_LOCK.blocking_lock();
     init();
     // The default key-gauge limit is 2000 (no limits installed in this test ⇒ the historical
     // default). We use the same value here to keep the test self-consistent.
@@ -1018,6 +1023,10 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
 fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
+    // Same lock, same reason as `test_key_gauge_limit_truncation`: the boundary asserted here is
+    // the installed `key_gauge_limit`, so a sibling's distinctive install landing mid-scrape moves
+    // the boundary out from under the assertion.
+    let _limits = crate::limits::LIMITS_TEST_LOCK.blocking_lock();
     init();
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 

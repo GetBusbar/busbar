@@ -58,20 +58,10 @@ fn get() -> Option<LimitsResolved> {
 // figure or an admission figure -- it is a transport body cap, so its home is the neutral values
 // leaf that already owns it, not a unit. This crate's four call sites now name that home.
 
-/// TLS handshake wall-clock bound (seconds), read per accepted connection in `tls::serve_one`.
-pub(crate) fn tls_handshake_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.tls_handshake_timeout_secs)
-        .unwrap_or(crate::config::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS)
-}
-
-/// Inbound request-BODY inter-frame read bound (seconds), read per served connection in `tls`. Bounds
-/// a slow-loris that dribbles the request body after headers are complete.
-pub(crate) fn request_body_read_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.request_body_read_timeout_secs)
-        .unwrap_or(crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS)
-}
+// The two LISTENER bounds (`tls_handshake_timeout_secs`, `request_body_read_timeout_secs`) are read
+// by the composition root's `tls` module, which moved out of this crate: it reads the same
+// `busbar_substrate::config::limits::installed()` slot with the same defaults, so the accessors that
+// only that module called are gone from here rather than left as dead code.
 
 /// Cap on a buffered upstream ERROR / verbatim-relay body (bytes).
 pub(crate) fn upstream_error_body_max_bytes() -> usize {
