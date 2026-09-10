@@ -3,22 +3,22 @@
   "version": "busbar 1.5.5",
   "recorded": 927,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502",
+  "harness_rev": "7b8a224fd8edc2f778aaee043001b9f4745bd174bea9030867244490ddc4d00d",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
     "note": [
       "THE RECORDING'S HISTORY, KEPT WHERE IT CANNOT BE MISREAD AS ITS PROVENANCE. The differ's skew",
-      "guard compares the whole provenance SET — harness_rev, harness_rev_history, harness_rev_recorded",
-      "and merged_from[].harness_rev — because one scalar comparing equal never proved the two sides were",
+      "guard compares the whole provenance SET \u2014 harness_rev, harness_rev_history, harness_rev_recorded",
+      "and merged_from[].harness_rev \u2014 because one scalar comparing equal never proved the two sides were",
       "made by the same harness. 2026-09-10: this golden was MERGED again, to add the 12",
       "llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells (the recording busbar-unit-egress's",
       "first activation on the money path is gated on; L2 MOVE 7). The 915 existing cells were NOT",
-      "re-recorded and not one of their bytes changed — the cells.json change behind the new revision is",
+      "re-recorded and not one of their bytes changed \u2014 the cells.json change behind the new revision is",
       "purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps.json entry, so no",
       "existing cell's definition, request or normalization moved. The merge left the set with two",
       "members (bba66fd7, the linux part's revision, and d63a7c5e, this tree's), which no candidate",
-      "recorded from this tree could ever equal without --allow-harness-skew — a flag that would then",
+      "recorded from this tree could ever equal without --allow-harness-skew \u2014 a flag that would then",
       "hide real skew as well. So the provenance is re-normalised to the ONE revision this tree computes,",
       "exactly as it was on 2026-09-07, and the merge history is kept here, in a field the tool does not",
       "read.",
@@ -26,29 +26,29 @@
       "`binary_sha256`, `version` and the 915 ledger rows are as the EC2 re-record left them; `recorded`",
       "rises 915 -> 927 and 12 ledger rows are ADDED, which is the 12 new recordings and nothing else.",
       "DOCUMENTATION ONLY: not one cells/*.json byte changed, and neither did the ledger, `recorded`,",
-      "2026-09-10 (EG-3): re-normalised again after the one-cell re-record described in `merges[1]`. The top-level provenance is the single revision this tree computes; the merge's two revisions live in `merges`."
+      "2026-09-10 (EG-3): re-normalised again after the one-cell re-record described in `merges[1]`. The top-level provenance is the single revision this tree computes; the merge's two revisions live in `merges`.",
+      "2026-09-10 (EG-5): re-normalised again after the twelve-cell re-record described in the last `merges` entry. The top-level provenance is the single revision this tree computes; the merge's parts and revisions live in `merges`."
     ],
     "merged_from": [
       {
-        "part": "rec-only",
-        "recorded": 913,
-        "at": "2026-09-07T21:36:12Z",
-        "binary": "<oracle-cache>/1.5.5/busbar",
-        "harness_rev": "f2094498a34de8d8ba7b8e002dd0ac0988705e3f1c20b8d765d51039088480a4"
-      },
-      {
-        "part": "rec2",
-        "recorded": 2,
+        "part": "golden-part",
+        "recorded": 915,
         "at": "2026-09-07T22:16:53Z",
         "binary": "<oracle-cache>/1.5.5/busbar",
-        "harness_rev": "3fea008790b3df6340d6c6f5e9cd73ebc8a013a9b1be0c088790d1f7a596c74d"
+        "harness_rev": "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502"
+      },
+      {
+        "part": "eg5-stream-part",
+        "recorded": 12,
+        "at": "2026-09-10T23:23:51Z",
+        "binary": "<oracle-cache>/1.5.5/busbar",
+        "harness_rev": "7b8a224fd8edc2f778aaee043001b9f4745bd174bea9030867244490ddc4d00d"
       }
     ],
     "harness_rev_history": [
-      "f2094498a34de8d8ba7b8e002dd0ac0988705e3f1c20b8d765d51039088480a4",
-      "2ef756c92bffc940613591c8e7b2831952fecfb8f35a2d1547dc6d8e8e122ba7"
+      "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502"
     ],
-    "harness_rev_recorded": "3fea008790b3df6340d6c6f5e9cd73ebc8a013a9b1be0c088790d1f7a596c74d",
+    "harness_rev_recorded": "7b8a224fd8edc2f778aaee043001b9f4745bd174bea9030867244490ddc4d00d",
     "re_stamps": [
       {
         "from": "785f6b673d56eb3329467edfe34cc9e7f3b4b0d6600c124170ec92df8b1da4c4",
@@ -94,7 +94,12 @@
       {
         "from": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5",
         "to": "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502",
-        "why": "2026-09-10 (EG-3) ONE CELL RE-RECORDED, and the revision moved for two reasons, both in the harness-rev file set: oracle.pin v0.3.7 -> v0.3.11, and accepted-differences.json gained F-011v (the openapi trap cell's three named leaves, one of them the version literal) while F-011b narrowed to two cells. cells.json did not move and no driver moved. THIS IS NOT A STAMP ONTO A REVISION NOTHING COMPUTES: `harness_rev` here IS what this tree's ./bin/oracle harness-rev prints, because the one new cell was recorded from a checkout of exactly this tree, register and pin included. The merge's own history — both parts, both revisions, the control recording and the note — is kept verbatim under `provenance_history.merges`, a field the tool does not read, and `harness_rev_history`/`merged_from`/`harness_rev_recorded` are left out of the top level so the provenance SET is the single revision a candidate recorded from this tree computes (diff-cells.py provenance_revs), rather than a set no candidate could equal without --allow-harness-skew, a flag that would hide real skew as well. `host_triple` and `at` are the 926-cell part's, because they say which machine and when the BULK of this recording was made; the re-recorded cell's own host and time are in `provenance_history.merges`. THE OTHER 926 CELLS WERE NOT RE-RECORDED AND NOT ONE OF THEIR BYTES CHANGED."
+        "why": "2026-09-10 (EG-3) ONE CELL RE-RECORDED, and the revision moved for two reasons, both in the harness-rev file set: oracle.pin v0.3.7 -> v0.3.11, and accepted-differences.json gained F-011v (the openapi trap cell's three named leaves, one of them the version literal) while F-011b narrowed to two cells. cells.json did not move and no driver moved. THIS IS NOT A STAMP ONTO A REVISION NOTHING COMPUTES: `harness_rev` here IS what this tree's ./bin/oracle harness-rev prints, because the one new cell was recorded from a checkout of exactly this tree, register and pin included. The merge's own history \u2014 both parts, both revisions, the control recording and the note \u2014 is kept verbatim under `provenance_history.merges`, a field the tool does not read, and `harness_rev_history`/`merged_from`/`harness_rev_recorded` are left out of the top level so the provenance SET is the single revision a candidate recorded from this tree computes (diff-cells.py provenance_revs), rather than a set no candidate could equal without --allow-harness-skew, a flag that would hide real skew as well. `host_triple` and `at` are the 926-cell part's, because they say which machine and when the BULK of this recording was made; the re-recorded cell's own host and time are in `provenance_history.merges`. THE OTHER 926 CELLS WERE NOT RE-RECORDED AND NOT ONE OF THEIR BYTES CHANGED."
+      },
+      {
+        "from": "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502",
+        "to": "7b8a224fd8edc2f778aaee043001b9f4745bd174bea9030867244490ddc4d00d",
+        "why": "2026-09-10 (EG-5) TWELVE CELLS RE-RECORDED, and the revision moved for three reasons, all in the harness-rev file set: oracle.pin v0.3.11 -> v0.3.13 (the derived-from-body relation), scripts/llm-stream-fault.sh (the mid-stream driver counts the body it RECORDS, not the bytes it received), and accepted-differences.json (M-4's rationale corrected where it named a gap the tool now closes). cells.json did not move. THIS IS NOT A STAMP ONTO A REVISION NOTHING COMPUTES: `harness_rev` here IS what this tree's ./bin/oracle harness-rev prints, because the 12 cells were recorded from a checkout of exactly this tree, register and pin included. `host_triple` and `at` are the 915-cell part's, because they say which machine and when the BULK of this recording was made; the fresh part's own time is in `provenance_history.merges`. THE OTHER 915 CELLS WERE NOT RE-RECORDED AND NOT ONE OF THEIR BYTES CHANGED, and of the 12 that were, 11 came back byte-identical."
       }
     ],
     "merges": [
@@ -127,7 +132,7 @@
             "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7"
           }
         ],
-        "host_triple_note_at_merge": "the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e — the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved."
+        "host_triple_note_at_merge": "the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e \u2014 the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved."
       },
       {
         "at": "2026-09-10",
@@ -158,24 +163,50 @@
           "eg3-restream-part": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7"
         },
         "host_triple_at_merge": "x86_64-unknown-linux-gnu (both parts; no host skew, and none was allowed)",
-        "control_recording": "PROVEN, NOT ASSUMED, THAT THE DELTA IS THE TOOL AND NOT THE PLATFORM: the cell being replaced was recorded on aarch64-apple-darwin, so the same cell was ALSO recorded on each fleet box, from the same Linux binary, with the pin held back at v0.3.7 — and both control captures are BYTE-IDENTICAL to the committed darwin recording they replace (sha256 8e8d9f26a34d09173b2170fcf5f733581c4533d7a99659b62f7bc6d935e1b8bc, all three). So this cell's move from a truncated buffered JSON body to a cut SSE stream is the mock's new shape and nothing else; the cross-triple re-record contributed zero bytes of drift."
+        "control_recording": "PROVEN, NOT ASSUMED, THAT THE DELTA IS THE TOOL AND NOT THE PLATFORM: the cell being replaced was recorded on aarch64-apple-darwin, so the same cell was ALSO recorded on each fleet box, from the same Linux binary, with the pin held back at v0.3.7 \u2014 and both control captures are BYTE-IDENTICAL to the committed darwin recording they replace (sha256 8e8d9f26a34d09173b2170fcf5f733581c4533d7a99659b62f7bc6d935e1b8bc, all three). So this cell's move from a truncated buffered JSON body to a cut SSE stream is the mock's new shape and nothing else; the cross-triple re-record contributed zero bytes of drift."
+      },
+      {
+        "at": "2026-09-10",
+        "why": "EG-5: RE-RECORDED THE WHOLE llm.stream MID-STREAM FAMILY -- all 12 cells, 6 dialects x {stream-error, cut} -- and nothing else. Three harness-rev files moved: oracle.pin v0.3.11 -> v0.3.13 (the derived-from-body relation), scripts/llm-stream-fault.sh (the driver now records the byte length of the body AS RECORDED rather than of the bytes it received), and accepted-differences.json (M-4's rationale corrected). A driver change is a re-record, not a re-stamp, so the family was recorded again from the SAME published 1.5.5 binary (84bde0a0, busbar-x86_64-unknown-linux-gnu) on a free fleet box. THE MEASURED RESULT: 11 of the 12 fresh cells are BYTE-IDENTICAL to the rows they replace, and the twelfth moved by exactly one integer -- llm.stream|responses|cut's effects.stream_fault.body_bytes 482 -> 429, which is the length of that cell's own recorded body. The stale 12 were removed from the 927-cell part before the merge (a cell id present in two parts is refused), so the merged recording is 915 cells verbatim + 12 fresh: `recorded` 927 -> 927, ledger rows 2329 -> 2329, and not one of the 915 ledger rows' bytes moved. This merge also RETIRES the last darwin provenance in this golden: the 11 cells that had been recorded on aarch64-apple-darwin are now Linux recordings from the Linux build, so every one of the 927 cells was recorded on x86_64-unknown-linux-gnu from binary 84bde0a0 and there is no host skew left to allow.",
+        "parts": [
+          {
+            "part": "golden-part",
+            "recorded": 915,
+            "at": "2026-09-07T22:16:53Z",
+            "binary": "<oracle-cache>/1.5.5/busbar",
+            "harness_rev": "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502",
+            "note": "the previous committed golden with all 12 llm.stream cells removed; every one of the 915 cells/*.json is byte-identical to what it was, and so is its ledger row"
+          },
+          {
+            "part": "eg5-stream-part",
+            "recorded": 12,
+            "at": "2026-09-10T23:23:51Z",
+            "binary": "<oracle-cache>/1.5.5/busbar",
+            "harness_rev": "7b8a224fd8edc2f778aaee043001b9f4745bd174bea9030867244490ddc4d00d",
+            "note": "the 12 llm.stream cells. Recorded FOUR times in all: twice on each of two free fleet boxes (i-0ec2cd41568046f68 and i-0ea456b0528643850), and all four recordings are byte-identical cell for cell -- llm.stream|responses|cut hashes 30c4e9b2eece99f6c66165e89c15567efb41506da744e7a2b5777567c670cf77 in every one of them."
+          }
+        ],
+        "harness_rev_history_at_merge": [
+          "ba6558cc6feb83c3424c1e8ba603d1f5c947325d40aecf1b1c12d38c3124a502"
+        ],
+        "binary_sha256_at_merge": {
+          "golden-part": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
+          "eg5-stream-part": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7"
+        },
+        "host_triple_at_merge": "x86_64-unknown-linux-gnu (both parts; no host skew, and none was allowed)",
+        "what_moved": "ONE FIELD, ON ONE CELL. A per-cell diff of the fresh 12 against the 12 they replace reports exactly one difference in the whole family: llm.stream|responses|cut /effects/stream_fault/body_bytes 482 -> 429. Status, headers, body, frames, the client's transport outcome, usage, metrics and egress are identical on all 12. The 482 was a count of the bytes that came off the socket; the 429 is the length of the body this cell records, and the two differ by the 53 bytes normalize.py rewrote (a 48-character synthesized `resp_` id -> `<ID>`, a ten-digit `created_at` -> `0`)."
       }
     ]
   },
-  "harness_rev_note": "EG-3, 2026-09-10: ONE cell re-recorded, llm.stream|responses|cut, from the same published 1.5.5 x86_64-unknown-linux-gnu binary (84bde0a0) on a fleet prove box, under the pinned busbar-oracle v0.3.11 whose mock gives /v1/responses a real SSE stream on the fault verbs, so a cut on that door finally cuts a stream instead of a buffered JSON body. The other 926 cells are the previous recording verbatim; the stale cell was removed from that part before the merge, because a cell id present in two parts is refused. | Earlier note: 2026-09-10 RE-NORMALISED PROVENANCE to a single revision d63a7c5e (the tree's own ./bin/oracle harness-rev) after the llm.stream merge. The merge's own history — both parts, both revisions, both host triples and the merge note — is kept verbatim under `provenance_history.merges`, a field the tool does not read. `host_triple` and `at` are restored to the 915-cell part's, because they say which machine and when the BULK of this recording was made; the 12 new cells' own host and time are in `provenance_history.merges`. NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED. | the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e — the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved. | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev — merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 — and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0…), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed — every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
+  "harness_rev_note": "EG-5, 2026-09-10: the 12 llm.stream|<dialect>|<fault> mid-stream cells re-recorded from the same published 1.5.5 x86_64-unknown-linux-gnu binary (84bde0a0) on a fleet box, under the harness revision this tree computes (7b8a224f: oracle.pin v0.3.11 -> v0.3.13, llm-stream-fault.sh now counts the body it RECORDS, accepted-differences.json's M-4 rationale corrected). The 915 cells of the golden part were NOT re-recorded and not one of their bytes changed; the 12 stale rows were removed from that part before the merge, because a cell id present in two parts is refused. Of the 12 fresh cells, 11 are byte-identical to the rows they replace and one moved by one integer: llm.stream|responses|cut's effects.stream_fault.body_bytes 482 -> 429, the recorded body's own length. | Earlier note: EG-3, 2026-09-10: ONE cell re-recorded, llm.stream|responses|cut, from the same published 1.5.5 x86_64-unknown-linux-gnu binary (84bde0a0) on a fleet prove box, under the pinned busbar-oracle v0.3.11 whose mock gives /v1/responses a real SSE stream on the fault verbs, so a cut on that door finally cuts a stream instead of a buffered JSON body. The other 926 cells are the previous recording verbatim; the stale cell was removed from that part before the merge, because a cell id present in two parts is refused. | Earlier note: 2026-09-10 RE-NORMALISED PROVENANCE to a single revision d63a7c5e (the tree's own ./bin/oracle harness-rev) after the llm.stream merge. The merge's own history \u2014 both parts, both revisions, both host triples and the merge note \u2014 is kept verbatim under `provenance_history.merges`, a field the tool does not read. `host_triple` and `at` are restored to the 915-cell part's, because they say which machine and when the BULK of this recording was made; the 12 new cells' own host and time are in `provenance_history.merges`. NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED. | the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e \u2014 the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved. | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev \u2014 merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 \u2014 and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0\u2026), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed \u2014 every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
   "binary_sha256_pins": [
     {
-      "part": "golden-part (the 915 originally recorded on Linux CI)",
+      "part": "golden-part (the 915 recorded on Linux CI)",
       "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
       "pinned_as": "busbar-x86_64-unknown-linux-gnu"
     },
     {
-      "part": "stream-part (11 of the 12 llm.stream cells)",
-      "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
-      "pinned_as": "busbar-aarch64-apple-darwin"
-    },
-    {
-      "part": "eg3-restream-part (llm.stream|responses|cut, re-recorded 2026-09-10)",
+      "part": "eg5-stream-part (the 12 llm.stream cells, re-recorded 2026-09-10)",
       "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
       "pinned_as": "busbar-x86_64-unknown-linux-gnu"
     }
