@@ -718,11 +718,26 @@ land_shard_remote() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
   local ref="landshard-$stamp"
   ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest --shard "1/$n" >"$dir/shard-1.log" 2>&1 ) &
   pid1=$!
+  # ONE SHARD PER BOX, AND NEVER THIS BOX. The allocator is a round-robin cursor shared by every
+  # agent on the host, so two consecutive picks can perfectly well hand back the same box — and
+  # this box is already running shard 1. Two shards on one box is the wall clock of one box, which
+  # is the whole thing this leg exists to stop paying; this box taking a second is worse still.
+  local me used=""
+  me="$(cat /var/lib/cloud/data/instance-id 2>/dev/null || true)"
   k=2
   while [ "$k" -le "$n" ]; do
-    host="$( fleet_pick_host )" || host=""
+    host=""
+    local try=0
+    while [ "$try" -lt $(( n * 4 )) ]; do
+      try=$((try + 1))
+      local cand; cand="$( fleet_pick_host )" || cand=""
+      [ -n "$cand" ] || break
+      [ "$cand" = "$me" ] && continue
+      case " $used " in *" $cand "*) continue ;; esac
+      host="$cand"; used="$used $cand"; break
+    done
     if [ -z "$host" ]; then
-      echo "land.sh: shard $k/$n: no fleet host to hand it to" >"$dir/shard-$k.log"
+      echo "land.sh: shard $k/$n: no free fleet host to hand it to (a shard with no box is RED, never skipped)" >"$dir/shard-$k.log"
       echo 2 >"$dir/shard-$k.rc"
     else
       (
