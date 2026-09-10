@@ -13,7 +13,10 @@ fn lane(model: &str, context_max: Option<usize>) -> LaneInput {
     LaneInput {
         model: model.to_string(),
         provider: "acme".to_string(),
-        protocol: "openai".to_string(),
+        // A protocol this build declares, asked of the declarations rather than spelled: which
+        // dialect a lane speaks is nothing the hydration reads, so a fixture that named one would
+        // be pinning this cell to a dialect set that has changed twice already.
+        protocol: busbar_llm::DECLS[0].name.to_string(),
         base_url: "https://upstream.invalid".to_string(),
         path: None,
         path_base: None,

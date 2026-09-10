@@ -421,17 +421,59 @@ fn the_dispatch_record_names_the_dispatch_and_carries_no_content() {
 
 // ── the credential that decorates an outbound request ───────────────────────────────────────────
 
+/// Two protocols this build declares whose schemes decorate DIFFERENTLY, chosen by asking the
+/// declarations rather than by naming any of them.
+///
+/// The cell below is about a binding that has no arm for any provider, so the cell must have none
+/// either: a fixture that spelled two dialect names would be proving the binding over the two the
+/// author happened to pick, and would have to be edited every time the set of declared dialects
+/// changed. This asks the registry for what it declares and takes the first two that answer
+/// differently.
+fn two_differently_decorating_declarations() -> (&'static str, &'static str) {
+    let field_names = |protocol: &str| {
+        let provider = busbar_substrate::egress_auth::resolve(protocol, None);
+        let ctx = busbar_substrate::proto::SigningContext {
+            host: "",
+            canonical_uri: "",
+            body: b"",
+            timestamp_epoch: 0,
+            upstream_creds: UpstreamCreds::default(),
+        };
+        provider.is_lane_constant().then(|| {
+            provider
+                .headers_for("probe", &ctx)
+                .into_iter()
+                .map(|(name, _)| name.as_str().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let mut declared: Vec<(&'static str, Vec<String>)> = busbar_llm::DECLS
+        .iter()
+        .filter_map(|decl| field_names(decl.name).map(|fields| (decl.name, fields)))
+        .filter(|(_, fields)| !fields.is_empty())
+        .collect();
+    declared.dedup_by(|a, b| a.1 == b.1);
+    assert!(
+        declared.len() >= 2,
+        "this build must declare at least two schemes that decorate differently"
+    );
+    let second = declared.pop().expect("two").0;
+    let first = declared.remove(0).0;
+    (first, second)
+}
+
 /// The decoration is the DIALECT'S declared scheme, resolved once, keyed by the lane's own secret.
 ///
 /// Two lanes on two dialects with two different keys, decorated through one binding with no arm for
-/// either: each comes back decorated with the header its own dialect declares, carrying its own
-/// key. Nothing in the binding was told which dialect it was serving.
+/// either — and the cell names neither dialect, because it asks the same declarations the binding
+/// asks. Each comes back decorated with the fields its own dialect declares, carrying its own key.
 #[test]
 fn each_lane_is_decorated_by_its_own_declared_scheme_with_its_own_secret() {
     busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
+    let (one, another) = two_differently_decorating_declarations();
     let carrier = input(vec![
-        lane("fast", "openai", "key-fast", 4),
-        lane("other", "gemini", "key-other", 4),
+        lane("fast", one, "key-fast", 4),
+        lane("other", another, "key-other", 4),
     ]);
     let mut seat = seater();
     let auth = DeclaredEgressAuth::resolve(&carrier, &mut seat);
@@ -459,7 +501,7 @@ fn each_lane_is_decorated_by_its_own_declared_scheme_with_its_own_secret() {
 
     assert!(
         !fast.is_empty() && !other.is_empty(),
-        "both dialects declare a scheme and both decorated"
+        "both declarations name a scheme and both decorated"
     );
     assert!(
         fast.iter().any(|(_, v)| v.contains("key-fast")),
@@ -472,7 +514,7 @@ fn each_lane_is_decorated_by_its_own_declared_scheme_with_its_own_secret() {
     assert_ne!(
         fast.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
         other.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-        "two dialects declaring different schemes decorate with different fields, and the binding \
+        "two declarations naming different schemes decorate with different fields, and the binding \
          was told neither name"
     );
 }
@@ -485,7 +527,8 @@ fn each_lane_is_decorated_by_its_own_declared_scheme_with_its_own_secret() {
 #[test]
 fn a_destination_with_no_declared_credential_is_refused_rather_than_sent_bare() {
     busbar_substrate::proto::register_test_protocols(busbar_llm::DECLS);
-    let carrier = input(vec![lane("fast", "openai", "key-fast", 4)]);
+    let (declared, _) = two_differently_decorating_declarations();
+    let carrier = input(vec![lane("fast", declared, "key-fast", 4)]);
     let mut seat = seater();
     let auth = DeclaredEgressAuth::resolve(&carrier, &mut seat);
     let port: &dyn EgressAuth = &auth;

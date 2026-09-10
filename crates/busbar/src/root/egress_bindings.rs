@@ -37,9 +37,12 @@ use std::sync::{Arc, Mutex};
 use busbar_api::UpstreamCreds;
 use busbar_caps::{DurabilityToken, StepName};
 use busbar_contract::VerifiedDestination;
-use busbar_substrate::egress_auth::CredentialProvider;
+use busbar_substrate::config::ProviderAuth;
+use busbar_substrate::egress_auth::{resolve as resolve_scheme, CredentialProvider};
 use busbar_substrate::plane_host::{AuthStyleInput, LaneInput, PlaneBuildInput, TelemetryHost};
+use busbar_substrate::proto::SigningContext;
 use busbar_substrate::store::LaneRuntime;
+use busbar_substrate::store::Permit as LaneSlotPermit;
 use busbar_unit_egress::ports::{
     BoxFut, Capacity, Clock, DecorationRefused, DestinationId, Dispatched, DurabilityUnavailable,
     EgressAuth, Journal, OutboundRequest, Permit, PermitHandle, Telemetry,
@@ -59,7 +62,7 @@ use super::pool_hydration::{destination_of_lane, lane_of_destination};
 /// store's own handle is not printable.
 struct LaneSlot {
     destination: DestinationId,
-    _held: busbar_substrate::store::Permit,
+    _held: LaneSlotPermit,
 }
 
 impl std::fmt::Debug for LaneSlot {
@@ -145,7 +148,7 @@ impl Capacity for LaneCapacity {
                 destination,
                 Permit::new(Box::new(LaneSlot {
                     destination,
-                    _held: busbar_substrate::store::Permit::Bounded(held),
+                    _held: LaneSlotPermit::Bounded(held),
                 })),
             ))
         })
@@ -402,15 +405,13 @@ impl std::fmt::Debug for LaneCredential {
 /// A total map between two neutral vocabularies and nothing else. `Default` is the absence of an
 /// override — the resolver then answers with the dialect's own declared scheme, which is the arm
 /// every lane this build serves takes.
-fn declared_auth(style: AuthStyleInput) -> Option<busbar_substrate::config::ProviderAuth> {
+fn declared_auth(style: AuthStyleInput) -> Option<ProviderAuth> {
     match style {
         AuthStyleInput::Default => None,
-        AuthStyleInput::Bearer => Some(busbar_substrate::config::ProviderAuth::Bearer),
-        AuthStyleInput::ApiKey => Some(busbar_substrate::config::ProviderAuth::ApiKey),
-        AuthStyleInput::JwtBearer => Some(busbar_substrate::config::ProviderAuth::JwtBearer),
-        AuthStyleInput::OAuthClientCredentials => {
-            Some(busbar_substrate::config::ProviderAuth::OAuthClientCredentials)
-        }
+        AuthStyleInput::Bearer => Some(ProviderAuth::Bearer),
+        AuthStyleInput::ApiKey => Some(ProviderAuth::ApiKey),
+        AuthStyleInput::JwtBearer => Some(ProviderAuth::JwtBearer),
+        AuthStyleInput::OAuthClientCredentials => Some(ProviderAuth::OAuthClientCredentials),
     }
 }
 
@@ -461,10 +462,7 @@ impl DeclaredEgressAuth {
     /// declared override.
     fn credential_for(lane: &LaneInput, input: &PlaneBuildInput) -> LaneCredential {
         LaneCredential {
-            provider: busbar_substrate::egress_auth::resolve(
-                &lane.protocol,
-                declared_auth(lane.auth_style),
-            ),
+            provider: resolve_scheme(&lane.protocol, declared_auth(lane.auth_style)),
             key: lane.api_key.clone(),
             mode: input.upstream_credentials,
         }
@@ -504,7 +502,7 @@ impl EgressAuth for DeclaredEgressAuth {
         if !credential.provider.is_lane_constant() {
             return Err(DecorationRefused);
         }
-        let ctx = busbar_substrate::proto::SigningContext {
+        let ctx = SigningContext {
             host: "",
             canonical_uri: "",
             body: request.body,
