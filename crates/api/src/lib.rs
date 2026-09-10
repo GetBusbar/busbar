@@ -57,7 +57,11 @@ pub use secret::{
 };
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
-pub use busbar_secret_grammar::SecretRef;
+// The reserved module names a secret reference may carry travel with it: the substrate's
+// resolver reads them through this crate rather than through a direct edge to the leaf.
+pub use busbar_secret_grammar::{
+    SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE,
+};
 // The signal catalog is the CONTRACT's now (it moved with the hooks-kind face); re-exported here
 // while busbar-api drains, so every reader keeps its spelling and resolves to one definition.
 pub use busbar_contract::{Signal, SignalBag, SignalValue};

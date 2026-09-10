@@ -10,13 +10,15 @@
 //! interprets. This is the *neutral mechanism + opaque payload* pattern applied to per-session state,
 //! exactly like [`crate::plane`]'s type-erased plane slots but keyed by session.
 //!
-//! It lives in the NEUTRAL SUBSTRATE rather than in `busbar-core`, which is the same claim the
+//! It lives in the NEUTRAL SUBSTRATE rather than in the engine crate, which is the same claim the
 //! paragraph below makes, followed through: a mechanism two or more planes need cannot sit where only
 //! the engine can name it. The header's word "core" reads as "the neutral middle" throughout — every
-//! sentence of it is unchanged and still true. `busbar_core::session` re-exports this.
+//! sentence of it is unchanged and still true. The engine re-exports this at its historical path.
 //!
-//! It is core (not an LLM feature) by the decision rule — **two or more planes need it:** LLM cache-
-//! affinity and the gate's incremental-scan want an ephemeral per-session set; A2A tasks want durable
+//! It is core (not one plane's feature) by the decision rule — **two or more planes need it:** a
+//! dialogue plane's cache-
+//! affinity and the gate's incremental-scan want an ephemeral per-session set; a task plane's live
+//! tasks want durable
 //! per-session state (today `plane::taskstore`, a special case that folds in here); a future protocol
 //! (a VPN tunnel) *is* a durable session. One substrate, many tenants; a new tenant is one new
 //! [`OwnerKey`], zero substrate code.
@@ -24,7 +26,7 @@
 //! # In-process-first, safe degradation (owner-ruled state fork)
 //!
 //! This is the in-process working set: per-replica, ephemeral, bounded. Durability is a per-tenant
-//! write-through the OWNER drives (A2A keeps writing through its `PlaneStore`); it is not the
+//! write-through the OWNER drives (the task plane keeps writing through its `PlaneStore`); it is not the
 //! substrate's concern. A cold / evicted / cross-replica slot is **never wrong, only less optimized**
 //! — the consumer falls back to its stateless path (full re-scan, pure-hash affinity, independent
 //! metering). A Store-backed shared impl is a later drop-in behind the same API.
@@ -33,7 +35,7 @@
 //!
 //! Unbounded per-session slots would be a hole. Every slot has an optional TTL and the store has a
 //! hard capacity; on overflow the least-recently-used **unpinned** slot is evicted. **Pinned** slots
-//! (a durable/active tenant such as an A2A live task) are exempt from LRU and TTL — they leave only by
+//! (a durable/active tenant such as a live task) are exempt from LRU and TTL — they leave only by
 //! explicit removal — so eviction can never silently drop state a tenant still owns.
 //!
 //! Time is passed in as `now_ms` (epoch millis) rather than read here, so lifecycle is deterministic
@@ -57,7 +59,7 @@ pub type OwnerKey = &'static str;
 struct Slot {
     value: Arc<dyn Any + Send + Sync>,
     /// Pinned slots are exempt from LRU and TTL — explicit-removal-only. For durable/active tenants
-    /// (A2A live tasks) so eviction cannot drop state the tenant still owns.
+    /// (live tasks) so eviction cannot drop state the tenant still owns.
     pinned: bool,
     last_touch_ms: u64,
     /// Absolute expiry; `None` = no TTL. Ignored while `pinned`.

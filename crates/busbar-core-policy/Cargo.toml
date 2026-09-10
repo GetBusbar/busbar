@@ -4,7 +4,7 @@
 # decides which hook runs, with which grants, on which terminal, out of which pool's configuration.
 # It is not a hook plugin — `hooks` is the marker word of the hook-plugin kind (`busbar-hook-*`,
 # `busbar-hooks-*`), and a core crate wearing another kind's marker was the fusion `kind-isolation:name`
-# exists to refuse. It landed once as `busbar-core-hooks` on a waiver; the waiver is struck with the
+# exists to refuse. It landed once under a name wearing that marker, on a waiver; the waiver is struck with the
 # rename, and the `[[renamed]]` row in qa/kind-isolation.toml is how history is read across it.
 #
 # WHAT IT IS. The engine that turns a pool's `route:`/`hooks:` configuration into resolved policy
@@ -67,7 +67,7 @@ test-support = []
 
 [dev-dependencies]
 # The dlopen battery — the one that packages a REAL hook plugin and asserts on what it answered —
-# lives in busbar-core beside the seat adapter, because "the plugin answered this" is a claim about
+# lives beside the seat adapter, in the crate that binds the registry, because "the plugin answered this" is a claim about
 # adapter + loader + engine together. What stays here is engine-only: the gate, the wire parsers,
 # the scrape and the limits assertion, none of which opens a plugin.
 # The relocated limits assertion takes `busbar_substrate::config::limits::LIMITS_TEST_LOCK`, which

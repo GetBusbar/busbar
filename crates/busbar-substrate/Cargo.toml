@@ -21,9 +21,6 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
-# The `{module, settings}` reference SHAPE the config leaf structs (and `config::secret`'s resolver)
-# are written on. A leaf below `busbar-api`, so it opens nothing this crate did not already have.
-busbar-secret-ref = { path = "../secret-ref" }
 # THE VALUE HALF. This crate used to be two things behind one name: the value families the codecs and
 # planes name, and the egress engine that dials upstreams. A plane is a PURE kind, so its whole
 # transitive closure is scanned — and one whole-workspace `cargo metadata` unifies features, so no

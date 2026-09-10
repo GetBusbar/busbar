@@ -11,7 +11,7 @@
 //!
 //! ```yaml
 //! api_key: { env: ANTHROPIC_API_KEY }          # ⇒ { module: env,  settings: { key: ANTHROPIC_API_KEY } }
-//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
+//! cert:    { file: /run/secrets/server-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/server-cert.pem } }
 //! ```
 //!
 //! A `SecretRef` holds NO secret material - only the module name and its opaque settings - so it is
@@ -21,21 +21,22 @@
 //!
 //! WHERE THIS LIVES. Beside the config leaf structs it resolves settings FOR — `HookCfg`, `PoolCfg`,
 //! the auth and store entries — all of which are already here in the neutral substrate. It came from
-//! `busbar_core::config::secret` unchanged, and `busbar_core::config::secret` is now the spelling.
+//! the engine's `config::secret` unchanged, and the engine re-exports this module at that path.
 //! The reason it had to move is the hook engine: the engine resolves every hook's `settings:` map
 //! through `SecretResolver` BEFORE the JSON crosses the plugin ABI, and the engine is leaving
-//! busbar-core. Two resolvers would be two fail-closed policies, one of which somebody would
+//! the engine crate. Two resolvers would be two fail-closed policies, one of which somebody would
 //! eventually get wrong; there is one, here.
 
 /// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
 /// live in the standalone `busbar-secret-grammar` crate — it used to be defined here `pub(crate)`,
-/// unreachable from `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so
+/// unreachable from the packaging tooling or any future schema-generation tooling. Re-exported so
 /// every call site in this crate is unchanged; `busbar` still owns
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub use busbar_secret_grammar::{
-    SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE,
+pub use busbar_api::{
+    resolve_builtin, resolve_builtin_string, SecretRef, SecretResolve, SECRET_MODULE_ENV,
+    SECRET_MODULE_FILE, SECRET_MODULE_NONE,
 };
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
@@ -53,7 +54,7 @@ pub const SETTING_LITERAL_KEY: &str = "literal";
 /// normal trust pipeline. FAIL-CLOSED at every branch: an unknown module or a resolution failure
 /// is a hard error, never an empty secret.
 ///
-/// The plugin lookup is a boxed closure so `config`/`tls` stay free of a `plugin-loader`
+/// The plugin lookup is a boxed closure so the config and certificate readers stay free of a `plugin-loader`
 /// dependency (the engine wires the registry in at `build_app`); `None` = no plugin subsystem, so
 /// only the built-ins resolve.
 pub struct SecretResolver {
@@ -259,11 +260,11 @@ pub fn resolve_settings(
     Ok(out)
 }
 
-/// The NEUTRAL secret-resolver SEAM: `SecretResolver` implements `busbar_api::SecretResolve` by
-/// delegating to its own inherent resolution, so `&SecretResolver` is
-/// usable as `&dyn busbar_api::SecretResolve`. An extracted plane names the trait, never this
-/// engine-specific struct. The methods forward verbatim; the error is already a neutral `String`.
-impl busbar_api::SecretResolve for SecretResolver {
+/// The NEUTRAL secret-resolver SEAM: `SecretResolver` implements [`SecretResolve`] by delegating
+/// to its own inherent resolution, so `&SecretResolver` is usable as `&dyn SecretResolve`. An
+/// extracted plane names the trait, never this engine-specific struct. The methods forward
+/// verbatim; the error is already a neutral `String`.
+impl SecretResolve for SecretResolver {
     fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         SecretResolver::resolve(self, secret)
     }
@@ -273,13 +274,12 @@ impl busbar_api::SecretResolve for SecretResolver {
     }
 }
 
-/// BUILT-IN resolution of a secret reference to its raw bytes (`env` / `file`) and its UTF-8-string
-/// twin now live in the dependency-light `busbar-api` contract crate — they are pure
-/// `std::env`/`std::fs` + `busbar_secret_grammar::SecretRef`, with no engine coupling, so a plane crate
-/// can resolve a built-in ref without reaching into `busbar`. Re-exported so every in-crate call
-/// site (the [`SecretResolver`] built-in fallback below) is unchanged.
-pub use busbar_api::resolve_builtin;
-pub use busbar_api::resolve_builtin_string;
+// BUILT-IN resolution of a secret reference to its raw bytes (`env` / `file`) and its UTF-8-string
+// twin (`resolve_builtin` / `resolve_builtin_string`) live beside the reference shape, in the crate
+// re-exported at the top of this file: pure `std::env`/`std::fs` over a `SecretRef`, no engine
+// coupling, so a plane crate can resolve a built-in ref without reaching into `busbar`. They are
+// re-exported there too, so every in-crate call site (the [`SecretResolver`] built-in fallback
+// below) is unchanged.
 
 #[cfg(test)]
 #[path = "tests/secret_tests.rs"]

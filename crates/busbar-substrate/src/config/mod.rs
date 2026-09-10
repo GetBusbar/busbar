@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The neutral LLM-RUNTIME config VALUE enums a plane crate (`busbar-llm`) names via the ABI
-//! instead of reaching back into `busbar_core::config::`.
+//! instead of reaching back into the engine's config grammar.
 //!
 //! ABI-purity CONFIG-ENUMS: `PolicyOnError` (the resolved on_error/on_empty terminal) and
 //! `ProviderAuth` (the per-provider auth-style selector) are LLM-runtime concepts that sat in the
 //! core config grammar. They are fieldless serde enums — no reach into any core type — so they move
 //! DOWN here WITH their `#[derive(Serialize/Deserialize)]` + `#[serde(...)]` attrs VERBATIM (the
 //! serialized/deserialized wire form is byte-identical). Core re-exports each from its historical
-//! `busbar_core::config::` path so the frozen config-grammar call sites and every deserialization
+//! config path so the frozen config-grammar call sites and every deserialization
 //! are unchanged.
 
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub mod limits;
 pub mod pools;
 pub mod providers;
 // The SECRET REFERENCE type and the fail-closed resolver that turns one into bytes, beside the leaf
-// structs whose `settings:` maps it resolves. Core re-exports it at `busbar_core::config::secret`.
+// structs whose `settings:` maps it resolves. Core re-exports it at its historical config path.
 pub mod secret;
 pub mod sections;
 

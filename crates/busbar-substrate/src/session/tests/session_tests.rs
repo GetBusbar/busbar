@@ -8,7 +8,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 const GATE: OwnerKey = "gate.screen";
-const AFFINITY: OwnerKey = "llm.affinity";
+const AFFINITY: OwnerKey = "cache.affinity";
 
 #[test]
 fn put_get_roundtrips_an_opaque_value_downcast_to_its_type() {
@@ -62,13 +62,13 @@ fn the_lru_unpinned_slot_is_evicted_when_over_capacity() {
 #[test]
 fn a_pinned_slot_is_never_evicted_even_over_capacity_or_past_ttl() {
     let s = SessionStore::new(1, Some(100));
-    // Pin a durable tenant (e.g. an A2A live task).
-    s.put(SessionKey(1), "a2a.task", Arc::new(1u8), 0, true, None);
+    // Pin a durable tenant (e.g. a live task).
+    s.put(SessionKey(1), "task.live", Arc::new(1u8), 0, true, None);
     // Push well past capacity with unpinned slots and past any TTL.
     s.put(SessionKey(2), GATE, Arc::new(2u8), 1_000, false, None);
     s.put(SessionKey(3), GATE, Arc::new(3u8), 2_000, false, None);
     // The pinned slot survives; unpinned ones are bounded/expired away.
-    assert!(s.get::<u8>(SessionKey(1), "a2a.task", 9_999).is_some());
+    assert!(s.get::<u8>(SessionKey(1), "task.live", 9_999).is_some());
 }
 
 #[test]
@@ -85,9 +85,9 @@ fn pinning_clears_ttl_and_unpinning_reapplies_it() {
 #[test]
 fn remove_drops_a_pinned_slot_the_only_way_it_leaves() {
     let s = SessionStore::new(64, None);
-    s.put(SessionKey(1), "a2a.task", Arc::new(1u8), 0, true, None);
-    assert!(s.remove(SessionKey(1), "a2a.task"));
-    assert!(s.get::<u8>(SessionKey(1), "a2a.task", 0).is_none());
+    s.put(SessionKey(1), "task.live", Arc::new(1u8), 0, true, None);
+    assert!(s.remove(SessionKey(1), "task.live"));
+    assert!(s.get::<u8>(SessionKey(1), "task.live", 0).is_none());
     assert!(s.is_empty());
 }
 

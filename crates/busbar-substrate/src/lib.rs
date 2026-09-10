@@ -197,10 +197,11 @@ pub mod hooks;
 
 // THE NEUTRAL PER-SESSION SUBSTRATE — `(session, owner) → opaque slot`, with the identity, TTL,
 // pinning, LRU and hard bound owned here and the value opaque. It came DOWN from
-// `busbar_core::session` unchanged, for the reason its own header already gives: it is the neutral
-// mechanism two or more planes need, so it must sit where a plane (and the hook gate's incremental
-// screen cache, which is its first tenant) can name it without naming `busbar-core`. Core re-exports
-// it at `busbar_core::session::…`, so every in-core call site is unchanged.
+// the engine's `session` module unchanged, for the reason its own header already gives: it is the
+// neutral mechanism two or more planes need, so it must sit where a plane (and the hook gate's
+// incremental screen cache, which is its first tenant) can name it without naming the engine crate.
+// The engine re-exports it at its historical `session::…` path, so every in-engine call site is
+// unchanged.
 pub mod session;
 
 // THE TELLER: the one governed request loop every plane rides — the sealed step markers, the
