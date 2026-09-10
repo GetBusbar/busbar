@@ -211,6 +211,38 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 27
 because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::rate::{MutationClass::for_path, ConfigClassRule::NamedMapRoot, config_class_rules}: +27 surface lines in busbar-unit-verbs and nothing in busbar-caps, busbar-contract or busbar-kernel, and rate.rs is not in the kernel call-graph name-match set so none of the 27 is counted a second time here — the union rises by exactly the unit rise."
 
+# THE BORROWED-LIMITER FACE: `busbar_unit_verbs::Verbs::new` takes the node's `&MutationLimiter`
+# (crates/busbar-unit-verbs/src/verbs.rs; ONE measured surface line — the parameter — because the
+# field it replaces was already there and the constructor line it deletes
+# (`limiter: MutationLimiter::new()`) is the defect being removed). `Verbs` is built where an
+# operation is EXECUTED and the composition root builds one per request, so a limiter this type
+# constructed opened a fresh window per request and admitted every time: the limit existed, its own
+# unit tests measured it, and it could not fire on a live node. The counters move to the root's
+# boot-owned unit state (`ProductionUnits::mutation_limiter`, one per node) and every executor over
+# the life of the process borrows the same ones. There is no constructor here that makes one, which
+# is what stops the defect coming back. `kernel_ceiling` rises by one because verbs.rs IS in the
+# kernel's call-graph name-match set, so the same parameter line spends kernel budget too — and the
+# union counts it in both sums, hence +2 there against +1 in each of the other three.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.verbs_ceiling"
+by = 1
+because = "borrowed-limiter face busbar_unit_verbs::Verbs::new(.., limiter: &MutationLimiter): the node's boot-owned mutation counters, borrowed for the length of an executor built per request, replacing a per-executor limiter that opened a fresh window every request and therefore admitted every time. One measured surface line: the parameter."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::Verbs::new(.., limiter: &MutationLimiter): the one line lands in busbar-unit-verbs and nothing else in the busbar-unit-* family moves, so the family sum rises by exactly the crate rise."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 1
+because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::Verbs::new(.., limiter: &MutationLimiter): one line of PARAMETER, not one line of kernel. crates/busbar-unit-verbs/src/verbs.rs is in the kernel's call-graph name-match set, so a signature line in it spends kernel budget as well as its own crate's."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 2
+because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::Verbs::new(.., limiter: &MutationLimiter): the one parameter line, counted twice in this union because verbs.rs is call-graph-reachable from the Teller loop and a reachable unit file spends kernel budget as well as its own crate's — so the union rises by two where each of the other three rises by one."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -435,15 +467,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5381
+kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14960
+unit_total_ceiling = 14961
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 1455
-union_ceiling = 23852
+verbs_ceiling = 1456
+union_ceiling = 23854
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

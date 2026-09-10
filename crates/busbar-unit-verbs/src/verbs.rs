@@ -192,33 +192,44 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
 /// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
 /// [`Governance`] and [`Store`] record-store adapters, the [`NonceSource`] the secret plugin lends
 /// and the [`ReplayEncoder`] the admin plane's own writer implements.
-/// `config_class_rules` is data rather than a fifth type parameter — a `&'static` table has
+/// `config_class_rules` is data rather than a fifth type parameter — a table has
 /// no behaviour to seal behind a trait.
-pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
+///
+/// THE LIMITER IS BORROWED, NOT OWNED, and that is the whole of this type's rate posture. A
+/// `Verbs` is built where an operation is executed, and this executor is built per request; a
+/// limiter built with it would open a fresh window per request and therefore ADMIT EVERY TIME. A
+/// per-request limiter is not a limiter. So the counters live on the composition root's boot-owned
+/// unit state — one per node, for the life of the node — and every executor over the life of the
+/// process borrows the same ones. There is no constructor that makes one here, which is what stops
+/// the defect coming back.
+pub struct Verbs<'a, G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
     governance: G,
     store: S,
     nonce_source: N,
     replay_encoder: E,
-    config_class_rules: &'static [ConfigClassRule],
+    config_class_rules: &'a [ConfigClassRule],
     create_key_cache: IdempotencyCache<Vec<u8>>,
     rotate_key_cache: IdempotencyCache<Vec<u8>>,
-    limiter: MutationLimiter,
+    limiter: &'a MutationLimiter,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
-    Verbs<G, S, N, E>
+impl<'a, G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
+    Verbs<'a, G, S, N, E>
 {
-    /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
-    /// root's sealed class table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
-    /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
-    /// either, so a caller cannot silently construct a `Verbs` with a predictable nonce or a
-    /// re-minting replay path.
+    /// Build a fresh executor over the four bound seams, the node's class table and the node's one
+    /// mutation limiter. `config_class_rules` is the composition root's sealed class table (see
+    /// [`crate::rate::config_class_rules`], which folds the declared named-definition map sections
+    /// into [`crate::rate::CONFIG_CLASS_RULES`]' six frozen rows); `limiter` is the node's
+    /// boot-owned counters, borrowed for the length of this executor; `nonce_source` and
+    /// `replay_encoder` are mandatory — there is no `Default` for either, so a caller cannot
+    /// silently construct a `Verbs` with a predictable nonce or a re-minting replay path.
     pub fn new(
         governance: G,
         store: S,
         nonce_source: N,
         replay_encoder: E,
-        config_class_rules: &'static [ConfigClassRule],
+        config_class_rules: &'a [ConfigClassRule],
+        limiter: &'a MutationLimiter,
     ) -> Self {
         Verbs {
             governance,
@@ -228,7 +239,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             config_class_rules,
             create_key_cache: IdempotencyCache::new(),
             rotate_key_cache: IdempotencyCache::new(),
-            limiter: MutationLimiter::new(),
+            limiter,
         }
     }
 

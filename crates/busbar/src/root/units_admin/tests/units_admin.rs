@@ -364,6 +364,9 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let admin = crate::root::kernel::new_kernel().admin_token();
+    // The node's one limiter: opened here, borrowed by every executor the closure builds, exactly
+    // as the composition root's boot-owned one is.
+    let limiter = busbar_unit_verbs::rate::MutationLimiter::new();
 
     let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
         let binding =
@@ -391,6 +394,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             &binding,
             Arc::new(crate::root::kernel::RefusingStore),
             &admin,
+            busbar_unit_verbs::rate::CONFIG_CLASS_RULES,
+            &limiter,
             &token,
             &ctx,
             &busbar_kernel::teller::AccrualMeter::new(),
@@ -1467,6 +1472,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         Arc::new(Ran)
     };
 
+    let limiter = busbar_unit_verbs::rate::MutationLimiter::new();
     for (path, body, reached) in [
         ("/api/v1/admin/chain-break", "{}", "chain_break"),
         (
@@ -1507,6 +1513,8 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &binding,
             Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
             &admin,
+            busbar_unit_verbs::rate::CONFIG_CLASS_RULES,
+            &limiter,
             &token,
             &ctx,
             &busbar_kernel::teller::AccrualMeter::new(),
@@ -2695,6 +2703,9 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let admin = crate::root::kernel::new_kernel().admin_token();
+    // The node's one limiter, held for the length of the test the way a node holds it for the
+    // length of the node — the executor borrows it and never opens one of its own.
+    let limiter = busbar_unit_verbs::rate::MutationLimiter::new();
 
     for verb in LEDGER_VERBS {
         let verbs = busbar_unit_verbs::Verbs::new(
@@ -2708,6 +2719,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
+            &limiter,
         );
         let packed = verbs
             .execute(
@@ -2749,6 +2761,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         ArrivalNonce(1),
         PackedReplay,
         CONFIG_CLASS_RULES,
+        &limiter,
     );
     assert!(verbs
         .execute(

@@ -143,6 +143,14 @@ them). Each axis is blind to the other two; only the kernel composes them.
   section noun of its own, and `config_class_rules` is the one place the declaration is folded in.
   It is a DELETION: `busbar-core/src/admin/rate.rs` (200 lines) dies against it in the same seam,
   and the process-global limiter it held becomes the boot-owned unit state the root composes once.
+  That last part is the fourth, and it is ONE LINE: **`busbar_unit_verbs::Verbs::new`** takes the
+  node's `&MutationLimiter` (+1 against `verbs_ceiling`, `unit_total_ceiling` and `kernel_ceiling`,
+  +2 against `union_ceiling` because `verbs.rs` is in the kernel's call-graph name-match set and the
+  union counts a reachable unit file in both sums). `Verbs` is built where an operation is EXECUTED
+  and the root builds one PER REQUEST, so the limiter this type used to construct opened a fresh
+  window every request and admitted every time: the limit existed, its own unit tests measured it,
+  and it could not fire on a live node. The counters are now the root's boot-owned unit state, one
+  per node, and there is no constructor here that makes one — which is what stops it coming back.
   100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 

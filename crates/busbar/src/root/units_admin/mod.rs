@@ -1496,10 +1496,13 @@ pub(crate) fn admit(
 /// `Verbs::execute` like every other verb, are scope-checked and rate-classed by the same two lines,
 /// and differ only in which method of the governance seam the unit calls at the end of it — which is
 /// the unit's decision, from its own closed table, and not this step's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn route(
     binding: &AdminBinding,
     store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     admin: &busbar_caps::AdminToken,
+    config_class_rules: &[busbar_unit_verbs::rate::ConfigClassRule],
+    limiter: &busbar_unit_verbs::rate::MutationLimiter,
     token: &UnitToken<Route>,
     ctx: &UnitCtx,
     _meter: &busbar_kernel::teller::AccrualMeter,
@@ -1539,7 +1542,11 @@ pub(crate) fn route(
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,
-        CONFIG_CLASS_RULES,
+        // The node's table and the node's counters, both composed at boot and both reached here by
+        // reference. Building either at this line would rebuild it per request, and a rate limiter
+        // rebuilt per request opens a fresh window every time and therefore admits every time.
+        config_class_rules,
+        limiter,
     );
 
     // The same identity the record attributes to, so the rate-limit bucket, the audit row and the

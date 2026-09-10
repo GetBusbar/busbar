@@ -522,6 +522,29 @@ pub struct ProductionUnits {
     /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
     /// rather than a step, so no step's token stands in for it.
     pub admin_token: busbar_caps::AdminToken,
+    /// The verbs unit's per-principal mutation counters.
+    ///
+    /// There is exactly one of these and it is reached only here, for the same reason the breaker
+    /// above says: two limiters would be two sets of counters, and an attempt spent through one
+    /// would be invisible to the other. It is the node's, for the life of the node — the executor
+    /// that reads it is built per operation, and a limiter built with THAT would open a fresh
+    /// window per request and admit every time. A per-request limiter is not a limiter.
+    ///
+    /// Behind an `Arc` because the counters outlive any one snapshot of the node's configuration:
+    /// a config apply builds a new `App` and the budget an operator has already spent this minute
+    /// does not reset because they applied a config. [`ProductionUnits::with_mutation_limiter`] is
+    /// how a boot that already holds the node's one limiter hands it here.
+    pub mutation_limiter: Arc<busbar_unit_verbs::rate::MutationLimiter>,
+    /// What the mutation limiter classifies against: the CONFIG-class blast-radius table, folded
+    /// ONCE at boot from the named-definition map sections this deployment DECLARES.
+    ///
+    /// Data, not policy this root writes: the six frozen rows are the unit's, and the named-map
+    /// roots are whatever the section declaration answers — so a section that joins the registry is
+    /// in the blast-radius class without a line here changing. A node that composes none gets the
+    /// six frozen rows, which is the honest answer for a deployment that declares no section.
+    /// [`ProductionUnits::with_config_class_rules`] is how a boot that has read the declaration
+    /// hands the folded table here.
+    pub config_class_rules: Arc<[busbar_unit_verbs::rate::ConfigClassRule]>,
 }
 
 impl ProductionUnits {
@@ -608,6 +631,13 @@ impl ProductionUnits {
             // Minted once, at boot, from the node's one authority. The verbs unit is lent it for the
             // length of an execution and holds nothing after; there is no second way to obtain one.
             admin_token: kernel.admin_token(),
+            // The node's one set of mutation counters, opened here and never opened again. A boot
+            // that shares them with another reader of the same budget replaces this value through
+            // `with_mutation_limiter`; a boot that does not is the only spender of them.
+            mutation_limiter: Arc::new(busbar_unit_verbs::rate::MutationLimiter::new()),
+            // The six frozen rows and no declared section. A boot that has read the section
+            // declaration replaces this through `with_config_class_rules`.
+            config_class_rules: busbar_unit_verbs::rate::CONFIG_CLASS_RULES.into(),
         }
     }
 
@@ -693,6 +723,39 @@ impl ProductionUnits {
         // rather than an empty table that looks like a balanced one.
         units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(durability, read));
         units
+    }
+
+    /// Hand these units the node's ONE mutation limiter, rather than the one they opened.
+    ///
+    /// A boot where the administrative budget is spent in two places — the kernel loop's Route step
+    /// and the layered surface underneath it — has to spend it from the same counters, or the same
+    /// principal gets two budgets and the tighter of the two limits is not the one that fires. The
+    /// limiter arrives here rather than through the constructor for the same reason the auth
+    /// bindings do: the value exists only once the boot that owns it has been built, and a
+    /// constructor argument would have made a node that has no second reader carry one anyway.
+    #[must_use]
+    pub fn with_mutation_limiter(
+        mut self,
+        limiter: Arc<busbar_unit_verbs::rate::MutationLimiter>,
+    ) -> Self {
+        self.mutation_limiter = limiter;
+        self
+    }
+
+    /// Hand these units the class table folded from the sections this deployment DECLARES.
+    ///
+    /// The six frozen rows the constructor installs are the table for a node with no named
+    /// definition map at all. A boot that has read the declaration folds its section keys in and
+    /// passes the result here, so the loop and every other reader of the same budget classify a
+    /// mutation the same way — which is the property two hand-written copies of the table did not
+    /// have.
+    #[must_use]
+    pub fn with_config_class_rules(
+        mut self,
+        rules: Arc<[busbar_unit_verbs::rate::ConfigClassRule]>,
+    ) -> Self {
+        self.config_class_rules = rules;
+        self
     }
 
     /// Bind the authenticate step's three seams to a node's virtual-key directory.
@@ -889,6 +952,8 @@ impl Units for ProductionUnits {
                 &self.admin,
                 Arc::clone(&self.store),
                 &self.admin_token,
+                &self.config_class_rules,
+                &self.mutation_limiter,
                 token,
                 ctx,
                 meter,

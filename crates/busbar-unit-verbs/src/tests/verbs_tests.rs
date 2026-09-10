@@ -8,7 +8,7 @@
 use crate::governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 use crate::idempotency::ReplayEncoder;
 use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
-use crate::rate::CONFIG_CLASS_RULES;
+use crate::rate::{MutationLimiter, CONFIG_CLASS_RULES};
 use crate::store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
@@ -52,14 +52,26 @@ impl ReplayEncoder<MintedKeyOutcome> for FakeReplayEncoder {
 
 fn make_verbs<G: Governance>(
     gov: G,
-) -> Verbs<G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
+) -> Verbs<'static, G, FakeStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         gov,
         FakeStore,
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        boot_limiter(),
     )
+}
+
+/// ONE NODE'S limiter, for one test.
+///
+/// `Verbs` borrows its counters from the composition root's boot-owned unit state, which outlives
+/// every executor built over it; a test's executor outlives every local a test function could build
+/// it from, so the fixture is allocated for the life of the test process instead. A test process
+/// ends, so this is a fixture rather than a leak — and each call makes its OWN, so no test can
+/// spend another test's budget.
+fn boot_limiter() -> &'static MutationLimiter {
+    Box::leak(Box::new(MutationLimiter::new()))
 }
 
 struct FakeGovernance {
@@ -443,6 +455,7 @@ fn two_mints_with_a_real_nonce_source_produce_different_nonces() {
         },
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        boot_limiter(),
     );
     let admin = admin();
     // Two calls with DISTINCT idempotency keys (or none), each therefore minting fresh, and each
@@ -527,6 +540,7 @@ fn the_minted_nonce_is_whatever_the_source_gave_and_nothing_else() {
         ConstantNonceSource,
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        boot_limiter(),
     );
     let admin = admin();
     let expected = u128::from_be_bytes([7u8; 16]);
@@ -1169,6 +1183,52 @@ fn rate_limit_is_enforced_across_execute_calls() {
     assert_eq!(err.reason, crate::refusal::ReasonCode::RateLimited);
 }
 
+/// THE BUDGET IS THE NODE'S, NOT THE EXECUTOR'S — and this is the test the old shape could not pass.
+///
+/// `Verbs` is built where an operation is executed, and the composition root builds one PER
+/// REQUEST. When the limiter was a field this type constructed, every request got a fresh set of
+/// counters and a fresh window, so the eleventh config apply in a minute was admitted exactly like
+/// the first: the limit existed, was measured by its own unit tests, and could not fire on a live
+/// node. A limiter that cannot deny is not a limiter, and the shape that made that true was the
+/// constructor, so the constructor is gone.
+///
+/// Here one limiter is opened once — the way the root opens the node's — and ELEVEN executors are
+/// built over it, one per attempt, exactly as eleven requests would. The eleventh is refused,
+/// because the counters belong to the node.
+#[test]
+fn eleven_executors_over_one_node_limiter_share_one_budget() {
+    let limiter = MutationLimiter::new();
+    let apply = |i: u32| {
+        let verbs = Verbs::new(
+            FakeGovernance::new(),
+            FakeStore,
+            CountingNonceSource::new(),
+            FakeReplayEncoder,
+            CONFIG_CLASS_RULES,
+            &limiter,
+        );
+        let _ = i;
+        verbs.execute(
+            KernelVerb::PostConfigApply,
+            &admin(),
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+    };
+    for i in 0..10 {
+        apply(i).unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
+    }
+    assert_eq!(
+        apply(10).unwrap_err().reason,
+        crate::refusal::ReasonCode::RateLimited,
+        "the eleventh CONFIG-class mutation in a window is refused however many executors ran it"
+    );
+}
+
 // ── the five 1.6.0 ledger views ─────────────────────────────────────────────────────────────────
 
 /// Which of the governance seam's three execution methods each verb reached.
@@ -1572,14 +1632,15 @@ impl Store for RecordingStore {
     }
 }
 
-fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore, CountingNonceSource, FakeReplayEncoder>
-{
+fn recovery_verbs(
+) -> Verbs<'static, FakeGovernance, RecordingStore, CountingNonceSource, FakeReplayEncoder> {
     Verbs::new(
         FakeGovernance::new(),
         RecordingStore::new(),
         CountingNonceSource::new(),
         FakeReplayEncoder,
         CONFIG_CLASS_RULES,
+        boot_limiter(),
     )
 }
 
