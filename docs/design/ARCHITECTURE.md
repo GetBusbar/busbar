@@ -143,6 +143,12 @@ them). Each axis is blind to the other two; only the kernel composes them.
 ### 1.2 Core → plugin. Never plugin → core.
 
 Every plugin is passive: the kernel registers it, calls it, consumes what it returns.
+- **Composition allow-list**: the composition root mounts every plugin kind it ships — api, caps,
+  contract, control, export, kernel, legacy, plane, plugin-tooling, store, substrate, transport,
+  unit — so the root names all of them; the edge always runs root → plugin and never the reverse.
+  `export` names the contract only (§1.2's manifest allow-list below), on the same terms as every
+  other plugin kind, so mounting an export plugin does not widen what an export plugin itself may
+  name.
 - **Manifest allow-list**: `busbar-contract`, the closed grammar it is written on and re-exports
   (`busbar-grammar`), plus reviewed third-party crates; any dependency on `busbar-kernel`,
   `busbar-caps`, `busbar-contract-transport`, a `busbar-unit-*`, another plane or a transport is a
