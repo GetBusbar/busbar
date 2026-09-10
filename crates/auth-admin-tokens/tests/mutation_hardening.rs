@@ -107,7 +107,15 @@ fn non_matching_credentials_of_any_shape_never_identify() {
 fn wrong_credential_of_any_shape_rejects_not_passes() {
     let h = hash("secret");
     // Not attributable to any other issuer ⇒ still MINE ⇒ terminal Reject, never Identify.
-    for cred in ["", "wrong", "\0\x01garbage", "a.b", "a.b.c.d", "a..c", "a.b.$"] {
+    for cred in [
+        "",
+        "wrong",
+        "\0\x01garbage",
+        "a.b",
+        "a.b.c.d",
+        "a..c",
+        "a.b.$",
+    ] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
             AuthOutcome::Reject,
@@ -122,7 +130,11 @@ fn wrong_credential_of_any_shape_rejects_not_passes() {
         );
     }
     // Provably another issuer's ⇒ not mine ⇒ Pass, so the next arm is asked.
-    for cred in ["a.b.c", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcHMifQ.c2ln", "-_-.-_-.-_-"] {
+    for cred in [
+        "a.b.c",
+        "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcHMifQ.c2ln",
+        "-_-.-_-.-_-",
+    ] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
             AuthOutcome::Pass,

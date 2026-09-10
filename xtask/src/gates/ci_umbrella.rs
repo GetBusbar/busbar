@@ -66,6 +66,15 @@ use crate::ledger::{Row, Verdict};
 use crate::yaml_lite;
 
 pub const WORKFLOW: &str = ".github/workflows/ci.yml";
+
+/// The self-test fixture for [`ROW_DECL_EXPIRY`], in the two halves one substitution turns into the
+/// other. The tree carries no `# report-only:` declaration — every exemption in `ci.yml` is
+/// `# non-gating:`, a permanent statement of kind that owes no expiry — so the expiry cases build
+/// their own subject out of one of those lines rather than waiting for the tree to supply one.
+/// `A1` is a row `docs/design/1.6.0-TRACKER.md` carries, so the fixture alone leaves the gate GREEN
+/// and each case's SECOND edit is the only thing that turns it red.
+const DECL_FIXTURE_FROM: &str = "# non-gating: coverage -- a REPORTING job";
+const DECL_FIXTURE_TAGGED: &str = "# report-only: coverage -- [retires: A1] a REPORTING job";
 pub const UMBRELLA: &str = "ci-umbrella";
 
 pub const ROW_WORKFLOW: &str = "ci-umbrella:workflow-readable";
@@ -282,23 +291,35 @@ impl Gate for CiUmbrellaGate {
         // the tracker does not carry. The second is the one worth having — a hatch that only
         // checked for the SHAPE of a retirement id would accept `[retires: SOMEDAY]` and read as
         // reviewed, which is the same permanent exemption written more convincingly.
-        report.push(plant_subst(
+        //
+        // This rule's subject is `# report-only:`, and the tree carries NONE — every declaration in
+        // `ci.yml` today is `# non-gating:`, a statement of kind that owes no expiry by design. So
+        // both cases PLANT THEIR OWN SUBJECT: the first edit turns one non-gating declaration into a
+        // correctly tagged report-only one (a fixture that leaves the gate green, retiring against
+        // `A1`, a row the tracker carries), and the second edit breaks that fixture in the one way
+        // the case is named for. Waiting for the tree to happen to carry a report-only line would
+        // make the rule unproven on exactly the tree it is meant to police.
+        report.push(plant_substs(
             cx,
             self,
             "a report-only exemption with no retirement tag is permanent by accident",
             &[ROW_DECL_EXPIRY],
-            "[retires: I4]",
-            "",
+            &[
+                (DECL_FIXTURE_FROM, DECL_FIXTURE_TAGGED),
+                (" [retires: A1]", ""),
+            ],
             &["carries no `[retires:"],
         ));
 
-        report.push(plant_subst(
+        report.push(plant_substs(
             cx,
             self,
             "a retirement tag naming a row the tracker does not carry is refused",
             &[ROW_DECL_EXPIRY],
-            "[retires: I4]",
-            "[retires: ZZ999]",
+            &[
+                (DECL_FIXTURE_FROM, DECL_FIXTURE_TAGGED),
+                ("[retires: A1]", "[retires: ZZ999]"),
+            ],
             &["ZZ999", "is not a row in"],
         ));
 
@@ -1156,16 +1177,51 @@ fn plant_subst(
     }
 }
 
+/// The same, for a plant that has to BUILD ITS OWN SUBJECT before it can break it.
+///
+/// A rule whose subject is absent from `ci.yml` today — `# report-only:`, of which the tree
+/// currently carries none — cannot be proved by substituting into the real file, and a case that
+/// answers "nothing to plant" is a rule that is unproven rather than passing. Depending on the tree
+/// to keep carrying a subject so a self-test can mutate it is the same fragility one step removed:
+/// the day somebody retires the last `# report-only:` line, the rule silently stops being proved.
+///
+/// So the case plants its own fixture first. `edits` is applied in order to one text: the leading
+/// substitution(s) install a subject that leaves the gate GREEN, and the last one breaks it in the
+/// single way this case is named for. Each needle is looked for in the text as the edits before it
+/// left it, so a fixture that stopped matching is still an unplantable case and never a quiet no-op.
+fn plant_substs(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: &str,
+    covers: &[&str],
+    edits: &[(&str, &str)],
+    naming: &[&str],
+) -> Case {
+    match substs_overlay(cx, edits) {
+        Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
+        Err(e) => unplantable(name, covers, naming, e),
+    }
+}
+
 /// The overlay ONE substitution into the real `ci.yml` produces. Shared by [`Gate::selftest`] and
 /// [`Gate::parity_probes`] so a probe and its self-test case are the same planted tree, not two
 /// descriptions of one that drift apart.
 fn subst_overlay(cx: &Ctx, needle: &str, with: &str) -> Result<Overlay, String> {
-    let text = cx.read(WORKFLOW)?;
-    if !text.contains(needle) {
-        return Err(format!("`{needle}` is not in {WORKFLOW} to plant over"));
+    substs_overlay(cx, &[(needle, with)])
+}
+
+/// The overlay a SEQUENCE of substitutions into the real `ci.yml` produces; [`subst_overlay`] is
+/// the one-edit case of it, so there is one spelling of "a needle that is gone is unplantable".
+fn substs_overlay(cx: &Ctx, edits: &[(&str, &str)]) -> Result<Overlay, String> {
+    let mut text = cx.read(WORKFLOW)?;
+    for (needle, with) in edits {
+        if !text.contains(needle) {
+            return Err(format!("`{needle}` is not in {WORKFLOW} to plant over"));
+        }
+        text = text.replacen(needle, with, 1);
     }
     let mut ov = Overlay::new();
-    ov.set(WORKFLOW, text.replacen(needle, with, 1));
+    ov.set(WORKFLOW, text);
     Ok(ov)
 }
 
