@@ -507,3 +507,55 @@ book, so deleting the legacy accrual without moving the views first turns thirte
   every plane follows; a control surface is not on it and follows the lesser one
   (verify → admit → audit → answer). `PLUGIN-TREE.md` §1 carries the kind row, its CAN/CANNOT list
   and the dependency row; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary row.
+## 8. The boot's mount fold, and what it makes unreachable — the deletion hand-off
+
+Measured on `keep-boot-mounts` (base `213eb1d48`). Before it, `units_a2a_mount::mount`,
+`units_mcp_mount::mount` and `units_llm_mount::mount` had **no production caller**: nothing in
+`crates/busbar/src/main.rs` composed a mount, so a default-ON serving switch still served the legacy
+path in the shipped binary. The boot now folds `registry::mount_rows()` through
+`plane_mount::compose_mounts` — one step, no plane named — inside the operator's inbound cap.
+
+### What the shipped binary serves through a mount
+
+| plane | row | shipped default | what answers its claimed addresses |
+|---|---|---|---|
+| llm | composes | `root-llm-serve` **in `default`** | the mounted `LlmLeg`, through the kernel's loop |
+| a2a | refuses (`auth`) | `root-a2a-serve` off (the a2a slot flips it) | the legacy router, unchanged |
+| mcp | refuses (`auth`) | `root-mcp-serve` off (the mcp slot flips it) | the legacy router, unchanged |
+
+A row that refuses composes **no wrap**, so that plane's addresses reach the surface underneath
+exactly as they did. The boot records one line per plane at DEBUG, mounted or absent-with-its-source.
+
+### The llm deletion list, stated precisely
+
+The mount hands a request to the leg only when **both** are true: the path is in
+`busbar_plane_llm::claims::CLAIMS`, and `LlmLeg::recognises` resolves a dialect *and* an operation
+for it. Anything else — an unclaimed address, or a claimed address whose body names no operation —
+is rebuilt and passed to the router underneath. So what is now unreachable is not a file:
+
+- **Unreachable in the shipped binary:** the body of `root::units_llm::body_arrival` **after** its
+  `resolve_operation` guard, for every address in `claims::CLAIMS`. That is the whole driven walk —
+  the `WalkArrival` build, `LlmNode::answer`, and the per-dialect ingress entry that reaches it — for
+  recognised traffic on this plane. The mounted leg answers exactly that set.
+- **Still reached, and therefore NOT deletable:** `body_arrival`'s own 404 arm (a claimed address
+  whose body names no operation falls through to it), and everything `protocol_dispatch` answers for
+  addresses outside the claim table. `root::units_llm::PATH_INGRESS` / `BODY_INGRESS` are still
+  registered and still serve those.
+
+The deletion slot's next measurement is therefore *not* "delete the legacy llm ingress"; it is
+"close the fallthrough" — make the mount answer a claimed-but-unrecognised address itself, in the
+caller's own dialect, at which point the per-dialect ingress registration has no reachable caller.
+
+### The a2a and mcp deletion lists: nothing yet, and the named blocker
+
+Both rows refuse with `source: "auth"`, and the refusal is measured rather than provisional.
+`A2aLeg::assemble` and `McpLeg::assemble` take a dozen boot-resolved bindings each — the auth chain,
+the credential cache and revocation view, the breaker, the door, the group table, the pricer, the
+store, the meter and scope policies, the RFC 8707 canonical audience — and the composition root
+resolves **none** of them: grep shows the only callers of either `assemble` are those planes' own
+cells, from a fixture. A leg assembled from less than the deployment configured would put a plane's
+door and its money on the serving path with a chain nothing configured, so the rows refuse by name.
+
+**Nothing of the legacy a2a or mcp router is unreachable, and nothing on either plane may be
+deleted, until those sources have a boot answer.** That is the one work item between here and both
+deletions.
