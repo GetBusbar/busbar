@@ -658,7 +658,8 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         (
             "a retirement row naming a crate that is still in the tree is refused",
             "crate = \"busbar-voice\"\ncommit = \"deadbeef\"\nfloor = \"plane_crates\"\nfrom = \
-             4\nto = 3\n",
+             4\nto = 3\nwhy = \"the STREAMS plane, whose crate this tree still carries — which \
+             is exactly what makes the row a lie\"\n",
             &["busbar-voice", "is still in", "nothing was retired"][..],
         ),
         (
@@ -686,6 +687,118 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
             ov,
             naming,
         ));
+    }
+
+    // -- ceiling-census: A RETIREMENT IS SPENT ONCE ----------------------------------------------
+    //
+    // The row rides in the commit that deletes the crate, so one batch later the BASE carries both
+    // the row and the lowered floor — and from then on the row has been paid out. These three cases
+    // are the lifecycle, and each of them needs a base that carries something this branch cannot
+    // commit, so each stages the base's copy of the ceilings file the way the `ceiling-rose` cases
+    // do. `busbar-nosuch` is a crate that is not in the tree, which is what a retirement names.
+    let retire = |floor: &str, from: i64, to: i64| {
+        format!(
+            "\n[[gate.census_retired]]\ncrate = \"busbar-nosuch\"\ncommit = \"deadbeef\"\n\
+             floor = \"{floor}\"\nfrom = {from}\nto = {to}\nwhy = \"busbar-nosuch was the \
+             split-out step this tree no longer walks, and nothing names it any more\"\n"
+        )
+    };
+    // The floor this branch is made to lower, and the number the staged base carries for it.
+    let floor_key = "plugin_kinds.unit";
+    let at_base = cfg
+        .doc
+        .table("gate.census.plugin_kinds")
+        .and_then(|t| t.int_of("unit"));
+    match at_base {
+        Some(pinned) => {
+            let lowered = ceilings::set_int(&text, "gate.census.plugin_kinds", "unit", pinned - 1);
+            let Some(lowered) = lowered else {
+                r.note_infra_failure(
+                    "the [gate.census.plugin_kinds] unit floor could not be lowered, so the \
+                     retirement lifecycle arms are unproven",
+                );
+                return r;
+            };
+            let row = retire(floor_key, pinned, pinned - 1);
+
+            // A ROW THE BASE ALREADY CARRIES IS SPENT: the base holds the floor it bought, so the
+            // same row admitting a second drop of that floor is one deletion paying for two.
+            let mut ov = on(base);
+            ov.set(CEILINGS, format!("{}{row}", lowered.trim_end()));
+            ov.set_command(
+                format!("git-show:{based}:{CEILINGS}"),
+                format!("{}{row}", text.trim_end()),
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a retirement the base already carries cannot admit a second drop of its floor",
+                &[census::ROW_CENSUS],
+                ov,
+                &[
+                    "BASE ALREADY CARRIES",
+                    "spent by the deletion it rode in with",
+                ],
+            ));
+
+            // AND A ROW THAT NAMES NO DROP AT ALL IS A DEAD ROW — the door the next drop of that
+            // floor would walk through.
+            let mut ov = on(base);
+            ov.set(CEILINGS, format!("{}{row}", text.trim_end()));
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a live retirement row that names no drop on this branch is refused",
+                &[census::ROW_CENSUS],
+                ov,
+                &["is not a drop at the base", "busbar-nosuch"],
+            ));
+
+            // A ROW WITH NO REASON IN IT retires nothing: the numbers say what moved, and only the
+            // `why` says whether it should have.
+            let mut ov = on(base);
+            ov.set(
+                CEILINGS,
+                format!(
+                    "{}{}",
+                    lowered.trim_end(),
+                    row.replace(
+                        "busbar-nosuch was the split-out step this tree no longer walks, and \
+                         nothing names it any more",
+                        "dead code"
+                    )
+                ),
+            );
+            r.push(prove_rows_red(
+                cx,
+                gate,
+                "a retirement row with no reason in it is refused",
+                &[census::ROW_CENSUS],
+                ov,
+                &["retires nothing"],
+            ));
+
+            // THE GREEN SIDE OF THE LIFECYCLE. A spent row that admits nothing further is a
+            // WARNING and not a red — the strike cannot ride in the same batch as the deletion —
+            // and the warning names `--write`, which is what strikes it.
+            let mut ov = on(base);
+            ov.set(CEILINGS, format!("{}{row}", text.trim_end()));
+            ov.set_command(
+                format!("git-show:{based}:{CEILINGS}"),
+                format!("{}{row}", text.trim_end()),
+            );
+            r.push(prove_rows_green(
+                cx,
+                gate,
+                "a spent retirement that admits nothing further is a warning, not a red",
+                &[census::ROW_CENSUS],
+                ov,
+            ));
+        }
+        None => r.note_infra_failure(
+            "[gate.census.plugin_kinds] has no `unit` floor, so the retirement lifecycle arms are \
+             unproven",
+        ),
     }
 
     r.push(prove_rows_green(

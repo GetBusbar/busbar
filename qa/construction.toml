@@ -1223,7 +1223,7 @@ abi = 1
 # table and drop its census number in the same edit" are the same diff.
 #
 # A NAME CAN TELL THEM APART. A retirement row says which crate went, in which commit, which floor
-# moved, and from what to what — and it is checked four ways:
+# moved, from what to what, and WHY the tree no longer needs it — and it is checked six ways:
 #
 #   * the crate must be GONE. A row naming a crate still under `crates/` has retired nothing; it is
 #     a lowered floor bought in advance, which is the manoeuvre the floor exists to refuse, one row
@@ -1233,19 +1233,36 @@ abi = 1
 #     that describes a different drop admits nothing.
 #   * `to = from - 1`, exactly. A retirement deletes ONE crate; a row that lowers a floor by two is
 #     two retirements under one sentence, and the second is the one nobody read.
+#   * `why` is at least 60 characters. Every other field is a number or a hash saying WHAT moved; a
+#     deletion is admitted on the claim that the tree no longer needs the crate, and that claim is
+#     made in words or it is not made at all.
+#   * the row must be LIVE — i.e. the merge-base does not already carry it.
 #
-# A lowered floor with NO row is refused exactly as it was before this table existed. The rows stay
-# after they have done their work: this is the record of what 1.6.0 deleted, and the "crate must be
-# gone" check is what keeps a row from being written ahead of the deletion it claims.
+# AND THE ROW EXPIRES, exactly the way a `[[gate.ceiling_raises]]` entry does, and for the same
+# reason. A row rides in the commit that deletes the crate; one batch later the base carries both
+# the row and the lowered floor, and from then on the row is SPENT — the base already holds the
+# floor it bought. A spent row is a WARNING (never a red: the strike cannot ride in the same batch
+# as the deletion) and `cargo xtask gate construction --write` strikes it. A spent row that is left
+# behind and then admits a second drop of the same floor is one deletion's ceremony paying for two,
+# and is RED by name.
+#
+# A LIVE ROW THAT NAMES NO DROP IS ALSO RED. The base does not carry it and the floor it names did
+# not move on this branch: the deletion is not here, or the floor is misspelt. A dead row is the
+# door the NEXT drop of that floor walks through, so it is refused rather than left lying about.
+#
+# A lowered floor with NO row is refused exactly as it was before this table existed. The record of
+# what 1.6.0 deleted is the commit history — the `commit` field points at it — not a pile of spent
+# rows in this file.
 #
 # The shape, for the first retirement that needs one:
 #
 #   [[gate.census_retired]]
-#   crate  = "busbar-voice"
-#   commit = "0000000"
-#   floor  = "plane_crates"
-#   from   = 4
-#   to     = 3
+#   crate  = "busbar-unit-egress-auth"
+#   commit = "0000000"                       # the sha that DELETES the crate
+#   floor  = "plugin_kinds.unit"
+#   from   = 14
+#   to     = 13
+#   why    = "the split-out auth step; the unit walks the one egress path now and nothing calls it"
 #
 # `floor` is the dotted key under `[gate.census]` — `plane_crates`, `legacy_reach_prefixes`,
 # `loc_ceilings_kernel_files`, or `plugin_kinds.<kind>` for a glob count.

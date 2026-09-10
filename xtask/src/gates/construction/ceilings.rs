@@ -256,11 +256,12 @@ pub fn rewrite(cx: &Ctx) -> Result<String, String> {
             orphan.join(", ")
         ));
     }
-    let (mut out, struck) = struck_text(cx)?;
-    if slack.is_empty() && struck.is_empty() {
+    let (out, struck) = struck_text(cx)?;
+    let (mut out, retired) = struck_retirements(cx, &out)?;
+    if slack.is_empty() && struck.is_empty() && retired.is_empty() {
         return Ok(
-            "every ratcheted ceiling already equals what it measures, and no declared raise has \
-             expired; nothing to write"
+            "every ratcheted ceiling already equals what it measures, and no declared raise or \
+             retirement has expired; nothing to write"
                 .to_string(),
         );
     }
@@ -281,12 +282,14 @@ pub fn rewrite(cx: &Ctx) -> Result<String, String> {
             r.ordinal, r.key, r.by
         ));
     }
+    done.extend(retired.iter().cloned());
     std::fs::write(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!(
-        "re-pinned {} ceiling(s) (downward only) and struck {} expired declared raise(s) in \
-         {CEILINGS}:\n  {}",
+        "re-pinned {} ceiling(s) (downward only) and struck {} expired declared raise(s) and {} \
+         spent retirement(s) in {CEILINGS}:\n  {}",
         slack.len(),
         struck.len(),
+        retired.len(),
         done.join("\n  ")
     ))
 }
@@ -765,8 +768,13 @@ pub fn expired(cx: &Ctx) -> Result<Vec<Raise>, String> {
 /// A line editor for the same reason [`set_int`] is one — the file is the owner's prose, and a
 /// strike a reviewer can read is one that removes one block and touches nothing else.
 pub fn strike(text: &str, ordinal: usize) -> Option<String> {
+    strike_row(text, RAISES, ordinal)
+}
+
+/// The same strike over any array of tables, so the retirements expire the way the raises do.
+pub fn strike_row(text: &str, table: &str, ordinal: usize) -> Option<String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let header = format!("[[{RAISES}]]");
+    let header = format!("[[{table}]]");
     let start = lines
         .iter()
         .enumerate()
@@ -810,6 +818,37 @@ pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>), String> {
         })?;
     }
     Ok((out, expired))
+}
+
+/// THE RETIREMENTS `--write` STRIKES: every `[[gate.census_retired]]` row the base already carries.
+///
+/// The same expiry the declared raises have, for the same reason — a row rides in the commit that
+/// deletes the crate, and one batch later the base holds both the row and the floor it bought, so
+/// the row is spent. Leaving it in the file is leaving a door open for the next drop of that floor,
+/// which `ceiling-census` reds by name; this is what closes it without a hand edit.
+pub fn struck_retirements(cx: &Ctx, text: &str) -> Result<(String, Vec<String>), String> {
+    let base = base_ref(cx)?;
+    let Ok(at_base) = cx.git_show(&base, CEILINGS) else {
+        return Ok((text.to_string(), Vec::new()));
+    };
+    let spent = super::census::spent(text, &at_base);
+    let mut out = text.to_string();
+    let mut done = Vec::new();
+    // Highest ordinal first, so each strike leaves the ordinals below it where they were.
+    let mut order: Vec<_> = spent.iter().collect();
+    order.sort_by_key(|r| std::cmp::Reverse(r.ordinal));
+    for r in order {
+        out = strike_row(&out, super::census::RETIRED, r.ordinal).ok_or_else(|| {
+            format!(
+                "{CEILINGS} has no [[{}]] #{} to strike",
+                super::census::RETIRED,
+                r.ordinal
+            )
+        })?;
+        done.push(r.report());
+    }
+    done.reverse();
+    Ok((out, done))
 }
 
 /// THE ARRAY-OF-TABLES ROWS WHOSE NAME IS THEIR IDENTITY, and the fields that spell it.
