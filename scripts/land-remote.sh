@@ -17,6 +17,7 @@
 # pushed under refs/proof/<ref>/<hash>, which both transfers the object and keeps it alive against
 # the box's gc.
 set -uo pipefail
+# shellcheck disable=SC2154   # R_* are assigned by fanout_parse_request in ci-remote-lib.sh
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
@@ -78,6 +79,38 @@ else
   done
 fi
 
+# ── THE SHARD FAN-OUT, ALLOCATED BEFORE THE PRIMARY STARTS ─────────────────────────────────────────
+# LAND_SELFTEST_SHARDS=n asks for the two long self-tests to run as n shards: shard 1 on the primary
+# box as part of the landing, shards 2..n on n-1 DISTINCT siblings that this script drives (a box
+# cannot reach a sibling; see land.sh's header). The siblings are chosen HERE, up front, least
+# loaded first and never the primary: a fleet that cannot give n-1 boxes DEGRADES TO UNSHARDED,
+# loudly — the primary then runs the whole self-test itself, which is the same proof taken slower —
+# rather than launching fewer shards and calling it n. A shard that is launched and then lost is a
+# different thing: that is RED, on both sides, and never skipped.
+SHARDS=0; SIBS=()
+case "${LAND_SELFTEST_SHARDS:-}" in
+  '') ;;
+  *[!0-9]*) rdie "LAND_SELFTEST_SHARDS='${LAND_SELFTEST_SHARDS}' is not a number" ;;
+  *) [ "$LAND_SELFTEST_SHARDS" -le 4 ] || rdie "LAND_SELFTEST_SHARDS=$LAND_SELFTEST_SHARDS: at most 4 boxes take a leg"
+     [ "$LAND_SELFTEST_SHARDS" -ge 2 ] && SHARDS="$LAND_SELFTEST_SHARDS" ;;
+esac
+if [ "$SHARDS" -gt 0 ] && [ "$PREPROVE" = 1 ]; then
+  rlog "pre-proof: the fan-out is not used (a sweep's parallelism is across lines); self-tests run sequentially on $HOST"
+  SHARDS=0
+fi
+if [ "$SHARDS" -gt 0 ]; then
+  while IFS= read -r h; do [ -n "$h" ] && SIBS+=("$h"); done <<EOF
+$(fleet_pick_hosts $((SHARDS - 1)) "$HOST")
+EOF
+  if [ "${#SIBS[@]}" -lt $((SHARDS - 1)) ]; then
+    rlog "fan-out: asked for $((SHARDS - 1)) sibling box(es), the fleet gave ${#SIBS[@]} — UNSHARDED landing on $HOST (the same proof, slower)"
+    SHARDS=0; SIBS=()
+  else
+    rlog "fan-out: $SHARDS shard(s) — shard 1 on $HOST, shards 2..$SHARDS on ${SIBS[*]}"
+  fi
+fi
+FANDIR="$REPO/target/land-fanout-$REF"; mkdir -p "$FANDIR"
+
 rlog "host $HOST   ref $REF   picks:${HASHES:- <none>}"
 # shellcheck disable=SC2086
 remote_push_tree "$HOST" "$REPO" "$REF" $HASHES
@@ -128,9 +161,13 @@ RRC="busbar-prove/target/land-remote-$REF.rc"
 # that name in the box's checkout before land.sh runs, verified with `rev-parse --verify`, and printed
 # into the landing log so a reader of the log can see what the ceilings were judged against.
 LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
-rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "${RARGS[@]}" <<'RUN'
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; CEIL="$2"; BASEREF="$3"; shift 3
+REF="$1"; CEIL="$2"; BASEREF="$3"; SHARDS="$4"; shift 4
+# THE FAN-OUT MODE, when shards were allocated: land.sh writes a REQUEST per leg and waits for what
+# this script delivers (land.sh's header has the protocol). With SHARDS=0 neither variable is set
+# and land.sh runs exactly what it ran before.
+if [ "$SHARDS" -gt 0 ]; then export LAND_SELFTEST_SHARDS="$SHARDS" LAND_SHARD_FANOUT=laptop; fi
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
@@ -170,10 +207,124 @@ echo "detached: $LOG"
 RUN
 [ $? -eq 0 ] || { rlog "could not start the landing on $HOST"; exit 2; }
 
-# POLL. Every 60 s: the .rc file (the verdict), then the log's new bytes (the operator's view).
+# ── SERVING THE FAN-OUT ──────────────────────────────────────────────────────────────────────────
+# Each poll also asks the primary for REQUEST files. A new one is fetched (the sha, from the
+# primary's bare repo), pushed to each sibling, and started there DETACHED with its own log and .rc
+# under ~/busbar-shards/<job>; every launched shard is then polled for its .rc, and the moment it
+# has one its log and then its .rc are copied here (the laptop's own ledger, $FANDIR) and onto the
+# primary (into the request's directory, where land.sh is waiting). Log first: the .rc is the signal.
+# A sibling unreachable for ten polls is delivered as rc 2 with the transport's own words — an
+# honest report from the transport, not a vote — so the primary's wait ends with a named reason.
+SERVED=""            # request refs already launched
+LAUNCHED=()          # "seq|k|host|jobref|primary-dir|t0" per launched shard, until delivered
+DELIVERED=()         # "seq|k|host|secs" per delivered shard
+shard_launch() { # $1 = sibling host  $2 = job ref  $3 = gate  $4 = k/n  $5 = CEIL=VALUE  $6 = ceiling secs
+  rsh_script "$1" "$2" "$3" "$4" "$5" "$6" <<'SHARD'
+set -uo pipefail
+JOB="$1"; GATE="$2"; SPEC="$3"; CEIL="$4"; CEILSECS="$5"
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
+export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4310}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+export XTASK_GATE_CEILING_SECS="$CEILSECS"
+export "$CEIL"
+# A CLONE PER JOB, A TARGET DIRECTORY PER BOX. The checkout is cheap (`--shared` against the bare
+# repo) and disposable; the build artefacts are what cost minutes, so they live in one directory
+# every shard job on this box reuses, and cargo's own lock serialises two jobs that meet there.
+export CARGO_TARGET_DIR="$HOME/busbar-shards/target"
+BARE="$HOME/busbar.git"; W="$HOME/busbar-shards/$JOB"
+mkdir -p "$HOME/busbar-shards"
+[ -d "$W/.git" ] || git clone -q --shared "$BARE" "$W" || exit 2
+cd "$W" || exit 2
+git fetch -q origin "+refs/heads/$JOB:refs/heads/$JOB" || exit 2
+git checkout -q -f "$JOB" || exit 2
+git clean -qffdx -e target -e .cargo
+mkdir -p target; rm -f target/shard.rc
+setsid nohup bash -c '
+  { echo "shard '"$SPEC"' of '"$GATE"' on $(hostname): tree $(git rev-parse --short HEAD) $(date -u +%FT%TZ)"
+    cargo xtask gate "'"$GATE"'" --selftest --shard "'"$SPEC"'"; rc=$?
+    echo "shard '"$SPEC"' done rc=$rc $(date -u +%FT%TZ)"; exit $rc; } >target/shard.log 2>&1; echo $? >target/shard.rc
+' >/dev/null 2>&1 </dev/null &
+echo "shard $SPEC of $GATE detached on $(hostname) in $W"
+SHARD
+}
+serve_requests() {
+  local out line dir seq k sib job t0 i rec ent secs quiet
+  # New requests on the primary.
+  out="$(rsh "$HOST" bash -c 'for f in busbar-prove/target/land-shards-*/REQUEST; do [ -f "$f" ] && printf "%s " "$f" && cat "$f"; done' </dev/null 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dir="${line%% *}"; dir="${dir%/REQUEST}"
+    fanout_parse_request "${line#* }" || { rlog "fan-out: REFUSED an unparseable request from $HOST: ${line#* }"; continue; }
+    case " $SERVED " in *" $R_ref "*) continue ;; esac
+    SERVED="$SERVED $R_ref"
+    seq="${R_ref##*-}"
+    if [ "$R_n" != "$SHARDS" ]; then rlog "fan-out: request $R_ref asks for $R_n shards, $SHARDS were allocated — not served (the primary will report them missing)"; continue; fi
+    mkdir -p "$FANDIR/$seq"; printf '%s\n' "${line#* }" >"$FANDIR/$seq/REQUEST"
+    if ! GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$R_ref:refs/remotes/fanout/$R_ref" 2>>"$FANDIR/$seq/transport.log"; then
+      rlog "fan-out: could not fetch $R_ref ($(printf '%.9s' "$R_sha")) from $HOST — shards 2..$R_n are not launched (see $FANDIR/$seq/transport.log)"; continue
+    fi
+    rlog "fan-out: request $seq: $R_gate in $R_n shards at $(printf '%.9s' "$R_sha") — launching shards 2..$R_n"
+    k=2
+    while [ "$k" -le "$R_n" ]; do
+      sib="${SIBS[$((k - 2))]}"; job="$REF-s$seq"
+      t0="$(date +%s)"
+      if remote_push_sha "$sib" "$REPO" "$job" "$R_sha" 2>>"$FANDIR/$seq/transport.log" \
+         && shard_launch "$sib" "$job" "$R_gate" "$k/$R_n" "$R_ceil" "${XTASK_GATE_CEILING_SECS:-3600}" >>"$FANDIR/$seq/transport.log" 2>&1; then
+        LAUNCHED+=("$seq|$k|$sib|$job|$dir|$t0|0")
+        rlog "fan-out: shard $k/$R_n of $R_gate launched on $sib"
+      else
+        # Never launched: delivered as rc 2 now, with the transport's words, so the primary's wait
+        # ends with a reason rather than a deadline.
+        { echo "land.sh: shard $k/$R_n of $R_gate: the laptop could not start it on $sib"; tail -5 "$FANDIR/$seq/transport.log"; } >"$FANDIR/$seq/shard-$k.log"
+        echo 2 >"$FANDIR/$seq/shard-$k.rc"
+        rcp_to "$HOST" "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && rcp_to "$HOST" "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"
+        DELIVERED+=("$seq|$k|$sib|0")
+        rlog "fan-out: shard $k/$R_n could not be started on $sib — delivered RED"
+      fi
+      k=$((k + 1))
+    done
+  done <<EOF
+$out
+EOF
+  # Launched shards: deliver the ones that have reported.
+  i=0
+  while [ "$i" -lt "${#LAUNCHED[@]}" ]; do
+    ent="${LAUNCHED[$i]}"; [ -n "$ent" ] || { i=$((i + 1)); continue; }
+    IFS='|' read -r seq k sib job dir t0 quiet <<<"$ent"
+    rec="$(rsh "$sib" cat "busbar-shards/$job/target/shard.rc" </dev/null 2>/dev/null || true)"
+    rec="$(printf '%s' "$rec" | tr -d '[:space:]')"
+    if [ -z "$rec" ]; then
+      if rsh "$sib" true </dev/null >/dev/null 2>&1; then quiet=0; else quiet=$((quiet + 1)); fi
+      if [ "$quiet" -ge 10 ]; then
+        { echo "land.sh: shard $k of $seq: $sib unreachable for $quiet polls; the laptop delivers this as RED"; } >"$FANDIR/$seq/shard-$k.log"
+        echo 2 >"$FANDIR/$seq/shard-$k.rc"; rec=2
+      else
+        LAUNCHED[$i]="$seq|$k|$sib|$job|$dir|$t0|$quiet"; i=$((i + 1)); continue
+      fi
+    else
+      rcp_back "$sib" "busbar-shards/$job/target/shard.log" "$FANDIR/$seq/shard-$k.log" || echo "(log could not be copied back from $sib)" >"$FANDIR/$seq/shard-$k.log"
+      printf '%s\n' "$rec" >"$FANDIR/$seq/shard-$k.rc"
+      rsh "$sib" rm -rf "busbar-shards/$job" </dev/null >/dev/null 2>&1 || true
+    fi
+    secs=$(( $(date +%s) - t0 ))
+    if rcp_to "$HOST" "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && rcp_to "$HOST" "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"; then
+      rlog "fan-out: shard $k of request $seq on $sib: rc $rec, ${secs}s launch-to-verdict — delivered to $HOST"
+    else
+      rlog "fan-out: shard $k of request $seq on $sib: rc $rec, but it could NOT be delivered to $HOST (the primary will report it missing)"
+    fi
+    DELIVERED+=("$seq|$k|$sib|$secs")
+    LAUNCHED[$i]=""; i=$((i + 1))
+  done
+}
+
+# POLL. Every 60 s: the .rc file (the verdict), then the log's new bytes (the operator's view), then
+# the fan-out's requests and deliveries.
 RC=""; SEEN=0; QUIET=0
 while :; do
   sleep 60
+  [ "$SHARDS" -gt 0 ] && serve_requests
   out="$(rsh "$HOST" bash -c "cat $RRC 2>/dev/null; echo ::; wc -c <$RLOG 2>/dev/null" </dev/null 2>/dev/null)"
   if [ -z "$out" ]; then
     QUIET=$((QUIET + 1))
@@ -192,6 +343,37 @@ while :; do
 done
 set -e
 END=$(date +%s)
+
+# ── THE JOIN, HERE, OVER THE LAPTOP'S OWN COPIES ────────────────────────────────────────────────────
+# The primary judged what was delivered to it; this side holds the same logs and re-runs the same
+# union check (land.sh's land_shard_union, sourced in library mode) over every request it served.
+# A green from the box that these copies do not support is refused. Shards still running when the
+# box reported are the box's "never reported" already; they are named here too, and stopped nowhere
+# — a shard that finishes late finishes into a directory nobody reads.
+if [ "$SHARDS" -gt 0 ]; then
+  set +e
+  LAND_LIB_ONLY=1 . "$ENGINE"
+  nreq=0; joined=0
+  for d in "$FANDIR"/*/; do
+    [ -f "$d/REQUEST" ] || continue
+    nreq=$((nreq + 1)); seq="$(basename "$d")"
+    fanout_parse_request "$(cat "$d/REQUEST")" || continue
+    # shard 1 ran on the primary: its log and rc are in the primary's request directory.
+    pdir="busbar-prove/target/land-shards-$R_gate-*-$seq"
+    rsh "$HOST" bash -c "cat $pdir/shard-1.rc 2>/dev/null" </dev/null 2>/dev/null | tr -d '[:space:]' >"$d/shard-1.rc"
+    [ -s "$d/shard-1.rc" ] || rm -f "$d/shard-1.rc"
+    rsh "$HOST" bash -c "cat $pdir/shard-1.log 2>/dev/null" </dev/null 2>/dev/null >"$d/shard-1.log"
+    if land_shard_union "$R_gate" "$R_n" "${d%/}" >"$d/union.txt" 2>&1; then
+      joined=$((joined + 1)); rlog "fan-out: request $seq ($R_gate): $(cat "$d/union.txt")"
+    else
+      rlog "fan-out: request $seq ($R_gate): $(tail -1 "$d/union.txt")"
+      [ "$RC" = 0 ] && { rlog "ERROR: the primary reported GREEN over a fan-out this side cannot confirm — refusing"; RC=2; }
+    fi
+  done
+  for ent in ${DELIVERED[@]+"${DELIVERED[@]}"}; do IFS='|' read -r seq k sib secs <<<"$ent"; rlog "fan-out: shard $k of request $seq on $sib: ${secs}s"; done
+  rlog "fan-out: $nreq request(s) served, $joined joined green; ledger $FANDIR"
+  set -e
+fi
 
 # THE RESULT FILE COMES BACK TO THE PATH THE LOCAL RUNNER ALREADY READS. target/gate/landq3.sh reads
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
