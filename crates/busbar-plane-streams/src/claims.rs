@@ -9,11 +9,13 @@
 //! This module claims TWO transports today: `ws` (both duplex JSON dialects and the carrier) and
 //! `http` (the two one-shot operations). One is deliberately unclaimed:
 //!
-//! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
-//!   (the legacy WebRTC topology is `runtime`-gated and, per its own module documentation, is a
-//!   browser-sideband ferry over the same JSON event vocabulary rather than a distinct wire format —
-//!   but a plane cannot claim a transport it cannot decode frames from without lying about what it
-//!   reads).
+//! * **`webrtc`** — and it is unclaimed because there is nothing to claim, not because a reader is
+//!   owed. The browser topology's MEDIA never touches this node: the browser establishes it
+//!   directly with the provider off the ephemeral secret this plane mints, peer to peer. What this
+//!   node carries for that call is the SIDEBAND control socket, which is a WebSocket carrying the
+//!   OpenAI Realtime event vocabulary and is claimed above as that dialect. There is no RTP and no
+//!   ICE anywhere in this workspace, and a plane may not claim a transport it cannot read frames
+//!   from.
 //!
 //! **THE CARRIER CLAIM IS BACK, ON [`WS_TRANSPORT`].** It was dropped because it named a wire with
 //! no crate, and a claim nothing registers is a boot refusal that stops the whole node rather than
@@ -27,6 +29,28 @@
 //! this crate an RTP data-channel reader, or the tree a telephony transport, can add the claim
 //! without touching any other one, because claims are declared independently and the boot's own
 //! overlap check is what proves they stay disjoint.
+//!
+//! ## THE CLAIMED PATHS ARE THE SERVED PATHS, and the served paths are 1.5.x's
+//!
+//! The three duplex legs are claimed at `/v1/realtime/sideband/{call_id}`,
+//! `/v1/realtime/telephony/{call_id}` and `/v1/realtime/gemini/{call_id}` — the URLs
+//! `docs/voice.md` documents, the URLs a deployment's carrier is configured to dial, and the URLs
+//! every conformant client of this node already sends. They are not this module's to choose. A
+//! previous pass on this line declared `/v1/realtime`, `/twilio/stream` and a generative-language
+//! service path instead, which were all three defensible readings of what the dialects are and all
+//! three a served surface changed by a refactor: every test in the tree would have stayed green
+//! while every live carrier configuration answered 404.
+//!
+//! Each is spelled as ONE LEVEL UNDER its own base, which is exactly the shape of the URL, because
+//! the one level is the call. A closed form rather than a suffix or a substring, and the difference
+//! is what the boot's overlap check can prove about it: two one-level prefixes overlap only when
+//! they are the same string.
+//!
+//! `/v1/realtime` itself is NOT claimed. It is the RFC 8707 audience base every one of these legs
+//! presents a token for and the mount the one-shot mint and SDP-broker passes live under, and it is
+//! not a place a session is opened; the audience and the session mount are two different facts and
+//! the old `PathSuffix("/v1/realtime")` claim was the first standing in for the second. It matched
+//! none of the three URLs this plane serves.
 //!
 //! ## A DIALECT IS A NAME HERE, NEVER A VARIANT
 //!
@@ -91,6 +115,15 @@ pub const TTS: &str = "tts";
 /// on this line and needs the constant to become a declaration the root can fill.
 pub const CARRIER: &str = "twilio-media-streams";
 
+/// The browser sideband socket: one level under `/v1/realtime/sideband`, which is the call.
+const SIDEBAND: Selector = Selector::PrefixOneLevel("/v1/realtime/sideband");
+
+/// The carrier media leg: one level under `/v1/realtime/telephony`, which is the call.
+const TELEPHONY: Selector = Selector::PrefixOneLevel("/v1/realtime/telephony");
+
+/// The Gemini Live thin duplex: one level under `/v1/realtime/gemini`, which is the call.
+const GEMINI: Selector = Selector::PrefixOneLevel("/v1/realtime/gemini");
+
 /// One claim with the dialect it names recorded beside it, the same pairing
 /// `busbar_plane_llm::claims::LadderClaim` uses for its ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,32 +154,42 @@ const fn claim(
 
 /// The declared claims, dialect-tagged, in the order the boot's overlap check sees them.
 pub const DIALECT_CLAIMS: &[DialectClaim] = &[
+    // THE THREE DUPLEX LEGS, EACH AT THE URL IT HAS ALWAYS BEEN SERVED AT, and each spelled as ONE
+    // LEVEL UNDER its own base — which is exactly the shape of the served URL, because the one level
+    // is the call. A closed form rather than a suffix or a substring, and the difference is what the
+    // boot's overlap check can prove: two one-level prefixes overlap only when they are the same
+    // string, where two substrings are compared by giving up and calling them overlapping.
+    //
+    // `/v1/realtime` itself is deliberately NOT claimed here. It is the audience base the one-shot
+    // mint and SDP-broker passes live under, not a place a session is opened, and a claim on the
+    // base would admit all three legs under whichever dialect happened to name it — a session read
+    // by the wrong dialect's reader, which fails some frames into an open call rather than at the
+    // door, because all three speak JSON over the same wire.
+    //
+    // THE SIDEBAND LEG IS THIS DIALECT'S, and its claim used to name the base and therefore matched
+    // nothing it served. The socket carries the OpenAI Realtime GA event vocabulary — the same
+    // events the direct realtime socket carries — and it is the CONTROL channel of a browser call
+    // whose media never touches this node at all: the browser establishes its media path directly
+    // with the provider off the ephemeral secret this plane mints. There is no second dialect to
+    // claim it under and no `webrtc` claim to make: this node carries no RTP and no ICE, and a plane
+    // may not claim a transport it cannot read frames from.
     DialectClaim {
         dialect: crate::dialect::NAME_OPENAI_REALTIME,
-        claim: claim(
-            WS_TRANSPORT,
-            Selector::PathSuffix("/v1/realtime"),
-            WS_SCHEME_ALTS,
-        ),
+        claim: claim(WS_TRANSPORT, SIDEBAND, WS_SCHEME_ALTS),
     },
     DialectClaim {
         dialect: crate::dialect::NAME_GEMINI_LIVE,
-        claim: claim(
-            WS_TRANSPORT,
-            Selector::PathContains("BidiGenerateContent"),
-            WS_SCHEME_ALTS,
-        ),
+        claim: claim(WS_TRANSPORT, GEMINI, WS_SCHEME_ALTS),
     },
-    // THE CARRIER, on `ws` — the transport that was always underneath it. One level under
-    // `/twilio` and no deeper: the carrier posts its stream to a single mount, and a claim that
-    // admitted arbitrary depth would be this plane claiming a subtree it does not serve.
+    // THE CARRIER, on `ws` — the transport that was always underneath it — and at the TELEPHONY URL
+    // rather than the `/twilio/stream` the previous commit invented. A mount is not a string a
+    // declaration may pick: it is where a deployment's carrier is already configured to dial. And
+    // the vendor's name leaves the path with it, which is the second thing that was wrong with
+    // `/twilio`: a claim selector is read by the front door, and the front door's routing table is
+    // the one place an instance name is never allowed to be.
     DialectClaim {
         dialect: CARRIER,
-        claim: claim(
-            WS_TRANSPORT,
-            Selector::PrefixOneLevel("/twilio"),
-            CARRIER_SCHEME_ALTS,
-        ),
+        claim: claim(WS_TRANSPORT, TELEPHONY, CARRIER_SCHEME_ALTS),
     },
     DialectClaim {
         dialect: TRANSCRIBE,
@@ -200,11 +243,11 @@ pub fn dialect_for(path: &str) -> Option<&'static str> {
 /// Only the forms this plane's claims actually use are answered.
 pub(crate) fn matches_selector(s: &Selector, path: &str) -> bool {
     match s {
-        Selector::PathSuffix(suffix) => path.ends_with(suffix),
-        Selector::PathContains(needle) => path.contains(needle),
-        // The contract's rule, read rather than restated: a second spelling here could hand a
-        // request to a dialect the boot's overlap check never saw this plane claim.
+        // The contract's own rule, READ rather than restated. A plane that reimplemented the form
+        // would be a second opinion about which claim a request matches, and the one request the two
+        // disagree on is exactly the one the boot's overlap check proved could not exist.
         Selector::PrefixOneLevel(prefix) => one_level_under(prefix, path),
+        Selector::PathSuffix(suffix) => path.ends_with(suffix),
         _ => false,
     }
 }

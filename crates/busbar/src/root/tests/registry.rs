@@ -33,10 +33,15 @@ const SEALED_ORDER: &[&str] = &[
     "llm PathPattern([Lit(\"v1\"), Lit(\"models\"), Tail])",
     "llm PathPattern([Lit(\"v1beta\"), Lit(\"models\"), Tail])",
     "a2a PathPattern([Lit(\"lf.a2a.v1.A2AService\"), Var])",
-    // The carrier, restored. A one-level prefix outranks every header and suffix selector below it
-    // and is outranked by every exact path and pattern above it, which is where a mount that serves
-    // one carrier's stream belongs.
-    "voice PrefixOneLevel(\"/twilio\")",
+    // THE THREE DUPLEX LEGS, at the URLs this node has served since 1.5.x and each one level under
+    // its own base — the one level being the call. A one-level prefix outranks every header and
+    // suffix selector below it and is outranked by every exact path and pattern above it, which is
+    // where a mount that serves one live call belongs. Their order among themselves is the length of
+    // the base and nothing else, which is why `telephony` sits above `sideband` above `gemini`: the
+    // three are disjoint, so nothing depends on it.
+    "voice PrefixOneLevel(\"/v1/realtime/telephony\")",
+    "voice PrefixOneLevel(\"/v1/realtime/sideband\")",
+    "voice PrefixOneLevel(\"/v1/realtime/gemini\")",
     "llm HeaderPrefix(\"authorization\", \"AWS4-HMAC-SHA256\")",
     "llm HeaderPresent(\"anthropic-version\")",
     "llm HeaderPresent(\"anthropic-beta\")",
@@ -47,14 +52,12 @@ const SEALED_ORDER: &[&str] = &[
     "llm PathContains(\":streamGenerateContent\")",
     "llm PathSuffix(\"/v1/chat/completions\")",
     "llm PathContains(\":batchEmbedContents\")",
-    "voice PathContains(\"BidiGenerateContent\")",
     "voice PathSuffix(\"/v1/audio/speech\")",
     "llm PathContains(\":generateContent\")",
     "llm PathSuffix(\"/v1/moderations\")",
     "llm PathSuffix(\"/v1/embeddings\")",
     "llm PathSuffix(\"/v1/responses\")",
     "llm PathContains(\":embedContent\")",
-    "voice PathSuffix(\"/v1/realtime\")",
     "llm PathContains(\"/v1/messages\")",
     "llm PathContains(\"/v1/images/\")",
     "llm PathSuffix(\"/v2/rerank\")",

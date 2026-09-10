@@ -25,11 +25,20 @@
 //! the one that answered nothing. This crate names no transport CRATE and reaches no transport code;
 //! the word is data on both sides of the seam.
 //!
-//! ## Three bindings, one per duplex dialect
+//! ## Three bindings, one per duplex dialect, at the URLs this node has always served
 //!
-//! * **[`BINDING_OPENAI_REALTIME`]** — the OpenAI Realtime shape. Its mount is `/v1/realtime`.
-//! * **[`BINDING_GEMINI_LIVE`]** — the Gemini Live (`BidiGenerateContent`) shape. Its mount is the
-//!   service path a Gemini-shaped client resolves against a base URL.
+//! * **[`BINDING_OPENAI_REALTIME`]** — the OpenAI Realtime shape, on the browser sideband socket:
+//!   `/v1/realtime/sideband/{call_id}`.
+//! * **[`BINDING_CARRIER`]** — the carrier media leg: `/v1/realtime/telephony/{call_id}`.
+//! * **[`BINDING_GEMINI_LIVE`]** — the Gemini Live thin duplex: `/v1/realtime/gemini/{call_id}`.
+//!
+//! THOSE THREE STRINGS ARE THE PUBLISHED SURFACE and are not this module's to choose. They are what
+//! `docs/voice.md` documents, what a deployment's carrier is configured to dial, and what every
+//! conformant client of this node already sends; a declaration that spelled them any other way
+//! would be a served URL changed by a refactor, which is the one thing a re-declaration of an
+//! existing surface may not do. Each carries the `{call_id}` its published form has always carried
+//! — the mount is a PATTERN ([`busbar_contract::transport::surface::BindingDecl::mounts`]), which
+//! is the vocabulary that makes that expressible at all.
 //!
 //! How an event INSIDE either session names itself is not declared here and is not declarable here.
 //! A frame of an open session is not addressed: which operation it is, is what this plane's own
@@ -89,29 +98,64 @@ pub const MEDIA_JSON: &str = "application/json";
 /// target.
 const UPGRADE: &str = "GET";
 
-/// Where an OpenAI Realtime session is opened.
+/// The segment every one of the three duplex mounts captures: the call this session is about.
 ///
-/// The base every route of that dialect sits under, and the exact string
-/// [`crate::claims::DIALECT_CLAIMS`]'s `PathSuffix` selector for this dialect matches.
-const MOUNT_OPENAI_REALTIME: &str = "/v1/realtime";
+/// One name, because it is the name the fact is published under on all three bindings and a second
+/// spelling would be a second fact. The word is the one the served URLs have always carried —
+/// `docs/voice.md` writes `{call_id}` in each of its three upgrade rows — and `tests/surface.rs`
+/// holds every declared mount to ending in exactly this capture rather than trusting three
+/// hand-written copies of it.
+pub(crate) const CAPTURE_CALL_ID: &str = "call_id";
 
-/// Where a carrier session is opened.
+/// Whether a mount pattern ends in the one declared capture, answerable at compile time.
 ///
-/// The one level under `/twilio` this plane's own claim selector admits, and the mount the carrier
-/// is configured to post its stream to. It is a mount and not a pattern: the carrier resolves one
-/// URL per configured stream, so a deeper or wilder shape would be this plane declaring routes
-/// nobody dials.
-const MOUNT_CARRIER: &str = "/twilio/stream";
+/// A const rather than a test, because it is the only thing holding three hand-written strings to
+/// one name, and a name that drifted would publish a fact under a spelling the composition above
+/// does not read — which is not a failure any wire could report.
+const fn ends_in_the_capture(mount: &str) -> bool {
+    let (m, want) = (mount.as_bytes(), CAPTURE_CALL_ID.as_bytes());
+    // `/{name}`: the separator, the brace, the name, the closing brace.
+    if m.len() < want.len() + 3 {
+        return false;
+    }
+    let start = m.len() - want.len() - 3;
+    if m[start] != b'/' || m[start + 1] != b'{' || m[m.len() - 1] != b'}' {
+        return false;
+    }
+    let mut i = 0;
+    while i < want.len() {
+        if m[start + 2 + i] != want[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
-/// Where a Gemini Live session is opened.
+/// Where an OpenAI Realtime session is opened: the browser's persistent sideband control socket.
 ///
-/// The service path the generative-language wire spells `BidiGenerateContent` on, which is what a
-/// Gemini-shaped client resolves when it is handed this node as its base: the client derives its
-/// target from the service descriptor rather than choosing one, so a mount declared any other way
-/// would leave the only spelling that dialect's clients send answering nothing. It is the string
-/// this plane's `PathContains` selector for the dialect is written to admit.
-const MOUNT_GEMINI_LIVE: &str =
-    "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+/// The published URL, byte for byte. Not the plane's audience base `/v1/realtime` — that base is
+/// where the one-shot mint and SDP-broker passes live and is not a place a session is opened at all,
+/// and a binding declared there would advertise a session mount at a target no client upgrades on.
+const MOUNT_OPENAI_REALTIME: &str = "/v1/realtime/sideband/{call_id}";
+
+/// Where a carrier session is opened: the carrier media leg, `g711_ulaw` end to end.
+///
+/// The published URL, byte for byte, and it replaces the `/twilio/stream` this file invented one
+/// commit ago. That invention was the mistake this commit undoes: a mount is not a place a
+/// declaration is free to pick, it is where a deployment's carrier is already configured to dial,
+/// and moving it would have taken every live carrier configuration down while every test in the
+/// tree stayed green.
+const MOUNT_CARRIER: &str = "/v1/realtime/telephony/{call_id}";
+
+/// Where a Gemini Live session is opened: the thin duplex proxy, the same shape as the carrier leg.
+///
+/// The published URL, byte for byte, and it replaces the generative-language SERVICE path this file
+/// carried. A Gemini-shaped client pointed at a provider derives that service path from the
+/// descriptor — but this node is not the provider, it is the proxy in front of one, and what it
+/// serves is its own URL keyed by the call, exactly as the carrier leg is. The service path is what
+/// this plane DIALS upstream, which is the far side of the leg and no part of what it mounts.
+const MOUNT_GEMINI_LIVE: &str = "/v1/realtime/gemini/{call_id}";
 
 /// Opening a duplex session: the one addressable operation of this surface.
 ///
@@ -150,6 +194,12 @@ const D_SESSION_OPEN: &[Dispatch] = &[
         bar: Bar::Credential,
     },
 ];
+
+/// Every declared mount captures the call, under the one name, and it is checked here rather than
+/// left to three copies of a word agreeing by inspection.
+const _: () = assert!(ends_in_the_capture(MOUNT_OPENAI_REALTIME));
+const _: () = assert!(ends_in_the_capture(MOUNT_CARRIER));
+const _: () = assert!(ends_in_the_capture(MOUNT_GEMINI_LIVE));
 
 /// THE SURFACE.
 ///

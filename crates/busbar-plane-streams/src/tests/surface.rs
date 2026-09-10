@@ -18,8 +18,30 @@ use busbar_contract::transport::surface::{check_surface, Answering, Bar, Dispatc
 use crate::claims;
 use crate::dialect;
 use crate::surface::{
-    BINDING_CARRIER, BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, MEDIA_JSON, SURFACE,
+    BINDING_CARRIER, BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, CAPTURE_CALL_ID, MEDIA_JSON,
+    SURFACE,
 };
+
+/// A concrete target a client would send, built from one declared mount PATTERN.
+///
+/// The assertions below are about what a live request is admitted as, and a mount is now a pattern
+/// rather than a target — so a walk run over the pattern STRING would be asserting that the front
+/// door admits a URL with braces in it, which no client sends and which would go on passing if the
+/// capture stopped being a capture. Every capture is filled with a value a call id could actually
+/// be.
+fn a_live_target(mount: &str) -> String {
+    mount
+        .split('/')
+        .map(|seg| {
+            if seg.starts_with('{') && seg.ends_with('}') {
+                "rtc_c0ffee"
+            } else {
+                seg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 /// The dialect a binding name belongs to, by the dialect's own word for itself.
 ///
@@ -69,51 +91,54 @@ fn every_declared_row_opens_a_session_and_every_mount_is_addressable_as_one() {
     }
     for binding in SURFACE.bindings {
         for mount in binding.mounts {
-            let (addressed, bar, _) = busbar_contract::transport::surface::duplex_binding_at(
-                &SURFACE,
-                claims::WS_TRANSPORT,
-                mount,
-            )
-            .unwrap_or_else(|| {
-                panic!("`{mount}` is a declared mount and a duplex wire must address it")
-            });
+            let target = a_live_target(mount);
+            let (addressed, bar, captures) =
+                busbar_contract::transport::surface::duplex_binding_at(
+                    &SURFACE,
+                    claims::WS_TRANSPORT,
+                    &target,
+                )
+                .unwrap_or_else(|| {
+                    panic!("`{target}` is a declared mount and a duplex wire must address it")
+                });
             assert_eq!(addressed.name, binding.name);
             assert_eq!(bar, Bar::Credential);
+            // The capture is the whole reason these three mounts are patterns: the call a session
+            // is about is in the URL and nowhere else, because after the upgrade this wire has no
+            // target left to read it out of.
+            assert_eq!(
+                captures.iter().map(|c| c.name).collect::<Vec<_>>(),
+                vec![CAPTURE_CALL_ID],
+                "the mount `{mount}` captures the call and nothing else"
+            );
+            assert_eq!(captures[0].value, "rtc_c0ffee");
         }
     }
 }
 
-/// EVERY DECLARED MOUNT IS ITS OWN DIALECT'S CLAIM, AND NOBODY ELSE'S.
+/// THE THREE SERVED URLS, WRITTEN OUT, because they are the published surface and nothing else here
+/// would notice them changing.
 ///
-/// Both halves, because each on its own is satisfiable by something wrong. A mount no claim matches
-/// is a route the kernel never hands this plane a session on — the surface would advertise an
-/// endpoint the front door does not admit. A mount that TWO dialects' claims match is worse: the
-/// session opens under one dialect's binding and is routed under whichever claim the declaration
-/// order reached first, and the two are only the same answer by luck.
+/// Every other cell in this file is relative: it holds the declaration to the claims, and the claims
+/// to the declaration, and both would stay green if all six moved together. These three strings are
+/// what `docs/voice.md` documents, what a deployment's carrier is configured to dial and what every
+/// conformant client already sends — the one thing on this surface that a refactor may not move, and
+/// therefore the one thing that has to be asserted against a literal rather than against itself.
 #[test]
-fn each_mount_is_matched_by_exactly_its_own_dialect_claim() {
-    for binding in SURFACE.bindings {
-        let own = dialect_of(binding.name);
-        assert!(
-            !binding.mounts.is_empty(),
-            "the binding `{}` declares no mount, so no session could ever be opened on it",
-            binding.name
-        );
-        for mount in binding.mounts {
-            let matched: Vec<&'static str> = claims::DIALECT_CLAIMS
-                .iter()
-                .filter(|c| claims::matches_selector(&c.claim.selector, mount))
-                .map(|c| c.dialect)
-                .collect();
-            assert_eq!(
-                matched,
-                vec![own],
-                "the mount `{mount}` on binding `{}` must be admitted by its own dialect's claim \
-                 and by no other",
-                binding.name
-            );
-        }
-    }
+fn the_three_duplex_mounts_are_the_published_urls() {
+    let mut served: Vec<(&str, &str)> = SURFACE
+        .bindings
+        .iter()
+        .flat_map(|b| b.mounts.iter().map(move |m| (b.name, *m)))
+        .collect();
+    served.sort_unstable();
+    let mut expected = vec![
+        (BINDING_OPENAI_REALTIME, "/v1/realtime/sideband/{call_id}"),
+        (BINDING_CARRIER, "/v1/realtime/telephony/{call_id}"),
+        (BINDING_GEMINI_LIVE, "/v1/realtime/gemini/{call_id}"),
+    ];
+    expected.sort_unstable();
+    assert_eq!(served, expected);
 }
 
 /// THE CLAIM'S OWN TRANSPORT KEY, NOT A SECOND COPY OF THE WORD.

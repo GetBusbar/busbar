@@ -12,17 +12,52 @@ mod selectors {
     use crate::claims::matches_selector;
     use busbar_contract::grammar::Selector;
 
-    /// A one-level prefix claims the segment below it and nothing else. A sibling whose name merely
-    /// starts with the prefix's bytes is a different route, and matching it here would hand a
-    /// request to a dialect the boot never proved this plane had claimed.
+    /// A ONE-LEVEL PREFIX CLAIMS ITS OWN URL AND NO RELATIVE OF IT.
+    ///
+    /// The form all three duplex legs are claimed in, and every near miss below is a path some other
+    /// route of this node serves or could serve; admitting one would hand a request to a dialect the
+    /// boot never proved this plane had claimed. The bare base `/v1/realtime` is the sharpest of
+    /// them — it is the plane's audience base and the mount the one-shot passes live under, and a
+    /// claim that reached it would put a posted document into a session dialect's reader. The
+    /// sibling whose name merely STARTS with the prefix's bytes is the other one: a prefix that
+    /// stopped at the byte rather than the segment boundary would claim it.
     #[test]
-    fn a_one_level_prefix_stops_at_the_segment_boundary() {
-        let s = Selector::PrefixOneLevel("/twilio");
-        assert!(matches_selector(&s, "/twilio/inbound"));
-        assert!(!matches_selector(&s, "/twiliofoo"));
-        assert!(!matches_selector(&s, "/twilio"));
-        assert!(!matches_selector(&s, "/twilio/inbound/deeper"));
-        assert!(!matches_selector(&s, "/other/inbound"));
+    fn a_one_level_prefix_claims_its_own_url_and_no_relative_of_it() {
+        let s = Selector::PrefixOneLevel("/v1/realtime/telephony");
+        assert!(matches_selector(&s, "/v1/realtime/telephony/rtc_c0ffee"));
+        assert!(!matches_selector(&s, "/v1/realtime/telephony"));
+        assert!(!matches_selector(&s, "/v1/realtime/telephony/a/b"));
+        assert!(!matches_selector(&s, "/v1/realtime/telephonyfoo/a"));
+        assert!(!matches_selector(&s, "/v1/realtime/sideband/rtc_c0ffee"));
+        assert!(!matches_selector(&s, "/v1/realtime"));
+        assert!(!matches_selector(&s, "/v2/realtime/telephony/rtc_c0ffee"));
+    }
+
+    /// THE THREE LEGS ARE ADMITTED SEPARATELY, which is what makes them three dialects.
+    ///
+    /// A claim on the shared base would admit all three under whichever dialect named it, and the
+    /// session would be read by the wrong reader — silently, because every one of the three speaks
+    /// JSON over the same wire and a frame of the wrong vocabulary is a decode failure some frames
+    /// into an open call rather than a refusal at the door.
+    #[test]
+    fn each_served_leg_names_its_own_dialect_and_the_base_names_none() {
+        use crate::claims::{dialect_for, CARRIER};
+        use crate::dialect::{NAME_GEMINI_LIVE, NAME_OPENAI_REALTIME};
+
+        assert_eq!(
+            dialect_for("/v1/realtime/sideband/rtc_c0ffee"),
+            Some(NAME_OPENAI_REALTIME)
+        );
+        assert_eq!(
+            dialect_for("/v1/realtime/telephony/rtc_c0ffee"),
+            Some(CARRIER)
+        );
+        assert_eq!(
+            dialect_for("/v1/realtime/gemini/rtc_c0ffee"),
+            Some(NAME_GEMINI_LIVE)
+        );
+        assert_eq!(dialect_for("/v1/realtime"), None);
+        assert_eq!(dialect_for("/twilio/stream"), None);
     }
 }
 
