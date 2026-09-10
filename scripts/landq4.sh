@@ -99,12 +99,15 @@ lq_line_files() { # $1 = queue line, in the repo at $2 (default $W)
 # second sweep's lines were disjoint among themselves but not from the first sweep's, and the popper
 # would have joined two lines that touch one file. $4 is the tip; empty means "no ledger consulted".
 lq_disjoint_lines() { # $1 = max, $2 = queue file, $3 = repo (default $W), $4 = tip (optional)
-  local max="$1" qf="$2" repo="${3:-$W}" tip="${4:-}" line files claimed="" n=0 clash f
+  # qa/*.toml IS SHARED OVER FIGURE-ONLY DIFFS here too (see lq_line_qa_rows): a sweep that never
+  # let two figure-only lines share a box never reached the eight greens the larger batch waits for.
+  local max="$1" qf="$2" repo="${3:-$W}" tip="${4:-}" line files claimed="" n=0 clash f crows=0 myrows
   if [ -n "$tip" ] && [ -f "$PP" ]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       files="$(lq_line_files "$line" "$repo")"
       case "$files" in '?'|'') continue ;; esac
+      [ "$(lq_line_qa_rows "$line" "$repo")" = 0 ] || crows=1
       while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
 $files
 EOF
@@ -118,10 +121,14 @@ EOF
     if [ -n "$tip" ] && [ "$(lq_preproved_status "$tip" "$line")" = GREEN ]; then continue; fi
     files="$(lq_line_files "$line" "$repo")"
     case "$files" in '?'|'') continue ;; esac
+    myrows="$(lq_line_qa_rows "$line" "$repo")"; case "$myrows" in ''|'?') myrows=1 ;; esac
     clash=0
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      case "$TAB$claimed" in *"$TAB$f$TAB"*) clash=1; break ;; esac
+      case "$TAB$claimed" in *"$TAB$f$TAB"*)
+        case "$f" in qa/*.toml) [ "$myrows" = 0 ] && [ "$crows" = 0 ] && continue ;; esac
+        clash=1; break ;;
+      esac
     done <<EOF
 $files
 EOF
@@ -132,6 +139,7 @@ EOF
     done <<EOF
 $files
 EOF
+    [ "$myrows" = 0 ] || crows=1
     printf '%s\n' "$line"
     n=$((n + 1))
   done <"$qf"
@@ -273,11 +281,15 @@ lq_line_qa_rows() { # $1 = queue line, $2 = repo
 # answer, and the caller extends the claimed set only on a yes.
 #   $1 = line  $2 = repo  $3 = lines in batch so far  $4 = claimed files (TAB-joined)  $5 = gates already taken (0|1)
 #   $6 = batch holds a was-red line (0|1)  $7 = ceiling moves claimed so far ("raise K" / "lower K", TAB-joined)
-#   $8 = batch holds a line with qa row diffs (0|1)
+#   $8 = batch holds a line with qa row diffs (0|1)  $9 = batch holds a base fix (0|1)
 lq_may_join() {
-  local line="$1" repo="$2" nb="$3" claimed="$4" gates="$5" alone="$6" moves="${7:-}" brows="${8:-0}" files f m kind key myrows
+  local line="$1" repo="$2" nb="$3" claimed="$4" gates="$5" alone="$6" moves="${7:-}" brows="${8:-0}" bfix="${9:-0}" files f m kind key myrows
   [ "$alone" = 0 ] || return 1                         # a red-once line took the whole batch
+  [ "$bfix" = 0 ] || return 1                          # a base fix took the whole batch
   if lq_line_was_red "$line"; then [ "$nb" = 0 ] || return 1; fi
+  # A BASE FIX JOINS NOBODY (see lq_line_is_base_fix): a line that touches only qa/*.toml re-pins
+  # what every other line in the batch would be judged against, and lands alone.
+  if lq_line_is_base_fix "$line" "$repo"; then [ "$nb" = 0 ] || return 1; fi
   files="$(lq_line_files "$line" "$repo")"
   case "$files" in '?'|'') [ "$nb" = 0 ] || return 1 ;; esac   # unknown shares with nobody
   myrows="$(lq_line_qa_rows "$line" "$repo")"; case "$myrows" in ''|'?') myrows=1 ;; esac
@@ -313,11 +325,20 @@ EOF
 # batch is judged on a HEAD the other one moved. A stranger is killed and logged; then the tree
 # itself must be settled (HEAD is the last landed tip, nothing modified) or the batch is refused.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-LQ_ENGINE_RE='land\.sh|land\.run(\.local)?\.sh|land-remote\.sh|xtask (gate|selftest)'
+LQ_ENGINE_RE='land\.sh|land\.run(\.local)?\.sh|land-remote\.sh|landq4\.sh|xtask (gate|selftest)'
 lq_ps() { ps -eo pid=,ppid=,args= 2>/dev/null; }
 lq_pid_cwd() { # $1 = pid; prints its cwd where the host can say (Linux /proc, else lsof), else nothing
   if [ -r "/proc/$1/cwd" ]; then readlink "/proc/$1/cwd" 2>/dev/null || true
   elif command -v lsof >/dev/null 2>&1; then lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | head -n1
+  fi
+}
+lq_pid_touches() { # $1 = pid, $2 = tree; 0 when one of its OPEN FILES (lsof, or /proc/<pid>/fd) is under the tree
+  if command -v lsof >/dev/null 2>&1; then lsof -p "$1" 2>/dev/null | grep -q -- "$2"
+  elif [ -d "/proc/$1/fd" ]; then
+    local fd
+    for fd in /proc/"$1"/fd/*; do case "$(readlink "$fd" 2>/dev/null)" in *"$2"*) return 0 ;; esac; done
+    return 1
+  else return 1
   fi
 }
 lq_descends() { # $1 = pid, $2 = ancestor pid, $3 = listing (pid ppid args); 0 when $1 is $2 or a descendant
@@ -328,24 +349,41 @@ lq_descends() { # $1 = pid, $2 = ancestor pid, $3 = listing (pid ppid args); 0 w
   done
   return 1
 }
-lq_census() { # $1 = holder pid, $2 = tree, $3 = listing (default: live ps); prints "stranger pid N killed" per outsider
-  local holder="$1" tree="$2" list="${3:-$(lq_ps)}" pid _ppid args cwd hit
+# WHAT COUNTS AS TOUCHING THE TREE — not cwd first: the engine mutates the tree by `git -C`, so its
+# cwd is wherever it was started. A process is in the census when its COMMAND LINE names the tree,
+# or (for a command that names an engine) one of its OPEN FILES is under the tree, or (for an
+# `xtask gate|selftest`, which a slot runs from inside the tree) its cwd IS the tree. Every process
+# found is printed — "own pid N (...)" for the runner's chain, "stranger pid N killed (...)" for an
+# outsider, which is killed unless LANDQ_CENSUS_DRY=1 — and an EMPTY census is BROKEN (rc 1): the
+# runner's own chain (this pid, its subshell, land-remote.sh, its re-exec) must be visible, or the
+# census is not looking at the host it thinks it is.
+lq_census() { # $1 = holder pid, $2 = tree, $3 = listing (default: live ps); rc 1 when nothing at all was found
+  local holder="$1" tree="$2" list="${3:-$(lq_ps)}" pid _ppid args hit found=0
   while read -r pid _ppid args; do
     [ -n "$pid" ] || continue
-    [ "$pid" = "$$" ] && continue
     hit=0
-    if printf '%s' "$args" | grep -qE "$LQ_ENGINE_RE"; then
-      case "$args" in *"$tree"*) hit=1 ;; *) cwd="$(lq_pid_cwd "$pid")"; [ "$cwd" = "$tree" ] && hit=1 ;; esac
-    elif [ -r "/proc/$pid/cwd" ]; then
-      [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$tree" ] && hit=1
+    case "$args" in *"$tree"*) hit=1 ;; esac
+    if [ "$hit" = 0 ] && printf '%s' "$args" | grep -qE "$LQ_ENGINE_RE"; then
+      if [ -n "${3:-}" ]; then :   # a fabricated listing has no live files to ask about
+      elif lq_pid_touches "$pid" "$tree"; then hit=1
+      elif printf '%s' "$args" | grep -qE 'xtask (gate|selftest)' && [ "$(lq_pid_cwd "$pid")" = "$tree" ]; then hit=1
+      fi
     fi
     [ "$hit" = 1 ] || continue
-    lq_descends "$pid" "$holder" "$list" && continue
+    found=$((found + 1))
+    if lq_descends "$pid" "$holder" "$list"; then
+      printf 'own pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
+    fi
+    # A `tail -f` on a log is a reader, the one outsider that may touch the tree: listed, kept.
+    if printf '%s' "$args" | grep -qE '^tail( |$)'; then
+      printf 'reader pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
+    fi
     [ "${LANDQ_CENSUS_DRY:-}" = 1 ] || kill "$pid" 2>/dev/null
     printf 'stranger pid %s killed (%s)\n' "$pid" "$(printf '%.100s' "$args")"
   done <<EOF
 $list
 EOF
+  [ "$found" -gt 0 ]
 }
 lq_tree_settled() { # $1 = tree, $2 = last-landed-tip file; 0 = HEAD is that tip and nothing tracked is modified
   local head last dirty
@@ -534,7 +572,7 @@ EOF
 # line pre-proven RED at this tip is parked `#RED-preproof <log>` rather than popped. Everything
 # else is popped exactly as it always was, in queue order.
 lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out; prints the count
-  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f moves="" m qarows=0 r
+  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f moves="" m qarows=0 r bfix=0
   : >"$batch"; : >"$keep"
   greens="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" 2>/dev/null | sort -u | grep -c . || true)"
   case "$greens" in ''|*[!0-9]*) greens=0 ;; esac
@@ -557,9 +595,10 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
     if [ "$greens" -gt 0 ] && [ "$st" != GREEN ]; then
       printf '%s\n' "$line" >>"$keep"; continue
     fi
-    if [ "$n" -lt "$b" ] && lq_may_join "$line" "$W" "$n" "$claimed" "$gates" "$alone" "$moves" "$qarows"; then
+    if [ "$n" -lt "$b" ] && lq_may_join "$line" "$W" "$n" "$claimed" "$gates" "$alone" "$moves" "$qarows" "$bfix"; then
       printf '%s\n' "$line" >>"$batch"; n=$((n + 1))
       r="$(lq_line_qa_rows "$line" "$W")"; [ "$r" = 0 ] || qarows=1
+      lq_line_is_base_fix "$line" "$W" && bfix=1
       while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
 $(lq_line_files "$line" "$W")
 EOF
@@ -576,17 +615,36 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # CI-AWARE PUSH — unchanged in substance from the runner this replaces.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-ci_conclusion() { # $1 = sha ; prints: success|failure|cancelled|running|none
-  local out
-  out="$(gh run list -R "$REPO" --workflow CI --commit "$1" --limit 1 \
-        --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"' 2>/dev/null)"
-  case "$out" in
+# A RUN THAT HAS SAT `queued` FOR AN HOUR IS NOT RUNNING. The tip's CI umbrella (label busbar-xl)
+# sat queued from 22:39 because slot-branch proof runs held every busbar-xl runner, and a push
+# deferred on "ci still running" would have kept every landing local for as long as that lasted.
+# Queued past 60 minutes reads as `none`: there is no verdict to wait for. `in_progress` still waits.
+lq_epoch() { # $1 = ISO-8601 UTC stamp (2026-09-10T22:39:00Z); prints epoch seconds, or nothing
+  # GNU date takes -d <stamp>; BSD date's -d is something else entirely (it would print NOW).
+  if date --version >/dev/null 2>&1; then date -u -d "$1" +%s 2>/dev/null || true
+  else date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || true; fi
+}
+lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $2 = now (epoch; default: now)
+  local st con created now="${2:-$(date +%s)}" at age
+  st="${1%% *}"; con="${1#* }"; con="${con%% *}"; created="${1##* }"
+  [ "$created" = "$1" ] && created=""
+  case "$st $con" in
     "completed success") echo success ;;
     "completed failure"|"completed timed_out") echo failure ;;
     "completed cancelled") echo cancelled ;;
-    ""|"null null") echo none ;;
+    " "|"null null") echo none ;;
+    "queued "*)
+      at="$(lq_epoch "$created")"
+      if [ -n "$at" ]; then age=$(( now - at )); [ "$age" -gt 3600 ] && { echo none; return 0; }; fi
+      echo running ;;
     *) echo running ;;
   esac
+}
+ci_conclusion() { # $1 = sha ; prints: success|failure|cancelled|running|none
+  local out
+  out="$(gh run list -R "$REPO" --workflow CI --commit "$1" --limit 1 \
+        --json status,conclusion,createdAt --jq '.[0] | "\(.status) \(.conclusion) \(.createdAt)"' 2>/dev/null)"
+  lq_ci_verdict "$out"
 }
 
 try_push() {
@@ -670,6 +728,15 @@ lq_selftest() {
   printf '[gate]\nx = 1\n\n[[minted]]\nkind = "k"\n\n[rules.legacy-reach]\nceiling = 92\n' >"$repo/qa/construction.toml"
   git -C "$repo" add -A; git -C "$repo" commit -qm mints-row
   local hmint; hmint="$(git -C "$repo" rev-parse HEAD)"
+  # Two lines that re-pin a figure BESIDE code (what K1 lands): figure-only qa diffs, not base fixes.
+  git -C "$repo" checkout -q "$hcb"
+  printf '[gate]\nx = 2\n\n[rules.legacy-reach]\nceiling = 92\n' >"$repo/qa/construction.toml"; printf 'k1\n' >"$repo/k1.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm repins-with-code
+  local hfig2; hfig2="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q "$hcb"
+  printf '[gate]\nx = 1\n\n[rules.legacy-reach]\nceiling = 90\n' >"$repo/qa/construction.toml"; printf 'm\n' >"$repo/m.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm repins-other-with-code
+  local hfigB; hfigB="$(git -C "$repo" rev-parse HEAD)"
   git -C "$repo" checkout -q -f master 2>/dev/null || git -C "$repo" checkout -q -f main 2>/dev/null || git -C "$repo" checkout -q -f "$hg2"
 
   echo "landq4 selftest: a line's file set"
@@ -790,28 +857,53 @@ lq_selftest() {
   _t "a minted row is a row diff"               1 "$(lq_line_qa_rows "--prove $hmint" "$repo")"
   _t "a declared raise is a row diff"           1 "$(lq_line_qa_rows "--prove $hraise" "$repo")"
   _t "an unresolvable line's rows are UNKNOWN"  "?" "$(lq_line_qa_rows "--prove deadbee" "$repo")"
-  printf -- '--prove %s\n--prove %s\n' "$hother" "$hfig" >"$Q"
+  _t "a figure re-pin beside code has no row diff" 0 "$(lq_line_qa_rows "--prove $hfig2" "$repo")"
+  printf -- '--prove %s\n--prove %s\n' "$hfig2" "$hfigB" >"$Q"
   n="$(lq_pop tipX 4 "$root/b10.txt" "$root/k10.txt")"
-  _t "two figure-only lines share the ceiling file" "$(printf -- '--prove %s\n--prove %s' "$hother" "$hfig")" "$(cat "$root/b10.txt")"
-  printf -- '--prove %s\n--prove %s\n' "$hmint" "$hfig" >"$Q"
+  _t "two figure-only lines share the ceiling file" "$(printf -- '--prove %s\n--prove %s' "$hfig2" "$hfigB")" "$(cat "$root/b10.txt")"
+  printf -- '--prove %s\n--prove %s\n' "$hmint" "$hfig2" >"$Q"
   n="$(lq_pop tipX 4 "$root/b11.txt" "$root/k11.txt")"
   _t "a row diff at the head: the figure line waits" "--prove $hmint" "$(cat "$root/b11.txt")"
-  printf -- '--prove %s\n--prove %s\n' "$hfig" "$hmint" >"$Q"
+  printf -- '--prove %s\n--prove %s\n' "$hfig2" "$hmint" >"$Q"
   n="$(lq_pop tipX 4 "$root/b12.txt" "$root/k12.txt")"
-  _t "  ...and behind a figure line, the row line waits" "--prove $hfig" "$(cat "$root/b12.txt")"
+  _t "  ...and behind a figure line, the row line waits" "--prove $hfig2" "$(cat "$root/b12.txt")"
   _t "  ...kept, unmarked"                        "--prove $hmint" "$(cat "$root/k12.txt")"
+  # THE SWEEP SHARES THE SAME WAY (lq_disjoint_lines claims files first).
+  local qf2="$root/queue2.txt"
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$hfig2" "$hfigB" "$hmint" >"$qf2"
+  _t "the sweep hands out two figure-only lines together, and holds the row line" \
+     "$(printf -- '--prove %s\n--prove %s' "$hfig2" "$hfigB")" "$(lq_disjoint_lines 6 "$qf2" "$repo")"
+  printf -- '--prove %s\n--prove %s\n' "$hmint" "$hfig2" >"$qf2"
+  _t "  ...and behind a row line, the figure line waits" "--prove $hmint" "$(lq_disjoint_lines 6 "$qf2" "$repo")"
+  # A BASE FIX JOINS NOBODY, in either position; a multi-pick line's files are the UNION of its picks.
+  echo "landq4 selftest: a base fix joins nobody; a line's files are the union of its picks"
+  printf -- '--prove %s\n--prove %s\n' "$hother" "$ha" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b15.txt" "$root/k15.txt")"
+  _t "a base fix at the head lands alone"      "--prove $hother" "$(cat "$root/b15.txt")"
+  _t "  ...the crate line waits"               "--prove $ha" "$(cat "$root/k15.txt")"
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hother" "$hb" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b16.txt" "$root/k16.txt")"
+  _t "a base fix behind a crate line does not join" "$(printf -- '--prove %s\n--prove %s' "$ha" "$hb")" "$(cat "$root/b16.txt")"
+  _t "  ...and is kept, unmarked"               "--prove $hother" "$(cat "$root/k16.txt")"
+  _t "three picks: the union of their files"    "$(printf 'a.txt\nb.txt\nc.txt')" "$(lq_line_files "--prove $ha $hb $hc" "$repo")"
+  _t "a qa pick beside a crate pick is not a base fix" 1 "$(lq_line_is_base_fix "--prove $hother $ha" "$repo"; echo $?)"
+  _t "two qa-only picks together are one"       0 "$(lq_line_is_base_fix "--prove $hother $hlower" "$repo"; echo $?)"
   W="$savedW"; D="$savedD"; Q="$savedQ"; PP="$savedPP"; L="$savedL"
 
   echo "landq4 selftest: one engine in the tree (the census)"
   local fake="/x/tree" list
-  list="$(printf '100 1 bash /x/tree/scripts/land.sh --batch b\n200 %s bash /x/tree/target/gate/land.run.sh --batch c\n300 200 cargo xtask gate construction --selftest /x/tree\n400 1 vim /x/tree/notes.md\n500 1 bash /elsewhere/scripts/land.sh --batch d\n' "$$")"
+  list="$(printf '100 1 bash /x/tree/scripts/land.sh --batch b\n200 %s bash /x/tree/target/gate/land.run.sh --batch c\n300 200 cargo xtask gate construction --selftest /x/tree\n400 1 tail -f /x/tree/target/gate/landq.out\n500 1 bash /elsewhere/scripts/land.sh --batch d\n' "$$")"
   LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$list" >"$root/census.txt"
   _t "an engine under the tree that is not the runner's is a stranger" 1 "$(grep -c '^stranger pid 100 killed' "$root/census.txt" || true)"
-  _t "the runner's own child is not"           0 "$(grep -c 'pid 200 ' "$root/census.txt" || true)"
-  _t "  ...nor its grandchild"                 0 "$(grep -c 'pid 300 ' "$root/census.txt" || true)"
-  _t "an editor is not an engine"              0 "$(grep -c 'pid 400 ' "$root/census.txt" || true)"
+  _t "the runner's own child is OWN, not a stranger" 1 "$(grep -c '^own pid 200 ' "$root/census.txt" || true)"
+  _t "  ...as is its grandchild"               1 "$(grep -c '^own pid 300 ' "$root/census.txt" || true)"
+  _t "a tail -f reader of the tree is listed, and is not killed" 1 "$(grep -c '^reader pid 400 ' "$root/census.txt" || true)"
+  _t "  ...never as a stranger"                0 "$(grep -c 'stranger pid 400 ' "$root/census.txt" || true)"
   _t "an engine in ANOTHER tree is not ours to kill" 0 "$(grep -c 'pid 500 ' "$root/census.txt" || true)"
   _t "the log line has the ruled form"         1 "$(grep -c '^stranger pid 100 killed (' "$root/census.txt" || true)"
+  _t "a census that found the chain is not broken" 0 "$(LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$list" >/dev/null; echo $?)"
+  _t "an EMPTY census is broken (rc 1)"        1 "$(LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$(printf '600 1 vim /elsewhere\n700 1 sleep 9')" >/dev/null; echo $?)"
+  _t "the census reads the command line, never cwd first" 0 "$(grep -c 'readlink "/proc/\$pid/cwd"' "$0" || true)"
   # A REAL STRANGER IS KILLED: a process whose argv names an engine under the tree and whose ancestry
   # does not reach the holder (pid 1 stands in for a holder it does not descend from).
   ( exec -a "bash $fake/scripts/land.sh --batch stray" sleep 300 ) &
@@ -821,7 +913,8 @@ lq_selftest() {
   _t "a live stranger is named"                1 "$(grep -c "^stranger pid $straypid killed" "$root/census2.txt" || true)"
   _t "  ...and is dead afterwards"             1 "$(kill -0 "$straypid" 2>/dev/null; echo $?)"
   kill "$straypid" 2>/dev/null; wait "$straypid" 2>/dev/null
-  _t "the main flow takes the census before the sweep and the pop" 1 "$(grep -c '^  lq_census \$\$ "\$W"' "$0")"
+  _t "the main flow takes the census before the sweep and the pop" 1 "$(grep -c '^  census="\$(lq_census \$\$ "\$W")"' "$0")"
+  _t "  ...and refuses on an empty one"        1 "$(grep -c '^    lq_log "=== census: EMPTY' "$0")"
 
   echo "landq4 selftest: the tree must be settled (HEAD is the last landed tip, nothing modified)"
   local tipf="$root/tip.txt"
@@ -870,6 +963,20 @@ lq_selftest() {
   _t "the tree-moved guard's red is NONE (re-queued)" "NONE:moved" "$(lq_preproof_verdict 2 "$root/pl3.log")"
   _t "an ordinary red is RED"                  RED "$(lq_preproof_verdict 1 "$root/pl4.log")"
   _t "the sweep records through the verdict"   1 "$(grep -c 'case "\$(lq_preproof_verdict "\$rc" "\$dir/line-\$j.log")" in' "$0")"
+
+  echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
+  local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"
+  _t "the stamp parses on this host"           1 "$( [ -n "$now0" ] && echo 1 || echo 0)"
+  _t "queued 81 minutes: none"                 none    "$(lq_ci_verdict "queued null 2026-09-10T22:39:00Z" "$now0")"
+  _t "queued 10 minutes: running"              running "$(lq_ci_verdict "queued null 2026-09-10T23:50:00Z" "$now0")"
+  _t "in_progress for two hours: still running" running "$(lq_ci_verdict "in_progress null 2026-09-10T22:00:00Z" "$now0")"
+  _t "completed success"                       success "$(lq_ci_verdict "completed success 2026-09-10T22:00:00Z" "$now0")"
+  _t "completed timed_out is failure"          failure "$(lq_ci_verdict "completed timed_out 2026-09-10T22:00:00Z" "$now0")"
+  _t "completed cancelled"                     cancelled "$(lq_ci_verdict "completed cancelled 2026-09-10T22:00:00Z" "$now0")"
+  _t "no run at all: none"                     none    "$(lq_ci_verdict "" "$now0")"
+  _t "gh's null null: none"                    none    "$(lq_ci_verdict "null null null" "$now0")"
+  _t "queued with an unreadable stamp: running (never guessed)" running "$(lq_ci_verdict "queued null whenever" "$now0")"
+  _t "ci_conclusion asks gh for createdAt"     1 "$(grep -c '^        --json status,conclusion,createdAt' "$0")"
 
   echo "landq4 selftest: the staged engine (the sweep runs the copy whose root is THIS tree)"
   local savedW2="$W" savedS="$SCRIPTS"; W="$root/tree"; SCRIPTS="$root/scratch/scripts"
@@ -976,7 +1083,12 @@ while true; do
   # ONE ENGINE IN THE TREE (see lq_census): strangers are killed and logged, and a tree that is not
   # settled — HEAD is not the last landed tip, or something tracked is modified — refuses the batch.
   TIPF="$W/target/gate/landq4.tip"
-  lq_census $$ "$W" | while IFS= read -r s; do [ -n "$s" ] && lq_log "census: $s"; done
+  census="$(lq_census $$ "$W")"; census_rc=$?
+  printf '%s\n' "$census" | while IFS= read -r s; do [ -n "$s" ] && lq_log "census: $s"; done
+  if [ "$census_rc" != 0 ]; then
+    lq_log "=== census: EMPTY — not even this runner's own chain is visible; the census is broken, batch REFUSED"
+    sleep 60; continue
+  fi
   if ! lq_tree_settled "$W" "$TIPF"; then
     lq_log "=== census: batch REFUSED — HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF") or the tree is modified; nothing popped"
     sleep 60; continue
