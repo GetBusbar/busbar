@@ -575,13 +575,6 @@ drain = "delete the hooks name from the export crate: a export reaches hooks thr
 
 [[edge]]
 from = "export"
-to = "plane"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plane name from the export crate: a export reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "export"
 to = "plugin-tooling"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
 why = "crates of kind export naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1463,12 +1456,12 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "98"
+count = "283"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1757"
 
 [[cell]]
 crate = "busbar"
@@ -1488,7 +1481,7 @@ count = "6"
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "135"
 
 [[cell]]
 crate = "busbar"
@@ -1498,7 +1491,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+count = "1180"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1533,12 +1526,12 @@ count = "1"
 [[cell]]
 crate = "busbar-a2a"
 kind = "legacy"
-count = "60"
+count = "74"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "2758"
+count = "2728"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1568,7 +1561,7 @@ count = "7"
 [[cell]]
 crate = "busbar-a2a-codec"
 kind = "legacy"
-count = "1"
+count = "18"
 
 [[cell]]
 crate = "busbar-a2a-codec"
@@ -1703,7 +1696,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "41"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1723,7 +1716,7 @@ count = "5"
 [[cell]]
 crate = "busbar-contract-transport"
 kind = "plane"
-count = "8"
+count = "7"
 
 [[cell]]
 crate = "busbar-contract-transport"
@@ -1758,7 +1751,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "2826"
 
 [[cell]]
 crate = "busbar-core"
@@ -1778,7 +1771,7 @@ count = "104"
 [[cell]]
 crate = "busbar-core"
 kind = "substrate"
-count = "1"
+count = "920"
 
 [[cell]]
 crate = "busbar-core"
@@ -1799,11 +1792,6 @@ count = "10"
 crate = "busbar-export-example-plugin"
 kind = "hooks"
 count = "1"
-
-[[cell]]
-crate = "busbar-export-example-plugin"
-kind = "plane"
-count = "3"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1898,12 +1886,12 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "legacy"
-count = "79"
+count = "93"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "274"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1938,17 +1926,17 @@ count = "78"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "legacy"
-count = "60"
+count = "108"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "285"
+count = "216"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "substrate"
-count = "904"
+count = "910"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -1988,12 +1976,12 @@ count = "7"
 [[cell]]
 crate = "busbar-mcp"
 kind = "legacy"
-count = "57"
+count = "73"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3345"
+count = "3339"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -2038,7 +2026,7 @@ count = "4"
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "legacy"
-count = "8"
+count = "34"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2048,7 +2036,7 @@ count = "241"
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "substrate"
-count = "38"
+count = "41"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2083,12 +2071,12 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
-count = "2"
+count = "10"
 
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "17"
+count = "12"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -2153,12 +2141,12 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "legacy"
-count = "1"
+count = "7"
 
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-count = "5"
+count = "4"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2188,7 +2176,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "legacy"
-count = "2"
+count = "12"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2243,12 +2231,12 @@ count = "35"
 [[cell]]
 crate = "busbar-plugin"
 kind = "legacy"
-count = "2"
+count = "5"
 
 [[cell]]
 crate = "busbar-plugin"
 kind = "plane"
-count = "81"
+count = "55"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2303,7 +2291,7 @@ count = "8"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plane"
-count = "55"
+count = "23"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2359,11 +2347,6 @@ count = "61"
 crate = "busbar-plugin-sdk"
 kind = "control"
 count = "1"
-
-[[cell]]
-crate = "busbar-plugin-sdk"
-kind = "plane"
-count = "20"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2513,12 +2496,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "298"
+count = "346"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "770"
+count = "756"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2568,12 +2551,12 @@ count = "121"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "134"
+count = "177"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "162"
+count = "159"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2623,7 +2606,7 @@ count = "6"
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "plane"
-count = "47"
+count = "32"
 
 [[cell]]
 crate = "busbar-transport-grpc"
@@ -2648,12 +2631,12 @@ count = "6"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "legacy"
-count = "2"
+count = "10"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "35"
+count = "32"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2674,11 +2657,6 @@ count = "5"
 crate = "busbar-transport-sse"
 kind = "contract-transport"
 count = "31"
-
-[[cell]]
-crate = "busbar-transport-sse"
-kind = "plane"
-count = "3"
 
 [[cell]]
 crate = "busbar-transport-sse"
@@ -2752,11 +2730,6 @@ count = "70"
 
 [[cell]]
 crate = "busbar-transport-ws"
-kind = "plane"
-count = "2"
-
-[[cell]]
-crate = "busbar-transport-ws"
 kind = "transport"
 count = "165"
 
@@ -2789,11 +2762,6 @@ count = "23"
 crate = "busbar-unit-audit"
 kind = "control"
 count = "87"
-
-[[cell]]
-crate = "busbar-unit-audit"
-kind = "plane"
-count = "6"
 
 [[cell]]
 crate = "busbar-unit-auth"
@@ -2833,7 +2801,7 @@ count = "11"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "legacy"
-count = "5"
+count = "8"
 
 [[cell]]
 crate = "busbar-unit-breaker"
@@ -2848,7 +2816,7 @@ count = "232"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "unit"
-count = "4"
+count = "5"
 
 [[cell]]
 crate = "busbar-unit-cost"
@@ -3023,12 +2991,12 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "legacy"
-count = "11"
+count = "23"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+count = "694"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3053,17 +3021,17 @@ count = "9"
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "legacy"
-count = "1"
+count = "18"
 
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "plane"
-count = "117"
+count = "96"
 
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "substrate"
-count = "15"
+count = "17"
 
 [[cell]]
 crate = "busbar-voice-codec"
@@ -5847,3 +5815,556 @@ crate = "busbar-voice-codec"
 kind = "dialect"
 note = "segment scanner 175, window scanner 257. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
+# ------------------------------------------------------------------------------------------------
+# THE RE-BASELINE — WHAT THE INSTRUMENT WAS HIDING (T0-I, 2026-09-10)
+# ------------------------------------------------------------------------------------------------
+#
+# `matrix::vocabulary` used to strike any needle that a longer sibling package name extended. The
+# rule was written for `busbar` — the workspace's namespace, which every package name carries — and
+# generalised into a hole the shape of whatever a sibling happened to extend. Seven real crates fell
+# through it:
+#
+#   busbar-voice        struck by busbar-voice-codec
+#   busbar-llm          struck by busbar-llm-codec
+#   busbar-mcp          struck by busbar-mcp-codec
+#   busbar-a2a          struck by busbar-a2a-codec
+#   busbar-contract     struck by busbar-contract-transport
+#   busbar-substrate    struck by busbar-substrate-values
+#   busbar-unit-egress  struck by busbar-unit-egress-auth
+#
+# Four of the five LEGACY crates are `busbar-<dialect>` and every one has a `*-codec` sibling, so
+# the `legacy` column — the number the whole 1.5.x drain is measured by — counted `busbar-core` and
+# nothing else. `busbar-contract` was the contract kind's ONLY needle, so striking it emptied the
+# kind and deleted the whole `contract` COLUMN: there was no `<crate> x contract` cell anywhere in
+# this file, and there never had been.
+#
+# The rows below are that measurement, taken with the fixed instrument at the tip that fixes it.
+# NOTHING IS MINTED. A `[[minted]]` row admits the rows of a crate an `[[announced]]` row names, and
+# every crate here has been in the tree all along — these are not new crates, they are old couplings
+# nobody could see. An uncounted coupling is still a coupling, so the fix lands WITH its numbers.
+#
+# WHAT THE THREE NEW COLUMNS MEAN (owner rulings, 2026-09-10):
+#
+#   x contract   GRANTED to every kind. ARCHITECTURE.md 1.2's manifest allow-list is the contract,
+#                the grammar it re-exports, and reviewed third-party crates; the contract is the
+#                face every kind is written against. Each class below carries its 1.1/1.2 citation
+#                and the number it was measured at.
+#   x substrate  busbar-substrate is FROZEN AND DISSOLVING. Its column is the declared dependency
+#                spine of the tree as it stands today — recorded at the measured count, cited to
+#                nothing, and never declared as a face. Its drain sentence is the dissolution:
+#                dissolves to plugin/units/transports/contract.
+#   x plugin-abi DEBT except for the trusted base. `plugin-tooling -> plugin-abi` is one of
+#                ARCHITECTURE_TCB's seven edges (1.4: the loader and the tooling are not kinds);
+#                every other class here is recorded with `cite = "none"` and a drain, on the
+#                root -> legacy precedent.
+#
+# ------------------------------------------------------------------------------------------------
+# [[unmasked]] — THE THIRD LEAF OF THE VAULT DOOR: A COLUMN THE INSTRUMENT COULD NOT SEE THE WHOLE OF
+# ------------------------------------------------------------------------------------------------
+#
+# `[[minted]]` admits a NEW CRATE's rows and `[[minted_kind]]` a NEW KIND's column, and the automatic
+# carve-out in `matrix` admits a column that had NO row at the base at all — which is why the
+# `contract` and `plugin-abi` columns below arrive with no admission row: they did not exist.
+# `legacy` and `substrate` DID exist, measured with the needles the blanket strike happened to leave
+# alive, so a needle coming back to life inside a live column is a mint like any other and is
+# refused. Widening the automatic carve-out to cover it would be a permanent hole — `busbar-llm`
+# keeps its `busbar-llm-codec` sibling, so every future legacy coupling would walk through it — so
+# the admission is a ROW, priced, and spent once.
+#
+#   kind    — the column whose rows this admits.
+#   needles — the package names the old rule struck. Each must be a crate ON DISK of that kind, and
+#             each must be a name ANOTHER package name in the census EXTENDS: that is the whole of
+#             what "the old rule struck it" meant, it is checked against the tree's own census
+#             rather than against this file, and the row stops being writable the day the extending
+#             sibling is renamed away.
+#   commit  — where the unmasking landed.
+#   cells   — EXACTLY how many [[cell]] rows this admits, and never one above the measurement.
+#   edges   — EXACTLY how many [[edge]] classes.
+#
+# ONCE MEANS ONCE, as for the other two leaves: a row the merge-base already carries admits nothing,
+# and every cell after it is an ordinary 0 -> N raise landing in a commit that says why.
+
+[[unmasked]]
+kind = "legacy"
+needles = "busbar-llm, busbar-mcp, busbar-a2a, busbar-voice"
+commit = "b715da57e"
+cells = "4"
+edges = "2"
+
+[[unmasked]]
+kind = "substrate"
+needles = "busbar-substrate"
+commit = "b715da57e"
+cells = "15"
+edges = "6"
+
+# THE LEGACY COLUMNS ARE THE DELETION TRACKS' TRUE FIGURES, and they are recorded, never declared
+# as faces. Each column falls to zero when its crate is deleted, and the deletion is somebody's
+# line:
+#
+#   busbar-llm    -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain). `busbar-llm x substrate`
+#                    reads 1,643 today; it read 0 for as long as the instrument was broken.
+#   busbar-mcp    -> the MOUNT CHAIN (MCP-T and the mount seam that follows it).
+#   busbar-a2a    -> the MOUNT CHAIN, the same seam one crate over.
+#   busbar-voice  -> VT-3 (the streams mount seam and the body deletion behind it).
+#   busbar-core   -> the CORE-HOMES drain, already running; the carve-out shadow keeps its
+#                    `busbar-core-*` extenders out of the number, which is why this column moved
+#                    before the others could.
+#
+
+[[edge]]
+from = "api"
+to = "plugin-abi"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: no clause gives kind api an edge set at all (1.1 added the four crates with ceilings, not with an edge set) and none lets it name plugin-abi vocabulary. Recorded as DEBT, on the root -> legacy precedent: an uncounted coupling is still a coupling."
+why = "crates of kind api naming plugin-abi vocabulary: plugin-abi package names in any spelling, the kind-qualified id (plugin-abi-<id>), and — where plugin-abi is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-abi name from the api crate: a api reaches the ABI through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "caps"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind caps naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows caps -> contract is visible on the commit that grows it. It falls as the crates of kind caps shrink, never by an edit here."
+
+[[edge]]
+from = "contract"
+to = "plugin-abi"
+cite = "none. ARCHITECTURE.md 1.2 is written in ONE direction — core to plugin, never plugin to core — and the ABI is the plugin side of that line. The contract naming the ABI is the line read backwards. Recorded as DEBT."
+why = "crates of kind contract naming plugin-abi vocabulary: plugin-abi package names in any spelling, the kind-qualified id (plugin-abi-<id>), and — where plugin-abi is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-abi name from the contract crate: a contract reaches the ABI through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
+to = "substrate"
+cite = "none. Neither direction of contract <-> substrate is in ARCHITECTURE 1.1, 1.2 or 3.1. Owner ruling, 2026-09-10: busbar-substrate is FROZEN AND DISSOLVING, and its column is the declared dependency spine of the tree as it stands today, recorded at the measured count and never declared as a face."
+why = "crates of kind contract naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "busbar-substrate DISSOLVES to plugin/units/transports/contract — every hit here moves with the module it names, and the class goes to zero when the crate does. Nothing in this row is drained by editing it: the drain is the dissolution, and until it lands this number is what the spine costs."
+
+[[edge]]
+from = "control"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind control naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows control -> contract is visible on the commit that grows it. It falls as the crates of kind control shrink, never by an edit here."
+
+[[edge]]
+from = "grammar"
+to = "contract"
+cite = "ARCHITECTURE.md 1.1 — busbar-grammar is \"the closed JSON span grammar, std-only, named by the kernel and RE-EXPORTED AS `busbar_contract::spans`\". A crate whose shipped surface is a module of the contract names the contract by construction; the clause that places it there is the clause that grants it. ARCHITECTURE.md 1.2 grants the contract to every kind besides."
+why = "crates of kind grammar naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows grammar -> contract is visible on the commit that grows it. It falls as the crates of kind grammar shrink, never by an edit here."
+
+[[edge]]
+from = "kernel"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind kernel naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows kernel -> contract is visible on the commit that grows it. It falls as the crates of kind kernel shrink, never by an edit here."
+
+[[edge]]
+from = "legacy"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows legacy -> contract is visible on the commit that grows it. It falls as the crates of kind legacy shrink, never by an edit here."
+
+[[edge]]
+from = "legacy"
+to = "plugin-abi"
+cite = "none. The retiring 1.5.x crates predate the plugin/ABI split entirely (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT and not an allowance. Recorded as DEBT on the root -> legacy precedent, and it goes to zero when the crates do."
+why = "crates of kind legacy naming plugin-abi vocabulary: plugin-abi package names in any spelling, the kind-qualified id (plugin-abi-<id>), and — where plugin-abi is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement: busbar-llm falls on the L-series, busbar-mcp and busbar-a2a on the mount chain, busbar-voice on VT-3. This row cannot be edited down any other way."
+
+[[edge]]
+from = "plane"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plane naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows plane -> contract is visible on the commit that grows it. It falls as the crates of kind plane shrink, never by an edit here."
+
+[[edge]]
+from = "plane"
+to = "substrate"
+cite = "none. ARCHITECTURE.md 1.2 — a plane's manifest allow-list is the contract and the grammar; busbar-substrate is on neither list. Owner ruling, 2026-09-10: the substrate column is the declared dependency spine today, recorded at the measured count, never declared as a face."
+why = "crates of kind plane naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "busbar-substrate DISSOLVES to plugin/units/transports/contract — every hit here moves with the module it names, and the class goes to zero when the crate does. Nothing in this row is drained by editing it: the drain is the dissolution, and until it lands this number is what the spine costs."
+
+[[edge]]
+from = "plugin-tooling"
+to = "contract"
+cite = "ARCHITECTURE.md 1.4 — the loader and the plugin tooling are the TRUSTED BASE and are NOT kinds, so the kind rules are not about them; ARCHITECTURE.md 1.2 grants the contract vocabulary to every kind, and the tooling that BUILDS, SIGNS and TESTS plugins is written against the same face the plugins are. The number is here so that a tooling crate reaching past the contract is visible."
+why = "crates of kind plugin-tooling naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows plugin-tooling -> contract is visible on the commit that grows it. It falls as the crates of kind plugin-tooling shrink, never by an edit here."
+
+[[edge]]
+from = "plugin-tooling"
+to = "plugin-abi"
+cite = "ARCHITECTURE.md 1.4 — the trusted base is not a kind, and `plugin-tooling -> plugin-abi` is one of the seven edges ARCHITECTURE_TCB names in xtask/src/gates/kind_isolation.rs. Bridging a plugin's face across the ABI is what the loader and the SDK DO; a tooling crate that did not name the ABI would not be tooling."
+why = "crates of kind plugin-tooling naming plugin-abi vocabulary: plugin-abi package names in any spelling, the kind-qualified id (plugin-abi-<id>), and — where plugin-abi is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows plugin-tooling -> plugin-abi is visible on the commit that grows it. It falls as the crates of kind plugin-tooling shrink, never by an edit here."
+
+[[edge]]
+from = "root"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows root -> contract is visible on the commit that grows it. It falls as the crates of kind root shrink, never by an edit here."
+
+[[edge]]
+from = "store"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind store naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows store -> contract is visible on the commit that grows it. It falls as the crates of kind store shrink, never by an edit here."
+
+[[edge]]
+from = "substrate"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind substrate naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows substrate -> contract is visible on the commit that grows it. It falls as the crates of kind substrate shrink, never by an edit here."
+
+[[edge]]
+from = "substrate"
+to = "plugin-abi"
+cite = "none. The architecture gives kind substrate no edge set at all: 1.1 added crates with ceilings and 3.1's crate graph does not list busbar-substrate — the same reading the [[question]] rows above already carry for its dependency edges. Recorded as DEBT."
+why = "crates of kind substrate naming plugin-abi vocabulary: plugin-abi package names in any spelling, the kind-qualified id (plugin-abi-<id>), and — where plugin-abi is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-abi name from the substrate crate: a substrate reaches the ABI through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind transport naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows transport -> contract is visible on the commit that grows it. It falls as the crates of kind transport shrink, never by an edit here."
+
+[[edge]]
+from = "transport"
+to = "substrate"
+cite = "none. ARCHITECTURE.md 1.1 — a transport \"knows no protocol, no principal\" and is written on busbar-contract-transport; no clause names the substrate. Owner ruling, 2026-09-10: recorded at the measured count as the dependency spine, never a face."
+why = "crates of kind transport naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "busbar-substrate DISSOLVES to plugin/units/transports/contract — every hit here moves with the module it names, and the class goes to zero when the crate does. Nothing in this row is drained by editing it: the drain is the dissolution, and until it lands this number is what the spine costs."
+
+[[edge]]
+from = "unit"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 (Core -> plugin. Never plugin -> core) — the manifest allow-list is `busbar-contract`, the closed grammar it re-exports, and reviewed third-party crates: the contract IS the face every kind is written against, and naming it is what being a crate of a kind means. ARCHITECTURE.md 1.1 gives it a surface ceiling rather than a blindness rule, which is the same statement from the other side. Owner ruling, 2026-09-10: every kind is granted the contract vocabulary; what no clause grants is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind unit naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none: the architecture grants this class. What this row holds is the NUMBER, so a landing that grows unit -> contract is visible on the commit that grows it. It falls as the crates of kind unit shrink, never by an edit here."
+
+[[edge]]
+from = "unit"
+to = "substrate"
+cite = "none. ARCHITECTURE.md 1.1/3.1 — a unit's trusted base is busbar-caps + busbar-contract; the substrate is neither. Owner ruling, 2026-09-10: recorded at the measured count as the dependency spine, never a face."
+why = "crates of kind unit naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "busbar-substrate DISSOLVES to plugin/units/transports/contract — every hit here moves with the module it names, and the class goes to zero when the crate does. Nothing in this row is drained by editing it: the drain is the dissolution, and until it lands this number is what the spine costs."
+
+[[cell]]
+crate = "busbar"
+kind = "contract"
+count = "206"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "plugin-abi"
+count = "26"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "substrate"
+count = "554"
+
+[[cell]]
+crate = "busbar-a2a-codec"
+kind = "substrate"
+count = "1"
+
+[[cell]]
+crate = "busbar-api"
+kind = "plugin-abi"
+count = "4"
+
+[[cell]]
+crate = "busbar-caps"
+kind = "contract"
+count = "20"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "plugin-abi"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "substrate"
+count = "1"
+
+[[cell]]
+crate = "busbar-core"
+kind = "legacy"
+count = "323"
+
+[[cell]]
+crate = "busbar-core"
+kind = "plugin-abi"
+count = "148"
+
+[[cell]]
+crate = "busbar-grammar"
+kind = "contract"
+count = "2"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "contract"
+count = "39"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "contract"
+count = "16"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "plugin-abi"
+count = "5"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "substrate"
+count = "1643"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "plugin-abi"
+count = "15"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "substrate"
+count = "672"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "contract"
+count = "159"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "substrate"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "contract"
+count = "60"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "contract"
+count = "84"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "contract"
+count = "158"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "substrate"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "contract"
+count = "85"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "legacy"
+count = "28"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "substrate"
+count = "3"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "contract"
+count = "1"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "plugin-abi"
+count = "89"
+
+[[cell]]
+crate = "busbar-plugin-pack"
+kind = "plugin-abi"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "plugin-abi"
+count = "78"
+
+[[cell]]
+crate = "busbar-plugin-sign"
+kind = "plugin-abi"
+count = "1"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "plugin-abi"
+count = "2"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "contract"
+count = "12"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "contract"
+count = "5"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "plugin-abi"
+count = "44"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "plugin-abi"
+count = "2"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "substrate"
+count = "39"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "contract"
+count = "49"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "legacy"
+count = "8"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "contract"
+count = "32"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "substrate"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "contract"
+count = "17"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "substrate"
+count = "3"
+
+[[cell]]
+crate = "busbar-transport-stdio"
+kind = "contract"
+count = "41"
+
+[[cell]]
+crate = "busbar-transport-tcp"
+kind = "contract"
+count = "22"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "contract"
+count = "39"
+
+[[cell]]
+crate = "busbar-transport-ws"
+kind = "contract"
+count = "37"
+
+[[cell]]
+crate = "busbar-unit-audit"
+kind = "contract"
+count = "17"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "contract"
+count = "7"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "contract"
+count = "9"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "substrate"
+count = "9"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "contract"
+count = "82"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-egress-auth"
+kind = "substrate"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-scope"
+kind = "contract"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-transport-key"
+kind = "contract"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "contract"
+count = "28"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "substrate"
+count = "2"
+
+[[cell]]
+crate = "busbar-unit-usage"
+kind = "contract"
+count = "3"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "contract"
+count = "2"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "plugin-abi"
+count = "11"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "substrate"
+count = "175"
