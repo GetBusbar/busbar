@@ -8,7 +8,7 @@
 #
 # THE PRE-PROVE STAGE SPENDS THE IDLE BOXES. Before the runner pops anything, the next up-to-six
 # queue lines whose FILE SETS ARE DISJOINT are each handed to a box of their own and proven against
-# the CURRENT TIP with `land.sh --batch --remote <host>` under `LAND_PREPROVE=1`: the box picks,
+# the CURRENT TIP with `land.sh --preprove --remote <host> --batch <line>`: the box picks,
 # proves, reports, and puts its tree back. Nothing is published and this tree never moves. The
 # verdicts land in target/gate/preproved.txt, one row per line, WITH THE TIP THEY WERE PROVEN
 # AGAINST.
@@ -162,7 +162,7 @@ lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
 # THE PRE-PROVE SWEEP
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # One box per line, in parallel, each against the CURRENT tip and each publishing nothing. The
-# runner's own tree is never touched: LAND_PREPROVE=1 makes land.sh reset the box's tree to the base
+# runner's own tree is never touched: `--preprove` makes land.sh reset the box's tree to the base
 # it started from, so the tip land-remote.sh brings back is the tip it sent and the fast-forward is
 # a no-op. That is the whole safety argument, and it is proven by land.sh's own self-test
 # ("pre: the tree did NOT move").
@@ -199,7 +199,11 @@ lq_preprove_sweep() {
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
     (
-      LAND_PREPROVE=1 bash "$SCRIPTS/land.sh" --remote "$cand" --batch "$bf" \
+      # `--preprove` AS AN ARGUMENT, not LAND_PREPROVE in the environment. land.sh converts one
+      # into the other for a caller who typed the variable, but the argv is what reaches the box —
+      # see land.sh's own note — and a sweep whose mode depended on that conversion would be one
+      # refactor away from six real landings nobody asked for.
+      bash "$SCRIPTS/land.sh" --preprove --remote "$cand" --batch "$bf" \
         >"$dir/line-$i.log" 2>&1
       echo $? >"$dir/line-$i.rc"
     ) &
