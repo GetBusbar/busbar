@@ -1661,7 +1661,20 @@ about a kind boundary, this register and that spec win.)*
   twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
   how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
   included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
-  ratchet down only.
+  ratchet down only. **Every ceiling in `qa/construction.toml` and `qa/kind-isolation.toml` ratchets
+  the same way**: `cargo xtask gate construction` holds each figure EQUAL to its measurement
+  (`ceiling-slack`; `--write` re-pins downward only) and refuses any figure higher than it is at the
+  branch's base (`ceiling-rose`). The one way through `ceiling-rose` is a **declared raise**: a face
+  that lands under a ceiling measuring its own lines ships, in the same commit, one
+  `[[gate.ceiling_raises]]` entry — `key` (the dotted path; a `qa/kind-isolation.toml` row is keyed
+  by identity, `cell.<crate>.<kind>.count`, never by ordinal), `by` (the lines the face measured),
+  `because` (naming the face), optionally `file` and `commit`. Entries are deltas and sum: several
+  faces off one base each carry their own, and the tree is green when the ceiling rose by exactly
+  the sum — a `by` above the rise is over-declared and red, a `by` below leaves the remainder
+  undeclared and red. An entry expires by itself: once the base carries it (its face landed) it is a
+  warning, never red, and `--write` strikes it; an entry the base does not carry whose ceiling did
+  not rise is a deleted face's leftover and red. The figure in the file is still pinned to the exact
+  measurement — a declared raise moves the ratchet, it does not loosen it.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
