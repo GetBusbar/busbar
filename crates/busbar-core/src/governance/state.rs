@@ -1591,7 +1591,9 @@ impl GovState {
                 return Ok(DerivedUsage {
                     // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the
                     // admission count (the requests-limit truth).
-                    spend_cents: cost.derive_spend_cents(
+                    spend_cents: crate::cost::derive_spend_minor_units(
+                        cost.card(),
+                        crate::cost::CurrencyCode::USD,
                         cell.model_views(),
                         cell.billable_requests,
                         include_request_fee,
@@ -1603,7 +1605,9 @@ impl GovState {
         }
         let ledger = self.store.get_usage(bucket_id, window)?;
         Ok(DerivedUsage {
-            spend_cents: cost.derive_spend_cents(
+            spend_cents: crate::cost::derive_spend_minor_units(
+                cost.card(),
+                crate::cost::CurrencyCode::USD,
                 ledger
                     .models
                     .iter()
@@ -1669,7 +1673,13 @@ impl GovState {
                 let map = self.budget.read(bucket.bucket_id);
                 match map.get(bucket.bucket_id) {
                     Some(cell) if cell.window_start == window => {
-                        cost.derive_spend_micros(cell.model_views(), cell.billable_requests, true)
+                        crate::cost::derive_spend_micros_units(
+                            cost.card(),
+                            crate::cost::CurrencyCode::USD,
+                            cell.model_views(),
+                            cell.billable_requests,
+                            true,
+                        )
                     }
                     _ => 0,
                 }
@@ -1947,7 +1957,9 @@ impl GovState {
                             0
                         },
                         if bucket.budget_cap.is_some() {
-                            cost.derive_spend_cents(
+                            crate::cost::derive_spend_minor_units(
+                                cost.card(),
+                                crate::cost::CurrencyCode::USD,
                                 cell.model_views(),
                                 cell.billable_requests,
                                 true,

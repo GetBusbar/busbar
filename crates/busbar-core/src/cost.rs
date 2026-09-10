@@ -26,12 +26,11 @@
 //! apply), while the `GovState` token ledger survives the apply - which is exactly what makes
 //! reprice-on-reload work.
 
-use std::collections::BTreeMap;
-
 // The engine's one seam onto the cost unit: every other module in this crate that needs one of the
 // unit's constants reads it through here rather than naming the unit itself.
 pub(crate) use busbar_unit_cost::{
-    CurrencyCode, GroupRuntime, LaneRates, RateCard, TierRates, NANOS_PER_MICRO,
+    derive_spend_micros_units, derive_spend_minor_units, CurrencyCode, GroupRuntime, RateCard,
+    TierRates, NANOS_PER_MICRO,
 };
 // THE DRAIN EDGE, read rather than restated: the resolved topology is the cost unit's
 // (`GroupTable`) and the WALK over it is the admission unit's (`ChainWalk`, which yields a
@@ -379,6 +378,21 @@ impl CostModel {
         self.inner.card().per_request_fee(CurrencyCode::USD)
     }
 
+    /// **THE CARD ITSELF**, for a reader that needs to DERIVE rather than to ask this model a
+    /// question.
+    ///
+    /// It is here so that the engine's remaining spend readers — the budget engine's four in
+    /// `governance::state` and the admin projection's one — call
+    /// [`busbar_unit_cost::derive_spend_minor_units`] / `derive_spend_micros_units` DIRECTLY, on the
+    /// card this model resolved. The alternative is a per-reader method on this type that forwards
+    /// to the unit, and a forwarder is a place a fifth reader's slightly different rule can be
+    /// added: an extra `.max(0)` here, a fee left out there, and the engine is deriving money again
+    /// under a name that says it is only passing it along. With the card handed over, there is
+    /// nothing between a reader and the one derivation, and this accessor goes with the crate.
+    pub(crate) fn card(&self) -> &RateCard {
+        self.inner.card()
+    }
+
     /// THE RESOLVED TOPOLOGY, straight off the unit's table.
     ///
     /// `pub` under test support for the one-projection cell, which asserts that this engine and the
@@ -397,18 +411,6 @@ impl CostModel {
     pub(crate) fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
         let table = self.inner.groups();
         table.index_of(name).map(|i| &table.groups()[i])
-    }
-
-    /// The effective rates for `model` (post-`upstream_model` resolution), read off the card.
-    /// Semantics of the three outcomes, which are the card's own:
-    /// - card absent: `Some(zero)` - every model prices at 0.
-    /// - card present, model priced: `Some(rates)`.
-    /// - card present, model UNKNOWN: `None` - fail-closed; the admission path rejects an
-    ///   unpriced passthrough model, and the derive paths price it at 0 (it can only arise from
-    ///   ledger rows written before a config change).
-    #[inline]
-    fn lane(&self, model: &str) -> Option<LaneRates<'_>> {
-        self.inner.card().lane_rates(model, CurrencyCode::USD)
     }
 
     /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
@@ -433,7 +435,8 @@ impl CostModel {
         model: &str,
         usage: &busbar_substrate::billing::Usage,
     ) -> Option<u128> {
-        self.lane(model)
+        self.card()
+            .lane_rates(model, CurrencyCode::USD)
             .map(|lane| lane.reserved_units_nanos(&usage.usage_units))
     }
 
@@ -448,58 +451,6 @@ impl CostModel {
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
         self.inner.model_unpriced(model)
-    }
-
-    /// DERIVE the spend (in cents, abstract minor units) of a ledger view — **A RELAY, AND NO
-    /// LONGER A DERIVATION**.
-    ///
-    /// What used to be here was a second money fold: its own accumulation over the models a bucket
-    /// used, its own single divide to cents, its own flat-fee multiply and its own floor at zero,
-    /// beside the cost unit's. Every one of those four steps is a decision that must match the
-    /// unit's exactly, and nothing made them match — a per-lane floor undercharges every multi-model
-    /// bucket, an unclamped fee credits one back toward headroom, and a wrapping cast bills an
-    /// over-the-top ledger as free. Two answers to what a bucket has spent, with the ledger unable
-    /// to say which one admitted the request.
-    ///
-    /// So the whole of it is `busbar_unit_cost::derive_spend_minor_units` now, over the card this
-    /// model already holds: the same fold, the same divide, the same fee and the same floor as the
-    /// line-shaped derivation the composition root drives, because they are literally the same
-    /// lines. The semantics are unchanged and are the unit's: `include_request_fee` adds the flat
-    /// fee times the BILLABLE request count (`fee_requests`: admitted minus refunded, so the fee
-    /// bills 2xx only); every enforcement/read path passes `true`. Pure recompute from tokens x
-    /// current rates — no spend is ever cached or stored — and a model with no rate (card present,
-    /// entry missing, which only ledger rows written under a previous config can produce) derives at
-    /// 0, the operator's rate-card edit taking effect retroactively by design.
-    pub(crate) fn derive_spend_cents<'m>(
-        &self,
-        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
-        fee_requests: u64,
-        include_request_fee: bool,
-    ) -> i64 {
-        busbar_unit_cost::derive_spend_minor_units(
-            self.inner.card(),
-            CurrencyCode::USD,
-            models,
-            fee_requests,
-            include_request_fee,
-        )
-    }
-
-    /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections —
-    /// the same relay onto the same sum, at the finer scale and with no floor at zero.
-    pub(crate) fn derive_spend_micros<'m>(
-        &self,
-        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
-        fee_requests: u64,
-        include_request_fee: bool,
-    ) -> i64 {
-        busbar_unit_cost::derive_spend_micros_units(
-            self.inner.card(),
-            CurrencyCode::USD,
-            models,
-            fee_requests,
-            include_request_fee,
-        )
     }
 
     /// READ the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
