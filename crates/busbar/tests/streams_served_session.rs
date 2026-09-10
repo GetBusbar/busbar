@@ -11,10 +11,11 @@
 //! open. The measurement behind these two cells is `VT7-design-served-session.md`; what is repeated
 //! here is only what a reader needs to know why each assertion is where it is.
 //!
-//! THE THREE DOORS. (1) With no `public_url` the plane builds no dispatch slot, so the router mounts
-//! none of its arrivals and every one of its URLs is a path that does not exist — which is what
-//! `admission_runs_before_route_lookup` stands behind, and the one ordering 1.5.5 pins for every
-//! plane. (2) With one, the plane claims its region and the verifier demands a token carrying that
+//! THE THREE DOORS. (1) A deployment that declares nothing here mounts nothing here, so every one of
+//! these URLs is a path that does not exist — which is what `admission_runs_before_route_lookup`
+//! stands behind, and the one ordering 1.5.5 pins for every plane. (A deployment that DOES declare the
+//! section and gives it no `public_url` no longer reaches this cell's shape at all: it refuses to boot,
+//! because a declared region with no audience is a door with no lock.) (2) With one, the plane claims its region and the verifier demands a token carrying that
 //! RFC 8707 audience; nothing in a shipped build mints one, so the rig mints it against the
 //! deployment's own signing key to get past a door that was hiding the next one. (3) The socket
 //! upgrades, and what it does after that is `sideband_serves_a_session`.
@@ -91,7 +92,7 @@ impl Drop for Node {
 impl Node {
     /// Boot a node whose config carries a `streams:` section the grammar accepts, with or without the
     /// top-level `public_url` the plane's dispatch slot is built from.
-    fn boot(tag: &str, with_public_url: bool) -> Node {
+    fn spawn(tag: &str, with_public_url: bool, with_streams: bool) -> Node {
         let dir = fixture_dir(tag);
         let (data, admin) = (free_port(), free_port());
         let bin = env!("CARGO_BIN_EXE_busbar");
@@ -118,6 +119,15 @@ impl Node {
             Some(u) => format!("public_url: \"{u}\"\n"),
             None => String::new(),
         };
+        // The section is what DECLARES this plane, and a declaration with no receiving origin to bind
+        // an audience from refuses the boot. So the two are written independently: a node that
+        // declares and is addressable serves, and a node that declares nothing mounts nothing — which
+        // is the shape the ordering cell needs and the only other one that boots.
+        let streams_block = if with_streams {
+            "streams:\n  session:\n    voice: marin\n"
+        } else {
+            ""
+        };
         std::fs::write(
             dir.join("config.yaml"),
             format!(
@@ -140,10 +150,7 @@ groups:
 providers: {{}}
 models: {{}}
 pools: {{}}
-streams:
-  session:
-    voice: marin
-"#,
+{streams_block}"#,
                 key_file = dir.join("signing.key").display(),
             ),
         )
@@ -160,14 +167,20 @@ streams:
             .spawn()
             .expect("spawn busbar");
 
-        let mut node = Node {
+        Node {
             dir,
             child,
             data,
             admin,
             signing_secret: secret,
             public_url,
-        };
+        }
+    }
+
+    /// Spawn a node and WAIT FOR IT TO ANSWER — the ordinary case, and the one that panics if the
+    /// process ends instead.
+    fn boot(tag: &str, with_public_url: bool, with_streams: bool) -> Node {
+        let mut node = Node::spawn(tag, with_public_url, with_streams);
         // READY means ANSWERING on the data listener. `/healthz` reports 503 on a node with no
         // models — which this node deliberately has none of — so readiness is "the listener produced
         // a status line", not "the status line was 200".
@@ -191,6 +204,33 @@ streams:
             std::thread::sleep(Duration::from_millis(100));
         }
         node
+    }
+
+    /// Spawn the ONE declared shape that must never reach a listener — a section written here with no
+    /// receiving origin — and wait for the process to END. Returns the node so the caller reads the
+    /// log the refusal was written to. Panics if it is still running at the deadline, because a node
+    /// that serves this shape is the defect, not a slow start.
+    fn refused(tag: &str) -> Node {
+        let mut node = Node::spawn(tag, false, true);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            match node.child.try_wait().expect("try_wait") {
+                Some(status) => {
+                    assert!(
+                        !status.success(),
+                        "the process ended with success on a config it must refuse; log:\n{}",
+                        node.log()
+                    );
+                    return node;
+                }
+                None => assert!(
+                    Instant::now() < deadline,
+                    "the process is still running on a config it must refuse; log:\n{}",
+                    node.log()
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn log(&self) -> String {
@@ -502,7 +542,7 @@ fn event_type(frame: &str) -> String {
 /// in bytes rather than in prose.
 #[test]
 fn sideband_serves_a_session() {
-    let node = Node::boot("serves", true);
+    let node = Node::boot("serves", true, true);
     let plain = node.mint("vt7-session", None);
     let token = node.audience_bound(&plain);
 
@@ -566,18 +606,18 @@ fn sideband_serves_a_session() {
 /// ADMISSION RUNS BEFORE ROUTE LOOKUP — the ONE ordering 1.5.5 pins for every plane, on a
 /// deployment where the streams plane mounts nothing at all.
 ///
-/// This node writes a `streams:` section and NO `public_url`, so `PLANE_DECL.build` yields no
-/// dispatch slot and the router mounts neither the WS arrivals nor the one-shot passes. Every
+/// This node declares NO section here and no `public_url`, so `PLANE_DECL.build` yields no dispatch
+/// slot and the router mounts neither the WS arrivals nor the one-shot passes. Every
 /// realtime URL is therefore a path that does not exist — and the answer a caller gets to a path
 /// that does not exist is the ordering under test: an AUTHENTICATED caller is told 404, and an
 /// ANONYMOUS one is told 401 and nothing else. A build that answers 404 to the anonymous caller has
 /// moved the router ahead of the gate and published the shape of its surface to strangers.
 ///
-/// Green on both sides of this line by construction: nothing in the served-session work touches the
-/// slot the router mounts from, so a node with no `public_url` mounts exactly what it mounted before.
+/// Green on both sides of this line by construction: a deployment that declares nothing here mounts
+/// exactly what it mounted before, and the ordering it is told back is the same one.
 #[test]
 fn admission_runs_before_route_lookup() {
-    let node = Node::boot("order", false);
+    let node = Node::boot("order", false, false);
     let scopeless = node.mint("vt7-scopeless", Some(&[]));
 
     for path in [
@@ -599,4 +639,30 @@ fn admission_runs_before_route_lookup() {
             authed.head
         );
     }
+}
+
+/// A DECLARATION WITH NO RECEIVING ORIGIN REFUSES THE BOOT — the third answer, against the shipped
+/// binary, and the one this file could not previously ask for because it was not an answer.
+///
+/// Written here and given no `public_url`, this deployment used to boot and answer 404 on every URL it
+/// had just been configured to serve: the section reached no build, no slot was made, the router
+/// mounted nothing, and nothing said so. It now ends before a listener is bound, and the log carries
+/// BOTH halves of why — the field an operator has to fix, named where the operator can act on it, and
+/// the rule the composition refused under, which is that a claimed region with no RFC 8707 audience
+/// would admit a token minted for any other resource.
+#[test]
+fn a_declaration_with_no_receiving_origin_refuses_the_boot() {
+    let log = Node::refused("refused").log();
+    assert!(
+        log.contains("public_url"),
+        "the refusal must NAME the field an operator has to fix; log:\n{log}"
+    );
+    assert!(
+        log.contains("bound no admission"),
+        "and it must name the rule it refused under, not just fail; log:\n{log}"
+    );
+    assert!(
+        !log.contains("listening"),
+        "and it must end BEFORE a listener is bound, not after; log:\n{log}"
+    );
 }

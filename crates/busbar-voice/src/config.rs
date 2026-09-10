@@ -175,11 +175,12 @@ pub fn section_of(ctx: &busbar_substrate::plane::registry::BuildCtx) -> StreamsC
 /// the operator pinned none. This is the ONE name the composition root looks up in the deployment's
 /// existing model/provider catalog to find the realtime provider credential to compose — the voice
 /// grammar declares no credential field of its own and gains none here. Takes the section the root
-/// already resolved, type-erased, so the root reads THIS deployment's posture rather than whatever a
-/// process-wide latch happened to hold.
+/// already resolved, behind the neutral carrier the root already holds it in, so the root reads THIS
+/// deployment's posture without naming a type of this plane's or the erasure seam's.
 #[must_use]
-pub fn session_model(section: &dyn std::any::Any) -> Option<String> {
+pub fn session_model(section: &dyn busbar_substrate::plane::config::PlaneCfg) -> Option<String> {
     section
+        .as_any()
         .downcast_ref::<StreamsCfg>()
         .and_then(|parsed| parsed.session.model.clone())
 }

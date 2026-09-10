@@ -533,10 +533,9 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
     );
 }
 
-/// A `streams:` block an operator actually WROTE — the plane's own defaults with one ceiling moved, so
-/// the neutral `PlaneCfg::is_present` answers `true` the way a real block does and `false` the way an
-/// absent one does. The value moved is a ceiling rather than a session field because a ceiling is read
-/// straight back off the built runtime, which is what the second cell below reads it with.
+/// A block an operator actually WROTE — the defaults with one ceiling moved, so `PlaneCfg::is_present`
+/// answers `true` the way a real one does. A ceiling rather than a session field because the second
+/// cell below reads it straight back off what was built.
 #[cfg(feature = "test-support")]
 fn a_written_streams_section() -> crate::config::StreamsCfg {
     crate::config::StreamsCfg {
@@ -545,9 +544,8 @@ fn a_written_streams_section() -> crate::config::StreamsCfg {
     }
 }
 
-/// Build the voice dispatch slot the way `appbuild` does, from the two things the door is a function
-/// of: the plane's OWN parsed section, handed across the seam under the key this plane's declaration
-/// carries, and the deployment's receiving origin.
+/// Built the way `appbuild` does, from the two things the door is a function of: the OWN section handed
+/// across the seam under the key this declaration carries, and the deployment's receiving origin.
 #[cfg(feature = "test-support")]
 fn slot_from_declaration(
     streams: &crate::config::StreamsCfg,
@@ -566,18 +564,11 @@ fn slot_from_declaration(
 
 /// A DECLARED `streams:` with no `public_url` is a BOOT REFUSAL, not seven silent 404s.
 ///
-/// The shape this pins used to build no dispatch slot at all: the composition collected no voice
-/// entry, both route loops skipped every arrival spec the plane had installed, and all seven declared
-/// paths fell through to the catch-all — 401 to an anonymous caller, 404 to an admitted one — with
-/// nothing anywhere saying the plane the operator had configured was absent. A declaration that
-/// cannot be served has to say so.
-///
-/// It says so through the composition's own R2 ratchet rather than a refusal of this plane's
-/// invention: the mount CLAIMS its paths and binds NO admission, and a claimed path with no RFC 8707
-/// audience is what `build_dispatch` ends a boot on by name — because serving one would admit a token
-/// minted for any other resource. This cell pins the pair R2 reads, and that the silent-no-mount shape
-/// is gone; the plane also names both keys at ERROR on its way there, since the ratchet's own text
-/// names the rule and not the field an operator has to fix.
+/// The shape this pins built nothing at all, so every path the operator had configured fell through to
+/// the catch-all and answered 401/404 with nothing anywhere saying why. What it does instead is what
+/// the composition's R2 ratchet already refuses a boot on by name, rather than a refusal of this
+/// crate's invention: claimed, and no RFC 8707 audience bound. Both halves of that pair are asserted
+/// here, because either one alone is a different bug.
 #[cfg(feature = "test-support")]
 #[test]
 fn a_declared_streams_section_with_no_public_url_mounts_and_binds_no_admission() {
@@ -612,10 +603,9 @@ fn a_declared_streams_section_with_no_public_url_mounts_and_binds_no_admission()
     );
 }
 
-/// The posture the slot carries is the section the ROOT parsed — read off this generation's
-/// `BuildCtx`, not off a copy the plane parked in process-global state and read back behind the
-/// composition's back. Two builds in one process, two different postures: a latch would give both the
-/// same one, and the last config parsed would win over the config being built.
+/// The posture carried is the section the ROOT parsed for THIS generation — not a copy parked in
+/// process-global state and read back later. Two builds in one process, two different answers: a
+/// latch would give both the same one, and the last config PARSED would win over the one being BUILT.
 #[cfg(feature = "test-support")]
 #[test]
 fn the_slot_carries_the_section_this_generation_was_built_from() {

@@ -1317,11 +1317,7 @@ async fn run(data_workers: usize) {
     let voice_provider = cfg
         .plane_sections
         .get(busbar_voice::PLANE_DECL.config_section)
-        .and_then(|parsed| {
-            busbar_voice::config::session_model(busbar_substrate::plane::config::PlaneCfg::as_any(
-                &**parsed,
-            ))
-        })
+        .and_then(|parsed| busbar_voice::config::session_model(&**parsed))
         .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
