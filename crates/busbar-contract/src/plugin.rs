@@ -34,6 +34,8 @@ pub enum Kind {
     Hook,
     /// Ships journal entries, content facts or segments off the node.
     Export,
+    /// Serves an operator surface. Unmetered: no upstream, no leg, no price.
+    Control,
 }
 
 impl Kind {
@@ -63,6 +65,7 @@ impl fmt::Display for Kind {
             Self::Secret => "secret",
             Self::Hook => "hook",
             Self::Export => "export",
+            Self::Control => "control",
         };
         f.write_str(s)
     }
@@ -118,6 +121,9 @@ pub mod markers {
     marker!(
         /// Marker for the export kind.
         ExportKind => Export);
+    marker!(
+        /// Marker for the control kind.
+        ControlKind => Control);
 }
 
 /// The native plugin interface generation a plugin was built against.

@@ -301,6 +301,37 @@ file = "qa/kind-isolation.toml"
 by = 80
 because = "busbar-core/src/admin/v1/contract's Scope, Grants and required_scope DELETED against busbar-unit-scope, and every reader re-pointed in the same commit; the engine names the scope unit where it used to name a second copy of it. Heaviest: 24 more in auth/mod.rs (the chain verdict's cap, the grant resolution, the module ceiling, the forbidden refusal and the one enforcement chokepoint's approve), 8 in auth/tests/tests.rs, 8 in admin/tests/tests.rs, 4 in Cargo.toml (the dependency and its drain note), the rest one or two each in the taxonomy, the openapi stamp, json/named_map.rs, config/mod.rs, config_validate, test_support/engine_kit.rs and the served-document cell. It is a NET FALL in reach, not a rise: the engine's control cell falls 5187 -> 5131 and its transport cell 2120 -> 2116 with the same deletion, both re-pinned down in this commit."
 
+# THE CONTROL SEAT AT THE ABI. The plugin contract named eight kinds and the design names nine; the
+# ninth -- `control`, an unmetered served surface -- had no seat, so the one crate that IS one
+# answered `Kind::Plane` and implemented the seven-step plane face because that was the only face
+# there was. An ABI statement that contradicts the design is an ABI statement that runs. The seat is
+# `Kind::Control` (one enum arm, one Display arm, one sealed marker) plus `busbar_contract::control`
+# -- `ControlRoute`, `ControlMeta` (KEY, CLAIMS, ROUTES, OP_CLASSES, CONFIG_SCHEMA), `Rendering` and
+# the four-call `Control` face (verify, admit, audit, answer). It is NARROWER than the plane's, and
+# deliberately: no `route` and no `meter`, because a face with a step on it is a face whose
+# implementers are asked the question, and the honest answer for this kind is no method rather than
+# an empty return; no `authenticate` and no `approve`, because a second reading of one credential is
+# a second answer to one question and the auth kind and the scope unit already hold both. `ROUTES` is
+# the control kind's declared open vocabulary -- its route table as data -- which is what makes the
+# decode call unnecessary: the loop resolves the arriving request against the declaration, so there
+# is nothing left for a decode to decide. The three rows below are the same 46 lines measured under
+# the three ceilings that count them; `busbar-plane-admin` re-declares through the face in the
+# commit that follows, deleting 13 plane methods against these 4.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 46
+because = "the CONTROL entry face busbar_contract::control::{ControlRoute, ControlMeta, Rendering, Control} plus Kind::Control and its sealed marker: 46 plugin-visible surface lines measured by scripts/loc-surface.py, the ninth kind's seat at the ABI. ARCHITECTURE.md section 1.1 is amended in this same commit, 3509 -> 3555, as the pin's own rule requires."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 46
+because = "the CONTROL entry face busbar_contract::control::{ControlRoute, ControlMeta, Rendering, Control} plus Kind::Control and its sealed marker: the same 46 lines, counted here as busbar-caps + busbar-contract src/ lines rather than as plugin-visible surface. busbar-caps does not move; every line is busbar-contract's."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 46
+because = "the CONTROL entry face busbar_contract::control::{ControlRoute, ControlMeta, Rendering, Control} plus Kind::Control and its sealed marker: the same 46 lines a third time, because the union carries the caps/contract pair whole; the kernel and the busbar-unit-* sum do not move on this line at all."
+
 [[gate.ceiling_raises]]
 key = "cell.busbar-unit-scope.control.count"
 file = "qa/kind-isolation.toml"
@@ -315,7 +346,7 @@ because = "all 9 are in the scope unit's own tests.rs, in the cell that pins the
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3509
+contract_caps = 3555
 grammar = 388
 contract_transport = 845
 
@@ -536,12 +567,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3511
+caps_contract_ceiling = 3557
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14961
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1456
-union_ceiling = 23854
+union_ceiling = 23900
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3509`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3555`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -93,7 +93,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   silently, because both readings are internally consistent and neither knows the other exists. The
   one relay is `busbar_substrate::config::groups::group_specs`, beside the grammar it reads; the
   root's copy went in the same commit. Nothing is added to what a plugin author must read: no trait
-  takes these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
+  takes these types and no plugin is handed one. The THIRD is **the control kind's seat**
+  (`Kind::Control` with its `Display` arm and its sealed marker, and `busbar_contract::control` —
+  `ControlRoute`, `ControlMeta`, `Rendering` and the four-call `Control` face; 46 lines, 3509 →
+  3555). It is here because the contract named eight kinds and this document names nine, and a kind
+  with no seat at the ABI is a kind whose one member has to answer as something else: the admin
+  surface declared `Kind::Plane` and implemented the seven-step plane face, which is an ABI
+  statement contradicting the design and the ABI statement is the one that runs. The face is
+  NARROWER than the plane's, which is the whole reason it is a face and not a registration: no
+  `route` and no `meter` (a face with a step on it asks its implementers the question, and the
+  honest answer for an unmetered surface that dials nothing is no method rather than an empty
+  return), and no `authenticate` and no `approve` (the auth kind and the scope unit hold those, and
+  one credential read twice is one question answered twice). `ControlMeta::ROUTES` is the kind's
+  declared open vocabulary — its route table as DATA — and it is what replaces the decode call: the
+  loop resolves an arriving request against the declaration, so a control surface never reads bytes
+  to discover what arrived. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

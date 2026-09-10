@@ -11,6 +11,7 @@
 #![deny(missing_debug_implementations)]
 
 pub mod bounded;
+pub mod control;
 pub mod dest;
 pub mod grammar;
 pub mod ids;
@@ -30,6 +31,7 @@ pub use bounded::{
     MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
     MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
 };
+pub use control::{Control, ControlMeta, ControlRoute, Rendering};
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
