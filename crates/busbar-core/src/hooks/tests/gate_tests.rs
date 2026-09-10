@@ -14,7 +14,7 @@ use crate::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
-use crate::ir::invoke::InvokeReq;
+use busbar_substrate::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
@@ -501,7 +501,7 @@ async fn no_attached_gate_builds_no_projection() {
         inner: InvokeReq,
         walks: std::sync::atomic::AtomicUsize,
     }
-    impl crate::ir::facts::IrFacts for Counting {
+    impl busbar_substrate::ir::facts::IrFacts for Counting {
         fn verb(&self) -> crate::operation::Operation {
             crate::operation::Operation::INVOKE
         }
@@ -511,13 +511,13 @@ async fn no_attached_gate_builds_no_projection() {
         fn end_user(&self) -> Option<&str> {
             None
         }
-        fn shape(&self) -> crate::ir::facts::Shape {
-            crate::ir::facts::IrFacts::shape(&self.inner)
+        fn shape(&self) -> busbar_substrate::ir::facts::Shape {
+            busbar_substrate::ir::facts::IrFacts::shape(&self.inner)
         }
-        fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        fn content(&self) -> Vec<busbar_substrate::ir::facts::ContentItem<'_>> {
             self.walks
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::ir::facts::IrFacts::content(&self.inner)
+            busbar_substrate::ir::facts::IrFacts::content(&self.inner)
         }
     }
     let facts = Counting {

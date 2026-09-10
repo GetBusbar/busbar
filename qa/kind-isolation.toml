@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3002"
+count = "2969"
 
 [[cell]]
 crate = "busbar-core"
@@ -5475,7 +5475,7 @@ count = "14"
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1160"
+count = "1159"
 
 [[cell]]
 crate = "busbar-hooks-ranking"

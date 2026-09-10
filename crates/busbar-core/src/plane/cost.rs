@@ -269,7 +269,7 @@ impl CostBreakdown {
 
 /// A coarse pre-admission magnitude: a number and the NAME of what is counted (`"tokens"`, `"bytes"`,
 /// `"tasks"`, …), for a HARD pre-admission budget cap via over-reservation. The plane fills it from
-/// its own [`crate::ir::facts`] projection; core reserves against it without knowing the unit's origin
+/// its own [`busbar_substrate::ir::facts`] projection; core reserves against it without knowing the unit's origin
 /// (owner ruling Q5 — accuracy comes from the exact *settlement*, not this coarse estimate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Magnitude {

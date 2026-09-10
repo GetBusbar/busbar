@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE REQUEST GATE, FIRED FROM ANY PROTOCOL — one function, one projection, one verdict, for a
-//! request the shared pipeline knows only through [`crate::ir::facts::IrFacts`].
+//! request the shared pipeline knows only through [`busbar_substrate::ir::facts::IrFacts`].
 //!
 //! # Why this exists, and why it is not in `proxy/`
 //!
@@ -27,7 +27,7 @@
 //! body: `pool` is the container the request is addressed to (a pool, an MCP server, an A2A agent),
 //! `ingress_protocol` names the dialect, the shape signals come from [`IrFacts::shape`], and — behind
 //! the hook's own `prompt:` grant — `messages` carries the content projection, one entry per
-//! [`crate::ir::facts::ContentItem`], each rendered by `screenable_text`. A hook therefore screens a
+//! [`busbar_substrate::ir::facts::ContentItem`], each rendered by `screenable_text`. A hook therefore screens a
 //! tool call's arguments through exactly the field it already screens a prompt through, and a gate
 //! written for the model plane works here with no change.
 //!
@@ -58,7 +58,7 @@
 #![allow(dead_code)]
 
 use crate::hooks::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
-use crate::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use busbar_substrate::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type

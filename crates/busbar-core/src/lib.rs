@@ -187,7 +187,12 @@ mod handlers_registry_tests;
 // LLM plane spawns its probers off its own runtime through the plane `on_swap` seam.
 pub mod hooks;
 pub mod ingress;
-pub mod ir;
+// `ir` DELETED (1.6.0 deletion wave): seven files, every one a `pub use busbar_substrate::ir::…`
+// line. The neutral IR (`facts`, `handle`, `invoke`, `subscribe`, `egress_prep`, `neutral_handles`)
+// is defined on the substrate and surfaced at `busbar_substrate::ir`; readers name it there.
+#[cfg(test)]
+#[path = "tests/ir_subscribe_tests.rs"]
+mod ir_subscribe_tests;
 // wt2/neutral-utils: relocated DOWN to busbar-substrate. The depth-guarded JSON parse/serialize seam
 // (sonic-rs) is a neutral utility; core re-exports it so `crate::json::{parse,to_vec,…}` are unchanged.
 pub use busbar_substrate::json;
