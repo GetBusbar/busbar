@@ -577,3 +577,67 @@ fn selftest_a_token_reason_is_red() {
     let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
     assert!(err.contains("real"), "got: {err}");
 }
+
+/// EVERY SERVING SWITCH THE MANIFEST CARRIES IS IN `default` — THE SHIPPED BINARY SERVES WHAT IT
+/// SPEAKS.
+///
+/// A `root-<plane>-serve` feature is the switch that decides whether the root's leg for that plane
+/// is on the request path in the binary an operator runs. A plane whose crate is in `default`, whose
+/// leg is in `default`, and whose SERVING switch is not, ships as a plane the binary knows how to
+/// answer and does not: every rig above judges the leg, and none of them judge the binary, because
+/// the binary never reaches the leg. Default-off is an ORDERING — the leg is built before it is
+/// switched on — and an ordering that nothing retires is indistinguishable from a leg that was never
+/// finished.
+///
+/// It is asked over the MANIFEST rather than over a list restated here, so a plane that grows a
+/// serving switch tomorrow is held to the same rule without a line changing in this file, and a
+/// plane name appears nowhere in it. That is the whole reason this is data and not `cfg!`.
+#[test]
+fn every_serving_switch_is_in_the_shipped_default_feature_set() {
+    let manifest = std::fs::read_to_string(repo_root().join("crates/busbar/Cargo.toml"))
+        .expect("the binary's manifest must be readable");
+
+    // The features section, delimited the way every other section is: from its own header to the
+    // next one. Reading the whole file would let a `[dependencies]` key that happens to end in
+    // `-serve` be mistaken for a switch.
+    let features = manifest
+        .split_once("\n[features]\n")
+        .expect("the binary's manifest declares a `[features]` section")
+        .1;
+    let features = features
+        .split_once("\n[")
+        .map_or(features, |(head, _)| head);
+
+    let mut switches: Vec<&str> = Vec::new();
+    let mut default: Option<&str> = None;
+    for line in features.lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name == "default" {
+            default = Some(value);
+        } else if name.starts_with("root-") && name.ends_with("-serve") {
+            switches.push(name);
+        }
+    }
+    let default = default.expect("the binary's manifest declares a `default` feature set");
+
+    assert!(
+        !switches.is_empty(),
+        "no `root-<plane>-serve` switch was found in the manifest's `[features]` section. This \
+         test is the only thing that keeps a serving switch from shipping off, so a reading that \
+         finds none is this test having stopped asking rather than the rule holding."
+    );
+
+    for switch in &switches {
+        assert!(
+            default.contains(&format!("\"{switch}\"")),
+            "`{switch}` is a serving switch and it is NOT in the binary's `default` feature set, \
+             so the shipped binary carries the plane, carries its leg, and does not put the leg on \
+             the request path. Every rig judges the leg; none of them judge the binary. Serving \
+             switches in the manifest: {switches:?}"
+        );
+    }
+    println!("SERVING SWITCHES, all in `default`: {switches:?}");
+}
