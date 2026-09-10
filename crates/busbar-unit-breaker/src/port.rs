@@ -20,7 +20,7 @@
 //! This module takes no dependency beyond [`crate::classify`] and [`crate::Outcome`] — in
 //! particular, no `busbar-contract` (this crate's `Cargo.toml` is explicit that `busbar-caps` is the
 //! only workspace crate it may name). The egress unit's own `UpstreamStatus` additionally carries
-//! the transport's coarse status-class reading (`busbar_contract::StatusClass`); a caller that has
+//! the transport's coarse status-class reading (`busbar_contract::WireStatusClass`); a caller that has
 //! that reading folds it into [`UpstreamStatus::code`] itself before calling in — exactly the kind
 //! of narrowing an integrator's adapter does, alongside the `DestinationId` width narrowing.
 //!

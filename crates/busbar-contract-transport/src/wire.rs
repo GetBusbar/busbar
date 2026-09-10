@@ -29,8 +29,13 @@ pub enum Direction {
 ///
 /// This is the kernel-derived leg of the fee decision. It is per-frame meta, never a session-level
 /// fact, so a composed layer cannot overwrite a lower layer's reading.
+///
+/// Named by what it is — the WIRE's four-way reading — because the contract family carries one
+/// other status class, `busbar_contract::upstream::StatusClass`, the nine-way reading a plane's
+/// dialect makes of an upstream's answer, and one name per meaning is the rule: the two are
+/// compared by the ledger, never confused by a reader. (Owner ruling, 2026-09-09.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum StatusClass {
+pub enum WireStatusClass {
     /// The upstream reported success.
     Success,
     /// The upstream blamed the request.
@@ -155,7 +160,7 @@ pub struct FrameMeta {
     /// The transport's own unit count, where it decodes the payload.
     pub transport_units: Option<u64>,
     /// The transport's status reading, where it carries one.
-    pub status: Option<StatusClass>,
+    pub status: Option<WireStatusClass>,
     /// The exact numeric status the upstream reported, WITH THE NAMESPACE THAT SPELLED IT, where
     /// the transport's wire has one.
     ///

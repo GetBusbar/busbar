@@ -275,7 +275,7 @@ impl AccrualMeter {
 /// arrives, a plane declares how a unit finished, and the settlement table below reads both. A
 /// kernel-local restatement of any of them would be a second spelling of a value that crosses the
 /// plugin boundary in both directions.
-pub use busbar_contract::{FinishClass, StatusAt, StatusClass};
+pub use busbar_contract::{FinishClass, StatusAt, WireStatusClass};
 
 /// Everything the settlement table reads.
 ///
@@ -395,7 +395,7 @@ pub struct FeeEvidence {
     /// `status` below means the frame that would have carried it never arrived.
     pub status_at: Option<StatusAt>,
     /// The status class at the frame the transport reports it on.
-    pub status: Option<StatusClass>,
+    pub status: Option<WireStatusClass>,
     /// The plane's own verdict.
     pub finish: Option<FinishClass>,
 }
@@ -415,7 +415,7 @@ pub fn fee_count(evidence: &FeeEvidence) -> (u32, PostingFlags) {
     let eligible = evidence.client_open_or_one_shot
         && evidence.selected_upstream
         && evidence.relayed_first_response_frame;
-    let by_status = evidence.status.map(|status| status == StatusClass::Success);
+    let by_status = evidence.status.map(|s| s == WireStatusClass::Success);
     let by_finish = evidence.finish.map(|finish| finish != FinishClass::Error);
     // A transport that declares WHERE its status is reported and then does not report one is a
     // stream that died before the frame carrying it — most often a trailer. The status is the
