@@ -926,14 +926,31 @@ impl std::fmt::Display for RecordRefusal {
 
 impl std::error::Error for RecordRefusal {}
 
-/// This plane's record legs, over the store the loader opened.
+/// This plane's record legs, over the store the loader opened — and over the catalogue SNAPSHOT.
 ///
 /// The adapter is the one store handle in the process, and it is the published protocol's own record
 /// operations that answer here — not a second shape invented for this plane. A store that predates
 /// them answers from the adapter's node-local shim, which is why a deployment on a released store
 /// boots and serves exactly as it did.
+///
+/// **The catalogue schema is answered from the snapshot and never from the store**, and that is a
+/// fact about what the catalogue IS rather than a shortcut. The protocol's existing server builds its
+/// catalogue from the operator's configuration on every apply and swaps it whole; nothing of it is
+/// ever written to the store, and a store scan under that kind has answered no row on any
+/// deployment. So the honest source for [`records::SCHEMA_CATALOGUE`] is the same snapshot, handed
+/// in at assembly as rows in the plane's own grammar ([`busbar_plane_mcp::catalogue::Row`]) — a
+/// `get` reads one row by its published name and a `scan` reads them all, in the order the existing
+/// server lists them. The demotion, task, call and approval schemas are the store's, exactly as
+/// before.
 pub struct Records {
     store: Arc<dyn AbiStore>,
+    /// The catalogue rows, encoded once in the plane's record grammar, keyed by published name.
+    ///
+    /// Encoded at assembly and decoded by the plane on every listing, rather than kept as `Row`s
+    /// and handed across directly, so the leg the plane declares is the leg that runs: a listing
+    /// composed from a `Vec<Row>` the root passed beside the plan would be a listing composed from
+    /// state the unit never read through a record leg.
+    catalogue: Arc<[(String, Vec<u8>)]>,
 }
 
 impl Records {
@@ -943,15 +960,46 @@ impl Records {
         Records::over(adapter.store())
     }
 
-    /// Bind them to the store handle itself.
+    /// Bind them to the store handle itself, with an EMPTY catalogue.
     ///
     /// The adapter's whole contribution above is `adapter.store()`, and a leg assembled at boot
     /// holds the handle rather than the adapter that opened it — the same shape the sibling plane's
     /// `RecordLegs::new` has. Written as the one constructor the other calls, so there is one place
     /// this binding is made rather than two that could bind different stores.
+    ///
+    /// Empty is a real catalogue and not a missing one: it is what a deployment with no `tools:`
+    /// block has, and every listing composed over it is the empty listing the existing server
+    /// answers for that deployment.
     #[must_use]
     pub fn over(store: Arc<dyn AbiStore>) -> Self {
-        Records { store }
+        Records {
+            store,
+            catalogue: Arc::from(Vec::new()),
+        }
+    }
+
+    /// The same legs, over a catalogue snapshot.
+    ///
+    /// Rows are encoded here, once, in the plane's own record grammar. A row that does not encode
+    /// is dropped rather than written as a truncated body — which cannot happen for a row built from
+    /// a serialiser's own value, and is an arm rather than an unwrap because assembly is not a place
+    /// to abort a boot over a catalogue entry.
+    #[must_use]
+    pub fn with_catalogue(self, rows: &[busbar_plane_mcp::catalogue::Row]) -> Self {
+        let catalogue: Vec<(String, Vec<u8>)> = rows
+            .iter()
+            .filter_map(|row| row.encode().ok().map(|body| (row.name.clone(), body)))
+            .collect();
+        Records {
+            store: self.store,
+            catalogue: Arc::from(catalogue),
+        }
+    }
+
+    /// How many catalogue rows this snapshot holds, for the boot line that reports it.
+    #[must_use]
+    pub fn catalogue_len(&self) -> usize {
+        self.catalogue.len()
     }
 
     /// Run one leg.
@@ -973,6 +1021,40 @@ impl Records {
         }
         let kind = leg.schema.as_str();
         let map = |e: busbar_api::StoreError| RecordRefusal::Store(e.0);
+        // THE CATALOGUE IS THE SNAPSHOT'S — see the type's own header. Answered before the store is
+        // asked so a store that happens to hold rows under this kind is never a second catalogue.
+        if leg.schema == records::SCHEMA_CATALOGUE {
+            return match leg.op {
+                records::OP_GET => Ok(RecordAnswer::One(
+                    self.catalogue
+                        .iter()
+                        .find(|(name, _)| name == leg.key)
+                        .map(|(_, body)| body.clone()),
+                )),
+                records::OP_SCAN => Ok(RecordAnswer::Many(
+                    self.catalogue
+                        .iter()
+                        .map(|(_, body)| body.clone())
+                        .collect(),
+                )),
+                // The plane declares a `put` on this schema — its own records table says the
+                // catalogue is meant to survive a restart as records — and that write lands in the
+                // store exactly as it did before the snapshot existed. Nothing reads it back yet:
+                // the read half is the snapshot's, and moving the read onto the store-held rows is
+                // the cut after this one, named in the deletion list.
+                _ => self.store_leg(leg, kind, map),
+            };
+        }
+        self.store_leg(leg, kind, map)
+    }
+
+    /// One leg over the store, for every schema and operation the plane declares.
+    fn store_leg(
+        &self,
+        leg: &RecordLeg<'_>,
+        kind: &str,
+        map: impl Fn(busbar_api::StoreError) -> RecordRefusal,
+    ) -> Result<RecordAnswer, RecordRefusal> {
         match leg.op {
             records::OP_GET => self
                 .store
@@ -1753,6 +1835,55 @@ pub struct McpBindings<'r> {
     /// The sealed origin the audit record is written under. Sealed by the kernel and carried here
     /// because `Origin::seal` takes the kernel's seal and this is not the kernel.
     pub origin: busbar_caps::Origin,
+    /// THE GOVERNANCE KEY THIS CALLER PRESENTED, where the deployment governs — what the catalogue
+    /// walk narrows a listing by.
+    ///
+    /// `None` is the ungoverned posture and it is stated ONCE, by the substrate's own visibility
+    /// gate, for the whole tree: with no principal there is no grant to narrow. It is not a way past
+    /// the gate, and it is not this file's to reinterpret — [`visible_rows`] hands it to the same
+    /// function the existing server's listing asks, with the same two grants in the same order.
+    pub caller_key: Option<&'r busbar_api::VirtualKey>,
+}
+
+/// THE ENTITLEMENT WALK OVER THE ROWS, for one caller.
+///
+/// **The gate is the substrate's and the grant pair is the plane's; this function owns neither.** The
+/// existing server's listing asks `validate_visibility` with two grants per entry — the server it
+/// belongs to under [`busbar_plane_mcp::catalogue::SCOPE_KIND_SERVER`], then the published name under
+/// [`busbar_plane_mcp::catalogue::SCOPE_KIND_TOOL`] — and keeps the entries the gate admits, in the
+/// catalogue's order. This is that walk over rows instead of entries, calling the same function with
+/// the same pair in the same order, so a caller sees through the leg exactly what it sees through the
+/// server: the equality is by construction and is pinned by a cell against the server's own constants.
+///
+/// The artifact and generation steps are deliberately not asked, for the reason the server's listing
+/// gives: this catalogue LISTS what it will not dispatch, so an operator can see the approval queue,
+/// and a call asks the full gate at its own site.
+///
+/// Every refusal is the same silence. A row the caller may not see is simply absent, and nothing
+/// here can tell a not-found from a not-granted — a listing that could would be a probe for what is
+/// behind the grant.
+#[must_use]
+pub fn visible_rows(
+    rows: Vec<busbar_plane_mcp::catalogue::Row>,
+    key: Option<&busbar_api::VirtualKey>,
+    now: u64,
+) -> Vec<busbar_plane_mcp::catalogue::Row> {
+    use busbar_substrate::trust::validate::{validate_visibility, Grant};
+    rows.into_iter()
+        .filter(|row| {
+            let grants = [
+                Grant::Scope {
+                    kind: busbar_plane_mcp::catalogue::SCOPE_KIND_SERVER,
+                    name: &row.server,
+                },
+                Grant::Scope {
+                    kind: busbar_plane_mcp::catalogue::SCOPE_KIND_TOOL,
+                    name: &row.name,
+                },
+            ];
+            validate_visibility(key, now, &grants).is_ok()
+        })
+        .collect()
 }
 
 /// A lock this plane holds, taken the way the root takes its locks.
@@ -1778,6 +1909,9 @@ struct Progress {
     resources: Vec<Resource>,
     /// How many of the plane's declared read legs the routing step ran.
     read_legs: usize,
+    /// THE CATALOGUE ROWS THE READ LEGS HANDED BACK, decoded in the plane's grammar and narrowed to
+    /// what this caller may see. Empty for a unit whose reading names no catalogue scan.
+    rows: Vec<busbar_plane_mcp::catalogue::Row>,
     /// What the metering step located.
     metered: Option<u64>,
     /// The bytes the encode step reports.
@@ -1920,13 +2054,22 @@ impl<'r> McpUnits<'r> {
     /// # Errors
     ///
     /// The plane does not declare the operation for the schema, or the store refused.
-    fn run_read_legs(&self, op: OpClassId) -> Result<usize, RecordRefusal> {
+    ///
+    /// **What the legs READ comes back out**, which is the half this function did not do before the
+    /// catalogue was data: a catalogue scan's bodies are decoded in the plane's own row grammar and
+    /// returned beside the count, so the answer the plane composes is composed from what its own
+    /// declared leg returned and from nothing beside it.
+    fn run_read_legs(
+        &self,
+        op: OpClassId,
+    ) -> Result<(usize, Vec<busbar_plane_mcp::catalogue::Row>), RecordRefusal> {
         let Some(reads) = busbar_plane_mcp::served::reads(op) else {
-            return Ok(0);
+            return Ok((0, Vec::new()));
         };
         let mut ran = 0;
+        let mut rows = Vec::new();
         for (schema, record_op) in reads.legs() {
-            self.bindings.records.run(&RecordLeg {
+            let answer = self.bindings.records.run(&RecordLeg {
                 schema: *schema,
                 op: record_op,
                 // The composed answer is over the WHOLE kind — a scan of the catalogue and of the
@@ -1944,8 +2087,13 @@ impl<'r> McpUnits<'r> {
                 expires_at: self.bindings.at.wall,
             })?;
             ran += 1;
+            if *schema == records::SCHEMA_CATALOGUE && *record_op == records::OP_SCAN {
+                if let RecordAnswer::Many(bodies) = answer {
+                    rows = busbar_plane_mcp::catalogue::Row::decode_all(&bodies);
+                }
+            }
         }
-        Ok(ran)
+        Ok((ran, rows))
     }
 
     /// **THE ANSWER THIS PLANE WROTE ITSELF**, where it writes one.
@@ -1966,11 +2114,22 @@ impl<'r> McpUnits<'r> {
     /// `Err(())` is the identifier the plane read failing to be written back. It carries no detail
     /// because there is none to carry that this step is entitled to state: what the caller is owed is
     /// a refusal, and the refusal's own reason is chosen by the one call site above.
-    fn own_answer(&self) -> Option<Result<PlaneAnswer, ()>> {
+    ///
+    /// The rows the answer is composed from are the ones the Route step's own read legs handed back,
+    /// already narrowed by [`visible_rows`] to what this caller may see — so by the time the plane
+    /// is asked, entitlement has been decided by the same gate the existing server asks, and the
+    /// plane sees rows and never a grant.
+    fn own_answer(
+        &self,
+        rows: &[busbar_plane_mcp::catalogue::Row],
+    ) -> Option<Result<PlaneAnswer, ()>> {
         let op = self.draft.op?;
         let composed = busbar_plane_mcp::served::composed(
             op,
-            self.draft.rpc_id.as_deref().map(str::as_bytes),
+            &busbar_plane_mcp::served::Composing {
+                rpc_id: self.draft.rpc_id.as_deref().map(str::as_bytes),
+                rows,
+            },
         )?;
         Some(match composed {
             Ok(body) => Ok(PlaneAnswer {
@@ -2175,7 +2334,9 @@ impl Units for McpUnits<'_> {
             return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
         }
 
-        // The read legs the plane's own answer is composed from, before anything is dialled.
+        // The read legs the plane's own answer is composed from, before anything is dialled. What
+        // they read is kept — narrowed to this caller by the same gate the existing server asks —
+        // because it is what a composed listing is composed FROM.
         if let Some(op) = self.draft.op {
             match self.run_read_legs(op) {
                 Err(RecordRefusal::Undeclared { .. }) => {
@@ -2184,7 +2345,12 @@ impl Units for McpUnits<'_> {
                 Err(RecordRefusal::Store(_)) => {
                     return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
                 }
-                Ok(ran) => read_through_poison(&self.progress).read_legs = ran,
+                Ok((ran, rows)) => {
+                    let mut progress = read_through_poison(&self.progress);
+                    progress.read_legs = ran;
+                    progress.rows =
+                        visible_rows(rows, self.bindings.caller_key, self.bindings.at.wall);
+                }
             }
         }
 
@@ -2242,7 +2408,8 @@ impl Units for McpUnits<'_> {
         // own reading, so the surface is not asked about it at all and its arm there is unreachable —
         // which is the difference between a class whose UNIT the loop owns and a class whose BYTES it
         // owns, and the difference the deletion list exists to keep visible.
-        let answered = match self.own_answer() {
+        let rows = std::mem::take(&mut read_through_poison(&self.progress).rows);
+        let answered = match self.own_answer(&rows) {
             Some(Ok(answered)) => Some(answered),
             // The plane could not write back the identifier the plane itself read. The reader admits
             // only identifiers this can write, so the two disagreeing is a defect in the pair rather

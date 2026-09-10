@@ -156,7 +156,12 @@ pub const SOURCES: &[(&str, &str)] = &[
     // ── the durable half ─────────────────────────────────────────────────────────────────────────
     (
         "records",
-        "root: `units_mcp::Records` over the node's one store adapter, at the published protocol",
+        "root: `units_mcp::Records` over the node's one store adapter, at the published protocol \
+         — and over the CATALOGUE SNAPSHOT, handed in as `McpLegSources::catalogue`: the rows of \
+         the legacy plugin's own `Catalogue::build` over the loaded `tools:` intent, rendered by \
+         that plugin's own `CatalogueItem::render`, mapped one to one into the plane's row \
+         grammar by `catalogue_rows`. The plane composes a listing from what the catalogue leg \
+         hands back and never from a table beside it",
     ),
     (
         "durability",
@@ -193,6 +198,16 @@ pub const SOURCES: &[(&str, &str)] = &[
     (
         "origin",
         "kernel: `Kernel::origin(OriginKind::Client)`; sealed, for the audit record",
+    ),
+    // ── what the catalogue walk narrows by ───────────────────────────────────────────────────────
+    (
+        "caller_key",
+        "the governance key the auth chain resolved for THIS caller, handed to the substrate's \
+         own visibility gate exactly as the legacy listing hands `gov.key()`. NONE ON THIS BASE: \
+         the leg's authenticate step settles a principal and not a key record, so the mounted \
+         listing is narrowed as an ungoverned caller's is. Named in the deletion list as the open \
+         item in front of a governed deployment's mount; not a default, because the ungoverned \
+         posture is the gate's own stated one and this leg does not restate it",
     ),
 ];
 
@@ -339,6 +354,38 @@ pub struct McpLegSources<'k> {
     pub priced: bool,
     /// Whether the caller presented a key at all.
     pub has_key: bool,
+    /// THE CATALOGUE, AS ROWS — every approved capability of the loaded `tools:` intent, rendered.
+    ///
+    /// Not an `Option`, for the reason `key_scopes` is not an `Option<Option<_>>`: an empty
+    /// catalogue is a real deployment (one with no `tools:` block), and every listing over it is
+    /// the empty listing the legacy server answers for that deployment. A missing source would be
+    /// a boot that never asked, and the row that asks is [`catalogue_rows`].
+    pub catalogue: Vec<busbar_plane_mcp::catalogue::Row>,
+}
+
+/// THE LEGACY CATALOGUE, AS THE PLANE'S ROWS: the one place the two row shapes meet.
+///
+/// A one-to-one mapping and nothing else. The legacy plugin renders each entry with the render its
+/// own listing arms call, and hands the result out as data with the two grant coordinates beside it;
+/// this function spells that data in the plane's own record grammar. It reinterprets no field and
+/// re-renders nothing — a row whose kind word the plane's grammar does not know is dropped rather
+/// than guessed at, and the cell beside this file holds the four kind words to each other.
+#[cfg(feature = "plane-mcp")]
+#[must_use]
+pub fn catalogue_rows(
+    cfg: &busbar_mcp::mcp::config::ToolsCfg,
+) -> Vec<busbar_plane_mcp::catalogue::Row> {
+    busbar_mcp::mcp::catalogue::rows_of(cfg)
+        .into_iter()
+        .filter_map(|row| {
+            Some(busbar_plane_mcp::catalogue::Row {
+                kind: busbar_plane_mcp::catalogue::RowKind::parse(row.kind)?,
+                server: row.server,
+                name: row.name,
+                wire: row.wire,
+            })
+        })
+        .collect()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -417,7 +464,8 @@ impl McpLeg {
             door: sources.door.ok_or_else(|| missing("door"))?,
             groups: sources.groups.ok_or_else(|| missing("chain"))?,
             pricer: sources.pricer.ok_or_else(|| missing("pricer"))?,
-            records: Records::over(sources.store.ok_or_else(|| missing("records"))?),
+            records: Records::over(sources.store.ok_or_else(|| missing("records"))?)
+                .with_catalogue(&sources.catalogue),
             meter_policy: sources
                 .meter_policy
                 .ok_or_else(|| missing("meter_policy"))?,
@@ -456,6 +504,12 @@ impl McpLeg {
     #[must_use]
     pub fn pool(&self) -> &str {
         &self.pool
+    }
+
+    /// How many catalogue rows this leg composes listings from, for the boot line that reports it.
+    #[must_use]
+    pub fn catalogue_len(&self) -> usize {
+        self.records.catalogue_len()
     }
 
     /// **Whether these bytes are a unit THIS PLANE has** — asked of the plane, answered by the
@@ -764,6 +818,9 @@ impl McpLeg {
                 at,
                 dispatch,
                 origin: self.origin,
+                // See the `caller_key` row of `SOURCES`: none on this base, which is the gate's own
+                // ungoverned posture and not a value this leg chose.
+                caller_key: None,
             },
             draft,
             // THE GRANTS ARE THE CALLER'S, and an arrival that presented nothing holds the anonymous

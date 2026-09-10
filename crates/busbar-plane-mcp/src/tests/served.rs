@@ -32,8 +32,8 @@ use super::{
     cache_hints, completion_result, composed, initialize_result, instructions, ping_result,
     prompt_get_result, prompts_list_result, reads, resource_read_result,
     resource_templates_list_result, resources_list_result, task_ack_result, task_get_result,
-    tool_call_result, tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, COMPOSED,
-    PROTOCOL_VERSION, SERVER_NAME,
+    tool_call_result, tools_list_result, Composing, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS,
+    COMPOSED, PROTOCOL_VERSION, SERVER_NAME,
 };
 use crate::{ops, records};
 
@@ -522,9 +522,15 @@ fn completion_reads_nothing_and_answers_the_empty_set() {
 /// rather than silently reshape every answer this node gives.
 #[test]
 fn completion_bytes_are_composed_by_this_plane() {
-    let bytes = composed(ops::OP_COMPLETION, Some(b"1"))
-        .expect("completion is a composed class")
-        .expect("a numeric identifier writes");
+    let bytes = composed(
+        ops::OP_COMPLETION,
+        &Composing {
+            rpc_id: Some(b"1"),
+            rows: &[],
+        },
+    )
+    .expect("completion is a composed class")
+    .expect("a numeric identifier writes");
     assert_eq!(
         core::str::from_utf8(&bytes).expect("the answer is text"),
         r#"{"id":1,"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
@@ -538,9 +544,15 @@ fn completion_bytes_are_composed_by_this_plane() {
 /// string is an answer no client correlates.
 #[test]
 fn a_string_identifier_is_echoed_as_the_string_it_arrived_as() {
-    let bytes = composed(ops::OP_COMPLETION, Some(br#""abc""#))
-        .expect("completion is a composed class")
-        .expect("a string identifier writes");
+    let bytes = composed(
+        ops::OP_COMPLETION,
+        &Composing {
+            rpc_id: Some(br#""abc""#),
+            rows: &[],
+        },
+    )
+    .expect("completion is a composed class")
+    .expect("a string identifier writes");
     assert_eq!(
         core::str::from_utf8(&bytes).expect("the answer is text"),
         r#"{"id":"abc","jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
@@ -554,7 +566,7 @@ fn a_string_identifier_is_echoed_as_the_string_it_arrived_as() {
 /// member is there at all.
 #[test]
 fn a_composed_answer_with_no_identifier_omits_the_member() {
-    let bytes = composed(ops::OP_COMPLETION, None)
+    let bytes = composed(ops::OP_COMPLETION, &Composing::default())
         .expect("completion is a composed class")
         .expect("no identifier writes");
     assert_eq!(
@@ -574,7 +586,14 @@ fn a_composed_answer_with_no_identifier_omits_the_member() {
 fn every_composed_class_is_declared_and_every_declared_class_composes() {
     for op in ops::OP_CLASSES {
         assert_eq!(
-            composed(*op, Some(b"1")).is_some(),
+            composed(
+                *op,
+                &Composing {
+                    rpc_id: Some(b"1"),
+                    rows: &[]
+                }
+            )
+            .is_some(),
             COMPOSED.contains(op),
             "{op} answers and declares differently"
         );
