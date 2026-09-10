@@ -139,6 +139,22 @@ from = 23465
 to = 23466
 because = "The same single `Denied` variant, seen a second time: the union sums caps/contract in with the kernel and the units, so a +1 in the pair is a +1 here by arithmetic rather than by a second change. Nothing in the kernel or in any unit crate moved on this commit."
 
+# A FOURTH, AND IT IS THE ONE CELL THE SECRET KIND'S LANDING GROWS. busbar-secret-example-plugin is
+# re-based onto `busbar_contract::kinds::Secret`, whose base face asks the plugin to DECLARE its ABI
+# generation (`Plugin::abi`). The plugin answers with the SDK's own constant rather than a literal --
+# `busbar_plugin_sdk::secret_abi_version()` -- so the generation it declares and the generation it
+# was built against cannot drift apart, and the handshake refusal that guards against drift has
+# something true to compare. That spelling is two more hits on the SDK's name (the impl and the
+# test that pins it), on top of the `export_secret_plugin!` and manifest lines every SDK-built
+# plugin already carries. The alternative -- a bare `1` -- is the drift the constant exists to
+# refuse. The number is keyed by the cell's IDENTITY, never its ordinal, and it expires the moment
+# this lands.
+[gate.ceiling_raises."cell.busbar-secret-example-plugin.plugin-tooling.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 5
+because = "busbar-secret-example-plugin x plugin-tooling. Re-based onto busbar_contract::kinds::Secret, the plugin must declare its ABI generation through `Plugin::abi`, and it reads that generation off `busbar_plugin_sdk::secret_abi_version()` -- the SDK's own constant -- so a plugin cannot declare a generation it was not built against. The impl and the test that pins it are the two new hits; the export macro and the manifest dependency are the three the base already carried. A literal would be smaller and would be the exact drift the constant refuses."
+
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
 to = 3479
