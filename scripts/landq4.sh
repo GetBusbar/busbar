@@ -92,11 +92,30 @@ lq_line_files() { # $1 = queue line, in the repo at $2 (default $W)
 # pop next), and each later line joins only if it touches nothing already claimed. A line that
 # overlaps is left where it is — it is not reordered, and it is not dropped; the next sweep, on a
 # tip where the overlapping line has landed, will see it disjoint.
-lq_disjoint_lines() { # $1 = max, $2 = queue file, $3 = repo (default $W)
-  local max="$1" qf="$2" repo="${3:-$W}" line files claimed="" n=0 clash
+#
+# A LINE ALREADY PRE-PROVEN GREEN AT THIS TIP IS NOT SWEPT AGAIN, and its files are CLAIMED before the
+# walk starts. Without the first, a second sweep at the same tip re-proved the same six lines and the
+# ledger never reached the eight distinct greens the larger batch waits for; without the second, the
+# second sweep's lines were disjoint among themselves but not from the first sweep's, and the popper
+# would have joined two lines that touch one file. $4 is the tip; empty means "no ledger consulted".
+lq_disjoint_lines() { # $1 = max, $2 = queue file, $3 = repo (default $W), $4 = tip (optional)
+  local max="$1" qf="$2" repo="${3:-$W}" tip="${4:-}" line files claimed="" n=0 clash f
+  if [ -n "$tip" ] && [ -f "$PP" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      files="$(lq_line_files "$line" "$repo")"
+      case "$files" in '?'|'') continue ;; esac
+      while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$files
+EOF
+    done <<EOF
+$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" | sort -u)
+EOF
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; --*) ;; *) continue ;; esac
     [ "$n" -lt "$max" ] || break
+    if [ -n "$tip" ] && [ "$(lq_preproved_status "$tip" "$line")" = GREEN ]; then continue; fi
     files="$(lq_line_files "$line" "$repo")"
     case "$files" in '?'|'') continue ;; esac
     clash=0
@@ -145,17 +164,69 @@ lq_preproved_status() { # $1 = tip sha, $2 = queue line, $3 = ledger (default $P
 # would be — and a batch that goes green in one pass is the only thing that makes a bigger batch
 # cheaper rather than dearer, because a red one bisects.
 #
-# AN EXPLICIT `LAND_BATCH` STILL WINS. This moves a DEFAULT, and an operator who wrote a number in
-# the environment wrote it for a reason this file does not know; silently doubling it would be this
-# script overruling the person running it.
+# `LAND_BATCH` IS A CEILING, NOT A COMMAND. An operator who writes LAND_BATCH=8 is saying "take eight
+# when eight are ready", not "take eight arbitrary lines": a batch above four that has NOT been
+# pre-proven is the bisect-at-the-same-price-per-half case the header describes, and this file does
+# not take it whatever the environment says. So a LAND_BATCH of four or fewer is honoured as written
+# (smaller is always allowed), and one above four is honoured only when at least that many DISTINCT
+# lines are green at THIS tip — otherwise four. Ruled by the 2026-09-09 audit: eight only after eight.
 lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
-  local tip="$1" pp="${2:-$PP}" n=0
-  [ -z "${LAND_BATCH:-}" ] || { echo "$LAND_BATCH"; return 0; }
+  local tip="$1" pp="${2:-$PP}" n=0 want="${LAND_BATCH:-8}"
+  case "$want" in ''|*[!0-9]*) want=8 ;; esac
+  [ "$want" -gt 4 ] || { echo "$want"; return 0; }
   if [ -f "$pp" ]; then
     n="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$pp" | sort -u | grep -c . || true)"
   fi
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  if [ "$n" -ge 8 ]; then echo 8; else echo 4; fi
+  if [ "$n" -ge "$want" ]; then echo "$want"; else echo 4; fi
+}
+
+# ── WHAT MAY SHARE A BATCH ──────────────────────────────────────────────────────────────────────────
+# A batch is proven as a UNION, and a red union bisects at the full price per half. Three shapes of
+# line are known — measured over tonight's queue — to make a union red for a reason that is not the
+# union's, and each is refused a neighbour rather than left to the bisect:
+#
+#   * TWO LINES THAT TOUCH ONE FILE. Their picks interact (a conflict, or a green-alone/red-together
+#     pair), and a union that contains both says nothing about either. They never share a batch;
+#     the later one waits for a batch the earlier one is not in. A line whose picks cannot be
+#     resolved has an UNKNOWN file set (see lq_line_files), and unknown is not empty: it shares
+#     with nobody.
+#   * TWO LINES THAT TOUCH xtask/src/gates/**. A gate edit changes the JUDGE; two judge edits in one
+#     union make a red row attributable to neither. At most one per batch.
+#   * A LINE THAT HAS GONE RED ONCE. The land-done ledger remembers it; it lands ALONE, so its
+#     second red — or its green — is its own and not a bisect over its neighbours.
+lq_line_touches_gates() { # $1 = queue line, $2 = repo
+  local f
+  while IFS= read -r f; do
+    case "$f" in xtask/src/gates/*) return 0 ;; esac
+  done <<EOF
+$(lq_line_files "$1" "$2")
+EOF
+  return 1
+}
+lq_line_was_red() { # $1 = queue line, $2 = done ledger (default $D); rows are `ST batch=.. log=.. <text>`
+  local line="$1" d="${2:-$D}"
+  [ -f "$d" ] || return 1
+  awk -v want="$line" 'index($1, "RED") == 1 { t = $0; sub(/^[^ ]+ batch=[^ ]+ log=[^ ]+ /, "", t); if (t == want) { found = 1; exit } } END { exit !found }' "$d"
+}
+# THE JOIN DECISION for one candidate against the batch so far. Prints nothing; the exit status is the
+# answer, and the caller extends the claimed set only on a yes.
+#   $1 = line  $2 = repo  $3 = lines in batch so far  $4 = claimed files (TAB-joined)  $5 = gates already taken (0|1)
+#   $6 = batch holds a was-red line (0|1)
+lq_may_join() {
+  local line="$1" repo="$2" nb="$3" claimed="$4" gates="$5" alone="$6" files f
+  [ "$alone" = 0 ] || return 1                         # a red-once line took the whole batch
+  if lq_line_was_red "$line"; then [ "$nb" = 0 ] || return 1; fi
+  files="$(lq_line_files "$line" "$repo")"
+  case "$files" in '?'|'') [ "$nb" = 0 ] || return 1 ;; esac   # unknown shares with nobody
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$TAB$claimed" in *"$TAB$f$TAB"*) return 1 ;; esac
+  done <<EOF
+$files
+EOF
+  if [ "$gates" = 1 ] && lq_line_touches_gates "$line" "$repo"; then return 1; fi
+  return 0
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -168,7 +239,7 @@ lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
 # ("pre: the tree did NOT move").
 lq_preprove_sweep() {
   local tip; tip="$(git -C "$W" rev-parse HEAD)"
-  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$W")"
+  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$W" "$tip")"
   [ -n "$lines" ] || { lq_log "pre-prove: no disjoint line to hand out at $(printf '%.9s' "$tip")"; return 0; }
   local dir="$W/target/gate/preprove-$tip"
   mkdir -p "$dir"
@@ -241,7 +312,7 @@ EOF
 # line pre-proven RED at this tip is parked `#RED-preproof <log>` rather than popped. Everything
 # else is popped exactly as it always was, in queue order.
 lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out; prints the count
-  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0
+  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f
   : >"$batch"; : >"$keep"
   greens="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" 2>/dev/null | sort -u | grep -c . || true)"
   case "$greens" in ''|*[!0-9]*) greens=0 ;; esac
@@ -264,7 +335,13 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
     if [ "$greens" -gt 0 ] && [ "$st" != GREEN ]; then
       printf '%s\n' "$line" >>"$keep"; continue
     fi
-    if [ "$n" -lt "$b" ]; then printf '%s\n' "$line" >>"$batch"; n=$((n + 1))
+    if [ "$n" -lt "$b" ] && lq_may_join "$line" "$W" "$n" "$claimed" "$gates" "$alone"; then
+      printf '%s\n' "$line" >>"$batch"; n=$((n + 1))
+      while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$(lq_line_files "$line" "$W")
+EOF
+      lq_line_touches_gates "$line" "$W" && gates=1
+      lq_line_was_red "$line" && alone=1
     else printf '%s\n' "$line" >>"$keep"; fi
   done <"$Q"
   echo "$n"
@@ -334,6 +411,11 @@ lq_selftest() {
   local ha2; ha2="$(git -C "$repo" rev-parse HEAD)"
   printf 'c\n' >"$repo/c.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm c
   local hc; hc="$(git -C "$repo" rev-parse HEAD)"
+  mkdir -p "$repo/xtask/src/gates"
+  printf 'g1\n' >"$repo/xtask/src/gates/g1.rs"; git -C "$repo" add -A; git -C "$repo" commit -qm g1
+  local hg1; hg1="$(git -C "$repo" rev-parse HEAD)"
+  printf 'g2\n' >"$repo/xtask/src/gates/g2.rs"; git -C "$repo" add -A; git -C "$repo" commit -qm g2
+  local hg2; hg2="$(git -C "$repo" rev-parse HEAD)"
 
   echo "landq4 selftest: a line's file set"
   _t "the files of a one-pick line"  "a.txt"  "$(lq_line_files "--prove $ha" "$repo")"
@@ -376,17 +458,65 @@ lq_selftest() {
   _t "eight greens at ANOTHER tip -> the ordinary batch" 4 "$(_bs "" tip2 "$root/pp8.txt")"
   # THE DEFAULT MOVES; AN EXPLICIT NUMBER DOES NOT. An operator who wrote LAND_BATCH=6 gets 6,
   # eight pre-proven lines or none.
-  _t "an explicit LAND_BATCH wins over the raise"  6 "$(_bs 6 tip1 "$root/pp8.txt")"
-  _t "an explicit LAND_BATCH wins with no ledger"  6 "$(_bs 6 tip1 "$root/absent.txt")"
+  _t "an explicit LAND_BATCH=6 with eight greens is 6"  6 "$(_bs 6 tip1 "$root/pp8.txt")"
+  # LAND_BATCH IS A CEILING. Six with no ledger used to be six; the audit's rule is that a batch above
+  # four is only taken when that many lines are green at this tip, whatever the environment says.
+  _t "an explicit LAND_BATCH=6 with no ledger is 4"      4 "$(_bs 6 tip1 "$root/absent.txt")"
+  _t "an explicit LAND_BATCH=8 with two greens is 4"     4 "$(_bs 8 tip1 "$pp")"
+  _t "an explicit LAND_BATCH=8 with eight greens is 8"   8 "$(_bs 8 tip1 "$root/pp8.txt")"
+  _t "an explicit LAND_BATCH=3 is 3 (smaller is always allowed)" 3 "$(_bs 3 tip1 "$root/absent.txt")"
   # Eight ROWS but only four distinct lines is not eight pre-proven lines. A sweep re-run against
   # the same tip appends, and counting rows would let one line stand in for the batch.
   : >"$root/pp8dup.txt"
   i=0; while [ "$i" -lt 8 ]; do printf 'GREEN\ttip1\t/l/%s\t--prove line%s\n' "$i" "$((i % 4))" >>"$root/pp8dup.txt"; i=$((i + 1)); done
   _t "eight rows over four lines -> the ordinary batch" 4 "$(_bs "" tip1 "$root/pp8dup.txt")"
 
-  echo "landq4 selftest: the popper"
+  echo "landq4 selftest: the sweep does not re-prove a green line, and claims its files first"
+  local savedPP0="$PP"; PP="$pp"   # GREEN tip1 for a; RED tip1 for b
+  # a is green at tip1: not swept again; a2 touches a.txt, which a's green already claims; b (red at
+  # tip1, but the ledger's colour is not the sweep's business) and c are what is left.
+  _t "a green line is skipped and its files stay claimed" \
+     "$(printf -- '--prove %s\n--prove %s' "$hb" "$hc")" \
+     "$(lq_disjoint_lines 6 "$qf" "$repo" tip1)"
+  _t "at another tip the ledger is not consulted" \
+     "$(printf -- '--prove %s\n--prove %s\n--prove %s' "$ha" "$hb" "$hc")" \
+     "$(lq_disjoint_lines 6 "$qf" "$repo" tip2)"
+  PP="$savedPP0"
+
+  echo "landq4 selftest: what may share a batch (one file, one judge, one red-once line)"
+  local savedW="$W" savedD="$D"; W="$repo"; D="$root/done.txt"; : >"$D"
   local savedQ="$Q" savedPP="$PP" savedL="$L"
-  Q="$root/popq.txt"; PP="$pp"; L="$root/log.txt"; : >"$L"
+  Q="$root/popq.txt"; PP="$root/pp-none.txt"; : >"$PP"; L="$root/log.txt"; : >"$L"
+  # ONE FILE. a and a2 both touch a.txt: a2 waits for a batch a is not in.
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$ha2" "$hb" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b3.txt" "$root/k3.txt")"
+  _t "two lines on one file: the second waits"  "$(printf -- '--prove %s\n--prove %s' "$ha" "$hb")" "$(cat "$root/b3.txt")"
+  _t "  ...and is kept unmarked, in order"        "--prove $ha2" "$(cat "$root/k3.txt")"
+  # ONE JUDGE. g1 and g2 both touch xtask/src/gates/: one per batch.
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$hg1" "$hg2" "$hc" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b4.txt" "$root/k4.txt")"
+  _t "two gate edits: one per batch"   "$(printf -- '--prove %s\n--prove %s' "$hg1" "$hc")" "$(cat "$root/b4.txt")"
+  _t "  ...the other waits"            "--prove $hg2" "$(cat "$root/k4.txt")"
+  # ONE RED-ONCE LINE. b went red in an earlier batch (the done ledger says so): it lands alone.
+  printf 'RED batch=1 log=/l/x --prove %s\nGREEN batch=1 log=/l/x --prove %s\n' "$hb" "$ha" >"$D"
+  _t "the ledger remembers a red line"      0 "$(lq_line_was_red "--prove $hb"; echo $?)"
+  _t "a green line is not a red one"        1 "$(lq_line_was_red "--prove $ha"; echo $?)"
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b5.txt" "$root/k5.txt")"
+  _t "a red-once line does not join a batch"  "$(printf -- '--prove %s\n--prove %s' "$ha" "$hc")" "$(cat "$root/b5.txt")"
+  printf -- '--prove %s\n--prove %s\n' "$hb" "$hc" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b6.txt" "$root/k6.txt")"
+  _t "a red-once line at the head lands ALONE" "--prove $hb" "$(cat "$root/b6.txt")"
+  _t "  ...and nothing joins it"               "--prove $hc" "$(cat "$root/k6.txt")"
+  : >"$D"
+  # UNKNOWN SHARES WITH NOBODY. A line whose pick does not resolve is not "touches nothing".
+  printf -- '--prove %s\n--prove deadbee\n--prove %s\n' "$ha" "$hc" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b7.txt" "$root/k7.txt")"
+  _t "an unresolvable line does not join"      "$(printf -- '--prove %s\n--prove %s' "$ha" "$hc")" "$(cat "$root/b7.txt")"
+  W="$savedW"; D="$savedD"; Q="$savedQ"; PP="$savedPP"; L="$savedL"
+
+  echo "landq4 selftest: the popper"
+  Q="$root/popq.txt"; PP="$pp"; L="$root/log.txt"; : >"$L"; W="$repo"
   printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
   local n; n="$(lq_pop tip1 4 "$root/b.txt" "$root/k.txt")"
   _t "one line popped (only the pre-proven green)" 1 "$n"
@@ -398,11 +528,11 @@ lq_selftest() {
   printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
   n="$(lq_pop tipX 4 "$root/b2.txt" "$root/k2.txt")"
   _t "no records at this tip -> the ordinary pop" 3 "$n"
-  Q="$savedQ"; PP="$savedPP"; L="$savedL"
+  Q="$savedQ"; PP="$savedPP"; L="$savedL"; W="$savedW"
 
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
-    echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch size, popper)"
+    echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone, popper)"
     return 0
   fi
   echo "landq4 selftest: RED ($fails failure(s))" >&2
