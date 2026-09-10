@@ -1251,7 +1251,54 @@ plane on the commit that lands it. `impl_trait_on` now reads the qualified spell
 Four crates implement a foreign face today; each is a `[[face]]` row at its exact count with its
 citation and the line that deletes it, and the ship twin owes zero.
 
-### 9.3 `--write` re-pins DOWN, and refuses if anything would rise
+### 9.3 `kind-isolation:testkit` — a battery for the crate, in one of two homes
+
+The ship criterion is that every crate of a kind runs its kind's shared conformance battery. The row
+used to read that as a claim about WHERE the battery sits: `tests/*conformance*.rs` inside the crate,
+or a `testkit` dev-dependency declared by the crate. The second half asked for the one arrangement
+the rest of the same gate refuses. `busbar-unit-auth -> busbar-plugin-testkit` is a
+`unit -> plugin-tooling` edge; `kind-isolation:deps` reds it, `[[dep]]` rows may not admit an edge a
+branch INTRODUCED, and a shared battery built that way put fifty-six `new-forbidden-edge` findings on
+the board. The gate was refusing an edge on one row and paying for it on another.
+
+**Tooling reaches product, never the reverse.** The row now asks whether a battery FOR the crate
+exists in an allowed home, and there are exactly two:
+
+* the crate's own `tests/*conformance*.rs`, with at least one live entry — unchanged; or
+* an OFF-TREE tooling home — `xtask/tests/` or `crates/plugin-testkit/tests/` — where BOTH halves of
+  the same home say so: the home's `Cargo.toml` names the crate in `[dev-dependencies]`, and a
+  `*conformance*.rs` file under its `tests/` with at least one live entry carries a block for the
+  crate (`use busbar_unit_admission::…;`, one module per crate under test). The edge is declared on
+  the TOOLING side, so no crate of the tree gains one and no `[[cell]]` moves.
+
+Both halves are owed because either alone executes nothing: an edge with no block runs no assertion,
+and a block with no edge does not compile. The `::` in the block test is not decoration —
+`busbar_unit_egress` is a prefix of `busbar_unit_egress_auth`, and a bare substring test would have
+let one crate go green on its sibling's battery.
+
+**A crate's own `testkit` dev-dependency is no longer one of the homes, and nothing replaces it.** The
+row is not weakened by the widening: a crate of a battery kind with no battery in either home is
+`not-run`, a kind none of whose members has one is `no-battery`, a battery whose every entry is
+`#[ignore]`d is `battery-ignored` in `xtask/tests/` exactly as in the crate's own, and a crate that
+implements its kind's trait nowhere is `no-implementor` however many batteries name it. Six planted
+cases hold the shape: one subject crate, `busbar-store-homed`, with one file moved between them —
+no battery anywhere (RED), battery in `xtask` (quiet), its own `testkit` dev-dependency and nothing
+else (RED), the block without the edge (RED), the edge with a dead block (RED), and the battery
+inside the crate (quiet).
+
+The two "quiet" arms use `prove_rows_quiet_about` rather than `prove_rows_green`, and the reason is
+the row's own standing. `:testkit` is a SHIP criterion and is red on every dev-line commit by design,
+so a case demanding the row PASS could only be written on the day the whole criterion is met — which
+is to say never written, and the arrangement never proven. The helper runs the gate through
+`execute` like every other arm and requires that the covered rows' evidence does not NAME the planted
+crate; paired with the red plant one file away, the two are a red-then-green proof about exactly the
+difference between them.
+
+The row's other input can now be starved on its own, so it has its own refusal: a tooling walk that
+did not read is not a walk that found no battery, and it reds as `the tooling battery index did not
+run` rather than demoting every covered crate to `not-run`.
+
+### 9.4 `--write` re-pins DOWN, and refuses if anything would rise
 
 An exact ratchet taxes the landing that does the right thing: a cut that removes two of a crate's
 plane hits leaves the row three too high and the gate is red until somebody edits a number by hand.
@@ -1263,7 +1310,7 @@ is a landing that has to be read, and a tool that quietly re-pinned the falls in
 would hand it a file that looks reviewed. The write is a line-by-line rewrite of one number per row
 rather than a re-render, because this file is written by hand and its comments ARE the reasoning.
 
-### 9.4 The self-test, and the sub-checks that had no plant
+### 9.5 The self-test, and the sub-checks that had no plant
 
 Every red-team case is a named case. Beyond them, eight arms of `:registry` had no plant of their
 own — `dead-kind`, `kind-arrived`, `alias-retired`, `no-construction-kinds`, `unmapped-kind`,
@@ -1272,6 +1319,14 @@ arm left `kind-isolation: green` and `17 case(s), 0 skipped — the gate is prov
 same breath, because the row was still red-able through its neighbours. Each of the eight now has a
 fixture that only it rejects, and the two floors fail apart: four manifests is under the census floor
 and nowhere near the source floor, and four sources are the mirror.
+
+`kind-isolation:truths` was owed by both registrations and proven by neither — `owed row id
+kind-isolation:truths is covered by no RED selftest case`. Its green is an especially cheap one to
+fake, because every comparison it makes is a loop over a table and deleting the loop reads exactly
+like three files that agree. Its plant is the hole the row was written for and which its own module
+header records as MEASURED: strike `plane` out of `[gate.plugin_kinds]` and every construction rule
+scoped by that key scans the empty set and reports clean, which is the passing answer to a rule that
+has been switched off. The row must name `missing-construction-kind`.
 
 One cost note, because it is what makes the battery runnable at all. `--selftest` re-runs the WHOLE
 gate once per planted case, and this branch adds thirty of them, so the per-case cost is the whole

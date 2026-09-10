@@ -1228,6 +1228,47 @@ pub fn prove_rows_green(
     }
 }
 
+/// THE GREEN ARM FOR A ROW THAT IS RED ON THIS TREE FOR OTHER REASONS — narrowed not to the row
+/// but to the OFFENDER the case is about.
+///
+/// [`prove_rows_green`] asks the covered rows to PASS. That is the right question for a row the
+/// tree already satisfies and the wrong one for a SHIP-criterion row: `kind-isolation:testkit` is
+/// red on every dev-line commit by design, so a case saying "this arrangement satisfies the row"
+/// could only be written on the day the whole criterion is met — which is to say, never written,
+/// and the arrangement never proven. Hand-writing `got` is worse than not writing the case: that is
+/// a case with the gate taken out of it, and it stays green when the rule it names is deleted.
+///
+/// So this runs the gate through [`execute`] like every other arm, reads the covered rows'
+/// evidence, and requires that NONE of `absent` appears in it. Paired with a [`prove_rows_red`]
+/// over the same plant MINUS one file, the two cases together are a red-then-green proof about
+/// exactly the difference between them.
+pub fn prove_rows_quiet_about(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+    overlay: Overlay,
+    absent: &[&str],
+) -> Case {
+    let planted = cx.with_overlay(overlay);
+    let verdict = execute(gate, &planted);
+    let heard: Vec<String> = covers
+        .iter()
+        .flat_map(|id| evidence_for(&verdict, id))
+        .filter(|e| absent.iter().any(|a| e.contains(a)))
+        .collect();
+    Case {
+        name: name.into(),
+        covers: covers.iter().map(|s| (*s).to_string()).collect(),
+        expected: Expect::Green,
+        got: if heard.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: heard }
+        },
+    }
+}
+
 /// The tree in which `crates/` is present, readable and holds a file, and NO plane declares its
 /// grammar. It is the plant for every `plane-roots` row: the scanners that share the plane
 /// resolver read it with `std::fs`, so this is the only way to make a plane genuinely absent.

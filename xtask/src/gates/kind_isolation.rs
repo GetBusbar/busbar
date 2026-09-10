@@ -132,7 +132,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
+use crate::gates::{
+    prove_green, prove_rows_green, prove_rows_quiet_about, prove_rows_red, Gate, Report,
+};
 use crate::ledger::{Row, Verdict};
 use crate::manifest::{self, DepDecl};
 use crate::scan;
@@ -702,6 +704,42 @@ const BATTERY_MARKER: &str = "testkit";
 
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
+
+/// THE OFF-TREE HOMES A KIND'S SHARED BATTERY MAY LIVE IN, each with the sentence that says why it
+/// is allowed to be one.
+///
+/// TOOLING REACHES PRODUCT, NEVER THE REVERSE, and this list is where that ruling is spelled. The
+/// obvious shape for a shared battery — a helper crate every plugin crate takes as a
+/// `[dev-dependencies]` edge and calls from its own `tests/<kind>_conformance.rs` — is the shape
+/// the kind graph refuses out loud: `unit -> plugin-tooling` is `not-allowed`, fourteen of them are
+/// fourteen findings, and no `[[dep]]` row may admit an edge a branch INTRODUCED. So a crate that
+/// declared such a dev-dependency used to satisfy THIS row while being refused by the edge rows on
+/// the same run, which is a gate rewarding the thing it is elsewhere refusing. It no longer does:
+/// the dev-dependency is read on the TOOLING side, where it creates no edge of the tree.
+///
+/// A home is a directory prefix. Its `Cargo.toml`'s `[dev-dependencies]` say WHICH crates it
+/// compiles in, and its `tests/*conformance*.rs` files say which of them it carries a BLOCK for;
+/// both are owed, because an edge with no block runs nothing and a block with no edge does not
+/// compile.
+const TOOLING_BATTERY_HOMES: &[(&str, &str)] = &[
+    (
+        "xtask",
+        "the gate RUNNER, which `OFF_TREE_MANIFESTS` states in its own words has no kind, ships in \
+         no artifact, and is subject to none of these rules. Its dev-dependencies are edges of the \
+         tooling, not of the tree: no kind edge is created and no `[[cell]]` moves.",
+    ),
+    (
+        "crates/plugin-testkit",
+        "`busbar-plugin-testkit`, the plugin-tooling crate that has held the universal `open`-seam \
+         contract since 1.5. A battery it drives reaches DOWN into the plugin kinds, which is the \
+         direction the graph grants; what the graph refuses is a plugin crate reaching UP to it.",
+    ),
+];
+
+/// The tooling homes carry `src/` and (for `xtask`) `fixtures/`, and neither is a battery. Skipping
+/// them is what keeps this walk from re-reading the gate runner's own eight thousand lines once per
+/// self-test case.
+const TOOLING_BATTERY_SKIP: &[&str] = &["/src/", "/fixtures/", "/benches/"];
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary bans
@@ -3983,6 +4021,73 @@ fn head_after_impl(rest: &str) -> Option<String> {
         .then(|| head.to_string())
 }
 
+/// WHICH CRATES A BATTERY IN AN OFF-TREE TOOLING HOME IS ACTUALLY ABOUT: crate name -> the battery
+/// file that carries its block.
+///
+/// A crate is covered when BOTH halves of the same home say so, because either half alone is a
+/// claim nothing executes:
+///
+/// * the home's `[dev-dependencies]` name the crate — that is the edge that compiles the subject
+///   in, and it is declared on the tooling side, so no crate of the tree gains an edge; and
+/// * a `<home>/tests/*conformance*.rs` file with AT LEAST ONE LIVE ENTRY names the crate's lib
+///   spelling followed by `::` — the block shape (`use busbar_unit_admission::{…};`), one per crate
+///   under test.
+///
+/// THE `::` IS NOT DECORATION. `busbar_unit_egress` is a prefix of `busbar_unit_egress_auth`, so a
+/// bare `contains` would have read a file that names only the second as covering the first, and one
+/// crate of the kind would have gone green on its sibling's block.
+fn battery_block_names(text: &str, name: &str) -> bool {
+    text.contains(&format!("{}::", name.replace('-', "_")))
+}
+
+fn index_tooling_batteries(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+) -> Result<BTreeMap<String, String>, String> {
+    let roots: Vec<&str> = TOOLING_BATTERY_HOMES.iter().map(|(p, _)| *p).collect();
+    let files = cx
+        .walk(
+            &WalkSpec::new(roots)
+                .ext("rs")
+                .exclude(TOOLING_BATTERY_SKIP.iter().copied()),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (home, _) in TOOLING_BATTERY_HOMES {
+        let Ok(manifest_text) = cx.read(format!("{home}/Cargo.toml")) else {
+            continue;
+        };
+        let dev: BTreeSet<String> = manifest::dep_decls(&manifest_text)
+            .into_iter()
+            .filter(|d| d.table == manifest::DepTable::Dev)
+            .map(|d| d.pkg)
+            .collect();
+        if dev.is_empty() {
+            continue;
+        }
+        let prefix = format!("{home}/tests/");
+        for f in &files {
+            let rel = f.rel_str();
+            if !rel.starts_with(&prefix) || !rel.contains(CONFORMANCE_MARKER) {
+                continue;
+            }
+            let (live, _ignored) = live_battery_entries(&f.text);
+            if live == 0 {
+                continue;
+            }
+            for c in crates {
+                if !dev.contains(&c.name) || out.contains_key(&c.name) {
+                    continue;
+                }
+                if battery_block_names(&f.text, &c.name) {
+                    out.insert(c.name.clone(), rel.clone());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(MIN_SOURCES))
@@ -4259,7 +4364,27 @@ fn rule_faces(crates: &[CrateInfo], idx: &SourceIndex, reg: &KindRegistry, ship:
     )
 }
 
-fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
+/// A CRATE RUNS ITS KIND'S BATTERY WHEN A BATTERY FOR IT EXISTS IN AN ALLOWED HOME — and there are
+/// exactly two homes, one of which is the crate itself.
+///
+/// The row used to accept a third thing: the crate DECLARING a `testkit` dev-dependency. That is
+/// the `plugin -> plugin-tooling` edge the kind graph refuses fifty-six times over, so the row was
+/// asking for the one arrangement the rest of the gate reds. It is gone, and nothing replaces it:
+/// the same dev-dependency read from the TOOLING side, together with the block that uses it, is
+/// what [`index_tooling_batteries`] counts.
+fn crate_runs_its_battery(
+    c: &CrateInfo,
+    idx: &SourceIndex,
+    tooling: &BTreeMap<String, String>,
+) -> bool {
+    idx.conformance.contains(&c.dir) || tooling.contains_key(&c.name)
+}
+
+fn rule_testkit(
+    crates: &[CrateInfo],
+    idx: &SourceIndex,
+    tooling: &BTreeMap<String, String>,
+) -> Row {
     let batteries: Vec<&str> = crates
         .iter()
         .map(|c| c.name.as_str())
@@ -4279,20 +4404,25 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
         let runners: Vec<&CrateInfo> = members
             .iter()
             .copied()
-            .filter(|c| {
-                idx.conformance.contains(&c.dir)
-                    || c.dev_deps.iter().any(|d| d.pkg.contains(BATTERY_MARKER))
-            })
+            .filter(|c| crate_runs_its_battery(c, idx, tooling))
             .collect();
         checked += members.len();
         let want_trait = entry_trait(kind);
         let no_battery = runners.is_empty();
         if no_battery {
             offenders.push(format!(
-                "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} crate(s) \
-                 runs a shared conformance battery (no `{BATTERY_MARKER}` dev-dependency, no \
-                 tests/*{CONFORMANCE_MARKER}*.rs). Candidates in the tree: {}",
+                "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} crate(s) has \
+                 a battery in an allowed home: no `tests/*{CONFORMANCE_MARKER}*.rs` of its own, \
+                 and no `*{CONFORMANCE_MARKER}*.rs` block for it in {}. A `{BATTERY_MARKER}` \
+                 dev-dependency ON the crate is NOT one of the homes: that edge runs \
+                 plugin -> plugin-tooling, which the kind graph refuses. Battery crates in the \
+                 tree: {}",
                 members.len(),
+                TOOLING_BATTERY_HOMES
+                    .iter()
+                    .map(|(p, _)| format!("`{p}/tests/`"))
+                    .collect::<Vec<_>>()
+                    .join(" or "),
                 if batteries.is_empty() {
                     "none".to_string()
                 } else {
@@ -4332,10 +4462,18 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             if !no_battery && !runners.iter().any(|r| r.name == c.name) {
                 offenders.push(format!(
                     "not-run\t{}\t{} does not run kind `{kind}`'s shared battery, which {} of its \
-                     siblings do",
+                     siblings do. Give it a `tests/*{CONFORMANCE_MARKER}*.rs` of its own, or a \
+                     block naming `{}::` in a battery of {} whose manifest dev-depends on it — \
+                     never a `{BATTERY_MARKER}` dev-dependency here, which is the refused edge",
                     c.dir,
                     c.name,
-                    runners.len()
+                    runners.len(),
+                    c.name.replace('-', "_"),
+                    TOOLING_BATTERY_HOMES
+                        .iter()
+                        .map(|(p, _)| format!("`{p}/tests/`"))
+                        .collect::<Vec<_>>()
+                        .join(" or ")
                 ));
             }
         }
@@ -4354,8 +4492,15 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             ROW_TESTKIT,
             "every crate of a kind runs its kind's shared conformance battery",
             format!(
-                "{checked} crate(s) over {} kind(s); batteries: {}",
+                "{checked} crate(s) over {} kind(s); {} of them covered by an off-tree tooling \
+                 battery ({}), the rest by one of their own; battery crates: {}",
                 BATTERY_KINDS.len(),
+                tooling.len(),
+                TOOLING_BATTERY_HOMES
+                    .iter()
+                    .map(|(p, _)| *p)
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 batteries.join(", ")
             ),
         );
@@ -5393,7 +5538,21 @@ impl Gate for KindIsolationGate {
                 rows.push(rule_faces(&crates, &idx, &reg, self.ship));
                 if self.ship {
                     rows.push(rule_shape(&crates, &idx));
-                    rows.push(rule_testkit(&crates, &idx));
+                    // THE BATTERY'S OTHER HOME IS OFF-TREE, so the battery rule has a second input
+                    // and a second way to be starved. An index that did not read is not an index
+                    // that found no tooling battery: it would demote every crate covered by one to
+                    // `not-run` — a red, so not a hole, but a red that names the wrong thing.
+                    rows.push(match index_tooling_batteries(cx, &crates) {
+                        Ok(tooling) => rule_testkit(&crates, &idx, &tooling),
+                        Err(e) => Row::fail(
+                            ROW_TESTKIT,
+                            "the tooling battery index did not run",
+                            format!(
+                                "{e} — the off-tree battery homes are this row's own input, and a \
+                                 walk that did not read is not a walk that found no battery."
+                            ),
+                        ),
+                    });
                 }
             }
             Err(e) => {
@@ -7942,11 +8101,189 @@ impl Gate for KindIsolationGate {
             &["not-run", "busbar-store-planted"],
         ));
 
-        // A BATTERY FILE IS NOT A BATTERY. This crate carries `tests/conformance.rs` and a `testkit`
-        // dev-dependency — everything the rule used to ask — and every entry in it is `#[ignore]`d,
-        // so `cargo test` runs none of it. The rule detected the FILE and the DEV-DEPENDENCY, and
-        // neither of those executes; a whole kind's conformance can be switched off with one
-        // attribute per test and a reason that names the very work being gated.
+        // ── `:truths` GOES RED WHEN THE THREE VOCABULARIES DISAGREE ──────────────────────────────
+        //
+        // The row was owed by both registrations and proven by neither: `owed row id
+        // kind-isolation:truths is covered by no RED selftest case`. A green case cannot tell a
+        // rule that found nothing from a rule that is not there, and this rule is one whose green
+        // is especially cheap to fake — every one of its comparisons is a loop over a table, so
+        // deleting the loop reads exactly like three files that agree.
+        //
+        // THE PLANT IS THE HOLE THE ROW WAS WRITTEN FOR, and its own module header records that it
+        // was MEASURED: deleting `plane` from `[gate.plugin_kinds]` left this gate green and left
+        // the construction gate's failing-row count unchanged, because a kind with no globs reads
+        // as "the kind simply has no crate yet" and every rule scoped by it then scans the empty
+        // set and reports clean. So the plant strikes that one key out of that one section — the
+        // section walk is the row's own, so a key struck from a DIFFERENT table is not this case —
+        // and the row must name it.
+        let mut ov = Overlay::new();
+        ov.set(truths::CONSTRUCTION, {
+            let text = cx.read(truths::CONSTRUCTION).unwrap_or_default();
+            let mut inside = false;
+            let mut out = String::new();
+            for raw in text.lines() {
+                let t = raw.trim();
+                if t.starts_with('[') {
+                    inside = t == "[gate.plugin_kinds]";
+                } else if inside && t.starts_with("plane") && t.contains('=') {
+                    continue;
+                }
+                out.push_str(raw);
+                out.push('\n');
+            }
+            out
+        });
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind the design states, struck out of [gate.plugin_kinds], is a kind no \
+             construction rule reads a file of",
+            &[ROW_TRUTHS],
+            ov,
+            &[
+                "missing-construction-kind",
+                truths::CONSTRUCTION,
+                "the `plane` kind",
+            ],
+        ));
+
+        // ── WHERE A BATTERY IS ALLOWED TO LIVE, AND THE ONE ARRANGEMENT THAT IS NOT A HOME ───────
+        //
+        // The row's subject is whether a battery FOR this crate exists, not which directory it sits
+        // in, and there are exactly two homes: the crate's own `tests/`, or an off-tree tooling
+        // crate that dev-depends on it and carries a block for it. The one thing that is NOT a home
+        // is the crate declaring a `testkit` dev-dependency of its own — the `plugin ->
+        // plugin-tooling` edge the kind graph reds fifty-six times over. The five cases below are
+        // one subject crate with one file moved between them, so the difference between a green and
+        // a red here is exactly the difference the ruling is about.
+        //
+        // `busbar-store-homed` implements its kind's trait, so `no-implementor` never fires and the
+        // ONLY thing the row can have to say about it is whether it has a battery.
+        let homed = |extra: &[(&str, &str)]| -> Overlay {
+            let mut ov = manifest_plant(
+                "crates/busbar-store-homed",
+                "busbar-store-homed",
+                &["busbar-contract"],
+            );
+            ov.set(
+                "crates/busbar-store-homed/src/lib.rs",
+                "pub struct P;\nimpl Store for P {}\n",
+            );
+            for (path, text) in extra {
+                ov.set(*path, (*text).to_string());
+            }
+            ov
+        };
+        // The tooling home's two halves. The manifest is the REAL `xtask/Cargo.toml` with one
+        // dev-dependency appended, so the case is about the edge being added rather than about a
+        // hand-written manifest that happens to parse.
+        let xtask_dev = format!(
+            "{}\n[dev-dependencies]\nbusbar-store-homed = {{ path = \
+             \"../crates/busbar-store-homed\" }}\n",
+            cx.read("xtask/Cargo.toml").unwrap_or_default()
+        );
+        const HOMED_BLOCK: &str = "mod store_homed {\n    //! Conformance: this crate is a \
+                                   well-formed `store`.\n    use busbar_store_homed::P;\n    \
+                                   #[test]\n    fn the_kind_is_declared_once() {\n        let _ = \
+                                   P;\n    }\n}\n";
+
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plugin crate with no battery in any home is red",
+            &[ROW_TESTKIT],
+            homed(&[]),
+            &["not-run", "busbar-store-homed"],
+        ));
+
+        report.push(prove_rows_quiet_about(
+            cx,
+            self,
+            "a plugin crate whose battery lives in xtask, off-tree, satisfies the row",
+            &[ROW_TESTKIT],
+            homed(&[
+                ("xtask/Cargo.toml", &xtask_dev),
+                ("xtask/tests/store_conformance.rs", HOMED_BLOCK),
+            ]),
+            &["busbar-store-homed"],
+        ));
+
+        // THE ROW MUST NOT REWARD THE REFUSED EDGE. This is the arrangement `kind-isolation:deps`
+        // reds — a plugin crate reaching UP to `busbar-plugin-testkit` — and it used to be the
+        // cheapest way to satisfy this row: one dev-dependency line, no battery written, no test
+        // executed. A gate that reds an edge on one row and pays for it on another is a gate that
+        // teaches the tree to introduce it.
+        let mut ov = homed(&[]);
+        ov.set(
+            "crates/busbar-store-homed/Cargo.toml",
+            "[package]\nname = \"busbar-store-homed\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
+             busbar-contract = { workspace = true }\n\n[dev-dependencies]\n\
+             busbar-plugin-testkit = { path = \"../plugin-testkit\", features = [\"store\"] }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plugin crate's own dev-dependency on the testkit is not a battery and does not \
+             satisfy the row",
+            &[ROW_TESTKIT],
+            ov,
+            &["not-run", "busbar-store-homed"],
+        ));
+
+        // BOTH HALVES OF THE TOOLING HOME ARE OWED. The block is there, word for word, and the
+        // manifest does not name the crate — so nothing compiles it in and the file asserts about a
+        // crate the runner never builds.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tooling battery block with no dev-dependency behind it compiles nothing and is not \
+             a battery",
+            &[ROW_TESTKIT],
+            homed(&[("xtask/tests/store_conformance.rs", HOMED_BLOCK)]),
+            &["not-run", "busbar-store-homed"],
+        ));
+
+        // …AND THE OTHER HALF: the edge is declared and the battery it is for is `#[ignore]`d dead,
+        // which is the same lie [`live_battery_entries`] catches in a crate's own `tests/`. The
+        // home moved; the rule that a battery must EXECUTE did not.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tooling battery whose every entry is ignored is not a battery in xtask either",
+            &[ROW_TESTKIT],
+            homed(&[
+                ("xtask/Cargo.toml", &xtask_dev),
+                (
+                    "xtask/tests/store_conformance.rs",
+                    "mod store_homed {\n    use busbar_store_homed::P;\n    #[test]\n    \
+                     #[ignore = \"owed\"]\n    fn the_kind_is_declared_once() {\n        let _ = \
+                     P;\n    }\n}\n",
+                ),
+            ]),
+            &["not-run", "busbar-store-homed"],
+        ));
+
+        // THE CRATE'S OWN `tests/` IS STILL A HOME, UNCHANGED. Same subject, battery inside itself
+        // and nothing planted in the tooling: the shape the two planes already ship stays green,
+        // which is what says this landing widened the rule rather than moving it.
+        report.push(prove_rows_quiet_about(
+            cx,
+            self,
+            "a plugin crate whose battery lives inside itself satisfies the row, as it always did",
+            &[ROW_TESTKIT],
+            homed(&[(
+                "crates/busbar-store-homed/tests/conformance.rs",
+                "#[test]\nfn the_kind_is_declared_once() {}\n",
+            )]),
+            &["busbar-store-homed"],
+        ));
+
+        // A BATTERY FILE IS NOT A BATTERY. This crate carries `tests/conformance.rs` — the file the
+        // rule asks for — and every entry in it is `#[ignore]`d, so `cargo test` runs none of it.
+        // The rule detected the FILE, and a file does not execute; a whole kind's conformance can
+        // be switched off with one attribute per test and a reason that names the very work being
+        // gated. (When this case was written the rule also accepted a `testkit` dev-dependency,
+        // which executes even less; that arm is retired — see `TOOLING_BATTERY_HOMES`.)
         let mut ov = manifest_plant(
             "crates/busbar-store-ignored",
             "busbar-store-ignored",
@@ -8235,6 +8572,54 @@ fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(format!("{dir}/Cargo.toml"), body);
     ov
+}
+
+#[cfg(test)]
+mod tooling_battery_tests {
+    use super::{battery_block_names, TOOLING_BATTERY_HOMES};
+
+    /// The block shape the off-tree batteries are written in — `use <crate>::…;`, one module per
+    /// crate under test — is what says a battery file is ABOUT a crate.
+    #[test]
+    fn a_block_naming_the_crate_is_a_block_for_it() {
+        let text =
+            "mod admission {\n    use busbar_unit_admission::{AdmissionUnit, InMemoryCells};\n}\n";
+        assert!(battery_block_names(text, "busbar-unit-admission"));
+    }
+
+    /// A SIBLING'S BLOCK IS NOT THIS CRATE'S. `busbar_unit_egress` is a prefix of
+    /// `busbar_unit_egress_auth`, so a bare substring test would have read a file that carries only
+    /// the second as covering the first, and one crate of the kind would have gone green on its
+    /// sibling's battery. The `::` is what separates them.
+    #[test]
+    fn a_siblings_block_does_not_cover_the_crate_whose_name_prefixes_it() {
+        let text = "mod egress_auth {\n    use busbar_unit_egress_auth::EgressAuth;\n}\n";
+        assert!(battery_block_names(text, "busbar-unit-egress-auth"));
+        assert!(!battery_block_names(text, "busbar-unit-egress"));
+    }
+
+    /// A file that never names the crate covers nothing, whatever else it asserts.
+    #[test]
+    fn a_battery_that_never_names_the_crate_is_not_about_it() {
+        assert!(!battery_block_names(
+            "#[test]\nfn nothing() {}\n",
+            "busbar-unit-scope"
+        ));
+    }
+
+    /// TOOLING REACHES PRODUCT, NEVER THE REVERSE — and every home on the list is on the tooling
+    /// side of that sentence. A product-tree home added here would be the `plugin ->
+    /// plugin-tooling` edge back in through the row that is supposed to refuse rewarding it.
+    #[test]
+    fn every_battery_home_is_off_the_product_tree_or_is_plugin_tooling() {
+        for (home, why) in TOOLING_BATTERY_HOMES {
+            assert!(
+                *home == "xtask" || *home == "crates/plugin-testkit",
+                "{home} is not one of the two homes the ruling names"
+            );
+            assert!(!why.is_empty(), "{home} carries no sentence saying why");
+        }
+    }
 }
 
 #[cfg(test)]
