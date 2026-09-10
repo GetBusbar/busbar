@@ -1190,10 +1190,10 @@ pub(crate) async fn create_key(
                 }
                 if issue_aws {
                     // Issues the AccessKeyId + secret access key alongside the bearer secret.
-                    gov.mint_signed_with_aws(spec, exp, now)
+                    gov.mint_signed_with_aws(spec, exp, now, None)
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
-                    gov.mint_signed(spec, exp, now)
+                    gov.mint_signed(spec, exp, now, None)
                         .map(|m| MintOutcome::Bearer(Box::new(m)))
                 }
             })()

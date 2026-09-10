@@ -1892,6 +1892,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
             },
             2_000_000_000,
             1_000_000_000,
+            None,
         )
         .unwrap();
 
@@ -1902,11 +1903,11 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .verify(plain_token.as_str(), 1_000_000_000, None)
         .expect("plain claims")
         .generation;
-    let bound_token = signer.mint_for_audience(
+    let bound_token = signer.mint(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
-        "https://busbar.example.com/mcp",
+        Some("https://busbar.example.com/mcp"),
         Some("client-1"),
     );
 
@@ -2859,6 +2860,7 @@ fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
             },
             2_000_000_000,
             1_000_000_000,
+            None,
         )
         .unwrap();
     (gov, secret.as_str().to_string())
@@ -2980,6 +2982,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
             },
             2_000_000_000,
             1_000_000_000,
+            None,
         )
         .unwrap();
     let secret = secret.as_str();

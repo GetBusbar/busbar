@@ -216,38 +216,26 @@ impl TokenSigner {
         base64::engine::general_purpose::STANDARD.encode(der)
     }
 
-    /// Mint a signed token for `sub` expiring at `exp` (Unix seconds), stamped with the binding
-    /// GENERATION it is issued against (see [`TokenClaims::generation`]). Returns the full token
-    /// string, shown to the caller ONCE.
-    pub fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
-        self.sign_claims(TokenClaims {
-            sub: sub.to_string(),
-            exp,
-            kid: self.kid.clone(),
-            generation: generation.map(str::to_string),
-            aud: None,
-            cid: None,
-        })
-    }
-
-    /// Mint an AUDIENCE-BOUND token (1.6.0, the MCP authorization-server mint): identical to
-    /// [`Self::mint`] plus the `aud` plane-boundary claim and the optional `cid` client
-    /// attribution. Such a token verifies ONLY where the verifier expects exactly this audience
-    /// (the MCP ingress); the plain data-plane verify rejects it (see [`TokenClaims::aud`]).
+    /// THE MINT. One signed token for `sub`, expiring at `exp` (Unix seconds), stamped with the
+    /// binding GENERATION it is issued against (see [`TokenClaims::generation`]) and — when the
+    /// caller asked for one — with the RFC 8707 `aud` resource claim and the optional `cid` client
+    /// attribution. Returns the full token string, shown to the caller ONCE.
     ///
-    /// `cfg(test)` until the authorization-server mint path (OAuth Unit D) lands and becomes its
-    /// production caller - per the house rule against shipping dead code behind a live-looking
-    /// surface. The boundary tests below exercise it against the real verifier today. Gated on
-    /// `test-support` too so the crates whose test binaries link this one (core, and the mcp/a2a
-    /// plane tests dual-compiled into core) can name it — the same cross-crate test-only seam the
-    /// metrics initializer uses.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn mint_for_audience(
+    /// `aud` is the WHOLE of what distinguishes a data-plane credential from a plane-boundary one,
+    /// and it is a parameter rather than a second function because a mint is one verb: `None` is a
+    /// plain data-plane token (an audience-checked ingress rejects it), `Some(uri)` is a token that
+    /// verifies ONLY where the verifier expects exactly that audience and that the plain data-plane
+    /// verify rejects in turn (see [`TokenClaims::aud`]). There was a second, `cfg(test)` mint here
+    /// that took `aud` non-optionally, on the reasoning that no production path issued the claim
+    /// yet; the consequence was that no production path COULD, and a deployment whose plane bound
+    /// an audience had no credential it was able to issue for its own door. The two are one verb
+    /// now, so the door and the mint cannot be shipped apart again.
+    pub fn mint(
         &self,
         sub: &str,
         exp: u64,
         generation: Option<&str>,
-        aud: &str,
+        aud: Option<&str>,
         cid: Option<&str>,
     ) -> String {
         self.sign_claims(TokenClaims {
@@ -255,7 +243,7 @@ impl TokenSigner {
             exp,
             kid: self.kid.clone(),
             generation: generation.map(str::to_string),
-            aud: Some(aud.to_string()),
+            aud: aud.map(str::to_string),
             cid: cid.map(str::to_string),
         })
     }

@@ -18,7 +18,7 @@ fn verifier(s: &TokenSigner) -> TokenVerifier {
 fn mint_then_verify_roundtrips() {
     let s = signer();
     let v = verifier(&s);
-    let tok = s.mint("vk_abc", 2000, None);
+    let tok = s.mint("vk_abc", 2000, None, None, None);
     assert!(tok.starts_with(TOKEN_PREFIX));
     let claims = v.verify(&tok, 1000, None).expect("valid");
     assert_eq!(claims.sub, "vk_abc");
@@ -64,8 +64,8 @@ fn audience_matrix_is_fail_closed() {
     let s = signer();
     let v = verifier(&s);
     let mcp = "https://busbar.example.com/mcp";
-    let plain = s.mint("vk_abc", 2000, None);
-    let bound = s.mint_for_audience("vk_abc", 2000, None, mcp, Some("client-1"));
+    let plain = s.mint("vk_abc", 2000, None, None, None);
+    let bound = s.mint("vk_abc", 2000, None, Some(mcp), Some("client-1"));
 
     // Accept arms.
     assert!(v.verify(&plain, 1000, None).is_ok(), "plain on plain");
@@ -122,7 +122,7 @@ fn legacy_token_without_audience_still_verifies_on_the_data_plane() {
 fn expired_token_rejected() {
     let s = signer();
     let v = verifier(&s);
-    let tok = s.mint("vk_abc", 1000, None);
+    let tok = s.mint("vk_abc", 1000, None, None, None);
     assert_eq!(v.verify(&tok, 1000, None), Err(VerifyError::Expired));
     assert_eq!(v.verify(&tok, 1001, None), Err(VerifyError::Expired));
     assert!(v.verify(&tok, 999, None).is_ok());
@@ -133,7 +133,7 @@ fn expired_token_rejected() {
 fn tampered_token_rejected() {
     let s = signer();
     let v = verifier(&s);
-    let tok = s.mint("vk_abc", 2000, None);
+    let tok = s.mint("vk_abc", 2000, None, None, None);
     // Flip a char in the payload segment.
     let body = tok.strip_prefix(TOKEN_PREFIX).unwrap();
     let (payload, sig) = body.split_once('.').unwrap();
@@ -152,7 +152,7 @@ fn tampered_token_rejected() {
 #[test]
 fn token_fails_after_rotation() {
     let key_a = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
-    let tok = key_a.mint("vk_abc", 2000, None);
+    let tok = key_a.mint("vk_abc", 2000, None, None, None);
 
     // Same kid, different key material -> BadSignature.
     let key_b_same_kid = TokenSigner::from_secret_bytes(&[2u8; 32], DEFAULT_KID);
@@ -192,7 +192,7 @@ fn generated_key_persists_and_reloads() {
     let s = TokenSigner::generate(DEFAULT_KID).unwrap();
     let bytes = s.secret_bytes();
     let reloaded = TokenSigner::from_secret_bytes(&bytes, DEFAULT_KID);
-    let tok = s.mint("vk_x", 2000, None);
+    let tok = s.mint("vk_x", 2000, None, None, None);
     // The reloaded key is the SAME key: it mints/verifies interchangeably.
     let v = TokenVerifier::single(DEFAULT_KID, reloaded.verifying_key());
     assert!(v.verify(&tok, 1000, None).is_ok());

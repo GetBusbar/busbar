@@ -634,6 +634,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
             },
             2_000_000_000,
             1_000_000_000,
+            None,
         )
         .unwrap();
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
@@ -642,11 +643,11 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
         .verify(plain_token.as_str(), 1_000_000_000, None)
         .expect("plain claims")
         .generation;
-    let bound_token = signer.mint_for_audience(
+    let bound_token = signer.mint(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
-        "https://busbar.example.com/mcp",
+        Some("https://busbar.example.com/mcp"),
         Some("client-1"),
     );
 

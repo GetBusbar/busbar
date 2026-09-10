@@ -283,11 +283,11 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     gov.refresh().unwrap();
 
     // THE CALLER'S BUSBAR KEY: an audience-bound token for THIS deployment. This is the sentinel.
-    let bearer = signer.mint_for_audience(
+    let bearer = signer.mint(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
-        CANONICAL,
+        Some(CANONICAL),
         Some("external-client-1"),
     );
 

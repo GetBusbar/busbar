@@ -280,7 +280,7 @@ fn hmac_sig_token_rejected_bad_signature() {
     // A legit token: reuse its payload segment, then FORGE the signature as a literal HMAC over the
     // subject — the "Model B literal-HMAC credential" a naive reading might build. It must be
     // rejected: the credential is an ed25519 signature, not an HMAC.
-    let tok = signer.mint("vk_deadbeef", 5000, Some("0"));
+    let tok = signer.mint("vk_deadbeef", 5000, Some("0"), None, None);
     let body = tok.strip_prefix("bbk_").unwrap();
     let (payload_b64, _sig_b64) = body.split_once('.').unwrap();
     // 64-byte HMAC (SHA-512) so it PARSES as a signature and reaches the (failing) crypto check,

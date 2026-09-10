@@ -397,6 +397,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
                 },
                 u64::MAX,
                 0,
+                None,
             )
             .expect("mint");
         ids.push(key.id);

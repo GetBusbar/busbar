@@ -228,10 +228,10 @@ async fn rig(fixture: Fixture) -> Rig {
         ..Default::default()
     };
     let (key, token) = gov
-        .mint_signed(spec("root-llm"), LIVE_EXP, MINTED_AT)
+        .mint_signed(spec("root-llm"), LIVE_EXP, MINTED_AT, None)
         .expect("mint the deployment's key");
     let (_, expired_token) = gov
-        .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
+        .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT, None)
         .expect("mint the expired key");
     let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
     gov.hydrate_budgets(&cost, 0).expect("hydrate");

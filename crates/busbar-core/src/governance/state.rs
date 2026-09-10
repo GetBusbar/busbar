@@ -255,11 +255,19 @@ impl GovState {
     /// token `{sub, exp, kid}` for it. Returns `(binding, token)`; the token is shown ONCE. The
     /// subject id is a fresh unguessable `vk_<hex>` from the OS CSPRNG (its own bucket namespace).
     /// FAIL-CLOSED: no signer configured is an error (a key with no token is useless).
+    ///
+    /// `audience` is the RFC 8707 resource the ISSUED TOKEN is bound to, or `None` for a plain
+    /// data-plane token. It is a property of the token and not of the binding: the binding row is
+    /// byte-identical either way, so a key minted for a plane's door reads back through every
+    /// admin view exactly as one minted for the data plane does. What differs is where the
+    /// credential verifies — a bound token opens only the door whose audience it names, and the
+    /// plain data-plane verify rejects it.
     pub fn mint_signed(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
+        audience: Option<&str>,
     ) -> StoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
@@ -302,7 +310,9 @@ impl GovState {
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material
+            .signer
+            .mint(&id, exp, Some(&generation), audience, None);
         Ok((binding, token))
     }
 
@@ -315,6 +325,7 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
+        audience: Option<&str>,
     ) -> StoreResult<(VirtualKey, String, String, String)> {
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
@@ -371,7 +382,9 @@ impl GovState {
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material
+            .signer
+            .mint(&id, exp, Some(&generation), audience, None);
         Ok((binding, token, access_key_id, secret_access_key))
     }
 
@@ -594,7 +607,9 @@ impl GovState {
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material
+            .signer
+            .mint(&id, exp, Some(&generation), None, None);
         Ok((binding, token))
     }
 
@@ -650,13 +665,17 @@ impl GovState {
                     self.store.put_key(&updated)?;
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);
-                    let token = material.signer.mint(&updated.id, exp, generation);
+                    let token = material
+                        .signer
+                        .mint(&updated.id, exp, generation, None, None);
                     Ok((updated, token))
                 } else {
                     // Idempotent re-show: reuse the one binding, re-issue a fresh-exp token over the
                     // SAME id + generation. No new row, so the anti-sprawl cap can never trip.
                     let generation = binding_generation(&existing.generation_hash);
-                    let token = material.signer.mint(&existing.id, exp, generation);
+                    let token = material
+                        .signer
+                        .mint(&existing.id, exp, generation, None, None);
                     Ok(((*existing).clone(), token))
                 }
             }
@@ -1441,7 +1460,9 @@ impl GovState {
                  credential."
             )));
         }
-        let token = material.signer.mint(&key.id, exp, Some(&generation));
+        let token = material
+            .signer
+            .mint(&key.id, exp, Some(&generation), None, None);
         Ok(Some(RotatedCredential { key, token, exp }))
     }
 

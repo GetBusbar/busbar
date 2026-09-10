@@ -10922,6 +10922,7 @@ async fn serve_keys_fixture(
                 },
                 busbar_substrate::store::now() + 3600,
                 busbar_substrate::store::now(),
+                None,
             )
             .unwrap();
         key.id

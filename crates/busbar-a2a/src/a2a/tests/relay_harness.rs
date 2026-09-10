@@ -686,11 +686,11 @@ pub(super) async fn harness_full(
     gov.store().put_key(&scoped).expect("put");
     gov.refresh().expect("refresh");
 
-    let bearer = signer.mint_for_audience(
+    let bearer = signer.mint(
         &key.id,
         2_000_000_000,
         generation.as_deref(),
-        AUDIENCE,
+        Some(AUDIENCE),
         Some("external-agent-1"),
     );
 

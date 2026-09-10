@@ -1527,7 +1527,9 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         ..Default::default()
     };
     let now = busbar_substrate::store::now();
-    let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
+    let (_binding, old_token) = gov
+        .mint_signed(spec, now + 10_000, now, None)
+        .expect("mint");
     assert!(
         gov.verify_token(&old_token, now, None).is_some(),
         "valid pre-rotation"
@@ -1549,7 +1551,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         ..Default::default()
     };
     let (_b2, fresh) = gov
-        .mint_signed(spec2, now + 10_000, now)
+        .mint_signed(spec2, now + 10_000, now, None)
         .expect("mint under the new key");
     assert!(
         gov.verify_token(&fresh, now, None).is_some(),

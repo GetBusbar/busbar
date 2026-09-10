@@ -60,7 +60,9 @@ fn mint_then_expire_the_row(
         labels: Default::default(),
         ..Default::default()
     };
-    let (binding, token) = gov.mint_signed(spec, token_exp, mint_now).expect("mint");
+    let (binding, token) = gov
+        .mint_signed(spec, token_exp, mint_now, None)
+        .expect("mint");
     let mut row = store
         .get_key(&binding.id)
         .expect("store read")

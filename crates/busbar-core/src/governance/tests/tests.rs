@@ -704,6 +704,7 @@ fn test_refresh_updates_both_indices_atomically() {
             },
             2_000_000_000,
             1_700_000_000,
+            None,
         )
         .unwrap();
 
@@ -2925,7 +2926,7 @@ mod signed_token {
         let g = gov();
         let mcp = "https://busbar.example.com/mcp";
         let (binding, plain) = g
-            .mint_signed(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000)
+            .mint_signed(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000, None)
             .expect("mint");
 
         // Recover the binding generation from the plain token's claims (same signer key as
@@ -2936,7 +2937,7 @@ mod signed_token {
             .verify(&plain, 1_000, None)
             .expect("plain claims")
             .generation;
-        let bound = signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), mcp, None);
+        let bound = signer.mint(&binding.id, 2_000, generation.as_deref(), Some(mcp), None);
 
         // The plain token admits on the data plane; the bound one must not.
         assert!(g.verify_token(&plain, 1_000, None).is_some());
@@ -2962,6 +2963,7 @@ mod signed_token {
                 spec("bob", Some("growth"), Some(vec!["fast"])),
                 2_000,
                 1_000,
+                None,
             )
             .expect("mint");
         assert!(token.starts_with("bbk_"), "token carries the prefix");
@@ -2979,7 +2981,7 @@ mod signed_token {
     fn no_group_key_is_authed_unlimited() {
         let g = gov();
         let (_b, token) = g
-            .mint_signed(spec("free", None, None), 2_000, 1_000)
+            .mint_signed(spec("free", None, None), 2_000, 1_000, None)
             .expect("mint");
         let resolved = g.verify_token(&token, 1_500, None).expect("verify");
         assert_eq!(resolved.group, None);
@@ -2992,7 +2994,7 @@ mod signed_token {
     fn expired_token_is_rejected() {
         let g = gov();
         let (_b, token) = g
-            .mint_signed(spec("bob", None, None), 1_000, 500)
+            .mint_signed(spec("bob", None, None), 1_000, 500, None)
             .expect("mint");
         assert!(
             g.verify_token(&token, 999, None).is_some(),
@@ -3013,7 +3015,7 @@ mod signed_token {
     fn tampered_token_is_rejected() {
         let g = gov();
         let (_b, token) = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed(spec("bob", None, None), 2_000, 1_000, None)
             .expect("mint");
         let mut chars: Vec<char> = token.chars().collect();
         // Flip a char in the middle (the payload segment).
@@ -3029,7 +3031,7 @@ mod signed_token {
     fn revoke_denylists_and_keeps_binding() {
         let g = gov();
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed(spec("bob", None, None), 2_000, 1_000, None)
             .expect("mint");
         assert!(g.verify_token(&token, 1_500, None).is_some());
         g.revoke(&binding.id, "test").expect("revoke");
@@ -3053,7 +3055,7 @@ mod signed_token {
             GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
         );
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), 5_000, 1_000)
+            .mint_signed(spec("bob", None, None), 5_000, 1_000, None)
             .expect("mint");
         g.revoke(&binding.id, "test").expect("revoke");
 
@@ -3079,7 +3081,7 @@ mod signed_token {
             GovState::new_with_signer(store_a.clone(), Some("t".into()), Some(key_a)).unwrap(),
         );
         let (binding, token) = node_a
-            .mint_signed(spec("bob", None, None), 5_000, 1_000)
+            .mint_signed(spec("bob", None, None), 5_000, 1_000, None)
             .expect("mint");
 
         // Node B shares the SAME signing key + a store that also has the binding (shared durable
@@ -3114,7 +3116,7 @@ mod signed_token {
     fn mint_with_aws_issues_token_and_credential() {
         let g = gov();
         let (binding, token, akid, secret) = g
-            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000, None)
             .expect("mint+aws");
         assert!(token.starts_with("bbk_"));
         assert!(akid.starts_with("AKIA"));
@@ -3131,7 +3133,7 @@ mod signed_token {
         let g = Arc::new(GovState::new(store, Some("t".into())).unwrap());
         assert!(!g.signing_enabled());
         let err = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed(spec("bob", None, None), 2_000, 1_000, None)
             .unwrap_err();
         assert!(err.0.contains("no signing key"), "got {}", err.0);
     }
@@ -3156,7 +3158,7 @@ mod signed_token {
         let g = gov();
         let base = busbar_substrate::store::now();
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .mint_signed(spec("bob", None, None), base + 10_000, base, None)
             .expect("mint");
         assert!(
             g.verify_token(&token, base + 1, None).is_some(),
@@ -3189,7 +3191,7 @@ mod signed_token {
         );
         let base = busbar_substrate::store::now();
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .mint_signed(spec("bob", None, None), base + 10_000, base, None)
             .expect("mint");
         assert!(
             g.verify_token(&token, base, None).is_some(),
@@ -3236,7 +3238,7 @@ mod signed_token {
     fn rotate_invalidates_the_outstanding_signed_token() {
         let g = gov();
         let (binding, old_token) = g
-            .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
+            .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000, None)
             .expect("mint");
         assert!(
             g.verify_token(&old_token, 1_500, None).is_some(),
@@ -4184,6 +4186,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
             },
             2_000,
             1_000,
+            None,
         )
         .expect("mint");
     assert!(
@@ -5001,7 +5004,7 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
             minted_by: Some(admin.to_string()),
             binding_mode: Some("time-bound".to_string()),
         };
-        let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now).unwrap();
+        let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now, None).unwrap();
         minted.push((label, pool, key, token));
     }
 
@@ -5077,7 +5080,7 @@ fn proof_time_bound_expiry_is_enforced_locally() {
         labels: Default::default(),
         ..Default::default()
     };
-    let (_binding, token) = gov.mint_signed(spec, exp, now).unwrap();
+    let (_binding, token) = gov.mint_signed(spec, exp, now, None).unwrap();
 
     // PRECONDITION (GREEN): at a clock strictly before `exp`, the token verifies. Purely local —
     // no network — so the accept can only be the local signature+expiry check passing.
@@ -5136,7 +5139,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
 
     // GREEN precondition: a freshly minted key verifies locally.
     let gov = new_gov();
-    let (_b, token) = gov.mint_signed(spec("baseline"), exp, now).unwrap();
+    let (_b, token) = gov.mint_signed(spec("baseline"), exp, now, None).unwrap();
     assert!(
         gov.verify_token(&token, now, None).is_some(),
         "precondition: a freshly minted key MUST verify locally with no IdP configured"
@@ -5145,7 +5148,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // GATE 1 — BAD SIGNATURE: tamper a payload byte; the local ed25519 check rejects it.
     {
         let gov = new_gov();
-        let (_b, token) = gov.mint_signed(spec("sig"), exp, now).unwrap();
+        let (_b, token) = gov.mint_signed(spec("sig"), exp, now, None).unwrap();
         assert!(gov.verify_token(&token, now, None).is_some());
         // Char 10 sits inside the base64url payload segment (past the `bbk_` prefix); flipping it
         // changes the signed bytes, so the signature over the ORIGINAL payload no longer matches.
@@ -5168,7 +5171,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // GATE 3 — REVOKE (denylist): revoke the subject; the same token fails the local denylist read.
     {
         let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("revoke"), exp, now).unwrap();
+        let (b, token) = gov.mint_signed(spec("revoke"), exp, now, None).unwrap();
         assert!(gov.verify_token(&token, now, None).is_some());
         gov.revoke(&b.id, "offboarded").unwrap();
         assert!(
@@ -5181,7 +5184,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // via the local generation match.
     {
         let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("rotate"), exp, now).unwrap();
+        let (b, token) = gov.mint_signed(spec("rotate"), exp, now, None).unwrap();
         assert!(gov.verify_token(&token, now, None).is_some());
         gov.rotate_key(&b.id, exp)
             .unwrap()
@@ -5195,7 +5198,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // GATE 5 — DISABLE (enabled=false): the administrative kill switch, read locally after lookup.
     {
         let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("disable"), exp, now).unwrap();
+        let (b, token) = gov.mint_signed(spec("disable"), exp, now, None).unwrap();
         assert!(gov.verify_token(&token, now, None).is_some());
         gov.update_key(&b.id, Some(false), None)
             .unwrap()
@@ -5210,7 +5213,7 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // ingress fails the local plane-boundary check — no IdP is consulted to make that call.
     {
         let gov = new_gov();
-        let (_b, token) = gov.mint_signed(spec("aud"), exp, now).unwrap();
+        let (_b, token) = gov.mint_signed(spec("aud"), exp, now, None).unwrap();
         assert!(
             gov.verify_token(&token, now, None).is_some(),
             "the plain token verifies on the plain data plane (expected_aud = None)"
@@ -5253,6 +5256,7 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
             },
             exp,
             now,
+            None,
         )
         .unwrap();
     assert!(

@@ -176,7 +176,8 @@ impl GovKit for crate::governance::GovState {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), String> {
-        crate::governance::GovState::mint_signed(self, spec, exp, now).map_err(|e| e.to_string())
+        crate::governance::GovState::mint_signed(self, spec, exp, now, None)
+            .map_err(|e| e.to_string())
     }
     fn create_key_with_aws(
         &self,

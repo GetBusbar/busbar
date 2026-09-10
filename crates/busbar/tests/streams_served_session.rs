@@ -273,7 +273,7 @@ pools: {{}}
     /// THE AUDIENCE-BOUND TOKEN THIS DEPLOYMENT CANNOT MINT FOR ITSELF.
     ///
     /// The streams plane claims `<public_url>/v1/realtime` as its RFC 8707 resource, so the verifier
-    /// demands a token carrying exactly that `aud`. `TokenSigner::mint_for_audience` is the only
+    /// demands a token carrying exactly that `aud`. `TokenSigner::mint` is the only
     /// constructor of that claim in the tree and it is `cfg(test)` / `test-support` — the admin
     /// key-mint API has no audience field — so a `keys`-chain deployment has no way to reach its own
     /// streams plane. That is a finding, recorded in the measurement note; here the rig mints the
@@ -299,11 +299,11 @@ pools: {{}}
         let claims = verifier
             .verify(plain, now, None)
             .expect("the admin API just minted this token against this signing key");
-        signer.mint_for_audience(
+        signer.mint(
             &claims.sub,
             now + 3600,
             claims.generation.as_deref(),
-            &audience,
+            Some(&audience),
             None,
         )
     }
