@@ -67,7 +67,7 @@ fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
     let chain = deployment.resolve(&who, Some("a2a-team"));
     let record = |now| {
         deployment.calling_at(chain.as_ref(), now).audit_inputs(
-            &a2a_ctx(),
+            &ctx(),
             Outcome::Completed,
             Some(&who),
         )
@@ -114,7 +114,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let record = || {
         deployment
             .calling_at(chain.as_ref(), ONE_SECOND)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .audit_inputs(&ctx(), Outcome::Completed, Some(&who))
     };
 
     let first = record();
@@ -1714,11 +1714,11 @@ impl Deployment {
     }
 }
 
-fn a2a_ctx() -> UnitCtx {
-    a2a_ctx_from(busbar_caps::OriginKind::Client)
+fn ctx() -> UnitCtx {
+    ctx_from(busbar_caps::OriginKind::Client)
 }
 
-fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
+fn ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
     UnitCtx {
         key: busbar_caps::UnitKey::new(1),
         origin,
@@ -1755,7 +1755,7 @@ fn ask_the_door_as(
         unit,
         &busbar_caps::UnitToken::mint(&seal),
         &busbar_caps::AdmitToken::mint(&seal),
-        &a2a_ctx_from(origin),
+        &ctx_from(origin),
         who,
         &[],
         &slip,
@@ -1771,7 +1771,7 @@ fn ask_the_door_as(
 /// walks no group, raises no gauge and says yes to both — which is what a node whose operator
 /// wrote this cap down did, silently, with nothing on any surface to say the limit was inert.
 #[test]
-fn an_a2a_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
+fn a_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
     const GROUP: &str = "a2a-team";
     let deployment = deployment(one_call_at_a_time(GROUP));
     let who = PrincipalId::new("vk_agent");
@@ -1863,7 +1863,7 @@ fn the_hold_reserves_a_fee_only_where_the_settlement_could_post_one() {
 /// ordinary posture for a deployment with no `groups:` section, which must not become a
 /// refusal because the chain is now resolved.
 #[test]
-fn an_a2a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
+fn a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, None);
@@ -1883,7 +1883,7 @@ fn an_a2a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
 /// under caps that could not be read. Fail-closed, and rendered as over-quota, which is what the
 /// door itself answers for the same cause.
 #[test]
-fn an_a2a_caller_bound_to_an_unconfigured_group_is_refused() {
+fn a_caller_bound_to_an_unconfigured_group_is_refused() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a-group-this-node-never-had"));

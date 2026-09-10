@@ -33,7 +33,10 @@ use busbar_unit_scope::Scope;
 use std::collections::BTreeMap;
 
 use crate::root::units_mcp::{required_scopes, ClassPrices, Records};
-use busbar_plane_mcp::{claims, meta::CLASS_BYTES, meta::CLASS_TOOL_CALLS, records, McpPlane};
+use busbar_plane_mcp::{
+    claims, meta::CLASS_BYTES, meta::CLASS_TOOL_CALLS, records, served::ANSWERED, surface::SURFACE,
+    McpPlane,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The mount
@@ -88,42 +91,58 @@ pub enum MountRefusal {
     SurfaceRefused(SurfaceError),
 }
 
+/// The plane's own registry key, read rather than transcribed.
+///
+/// Every refusal below is about ONE plane and says so; the word it says is the one the plane
+/// registers under, so a plane renamed at its own declaration renames itself in the boot refusals
+/// too, and this file does not carry a second spelling that could disagree with the first.
+const PLANE: &str = <McpPlane as PlaneMeta>::KEY;
+
 impl std::fmt::Display for MountRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MountRefusal::SchemaWithoutOperations(schema) => {
-                write!(f, "the mcp plane declares the unreachable schema {schema}")
+                write!(
+                    f,
+                    "the {PLANE} plane declares the unreachable schema {schema}"
+                )
             }
             MountRefusal::UndeclaredLeg { schema, op } => {
-                write!(f, "an mcp route leg names an undeclared {op} on {schema}")
+                write!(
+                    f,
+                    "an {PLANE} route leg names an undeclared {op} on {schema}"
+                )
             }
             MountRefusal::MissingMeterClass(class) => {
-                write!(f, "the mcp plane does not declare the class {class}")
+                write!(f, "the {PLANE} plane does not declare the class {class}")
             }
             MountRefusal::InconsistentSchemes => {
                 write!(
                     f,
-                    "the mcp plane's claims declare different scheme alternatives"
+                    "the {PLANE} plane's claims declare different scheme alternatives"
                 )
             }
             MountRefusal::DuplicateRegistration(server) => {
-                write!(f, "two mcp registrations are both named {server}")
+                write!(f, "two {PLANE} registrations are both named {server}")
             }
             MountRefusal::UnclaimedTransport { server, transport } => {
                 write!(
                     f,
-                    "the mcp registration {server} is reached over {transport}, which no claim of \
-                     this plane declares"
+                    "the {PLANE} registration {server} is reached over {transport}, which no claim \
+                     of this plane declares"
                 )
             }
             MountRefusal::UnpricedRegistration(server) => {
-                write!(f, "the mcp registration {server} names no priced lane")
+                write!(f, "the {PLANE} registration {server} names no priced lane")
             }
             MountRefusal::UnansweredClass(op) => {
-                write!(f, "the mcp plane answers {op} and does not declare it")
+                write!(f, "the {PLANE} plane answers {op} and does not declare it")
             }
             MountRefusal::SurfaceRefused(error) => {
-                write!(f, "the mcp plane's served surface will not mount: {error}")
+                write!(
+                    f,
+                    "the {PLANE} plane's served surface will not mount: {error}"
+                )
             }
         }
     }
@@ -189,10 +208,10 @@ pub fn seal(plane: &McpPlane) -> Result<Vec<(OpClassId, Scope)>, MountRefusal> {
     }
 
     // ── THE SERVED SURFACE, asked of the vocabulary that will mount it ───────────────────────────
-    check_surface(&busbar_plane_mcp::surface::SURFACE).map_err(MountRefusal::SurfaceRefused)?;
+    check_surface(&SURFACE).map_err(MountRefusal::SurfaceRefused)?;
 
     // ── WHAT THE PLANE SAYS IT ANSWERS, against what it declares ─────────────────────────────────
-    for op in busbar_plane_mcp::served::ANSWERED {
+    for op in ANSWERED {
         if !<McpPlane as PlaneMeta>::OP_CLASSES.contains(op) {
             return Err(MountRefusal::UnansweredClass(op.as_str()));
         }

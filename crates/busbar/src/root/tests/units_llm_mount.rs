@@ -107,7 +107,7 @@ struct Mounted {
 
 /// The events a streamed answer relays, with the usage split on the last data frame — which is what
 /// makes the tap fill at the END of the body rather than at the terminal.
-fn sse_events() -> Vec<String> {
+fn event_stream_frames() -> Vec<String> {
     vec![
         serde_json::json!({"id": "chatcmpl-mount", "object": "chat.completion.chunk",
                            "created": 0, "model": LANE,
@@ -234,7 +234,7 @@ async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployme
     for _ in 0..8 {
         state.push(if streamed {
             MockResponse::Sse {
-                events: sse_events(),
+                events: event_stream_frames(),
                 abort_at_index: None,
             }
         } else {

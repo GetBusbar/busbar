@@ -1330,7 +1330,7 @@ fn ask_the_door(
 /// before the unit it admitted has done anything, and a limit an operator wrote down admits
 /// every unit that ever arrives with nothing on any surface to say so.
 #[test]
-fn an_mcp_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
+fn a_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
     const GROUP: &str = "mcp-team";
     let door = Door::new(InMemoryCells::new());
     let who = PrincipalId::new("vk_mcp");
