@@ -1169,6 +1169,20 @@ lq_selftest() {
   local monpid=$!; sleep 0.3
   lq_census 1 "$fake" >"$root/census4.txt"
   sleep 0.3
+  # THE READING LIST, MEASURED. Audit 14's question was whether anything but `tail` survives; these
+  # are the answers, one per command, and the refusals beside them.
+  _t "grep of a log under the tree is a reader"  0 "$(lq_is_reader "grep -n RED $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...cat"                                  0 "$(lq_is_reader "cat $fake/target/gate/land-queue.txt"; echo $?)"
+  _t "  ...ls"                                   0 "$(lq_is_reader "ls -la $fake/target/gate"; echo $?)"
+  _t "  ...wc"                                   0 "$(lq_is_reader "wc -l $fake/target/gate/land-queue.txt"; echo $?)"
+  _t "  ...head"                                 0 "$(lq_is_reader "head -n5 $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...awk"                                  0 "$(lq_is_reader "awk {print} $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...sed -n"                               0 "$(lq_is_reader "sed -n 1,5p $fake/target/gate/landq.out"; echo $?)"
+  _t "  ...and a wrapped pipeline of them"       0 "$(lq_is_reader "/bin/zsh -c grep RED $fake/x | wc -l"; echo $?)"
+  _t "sed WITHOUT -n can edit: not a reader"     1 "$(lq_is_reader "sed -i s/a/b/ $fake/target/gate/land-queue.txt"; echo $?)"
+  _t "a redirection out of a reader: not a reader" 1 "$(lq_is_reader "cat $fake/x > $fake/y"; echo $?)"
+  _t "tee is not on the list"                    1 "$(lq_is_reader "tail -f $fake/x | tee $fake/y"; echo $?)"
+  _t "nor is anything the list does not name"    1 "$(lq_is_reader "/bin/zsh -c git -C $fake reset --hard"; echo $?)"
   _t "the pre-rule test (argv begins with tail) misses it" 0 "$(printf '%s' "$largs" | grep -cE '^tail( |$)' || true)"
   _t "a monitor wrapped in a shell is a reader, kept" 1 "$(grep -c "^reader pid $monpid (kept) " "$root/census4.txt" || true)"
   _t "  ...and is ALIVE afterwards"             0 "$(kill -0 "$monpid" 2>/dev/null; echo $?)"
