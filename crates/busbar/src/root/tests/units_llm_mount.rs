@@ -652,3 +652,123 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
         "and the ending still carries the posting it settled from a lend"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE BOOT'S OWN COMPOSITION
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// This plane's key, as the registry spells it. Not a literal: the row the boot reads carries the
+/// plane's own declared key, and a second spelling here is a second answer to which plane this is.
+const THIS_PLANE: &str = <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::KEY;
+
+/// **RED FIRST: the shipped binary composed no mount at all.**
+///
+/// `units_llm_mount::mount` — and the two beside it — had no production caller, so a default-ON
+/// serving switch changed nothing a client could observe: every address of this plane still walked
+/// around the loop to the legacy router, and the only thing that said so was a grep.
+///
+/// This drives THE BOOT'S OWN STEP — [`crate::root::plane_mount::compose_mounts`], the one function
+/// `main.rs` calls — over the rows the sealed registry carries, and asserts the two halves that make
+/// a mounted path the shipped path: this plane's ladder address is answered by the LEG (the surface
+/// underneath never sees it, and the money lands in the book the BOOT handed the row, which nothing
+/// but the mounted leg could have posted to), and every row the fold did not mount named the source
+/// it has no boot answer for rather than disappearing quietly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_boots_own_composition_answers_this_planes_address_from_the_mounted_leg() {
+    let d = deployment(false, None).await;
+    let resolved = Arc::clone(&d.key);
+    // THE BOOK THE BOOT HOLDS, not the one the fixture's own node was bound to: the row binds the
+    // node it composes to this one, so a posting landing here is a posting the MOUNTED leg made.
+    let book = a_book();
+    let inputs = crate::root::registry::MountInputs {
+        ingress: Arc::new(BootIngress::new(
+            busbar_core::plane_host::engine_host(&d.app),
+            move |_| busbar_api::PlaneRequestCtx {
+                key: Some(Arc::clone(&resolved)),
+            },
+        )),
+        book: Arc::clone(&book),
+        request_body_max_bytes: 1024 * 1024,
+    };
+
+    let (router, report) =
+        crate::root::plane_mount::compose_mounts(a_surface_underneath(), &inputs);
+
+    assert!(
+        report
+            .iter()
+            .any(|m| m.plane == THIS_PLANE && m.is_mounted()),
+        "the boot's own step mounted this plane's declared surface"
+    );
+    for mounted in &report {
+        assert!(
+            mounted.is_mounted() || mounted.absent.is_some_and(|a| !a.source.is_empty()),
+            "a plane the fold did not mount names the source it has no boot answer for"
+        );
+    }
+
+    let response = through(router.clone(), chat_body(false)).await;
+    assert_ne!(
+        response.status(),
+        418,
+        "the surface underneath never saw this plane's own address"
+    );
+    assert_eq!(response.status(), 200, "the leg answered it");
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+
+    assert!(
+        journalled(&book) > 0,
+        "and the money landed in the book the BOOT handed the row, which only the mounted leg holds"
+    );
+    d.server.shutdown().await;
+}
+
+/// **What the surface underneath still answers, and why that is the whole deletion list.**
+///
+/// A plane whose row refuses is a plane whose claimed addresses go around the loop exactly as they
+/// did before — the released behaviour, untouched. That is what makes the boot's report the
+/// hand-off: a legacy body is unreachable in the shipped binary exactly when its plane's row is
+/// mounted here, and reachable exactly when it is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plane_whose_row_refuses_leaves_its_addresses_on_the_surface_underneath() {
+    let d = deployment(false, None).await;
+    let resolved = Arc::clone(&d.key);
+    let inputs = crate::root::registry::MountInputs {
+        ingress: Arc::new(BootIngress::new(
+            busbar_core::plane_host::engine_host(&d.app),
+            move |_| busbar_api::PlaneRequestCtx {
+                key: Some(Arc::clone(&resolved)),
+            },
+        )),
+        book: a_book(),
+        request_body_max_bytes: 1024 * 1024,
+    };
+    let (router, report) =
+        crate::root::plane_mount::compose_mounts(a_surface_underneath(), &inputs);
+
+    for mounted in &report {
+        if mounted.is_mounted() {
+            continue;
+        }
+        // The plane declared a mount and the boot has no source for it. Its addresses are the
+        // surface's, and the report says which source would change that.
+        let absent = mounted.absent.expect("a row that did not mount is absent");
+        assert_eq!(absent.plane, mounted.plane);
+        assert!(!absent.source.is_empty());
+    }
+
+    // An address no row in this build claims, driven through the composed chain: it reaches the
+    // bottom of the fold untouched however many wraps are above it.
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri("/healthz")
+        .body(axum::body::Body::empty())
+        .expect("builds");
+    let response = router.oneshot(request).await.unwrap_or_else(|e| match e {});
+    assert_eq!(
+        response.status(),
+        418,
+        "the surface underneath answered it, through every wrap the fold composed"
+    );
+    d.server.shutdown().await;
+}
