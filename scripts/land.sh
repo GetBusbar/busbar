@@ -622,6 +622,22 @@ EOF
 #     to compare against — which is the run this exists to avoid taking.
 #
 # OFF BY DEFAULT. With `LAND_SELFTEST_SHARDS` unset, every landing runs exactly what it ran before.
+#
+# ── WHAT THE FLEET STILL OWES THE REMOTE ARM, MEASURED 2026-09-09 ──────────────────────────────────
+# The sequential arm is proven. The FAN-OUT arm is not reachable yet, and the reason is a fact about
+# the boxes rather than about this script, so it is written here rather than discovered by whoever
+# first exports the variable on a landing box:
+#
+#   * a fleet box has no ~/.busbar-fleet, no ~/.busbar-fleet-ssh and no ~/.ssh/busbar-ci-fleet, and
+#     no `aws` on PATH — so `fleet_pick_host` and `rsh_script` have nothing to work with there;
+#   * box-to-box tcp/22 is CLOSED (probed against two siblings' private IPs from a third): the
+#     security group is egress-only, exactly as scripts/ci-remote-lib.sh's header says it is.
+#
+# So a box reaching a sibling needs the same three files the operator's laptop has, the aws CLI and
+# session-manager-plugin, and an instance profile that allows ssm:StartSession — one preparation
+# step, of the kind scripts/ci-runners-ssh.sh already performs for the laptop. Until then this arm
+# is RED when asked for, which is the correct answer and not a useful one: leave the variable unset
+# on a remote landing, or set it and take the sequential arm.
 
 # The shard count, validated. Empty or 1 is "do not shard"; anything above 4 or not a number is a
 # REFUSAL rather than a silent fallback, because a caller who wrote `LAND_SELFTEST_SHARDS=eight`
