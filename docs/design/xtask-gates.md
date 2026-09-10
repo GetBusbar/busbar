@@ -1054,6 +1054,20 @@ names, Cargo feature names — plus the file's own path, so `root/voice_serve.rs
 byte of it is read. Tests are not excluded; a transport's own fixture that names a plane is that
 transport naming a plane.
 
+**With ONE exemption, and it is the composition root's prose: a comment is not a coupling; the
+root's prose does not score.** Owner ruling: under `crates/busbar/src/**` — the root crate's own
+`src/`, identified by KIND rather than by name — a line that is WHOLLY a comment (`//`, `///`,
+`//!`, or a line inside a `/* … */`) and the string contents of a `#[doc = "…"]` attribute score 0
+in every `root × <kind>` cell. The root is the one crate whose job is to name every plane, every
+transport and every unit in one place; the sentences that say WHY are the root doing that job out
+loud, and a tree that pays for its own explanation pays by deleting it. The rule is narrow and each
+boundary has a case in the battery: a trailing comment on a line of code still scores (the code is
+on that line), a string literal still scores (a shipped name is not a sentence about one),
+`crates/busbar/tests/**` and `crates/busbar/Cargo.toml` still score, and EVERY OTHER CRATE is
+unchanged — the same comment that scores 0 in the root scores 1 in the kernel, and the two cases sit
+side by side. See `root_prose_redaction` in `kind_isolation/matrix.rs`; the prose is blanked to
+spaces rather than removed, so line numbers stay the author's.
+
 **Two independent scanners, and the higher number wins.** One reduces a line to a stream of
 lowercase alphanumeric segments (splitting at every non-alphanumeric byte and at both camel-case
 transitions) and matches a needle's segment run. The other walks the raw characters, compares
