@@ -26,6 +26,10 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# THE CONTRACT — the plane declaration LIST is contract data (`busbar_contract::plane::registry`):
+# which planes exist, by key, section and scope kind. Core reads it there; the composition root
+# writes it there; neither names the other.
+busbar-contract = { path = "../busbar-contract" }
 # The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the

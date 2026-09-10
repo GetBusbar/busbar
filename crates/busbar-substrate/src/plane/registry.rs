@@ -13,12 +13,18 @@
 //! Core RE-EXPORTS each from `busbar_core::plane::registry` so the in-core call sites — the fold, the
 //! dispatch build, the boot hooks and the built-in `PLANE_DECL`s — are unchanged.
 //!
-//! What STAYS in core is the population glue (`BUILTIN_PLANE_DECLS`, `plane_decls`, `install_planes`,
-//! `merged_boot_plane_decls`, `build_dispatch`) — it names `busbar_core::plane::Plane` /
-//! `PlaneDispatch` and the built-in plane statics, all core-live — and `BootCtx`, whose store surface
-//! is `PlaneStore` but whose phase fields borrow the core-live `App` / `AppHandle`. A plane boot hook
-//! reads that context through the NEUTRAL [`PlaneBootCtx`] trait (which `BootCtx` implements core-side),
-//! so an extracted plane names no `App`.
+//! THE LIST of which planes exist is NOT here: it is contract DATA
+//! (`busbar_contract::plane::registry`), folded from each declaration's plain facts
+//! ([`PlaneDecl::declaration`]) and installed by the composition root. What this file keeps is the
+//! BEHAVIOUR TABLE: the `PlaneDecl` rows themselves — the fn-pointer seams a layer runs for a plane —
+//! reachable by the same key the contract list is indexed by ([`behaviour_for`],
+//! [`behaviour_for_config_section`], [`plane_behaviours`]). A reader that needs a fact reads the
+//! contract list; a reader that needs a hook looks the row up here.
+//!
+//! What STAYS in core is `build_dispatch` (it names `PlaneDispatch`, core-live) and `BootCtx`, whose
+//! store surface is `PlaneStore` but whose phase fields borrow the core-live `App` / `AppHandle`. A
+//! plane boot hook reads that context through the NEUTRAL [`PlaneBootCtx`] trait (which `BootCtx`
+//! implements core-side), so an extracted plane names no `App`.
 //!
 //! [`PlaneDecl`] carries the plane VOCABULARY — the facts core reads to name, section, scope and label
 //! a plane — plus the app-state SLOT seam ([`PlaneDecl::build`], threaded a [`BuildCtx`]), the SURFACE
@@ -536,60 +542,113 @@ pub struct PlaneDecl {
     pub owned_config_sections: &'static [&'static str],
 }
 
-/// THE DUP-CLAIM GUARD for the plane-owned-config seam (1.6.0 config-seam, stage 1). Judges the
-/// [`PlaneDecl::owned_config_sections`] claims across the whole plane set against the sections core
-/// still owns CONCRETELY (`core_owned_concrete`, supplied by the caller so this stays neutral — a
-/// plain list of section-key strings, naming no plane vocabulary), returning `Ok(())` when every
-/// claim is disjoint and unique, or the FIRST refusal it finds.
-///
-/// It is a HARD ERROR — the whole point of stage 1 — if:
-/// - two planes claim the SAME section key (`plane` and `other` both own `key`): one plane's grammar
-///   would then answer for another plane's section, exactly the confusion the later moves must not
-///   introduce; or
-/// - a plane claims a key core STILL OWNS concretely (`key` ∈ `core_owned_concrete`): the section has
-///   not been moved out of `DeployCfg` yet, so a plane owning it would double-declare the grammar and
-///   the config would no longer deserialize/render byte-identically.
-///
-/// Pure (no I/O, no globals): a decl list and a reserved-key list in, a verdict out — so a test drives
-/// it directly rather than by booting a binary. Core calls it at boot from the plane fold; in stage 1
-/// every `owned_config_sections` is empty, so it is unconditionally `Ok(())` and adds no behaviour.
+impl PlaneDecl {
+    /// THE FACTS THIS ROW STATES, as the contract's plain declaration — what the composition root
+    /// installs into the contract list and what every fact reader folds. The behaviour stays on this
+    /// row, keyed by the same `key`.
+    pub fn declaration(&self) -> busbar_contract::plane::registry::PlaneDeclaration {
+        busbar_contract::plane::registry::PlaneDeclaration {
+            key: self.key,
+            fallback: self.fallback,
+            config_section: self.config_section,
+            scope_kinds: self.scope_kinds,
+            subject_noun: self.subject_noun,
+            admin_noun: self.admin_noun,
+            audit_kind: self.audit_kind,
+            card_signing_domain: self.card_signing_domain,
+            card_kid_prefix: self.card_kid_prefix,
+            owned_config_sections: self.owned_config_sections,
+        }
+    }
+}
+
+/// THE CLAIM GUARD over behaviour rows — the contract's
+/// [`busbar_contract::plane::registry::check_owned_config_claims`] applied to each row's facts, so a
+/// test that holds `&PlaneDecl`s drives the same rule the boot fold runs. Refusal texts are the
+/// contract's, verbatim.
 pub fn check_owned_config_claims(
     decls: &[&'static PlaneDecl],
     core_owned_concrete: &[&'static str],
 ) -> Result<(), String> {
-    // section key → the plane key that first claimed it, so a second claimant names its rival.
-    let mut claimed: std::collections::BTreeMap<&'static str, &'static str> =
-        std::collections::BTreeMap::new();
-    for decl in decls {
-        for &section in decl.owned_config_sections {
-            if core_owned_concrete.contains(&section) {
-                return Err(format!(
-                    "plane `{}` claims config section `{section}`, but core still owns it concretely: \
-                     a section must be evicted from core's `DeployCfg` in the SAME change that a plane \
-                     claims it, never before — else the grammar is declared twice and the config stops \
-                     deserializing byte-identically",
-                    decl.key
-                ));
-            }
-            if let Some(other) = claimed.insert(section, decl.key) {
-                return Err(format!(
-                    "config section `{section}` is claimed by two planes (`{other}` and `{}`): a \
-                     section is owned by exactly one plane, or one plane's grammar answers for \
-                     another's",
-                    decl.key
-                ));
-            }
-        }
+    let facts: Vec<_> = decls.iter().map(|d| d.declaration()).collect();
+    busbar_contract::plane::registry::check_owned_config_claims(&facts, core_owned_concrete)
+}
+
+// ── THE BEHAVIOUR TABLE ───────────────────────────────────────────────────────────────────────────
+// The rows the composition root installed and the rows a test binary compiled in as built-ins, kept
+// so a hook can be looked up BY KEY. Which keys exist, in what order, is the contract list's answer;
+// this table only says what each key does. Precedence on a same-key collision is the fold's:
+// installed copy, then a late test registration, then the built-in row.
+
+/// The rows the composition root installed.
+static INSTALLED_BEHAVIOUR: std::sync::OnceLock<&'static [&'static PlaneDecl]> =
+    std::sync::OnceLock::new();
+
+/// THE BUILT-IN ROWS a test binary installs. A TEST-SUPPORT module: production carries no built-in
+/// rows and has no installer for this slot, by design — every plane is a plugin the composition root
+/// installs through the contract slot and [`install_plane_behaviours`].
+#[cfg(any(test, feature = "test-support"))]
+pub mod builtins {
+    use super::PlaneDecl;
+
+    static ROWS: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
+
+    /// Record a test binary's built-in rows. Idempotent by first write, like the contract's built-ins.
+    pub fn install_builtin_behaviours(decls: &'static [&'static PlaneDecl]) {
+        let _ = ROWS.set(decls);
     }
-    Ok(())
+
+    /// The rows, or the empty set before any install.
+    pub(super) fn rows() -> &'static [&'static PlaneDecl] {
+        ROWS.get().copied().unwrap_or(&[])
+    }
+}
+
+/// RECORD THE COMPOSITION ROOT'S ROWS. The contract slot is the one that refuses a second install;
+/// this table follows it, first write wins.
+pub fn install_plane_behaviours(decls: &'static [&'static PlaneDecl]) {
+    let _ = INSTALLED_BEHAVIOUR.set(decls);
+}
+
+/// THE BEHAVIOUR ROW for a plane key: installed copy first, then a late test registration, then the
+/// built-in row — the fold's own precedence — or `None` for a key no source declares.
+pub fn behaviour_for(key: &str) -> Option<&'static PlaneDecl> {
+    let installed = INSTALLED_BEHAVIOUR.get().copied().unwrap_or(&[]);
+    #[cfg(any(test, feature = "test-support"))]
+    let (late, builtins) = (test_registered_planes(), builtins::rows());
+    #[cfg(not(any(test, feature = "test-support")))]
+    let (late, builtins): (Vec<&'static PlaneDecl>, &[&'static PlaneDecl]) = (Vec::new(), &[]);
+    installed
+        .iter()
+        .chain(late.iter())
+        .chain(builtins)
+        .copied()
+        .find(|d| d.key == key)
+}
+
+/// THE BEHAVIOUR ROW for the plane that owns a config section, resolved through the contract list
+/// (which decides which plane owns the section) and then this table (which says what it does).
+pub fn behaviour_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+    busbar_contract::plane::registry::plane_decl_for_config_section(section)
+        .and_then(|d| behaviour_for(d.key))
+}
+
+/// EVERY BEHAVIOUR ROW, in the contract list's canonical order — the iteration a boot fold or a
+/// surface merge runs over. A key the contract lists but no table row backs is skipped; the two are
+/// fed by the same installer, so that is a wiring bug and not a runtime state.
+pub fn plane_behaviours() -> Vec<&'static PlaneDecl> {
+    busbar_contract::plane::registry::plane_decls()
+        .iter()
+        .filter_map(|d| behaviour_for(d.key))
+        .collect()
 }
 
 // ── TEST-SUPPORT PLANE REGISTRATION (the neutral seam) ─────────────────────────────────────────────
 // A plane's `testkit` registers its `&'static PlaneDecl` here — a SUBSTRATE type — exactly as
 // production's composition root `install_planes` does, so the extracted plane crates reach the neutral
 // ABI (`busbar_substrate::plane::registry::register_test_plane`) rather than back into
-// `busbar_core::plane::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
-// its built-ins on every read, so a plane registered by any test before it reads the list is visible
+// `busbar_core::plane::registry`. The contract list folds this set (through the late source bound
+// below) ahead of the built-ins, so a plane registered by any test before it reads the list is visible
 // regardless of test order.
 #[cfg(any(test, feature = "test-support"))]
 static TEST_REGISTERED: std::sync::Mutex<Vec<&'static PlaneDecl>> =
@@ -625,6 +684,12 @@ static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
 /// either observes this registration in full or excludes it for its whole lifetime — never a torn view.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_plane(decl: &'static PlaneDecl) {
+    bind_late_source();
+    // The scope kinds the fold used to register on every re-fold are registered at the install
+    // site instead: idempotent, the same set, earlier.
+    for kind in decl.scope_kinds {
+        busbar_api::register_scope_kind(kind);
+    }
     let _serial = TEST_REGISTRY_SERIAL
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -634,6 +699,19 @@ pub fn register_test_plane(decl: &'static PlaneDecl) {
     }
 }
 
+/// BIND THIS REGISTRATION SET AS THE CONTRACT LIST'S LATE SOURCE — the moment the test surface first
+/// touches the set, so every later read of the contract list re-folds when the set grows or shrinks.
+/// Idempotent: the contract keeps the first source bound.
+#[cfg(any(test, feature = "test-support"))]
+fn bind_late_source() {
+    busbar_contract::plane::registry::install_late_registration_source(|| {
+        test_registered_planes()
+            .iter()
+            .map(|d| d.declaration())
+            .collect()
+    });
+}
+
 /// TEST-SUPPORT SEAM — ISOLATE THE PROCESS PLANE REGISTRY for one test. RAII: construction takes the
 /// process [`TEST_REGISTRY_SERIAL`] lock and snapshots-then-clears the registered planes, so a test that
 /// asserts against the built-in plane set sees a registry with no sibling's [`register_test_plane`]
@@ -641,8 +719,8 @@ pub fn register_test_plane(decl: &'static PlaneDecl) {
 /// rather than mutating the set mid-assertion. On drop it restores the snapshot and releases the lock —
 /// so the isolation is scoped to exactly the test that asked for it and the suite stays order-independent.
 ///
-/// `busbar-core`'s `plane_decls()` re-folds on every read and memoises by the registered-set COUNT, so
-/// clearing the set here makes that memo recompute against the built-ins alone with nothing else to do.
+/// The contract list re-folds when this set's length changes, so clearing the set here makes it
+/// recompute against the installed rows and built-ins alone with nothing else to do.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use = "the registry stays isolated only while the guard is alive"]
 pub struct TestRegistryIsolation {
@@ -654,6 +732,7 @@ pub struct TestRegistryIsolation {
 impl TestRegistryIsolation {
     /// Take the serial lock, snapshot the registered planes, and clear them for the guard's lifetime.
     pub fn empty() -> Self {
+        bind_late_source();
         let serial = TEST_REGISTRY_SERIAL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -690,8 +769,8 @@ impl Drop for TestRegistryIsolation {
 }
 
 /// TEST-SUPPORT SEAM — the planes registered through [`register_test_plane`], snapshot in registration
-/// order. `busbar-core`'s test-support `plane_decls()` reads this to fold the extracted planes into the
-/// process registry.
+/// order. The contract list's late source reads this to fold the extracted planes into the process
+/// registry; [`behaviour_for`] reads it for their rows.
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_registered_planes() -> Vec<&'static PlaneDecl> {
     // If THIS thread owns the active isolation it already holds the serial lock exclusively and sees

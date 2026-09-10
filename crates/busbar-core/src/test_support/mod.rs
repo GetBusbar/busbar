@@ -1722,7 +1722,7 @@ impl TestApp {
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
             };
-            if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+            if let Some(f) = crate::plane::registry::behaviour_for(crate::plane::fallback_key())
                 .and_then(|d| d.build_runtime)
             {
                 let slot = f(&build_input as &dyn std::any::Any, None);
