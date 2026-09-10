@@ -137,3 +137,7 @@ pub struct Projectors {
     /// Extract the `schema` member of a `describe` reply envelope.
     pub describe_schema: Box<dyn Fn(serde_json::Value) -> Option<serde_json::Value> + Send + Sync>,
 }
+
+#[cfg(test)]
+#[path = "tests/grant_axis_tests.rs"]
+mod grant_axis_tests;
