@@ -72,14 +72,21 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 # Synthesized wire ids hex-encode their bytes (the tool-id remap marker, the cohere uuid).
 hex = { workspace = true }
-# The thread-local OS-entropy pool behind the synthesized wire ids the five non-error paths mint
-# (`msg_`, `resp_`, the cohere uuid, the gemini/bedrock request ids). The ANTHROPIC ERROR ENVELOPE's
-# request id does NOT draw from here: its entropy is a caller-supplied input (see
+# NO ENTROPY SOURCE. The synthesized wire ids the five non-error paths mint (`msg_`, `resp_`, the
+# cohere uuid, the gemini/bedrock request ids) draw from `synth_rng`'s thread-local pool, and the
+# pool is fed by a source the COMPOSITION ROOT installs at boot (`synth_rng::install`, called by
+# the engine half's `install_os_entropy`). An OS entropy source is a syscall wrapper over `libc`,
+# and this crate's transitive closure is the plane's and the dialect crates' closure, which reaches no
+# `libc` at all — so the source lives with the root, not here. The ANTHROPIC ERROR ENVELOPE's request
+# id never draws from the pool: its entropy is a caller-supplied input (see
 # `anthropic::error_envelope_with_request_id`), which is what makes a plane-built refusal
 # deterministic over its inputs.
-getrandom = { workspace = true }
 
 [dev-dependencies]
+# THE OS AS THIS TEST BINARY'S ENTROPY SOURCE (`synth_rng::tests::os_entropy_for_tests`): the codec's
+# own suites exercise every synthesized-id path and none of them is a composition root. A DEV edge
+# only — no shipped target, and no dependent's closure, links it through this crate.
+getrandom = { workspace = true }
 busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 # ONE relocated suite reads core's neutral detection fold and its built-in declaration table through
 # core's public surface; a DEV edge only, so no shipped target links core.
