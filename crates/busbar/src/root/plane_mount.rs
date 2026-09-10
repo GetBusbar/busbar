@@ -655,6 +655,40 @@ pub fn header_of<'a>(
     arrival.fact(&header_fact(name))
 }
 
+/// EVERY header of one arrival, read back off the facts this mount published.
+///
+/// The plural of [`header_of`], and the inverse of what [`mount_facts`] wrote. A leg whose plane's
+/// own walk takes a header MAP rather than a fact reader needs the whole of what arrived, and
+/// rebuilding it from the facts is the only honest way to get it: the request itself was handed to
+/// the seam whole and is no longer this side's to read, so the facts are what a mounted unit knows
+/// about the wire.
+///
+/// **NOT a filter and not a curation.** Every fact under [`HEADER_FACT_PREFIX`] goes back, in the
+/// order it was published, which is the order it arrived — including a name that arrived twice,
+/// because `HeaderMap::append` keeps repeats exactly as `HeaderMap::iter` yielded them. A subset
+/// here would be the transport axis deciding what a plane is allowed to have received.
+///
+/// A fact whose key or value will not make a header again is left off rather than mangled. It cannot
+/// happen for anything this mount published — every one of them came off a `HeaderMap` — and it is
+/// written as a conversion rather than an assumption so a fact that some other transport published
+/// under this prefix would be visible rather than silently reshaped.
+#[must_use]
+pub fn headers_of(arrival: &busbar_contract::transport::Arrival<'_>) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    for (key, value) in arrival.facts {
+        let Some(name) = key.strip_prefix(HEADER_FACT_PREFIX) else {
+            continue;
+        };
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::try_from(name),
+            axum::http::HeaderValue::try_from(*value),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    headers
+}
+
 /// The facts this mount publishes for one arrival: the kernel's reserved keys, then this
 /// transport's own headers.
 ///
