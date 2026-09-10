@@ -181,18 +181,18 @@ because = "The plugin-visible surface a plugin author reads grows by the structu
 # by itself once the base carries it.
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 292
-because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 292 surface lines moved in from busbar-api, verbatim, so the plugin-visible surface of the contract pair rises by exactly that and is pinned there"
+by = 271
+because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 292 surface lines moved in from busbar-api, verbatim, 21 of them paid for by the DELETION that landed beside them (Unit::{byte_counts, frame_counts, set_counts} and their two fields, 21 lines the kernel never wrote) -- a deletion is not a declaration, so its surplus is what the face is declared net of, and the entries sum to exactly what this tree rose by"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 295
-because = "the same move under the loc-ceilings counting rule: busbar-contract takes the hooks-kind face from busbar-api, 295 lines by this rule's own counter (hooks.rs + signal.rs, verbatim, plus the two module lines and the root re-exports); busbar-caps unmoved"
+by = 274
+because = "the same move under the loc-ceilings counting rule: busbar-contract takes the hooks-kind face from busbar-api, 295 lines by this rule's own counter (hooks.rs + signal.rs, verbatim, plus the two module lines and the root re-exports), 21 of them paid for by the Unit-counts DELETION that landed beside them; busbar-caps unmoved"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 295
-because = "the union row sums caps/contract; it rises by the same 295 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the hooks-kind face move)"
+by = 258
+because = "the union row sums kernel + caps/contract + unit-*; the hooks-kind face is the same 295 lines the caps_contract row counts, 37 of them paid for by the two DELETIONS that landed beside it (21 contract lines for Unit::{byte_counts, frame_counts, set_counts}, 16 unit lines for unit-auth's ResolvedKey/KeyVerifier/RevocationView) -- kernel 5379 is unchanged"
 
 # THE VIRTUAL-KEY DIRECTORY FACE (`busbar_contract::kinds::{KeyScope, KeyFacts,
 # VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
@@ -286,32 +286,14 @@ file = "qa/kind-isolation.toml"
 by = 29
 because = "busbar-contract x plane. operation.rs's header is the table that derives the six shapes from the protocols' request/response shapes -- it says which shape `tools/call`, `resources/read`, `message/send` and `tasks/get` are, and a classification of protocols names the protocols it classifies. 29 hits, every one of them a doc line moved from busbar-api x plane (36 -> 7), none written; they fall when the table is rewritten in terms of the shapes alone, which is a doc rewrite and not this move."
 
-# TWO KIND-ISOLATION CELLS RAISED BY IDENTITY — the MOVE form: the words one crate LOST are exactly
-# the words another GAINED, measured hit by hit against the merge-base's `--report` drain lists.
-#
-# `busbar-contract × plane` 42 -> 71 (+29): the Operation axis moved `busbar-api -> busbar-contract`
-# (64523b277) and carried its verb constants' plane words with it — `busbar-api × plane` lost a2a 6,
-# llm 12, mcp 11 in `operation.rs` (107 -> 78, re-pinned DOWN in the same ledger) and
-# `busbar-contract × plane` gained a2a 6, llm 12, mcp 11 in the same file. 29 lost = 29 gained.
-#
-# `busbar-substrate × secret` 35 -> 82 (+47): `config::secret` moved `busbar-core -> busbar-substrate`
-# verbatim (ff006d823) and the hook policy engine was carved out of `busbar-core` (5fe28f82a).
-# `busbar-core × secret` lost 66 (319 -> 253, re-pinned DOWN): 49 of them were the `secret-ref`
-# spellings of `config/secret.rs` and its three test files, of which 47 are the substrate's now and 2
-# (one doc-comment spelling of the leaf crate) were DRAINED on this line; the other 17 are the
-# engine's, minted under `[[minted]] busbar-core-policy` (`× secret = 17`). 66 lost = 47 + 17 gained
-# + 2 drained.
-[[gate.ceiling_raises]]
-key = "cell.busbar-contract.plane.count"
-file = "qa/kind-isolation.toml"
-by = 29
-because = "MOVE by identity: the Operation axis busbar-api -> busbar-contract carried its 29 plane words (a2a 6, llm 12, mcp 11 in operation.rs); busbar-api × plane lost exactly those 29 (107 -> 78) in the same ledger"
-
-[[gate.ceiling_raises]]
-key = "cell.busbar-substrate.secret.count"
-file = "qa/kind-isolation.toml"
-by = 47
-because = "MOVE by identity: config::secret came down busbar-core -> busbar-substrate verbatim, 49 secret-ref spellings in config/secret.rs and its three test files, 2 of them drained on this line; busbar-core × secret lost 66 (319 -> 253) = these 47 + the 17 the hook policy engine minted + the 2 drained"
+# ONE KIND-ISOLATION CELL WAS RAISED BY IDENTITY ON M4's LINE AND NEITHER IS OWED HERE. This
+# series was re-picked onto the line that had already moved the Operation axis and the secret
+# grammar, so both MOVE-form declarations it carried describe rises this tree does not have:
+# `busbar-contract x plane` rose 42 -> 143 and the residue's own +29 above already accounts for
+# the Operation axis's plane words (a second +29 for the same 29 words is over-declaration), and
+# `busbar-substrate x secret` FELL 35 -> 6 rather than rising, because the reference shape is
+# `busbar-secret-grammar` here and that name is not the secret kind's instance vocabulary. A
+# declaration that describes no rise at the base is stale and refused; both are struck.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
