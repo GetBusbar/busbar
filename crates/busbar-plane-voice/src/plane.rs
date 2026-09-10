@@ -140,6 +140,17 @@ impl VoicePlane {
 }
 
 impl Plane for VoicePlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // No probe. A voice upstream is reached by opening a realtime session and holding it; there is no
+        // one-shot question, and the cheapest thing this plane could send costs the operator a
+        // connection and a minimum billed interval. Passive only.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,

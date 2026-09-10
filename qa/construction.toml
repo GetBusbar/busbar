@@ -113,12 +113,33 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# THREE ENTRIES STAND HERE, all of them one face and all of them the same five lines. The prober
+# face is the first new-architecture face to reach the contract on this line, and the five lines it
+# costs are counted three times because three figures sum over busbar-contract: the plugin-visible
+# surface figure, the loc-ceilings pair, and the union. Three declarations for one edit is the
+# mechanism being honest about its own double-counting rather than the face costing fifteen lines.
+#
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
 # rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# stale -- which is the expiry working exactly as the paragraph above describes it. The three below
+# expire the same way, on the commit after the one that needed them.
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3483
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's. The clock raises a Tick-origin unit (`Origin::Tick` already exists in busbar-contract and busbar-caps; no kernel type is minted), the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked. That question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic -- the retiring engine's health.rs kept that property by a comment about header insertion order, and a comment is not a control. `None` means the plane has no cheap, side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). FIVE surface lines, all of them the signature as rustfmt breaks it at 101 columns, in crates/busbar-contract/src/plane.rs; the wire it produces is frozen against the base's own probe bytes in crates/busbar-plane-llm/tests/probe_wire.rs; counted in the plugin-visible surface figure ARCHITECTURE.md section 1.1 amends to 3,483 in this same commit."
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3485
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's. The clock raises a Tick-origin unit (`Origin::Tick` already exists in busbar-contract and busbar-caps; no kernel type is minted), the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked. That question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic -- the retiring engine's health.rs kept that property by a comment about header insertion order, and a comment is not a control. `None` means the plane has no cheap, side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). FIVE surface lines, all of them the signature as rustfmt breaks it at 101 columns, in crates/busbar-contract/src/plane.rs; the wire it produces is frozen against the base's own probe bytes in crates/busbar-plane-llm/tests/probe_wire.rs; the same five plane.rs lines counted in the loc-ceilings pair, whose figure sits two above the surface figure on this base and moves with it."
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23470
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's. The clock raises a Tick-origin unit (`Origin::Tick` already exists in busbar-contract and busbar-caps; no kernel type is minted), the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked. That question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic -- the retiring engine's health.rs kept that property by a comment about header insertion order, and a comment is not a control. `None` means the plane has no cheap, side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). FIVE surface lines, all of them the signature as rustfmt breaks it at 101 columns, in crates/busbar-contract/src/plane.rs; the wire it produces is frozen against the base's own probe bytes in crates/busbar-plane-llm/tests/probe_wire.rs; the same five plane.rs lines, summed into the kernel + caps/contract + unit-* union."
+
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -126,7 +147,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3483
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +368,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3485
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23470
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

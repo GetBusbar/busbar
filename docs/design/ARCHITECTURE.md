@@ -74,7 +74,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
   (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero slack
+  against today's measurement, and it moves up only when a new-architecture face lands with a
+  declared raise (`[gate.ceiling_raises."<dotted path>"]` in `qa/construction.toml`, naming both
+  numbers so it describes one edit and expires by itself) that names the face and its measured
+  lines, this figure amended in the same commit. THE PROBER FACE AMENDS THE PAIR TO
+  **3,483** on one named face, declared and counted exactly:
+  `busbar-contract::Plane::probe_request` — active upstream probing is a capability of the node,
+  not of one plane, so the schedule and the health state are the breaker unit's and the clock that
+  drives them is a Tick; the only part of a probe a kind-neutral crate cannot write is the question
+  a live upstream of a given dialect is asked, and this face is that question and nothing more. It
+  answers with the same `EgressBody` `encode_egress` returns, so the probe is decorated by the same
+  egress-auth unit against the same scheme and cannot drift into being distinguishable from organic
+  traffic; `None` means the plane has no cheap, side-effect-free question and the destination is
+  watched passively (5 lines in `plane.rs`, the signature as rustfmt breaks it).
+  Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
