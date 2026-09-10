@@ -403,11 +403,25 @@ impl LlmNode {
     ///
     /// A journal that refuses the record is not a settlement rolled back. The books have moved and
     /// the value was delivered; what is lost is the proof, which the exit arm's own error says.
+    /// **AND IT SETTLES FROM A LEND, so the end survives it.** The exit arm used to destructure the
+    /// ending, move the `UnitEnd`'s `Posted` out and hand it to the books by value. That was right
+    /// while the only thing downstream of this arm was the response — and it is the exact reason
+    /// this plane could not have a mounted leg, because a `MountedLeg::serve` owes the mount the
+    /// kernel's own ending and the settlement had consumed it.
+    ///
+    /// So the ending is borrowed rather than taken. `UnitEnd::lend_posting` hands the posting out
+    /// once and refuses the second, `Durability::settle_lent` moves the same books through the same
+    /// arithmetic, and the ending walks out of here intact — with its outcome, its counts, its frame
+    /// and its posting all still readable by whatever is owed one.
+    ///
+    /// NOTHING ABOUT THE MONEY CHANGED. The same figures reach the same balance in the same window
+    /// under the same stamp, and the same two records reach the same chain in the same batch. The
+    /// paired cell beside this file asserts that byte for byte rather than asserting it in prose.
     fn settle_end(
         &self,
         principal: &PrincipalId,
         arrived: Arrived,
-        ended: busbar_kernel::teller::Ended,
+        ended: &mut busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
             return;
@@ -415,16 +429,19 @@ impl LlmNode {
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
             return;
         };
-        let Ok(posted) = end.into_posted() else {
+        // Two ways this is `None` and both mean settle nothing: the unit ended with a durability
+        // loss recorded in the posting's place, or this end has already been settled once. The
+        // second is the property the by-value move used to carry, refused here rather than assumed.
+        let Some(lent) = end.lend_posting() else {
             return;
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _settled = settle(
+        let _settled = settle_lent(
             &mut durability,
             principal,
             arrived,
             &self.durability_token,
-            posted,
+            lent,
         );
     }
 
@@ -476,6 +493,35 @@ impl LlmNode {
         seats: &[&(dyn approve::VetoSeat + Sync)],
         arrived: Arrived,
     ) -> Response {
+        // The driven path wants the bytes and nothing else, so it drops the ending. One body, not
+        // two: a second drive is a second chance for a mounted request and a driven one to be
+        // judged, priced or answered differently.
+        self.walk_arriving_at(arrival, model_hint, seats, arrived)
+            .await
+            .1
+    }
+
+    /// **THE SAME DRIVE, HANDING BACK THE ENDING AS WELL AS THE ANSWER.**
+    ///
+    /// [`answer_arriving_at`](Self::answer_arriving_at) is this with the ending dropped, which is
+    /// what a driver that only has to write a response wants. A MOUNT wants both: it is owed the
+    /// kernel's own ending — that is what a `MountedLeg::serve` returns — and it hands the plane's
+    /// response back untouched.
+    ///
+    /// The ending that comes out has already been SETTLED, from a lend, and still carries its
+    /// posting. That is the whole of what this slot's seam commits are for: settling used to consume
+    /// the end, so this method could not have existed.
+    ///
+    /// One body for both paths, deliberately. Two drives would be two chances for a mounted request
+    /// and a driven one to be judged differently, and the difference would be in the money.
+    #[must_use]
+    pub async fn walk_arriving_at(
+        &self,
+        arrival: WalkArrival,
+        model_hint: Option<String>,
+        seats: &[&(dyn approve::VetoSeat + Sync)],
+        arrived: Arrived,
+    ) -> (busbar_kernel::teller::Ended, Response) {
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -537,7 +583,16 @@ impl LlmNode {
         match entered {
             // The table is uncapped on this listener, so this arm is the table declining for a
             // reason that is not capacity. It is still an answer rather than a panic.
-            Err(_refused) => unavailable(proto),
+            //
+            // AND THE ENDING IS `AlreadySettled`, which on this arm is the true statement and not a
+            // stand-in: no hold was ever opened, no unit ever ran, and there is no posting for
+            // anything to settle. A caller that reads an ending to decide what to render reads this
+            // one never — the answer beside it is `Some`, and a mount opens the ending only where
+            // there is no answer.
+            Err(_refused) => (
+                busbar_kernel::teller::Ended::AlreadySettled,
+                unavailable(proto),
+            ),
             Ok(slot) => {
                 // THE SLOT, from here to whichever way this unit leaves. The table is what bounds
                 // how many units this node has in flight, so the one thing that must not depend on
@@ -555,7 +610,7 @@ impl LlmNode {
                     admin_listener: false,
                     kernel_verb_only: false,
                 };
-                let ended = busbar_kernel::teller::run_unit_async(
+                let mut ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
                     &unit,
                     &ctx,
@@ -574,7 +629,7 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                self.settle_end(&principal, arrived, ended);
+                self.settle_end(&principal, arrived, &mut ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -588,7 +643,10 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, arrived, history)
+                (
+                    ended,
+                    self.attach_late_accrual(response, walk, &principal, arrived, history),
+                )
             }
         }
     }
@@ -1587,7 +1645,44 @@ pub fn settle(
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
     let key = balance(principal);
-    let at = crate::root::durability::Settling {
+    durability.settle_posted(&settling(&key, arrived, token), posted)
+}
+
+/// **THE SAME EXIT ARM, FROM A LEND** — for a walk that owes its ending to something else.
+///
+/// [`settle`] above and this are one act described twice only in their signatures: the window, the
+/// step, the stamp and the balance are all [`settling`]'s, once, and the books move through the
+/// ledger's one book-moving function either way. What differs is who owns the posting when this
+/// returns, and that is not a fact about money.
+///
+/// This is the door the mounted leg uses, because a mount is owed the kernel's own ending and a
+/// settlement that consumed the posting would have consumed the ending with it.
+///
+/// # Errors
+///
+/// As [`settle`].
+pub fn settle_lent(
+    durability: &mut crate::root::durability::Durability,
+    principal: &PrincipalId,
+    arrived: Arrived,
+    token: &busbar_caps::DurabilityToken,
+    lent: busbar_caps::PostingLent<'_>,
+) -> Result<crate::root::durability::SettledLent, busbar_caps::DurabilityLost> {
+    let key = balance(principal);
+    durability.settle_lent(&settling(&key, arrived, token), lent)
+}
+
+/// WHERE, WHEN AND UNDER WHAT STAMP one of this plane's postings lands.
+///
+/// Split out of [`settle`] the moment there were two doors into it, and for the one reason worth
+/// splitting anything for: a second copy of this would be a second answer to which window a unit is
+/// billed in, and the two doors would be a mounted request and a driven one billed differently.
+fn settling<'a>(
+    key: &'a busbar_unit_ledger::totals::TotalsKey,
+    arrived: Arrived,
+    token: &'a busbar_caps::DurabilityToken,
+) -> crate::root::durability::Settling<'a> {
+    crate::root::durability::Settling {
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
@@ -1606,8 +1701,7 @@ pub fn settle(
             wall: arrived.secs(),
             mono: arrived.mono(),
         },
-    };
-    durability.settle_posted(&at, posted)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
