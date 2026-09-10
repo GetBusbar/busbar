@@ -395,6 +395,107 @@ land_gate_data() {  # $1 = newline-separated touched paths
 land_xtask_touched() {  # $1 = newline-separated touched paths
   printf '%s\n' "$1" | grep -E '^xtask/' || true
 }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH GATES' SELF-TEST BATTERIES THIS UNION HAS TO PAY FOR.
+#
+# THE MEASUREMENT THAT FORCED THIS. Read off the leg logs' own mtimes on the two prove boxes that
+# ran today's landings (2026-09-10, ~/busbar-prove/target/land-*-<stamp>.log — every leg here writes
+# a file and closes it, so the gaps between them ARE the legs):
+#
+#   landing                   kind-isolation  construction  xtask-full   landing   batteries
+#   20260910-042752-2718923         1912 s        616 s       4911 s      7819 s      95 %
+#   20260910-152337-513427          1914 s        615 s       4941 s      7899 s      95 %
+#   20260910-174421-1360741         1910 s        614 s       4923 s      7866 s      95 %
+#   20260910-100723-4056003         1914 s        615 s          —        2891 s      87 %
+#   20260910-143951-430526          1913 s          —            —        2339 s      82 %
+#
+# Ninety-five percent of a landing's wall clock is gates proving THEMSELVES. The last row's line was
+# `scripts/land.sh` and nothing else — it cannot have changed the kind-isolation gate, and it paid
+# 1913 s to watch that gate plant fifty-eight trees anyway. The `xtask-full` column is worse than it
+# looks: `cargo xtask selftest` runs the kind-isolation self-test INSIDE it, so those landings paid
+# for the same fifty-eight trees twice.
+#
+# THE RULE. A gate's self-test battery is evidence about THE GATE. It is worth its wall clock on a
+# line that can have changed that gate, and it is worth nothing on a line that cannot:
+#
+#   * `xtask/src/gates/<G>/**` or `xtask/src/gates/<G>.rs`  -> gate G's battery, and no other's;
+#   * `qa/<G>.toml`                                         -> gate G's battery (that is its DATA);
+#     any other `qa/*.toml`                                 -> construction's (it reads the ceilings);
+#   * the SHARED GATE PLUMBING -> ALL of them. That is `xtask/src/gates/mod.rs` (the registry),
+#     `xtask/src/main.rs` (the entry point), `xtask/Cargo.toml`, a `Cargo.lock` whose xtask package
+#     block MOVED — and, deliberately, EVERY OTHER PATH UNDER `xtask/`. The residue is plumbing by
+#     construction: `xtask/src/ctx.rs` and its siblings are compiled into every gate, and
+#     `xtask/tests/cli.rs` is where the two cases that re-run every gate's self-test live (the tests
+#     leg skips them by name, so this is the only place their evidence is produced). The narrow
+#     thing is the exception, not the rule: a path under `xtask/src/gates/<G>/` or
+#     `xtask/src/gates/<G>.rs` is that ONE gate's, and everything else under xtask/ is everyone's.
+#   * anything else — `crates/**`, `docs/**`, `scripts/**`, `testing/**` — none of them.
+#
+# WHAT DOES NOT MOVE, AND THIS IS THE HALF THAT MATTERS. The gates themselves still RUN on every
+# landing: `cargo xtask gate kind-isolation` (the owner's ship criterion, 84 s measured) and the
+# construction row report with its ceiling ratchet are floor and stay floor. This narrows what is
+# re-PROVEN ABOUT THE GATE, never what is MEASURED ABOUT THE TREE. A crates-only union runs the
+# gates and skips the batteries; it does not skip a single row.
+#
+# AND IT IS NOT PAID TWICE. When the set is ALL, `cargo xtask selftest` is the whole battery — every
+# registered gate's self-test, kind-isolation's and construction's among them — so the two per-gate
+# legs stand down rather than replant the same trees after it.
+#
+# `LAND_GATE_SELFTESTS=all` forces the whole battery back on for an operator who wants it.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+# THE xtask PACKAGE'S OWN BLOCK IN Cargo.lock, ISOLATED. A lockfile bump that moves some leaf
+# crate's version is not a change to the gate runner, and treating `Cargo.lock` as plumbing wholesale
+# would put the 4900 s battery on every dependency bump in the queue. A bump that moves xtask's own
+# entry IS a change to the gate runner. Paragraph mode, because that is the shape of a Cargo.lock:
+# `[[package]]` stanzas separated by blank lines.
+land_lock_xtask_block() { # $1 = a Cargo.lock path (a missing file is an empty block)
+  [ -f "$1" ] || { printf ''; return 0; }
+  awk 'BEGIN{RS="";ORS="\n\n"} /(^|\n)name = "xtask"(\n|$)/ {print}' "$1" 2>/dev/null || true
+}
+land_lock_xtask_moved() { # $1 = tree  $2 = base sha; rc 0 when xtask's lock entry differs from base
+  local a b tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/land-lock.XXXXXX")" || return 1
+  git -C "$1" show "$2:Cargo.lock" >"$tmp" 2>/dev/null || : >"$tmp"
+  a="$(land_lock_xtask_block "$tmp")"
+  b="$(land_lock_xtask_block "$1/Cargo.lock")"
+  rm -f "$tmp"
+  [ "$a" != "$b" ]
+}
+
+# Prints `ALL`, or the gate names one per line, or nothing at all. A function, like land_floor_plan,
+# so --selftest asks it directly instead of reading the log of a landing that took two hours.
+land_gate_battery_set() { # $1 = newline-separated touched paths  $2 = 1 when Cargo.lock's xtask block moved
+  local touched="$1" lockmoved="${2:-0}"
+  [ "${LAND_GATE_SELFTESTS:-}" = all ] && { echo ALL; return 0; }
+  [ "$lockmoved" = 1 ] && { echo ALL; return 0; }
+  # THE PLUMBING IS THE RESIDUE. Every path under xtask/ that is not one gate's own module is
+  # shared by all of them; `mod.rs` is gate-SHAPED and is the registry, so it is named back in.
+  local nongate
+  nongate="$(printf '%s\n' "$touched" | grep -E '^xtask/' \
+             | grep -vE '^xtask/src/gates/[a-z0-9_]{1,}(/|\.rs$)' || true)"
+  if [ -n "$nongate" ] || printf '%s\n' "$touched" | grep -qx 'xtask/src/gates/mod.rs'; then
+    echo ALL; return 0
+  fi
+  { printf '%s\n' "$touched" \
+      | sed -n -e 's|^xtask/src/gates/\([a-z0-9_]\{1,\}\)/.*$|\1|p' \
+               -e 's|^xtask/src/gates/\([a-z0-9_]\{1,\}\)\.rs$|\1|p' \
+      | grep -v '^mod$' | tr '_' '-'
+    # THE GATES' DATA. qa/construction.toml and qa/kind-isolation.toml name their gate; every other
+    # qa/*.toml is a ceiling or a waiver table that the CONSTRUCTION gate is the reader for, which
+    # is the rule land_gate_data has enforced since it was written. Neither is dropped here.
+    printf '%s\n' "$touched" | sed -n -e 's|^qa/construction\.toml$|construction|p' \
+                                      -e 's|^qa/kind-isolation\.toml$|kind-isolation|p'
+    printf '%s\n' "$touched" | grep -qE '^qa/[^/]+\.toml$' && echo construction
+  } | grep . | sort -u || true
+}
+
+# Is gate $1 in the set $2? `ALL` contains every gate; the empty set contains none.
+land_gate_battery_wanted() { # $1 = gate name  $2 = the set land_gate_battery_set printed
+  case "$2" in ALL) return 0 ;; esac
+  printf '%s\n' "$2" | grep -qx -- "$1"
+}
 # THE RUNNER'S OWN FOUR. A line that changes anything under scripts/ re-proves all four of them, as a
 # set, from the PICKED tree: land-remote.sh sources ci-remote-lib.sh and land.sh execs the
 # land-remote.sh beside it, so a change to one is a change to what the others prove. The copy the
@@ -961,6 +1062,20 @@ prove_tree() {
   local plan; plan="$(land_floor_plan "$tests" "$gate" "$families")"
   echo "land.sh: [$label] plan: $plan"
   local touched; touched="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null || true)"
+  # WHICH GATE SELF-TEST BATTERIES THIS UNION PAYS FOR (see land_gate_battery_set's header for the
+  # measurement). Computed ONCE, here, and printed beside the plan: an integrator reading GREEN has
+  # to be able to see which batteries were skipped and on what grounds, in the same breath as the
+  # plan, without opening a leg log.
+  local lockmoved=0
+  if printf '%s\n' "$touched" | grep -qx 'Cargo.lock'; then
+    land_lock_xtask_moved "$here" "$base" && lockmoved=1
+  fi
+  local battery; battery="$(land_gate_battery_set "$touched" "$lockmoved")"
+  case "$battery" in
+    ALL) echo "land.sh: [$label] gate self-tests: ALL (the shared gate plumbing is in this union)" ;;
+    "")  echo "land.sh: [$label] gate self-tests: none (this union touches no gate source, no gate data and no gate plumbing — the gates themselves still run)" ;;
+    *)   echo "land.sh: [$label] gate self-tests: $(printf '%s' "$battery" | tr '\n' ' ')" ;;
+  esac
 
   local leg
   for leg in $plan; do
@@ -1088,9 +1203,20 @@ EOF
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
         # Same reason as the kind-isolation leg above: 394s measured over thirty-two planted trees.
-        land_selftest_leg construction "$here/target/land-cselftest-$stamp.log" XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 \
-          || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
-               echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
+        # …AND ONLY WHEN THIS UNION CAN HAVE CHANGED THE CONSTRUCTION GATE. Measured at 615 s on
+        # every landing today, including the ones whose only gate-data edit was somebody else's
+        # gate's directory. Under `ALL` the full battery below runs `xtask selftest`, which contains
+        # this one, so it is not replanted here.
+        if [ "$battery" = ALL ]; then
+          echo "land.sh: construction --selftest: inside the full battery below, not run twice"
+        elif land_gate_battery_wanted construction "$battery"; then
+          land_selftest_leg construction "$here/target/land-cselftest-$stamp.log" XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 \
+            || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
+                 echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
+        else
+          echo "land.sh: construction --selftest skipped (no construction source, data or gate plumbing in this union) — the ceiling ratchets below still run"
+          PROVEN="$PROVEN construction --selftest not owed by this union;"
+        fi
         local clog="$here/target/land-ceilings-$stamp.log"
         ( cd "$here" && cargo xtask gate construction --report ) >"$clog" 2>&1 || true
         local crows; crows="$(grep -cE '^(PASS|FAIL)  ' "$clog" || true)"
@@ -1105,7 +1231,13 @@ EOF
       # this script had already run. The tests leg skips those two cases by name; this is where
       # their evidence is produced instead — on the lines that can have changed it. CI runs
       # `full-gate --selftest` on every push regardless: the judge is unchanged.
-      if [ -n "$(land_xtask_touched "$touched")" ]; then
+      # …AND ONLY WHEN THE SHARED PLUMBING MOVED. This was `land_xtask_touched`, which is ANY path
+      # under xtask/ — so a line whose only xtask edit was one gate's own module paid 4911-4941 s
+      # (measured today, three landings) to re-prove thirty-odd other gates that no commit in the
+      # union can have reached. land_gate_battery_set says ALL for the registry, the entry point,
+      # the manifest, a moved xtask lock entry and any shared xtask/src/*.rs, and that is exactly
+      # the set of edits that can change what another gate's self-test does.
+      if [ "$battery" = ALL ]; then
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
         # THE SAME CEILING THE PER-GATE SELFTESTS GET. `xtask selftest` runs the kind-isolation
@@ -1117,7 +1249,17 @@ EOF
           || { tail -20 "$xlog" >&2; echo "land.sh: RED — xtask selftest (a registered gate can no longer prove itself; log: $xlog)" >&2; return 1; }
         (cd "$here" && cargo xtask full-gate --selftest >>"$xlog" 2>&1) \
           || { tail -20 "$xlog" >&2; echo "land.sh: RED — full-gate --selftest (the registry and ci.yml no longer name the same gates; log: $xlog)" >&2; return 1; }
-        PROVEN="$PROVEN xtask touched: every registered gate self-test + full-gate --selftest green;"
+        PROVEN="$PROVEN gate plumbing touched: every registered gate self-test + full-gate --selftest green;"
+      elif [ -n "$(land_xtask_touched "$touched")" ]; then
+        # xtask changed, but only inside one gate's own module. `full-gate --selftest` is the
+        # REGISTRY-vs-ci.yml equality and it is seconds, not minutes — a gate added or renamed under
+        # xtask/src/gates/<G>/ is exactly what breaks it, so it is not skipped with the battery.
+        (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+          || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
+        local xlog2="$here/target/land-xselftest-$stamp.log"
+        (cd "$here" && cargo xtask full-gate --selftest >"$xlog2" 2>&1) \
+          || { tail -20 "$xlog2" >&2; echo "land.sh: RED — full-gate --selftest (the registry and ci.yml no longer name the same gates; log: $xlog2)" >&2; return 1; }
+        PROVEN="$PROVEN full-gate --selftest green (every registered gate self-test not owed: no gate plumbing in this union);"
       fi ;;
 
     tests)
@@ -1190,10 +1332,21 @@ EOF
       # THE SELF-TEST'S OWN WORDS ARE THE DIAGNOSIS. Sent to /dev/null, a red here said only "the
       # gate can no longer prove itself" and the operator re-ran fifteen minutes of proof to learn
       # which case — on a fleet box, from a session that had already ended.
+      # …AND THE SELF-TEST IS OWED BY THE UNION, NOT BY THE CALENDAR. 1910-1914 s on every landing
+      # today, five of five, including one whose entire diff was scripts/land.sh. The GATE below is
+      # unconditional and stays unconditional — that is the ship criterion, and it is 84 s.
       local kslog="$here/target/land-kselftest-$stamp.log"
-      land_selftest_leg kind-isolation "$kslog" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 \
-        || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
-             echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
+      if [ "$battery" = ALL ]; then
+        echo "land.sh: kind-isolation --selftest: inside the full battery the gatefiles leg ran, not run twice"
+        PROVEN="$PROVEN kind-isolation --selftest via the full battery;"
+      elif land_gate_battery_wanted kind-isolation "$battery"; then
+        land_selftest_leg kind-isolation "$kslog" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 \
+          || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
+               echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
+      else
+        echo "land.sh: kind-isolation --selftest skipped (no kind-isolation source, data or gate plumbing in this union) — the GATE still runs, below"
+        PROVEN="$PROVEN kind-isolation --selftest not owed by this union;"
+      fi
       (cd "$here" && cargo xtask gate kind-isolation) \
         || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; return 1; }
       PROVEN="$PROVEN kind-isolation green;" ;;
@@ -1875,6 +2028,89 @@ land_selftest() {
   _stgrep "plan(named) has the gate row leg"           "$root/plan-full.txt" '(^| )gate( |$)'
   _stgrep "plan(named) has the oracle leg"             "$root/plan-full.txt" 'oracle'
   _stno   "plan(named) does NOT fall back to workspace" "$root/plan-full.txt" 'workspace-clippy'
+
+  # ── CASE O: THE GATE SELF-TEST BATTERIES ARE OWED BY THE UNION, NOT BY THE CALENDAR ────────────
+  # Measured on five landings today (land_gate_battery_set's header carries the table): 82-95% of a
+  # landing's wall clock was gates proving THEMSELVES, on lines that in three of the five cases
+  # could not have touched the gate concerned. These cases are the rule, asked directly.
+  echo "land.sh selftest: which gate self-test batteries a union owes (case O)"
+  _seteq() { # $1 = name, $2 = expected set (space-separated), $3 = touched paths, $4 = lockmoved
+    local got; got="$(land_gate_battery_set "$3" "${4:-0}" | tr '\n' ' ')"; got="${got% }"
+    if [ "$got" = "$2" ]; then printf '  ok   %-46s\n' "$1"
+    else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$got"; fails=$((fails + 1)); fi
+  }
+  # THE CRATES-ONLY UNION. This is the queue's commonest shape and it paid 1913 s for the
+  # kind-isolation battery on every landing.
+  _seteq "a crates-only union owes NO battery"      "" "$(printf 'crates/busbar-core/src/plane/mod.rs\ncrates/busbar-llm/src/lib.rs\n')"
+  _seteq "  ...nor does a docs-only one"            "" "docs/design/D33-legacy-retirement.md"
+  # 20260910-143951-430526: scripts/land.sh and nothing else, 2339 s, 82% of it the ki battery.
+  _seteq "  ...nor a scripts-only one"              "" "scripts/land.sh"
+  # ONE GATE'S OWN MODULE IS ONE GATE'S BATTERY. Directory form and file form, both.
+  _seteq "a gate's directory owes THAT gate only"   "kind-isolation" "xtask/src/gates/kind_isolation/matrix.rs"
+  _seteq "  ...even beside crates/**"               "kind-isolation" "$(printf 'crates/busbar-core/src/a.rs\nxtask/src/gates/kind_isolation/plant.rs\n')"
+  _seteq "  ...and construction's is construction's" "construction"  "xtask/src/gates/construction/rows.rs"
+  _seteq "  ...a single-file gate too"              "audit-ledger"   "xtask/src/gates/audit_ledger.rs"
+  _seteq "two gates' modules owe two batteries"     "construction kind-isolation" \
+     "$(printf 'xtask/src/gates/construction/rows.rs\nxtask/src/gates/kind_isolation/matrix.rs\n')"
+  # THE SHARED PLUMBING OWES ALL OF THEM. mod.rs is gate-SHAPED — it is the registry, not a gate.
+  _seteq "the gate registry owes ALL"               "ALL" "xtask/src/gates/mod.rs"
+  _seteq "  ...the entry point too"                 "ALL" "xtask/src/main.rs"
+  _seteq "  ...the xtask manifest too"              "ALL" "xtask/Cargo.toml"
+  _seteq "  ...a shared xtask/src/*.rs too"         "ALL" "xtask/src/ctx.rs"
+  _seteq "  ...and xtask/tests/, where the two skipped cases live" "ALL" "xtask/tests/cli.rs"
+  _seteq "plumbing beside one gate is still ALL"    "ALL" "$(printf 'xtask/src/gates/kind_isolation/matrix.rs\nxtask/src/main.rs\n')"
+  # THE GATES' DATA. Its own gate, and construction as the reader of every ceiling file.
+  _seteq "qa/kind-isolation.toml owes both readers" "construction kind-isolation" "qa/kind-isolation.toml"
+  _seteq "qa/construction.toml owes construction"   "construction" "qa/construction.toml"
+  _seteq "another qa/*.toml owes the ceiling reader" "construction" "qa/segments.toml"
+  # THE LOCKFILE. A leaf-crate bump is not a change to the gate runner; xtask's own entry is.
+  _seteq "a Cargo.lock whose xtask entry moved owes ALL" "ALL" "Cargo.lock" 1
+  _seteq "  ...one that only moved a leaf does not"  ""   "Cargo.lock" 0
+  # THE OPERATOR'S OVERRIDE.
+  ( export LAND_GATE_SELFTESTS=all
+    got="$(land_gate_battery_set 'crates/busbar-core/src/a.rs' 0)"
+    [ "$got" = ALL ] ) \
+    && printf '  ok   %-46s\n' "LAND_GATE_SELFTESTS=all forces the battery on" \
+    || { printf '  FAIL %-46s\n' "LAND_GATE_SELFTESTS=all forces the battery on"; fails=$((fails + 1)); }
+  # MEMBERSHIP IS EXACT, NOT A SUBSTRING. `kind` is not `kind-isolation`, and an empty set holds
+  # nothing — a `grep -q` without -x here would run every battery on a union that owes one.
+  _st "wanted: ALL contains kind-isolation"    0 land_gate_battery_wanted kind-isolation ALL
+  _st "wanted: ALL contains construction"      0 land_gate_battery_wanted construction ALL
+  _st "wanted: the named gate is in its set"   0 land_gate_battery_wanted kind-isolation "kind-isolation"
+  _st "wanted: the OTHER gate is not"          1 land_gate_battery_wanted construction "kind-isolation"
+  _st "wanted: the empty set holds nothing"    1 land_gate_battery_wanted kind-isolation ""
+  _st "wanted: a prefix is not a member"       1 land_gate_battery_wanted kind "kind-isolation"
+
+  # THE LOCKFILE READER, over two real-shaped lockfiles. A grep for `xtask` anywhere in the diff
+  # would fire on every crate that merely DEPENDS on nothing of the sort; the block is the unit.
+  mkdir -p "$root/lock"
+  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.3"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.7.35"\n' >"$root/lock/base.toml"
+  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.4"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.8.0"\n' >"$root/lock/leaf.toml"
+  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.3"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n "toml",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.7.35"\n' >"$root/lock/xt.toml"
+  _stlock() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  _stlock "the lock block is only xtask's stanza" 1 "$(land_lock_xtask_block "$root/lock/base.toml" | grep -c '^name = ')"
+  _stlock "  ...and it is xtask's"      'name = "xtask"' "$(land_lock_xtask_block "$root/lock/base.toml" | grep '^name = ')"
+  _stlock "a leaf-only bump leaves it unmoved" same \
+     "$([ "$(land_lock_xtask_block "$root/lock/base.toml")" = "$(land_lock_xtask_block "$root/lock/leaf.toml")" ] && echo same || echo moved)"
+  _stlock "an xtask dependency bump moves it" moved \
+     "$([ "$(land_lock_xtask_block "$root/lock/base.toml")" = "$(land_lock_xtask_block "$root/lock/xt.toml")" ] && echo same || echo moved)"
+  _stlock "a lockfile with no xtask stanza is empty" "" "$(land_lock_xtask_block "$root/lock/none.toml")"
+
+  # AND THE LEGS THEMSELVES READ THE SET. Source assertions, because the alternative is a two-hour
+  # landing: what is proven here is that the three conditions are the battery set and nothing else.
+  _stgrep "the full battery is keyed on the set"     "$LAND_SRC" 'if \[ "\$battery" = ALL \]; then'
+  _stno   "  ...and no longer on any xtask/ path"    "$LAND_SRC" '^ *if \[ -n "\$\(land_xtask_touched "\$touched"\)" \]; then$'
+  # …and the narrow line still proves the ONE thing that is seconds rather than minutes: that the
+  # registry and ci.yml name the same gates. A gate ADDED under xtask/src/gates/<G>/ is exactly the
+  # edit that breaks it, and it is exactly the edit that no longer runs the full battery.
+  _stgrep "a gate-only xtask edit still runs full-gate --selftest" "$LAND_SRC" \
+     'elif \[ -n "\$\(land_xtask_touched "\$touched"\)" \]; then'
+  _stgrep "the kind-isolation battery is guarded"    "$LAND_SRC" 'land_gate_battery_wanted kind-isolation "\$battery"'
+  _stgrep "the construction battery is guarded"      "$LAND_SRC" 'land_gate_battery_wanted construction "\$battery"'
+  # THE GATES THEMSELVES ARE NOT GUARDED. This is the case that goes red if somebody "saves" the
+  # 84 s the ship criterion costs.
+  _stgrep "the kind-isolation GATE still runs unguarded" "$LAND_SRC" 'cargo xtask gate kind-isolation\)'
+  _stgrep "the construction rows are still floor"    "$root/plan-empty.txt" '(^| )gate( |$)'
 
   echo "land.sh selftest: the ceiling ratchet's verdict (a filter that matches nothing is red)"
   # Both rows present and passing: the only shape that is green.
