@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/ir/subscribe.rs`.
+//! Tests for the neutral SUBSCRIBE leaf (`busbar_substrate::ir::subscribe`), kept in core's battery.
 
-use super::*;
-use crate::ir::facts::{ContentItem, IrFacts};
 use crate::operation::Operation;
+use busbar_substrate::ir::facts::{ContentItem, IrFacts};
+use busbar_substrate::ir::subscribe::*;
 
 #[test]
 fn subscribe_projects_target_name_and_never_streams() {

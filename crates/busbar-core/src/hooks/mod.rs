@@ -38,7 +38,7 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 }
 
 /// THE PROTOCOL-BLIND REQUEST GATE — the seam that fires a hook for a request the pipeline knows
-/// only as an [`crate::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
+/// only as an [`busbar_substrate::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub(crate) mod gate;
 pub(crate) mod plugin;

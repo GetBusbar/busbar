@@ -9,10 +9,13 @@ impl OperationHandler for NoopModeration {
         &self,
         _body: &[u8],
         _content_type: &str,
-    ) -> Result<Box<dyn crate::ir::handle::IrHandle>, IngressReject> {
+    ) -> Result<Box<dyn busbar_substrate::ir::handle::IrHandle>, IngressReject> {
         Err(IngressReject::BadRequest("noop".into()))
     }
-    fn read_response(&self, _w: &[u8]) -> Result<Box<dyn crate::ir::handle::IrHandle>, CodecError> {
+    fn read_response(
+        &self,
+        _w: &[u8],
+    ) -> Result<Box<dyn busbar_substrate::ir::handle::IrHandle>, CodecError> {
         Err(CodecError::Malformed("noop".into()))
     }
 }

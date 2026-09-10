@@ -337,7 +337,7 @@ fn gate_scan_inner(
 fn run_content_gate(
     gates: &[(u16, crate::hooks::ResolvedPolicy)],
 ) -> crate::hooks::gate::GateVerdict {
-    let facts = crate::ir::facts::NeutralFacts(crate::operation::Operation::SUBSCRIBE);
+    let facts = busbar_substrate::ir::facts::NeutralFacts(crate::operation::Operation::SUBSCRIBE);
     let subject = crate::hooks::gate::GateSubject {
         facts: &facts,
         container: "",
@@ -467,7 +467,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
         // the identical `Value` and the gate's `value.to_string()` projection is unchanged.
         let arguments: serde_json::Value =
             serde_json::from_slice(args).unwrap_or(serde_json::Value::Null);
-        let facts = crate::ir::invoke::InvokeReq {
+        let facts = busbar_substrate::ir::invoke::InvokeReq {
             tool: tool.to_string(),
             arguments,
             extra: Default::default(),
