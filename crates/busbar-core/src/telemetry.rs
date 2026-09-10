@@ -60,6 +60,13 @@ use std::sync::OnceLock;
 
 use crate::state::App;
 
+// The four metric NAMES the cached-handle fallback below emits on. They are the substrate's, as
+// every metric name is; core names them here because this is now the only file that emits them.
+use busbar_substrate::metrics::{
+    recorder_installed, PLANE_REQUESTS_TOTAL, PLANE_REQUEST_DURATION_SECONDS, REQUESTS_TOTAL,
+    REQUEST_DURATION_SECONDS,
+};
+
 // ── THE BANK, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────────────────
 //
 // The per-thread cells, the intern tables and the scrape-time aggregator moved DOWN to
@@ -77,6 +84,232 @@ pub(crate) use busbar_substrate::telemetry::{
 pub(crate) use busbar_substrate::telemetry::bank_internals::{
     hist_chunk_materialized, HIST_DRAIN_THRESHOLD,
 };
+
+// ─── THE PER-REQUEST HANDLE CACHE — the fallback path of `request_finished` below ────────────────
+//
+// MOVED HERE FROM `crate::metrics`, and it is a file boundary deleted rather than a body
+// relocated. These four helpers had exactly ONE reader each, and it was the same reader: the four
+// `_ =>` arms of `request_finished` below. They were never a module API - they are that function's
+// private fallback for when the bank has no slot - and living in `metrics.rs` made them look like
+// one, with the two files' `use` lines crossing in both directions to keep the illusion up.
+//
+// `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
+// the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
+// re-runs, per request: three owned-`String` label allocations (`plane` + `ingress_protocol` + `pool`), a `Key`
+// build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
+// space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
+// clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
+// one per label set turns the steady-state hot path into a lock-free map read + an atomic increment —
+// no per-request allocation and no registry lookup.
+//
+// The cache is a `RwLock<HashMap<Box<str>, Handle>>` keyed on a COMPACT single key built by joining
+// the (bounded) label values with a `\x1f` unit separator — a byte that cannot appear in a protocol
+// or pool name, so the join is unambiguous. Building that key is a single small allocation, but the
+// steady-state path performs the lookup under a shared read lock and never touches the metrics
+// registry (which would allocate the two `Label` Strings AND a `Key` AND hash+probe its own map);
+// net, one small alloc replaces two label allocs + a `Key` build + a registry probe.
+//
+// Correctness vs. the recorder-install ordering the module contract calls out (a handle minted before
+// `init()` installs the recorder binds to the no-op recorder FOREVER): the cache is populated ONLY
+// once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
+// install failed — these helpers fall through to the plain macro (itself a no-op against the default
+// recorder), caching nothing. So a pre-`init()` emission is never cached, and every cached handle is
+// bound to the real Prometheus recorder. In production `init()` runs at startup before any request
+// reaches `finish_inner`, so the steady state is always the cached fast path.
+use std::sync::RwLock;
+
+/// Unit separator joining label values into the compact cache key — a control byte that cannot occur
+/// in an ingress-protocol or pool name, so `"a\x1fb"` can never collide with `"a"` + `"\x1fb"`.
+const CACHE_KEY_SEP: char = '\u{1f}';
+
+static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
+static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
+// The mounted-plane (MCP/A2A) families keep their OWN caches: the `plane` label makes their key
+// space distinct from the model series above, and keeping them separate is what lets the model
+// series stay label-identical to v1.5.4.
+static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
+    OnceLock::new();
+static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
+    OnceLock::new();
+
+/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
+/// back to the plain macro until the recorder is installed (see the cache-module note above).
+/// Byte-for-byte the same series and value the macro produced. This is the MODEL plane's family and
+/// carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
+/// is the mounted-plane counterpart).
+fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+    // This `!recorder_installed()` branch is real (it exists so pre-install traffic never caches a
+    // handle bound to the no-op recorder), but it is NOT practically unit-testable in this crate
+    // as it stands. `ENABLED`/`HANDLE` are process-global `OnceLock`s that install (via `init()`)
+    // exactly once per process and never uninstall; `busbar`'s crate is `[[bin]]`-only (no `[lib]`
+    // target — see Cargo.toml), so there is no way for a `tests/*.rs` integration test to link the
+    // crate's internals into its OWN separate process either (the only integration-test pattern
+    // available, `tests/cli_validate.rs`, black-box-spawns the built binary as a subprocess
+    // instead). Within the single shared `#[cfg(test)]` unit-test process, some other test has
+    // near-certainly already called `init()` before this one runs (parallel test execution, no
+    // ordering guarantee), so this branch is unreachable from a normal `#[test]`. A real fix would
+    // mean adding a `[lib]` target to this crate purely to enable a never-calls-init() integration
+    // test binary, which is out of scope here. Externally, the two branches are ALSO behaviorally
+    // identical before install: both ultimately call the same no-op `metrics::counter!` macro
+    // against the default recorder, so even a real subprocess test could not distinguish them by
+    // observable effect. Left as a documented, investigated limitation.
+    if !recorder_installed() {
+        // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
+    // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    // Cold path (first time this label set is seen): register the handle once, then cache it.
+    let handle = metrics::counter!(
+        REQUESTS_TOTAL,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the mounted-plane
+/// (MCP/A2A) counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache so the model
+/// series stays label-identical to v1.5.4; same cached-handle contract otherwise.
+fn incr_plane_requests_total(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+) {
+    if !recorder_installed() {
+        metrics::counter!(
+            PLANE_REQUESTS_TOTAL,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = PLANE_REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!(
+        "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
+    );
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    let handle = metrics::counter!(
+        PLANE_REQUESTS_TOTAL,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// histogram handle. Same caching contract as [`incr_requests_total`]; the model plane's family,
+/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane counterpart).
+fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            REQUEST_DURATION_SECONDS,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        REQUEST_DURATION_SECONDS,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `PLANE_REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` — the
+/// mounted-plane (MCP/A2A) counterpart of [`record_request_duration`], in a SEPARATE family/cache.
+fn record_plane_request_duration(plane: &str, ingress_protocol: &str, pool: &str, seconds: f64) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            PLANE_REQUEST_DURATION_SECONDS,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = PLANE_DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
+        "plane" => plane.to_string(),
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
 
 // ── Per-App slot tables (registered once per config generation) ─────────────────────────────────
 
@@ -291,8 +524,8 @@ pub(crate) fn request_finished(
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
     if !crate::plane::is_fallback(plane) {
-        crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
-        crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
+        incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
+        record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
     }
     // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
@@ -300,11 +533,11 @@ pub(crate) fn request_finished(
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
-        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
+        _ => incr_requests_total(ingress_protocol, pool, outcome),
     }
     match fam {
         Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
-        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
+        _ => record_request_duration(ingress_protocol, pool, seconds),
     }
 }
 
