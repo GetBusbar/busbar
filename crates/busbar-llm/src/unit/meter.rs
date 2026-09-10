@@ -496,7 +496,17 @@ pub fn meter(
         fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it
         // is owed against the fee base alone.
-        refund: ctx.charged && !delivered,
+        //
+        // The first half is READ FROM THE TABLE rather than spelled here. `Settlement::of` takes the
+        // two facts that decide it: whether a hold is open, which at this step is unconditionally
+        // true because Meter runs under the hold (`StepName::under_hold` is strictly past the door,
+        // and Meter is), and whether the fee landed, which is `ctx.charged`. Written as
+        // `ctx.charged` alone this was a correct line that knew only half the rule, and the missing
+        // half is exactly what goes wrong elsewhere: `refund_request` is a blind decrement, so a
+        // refund against a request that was never charged erodes another principal's window. The
+        // second half — `!delivered` — is not a settlement question at all. The settlement says a
+        // refund is POSSIBLE; the delivery says it is OWED.
+        refund: busbar_contract::unit::Settlement::of(true, ctx.charged).refunds() && !delivered,
         posted,
         report,
         priced,
