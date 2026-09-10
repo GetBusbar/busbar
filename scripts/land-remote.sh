@@ -123,10 +123,8 @@ case "${LAND_SELFTEST_SHARDS:-}" in
   *) [ "$LAND_SELFTEST_SHARDS" -le 4 ] || rdie "LAND_SELFTEST_SHARDS=$LAND_SELFTEST_SHARDS: at most 4 boxes take a leg"
      [ "$LAND_SELFTEST_SHARDS" -ge 2 ] && SHARDS="$LAND_SELFTEST_SHARDS" ;;
 esac
-if [ "$SHARDS" -gt 0 ] && [ "$PREPROVE" = 1 ]; then
-  rlog "pre-proof: the fan-out is not used (a sweep's parallelism is across lines); self-tests run sequentially on $HOST"
-  SHARDS=0
-fi
+# A PRE-PROOF SHARDS LIKE A LANDING. The queue's sweep strips LAND_SELFTEST_SHARDS itself (its
+# parallelism is across lines); a slot pre-proving its own branch is one line and wants the boxes.
 if [ "$SHARDS" -gt 0 ]; then
   while IFS= read -r h; do [ -n "$h" ] && SIBS+=("$h"); done <<EOF
 $(fleet_pick_hosts $((SHARDS - 1)) "$HOST")
