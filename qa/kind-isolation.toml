@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+count = "123"
 
 [[cell]]
 crate = "busbar"
@@ -1349,7 +1349,7 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "97"
+count = "92"
 
 [[cell]]
 crate = "busbar"
@@ -1569,7 +1569,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "22"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "603"
+count = "601"
 
 [[cell]]
 crate = "busbar-core"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5200"
+count = "5198"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3033"
+count = "3022"
 
 [[cell]]
 crate = "busbar-core"
@@ -2379,7 +2379,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "api"
-count = "134"
+count = "135"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2389,7 +2389,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "control"
-count = "352"
+count = "354"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2399,7 +2399,7 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "298"
+count = "294"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -3649,6 +3649,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-auth-admin-tokens: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-auth-admin-tokens dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "D33-legacy-retirement.md 7.2 / ARCHITECTURE.md 1.1 — the plane declaration list is contract data; the legacy core reads which planes exist there, and names no layer above it to do so."
+why     = "busbar-core names busbar-contract: the plane declaration LIST (busbar_contract::plane::registry) is the one place the composition root writes and every layer reads which planes exist, so the retiring core binds it there rather than owning a copy. 1 declaration(s) at this commit; the count is TODAY'S MEASUREMENT, exact in both directions. This edge is not a drain to finish: it is the face the drain is written against, and it dies with the crate."
+drain   = "delete busbar-core. The edge ends when the retiring crate does (the ship sha); moving the list back into core, or onto the substrate, would be the coupling this row exists to record leaving by the front door."
 
 [[dep]]
 from    = "busbar-core"

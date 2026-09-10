@@ -128,8 +128,36 @@ busbar-voice = ["busbar-voice-codec"]
 # forward and this single name is the sideways step that paid for it.
 [gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
 from = 47
-to = 48
-because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
+to = 51
+because = "TWO queued moves of a boot installer into the composition root, measured together against this branch's base. 47 -> 48: the protocol installer, moved verbatim from busbar-core/src/proto/registry.rs (52 lines), naming busbar_substrate::ingress::arrival::install_path_ingress. 48 -> 51: the plane installer, moved verbatim from busbar-core/src/plane/registry.rs into root/plane_install.rs, naming busbar_substrate::plane::registry::{install_plane_behaviours, PlaneDecl} and busbar_substrate::plane::config::config_sections. The root's busbar_core:: prefix falls 27 -> 22 and its total legacy reach 91 -> 90 across the two. When the first move lands alone this entry is stale (the base then carries 48): re-declare it 48 -> 51."
+
+# THE FOUR KIND-ISOLATION CELLS THE PLANE-LIST MOVE RAISES, by identity. Every one is the ruling
+# applied, not prose: `admin_noun` is a ruled plain-data fact of the contract declaration (the
+# control-surface instance word IS the field's name), and scope-kind registration moved from the
+# fold (which the contract cannot host — it names busbar_api) to the three install sites.
+[gate.ceiling_raises."cell.busbar.api.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 123
+because = "root/plane_install.rs registers each installed plane's scope kinds with busbar_api::register_scope_kind — the fold that used to do it now lives in the contract, which cannot name busbar-api, so the composition root's installer does. One symbol, one site."
+
+[gate.ceiling_raises."cell.busbar-contract.control.count"]
+file = "qa/kind-isolation.toml"
+from = 20
+to = 22
+because = "PlaneDeclaration.admin_noun: a ruled plain-data fact of the contract declaration (owner ruling, every fact that names no plane instance), plus its row in tests/plane_registry.rs. The instance word is the field's own name; the doc line around it names no control surface."
+
+[gate.ceiling_raises."cell.busbar-substrate.api.count"]
+file = "qa/kind-isolation.toml"
+from = 134
+to = 135
+because = "register_test_plane (the test-kit's install site) registers the registered plane's scope kinds with busbar_api::register_scope_kind: the third of the three install sites that took over the fold's registration when the fold moved to the contract. One symbol, one site, test-support only."
+
+[gate.ceiling_raises."cell.busbar-substrate.control.count"]
+file = "qa/kind-isolation.toml"
+from = 352
+to = 354
+because = "PlaneDecl::declaration() copies the row's admin_noun into the contract's PlaneDeclaration (the ruled plain-data fact): one line, the field named on both sides of the assignment. The substrate gains no new coupling to the control surface; it hands a fact it already carried across."
 
 # THE PLANE DECLARATION LIST IS CONTRACT DATA (D33 section 7.2: "plane declarations must become
 # contract-level data before a config crate can exist, because a config crate must not name a
@@ -747,7 +775,6 @@ known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
   "crates/busbar-contract/src/plane/registry.rs::leak_fold",
   "crates/busbar-core/src/plane_host/",
-  "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
   "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
   "crates/busbar-substrate/src/plane_host/mod.rs",
@@ -1035,7 +1062,7 @@ ceiling = 90
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 25
+figure = 22
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1062,7 +1089,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
 # The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
 # this is the sideways step the per-crate rows exist to make visible, not a regression.
-figure = 48
+figure = 51
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
