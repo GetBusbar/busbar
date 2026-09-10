@@ -113,6 +113,13 @@ YAML
     sleep 1
   done
 
+  # AND THE ADMIN LISTENER, which the connect below goes to. The loop above proves the DATA plane
+  # answers, and that is a different fact: `run()` spawns the per-core data workers first and binds
+  # the admin address only afterwards, so a data worker can be serving while the admin socket does
+  # not exist yet, and this rig's very next request would land on a port nothing is bound to.
+  wait_for_answer "http://127.0.0.1:${H2_ADMIN_PORT}/healthz" 60 \
+    || { cat "$dir/busbar.log" >&2; return 1; }
+
   local preview fingerprint approved state
   preview="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/agents/probe/connect" \
     -H "authorization: Bearer $H2_ADMIN_TOKEN")"

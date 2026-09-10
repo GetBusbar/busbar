@@ -473,6 +473,18 @@ for RUN in $(seq 1 "$TRAIN_RUNS"); do
   curl -sf -o /dev/null "http://127.0.0.1:$RUN_PORT/healthz" \
     || pgo_fail "run $RUN/$TRAIN_RUNS: instrumented busbar never became healthy (not host-executable, or crashed)"
 
+  # AND THE ADMIN LISTENER, which the mint below goes to. The poll above proves the DATA plane is
+  # up, and that is a different fact: `run()` spawns the per-core data workers first and binds the
+  # admin address only afterwards, so a data worker can be answering while the admin socket does
+  # not exist yet — and this run then trains nothing at all because its key never minted. Any
+  # status is enough; a listener that accepted and spoke is the whole question.
+  for _ in $(seq 1 50); do
+    [ "$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://127.0.0.1:$((RUN_PORT + 1))/healthz")" != "000" ] && break
+    sleep 0.2
+  done
+  [ "$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://127.0.0.1:$((RUN_PORT + 1))/healthz")" != "000" ] \
+    || pgo_fail "run $RUN/$TRAIN_RUNS: the instrumented binary's admin listener never answered"
+
   # Mint the run's client key on the admin listener (per run - the key store is in-memory, so it
   # dies with the run's gateway). This also trains the admin plane (admin chain, scope check,
   # mutation limiter, audit) - one warm request on an otherwise-cold surface, now once per run.

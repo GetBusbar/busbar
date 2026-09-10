@@ -609,6 +609,21 @@ protected-resource metadata within 60s. Either the plane did not mount — \`age
 failing one — or busbar never came up."; }
     sleep 1
   done
+
+  # AND THE ADMIN LISTENER, which this leg goes on to use. The loop above proves the DATA plane is
+  # up, and that is a different fact: `run()` spawns the per-core data workers first and binds the
+  # admin address only afterwards, so a data worker can be answering while the admin socket does
+  # not exist yet. Any status is enough — a listener that accepted and spoke is the whole question;
+  # a 401 answers it as well as a 200 does, and folding an auth expectation into a boot fence makes
+  # the fence fail for reasons that are not about readiness.
+  until [ "$(subject_probe_status "http://127.0.0.1:$admin_port/healthz")" != "000" ]; do
+    kill -0 "$busbar_pid" 2>/dev/null || { cat "$dir/busbar.log" >&2; die "busbar exited during boot."; }
+    waited=$((waited+1))
+    [ "$waited" -lt 120 ] || { cat "$dir/busbar.log" >&2; die "busbar's admin listener never \
+answered within the boot budget, so the binding this rig mints below would have gone to a port \
+nothing is bound to."; }
+    sleep 1
+  done
   say "   busbar ready after ${waited}s"
 
   local canonical

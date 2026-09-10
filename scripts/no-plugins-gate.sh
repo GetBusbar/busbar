@@ -128,6 +128,36 @@ wait_for_http() {
   done
 }
 
+wait_for_answer() {
+  # THE WEAKER QUESTION, WHICH IS THE RIGHT ONE FOR A LISTENER THAT MAY ANSWER 401. `wait_for_http`
+  # above asks "is this URL healthy"; this asks "is anything listening here yet". curl writes `000`
+  # when it never got an HTTP response at all (refused, reset, timed out); any other status is a
+  # server that accepted the connection and spoke, which is the fact a boot fence needs.
+  local url="$1" timeout_s="${2:-30}" waited=0
+  until [ "$(curl -s -o /dev/null --max-time 3 -w '%{http_code}' "$url" 2>/dev/null)" != "000" ]; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$timeout_s" ]; then
+      echo "  timed out waiting for a listener on ${url} after ${timeout_s}s" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+# BOTH PLANES, NOT WHICHEVER ONE COMES UP FIRST.
+#
+# busbar binds its two listeners in a fixed order and the admin one is LAST: `run()` calls
+# `serve_thread_per_core`, which only SPAWNS the per-core data threads, and `bind_listener` for the
+# admin address runs after that on the control runtime. A data worker can therefore be answering
+# `/healthz` while the admin socket does not exist yet, so waiting on the data port and then
+# POSTing to the admin port — which is what every caller of this fence went on to do — proves
+# nothing about the listener the request is actually going to. Under load that request lands on a
+# port nothing is bound to and the check dies on its own start-up.
+wait_for_busbar() {  # wait_for_busbar <data-port> <admin-port> <timeout-seconds>
+  wait_for_http "http://127.0.0.1:$1/healthz" "$3" || return 1
+  wait_for_answer "http://127.0.0.1:$2/healthz" "$3" || return 1
+}
+
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 # ── The mock upstream — a real HTTP server, Anthropic protocol, unique marker per run ─────────────
@@ -285,7 +315,7 @@ run_axis() {
   BUSBAR_CONFIG="${work}/config.yaml" MOCK_KEY=unused RUST_LOG=warn "$bin" >"${work}/busbar.log" 2>&1 &
   local pid=$!
   BG_PIDS+=("$pid")
-  if ! wait_for_http "${D}/healthz" 45; then
+  if ! wait_for_busbar "${listen_port}" "${admin_port}" 45; then
     fail "A2/A3 ${label}: did not come up — /healthz never answered. Log: $(tail -5 "${work}/busbar.log" | tr '\n' ' ')"
     return 1
   fi

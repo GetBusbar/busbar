@@ -227,6 +227,23 @@ YAML
     sleep 1
   done
 
+  # AND THE ADMIN LISTENER, which this leg goes on to use. The loop above proves the DATA plane is
+  # up, and that is a different fact: `run()` spawns the per-core data workers first and binds the
+  # admin address only afterwards, so a data worker can be answering while the admin socket does
+  # not exist yet. Any status is enough — a listener that accepted and spoke is the whole question;
+  # a 401 answers it as well as a 200 does, and folding an auth expectation into a boot fence makes
+  # the fence fail for reasons that are not about readiness.
+  waited=0
+  until [ "$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' "http://127.0.0.1:$admin_port/healthz")" != "000" ]; do
+    waited=$((waited+1))
+    if [ "$waited" -ge 60 ] || ! kill -0 "$pid" 2>/dev/null; then
+      cat "$dir/server.log" >&2
+      kill "$pid" 2>/dev/null || true
+      die "axis 2: the admin listener never answered. Nothing was probed, and an unprobed axis is red."
+    fi
+    sleep 1
+  done
+
   : >"$dir/wire.txt"
   # `probe` hits the DATA plane; `probe_admin` hits the ADMIN plane, which listens on its own port.
   # Both are needed: the admin surface was previously probed on the data port, where it can only
