@@ -239,24 +239,10 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "api"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind api naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
-
-[[edge]]
-from = "api"
 to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
 why = "crates of kind api naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the plane name from the api crate: a api reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "api"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the api crate: a api reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "api"
@@ -1499,22 +1485,12 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "control"
-count = "28"
-
-[[cell]]
-crate = "busbar-api"
-kind = "legacy"
-count = "2"
+count = "23"
 
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
 count = "107"
-
-[[cell]]
-crate = "busbar-api"
-kind = "plugin-tooling"
-count = "2"
 
 [[cell]]
 crate = "busbar-api"
@@ -2294,7 +2270,7 @@ count = "1"
 [[cell]]
 crate = "busbar-secret-example-plugin"
 kind = "plugin-tooling"
-count = "5"
+count = "3"
 
 [[cell]]
 crate = "busbar-secret-grammar"
@@ -4223,16 +4199,6 @@ count   = "1"
 verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-sdk names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-sdk"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The SDK's SECRET glue is written against busbar_contract::kinds::Secret, so an author of a kind:secret plugin implements the contract's face and names nothing else; the SDK holds the face-error -> wire-token half of the seam and the loader holds the other half. This is the edge the busbar-api row above drains ONTO. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]

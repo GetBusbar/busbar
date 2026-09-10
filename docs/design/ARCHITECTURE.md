@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3994`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3995`), which the construction gate runs as
   `surface-ceiling:contract+caps`. **The plugin structured-error seam** (owner ruling, 2026-09-09;
   `busbar_contract::error`) is inside that number: every plugin kind's face fails with ONE
   `PluginError { class, code, params, developer_message, advisory }` — `class` the contract's
@@ -87,9 +87,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   is the PIN, not a budget: it is held at zero slack against today's measurement, and it moves up
   only when a new-architecture face lands with a declared raise (`[[gate.ceiling_raises]]` in
   `qa/construction.toml`) that names the face and its measured lines, this figure amended in the
-  same commit — the hooks-kind face (`RoutingPolicy`, its projections, the signal catalog; 291
+  same commit — the hooks-kind face (`RoutingPolicy`, its projections, the signal catalog; 292
   lines, moved in from `busbar-api`) and the virtual-key directory face (`KeyScope`, `KeyFacts`,
-  `VirtualKeyDirectory`; 19 lines) are the ones so far, 3684 → 3994. Two crates carry their own surface ceilings beside it, because
+  `VirtualKeyDirectory`; 19 lines) are the ones so far, 3684 → 3995. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

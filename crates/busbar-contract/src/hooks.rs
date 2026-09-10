@@ -12,7 +12,7 @@
 /// only small derived scalars. A policy never touches the mutable IR or engine state.
 #[derive(Debug, Clone)]
 pub struct RoutingRequest<'a> {
-    /// This request's correlation id — a single `u64` stamped once at ingress (busbar core's
+    /// This request's correlation id — a single `u64` stamped once at ingress (the engine's
     /// `RequestCtx::request_id`), unique-per-process-lifetime and Copy-cheap (no UUID/String). Lets
     /// a hook (or a log line reading the same id off busbar's tracing span) join THIS routing
     /// decision to the request's eventual OUTCOME on the completion-tap notification, which carries
