@@ -155,46 +155,28 @@ impl PlaneBootCtx for BootCtx {
         }
     }
 
-    /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
-    /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
-    /// `crate::mcp::mcp_hydrate` registers the stream without its own code naming
-    /// `crate::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
-    /// does stays wholly inside `calllog::register_call_stream` (minted synchronously, never across an
-    /// `.await`), and the app it reads is the core-owned hydrate-phase `App`. A no-op unless the
-    /// freshly-built app (hydrate phase) is present — byte-identical to the old inline
-    /// `busbar_core::calllog::register_call_stream(app)`.
+    /// RETIRED, and answered as retired. The per-call record is landed by the composition root's
+    /// kernel-held record leg, which registers nothing with this engine and reads its chains back
+    /// itself — so there is no stream here to register and no plane calls this. The method stays on
+    /// the frozen boot seam; what it must never do is look like it worked.
     fn register_call_stream(&self) {
-        if let Some(app) = self.app.as_ref() {
-            crate::calllog::register_call_stream(app);
-        }
+        tracing::error!(
+            "register_call_stream reached on the engine boot context: the per-call record is landed \
+             on the composition root's record leg and this seam registers NOTHING. Whatever called \
+             this is not getting a durable call stream."
+        );
     }
 
-    /// REHYDRATE THE MCP PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
-    /// phase — the boot rehydrate, run AFTER [`Self::register_call_stream`]. Returns the NEUTRAL
-    /// [`RestoredSummary`] rather than the core-live `calllog::Restored` (which carries
-    /// `audit::ChainBreak`), so the hook logs the outcome without naming a core-live type. The
-    /// `with_dispatch_scope`/`HostCtx` mint stays wholly inside `calllog::restore_from_store_over`
-    /// (minted synchronously, never across an `.await`). The `Err` is mapped to the store error's
-    /// Display string so the hook's `MCP_CALLLOG_UNREAD` warning reads byte-identically. A no-op-shaped
-    /// panic guards the impossible None-app/None-store hydrate call (the hook reaches here only past its
-    /// store guard, in the phase that supplies the app) — byte-identical to the old inline
-    /// `busbar_core::calllog::restore_from_store_over(app, store)`.
+    /// RETIRED, and answered as retired — the twin of [`Self::register_call_stream`]. The root's
+    /// record leg reads every persisted call chain back and verifies it at boot; this engine holds
+    /// no call chain to rehydrate. It reports the failure rather than an empty success, because an
+    /// empty [`RestoredSummary`] is indistinguishable from a store that genuinely held nothing.
     fn restore_call_log(&self) -> Result<RestoredSummary, String> {
-        let app = self.app.as_ref().expect(
-            "restore_call_log runs in the HYDRATE phase, which supplies the freshly-built app",
-        );
-        let store = self.store.as_ref().expect(
-            "restore_call_log runs past the hydrate hook's store guard, so a store is present",
-        );
-        crate::calllog::restore_from_store_over(app, store.as_ref())
-            .map(|r| RestoredSummary {
-                principals: r.principals,
-                records: r.records,
-                empty_chains: r.empty_chains,
-                unreadable: r.unreadable,
-                chain_breaks: r.chain_breaks.iter().map(|b| b.to_string()).collect(),
-            })
-            .map_err(|e| e.to_string())
+        Err(
+            "the engine holds no per-call chain to restore: the per-call record is landed and \
+             rehydrated on the composition root's record leg"
+                .to_string(),
+        )
     }
 
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the

@@ -224,6 +224,48 @@ file = "qa/kind-isolation.toml"
 by = 8
 because = "the audit unit's chain, named by the composition that drives it: `busbar_unit_audit::legacy::{Chain, ChainedRecord, ChainBreak, ChainLabels, Digest, Framing, frame_prelude, verify_chain}`. The prelude, the digest, the sequence authority and the verifier are the unit's and are not re-implemented here; what the root adds is the position it holds and the store it lands on."
 
+# THE PER-CALL RECORD ON THE SAME LEG, and the battery that proves the writer is REACHED, moved to
+# the one kind that may name both halves. `crates/busbar/src/root/call_stream.rs` mounts the MCP
+# plane's per-call record on the kernel-held record leg — the plane declares the record and keeps the
+# ONE chokepoint every call is written through, and the root lands it, because a plane performs no
+# output. `crates/busbar/src/root/tests/call_record_dlopen.rs` is the MOVE: a real `tools/call`,
+# through the real dispatcher, into a real `dlopen`ed store plugin, the handle closed and reopened
+# and the rows read back. It had to name BOTH the plane and the root's persister, and a plane crate
+# may not name the persister, so it came here — the landed precedent for a battery that must name two
+# halves. Nothing about the proof moved with it and no assertion was weakened; the two seams it used
+# to reach the engine's own call log through are gone, and it now drives the leg the deployment does.
+# The measured cost is below. Six busbar-mcp and busbar-core cells FALL in the same landing and are
+# re-pinned to the measurement; `busbar-mcp × store` alone falls 57 -> 37.
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the per-call record's store reach, in the root, and the battery's read-back: `busbar_api::Store` as the handle the leg is bound to and the handle a reopened plugin is read through, and `busbar_api::PlaneSelector` as the parent selector one caller's chain is listed by. A plane may not hold a store, so the mapping from a record to a store verb belongs to the composition and to nothing else."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 92
+because = "the MOVE of the per-call record's dlopen battery into the composition root, plus the mount that installs the durable path behind the plane's chokepoint. The battery drives the MCP plane's real dispatcher and reads the MCP plane's own record type back out, so every name it spells is a plane name; it spelled them in the plane crate before this landing and spells them here now, and `busbar-mcp × plane` falls 3345 -> 3298 against it. The mount names `busbar_plane_mcp::records` (the call schema, its append/scan table, the seven-field length-prefixed suffix) and `busbar_mcp::mcp::callrecord` (the chokepoint's sink trait and its restore narrator), which is the composition root naming what it mounts."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the MOVE: the battery loads the REAL store plugin over the REAL plugin C ABI (`busbar_plugin_loader::{load_store, plugin_library_filename}`) rather than against an in-process double, because the defect it exists to catch — an ABI that carried four store methods and discarded every write — is invisible to any double. `busbar-mcp × plugin-tooling` falls 7 -> 4 against it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.store.count"
+file = "qa/kind-isolation.toml"
+by = 23
+because = "the MOVE: the battery's whole subject is a store — the example store plugin's cdylib, its durable-path config, the `dlopen` that opens it, the second `dlopen` that reopens it after the handle is dropped (which is what a restart is), and the on-disk ledger it prints as evidence — plus the one name the mount spells, the store handle the leg is bound to. `busbar-mcp × store` falls 57 -> 37 against it, which is the same coverage measured in the home that may hold it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the audit unit's framing declaration, named by the composition that binds the per-call leg to it: `busbar_unit_audit::legacy::Framing` and the length-prefixed variant the already-persisted call records were sealed under. The framing arrives from the composition rather than being chosen in the leg because it is a wire fact of the rows already on disk — a stream whose framing moved would report every deployed chain as tampered at its next boot."
+
 # THE ADMIN MUTATION LOG, mounted on the record leg, and the SECOND COPY OF IT deleted from the
 # engine. `crates/busbar-core/src/plane/auditlog.rs` (787 lines) and its battery (588) go; what
 # replaces them is `crates/busbar/src/root/audit_stream.rs` and its cells, which build the durable

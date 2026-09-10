@@ -1064,11 +1064,11 @@ impl<'a> CallLog<'a> {
             pin_generation: self.pin_generation,
             request_id: self.request_id.clone(),
         };
-        // The per-call chain lives host-side now; reached through the `call_log_emit` host seam, which
-        // mints the transient host + arena INTERNALLY. The former reuse-request-arena / open-fresh-scope
-        // split collapsed into that method: a chain append registers no host handle, so which arena
-        // reclaims was always immaterial to this write.
-        self.host.call_log_emit(self.principal, input);
+        // THE PLANE'S ONE CHOKEPOINT. The record is this plane's; the chain, the digest, the sequence
+        // and the store are the composition root's kernel-held record leg, which the root installed
+        // behind this seam at boot. Nothing about which arena reclaims was ever material to this
+        // write — a record leg registers no host handle — so the host is not in the path at all.
+        crate::mcp::callrecord::record(self.principal, &input);
     }
 
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and

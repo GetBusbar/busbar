@@ -25,12 +25,12 @@ pub(crate) fn engine() -> &'static dyn EngineTestKit {
 }
 
 /// A fresh test-App builder — the fluent chain a test drives `.mcp(&cfg).mcp_server(..).build()` on.
-pub(crate) fn test_app() -> Box<dyn TestAppKit> {
+pub fn test_app() -> Box<dyn TestAppKit> {
     engine().new_app()
 }
 
 /// Install the engine's metrics recorder for this process (idempotent).
-pub(crate) fn metrics_init() {
+pub fn metrics_init() {
     engine().metrics_init();
 }
 

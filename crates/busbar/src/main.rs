@@ -1408,10 +1408,19 @@ async fn run(data_workers: usize) {
     // documented in-memory behaviour and not a failure.
     let admin_audit = root::audit_stream::mount(app.governance.as_ref().map(|gov| gov.store()));
 
-    // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
-    // the MCP demotion/spent-approval records, restored from the configured governance store
+    // THE MCP PER-CALL RECORD'S DURABLE PATH, on the same leg and for the same reason: the plane
+    // declares the record and keeps the one chokepoint every call is written through, and the root
+    // is what lands it — a plane performs no output. Every persisted chain is read back and verified
+    // here, BEFORE a listener binds, so the first call of this process chains onto the last call of
+    // the previous one. With nothing durable configured the slot stays empty, the call still serves
+    // and nothing is kept, which is the documented `store: memory` contract.
+    #[cfg(feature = "plane-mcp")]
+    root::call_stream::mount(app.governance.as_ref().map(|gov| gov.store()));
+
+    // DURABLE STATE HYDRATION — the audit ring, the A2A task table and the MCP demotion/
+    // spent-approval records, restored from the configured governance store
     // BEFORE a listener is bound. One boot entry point (`busbar_core::boot::hydrate_all`)
-    // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
+    // rather than four widened statics: the sinks (`AUDIT`, `TASKS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
     // out from under the hash chains. The narration (which restore is a hiccup, which is
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable

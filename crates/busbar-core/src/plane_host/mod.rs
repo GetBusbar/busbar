@@ -660,23 +660,35 @@ impl busbar_substrate::plane_host::JournalHost for EngineHostImpl {
         crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
     }
 
-    fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
-        // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
-        // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
-        // request arena vs open a fresh one) was a no-op distinction for THIS write: a chain append
-        // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
-        // in-place `with_dispatch_scope` leg.
-        with_dispatch_scope(&self.app, |host, _| {
-            crate::calllog::emit(host, principal, input)
-        });
+    /// RETIRED, and answered as retired. The per-call record is landed on the composition root's
+    /// kernel-held record leg through the plane's own chokepoint; this engine holds no call chain,
+    /// so there is nothing here for a record to reach. The method stays on the frozen host
+    /// seam with no caller — what it must never do is accept an evidence record and drop it
+    /// quietly, so the one thing it does is say so.
+    fn call_log_emit(&self, principal: &str, _input: busbar_substrate::plane::calllog::CallInput) {
+        Self::call_log_retired(principal);
     }
 
+    /// The deferred-site twin, retired for the same reason and just as loudly.
     fn call_log_emit_hostless(
         &self,
         principal: &str,
-        input: busbar_substrate::plane::calllog::CallInput,
+        _input: busbar_substrate::plane::calllog::CallInput,
     ) {
-        crate::calllog::emit_hostless(principal, input);
+        Self::call_log_retired(principal);
+    }
+}
+
+impl EngineHostImpl {
+    /// One place to say it, so the two retired seam methods cannot drift into saying different
+    /// things about the same missing record.
+    fn call_log_retired(principal: &str) {
+        tracing::error!(
+            principal = %principal,
+            "a per-call record reached the RETIRED engine call-log seam and was NOT kept: the \
+             record is landed on the composition root's kernel-held record leg, through the plane's \
+             own chokepoint. This record's evidence is lost."
+        );
     }
 }
 

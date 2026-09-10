@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "151"
+count = "154"
 
 [[cell]]
 crate = "busbar"
@@ -1354,12 +1354,12 @@ count = "93"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1815"
+count = "1907"
 
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "28"
+count = "31"
 
 [[cell]]
 crate = "busbar"
@@ -1369,7 +1369,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "store"
-count = "6"
+count = "29"
 
 [[cell]]
 crate = "busbar"
@@ -1384,7 +1384,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1189"
+count = "1191"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "2992"
+count = "2987"
 
 [[cell]]
 crate = "busbar-core"
@@ -1849,7 +1849,7 @@ count = "596"
 [[cell]]
 crate = "busbar-mcp"
 kind = "api"
-count = "135"
+count = "134"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1864,7 +1864,7 @@ count = "42"
 [[cell]]
 crate = "busbar-mcp"
 kind = "control"
-count = "153"
+count = "152"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1879,12 +1879,12 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3345"
+count = "3298"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "plugin-tooling"
-count = "7"
+count = "4"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1894,7 +1894,7 @@ count = "13"
 [[cell]]
 crate = "busbar-mcp"
 kind = "store"
-count = "57"
+count = "37"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -4998,6 +4998,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-mcp"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-mcp: declared dev in the test graph, 1 declaration(s) at this commit. THE MOVE FORM. The per-call record's dlopen battery — a real tools/call, through the real dispatcher, into a real dlopen'ed store plugin, closed and reopened and read back — has to name BOTH the plane that dispatches and the kernel-held record leg that lands the row, and a plane crate may not name the root's persister. So it moved to the one kind entitled to name everything it mounts, and this edge is what carrying it costs. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

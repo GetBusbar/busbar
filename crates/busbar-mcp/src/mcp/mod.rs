@@ -515,82 +515,19 @@ pub(crate) fn mcp_on_swap(
     );
 }
 
-/// RESTORE THE MCP PLANE'S DURABLE STATE, in order, BEFORE a listener binds — the per-call log, the
-/// upstream-demotion record and the spent-approval ledger, each attached as a write-through sink to
-/// the plane-narrowed store and read back. The narrowed store (task/mcp/demotion/spent methods only,
+/// RESTORE THE MCP PLANE'S DURABLE STATE, BEFORE a listener binds — the upstream-demotion record and
+/// the spent-approval ledger, each attached as a write-through sink to the plane-narrowed store and
+/// read back. The per-call record is NOT here: it is landed and restored on the composition root's
+/// kernel-held record leg, because a plane performs no output. The narrowed store (task/mcp/demotion/spent methods only,
 /// never `append_audit`) is the whole of what this hook touches of the durable home, so an MCP
 /// hydrate can neither read nor forge the audit chain (invariant (a)). With `store: memory` (no
-/// governance store) `ctx.store` is `None` and every block below is skipped — the call log, the
-/// demotion record and the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
+/// governance store) `ctx.store` is `None` and every block below is skipped — the demotion record and
+/// the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
 pub(crate) fn mcp_hydrate(
     ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
     if !ctx.has_store() {
         return Ok(());
-    }
-
-    // DURABLE MCP PER-CALL LOG. The tamper-evident record of who called which tool, under which
-    // approved digest, and whether it went out — the Art 26(6) record-keeping pillar. Attached as a
-    // write-through sink and READ BACK, because a write's `Ok(())` proves nothing about a trait whose
-    // defaults accept and keep nothing.
-    //
-    // THE RESTORE IS NOT A FORMALITY. It is the only place in a running deployment where a persisted
-    // chain is recomputed, so it is also the only place a tamper is detected — every break it finds is
-    // logged at ERROR, naming the principal, while the records stay restored (refusing to restore them
-    // would let anyone able to write to the store DELETE a caller's history by corrupting one byte).
-    // REGISTER the durable `call` stream FIRST — the host attaches its sink from `app.governance` (the
-    // same plane-narrowed store) at register time, bounded at the MCP call log's LRU cap — then rehydrate
-    // through the seam, opening a dispatch scope so the caller-driven seed reaches the host over a live
-    // `HostCtx`.
-    ctx.register_call_stream();
-    let restored = ctx.restore_call_log();
-    match restored {
-        Ok(r) if r == busbar_substrate::plane::registry::RestoredSummary::default() => {}
-        Ok(r) => {
-            tracing::info!(
-                principals = r.principals,
-                records = r.records,
-                unreadable = r.unreadable,
-                "MCP per-call log restored from the durable governance store"
-            );
-            // An UNDECODABLE row is an evidence record this build could not read back — counted and
-            // SKIPPED per-record (each already logged LOUDLY at its skip site in core). Repeated here
-            // at the boot summary and at WARN, and fired whenever `unreadable > 0` even if `records`
-            // is zero (a scope whose rows were ALL undecodable), so the aggregate is never invisible.
-            if r.unreadable > 0 {
-                busbar_substrate::diag_warn!(
-                    busbar_substrate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
-                    rows = r.unreadable,
-                    "persisted MCP per-call records could not be decoded on restore and were SKIPPED; \
-                     they were most likely written by a different engine version or the store is corrupt"
-                );
-            }
-            // An ENUMERATED-BUT-EMPTY chain is the one shape the verifier cannot judge alone, and it
-            // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
-            // rather than summed into `principals`.
-            if r.empty_chains > 0 {
-                busbar_substrate::diag_warn!(
-                    crate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
-                    principals = r.empty_chains,
-                    "the durable MCP call log enumerates these principals but holds NO records \
-                     for them; their chains reopen at seq 1"
-                );
-            }
-            for brk in &r.chain_breaks {
-                busbar_substrate::diag_error!(
-                    crate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
-                    break_detail = %brk,
-                    "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
-                );
-            }
-        }
-        Err(e) => busbar_substrate::diag_warn!(
-            crate::diagnostics::MCP_CALLLOG_UNREAD,
-            error = %e,
-            "could not read the durable MCP per-call log; chains start at their persisted \
-             tail being unknown, which means a principal with rows in the store may reopen at \
-             seq 1 and collide"
-        ),
     }
 
     // THE DURABLE MCP DEMOTION RECORD, and the SPENT-APPROVAL LEDGER. Two security properties that
@@ -782,9 +719,13 @@ pub mod admin_view;
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
 /// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
 pub mod callerask;
-/// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
-/// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
-/// module header.
+/// THE PER-CALL RECORD'S ONE CHOKEPOINT — one hash-chained record per tool call, landed on the
+/// composition root's kernel-held record leg. Separate from the operator-mutation evidence ring on
+/// purpose: a configuration change is operator-rate and a tool call is request-rate, and two
+/// populations that churn at different rates do not share one evidence surface.
+pub mod callrecord;
+/// THE PUBLISHED TOOL CATALOGUE: what each registered upstream exposes, as busbar last saw it, and
+/// the namespaced routing keys a caller's `mcp_tool` grant names.
 pub mod catalogue;
 /// The CLIENT direction: busbar calling OUT to external MCP tool servers. The other half of
 /// the same governance boundary this module's front door opens — same revision, same trust
@@ -1178,7 +1119,13 @@ fn normalise_path(path: &str) -> String {
 #[cfg(feature = "test-support")]
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/engine.rs"]
-pub(crate) mod test_engine;
+pub mod test_engine;
+
+/// The upstream-leg fixtures — a REAL fake MCP peer and a REAL fake RFC 8693 token endpoint —
+/// republished at the plane's own root so the battery that had to move OUT of this crate reaches
+/// them by a stable path rather than through the private module they are declared in.
+#[cfg(feature = "test-support")]
+pub use upstream::upstream_support;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/config_tests.rs"]

@@ -113,7 +113,7 @@ impl Recorded {
 
 /// What the fake MCP endpoint answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Behaviour {
+pub enum Behaviour {
     /// A normal, finished tool result.
     Result,
     /// An `InputRequiredResult` asking busbar to spend busbar's OWN authority. Hostile on purpose:
@@ -175,7 +175,7 @@ struct PeerState {
 }
 
 /// A running fake peer. Dropping it aborts the server task.
-pub(super) struct Peer {
+pub struct Peer {
     pub(super) base: String,
     pub(super) log: Arc<Mutex<PeerLog>>,
     task: tokio::task::JoinHandle<()>,
@@ -188,7 +188,7 @@ impl Drop for Peer {
 }
 
 impl Peer {
-    pub(super) async fn start(behaviour: Behaviour, issued: &str) -> Self {
+    pub async fn start(behaviour: Behaviour, issued: &str) -> Self {
         let log = Arc::new(Mutex::new(PeerLog::default()));
         let state = PeerState {
             log: log.clone(),
@@ -226,7 +226,7 @@ impl Peer {
         self.log.lock().unwrap().token.len()
     }
 
-    pub(super) fn mcp_hits(&self) -> usize {
+    pub fn mcp_hits(&self) -> usize {
         self.log.lock().unwrap().mcp.len()
     }
 
@@ -487,10 +487,7 @@ pub(super) fn secret_file(name: &str, value: &str) -> busbar_api::SecretRef {
 /// Two tools and not one, deliberately: the down-scope under test is "exactly the tools this caller
 /// is granted ON THIS SERVER", and a server offering one tool makes every possible down-scope look
 /// identical.
-pub(super) fn exchanging_server(
-    peer: &Peer,
-    subject_token: &str,
-) -> crate::mcp::config::McpServerDefCfg {
+pub fn exchanging_server(peer: &Peer, subject_token: &str) -> crate::mcp::config::McpServerDefCfg {
     use crate::mcp::config::{
         McpPinMechanism, McpServerDefCfg, ServerPinCfg, ServerRequestGrants, TokenExchangeCfg,
         ToolAllowCfg,
@@ -551,7 +548,7 @@ pub(super) fn exchanging_server(
 }
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
+pub fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
     busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key_with_scopes("k-test", pairs))),
     }
@@ -609,7 +606,7 @@ pub(super) async fn call(
 /// principal therefore shares one chain, and a test asserting `seq == 1` against a fresh store would
 /// read the sequence a SIBLING test left behind — which is exactly what happened the first time.
 /// A test that needs a virgin chain asks for its own principal.
-pub(super) async fn call_as(
+pub async fn call_as(
     app: &std::sync::Arc<dyn EngineApp>,
     gov: &busbar_api::PlaneRequestCtx,
     actor: &str,
@@ -677,7 +674,7 @@ pub(super) async fn call_response_caps(
 }
 
 /// The MCP resource config every test in this directory serves under.
-pub(super) fn mcp_cfg(canonical: &str) -> crate::mcp::McpCfg {
+pub fn mcp_cfg(canonical: &str) -> crate::mcp::McpCfg {
     crate::mcp::McpCfg {
         canonical_uri: canonical.to_string(),
         authorization_servers: vec!["https://login.example.com".to_string()],

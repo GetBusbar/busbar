@@ -20,7 +20,7 @@
 //! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_substrate::egress_auth::gate` |
 //! | outbound credential, RFC 8693/8707 | the same planner, and NEVER the caller's busbar key |
 //! | the supervision breaker | inside the wire — a quarantined child refuses every verb, not just calls |
-//! | the durable per-call hash chain | the host's `call_log_emit_hostless` (core's call-log chain), at every terminal |
+//! | the durable per-call hash chain | `crate::mcp::callrecord`, the plane's one chokepoint, at every terminal |
 //! | JSON-RPC correlation | `super::jsonrpc::parse_response` with the id this call sent |
 //!
 //! ## The gate runs BEFORE any I/O, and the ordering is load-bearing
@@ -32,9 +32,9 @@
 //!
 //! ## WHAT IS RECORDED, and the one schema decision this file takes
 //!
-//! Core's call-log header states that `prompts/get` and `resources/read` were NOT written to
-//! the chain because `McpCallRecord.tool` is a TOOL ROUTING KEY and widening it to every capability
-//! is a schema decision rather than a wiring one. That decision is taken here, explicitly, and in the
+//! `prompts/get` and `resources/read` are NOT written to the chain, because `McpCallRecord.tool` is
+//! a TOOL ROUTING KEY and widening it to every capability is a schema decision rather than a wiring
+//! one. That decision is taken here, explicitly, and in the
 //! narrow direction: the record's `tool` field carries the METHOD NAME prefixed with `verb:` — for
 //! example `verb:prompts/list`. The prefix is the point. `mcp_tool` grant values are namespaced
 //! routing keys of the form `{server}_{tool}` and can never contain a colon or a slash, so a
@@ -96,15 +96,14 @@ pub(crate) async fn issue(
     let server: &ServerId = &auth.server;
     let method = verb.method();
     let principal = auth.caller.id.clone();
-    // The per-call chain lives HOST-SIDE now. This `async` client-leg path cannot hold a `HostCtx`
-    // across its `.await`s, but the `EngineHost` seam is `Send + Sync` and safe to carry: it emits
-    // through the HOSTLESS `call_log_emit_hostless` method (the durable-cleave twin the seam keeps for
-    // exactly this site, which mints no `HostCtx`), so the leg reaches the chain without naming
-    // core's call-log module.
+    // The record goes through THE PLANE'S ONE CHOKEPOINT, the same one the inbound dispatcher uses,
+    // and the composition root's record leg lands it. This `async` client-leg path has no `HostCtx`
+    // to hold across its `.await`s and now needs none: a record leg registers no host handle, so the
+    // deferred site and the request site reach the chain by the same call.
     let record = |outcome: &'static str, reason: String| {
-        host.call_log_emit_hostless(
+        crate::mcp::callrecord::record(
             &principal,
-            busbar_substrate::plane::calllog::CallInput {
+            &busbar_substrate::plane::calllog::CallInput {
                 // C10 (state/store port): the chain entry's timestamp is read off the SAME host this
                 // record emits through — `ClockHost::clock_now_secs`, inherited by `EngineHost` —
                 // rather than the ambient `store::now()` free function. Value-identical (the wired

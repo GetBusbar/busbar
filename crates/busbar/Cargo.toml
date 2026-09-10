@@ -281,6 +281,13 @@ openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "b
 loom-model = ["busbar-core/loom-model"]
 
 [dev-dependencies]
+# THE MCP PLANE, with its fixtures. The call-record dlopen battery lives in this crate's own test tree
+# because it is the ONE kind that may name both halves — the plane's dispatcher and its record
+# chokepoint, and the kernel-held record leg that lands what the chokepoint hands over. `test-support`
+# is what publishes the plane's engine binding and its real fake upstream peer; it adds no crate to
+# the closure that this manifest did not already carry, because everything it forwards to is already
+# enabled by the line below.
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures

@@ -745,9 +745,15 @@ pub(super) async fn exchange(
 // Shared fixtures for the upstream-leg batteries: a REAL fake MCP peer and a REAL fake RFC 8693
 // token endpoint, both recording every byte they receive. Declared here rather than duplicated per
 // file so a test that means to vary ONE thing varies one thing.
-#[cfg(all(test, feature = "test-support"))]
+//
+// PUBLISHED under `test-support` (never bare `cfg(test)`), because the call-record dlopen battery
+// that needs the same peer had to move to the composition root — the one home entitled to name both
+// this plane and the root's record leg. In that feature-only build its helpers read as dead to
+// rustc, which is the compilation mode and not rot.
+#[cfg(feature = "test-support")]
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 #[path = "tests/upstream_support.rs"]
-mod upstream_support;
+pub mod upstream_support;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_join_tests.rs"]
@@ -809,14 +815,6 @@ mod breaker_fastfail_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/reroute_pool_tests.rs"]
 mod reroute_pool_tests;
-
-// THE PER-CALL LOG'S WRITER, proven from the dispatcher outwards rather than from the log inwards.
-// It lives here, beside the upstream-leg batteries, because it needs the same real fake peer: the
-// claim is about what a REAL `tools/call` leaves behind, and a call with no upstream to reach could
-// only ever demonstrate the refusing half.
-#[cfg(all(test, feature = "test-support"))]
-#[path = "tests/calllog_dispatch_tests.rs"]
-mod calllog_dispatch_tests;
 
 // THE HOOK GATE ON THIS PLANE, proven the only way the claim can be made honestly: against the same
 // real fake peer. "The call was rejected" is evidence only next to a control that REACHES the peer

@@ -59,6 +59,10 @@ pub mod adapters;
 /// one chokepoint records through, and the ring it is seeded into at boot.
 pub mod audit_stream;
 pub mod auth_bindings;
+/// The MCP per-call record, mounted on the kernel-held record leg: the durable path the plane's one
+/// chokepoint records through, and the chains it is seeded from at boot.
+#[cfg(feature = "plane-mcp")]
+pub mod call_stream;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
