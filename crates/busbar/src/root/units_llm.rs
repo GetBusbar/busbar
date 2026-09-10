@@ -766,6 +766,20 @@ fn fold_report(
 /// that retired it: both answers over every recorded cell of the two families the golden has, and
 /// the golden's own billed count beside them.
 fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
+    fee_facts(walk.upstream_candidate(), origin)
+}
+
+/// The same evidence, over the facts the carry supplies rather than over the carry.
+///
+/// Split out for one reason: a cell that wants to check what this leg decides has to be able to
+/// drive THIS function, and the carry it used to take is a live per-request object with a runtime
+/// table behind it. A proof that drives a transcription of the rule instead of the rule is a proof
+/// about the transcription, and the transcription is what drifts.
+///
+/// The status is NOT a fact of the fee's evidence any more: what a transport reported is the
+/// ANSWER'S HEAD, and the head is its own face — see [`head_facts`], which a cell drives the same
+/// way. Two facts here, because two is what the kernel decides the flat fee from.
+fn fee_facts(upstream_candidate: bool, origin: OriginKind) -> FeeEvidence {
     FeeEvidence {
         // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is what a
         // caller pays for a request the node carried on its behalf, and a unit the node runs for any
@@ -775,7 +789,7 @@ fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
         // The origin the kernel sealed is the one fact that answers this, so it is the one thing
         // read.
         client_open_or_one_shot: origin == OriginKind::Client,
-        selected_upstream: walk.upstream_candidate(),
+        selected_upstream: upstream_candidate,
     }
 }
 
@@ -787,7 +801,13 @@ fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
 /// late-pricing arm) and only one of those two has a `&self` to ask. Two derivations of one head is
 /// how a unit ends up with two heads and the fee reads whichever ran last.
 fn served_head_of(walk: &Walk) -> Option<StatusLeg> {
-    walk.served_status().map(|status| {
+    head_facts(walk.served_status())
+}
+
+/// The head, over the one fact the carry supplies rather than over the carry — the same reason
+/// [`fee_facts`] exists, and the same thing a cell drives.
+fn head_facts(served_status: Option<u16>) -> Option<StatusLeg> {
+    served_status.map(|status| {
         let ok = (200..300).contains(&status);
         StatusLeg {
             at: Some(StatusAt::FirstFrame),

@@ -40,7 +40,7 @@
 //! own, the response IS the status — so `by_status` is always `None` and the dispute arm is
 //! **unreachable on this plane** whatever the fixtures say. See `dispute_arm_is_unreachable`.
 
-use busbar_contract::FinishClass;
+use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
 use busbar_kernel::teller::{fee_count, FeeEvidence};
 
 /// One recorded cell, reduced to the facts the two deciders read.
@@ -70,22 +70,45 @@ struct Cell {
 /// THE KERNEL'S DECIDER, reached over the evidence the root leg actually builds for this plane
 /// (`units_llm.rs`'s `evidence()`): no status leg, and a finish read off the client-facing status.
 fn kernel_fee(c: &Cell) -> u32 {
-    let status = Some(c.status);
-    fee_count(&FeeEvidence {
-        client_open_or_one_shot: c.client_origin,
-        selected_upstream: c.upstream_candidate,
-        relayed_first_response_frame: status.is_some(),
-        status_at: None,
-        status: None,
-        finish: status.map(|s| {
-            if (200..300).contains(&s) {
-                FinishClass::Complete
-            } else {
-                FinishClass::Error
-            }
-        }),
-    })
+    fee_count(
+        &FeeEvidence {
+            client_open_or_one_shot: c.client_origin,
+            selected_upstream: c.upstream_candidate,
+        },
+        Some(&llm_head(c.status)),
+    )
     .0
+}
+
+/// THE ANSWER'S HEAD this leg records, transcribed from `units_llm.rs`'s `head_facts`.
+///
+/// The status half of the old evidence did not disappear, it MOVED: what the transport reported is
+/// the head, the head is recorded once by the step that saw the answer, and the kernel reads it
+/// from the record. Both readings come off ONE number here, which is why they can never contradict
+/// each other and why the dispute arm stays unreachable for this plane — see
+/// `dispute_arm_is_unreachable_for_the_llm_plane`.
+fn llm_head(status: u16) -> StatusLeg {
+    let ok = (200..300).contains(&status);
+    StatusLeg {
+        at: Some(StatusAt::FirstFrame),
+        status: Some(if ok {
+            StatusClass::Success
+        } else if (400..500).contains(&status) {
+            StatusClass::ClientError
+        } else if (500..600).contains(&status) {
+            StatusClass::ServerError
+        } else {
+            StatusClass::Other
+        }),
+        finish: Some(if ok {
+            FinishClass::Complete
+        } else {
+            FinishClass::Error
+        }),
+        delivered: true,
+        degraded: false,
+        relayed_error: None,
+    }
 }
 
 /// THE PLANE'S SECOND DECIDER, verbatim as `busbar-llm/src/unit/meter.rs` answered it:
@@ -737,30 +760,44 @@ fn the_two_rules_are_not_the_same_rule() {
 /// reached the dispute arm.
 #[test]
 fn dispute_arm_is_unreachable_for_the_llm_plane() {
-    for &finish in &[
-        FinishClass::Complete,
-        FinishClass::TurnComplete,
-        FinishClass::Error,
+    // Every status class this leg can put on a head, and both the statuses either side of each
+    // boundary the derivation reads.
+    for &status in &[
+        100u16, 199, 200, 204, 299, 300, 399, 400, 404, 499, 500, 503, 599, 600,
     ] {
         for &client in &[false, true] {
             for &upstream in &[false, true] {
-                for &relayed in &[false, true] {
-                    let (_, flags) = fee_count(&FeeEvidence {
+                let (_, flags) = fee_count(
+                    &FeeEvidence {
                         client_open_or_one_shot: client,
                         selected_upstream: upstream,
-                        relayed_first_response_frame: relayed,
-                        // The two fields the root leg pins to `None` for this transport.
-                        status_at: None,
-                        status: None,
-                        finish: Some(finish),
-                    });
-                    assert!(
-                        !flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
-                        "a unit this plane can build raised METER_DISPUTED: \
-                         finish={finish:?} client={client} upstream={upstream} relayed={relayed}"
-                    );
-                }
+                    },
+                    Some(&llm_head(status)),
+                );
+                assert!(
+                    !flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+                    "a unit this plane can build raised METER_DISPUTED: \
+                     status={status} client={client} upstream={upstream}"
+                );
             }
+        }
+    }
+    // AND WITH NO HEAD AT ALL, which is what a unit that never got an answer records. A missing
+    // head is not a disagreement between two sources, it is the absence of the first one.
+    for &client in &[false, true] {
+        for &upstream in &[false, true] {
+            let (fee, flags) = fee_count(
+                &FeeEvidence {
+                    client_open_or_one_shot: client,
+                    selected_upstream: upstream,
+                },
+                None,
+            );
+            assert_eq!(fee, 0, "a unit with no head was billed");
+            assert!(
+                !flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
+                "a unit with no head raised METER_DISPUTED"
+            );
         }
     }
 }
