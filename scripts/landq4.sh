@@ -341,6 +341,76 @@ lq_pid_touches() { # $1 = pid, $2 = tree; 0 when one of its OPEN FILES (lsof, or
   else return 1
   fi
 }
+lq_cwd_pids() { # $1 = tree; prints every pid whose CWD is the tree or under it (the mutator's own mark)
+  local d p n phys
+  # BOTH FORMS OF THE PATH. `/tmp` is a symlink to `/private/tmp` on the laptop and `/var` to
+  # `/private/var`; lsof and /proc/<pid>/cwd both answer with the PHYSICAL path. Compared only
+  # against the name the runner uses, a process sitting in /tmp/land-fanout-<sha> — which is where
+  # the runner's tree actually is — would never match.
+  phys="$(cd "$1" 2>/dev/null && pwd -P)"; [ -n "$phys" ] || phys="$1"
+  if [ -r /proc/self/cwd ]; then
+    for d in /proc/[0-9]*; do
+      case "$(readlink "$d/cwd" 2>/dev/null)" in
+        "$1"|"$1"/*|"$phys"|"$phys"/*) printf '%s\n' "${d#/proc/}" ;;
+      esac
+    done
+  elif command -v lsof >/dev/null 2>&1; then
+    # ASKED BY ITS PHYSICAL NAME. lsof answers nothing at all for a path it cannot resolve — a
+    # `$TMPDIR` that ends in a slash yields `…/T//tree`, and the whole sweep came back empty.
+    lsof -a -d cwd -Fpn -- "$phys" 2>/dev/null | while IFS= read -r n; do
+      case "$n" in
+        p*) p="${n#p}" ;;
+        n*) case "${n#n}" in "$1"|"$1"/*|"$phys"|"$phys"/*) printf '%s\n' "$p" ;; esac ;;
+      esac
+    done
+  fi
+}
+lq_ancestry() { # $1 = pid, $2 = listing; prints $1 and every ancestor of it up to init
+  local p="$1" list="$2" i=0
+  while [ -n "$p" ] && [ "$p" != 0 ] && [ "$i" -lt 64 ]; do
+    printf '%s\n' "$p"
+    [ "$p" = 1 ] && break
+    p="$(printf '%s\n' "$list" | awk -v p="$p" '$1 == p {print $2; exit}')"; i=$((i + 1))
+  done
+}
+# WHAT A SHELL IS ACTUALLY RUNNING. `ps` flattens argv, so `/bin/zsh -c 'tail -f <W>/…/landq.out'`
+# reads as a command line that NAMES THE TREE — which is how the census came to kill the
+# integrator's monitor at 03:27. The string after a single `-c`/`-lc` is unwrapped once and judged
+# on its own merits; nothing deeper is unwrapped, because a shell that builds another shell's
+# command line is not something to be clever about.
+lq_shell_payload() { # $1 = args; prints the command a `-c`/`-lc` shell will run, else the args unchanged
+  local a="$1" s
+  case "$a" in
+    *" -lc "*) s="${a#*" -lc "}" ;;
+    *" -c "*)  s="${a#*" -c "}" ;;
+    *) s="$a" ;;
+  esac
+  s="${s#\'}"; s="${s#\"}"
+  printf '%s' "$s"
+}
+# THE ONE EXEMPTION THAT IS NOT ANCESTRY: A READER. Not "anything behind a -c string" — a mutator
+# invoked as `bash -c 'cd <W> && git reset --hard'` is EXACTLY the 22:50 mis-launch this census
+# exists to kill, and it hides behind a -c string just as well as a monitor does. So the payload
+# must be read-only on its face: every stage of it a command out of the reading list, no write
+# redirection, no second command, no substitution. `sed` counts only as `sed -n` (a `sed -i` edits
+# the tree); `tee`, `cp`, `git`, `cargo`, `rm` are not on the list and never will be.
+LQ_READER_CMDS='tail|head|cat|less|more|grep|egrep|fgrep|zgrep|rg|ls|wc|awk|cut|sort|uniq|tr|od|xxd|file|stat|find'
+lq_is_reader() { # $1 = args; 0 when this process can only READ the tree
+  local c seg w
+  c="$(lq_shell_payload "$1")"
+  case "$c" in *'>'*|*';'*|*'&&'*|*'`'*|*'$('*|*'&'*) return 1 ;; esac
+  while [ -n "$c" ]; do
+    case "$c" in *'|'*) seg="${c%%|*}"; c="${c#*|}" ;; *) seg="$c"; c="" ;; esac
+    while : ; do case "$seg" in ' '*|'	'*) seg="${seg# }"; seg="${seg#	}" ;; *) break ;; esac; done
+    w="${seg%% *}"; w="${w##*/}"
+    [ -n "$w" ] || return 1
+    case "$w" in
+      sed) case " $seg " in *" -n "*) ;; *) return 1 ;; esac ;;
+      *) printf '%s' "$w" | grep -qxE "$LQ_READER_CMDS" || return 1 ;;
+    esac
+  done
+  return 0
+}
 lq_descends() { # $1 = pid, $2 = ancestor pid, $3 = listing (pid ppid args); 0 when $1 is $2 or a descendant
   local p="$1" a="$2" list="$3" i=0
   while [ -n "$p" ] && [ "$p" != 0 ] && [ "$p" != 1 ] && [ "$i" -lt 64 ]; do
@@ -358,7 +428,16 @@ lq_descends() { # $1 = pid, $2 = ancestor pid, $3 = listing (pid ppid args); 0 w
 # runner's own chain (this pid, its subshell, land-remote.sh, its re-exec) must be visible, or the
 # census is not looking at the host it thinks it is.
 lq_census() { # $1 = holder pid, $2 = tree, $3 = listing (default: live ps); rc 1 when nothing at all was found
-  local holder="$1" tree="$2" list="${3:-$(lq_ps)}" pid _ppid args hit found=0
+  local holder="$1" tree="$2" list="${3:-$(lq_ps)}" pid _ppid args hit found=0 anc cwdpids=""
+  # THE RUNNER'S OWN CHAIN, UPWARD (03:27). lq_descends walks DOWN from the holder, so the shell
+  # that LAUNCHED the runner — `/bin/zsh -c 'source …snapshot…; … bash landq4.sh'`, whose command
+  # string names the tree because the tree is in the snapshot path — was neither a descendant nor a
+  # reader, and the census killed it, orphaning its own landing. An ancestor is never a stranger:
+  # killing one kills the census taking the decision. The walk is from the holder to init.
+  anc="$(lq_ancestry "$holder" "$list")"
+  # CWD IS A MUTATOR'S MARK whatever the process is called: `sleep`, `vim`, an editor's helper. It
+  # is asked once, of the host, and only when the listing is the live one.
+  [ -n "${3:-}" ] || cwdpids="$(lq_cwd_pids "$tree")"
   while read -r pid _ppid args; do
     [ -n "$pid" ] || continue
     hit=0
@@ -369,14 +448,28 @@ lq_census() { # $1 = holder pid, $2 = tree, $3 = listing (default: live ps); rc 
       elif printf '%s' "$args" | grep -qE 'xtask (gate|selftest)' && [ "$(lq_pid_cwd "$pid")" = "$tree" ]; then hit=1
       fi
     fi
+    if [ "$hit" = 0 ] && [ -n "$cwdpids" ]; then
+      case "
+$cwdpids
+" in *"
+$pid
+"*) hit=1 ;; esac
+    fi
     [ "$hit" = 1 ] || continue
     found=$((found + 1))
     if lq_descends "$pid" "$holder" "$list"; then
       printf 'own pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
     fi
-    # A `tail -f` on a log is a reader, the one outsider that may touch the tree: listed, kept.
-    if printf '%s' "$args" | grep -qE '^tail( |$)'; then
-      printf 'reader pid %s (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
+    case "
+$anc
+" in *"
+$pid
+"*) printf 'ancestor pid %s (kept) (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue ;; esac
+    # A READER is the one outsider that may touch the tree: listed, kept — whether it is a bare
+    # `tail -f` or a monitor's `zsh -c 'tail -f <W>/target/gate/landq.out'`. See lq_is_reader for
+    # why the exemption is the payload's READ-ONLY shape and not the `-c` string itself.
+    if lq_is_reader "$args"; then
+      printf 'reader pid %s (kept) (%s)\n' "$pid" "$(printf '%.100s' "$args")"; continue
     fi
     [ "${LANDQ_CENSUS_DRY:-}" = 1 ] || kill "$pid" 2>/dev/null
     printf 'stranger pid %s killed (%s)\n' "$pid" "$(printf '%.100s' "$args")"
@@ -913,6 +1006,47 @@ lq_selftest() {
   _t "a live stranger is named"                1 "$(grep -c "^stranger pid $straypid killed" "$root/census2.txt" || true)"
   _t "  ...and is dead afterwards"             1 "$(kill -0 "$straypid" 2>/dev/null; echo $?)"
   kill "$straypid" 2>/dev/null; wait "$straypid" 2>/dev/null
+
+  # ── THE 03:27 DEFECT: THE CENSUS KILLED ITS OWN LAUNCHER AND THE INTEGRATOR'S MONITOR ──────────
+  # Rule 2a read the command STRING, and a string that names the tree was a mutator. Two shells
+  # that mutate nothing were named by it: the zsh that launched the runner (the tree is in the
+  # snapshot path it sources) and the zsh wrapping the monitor's `tail -f`. Both were killed; the
+  # runner survived only because it was already orphaned.
+  local anclist ppid_of_me; ppid_of_me="$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')"
+  anclist="$(printf '%s %s bash landq4.sh --loop\n%s 1 /bin/zsh -c source %s/.snapshot; exec bash landq4.sh\n800 1 bash -c cd %s && git reset --hard\n' \
+             "$$" "$ppid_of_me" "$ppid_of_me" "$fake" "$fake")"
+  LANDQ_CENSUS_DRY=1 lq_census $$ "$fake" "$anclist" >"$root/census3.txt"
+  # RED BEFORE GREEN: under the descend-only rule the launcher was a stranger, because the walk only
+  # ever went DOWN from the holder and a launcher is above it.
+  _t "the launcher descends from the holder: no"  1 "$(lq_descends "$ppid_of_me" $$ "$anclist"; echo $?)"
+  _t "  ...and the reader rule does not save it"  1 "$(lq_is_reader "/bin/zsh -c source $fake/.snapshot; exec bash landq4.sh"; echo $?)"
+  _t "an ANCESTOR of the runner is never a stranger" 1 "$(grep -c "^ancestor pid $ppid_of_me (kept) " "$root/census3.txt" || true)"
+  _t "  ...never killed"                        0 "$(grep -c "stranger pid $ppid_of_me " "$root/census3.txt" || true)"
+  # AND THE EXEMPTION IS NARROW. `bash -c 'cd <W> && git reset --hard'` is the 22:50 mis-launch
+  # shape: it hides behind a -c string exactly as well as a monitor does, and it is a stranger.
+  _t "a mutator behind a -c string is still a stranger" 1 "$(grep -c '^stranger pid 800 killed' "$root/census3.txt" || true)"
+
+  # A LIVE WRAPPED READER, kept by a census that is not in dry-run: the monitor's shape.
+  local largs="/bin/zsh -c tail -f $fake/target/gate/landq.out"
+  ( exec -a "$largs" sleep 300 ) &
+  local monpid=$!; sleep 0.3
+  lq_census 1 "$fake" >"$root/census4.txt"
+  sleep 0.3
+  _t "the pre-rule test (argv begins with tail) misses it" 0 "$(printf '%s' "$largs" | grep -cE '^tail( |$)' || true)"
+  _t "a monitor wrapped in a shell is a reader, kept" 1 "$(grep -c "^reader pid $monpid (kept) " "$root/census4.txt" || true)"
+  _t "  ...and is ALIVE afterwards"             0 "$(kill -0 "$monpid" 2>/dev/null; echo $?)"
+  kill "$monpid" 2>/dev/null; wait "$monpid" 2>/dev/null
+
+  # CWD IS A MUTATOR'S MARK. `sleep` names no engine and no tree; its cwd IS the tree, and that is
+  # enough — this is the shape of every editor, shell and helper a slot leaves sitting in it.
+  local cwdtree="$root/cwdtree"; mkdir -p "$cwdtree"
+  ( cd "$cwdtree" && exec sleep 300 ) &
+  local cwdpid=$!; sleep 0.3
+  LANDQ_CENSUS_DRY=1 lq_census 1 "$cwdtree" >"$root/census5.txt" 2>/dev/null
+  _t "a process whose CWD is the tree is a stranger" 1 "$(grep -c "^stranger pid $cwdpid killed" "$root/census5.txt" || true)"
+  _t "  ...though its argv names neither tree nor engine" 0 "$(ps -o args= -p "$cwdpid" 2>/dev/null | grep -c "$cwdtree" || true)"
+  kill "$cwdpid" 2>/dev/null; wait "$cwdpid" 2>/dev/null
+
   _t "the main flow takes the census before the sweep and the pop" 1 "$(grep -c '^  census="\$(lq_census \$\$ "\$W")"' "$0")"
   _t "  ...and refuses on an empty one"        1 "$(grep -c '^    lq_log "=== census: EMPTY' "$0")"
 
