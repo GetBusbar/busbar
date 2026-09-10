@@ -125,6 +125,14 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The per-request fee is decided in one place, by the kernel, on every plane.** The model plane
+  used to decide its own flat fee — a delivered 2xx that reached an upstream — while the kernel
+  decided the same fee from the sealed origin, the admission's destination set and the plane's
+  finish, and the kernel's answer was discarded. The kernel's is now the only one, as it already was
+  for MCP, A2A and voice. **No billed count changes**: both answers were computed over every
+  recorded cell of the shadow oracle's 1.5.5 golden and agree on all of them, and the check is kept
+  as a test so they cannot drift apart again.
+
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
