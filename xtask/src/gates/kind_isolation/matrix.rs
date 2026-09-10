@@ -860,9 +860,19 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     // Read FIRST, and refused here rather than downstream, because an admission that is itself
     // unadmitted must not quietly widen anything: a row that fails one of these three tests admits
     // nothing at all, so every row it was written for stays `minted-row`.
+    // A RENAMED CRATE MINTS AGAINST THE NAME THE BASE ANNOUNCED. `[[renamed]]` is the translation
+    // every rule that asks the base a question keyed by crate name reads through, and this is one:
+    // the base announced `busbar-core-hooks`, the crate landed as `busbar-core-policy`, and the
+    // announcement is the same announcement.
+    let base_names = reg.base_names();
+    let announced_as = |name: &str| -> String {
+        base_names
+            .get(name)
+            .map_or_else(|| name.to_string(), |from| (*from).to_string())
+    };
     let mut admits: BTreeMap<&str, &super::Minted> = BTreeMap::new();
     for m in &reg.minted {
-        if !at_base.announced.contains_key(&m.krate) {
+        if !at_base.announced.contains_key(&announced_as(&m.krate)) {
             out.push(format!(
                 "unannounced-mint\t[[minted]] {}\t`{}` is in no `[[announced]]` row of {LEDGER} at \
                  the merge-base {short}, so this branch is minting rows for a crate whose landing \
@@ -891,7 +901,7 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     // the kind the BASE announced it as — never through a kind this branch assigned it.
     let mut minting_kind: BTreeMap<&str, &str> = BTreeMap::new();
     for name in admits.keys() {
-        if let Some(kind) = at_base.announced.get(*name) {
+        if let Some(kind) = at_base.announced.get(&announced_as(name)) {
             minting_kind.insert(kind.as_str(), name);
         }
     }
