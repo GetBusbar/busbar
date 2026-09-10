@@ -171,11 +171,12 @@ impl Serialize for SignalValue {
     }
 }
 
-/// The inline-capacity-4 backing store: the common case (0-4 signals declared for a given
-/// projection) never spills to the heap. `4` covers every signal this catalog currently wires for
-/// a single phase with room to spare; growing the catalog past 4 declared-at-once entries for one
-/// projection only costs a heap spill, never a contract change.
-type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
+/// The backing store: a fixed-capacity list with ONE slot per catalog entry. The bag UPSERTS — a
+/// signal recorded twice replaces its value rather than appearing twice — so it can never hold more
+/// entries than the catalog has names, and the bound the design states (one value per declared
+/// signal) is a bound the type carries rather than an inline-capacity guess (`4`, once) that a fifth
+/// declared signal quietly spilled past. Growing the catalog grows the capacity with it.
+type SignalBagInner = crate::bounded::BoundedVec<(Signal, SignalValue), { Signal::ALL.len() }>;
 
 /// The signal bag a projection (`RoutingRequest`, `Candidate`, and — once the response-phase seam
 /// lands — the response tap payload) carries. `#[serde(flatten)]`-compatible: [`SignalBag`]
@@ -183,8 +184,8 @@ type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
 /// as flat top-level keys alongside the projection's own fields (`{"breaker_state": ...}` sits next
 /// to `request_id`, not nested under a `signals` key) — and an EMPTY bag serializes as zero
 /// additional keys, i.e. `#[serde(flatten)]` on an empty bag is byte-identical to the field not
-/// existing at all. Default (no signals declared anywhere) never allocates: `SmallVec::new()` is a
-/// stack-only empty state.
+/// existing at all. Default (no signals declared anywhere) never allocates: the list reserves at
+/// the first upsert and never before.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SignalBag(SignalBagInner);
 
@@ -195,39 +196,47 @@ impl SignalBag {
         Self::default()
     }
 
-    /// Whether nothing has been pushed.
+    /// Whether nothing has been recorded.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    /// How many signals have been pushed.
+    /// How many signals have been recorded.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Insert one signal's computed value. The caller is responsible for only calling this behind
-    /// a `requested.wants(signal)` gate (see `busbar::hooks::RequestedSignals`) — the bag itself
-    /// does not enforce that; it is a plain container.
-    pub fn push(&mut self, signal: Signal, value: SignalValue) {
-        self.0.push((signal, value));
+    /// Record one signal's computed value, REPLACING the value already recorded for the same
+    /// signal if there is one — a bag holds at most one value per catalog entry, which is why it
+    /// can never be full when a NEW signal arrives. The caller is responsible for only calling this
+    /// behind a `requested.wants(signal)` gate (see `busbar::hooks::RequestedSignals`) — the bag
+    /// itself does not enforce that; it is a plain container.
+    pub fn upsert(&mut self, signal: Signal, value: SignalValue) {
+        let mut value = Some(value);
+        if self.get(signal).is_some() {
+            // The replace path rebuilds in first-recorded order: the bounded list hands out no
+            // mutable view of its items, by design, and a signal recorded twice is the rare case.
+            let mut next = SignalBagInner::new();
+            for (s, v) in std::mem::take(&mut self.0) {
+                let v = value.take_if(|_| s == signal).unwrap_or(v);
+                let _ = next.push((s, v));
+            }
+            self.0 = next;
+        }
+        // One slot per catalog entry and no duplicates: the list is full only when every signal
+        // in the catalog is present, and then the branch above has already taken the value.
+        let _ = value.map(|v| self.0.push((signal, v)));
     }
 
-    /// Read back a previously-pushed value (test/debug convenience; the wire never round-trips
+    /// Read back a previously-recorded value (test/debug convenience; the wire never round-trips
     /// through this — it serializes straight from `iter`).
     pub fn get(&self, signal: Signal) -> Option<&SignalValue> {
-        self.0.iter().find(|(s, _)| *s == signal).map(|(_, v)| v)
+        self.iter().find(|(s, _)| *s == signal).map(|(_, v)| v)
     }
 
-    /// The pushed signals, in push order — the wire serializes straight from this.
+    /// The recorded signals, in first-recorded order — the wire serializes straight from this.
     pub fn iter(&self) -> impl Iterator<Item = &(Signal, SignalValue)> {
-        self.0.iter()
-    }
-
-    /// Whether the bag has spilled its inline `SmallVec` capacity onto the heap. Test/proof aid
-    /// for the "the default (nothing declared) path never allocates" guarantee: an empty or
-    /// small (≤4) bag is always `false`.
-    pub fn spilled(&self) -> bool {
-        self.0.spilled()
+        self.0.as_slice().iter()
     }
 }
 
@@ -238,7 +247,7 @@ impl Serialize for SignalBag {
     {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (signal, value) in &self.0 {
+        for (signal, value) in self.iter() {
             map.serialize_entry(signal.name(), value)?;
         }
         map.end()

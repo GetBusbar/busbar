@@ -40,7 +40,6 @@ futures = { workspace = true }
 # (nothing declared) path never touches the heap.
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-smallvec = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

@@ -168,13 +168,13 @@ because = "the hooks-kind face (RoutingPolicy, its projections, the signal catal
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 292
-because = "the same move under the loc-ceilings counting rule: busbar-contract took the hooks-kind face from busbar-api, 294 lines as that rule counts them, 2 of them paid for by the Unit-counts deletion's surplus after the 19-line VirtualKeyDirectory face"
+by = 289
+because = "the same move under the loc-ceilings counting rule: busbar-contract took the hooks-kind face from busbar-api, 294 lines as that rule counts them, 2 of them paid for by the Unit-counts deletion's surplus after the 19-line VirtualKeyDirectory face and 3 more by the surplus the signal battery's move out of src (34e5c856e) left, net of the SignalBag rewrite"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 276
-because = "the union row sums kernel + caps/contract + unit-*; the hooks-kind face is the same 294 lines the caps_contract row counts, 18 of them paid for by the two deletions' surplus (2 contract lines after the VirtualKeyDirectory face, 16 unit-auth lines) — kernel 5379 is unchanged"
+by = 273
+because = "the union row sums kernel + caps/contract + unit-*; the hooks-kind face is the same 294 lines the caps_contract row counts, 18 of them paid for by the two deletions' surplus (2 contract lines after the VirtualKeyDirectory face, 16 unit-auth lines) and 3 more by the signal battery's move out of src (34e5c856e), net of the SignalBag rewrite — kernel 5379 is unchanged"
 
 # THE OPERATION AXIS MOVED INTO THE CONTRACT (`busbar_api::operation` -> `busbar_contract::operation`,
 # Track 4's operation step, pulled forward because the hook policy engine's own gate is written
@@ -451,12 +451,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3870
+caps_contract_ceiling = 3867
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23839
+union_ceiling = 23836
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

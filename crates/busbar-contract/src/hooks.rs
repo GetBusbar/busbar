@@ -52,7 +52,7 @@ pub struct RoutingRequest<'a> {
     pub identity: Option<CallerIdentity>,
     /// The declared-signal bag: request-phase [`crate::Signal`] entries a
     /// consumer explicitly declared (see `busbar::hooks::RequestedSignals`), computed ONLY when
-    /// declared — EMPTY (never allocated past the inline `SmallVec` capacity) on the default path,
+    /// declared — EMPTY (nothing allocated) on the default path,
     /// where the wire's `#[serde(flatten)]` renders it as zero additional keys. ADDITIVE: every
     /// existing typed field above is unchanged; a consumer that reads only them sees the identical
     /// projection it always has.

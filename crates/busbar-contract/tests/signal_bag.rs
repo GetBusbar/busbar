@@ -75,11 +75,11 @@ fn empty_bag_serializes_as_empty_map() {
 #[test]
 fn populated_bag_serializes_flat_scalars() {
     let mut bag = SignalBag::new();
-    bag.push(
+    bag.upsert(
         Signal::CandidateBreakerState,
         SignalValue::Str(Cow::Borrowed("closed")),
     );
-    bag.push(Signal::CandidateErrorRate, SignalValue::F64(0.125));
+    bag.upsert(Signal::CandidateErrorRate, SignalValue::F64(0.125));
     let v = serde_json::to_value(&bag).unwrap();
     assert_eq!(v["candidate_breaker_state"], "closed");
     assert_eq!(v["candidate_error_rate"], 0.125);
@@ -92,7 +92,7 @@ fn populated_bag_serializes_flat_scalars() {
 fn populated_bag_is_not_empty() {
     let mut bag = SignalBag::new();
     assert!(bag.is_empty());
-    bag.push(Signal::RequestedModel, SignalValue::Bool(true));
+    bag.upsert(Signal::RequestedModel, SignalValue::Bool(true));
     assert!(!bag.is_empty());
 }
 
@@ -101,11 +101,11 @@ fn populated_bag_is_not_empty() {
 #[test]
 fn get_finds_by_signal_key_and_none_when_absent() {
     let mut bag = SignalBag::new();
-    bag.push(
+    bag.upsert(
         Signal::RequestedModel,
         SignalValue::Str(Cow::Borrowed("gpt")),
     );
-    bag.push(Signal::RequestTotalChars, SignalValue::U64(42));
+    bag.upsert(Signal::RequestTotalChars, SignalValue::U64(42));
 
     assert_eq!(
         bag.get(Signal::RequestTotalChars),
@@ -122,9 +122,9 @@ fn get_finds_by_signal_key_and_none_when_absent() {
 #[test]
 fn iter_yields_every_pushed_entry_in_order() {
     let mut bag = SignalBag::new();
-    bag.push(Signal::RequestedModel, SignalValue::I64(1));
-    bag.push(Signal::RequestTotalChars, SignalValue::I64(2));
-    bag.push(Signal::RequestMessageCount, SignalValue::I64(3));
+    bag.upsert(Signal::RequestedModel, SignalValue::I64(1));
+    bag.upsert(Signal::RequestTotalChars, SignalValue::I64(2));
+    bag.upsert(Signal::RequestMessageCount, SignalValue::I64(3));
     let collected: Vec<_> = bag.iter().map(|(s, v)| (*s, v.clone())).collect();
     assert_eq!(
         collected,
@@ -136,20 +136,41 @@ fn iter_yields_every_pushed_entry_in_order() {
     );
 }
 
-/// `spilled` is `false` for the empty bag and for a bag within the inline `SmallVec` capacity (4);
-/// pushing past that capacity spills to the heap and `spilled` must flip to `true`. Pins BOTH
-/// values so a mutant that hardcodes either constant is caught.
+/// `upsert` REPLACES: the same signal recorded five times is one entry carrying the last value,
+/// never five. Pins the count AND the value so a mutant that appends, or that keeps the first
+/// value, is caught.
 #[test]
-fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
+fn upsert_replaces_the_value_recorded_for_the_same_signal() {
     let mut bag = SignalBag::new();
-    assert!(!bag.spilled(), "empty bag must not report spilled");
-    for _ in 0..4 {
-        bag.push(Signal::RequestedModel, SignalValue::Bool(true));
+    for i in 0..5 {
+        bag.upsert(Signal::RequestedModel, SignalValue::I64(i));
     }
-    assert!(!bag.spilled(), "within inline capacity (4) must not spill");
-    bag.push(Signal::RequestedModel, SignalValue::Bool(true));
-    assert!(
-        bag.spilled(),
-        "past inline capacity (4) must spill to the heap"
+    assert_eq!(
+        bag.len(),
+        1,
+        "one signal is one entry however often it is recorded"
     );
+    assert_eq!(bag.get(Signal::RequestedModel), Some(&SignalValue::I64(4)));
+}
+
+/// The bag is BOUNDED BY THE CATALOG: recording every catalog signal yields exactly
+/// `Signal::ALL.len()` entries, and recording each of them again adds none — no entry is dropped,
+/// none is duplicated, and the bag never grows past one slot per catalog entry.
+#[test]
+fn the_bag_holds_one_slot_per_catalog_entry_and_never_more() {
+    let mut bag = SignalBag::new();
+    for round in 0..2 {
+        for (i, s) in Signal::ALL.iter().enumerate() {
+            bag.upsert(*s, SignalValue::I64(i as i64 + round));
+        }
+        assert_eq!(bag.len(), Signal::ALL.len(), "round {round}");
+    }
+    for (i, s) in Signal::ALL.iter().enumerate() {
+        assert_eq!(
+            bag.get(*s),
+            Some(&SignalValue::I64(i as i64 + 1)),
+            "{}",
+            s.name()
+        );
+    }
 }
