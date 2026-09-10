@@ -1317,7 +1317,7 @@ fn the_chain_position_map_stays_bounded_across_many_distinct_principals() {
     }
     assert_eq!(
         log.len(),
-        MAX_TRACKED_PRINCIPALS,
+        MAX_TRACKED_PRINCIPALS as usize,
         "the map is capped at MAX_TRACKED_PRINCIPALS however many distinct principals arrive, \
          rather than growing one entry per principal forever"
     );
@@ -1360,7 +1360,7 @@ fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
     );
     assert_eq!(
         log.len(),
-        MAX_TRACKED_PRINCIPALS,
+        MAX_TRACKED_PRINCIPALS as usize,
         "still capped after the flood"
     );
 

@@ -200,7 +200,7 @@ fn register(host: HostCtx, vt: &PlaneHostVtable, kind_id: u32, framing: AbiFrami
         framing: RawFraming::of(framing),
         digests_scope: 1,
         kind_id,
-        _reserved: 0,
+        max_scopes: 0,
         kind_ptr: kind.as_ptr(),
         kind_len: kind.len(),
     };
@@ -608,7 +608,7 @@ fn register_stream(
         framing: RawFraming::of(framing),
         digests_scope,
         kind_id,
-        _reserved: 0,
+        max_scopes: 0,
         kind_ptr: kind.as_ptr(),
         kind_len: kind.len(),
     };
@@ -762,7 +762,7 @@ fn out_of_range_register_framing_is_refused_not_matched() {
         framing: RawFraming::of(AbiFraming::LengthPrefixed),
         digests_scope: 1,
         kind_id,
-        _reserved: 0,
+        max_scopes: 0,
         kind_ptr: kind.as_ptr(),
         kind_len: kind.len(),
     };

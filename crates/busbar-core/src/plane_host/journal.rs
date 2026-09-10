@@ -456,33 +456,13 @@ pub(crate) extern "C-unwind" fn journal_register(
     desc: *const JournalStreamDesc,
     reframe: JournalReframeFn,
 ) -> StatusClass {
-    // `usize::MAX` over the ABI seam: the [`JournalStreamDesc`] POD carries no LRU cap, and a durable
-    // TABLE (the A2A task journal) opts OUT of position eviction — its working set is bounded by its own
-    // lifecycle. A stream that needs an LRU cap (the MCP call log, keyed by an unbounded principal space)
-    // registers WITHIN CORE through [`journal_register_capped`], which the ABI descriptor cannot express.
-    register_stream(host, desc, reframe, usize::MAX)
-}
-
-/// REGISTER a durable journal stream with an explicit LRU `cap` on its position cache — the WITHIN-CORE
-/// entry point for a stream (the MCP `call` log) whose scope space is unbounded (one position per
-/// principal) and must be bounded in RAM. The [`JournalStreamDesc`] ABI POD carries no cap, and this
-/// crate must not touch the hot ABI to add one, so an in-core plane seam user reaches this directly
-/// instead of the vtable's `journal_register`. Byte-behaviour is identical to the ABI path but for the
-/// bound; an evicted position is resumed from the store on the principal's next call.
-pub(crate) fn journal_register_capped(
-    host: HostCtx,
-    desc: *const JournalStreamDesc,
-    reframe: JournalReframeFn,
-    cap: usize,
-) -> StatusClass {
-    register_stream(host, desc, reframe, cap)
+    register_stream(host, desc, reframe)
 }
 
 fn register_stream(
     host: HostCtx,
     desc: *const JournalStreamDesc,
     reframe: JournalReframeFn,
-    cap: usize,
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
@@ -499,6 +479,16 @@ fn register_stream(
         // build cannot name is `Unsupported`, never a stream registered under a guessed framing.
         let Some(framing) = map_framing(d.framing) else {
             return StatusClass::Unsupported;
+        };
+        // The stream DECLARES its own RAM bound (minor-21). `0` is the host default: UNBOUNDED, which
+        // a durable TABLE whose working set is bounded by its own row lifecycle wants, and which is
+        // what every descriptor written against the older minor carried in this slot. A stream keyed
+        // on an unbounded scope space names its own cap here — the tuning constant belongs to whoever
+        // knows how many scopes are worth a resident position, which is never the host.
+        let cap = if d.max_scopes == 0 {
+            usize::MAX
+        } else {
+            d.max_scopes as usize
         };
         let journal = Arc::new(Journal::<PlaneJournalRecord>::new(cap));
         if let Some(gov) = state.app.governance.as_ref() {

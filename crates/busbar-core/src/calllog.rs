@@ -158,9 +158,9 @@ extern "C-unwind" fn reframe_call_ffi(
 
 /// REGISTER the MCP `call` durable stream with the host (once, at boot, before the rehydrate):
 /// `LengthPrefixed` framing with the principal in the digest, under [`KIND_ID_CALL`], bounded at
-/// [`MAX_TRACKED_PRINCIPALS`] positions. Uses the WITHIN-CORE capped register (the ABI descriptor
-/// carries no LRU cap, and this crate must not touch the hot ABI); the host attaches the durable sink
-/// from `app.governance` at register time.
+/// [`MAX_TRACKED_PRINCIPALS`] positions, which the stream DECLARES in its own descriptor
+/// ([`JournalStreamDesc::max_scopes`]) and the host reads as data. Registers through the vtable slot
+/// like any other stream; the host attaches the durable sink from `app.governance` at register time.
 pub fn register_call_stream(app: &Arc<crate::state::App>) {
     register_call_stream_as(KIND_ID_CALL, app);
 }
@@ -187,16 +187,18 @@ pub(crate) fn register_call_stream_as(kind_id: u32, app: &Arc<crate::state::App>
         framing: RawFraming::of(AbiFraming::LengthPrefixed),
         digests_scope: 1,
         kind_id,
-        _reserved: 0,
+        // This stream is keyed on an UNBOUNDED scope space (one position per principal), so it
+        // declares its own RAM bound in the descriptor rather than reaching past the seam for it.
+        max_scopes: MAX_TRACKED_PRINCIPALS,
         kind_ptr: kind.as_ptr(),
         kind_len: kind.len(),
     };
-    crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        crate::plane_host::journal::journal_register_capped(
+    crate::plane_host::with_dispatch_scope(app, |host, vt| {
+        (vt.journal_register
+            .expect("journal_register is a wired host slot"))(
             host,
             &desc as *const JournalStreamDesc,
             reframe_call_ffi,
-            MAX_TRACKED_PRINCIPALS,
         );
     });
 }
@@ -506,7 +508,7 @@ impl std::fmt::Display for CallLogError {
 /// principals leaked memory unboundedly. The eviction is least-recently-USED (a still-active
 /// principal is kept resident and never pays a readback), and the cap is generous enough that any
 /// realistic working set of concurrently-active callers fits without a single eviction.
-const MAX_TRACKED_PRINCIPALS: usize = 16_384;
+const MAX_TRACKED_PRINCIPALS: u32 = 16_384;
 
 /// THE PER-CALL LOG. A thin MCP-facing wrapper over the generic core [`Journal`]: the principal-keyed
 /// position cache, the LRU bound, the store-resume of an evicted tail, the write-through sink and the

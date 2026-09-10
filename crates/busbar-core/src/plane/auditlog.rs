@@ -114,7 +114,7 @@ pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App
         framing: RawFraming::of(AbiFraming::PipeSeparated),
         digests_scope: 0,
         kind_id,
-        _reserved: 0,
+        max_scopes: 0,
         kind_ptr: kind.as_ptr(),
         kind_len: kind.len(),
     };
