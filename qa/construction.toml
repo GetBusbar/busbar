@@ -183,6 +183,34 @@ key = "rules.loc-ceilings.kernel_ceiling"
 by = 2
 because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: two lines of MODULE WIRING, not two lines of kernel. busbar-unit-admission/src/lib.rs is in the kernel's call-graph name-match set, so `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};` spend kernel budget; cache.rs itself is not name-matched and none of its 136 lines are counted here."
 
+# THE PATH-KEYED CLASSIFIER FACE: `busbar_unit_verbs::rate::{MutationClass::for_path,
+# ConfigClassRule::NamedMapRoot, config_class_rules}` (crates/busbar-unit-verbs/src/rate.rs, 27
+# measured surface lines). The mutation rate limiter had ONE classifier and it was keyed on a
+# KernelVerb; the enforcement chokepoint every admin request crosses runs before any verb is
+# resolved and reaches it with a method and a path, and the 15 named-map operations that resolve to
+# no kernel verb at all have no verb to be keyed on. So busbar-core kept a second copy of the class
+# table (`admin/rate.rs::classify_mutation`), and the two copies had already drifted: core DERIVES
+# the named-definition map roots from the section registry at runtime, the unit listed
+# `/identity-providers` and `/export` as literals, and a section that joined the registry extended
+# one table and not the other. `for_path` is the path-keyed reading of the SAME table, `NamedMapRoot`
+# carries a section by its declared KEY so no path is synthesised and no section noun is spelled in
+# this crate, and `config_class_rules` is where the composition root folds the declaration in once.
+# busbar-core/src/admin/rate.rs (200 lines) dies against it in the third commit of this seam.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.verbs_ceiling"
+by = 27
+because = "path-keyed classifier face busbar_unit_verbs::rate::{MutationClass::for_path, ConfigClassRule::NamedMapRoot, config_class_rules}: the mutation class table read by PATH as well as by verb, with the named-definition map roots folded in from the section declaration instead of hardcoded. 27 measured surface lines in crates/busbar-unit-verbs/src/rate.rs; busbar-core/src/admin/rate.rs (200 lines, the second copy of this table) dies against it."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 27
+because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::rate::{MutationClass::for_path, ConfigClassRule::NamedMapRoot, config_class_rules}: all 27 lines land in busbar-unit-verbs and nothing else in the busbar-unit-* family moves, so the family sum rises by exactly the crate rise. The 200 lines it funds come out of busbar-core, which this sum does not carry."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 27
+because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::rate::{MutationClass::for_path, ConfigClassRule::NamedMapRoot, config_class_rules}: +27 surface lines in busbar-unit-verbs and nothing in busbar-caps, busbar-contract or busbar-kernel, and rate.rs is not in the kernel call-graph name-match set so none of the 27 is counted a second time here — the union rises by exactly the unit rise."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -412,10 +440,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14933
+unit_total_ceiling = 14960
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 1428
-union_ceiling = 23825
+verbs_ceiling = 1455
+union_ceiling = 23852
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

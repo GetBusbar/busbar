@@ -5,7 +5,21 @@
 //! per class, per-principal isolation, the fixed one-minute window reset, and that a denial still
 //! counts (so probing costs the same budget as mutating).
 
-use crate::rate::{MutationClass, MutationLimiter, RateCheck, CONFIG_CLASS_RULES};
+use crate::rate::{
+    config_class_rules, ConfigClassRule, MutationClass, MutationLimiter, RateCheck,
+    CONFIG_CLASS_RULES,
+};
+
+/// The two 1.5.3-native named-definition map section KEYS, as the section declaration answers them.
+/// A test fixture rather than a table: the shipped crate derives this list from the declaration and
+/// spells neither key, and this is the one place the 1.5.5-parity answer is written down so the
+/// row-for-row comparison below has something to compare against.
+const NATIVE_SECTION_KEYS: &[&str] = &["identity-providers", "export"];
+
+/// The 1.5.5-parity class table: the six frozen rows plus the two native section roots.
+fn rules_1_5_5() -> Vec<ConfigClassRule> {
+    config_class_rules(NATIVE_SECTION_KEYS)
+}
 use crate::verb::KernelVerb;
 
 #[test]
@@ -102,6 +116,8 @@ fn forbidden_class_has_zero_budget() {
 #[test]
 fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
     use KernelVerb::*;
+    let rules = rules_1_5_5();
+    let rules = rules.as_slice();
 
     // The blast-radius CONFIG class (10/min): whole-config mutations (including `config/settings`
     // — only `config/validate` is carved out, and it is `ReadOnly`-scoped so it never reaches this
@@ -128,7 +144,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
     ];
     for verb in config_rows {
         assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            MutationClass::for_verb(verb, rules),
             MutationClass::Config,
             "{verb:?} must classify Config (10/min), matching 1.5.5"
         );
@@ -137,7 +153,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
     // `plugins/inspect` gets its own dedicated 30/min bucket — neither CONFIG nor CRUD — despite
     // being `ReadOnly`-scoped.
     assert_eq!(
-        MutationClass::for_verb(PostPluginsInspect, CONFIG_CLASS_RULES),
+        MutationClass::for_verb(PostPluginsInspect, rules),
         MutationClass::PluginInspect
     );
 
@@ -163,7 +179,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
     ];
     for verb in crud_rows {
         assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            MutationClass::for_verb(verb, rules),
             MutationClass::Crud,
             "{verb:?} must classify Crud (60/min), matching 1.5.5"
         );
@@ -180,7 +196,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
         GetKeys,
     ] {
         assert_eq!(
-            MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            MutationClass::for_verb(verb, rules),
             MutationClass::Forbidden,
             "{verb:?} is a read and must never be rate-limited as a mutation"
         );
@@ -188,10 +204,7 @@ fn for_verb_matches_1_5_5s_classify_mutation_row_for_row() {
 
     // A 1.6.0 new MUTATING verb has no admin path at all and falls through to CRUD, exactly as
     // 1.5.5's path-only classifier implicitly does for anything it never saw.
-    assert_eq!(
-        MutationClass::for_verb(Adjust, CONFIG_CLASS_RULES),
-        MutationClass::Crud
-    );
+    assert_eq!(MutationClass::for_verb(Adjust, rules), MutationClass::Crud);
 }
 
 /// The two 1.6.0 verbs bound as GETs never spend a mutation slot.
@@ -351,3 +364,133 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
 /// The window arithmetic and the audit labels, in their own file.
 #[path = "rate_window_tests.rs"]
 mod rate_window_tests;
+
+/// `for_path` answers exactly what 1.5.5's `busbar-core::admin::rate::classify_mutation` answers,
+/// row for row, over the relative paths that classifier was written against.
+///
+/// The row-for-row test above proves the VERB-keyed classifier; this one proves the PATH-keyed one,
+/// and they are separate tests because the enforcement chokepoint reaches the path-keyed face with
+/// paths no kernel verb is bound to. The two carve-outs are the rows worth reading twice:
+/// `/config/validate` lives under the `/config/` prefix and is CRUD anyway, and `/plugins/inspect`
+/// is neither CONFIG nor CRUD.
+#[test]
+fn for_path_matches_1_5_5s_classify_mutation_row_for_row() {
+    let rules = rules_1_5_5();
+    let rules = rules.as_slice();
+
+    for rel in [
+        "/config/apply",
+        "/config/reload",
+        "/config/rollback",
+        "/config/settings",
+        "/admin-auth",
+        "/overlay/auth",
+        "/plugins/reload",
+        "/plugins/rollback",
+        "/restart",
+        "/identity-providers",
+        "/identity-providers/corp-ad",
+        "/identity-providers/corp-ad/settings",
+        "/export",
+        "/export/otlp",
+        "/export/otlp/settings",
+    ] {
+        assert_eq!(
+            MutationClass::for_path(rel, rules),
+            MutationClass::Config,
+            "{rel} must classify Config (10/min), matching 1.5.5"
+        );
+    }
+
+    assert_eq!(
+        MutationClass::for_path("/plugins/inspect", rules),
+        MutationClass::PluginInspect
+    );
+
+    for rel in [
+        "/config/validate",
+        "/keys",
+        "/keys/abc",
+        "/groups",
+        "/hooks",
+        "/plugins",
+        "/plugins/a.wasm",
+        "/auth/cache/flush",
+    ] {
+        assert_eq!(
+            MutationClass::for_path(rel, rules),
+            MutationClass::Crud,
+            "{rel} must classify Crud (60/min), matching 1.5.5"
+        );
+    }
+}
+
+/// THE DRIFT, CLOSED — and this is the test that says so.
+///
+/// The frozen six rows carry NO named-map root, so a table built for a deployment that declares no
+/// section classifies `/export` as CRUD; the same table built from the two 1.5.3-native section keys
+/// classifies it CONFIG. That difference is the whole point: membership follows the DECLARATION, so
+/// a section that joins the registry is in the blast-radius class on the verb path and on the path
+/// path at the same moment, instead of on whichever of the two happened to list it.
+#[test]
+fn a_named_map_section_is_config_class_only_because_it_was_declared() {
+    assert_eq!(
+        MutationClass::for_path("/export/otlp", CONFIG_CLASS_RULES),
+        MutationClass::Crud,
+        "the six frozen rows carry no named-map root; nothing here derives one"
+    );
+
+    let declared = config_class_rules(&["export"]);
+    assert_eq!(
+        MutationClass::for_path("/export/otlp", &declared),
+        MutationClass::Config
+    );
+
+    // A SECTION THIS CRATE HAS NEVER HEARD OF is classified the moment it is declared — the
+    // property the hardcoded literals could not have. The key is opaque: no plane noun is spelled
+    // here or in the shipped crate, only whatever string the declaration answered with.
+    let declared = config_class_rules(&["export", "widgets"]);
+    assert_eq!(
+        MutationClass::for_path("/widgets/left-handed", &declared),
+        MutationClass::Config
+    );
+    assert_eq!(
+        MutationClass::for_path("/widgets", &declared),
+        MutationClass::Config
+    );
+
+    // And a path that merely RESEMBLES a declared root is not in it: the leading slash is required,
+    // so a section key can never match in the middle of another path.
+    assert_eq!(
+        MutationClass::for_path("/keys/export", &declared),
+        MutationClass::Crud
+    );
+}
+
+/// The verb-keyed and path-keyed classifiers agree on every legacy verb that has a path.
+///
+/// One table, two readings — and the reason the second reading exists at all is that the chokepoint
+/// has a path and no verb. If they could disagree, an operation would take one budget through the
+/// loop and another through the middleware, which is the two-tables defect this seam deleted, moved
+/// one level in.
+#[test]
+fn the_two_classifiers_agree_on_every_legacy_verb_with_a_path() {
+    let rules = rules_1_5_5();
+    for row in crate::verb::LEGACY_VERBS {
+        if MutationClass::for_verb(row.verb, &rules) == MutationClass::Forbidden {
+            // A read: the path-keyed face is never asked about one (the caller tests the method
+            // first), so there is nothing to agree about.
+            continue;
+        }
+        let rel = row
+            .path
+            .strip_prefix(crate::rate::ADMIN_PREFIX)
+            .unwrap_or(row.path);
+        assert_eq!(
+            MutationClass::for_verb(row.verb, &rules),
+            MutationClass::for_path(rel, &rules),
+            "{:?} ({rel}) classifies differently by verb and by path",
+            row.verb
+        );
+    }
+}

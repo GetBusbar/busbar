@@ -4,32 +4,51 @@
 //! The per-principal admin-mutation rate limiter, moved verbatim from
 //! `busbar-core::admin::rate` (fixed one-minute windows, `Config` class at 10/min, `Crud` class at
 //! 60/min, `PluginInspect` at 30/min, failed attempts count too, opportunistic per-window sweep).
-//! [`MutationClass::for_verb`] takes the migrated `CONFIG_CLASS_RULES` table as DATA — a
-//! `&'static [ConfigClassRule]` the composition root supplies from the sealed policy — because this
-//! crate has no `NamedMapSection`/config-section registry of its own (that lives in `busbar-core`'s
-//! config module, which this crate does not depend on) and must not hard-code the blast-radius
-//! membership as a literal `match` arm. [`CONFIG_CLASS_RULES`] below is the exact table
-//! `busbar-core::admin::rate::CONFIG_CLASS_RULES` (1.5.5, `crates/busbar/src/admin/rate.rs`)
-//! encoded, transcribed against the same ADMIN_PREFIX-relative path strings, plus the two
-//! generic named-map write roots (`/export`, `/identity-providers`) 1.5.5 derives from
-//! `NamedMapSection::ALL` rather than listing as literals — reproduced here as data because this
-//! crate cannot name that registry. Everything downstream of "which class is this verb" — the
-//! limit values, the fixed window, the sweep, the audit-once signal — is unchanged.
+//! [`MutationClass::for_verb`] (verb-keyed) and [`MutationClass::for_path`] (path-keyed) both take
+//! the migrated `CONFIG_CLASS_RULES` table as DATA — a `&[ConfigClassRule]` the composition root
+//! supplies from the sealed policy — because this crate has no `NamedMapSection`/config-section
+//! registry of its own (that lives in `busbar-core`'s config module, which this crate does not
+//! depend on) and must not hard-code the blast-radius membership as a literal `match` arm.
+//! [`CONFIG_CLASS_RULES`] below is the exact table `busbar-core::admin::rate::CONFIG_CLASS_RULES`
+//! (1.5.5, `crates/busbar/src/admin/rate.rs`) encoded, transcribed against the same
+//! ADMIN_PREFIX-relative path strings, and NOTHING ELSE.
+//!
+//! THE NAMED-MAP ROOTS ARE NOT IN IT, and that is the drift this module used to carry. 1.5.5
+//! DERIVES the generic named-DEFINITION map write roots at runtime from the section registry
+//! (`NamedMapSection::sections()`), while this crate listed `/identity-providers` and `/export` as
+//! literals — so a section that joined the registry (a plane declaring a `named_def_list`)
+//! silently extended one table and not the other, and the same mutation was CONFIG class on one
+//! path and CRUD class on the other. [`config_class_rules`] closes it: the composition root reads
+//! the DECLARED section keys — whatever they are, however many there are, spelling no plane noun —
+//! and this crate turns each into a [`ConfigClassRule::NamedMapRoot`] beside the six frozen rows.
+//! Everything downstream of "which class is this" — the limit values, the fixed window, the sweep,
+//! the audit-once signal — is unchanged.
 
 use crate::verb::KernelVerb;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// One rule in the CONFIG-class blast-radius set — mirrors 1.5.5's private `PathRule` exactly.
+/// One rule in the CONFIG-class blast-radius set — mirrors 1.5.5's private `PathRule` exactly,
+/// plus the one rule 1.5.5 never spelled because it derived it.
 /// `Exact` matches the whole ADMIN_PREFIX-relative path; `Prefix` matches every path starting with
-/// the string (used for the whole-config and overlay subtrees, and the two named-map sections,
-/// whose membership is a subtree, not a single endpoint).
+/// the string (used for the whole-config and overlay subtrees, whose membership is a subtree, not a
+/// single endpoint); `NamedMapRoot` matches a named-DEFINITION map section by its declared KEY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigClassRule {
     /// The relative path must equal this string exactly.
     Exact(&'static str),
     /// The relative path must start with this string.
     Prefix(&'static str),
+    /// A named-DEFINITION map SECTION, carried as the section's own declared KEY (`"export"`,
+    /// `"identity-providers"`, and whatever a registered plane declares) rather than as a path.
+    ///
+    /// The key is what the DECLARATION holds — a config section key is also the admin path segment,
+    /// which is why one string can be both — so the composition root can hand this crate the
+    /// registry's answer verbatim without first synthesising `"/" + key` and without this crate
+    /// spelling a section noun of its own. Matching is exactly `Prefix("/" + key)`: the path must
+    /// begin with the one leading slash and then the key, which is the same subtree 1.5.5's
+    /// `rel.starts_with(section.path_root())` selects, one allocation fewer.
+    NamedMapRoot(&'static str),
 }
 
 impl ConfigClassRule {
@@ -39,17 +58,21 @@ impl ConfigClassRule {
         match self {
             ConfigClassRule::Exact(p) => rel == *p,
             ConfigClassRule::Prefix(p) => rel.starts_with(p),
+            ConfigClassRule::NamedMapRoot(key) => rel
+                .strip_prefix('/')
+                .is_some_and(|after| after.starts_with(key)),
         }
     }
 }
 
-/// THE single source of truth for which admin mutation endpoints are in the tight CONFIG class
-/// (10/min) versus the roomy CRUD class (60/min) — 1.5.5's `CONFIG_CLASS_RULES`
-/// (`crates/busbar/src/admin/rate.rs`), transcribed verbatim against ADMIN_PREFIX-relative paths,
-/// with the two `NamedMapSection::ALL` roots (`export`, `identity-providers`) appended as the same
-/// kind of `Prefix` rule 1.5.5 derives from that registry (this crate cannot name it, so the root's
-/// sealed policy is expected to supply the current, possibly larger, set of named-map roots at
-/// composition time — this constant is the 1.5.5-parity default the root may pass as-is or extend).
+/// The SIX FROZEN ROWS of the CONFIG-class blast-radius set — 1.5.5's `CONFIG_CLASS_RULES`
+/// (`crates/busbar/src/admin/rate.rs`) transcribed verbatim against ADMIN_PREFIX-relative paths,
+/// and nothing else. These six are literals in 1.5.5 too.
+///
+/// This is NOT the whole class table: the named-DEFINITION map roots 1.5.5 derives from its section
+/// registry are absent by design and are supplied by the composition root through
+/// [`config_class_rules`]. A caller that passes this constant straight through is asking for the
+/// six frozen rows and no named-map section — correct only for a deployment that declares none.
 pub const CONFIG_CLASS_RULES: &[ConfigClassRule] = &[
     // Whole-config mutations (apply/reload/rollback/settings). `/config/validate` is a stateless
     // dry-run and `ReadOnly`-scoped, so it never reaches `for_verb`'s table lookup at all (filtered
@@ -65,17 +88,43 @@ pub const CONFIG_CLASS_RULES: &[ConfigClassRule] = &[
     ConfigClassRule::Exact("/plugins/rollback"),
     // Restarting ends the process.
     ConfigClassRule::Exact("/restart"),
-    // The generic named-DEFINITION map sections (1.5.5's `NamedMapSection::ALL`): every mutation
-    // under a section's root re-runs the boot pipeline and swaps a whole new `App` — the same blast
-    // radius as `/config/reload`, so every method (`PUT`/`PATCH`/`DELETE`) under the root takes the
-    // CONFIG budget, matching 1.5.5's pure-path (method-blind) classifier exactly.
-    ConfigClassRule::Prefix("/identity-providers"),
-    ConfigClassRule::Prefix("/export"),
 ];
+
+/// THE WHOLE class table for a deployment, built ONCE at composition from the DECLARED
+/// named-definition map sections: the six frozen rows above, then one
+/// [`ConfigClassRule::NamedMapRoot`] per section key the caller was handed.
+///
+/// Every mutation under a section's root re-runs the boot pipeline and swaps a whole new `App` —
+/// the same blast radius as `/config/reload` — so every method (`PUT`/`PATCH`/`DELETE`) under the
+/// root takes the CONFIG budget, matching 1.5.5's pure-path (method-blind) classifier exactly.
+/// `section_keys` is whatever the section declaration answers: this crate does not know how many
+/// there are, does not know their names, and cannot tell a 1.5.3-native section from a plane's.
+/// That is the point — the derivation happens once, where the declaration is readable, and both
+/// classifiers below read the SAME table afterwards.
+pub fn config_class_rules(section_keys: &[&'static str]) -> Vec<ConfigClassRule> {
+    let mut rules = CONFIG_CLASS_RULES.to_vec();
+    rules.extend(
+        section_keys
+            .iter()
+            .copied()
+            .map(ConfigClassRule::NamedMapRoot),
+    );
+    rules
+}
 
 /// The ADMIN_PREFIX 1.5.5's `LEGACY_VERBS` paths carry, stripped by [`relative_admin_path`] so a
 /// [`ConfigClassRule`] can be written against the same relative strings 1.5.5's table used.
-const ADMIN_PREFIX: &str = "/api/v1/admin";
+pub const ADMIN_PREFIX: &str = "/api/v1/admin";
+
+/// The stateless config DRY RUN. Carved out of the CONFIG class by 1.5.5 before `/config/` ever
+/// matches it, and carved out here for the same reason: a validation that changes nothing must not
+/// contend with the budget an operator needs to apply the change it validated.
+const PATH_CONFIG_VALIDATE: &str = "/config/validate";
+
+/// The archive PREVIEW. Its own dedicated budget in 1.5.5 — neither the CONFIG class nor the shared
+/// CRUD one — because decompressing and parsing an attacker-controlled archive is a mutation-like
+/// cost profile even though the endpoint changes no state.
+const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
 
 /// The ADMIN_PREFIX-relative path for a legacy verb, or `None` for a verb with no fixed path (every
 /// 1.6.0 new verb, and the named non-admin surfaces) — those never match a [`ConfigClassRule`] and
@@ -164,6 +213,39 @@ impl MutationClass {
         match relative_admin_path(verb) {
             Some(rel) if config_class_rules.iter().any(|r| r.matches(rel)) => MutationClass::Config,
             _ => MutationClass::Crud,
+        }
+    }
+
+    /// Classify an ADMIN_PREFIX-RELATIVE PATH into its rate-limit class, against the same
+    /// `config_class_rules` table [`MutationClass::for_verb`] reads — 1.5.5's
+    /// `busbar-core::admin::rate::classify_mutation`, expressed here so there is ONE classifier in
+    /// the tree rather than a verb-keyed one and a path-keyed twin that can disagree.
+    ///
+    /// PATH-KEYED, not verb-keyed, and the difference is the whole reason this face exists. The
+    /// enforcement chokepoint every admin request crosses runs BEFORE any verb is resolved: it has
+    /// a method and a path and nothing else, and the 15 named-map operations that reach no kernel
+    /// verb at all have no verb to be keyed on. A classifier that could only answer for a verb left
+    /// those paths to a second copy of this table.
+    ///
+    /// The two carve-outs are 1.5.5's, in 1.5.5's order and with 1.5.5's answers: `/config/validate`
+    /// is CRUD (not CONFIG — it lives under `/config/` and is checked first so the prefix never
+    /// reaches it, and not `Forbidden` — a path-keyed classifier is not told the caller's method and
+    /// this endpoint is reached by `POST`), and `/plugins/inspect` is its own `PluginInspect`
+    /// bucket. Everything the table matches is `Config`; everything else is `Crud`.
+    ///
+    /// This function is pure and never rate-limits a READ, because it is never asked about one: the
+    /// caller tests the method for a mutating verb first, exactly as 1.5.5 does.
+    pub fn for_path(rel: &str, config_class_rules: &[ConfigClassRule]) -> MutationClass {
+        if rel == PATH_CONFIG_VALIDATE {
+            return MutationClass::Crud;
+        }
+        if rel == PATH_PLUGINS_INSPECT {
+            return MutationClass::PluginInspect;
+        }
+        if config_class_rules.iter().any(|r| r.matches(rel)) {
+            MutationClass::Config
+        } else {
+            MutationClass::Crud
         }
     }
 }

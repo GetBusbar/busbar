@@ -127,7 +127,23 @@ them). Each axis is blind to the other two; only the kernel composes them.
   cost unit naming the admission unit is a Cargo library cycle, refused by name. The topology is the
   cost unit's, the walk is the door's, and a memo of the walk is the door's too. It is a MOVE: 105
   of the 138 lines are the retiring engine's own by identity, and `busbar-core/src/cost.rs` falls
-  471 -> 292 in the same transaction. 100 % (non-equivalent)
+  471 -> 292 in the same transaction. The third is
+  **`busbar_unit_verbs::rate::{MutationClass::for_path, ConfigClassRule::NamedMapRoot,
+  config_class_rules}`** (`src/rate.rs`; 27 measured lines, declared at +27 against
+  `verbs_ceiling`, `unit_total_ceiling` and `union_ceiling` alike, and nothing against
+  `kernel_ceiling` because `rate.rs` is not in the kernel's call-graph name-match set): the admin
+  mutation class table read by PATH as well as by verb. The limiter's one classifier was keyed on a
+  `KernelVerb`, and the enforcement chokepoint every admin request crosses runs BEFORE any verb is
+  resolved — it has a method and a path — while the 15 named-map operations resolve to no kernel
+  verb at all. So the retiring engine kept a second copy of the table, and the two copies had
+  already drifted apart in the way two copies do: the engine DERIVED the named-definition map roots
+  from the section registry at runtime and the unit listed two of them as literals, so a section
+  that joined the registry was blast-radius class on one path and not on the other. `NamedMapRoot`
+  carries a section by its DECLARED KEY rather than as a synthesised path, so the unit spells no
+  section noun of its own, and `config_class_rules` is the one place the declaration is folded in.
+  It is a DELETION: `busbar-core/src/admin/rate.rs` (200 lines) dies against it in the same seam,
+  and the process-global limiter it held becomes the boot-owned unit state the root composes once.
+  100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
