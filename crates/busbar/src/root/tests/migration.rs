@@ -221,10 +221,7 @@ impl busbar_api::Store for KeyRowsRefused {
         Ok(())
     }
 
-    fn list_metering(
-        &self,
-        _bucket: u64,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         Ok(Vec::new())
     }
 }
