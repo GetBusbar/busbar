@@ -260,7 +260,7 @@ fn secret_ffi_roundtrip_open_call_close() {
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
+            busbar_plugin::cold::SecretResponse::Error { kind, message, .. } => {
                 assert_eq!(kind, busbar_plugin::cold::SecretErrorKind::Invalid);
                 assert!(message.contains("settings.name required"), "got {message}");
             }
