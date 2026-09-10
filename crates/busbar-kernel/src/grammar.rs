@@ -10,9 +10,11 @@
 //!
 //! - **Selectors** — the forms a claim may match on. A plane says "these bytes are mine" only in
 //!   one of these shapes, which is what makes "can two claims both match?" a question with an
-//!   answer rather than an opinion. Declared by the contract; what stays here is how specific one
-//!   selector is against another, which is the within-a-plane precedence order and not part of
-//!   what a selector IS.
+//!   answer rather than an opinion. Declared by the contract, along with every per-form fact:
+//!   which part of a request a form reads, whether two selectors overlap, whether one matches an
+//!   arriving request, and how specific it is. What stays with the kernel is the APPLICATION of
+//!   the last of those — the sealed order a plane's claims are tried in, which is a decision about
+//!   claims and not a fact about a selector.
 //! - **Locations** — the forms a credential or an idempotency key may be found at. Each form also
 //!   says how it is masked, so hiding a credential is decided by the grammar and not per plane.
 //!   Declared by the contract.
@@ -30,7 +32,8 @@
 /// spelling of them. The contract owns the shapes, the overlap decision, the form-to-family map and
 /// the masking rule.
 pub use busbar_contract::{
-    ArrivalLocation, Location, MaskKind, PathSeg as Segment, Selector, SelectorForm, SignedOver,
+    ArrivalLocation, Location, MaskKind, PathSeg as Segment, Selector, SelectorFamily,
+    SelectorForm, SignedOver,
 };
 
 /// The closed JSON span grammar, named rather than spelled a second time.
@@ -38,75 +41,6 @@ pub use busbar_contract::{
 /// The scanner is [`busbar_grammar`]'s, and the contract re-exports the same crate, so the pointer
 /// a plane resolved and the pointer the pump resolves are resolved by one reading of one grammar.
 pub use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
-
-/// The three axes the boot-time overlap check groups selector forms onto.
-///
-/// Deliberately coarser than the contract's per-form family: the overlap decision only needs to
-/// know whether two selectors read the same axis at all, and every handshake-derived form is one
-/// axis for that purpose. It is the kernel's own grouping, which is why it lives here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectorFamily {
-    /// The request path.
-    Path,
-    /// A named header.
-    Header,
-    /// The transport handshake: server name, protocol, certificate subject, stream name, port.
-    Transport,
-}
-
-/// Which axis a selector reads.
-#[must_use]
-pub fn family(selector: &Selector) -> SelectorFamily {
-    match selector {
-        Selector::ExactPath(_)
-        | Selector::PrefixOneLevel(_)
-        | Selector::PathPattern(_)
-        | Selector::PathSuffix(_)
-        | Selector::PathContains(_) => SelectorFamily::Path,
-        Selector::HeaderExact(..) | Selector::HeaderPresent(_) | Selector::HeaderPrefix(..) => {
-            SelectorFamily::Header
-        }
-        Selector::Sni(_)
-        | Selector::ClientCertSubject(_)
-        | Selector::StreamName(_)
-        | Selector::Alpn(_)
-        | Selector::Port(_) => SelectorFamily::Transport,
-    }
-}
-
-/// How specific a selector is, for the within-one-plane precedence order: a literal beats a
-/// variable, longer beats shorter, a whole path beats a fragment of one.
-#[must_use]
-pub fn specificity(selector: &Selector) -> u32 {
-    match selector {
-        Selector::ExactPath(p) => 10_000 + p.len() as u32,
-        Selector::PathPattern(segments) => {
-            let literals = segments
-                .iter()
-                .filter(|s| matches!(s, Segment::Lit(_)))
-                .count() as u32;
-            let open = segments
-                .iter()
-                .filter(|s| matches!(s, Segment::Tail))
-                .count() as u32;
-            // Saturating, because the discount is a plane's own count of open segments and nothing
-            // bounds it: a pattern with more tails than its own score can pay for is the least
-            // specific thing there is, not a subtraction that panics the seal or wraps a claim to
-            // the top of the order.
-            (5_000 + literals * 100 + segments.len() as u32).saturating_sub(open.saturating_mul(50))
-        }
-        Selector::PrefixOneLevel(p) => 4_000 + p.len() as u32,
-        Selector::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
-        Selector::HeaderPrefix(n, v) => 2_000 + (n.len() + v.len()) as u32,
-        Selector::HeaderPresent(n) => 1_500 + n.len() as u32,
-        Selector::PathSuffix(s) | Selector::PathContains(s) => 1_000 + s.len() as u32,
-        Selector::Sni(s) | Selector::ClientCertSubject(s) | Selector::StreamName(s) => {
-            800 + s.len() as u32
-        }
-        Selector::Alpn(a) => 600 + a.len() as u32,
-        Selector::Port(_) => 500,
-    }
-}
 
 /// How far into a body the kernel has to read before a unit can open.
 ///

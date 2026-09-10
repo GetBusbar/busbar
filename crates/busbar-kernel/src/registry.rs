@@ -416,7 +416,7 @@ pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
 /// anchored to an end of what it reads.
 ///
 /// The second component only ever separates two selectors the first component ties, and it says one
-/// thing the first cannot. [`crate::grammar::specificity`] scores a fragment form by the length of
+/// thing the first cannot. [`Selector::specificity`] scores a fragment form by the length of
 /// its literal, which puts `PathSuffix(s)` and `PathContains(t)` at the same rank whenever `s` and
 /// `t` happen to be the same length — two unrelated fragments tied by a coincidence of spelling. A
 /// suffix is ANCHORED: it matches a strict subset of what the same literal would match floating, so
@@ -426,7 +426,7 @@ pub fn check_claims(claims: &[PlaneClaim]) -> Result<(), Box<ClaimConflict>> {
 #[must_use]
 pub fn precedence(selector: &Selector) -> (u32, u32) {
     let anchored = u32::from(matches!(selector, Selector::PathSuffix(_)));
-    (crate::grammar::specificity(selector), anchored)
+    (selector.specificity(), anchored)
 }
 
 /// One plane's claims in the order they are tried: most specific first, and ties broken by the

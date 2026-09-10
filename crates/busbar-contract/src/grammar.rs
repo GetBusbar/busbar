@@ -390,6 +390,91 @@ impl Selector {
         }
     }
 
+    /// Which part of an arriving request this selector reads.
+    ///
+    /// The form's own answer, reached without spelling the thirteen forms a second time: a
+    /// selector IS its form plus a value, and the value has no say in which part of the request
+    /// the form reads.
+    #[must_use]
+    pub const fn family(&self) -> SelectorFamily {
+        self.form().family()
+    }
+
+    /// How specific this selector is, for the within-one-plane precedence order: a literal beats a
+    /// variable, longer beats shorter, a whole path beats a fragment of one.
+    ///
+    /// The order is the kernel's to APPLY — which claim of a plane's set is tried first is a
+    /// kernel decision — but how specific one selector is against another is a fact about the
+    /// selector, and the selector is declared here. A second spelling one crate down was a second
+    /// answer to a question with one right answer, kept in step only by nobody editing it.
+    #[must_use]
+    pub fn specificity(&self) -> u32 {
+        match self {
+            Self::ExactPath(p) => 10_000 + p.len() as u32,
+            Self::PathPattern(segments) => {
+                let literals = segments
+                    .iter()
+                    .filter(|s| matches!(s, PathSeg::Lit(_)))
+                    .count() as u32;
+                let open = segments
+                    .iter()
+                    .filter(|s| matches!(s, PathSeg::Tail))
+                    .count() as u32;
+                // Saturating, because the discount is a plane's own count of open segments and
+                // nothing bounds it: a pattern with more tails than its own score can pay for is
+                // the least specific thing there is, not a subtraction that panics the seal or
+                // wraps a claim to the top of the order.
+                (5_000 + literals * 100 + segments.len() as u32)
+                    .saturating_sub(open.saturating_mul(50))
+            }
+            Self::PrefixOneLevel(p) => 4_000 + p.len() as u32,
+            Self::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
+            Self::HeaderPrefix(n, v) => 2_000 + (n.len() + v.len()) as u32,
+            Self::HeaderPresent(n) => 1_500 + n.len() as u32,
+            Self::PathSuffix(s) | Self::PathContains(s) => 1_000 + s.len() as u32,
+            Self::Sni(s) | Self::ClientCertSubject(s) | Self::StreamName(s) => 800 + s.len() as u32,
+            Self::Alpn(a) => 600 + a.len() as u32,
+            Self::Port(_) => 500,
+        }
+    }
+
+    /// Whether this selector matches a request's path and headers.
+    ///
+    /// The other half of [`Selector::overlaps`], and the half a request actually runs. A boot
+    /// proves two claims disjoint with the first; an arrival decides which claim it landed on with
+    /// the second. Written twice, in two crates, they come apart — and coming apart means a
+    /// request matching a claim the boot proved could never be matched alongside another. So they
+    /// are written once, here, beside each other, against the same thirteen forms.
+    ///
+    /// EVERY form is answered explicitly. A wildcard arm would silently answer "no match" for a
+    /// form added to the vocabulary later, which is the one way a declared claim could stop being
+    /// evaluated without anything failing to compile.
+    ///
+    /// The five forms about the CONNECTION rather than the request — the handshake name, the
+    /// client certificate, the stream, the protocol, the local port — are answered `false`, and
+    /// that is a stated answer rather than a default: this function is handed a path and a header
+    /// lookup and nothing else, and a caller that guessed at a fact it was never handed would be
+    /// routing on something it made up. A caller that HAS those facts decides them where it has
+    /// them; it does not ask this.
+    #[must_use]
+    pub fn matches<'h>(&self, path: &str, header: &dyn Fn(&str) -> Option<&'h str>) -> bool {
+        match self {
+            Self::ExactPath(p) => path == *p,
+            Self::PrefixOneLevel(prefix) => one_level_under(prefix, path),
+            Self::PathPattern(pattern) => pattern_matches(pattern, path),
+            Self::PathSuffix(suffix) => path.ends_with(suffix),
+            Self::PathContains(needle) => path.contains(needle),
+            Self::HeaderExact(name, value) => header(name) == Some(*value),
+            Self::HeaderPresent(name) => header(name).is_some(),
+            Self::HeaderPrefix(name, prefix) => header(name).is_some_and(|v| v.starts_with(prefix)),
+            Self::Sni(_)
+            | Self::ClientCertSubject(_)
+            | Self::StreamName(_)
+            | Self::Alpn(_)
+            | Self::Port(_) => false,
+        }
+    }
+
     /// Whether two selectors could ever match the same arriving bytes.
     ///
     /// Total over the cross-product of forms: every pair has an answer and no pair is left to a
@@ -406,7 +491,7 @@ impl Selector {
     /// Reflexive and symmetric by construction, and the fixtures assert both across every pair.
     #[must_use]
     pub fn overlaps(&self, other: &Selector) -> bool {
-        let (a, b) = (self.form().family(), other.form().family());
+        let (a, b) = (self.family(), other.family());
         if a != b {
             // Different parts of the same request: both can be true at once.
             return true;

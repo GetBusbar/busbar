@@ -136,8 +136,6 @@ fn the_planes_declare_forty_eight_claims() {
 #[cfg(feature = "plane-voice")]
 #[test]
 fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
-    use busbar_kernel::grammar::family;
-
     let claims = plane_claims();
     let mut cross_family = 0usize;
     let mut same_family = 0usize;
@@ -146,7 +144,7 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
             if left.plane == right.plane || !claims_overlap(&left.claim, &right.claim) {
                 continue;
             }
-            if family(&left.claim.selector) == family(&right.claim.selector) {
+            if left.claim.selector.family() == right.claim.selector.family() {
                 same_family += 1;
             } else {
                 cross_family += 1;
@@ -178,8 +176,6 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
-    use busbar_kernel::grammar::family;
-
     let claims = plane_claims();
     let (mut tail, mut variable, mut fragments) = (0usize, 0usize, 0usize);
     let ends_in_tail = |s: &Selector| matches!(s, Selector::PathPattern(p) if matches!(p.last(), Some(PathSeg::Tail)));
@@ -191,7 +187,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
         for right in &claims[i + 1..] {
             if left.plane == right.plane
                 || !claims_overlap(&left.claim, &right.claim)
-                || family(&left.claim.selector) != family(&right.claim.selector)
+                || left.claim.selector.family() != right.claim.selector.family()
             {
                 continue;
             }
@@ -375,13 +371,11 @@ fn the_precedence_order_is_a_permutation_of_every_claim() {
 /// first claim that matches is the most specific one that could have.
 #[test]
 fn the_precedence_order_is_most_specific_first() {
-    use busbar_kernel::grammar::specificity;
-
     let claims = plane_claims();
     let order = seal_claims(&claims).order;
     for pair in order.windows(2) {
-        let earlier = specificity(&claims[pair[0]].claim.selector);
-        let later = specificity(&claims[pair[1]].claim.selector);
+        let earlier = claims[pair[0]].claim.selector.specificity();
+        let later = claims[pair[1]].claim.selector.specificity();
         assert!(earlier >= later, "{earlier} came before {later}");
     }
 }
