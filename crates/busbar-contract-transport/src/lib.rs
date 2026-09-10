@@ -43,10 +43,6 @@ pub struct AbiVersion(pub u16);
 pub use dest::UpstreamAddress;
 pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 pub use registry::{check_composition, facts, CompositionError, Registered, TRANSPORT_ABI};
-pub use session::{
-    Cut, DetachedSession, DuplexWire, SessionBudgets, SessionDriver, SessionEnd, SessionFrame,
-    SessionHandle, SessionOpen, SessionReply,
-};
 pub use surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,

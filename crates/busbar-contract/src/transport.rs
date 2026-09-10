@@ -48,9 +48,8 @@ pub use busbar_contract_transport::registry::{
 /// is read by every mount and by no plugin author who is not writing one.
 pub use busbar_contract_transport::surface;
 pub use busbar_contract_transport::surface::{
-    binding_at, check_surface, duplex_bar, duplex_binding_at, match_target, resolve_document,
-    resolve_service, resolve_target, Answering, Bar, BindingDecl, Capture, Dispatch, Operation,
-    SurfaceError, WireSurface,
+    binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
+    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
 };
 
 /// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
@@ -69,10 +68,6 @@ pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, 
 /// keep it from having — and the two seams would then be reached by two different routes for no
 /// reason anybody could state.
 pub use busbar_contract_transport::session;
-pub use busbar_contract_transport::session::{
-    Cut, DetachedSession, DuplexWire, SessionBudgets, SessionDriver, SessionEnd, SessionFrame,
-    SessionHandle, SessionOpen, SessionReply,
-};
 
 /// Everything a transport declares about itself.
 pub trait TransportMeta {

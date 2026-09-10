@@ -291,7 +291,10 @@ fn an_upgrade_that_opened_nothing_leaves_nothing_to_drain() {
 fn the_open_session_carries_no_ceiling() {
     assert_eq!(SessionBudgets::default().deadline, None);
     assert_eq!(
-        SessionBudgets::within(std::time::Duration::from_secs(30)).deadline,
+        SessionBudgets {
+            deadline: Some(std::time::Duration::from_secs(30))
+        }
+        .deadline,
         Some(std::time::Duration::from_secs(30))
     );
 }

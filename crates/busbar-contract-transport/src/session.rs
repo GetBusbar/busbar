@@ -219,32 +219,6 @@ pub trait SessionDriver: Send + Sync {
     fn close(&self, session: SessionHandle, end: SessionEnd);
 }
 
-/// A session driver that opens nothing, for a mount composed before its driver exists.
-///
-/// The duplex twin of [`crate::driver::Detached`], and there for the same reason: a mount is handed a
-/// driver at listen, and a deployment that has mounted a surface it cannot yet run has to answer
-/// SOMETHING. Refusing the upgrade with the word that means "this node cannot serve it" is the only
-/// answer that is true, and it is refused BEFORE the protocol changes, so the caller gets it on a
-/// wire that still has somewhere to put it.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DetachedSession;
-
-impl SessionDriver for DetachedSession {
-    fn open(
-        &self,
-        _open: SessionOpen<'_>,
-        _surface: &WireSurface,
-    ) -> Result<SessionHandle, Outcome> {
-        Err(Outcome::Unavailable)
-    }
-
-    fn drive(&self, _session: SessionHandle, _frame: SessionFrame<'_>) -> SessionReply {
-        SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed)
-    }
-
-    fn close(&self, _session: SessionHandle, _end: SessionEnd) {}
-}
-
 /// THE COMPOSITION'S CEILING ON ONE SESSION.
 ///
 /// One field, and the "one" is the deliberate half. The other bounds a duplex session runs under
@@ -269,16 +243,6 @@ pub struct SessionBudgets {
     /// exchange with no stranger on either end would cut a healthy long-lived session for no reason
     /// anybody could act on.
     pub deadline: Option<std::time::Duration>,
-}
-
-impl SessionBudgets {
-    /// A session bounded to run no longer than `deadline`.
-    #[must_use]
-    pub fn within(deadline: std::time::Duration) -> Self {
-        Self {
-            deadline: Some(deadline),
-        }
-    }
 }
 
 /// A WIRE THAT UPGRADES AND PUMPS: the seam an ACCEPTOR reaches a duplex wire through.

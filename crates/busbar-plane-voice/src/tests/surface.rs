@@ -59,7 +59,7 @@ fn every_declared_row_opens_a_session_and_every_mount_is_addressable_as_one() {
     for op in SURFACE.operations {
         for d in op.dispatch {
             assert!(
-                d.is_duplex(),
+                matches!(d, Dispatch::Duplex { .. }),
                 "this plane declares its duplex route and nothing else; `{}` carries a row that is \
                  not a session",
                 op.op

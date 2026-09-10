@@ -171,15 +171,6 @@ impl Dispatch {
             | Dispatch::Duplex { bar, .. } => *bar,
         }
     }
-
-    /// Whether this row opens a SESSION rather than answering a request.
-    ///
-    /// The one question a duplex mount asks of a row, given a name so that no mount has to match on
-    /// the arm itself and quietly grow a fourth reading of what "duplex" means.
-    #[must_use]
-    pub fn is_duplex(&self) -> bool {
-        matches!(self, Dispatch::Duplex { .. })
-    }
 }
 
 /// One operation of a plane's served surface, and every way it can be addressed.

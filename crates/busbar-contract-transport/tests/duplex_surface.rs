@@ -296,11 +296,10 @@ fn a_duplex_address_does_not_collide_with_a_service_of_the_same_name() {
     check_surface(&S).expect("a binding and a service are not one namespace");
 }
 
-/// The kind is readable off a row by name, so no mount has to match on the arm and grow a fourth
-/// reading of what "duplex" means.
+/// The kind is readable off a row by its arm, and the one bar reader answers for every kind.
 #[test]
 fn a_row_says_whether_it_opens_a_session() {
-    assert!(D_SESSION[0].is_duplex());
-    assert!(!D_POSTED[0].is_duplex());
+    assert!(matches!(D_SESSION[0], Dispatch::Duplex { .. }));
+    assert!(!matches!(D_POSTED[0], Dispatch::Duplex { .. }));
     assert_eq!(D_SESSION[0].bar(), Bar::Credential);
 }

@@ -23,8 +23,7 @@ use busbar_contract::TransportMeta;
 use busbar_contract_transport::driver::Outcome;
 use busbar_contract_transport::registry::facts as tfacts;
 use busbar_contract_transport::session::{
-    Cut, DetachedSession, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
-    SessionReply,
+    Cut, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
 };
 use busbar_contract_transport::surface::{
     check_surface, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
@@ -497,6 +496,32 @@ fn a_refused_open_answers_in_the_closed_vocabulary() {
     );
 }
 
+/// A session driver that opens nothing, for a mount composed before its driver exists.
+///
+/// The duplex twin of the one-shot seam's `Detached` driver, and there for the same reason: a mount is handed a
+/// driver at listen, and a deployment that has mounted a surface it cannot yet run has to answer
+/// SOMETHING. Refusing the upgrade with the word that means "this node cannot serve it" is the only
+/// answer that is true, and it is refused BEFORE the protocol changes, so the caller gets it on a
+/// wire that still has somewhere to put it.
+#[derive(Clone, Copy, Debug, Default)]
+struct DetachedSession;
+
+impl SessionDriver for DetachedSession {
+    fn open(
+        &self,
+        _open: SessionOpen<'_>,
+        _surface: &WireSurface,
+    ) -> Result<SessionHandle, Outcome> {
+        Err(Outcome::Unavailable)
+    }
+
+    fn drive(&self, _session: SessionHandle, _frame: SessionFrame<'_>) -> SessionReply {
+        SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed)
+    }
+
+    fn close(&self, _session: SessionHandle, _end: SessionEnd) {}
+}
+
 /// A mount composed before its driver exists opens nothing, and says so honestly.
 #[test]
 fn a_detached_mount_opens_nothing() {
@@ -770,7 +795,9 @@ async fn a_session_that_outruns_its_deadline_is_cut_by_this_side() {
         SessionHandle(7),
         SilentSource,
         &mut sink,
-        SessionBudgets::within(std::time::Duration::from_secs(30)),
+        SessionBudgets {
+            deadline: Some(std::time::Duration::from_secs(30)),
+        },
     )
     .await;
 
@@ -806,7 +833,9 @@ async fn a_peer_that_never_stops_talking_still_meets_the_deadline() {
         SessionHandle(7),
         &mut source,
         &mut sink,
-        SessionBudgets::within(std::time::Duration::from_secs(30)),
+        SessionBudgets {
+            deadline: Some(std::time::Duration::from_secs(30)),
+        },
     )
     .await;
 
@@ -836,7 +865,9 @@ async fn a_session_inside_its_deadline_ends_on_its_own_terms() {
         SessionHandle(7),
         FakeSource::of(&["one"]),
         &mut sink,
-        SessionBudgets::within(std::time::Duration::from_secs(30)),
+        SessionBudgets {
+            deadline: Some(std::time::Duration::from_secs(30)),
+        },
     )
     .await;
 
@@ -855,10 +886,6 @@ async fn a_session_inside_its_deadline_ends_on_its_own_terms() {
 #[test]
 fn the_default_budget_bounds_nothing() {
     assert_eq!(SessionBudgets::default().deadline, None);
-    assert_eq!(
-        SessionBudgets::within(std::time::Duration::from_secs(5)).deadline,
-        Some(std::time::Duration::from_secs(5))
-    );
 }
 
 // ── the numbers this wire spells ────────────────────────────────────────────────────────────────
