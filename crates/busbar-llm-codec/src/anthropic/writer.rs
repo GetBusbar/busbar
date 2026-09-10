@@ -764,15 +764,24 @@ impl ProtocolWriter for AnthropicWriter {
                 // `message` leaves the SDK's `APIError` with an undefined description and is a
                 // distinguishability tell vs a native event.
                 let mut error_obj = serde_json::Map::new();
-                // `error.type` is a DISCRIMINATOR over nine tokens, not a free-text slot: the
-                // signal often carries an upstream sentence (or a foreign dialect's code), and
-                // writing that here produces an error object no SDK can dispatch on. Derive the
-                // token from the class, keeping a signal that is already a spec token so a native
-                // one round-trips. The free text is not lost — it is the `message` below.
-                error_obj.insert(
-                    "type".to_string(),
-                    serde_json::json!(stream_error_type(err)),
-                );
+                // `error.type` CARRIES THE SIGNAL VERBATIM, prose included, and that is the
+                // published wire contract — not an oversight. The mid-stream abort path hands this
+                // writer a human sentence as the signal, and the shipped 1.5.5 binary put that
+                // sentence in the `type` slot; the mid-stream golden pins those exact bytes for an
+                // Anthropic-ingress reset. Deriving a spec token from `err.class` here instead
+                // reads better against the published discriminator, but it is a caller-visible
+                // change to a terminal frame on the money path, and no CHANGELOG line registers
+                // one — the release notes assert the opposite ("every other error type unchanged").
+                // So the recorded bytes stand: the signal goes through untouched, and an absent
+                // signal is an explicit `null` rather than an invented token.
+                match err.provider_signal {
+                    Some(ref ps) => {
+                        error_obj.insert("type".to_string(), serde_json::json!(ps));
+                    }
+                    None => {
+                        error_obj.insert("type".to_string(), serde_json::Value::Null);
+                    }
+                }
                 // The IR carries no separate message string (IrError == CanonicalSignal, which has
                 // no `message` field), so derive a human-readable one from the signal: prefer the
                 // provider type when present, otherwise a generic fallback. Always non-empty so the
