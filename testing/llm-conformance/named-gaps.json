@@ -97,12 +97,25 @@
     "towards — but it is printed with the instruction to lower `expected`, so the floor only ever",
     "moves down. MORE, or one this file does not name, is red.",
     "",
-    "Every entry today is a cell testing/shadow-oracle/record.sh could not record at all (its own",
-    "ledger says UNSUPPORTED), so there is no wire for this gate to judge. They are the recorder's",
-    "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
-    "their merits, and the entry and the count come off."
+    "A SKIP row reaches this ceiling by TWO roads, and both are declared here.",
+    "",
+    "  1. THE RECORDER COULD NOT RECORD THE CELL AT ALL (its own ledger says UNSUPPORTED), so",
+    "     there is no wire for this gate to judge. Those are the recorder's to close, not this",
+    "     rig's; when the fixture lands the cell records, the rows go PASS or FAIL on their",
+    "     merits, and the entry and the count come off. Each is a `needs_fixture` cell in",
+    "     testing/shadow-oracle/cells.json.",
+    "",
+    "  2. THE `gaps` SECTION ABOVE FORGAVE EVERY VIOLATION ON THE ROW. A forgiven row is a SKIP",
+    "     row like any other, so it must be inside this ceiling as well as named up there: one",
+    "     section says WHY the vendor's schema is the incomplete side, this one says how many",
+    "     forgiven rows a run may have. Two signatures on purpose — the `gaps` entry can be",
+    "     read alone and still not quietly grow the number of rows nobody judged.",
+    "",
+    "Road 2 was missed when this ceiling was first written (2026-09-06): five rows the `gaps`",
+    "section already forgave were never counted here, and the job that would have said so was",
+    "red at its own self-test, so nothing reported it. Both roads are declared below now."
   ],
-  "expected": 16,
+  "expected": 23,
   "accepted": [
     {
       "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error#(request|response)$",
@@ -118,6 +131,21 @@
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation#(request|response)$",
       "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
       "rationale": "An answer carrying a URL citation — the Responses annotation the published UrlCitationBody flattens onto the annotation object — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
+    },
+    {
+      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens#(request|response)$",
+      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
+      "rationale": "The happy path whose ANSWER reports `usageMetadata.toolUsePromptTokenCount` — the server-side tool-use token term Vertex bills BESIDE `promptTokenCount` — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing. The cell was added with the gemini tool-use billing change (580352724, 2026-09-07) and is `needs_fixture` in cells.json; this ceiling was written the day before and never grew the two rows. 2 rows."
+    },
+    {
+      "cells": "^llm\\|anthropic\\|(bedrock|cohere|openai|responses)\\|request\\|ok_stream#response$",
+      "owner": "llm plane owner (via the `anthropic-ping-event` entry in `gaps` above)",
+      "rationale": "NOT a recorder gap: these four rows recorded, were judged, and every violation on them was forgiven by the `anthropic-ping-event` entry above — which is why they arrive here as SKIP. The decision and its reasoning live on that entry (Anthropic documents a `ping` event its own published MessageStreamEvent union omits); this line exists so the four forgiven rows are inside the declared count as well as named, and so a FIFTH cross-dialect Anthropic stream lane cannot appear unjudged under the same name. 4 rows: the four cross-dialect egress lanes busbar composes the stream for."
+    },
+    {
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total#response$",
+      "owner": "llm plane owner (via the `bedrock-service-quota-exceeded` entry in `gaps` above)",
+      "rationale": "NOT a recorder gap: the row recorded, was judged, and its one violation was forgiven by the `bedrock-service-quota-exceeded` entry above — Bedrock documents `ServiceQuotaExceededException` but leaves it out of the Converse error union, and busbar keeps the accurate type rather than telling an SDK to retry a request that can never succeed. Declared here so the forgiven row is inside the count as well as named. 1 row."
     }
   ]
 }

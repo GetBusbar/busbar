@@ -85,6 +85,12 @@ are two spellings of the same flag pointing at it:
   violation on that row.
 * `expected` / `accepted` — the SKIP ceiling `run.sh` reconciles the observed gaps against.
 
+A row the `gaps` section forgives becomes a SKIP row like any other, so it must be named in
+`accepted` **and** counted in `expected` too. Two signatures on purpose: one says why the vendor's
+schema is the incomplete side, the other says how many rows a run may leave unjudged. The other
+road into the ceiling is a cell the recorder could not record at all — a `needs_fixture` cell in
+`testing/shadow-oracle/cells.json`, whose entry and count come off the day the fixture lands.
+
 Each section stands alone. A file that carries only the ceiling (no `gaps`) forgives no violation
 and loads — absence is an empty forgiveness list, which is the strict direction. A `gaps` key that
 is present but is not a list is refused with nothing judged, because a malformed section read as
