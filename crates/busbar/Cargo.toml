@@ -321,6 +321,12 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through core's test_support, which core exposes to dependents only behind this feature.
 busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# `tests/streams_served_session.rs` mints the AUDIENCE-BOUND token the streams plane's RFC 8707
+# claim demands. `TokenSigner::mint_for_audience` is the only constructor of that claim in the tree
+# and it is test-only, so the rig names the substrate's signing seam directly — the same dev-only
+# edge `busbar-core`'s own plane-boundary integration test takes. The shipped binary's normal
+# dependency on this crate (above) carries no such feature.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
 # The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
