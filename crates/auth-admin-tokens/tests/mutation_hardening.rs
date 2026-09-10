@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening tests for `busbar-auth-admin-tokens`, added after a `cargo mutants` pass.
+//! Totality cases for `busbar-auth-admin-tokens`: the carrier fold, and the invariant that holds
+//! in place of a JWT-shape check.
 //!
-//! ## Surviving mutant: `bearer_match | header_match` → `bearer_match ^ header_match`
+//! ## The carrier fold is OR, and OR is observable only when BOTH carriers match
 //!
-//! No existing test presented BOTH carriers matching the configured token at once, so the fold's
-//! operator (bitwise-OR vs XOR) was unobserved: OR and XOR only disagree when both operands are 1.
-//! This file closes that gap directly.
+//! `bearer_match | header_match` and `bearer_match ^ header_match` agree on every input except the
+//! one where both operands are 1, and no other test in the crate presents both carriers matching
+//! the configured token at once. So the fold's operator is unobserved unless a case asks for that
+//! input specifically. This file asks for it.
 //!
 //! ## Non-JWT-shaped-credential invariant
 //!

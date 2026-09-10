@@ -6,9 +6,9 @@
 //! printed. SILENTLY PENDING is the worst verdict a gate runner can give, because it is
 //! indistinguishable from slow and nobody can act on it.
 //!
-//! RED BEFORE GREEN: `execute` has no ceiling and never will -- these same cases against
-//! `gates::execute(&SleepyGate, &cx())` sat until the watchdog below fired, which is the red they
-//! were written from.
+//! THE CEILING IS WHAT MAKES THE DIFFERENCE OBSERVABLE. `execute` has no ceiling and never will:
+//! run these same cases against `gates::execute(&SleepyGate, &cx())` and they do not finish, they
+//! sit until the watchdog below fires. That is the behaviour the ceiling replaces with a verdict.
 //!
 //! Every case runs under its own watchdog, because the red of a missing ceiling is a hang and a
 //! hung test binary reports nothing at all.

@@ -1224,7 +1224,7 @@ EOF
 
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
-    printf '                  conflict isolation, empty-batch refusal — each proven RED before green)\n'
+    printf '                  conflict isolation, empty-batch refusal — each refuses its own planted counter-case)\n'
     rm -rf "$root"
     return 0
   fi

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening tests for `crates/busbar-timing/src/lib.rs` (feature-on registry, module
-//! `imp`). Added to close survivors a `cargo mutants -p busbar-timing --features timing` run
-//! found that `tests/imp_tests.rs` did not catch: the cached-disabled gate branch, the
-//! install-once `atexit` latch, and `bucket_floor`'s own arithmetic (previously only ever checked
-//! against ANOTHER call to itself).
+//! Direct cases for `crates/busbar-timing/src/lib.rs` (feature-on registry, module `imp`) — the
+//! three behaviours `tests/imp_tests.rs` cannot observe: the cached-disabled gate branch, the
+//! install-once `atexit` latch, and `bucket_floor`'s own arithmetic, which over there is only ever
+//! checked against ANOTHER call to itself and so agrees with any self-consistent rewrite of it.
 //!
 //! An earlier draft of this file also tried to pin `dump`/`dump_scoped`/`print_table`/`fmt_ns` by
 //! redirecting the real stderr fd (`dup2`) around a call made on a freshly spawned thread, to
@@ -46,9 +45,10 @@ fn a_cached_disabled_gate_does_not_resample_the_environment() {
     );
 }
 
-/// `install_atexit` is the ONLY writer of `ATEXIT_INSTALLED`; replacing its body with `()` (a
-/// surviving mutant) leaves the flag permanently `false` no matter how many times the gate turns
-/// on. This does not depend on `atexit(3)` itself ever firing (which a unit test cannot observe
+/// `install_atexit` is the ONLY writer of `ATEXIT_INSTALLED`, so emptying its body leaves the flag
+/// permanently `false` however many times the gate turns on, and nothing else in the crate reads
+/// the flag closely enough to notice.
+/// This does not depend on `atexit(3)` itself ever firing (which a unit test cannot observe
 /// without ending the process) — only on the latch install_atexit exists to set.
 #[test]
 fn enabling_the_gate_installs_the_atexit_latch_exactly_once() {

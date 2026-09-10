@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening tests for `busbar-grammar`.
+//! Direct cases for the `busbar-grammar` behaviours nothing else pins.
 //!
-//! Added to close survivors a `cargo mutants -p busbar-grammar` run found that
-//! `tests/adversarial.rs` and `tests/json_scanner.rs` did not catch: [`Span::len`]/
+//! Each one below is a behaviour that `tests/adversarial.rs` and `tests/json_scanner.rs` leave
+//! unobserved — they reach it only through another call that would move with it, so it could be
+//! rewritten with every one of those tests still green: [`Span::len`]/
 //! [`Span::is_empty`] pinned only through each other, the number/garbage-byte match guard in
 //! `skip_value`, the quote-skipping arm inside `skip_container` (only ever exercised through a
 //! STRING VALUE's own direct scan, never through a decoy CONTAINER a search has to skip past),
