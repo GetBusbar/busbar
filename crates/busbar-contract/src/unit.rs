@@ -578,8 +578,6 @@ pub struct Unit<'u> {
     body: Ir<'u>,
     facts: Facts<'u>,
     correlates: Option<CorrelationRef<'u>>,
-    byte_counts: (u64, u64),
-    frame_counts: (u32, u32),
     leg_results: BoundedVec<LegResult<'u>, { crate::bounded::MAX_LEG_REPLIES }>,
 }
 
@@ -611,8 +609,6 @@ impl<'u> Unit<'u> {
             body,
             facts,
             correlates,
-            byte_counts: (0, 0),
-            frame_counts: (0, 0),
             leg_results: BoundedVec::new(),
         }
     }
@@ -682,33 +678,10 @@ impl<'u> Unit<'u> {
         self.correlates
     }
 
-    /// Bytes in, bytes out, as the kernel counted them.
-    #[must_use]
-    pub fn byte_counts(&self) -> (u64, u64) {
-        self.byte_counts
-    }
-
-    /// Frames in, frames out, as the kernel counted them.
-    #[must_use]
-    pub fn frame_counts(&self) -> (u32, u32) {
-        self.frame_counts
-    }
-
     /// What the unit's legs came back with.
     #[must_use]
     pub fn leg_results(&self) -> &[LegResult<'u>] {
         self.leg_results.as_slice()
-    }
-
-    /// Record the kernel's byte and frame counts. Kernel-only.
-    pub fn set_counts(
-        &mut self,
-        _seal: &dyn KernelSeal,
-        byte_counts: (u64, u64),
-        frame_counts: (u32, u32),
-    ) {
-        self.byte_counts = byte_counts;
-        self.frame_counts = frame_counts;
     }
 
     /// Record a leg's reply. Kernel-only.

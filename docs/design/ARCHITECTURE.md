@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3704`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3683`), which the construction gate runs as
   `surface-ceiling:contract+caps`. **The plugin structured-error seam** (owner ruling, 2026-09-09;
   `busbar_contract::error`) is inside that number: every plugin kind's face fails with ONE
   `PluginError { class, code, params, developer_message, advisory }` — `class` the contract's
@@ -88,7 +88,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   face lands with a declared raise (`[[gate.ceiling_raises]]` in `qa/construction.toml`) that
   names the face and its measured lines, this figure amended in the same commit — the
   virtual-key directory face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 20 lines,
-  3684 → 3704) is the first. Two crates carry their own surface ceilings beside it, because
+  3684 → 3704) was the first, and the deletion that followed it (the never-written `Unit` byte
+  and frame counts, 21 lines, 3704 → 3683) paid it back. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
@@ -620,7 +621,8 @@ pub trait SessionPlane: Plane {
 ```
 The registry requires `SessionPlane` iff any claimed transport declares `SESSION = true`. If
 `encode_refusal` or `encode_end` fails, the kernel emits a kernel-owned minimal end. `Unit { key,
-origin, session, reply_to, byte_counts, frame_counts, leg_results, .. }` is kernel-built. `Ctx { clock,
+origin, session, reply_to, leg_results, .. }` is kernel-built; the kernel's byte and frame counts
+are not stored on it — they reach the metering step as `KernelCounts`. `Ctx { clock,
 config, session, transport, labels, arena }`. Minted secrets: `SecretOnce` placeholder (128-bit nonce
 bound to the unit and a declared target location), exactly one occurrence at that location, else
 `Failed(Encode, SecretPlaceholder)` with the mint reversed; never in `ContentFacts`.
