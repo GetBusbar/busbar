@@ -29,6 +29,7 @@ pub mod denylist_gate;
 pub mod design_bindings;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
+pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
@@ -1529,6 +1530,13 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(config_schema::ConfigSchemaGate),
         summary:
             "the config grammar is frozen at 1.5.3: snapshot drift plus additive-only vs a git ref",
+    },
+    Registration {
+        name: "inventory-coverage",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(inventory_coverage::InventoryCoverageGate),
+        summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
     },
     Registration {
         name: "audit-ledger",

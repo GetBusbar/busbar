@@ -469,6 +469,19 @@ jobs:
         run: cargo xtask gate inventory-ref --selftest
       - name: Inventory-ref lint (BLOCKING — every binding's inventory column resolves)
         run: cargo xtask gate inventory-ref
+      # INVENTORY-COVERAGE: the third member of that family, and the one that asks the question the
+      # other two only frame. inventory-ref proves a binding's inventory citation resolves to a FILE;
+      # this proves every ROW of every such file is either covered by a shadow-oracle cell that PASSes
+      # on the golden ledger, or is a NAMED gap in qa/inventory-gaps.json with a written reason. A row
+      # that is neither is RED, and so is a gap entry naming a row that no longer exists or has since
+      # been covered — the gaps file is regenerated from the same derivation --check reads, so a stale
+      # name cannot survive a run. This replaces scripts/inventory-coverage.py, which was DELETED at
+      # c8272b166 without its Rust successor landing; for that whole window design binding PB-0 cited
+      # a check that could not run.
+      - name: Inventory-coverage self-test (the coverage derivation cannot be lied to)
+        run: cargo xtask gate inventory-coverage --selftest
+      - name: Inventory-coverage (BLOCKING — every inventory row is a covered cell or a named gap)
+        run: cargo xtask gate inventory-coverage
       # CHANGELOG REGISTER: the second half of the shadow-oracle register's money rule. diff-cells.py
       # refuses at LOAD time to let an `improvement` entry forgive a status or a billing figure — only
       # a `kind: breaking` entry carrying a changelog line may. This proves that changelog line is not

@@ -6,7 +6,7 @@
     "cells, i.e. nothing was executed against it). --check fails if any uncovered id is",
     "missing from this file, and --write refuses to ADD one without --accept-gap ID."
   ],
-  "generated_at": "2026-09-06",
+  "generated_at": "2026-09-10",
   "gaps": [
     {
       "id": "CONF-001",
@@ -1215,14 +1215,6 @@
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 358,
       "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-config.md:358)"
-    },
-    {
-      "id": "CONF-220",
-      "family": "CONF",
-      "status": "none",
-      "file": "docs/design/inventory/1.5.5-config.md",
-      "line": 369,
-      "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-config.md:369)"
     },
     {
       "id": "CONF-221",
