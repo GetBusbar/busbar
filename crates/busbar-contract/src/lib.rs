@@ -16,6 +16,7 @@ pub mod grammar;
 pub mod hooks;
 pub mod ids;
 pub mod kinds;
+pub mod operation;
 pub mod plane;
 pub mod plugin;
 pub mod signal;

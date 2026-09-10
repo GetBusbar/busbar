@@ -190,6 +190,7 @@ impl OpShape {
 /// adds a `const` in ITS OWN module; it does not touch this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
+    /// A shape plus the word the wire calls it; the only variant, by design.
     Verb {
         /// The shape the pipeline decides on.
         op: OpShape,
@@ -203,12 +204,19 @@ impl Operation {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
+    /// A chat completion: a model + messages, answered with content.
     pub const CHAT: Operation = Operation::named_invoke("chat");
+    /// An embedding: a model + inputs, answered with vectors.
     pub const EMBEDDINGS: Operation = Operation::named_invoke("embeddings");
+    /// A moderation: a model + inputs, answered with a classification.
     pub const MODERATION: Operation = Operation::named_invoke("moderation");
+    /// An image generation: a model + a prompt, answered with image content.
     pub const IMAGE: Operation = Operation::named_invoke("image");
+    /// A transcription: a model + audio, answered with text.
     pub const TRANSCRIPTION: Operation = Operation::named_invoke("transcription");
+    /// A speech synthesis: a model + text, answered with audio.
     pub const SPEECH: Operation = Operation::named_invoke("speech");
+    /// A rerank: a model + documents, answered with an ordering.
     pub const RERANK: Operation = Operation::named_invoke("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
@@ -216,14 +224,20 @@ impl Operation {
     //    `resolve_operation` maps onto these constants. When a cell needs to distinguish two verbs
     //    of one shape (`tools/list` from `prompts/list`), it adds a constant beside these with the
     //    SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in the core's.
+    /// The invoke shape under its own word.
     pub const INVOKE: Operation = Operation::of(OpShape::Invoke);
+    /// The catalogue shape under its own word.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
+    /// The fetch shape under its own word.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const FETCH: Operation = Operation::of(OpShape::Fetch);
+    /// The task shape under its own word.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const TASK: Operation = Operation::of(OpShape::Task);
+    /// The subscribe shape under its own word.
     pub const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
+    /// The control shape under its own word.
     #[cfg_attr(not(test), allow(dead_code))]
     pub const CONTROL: Operation = Operation::of(OpShape::Control);
 

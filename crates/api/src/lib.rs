@@ -23,7 +23,10 @@
 
 mod auth;
 pub mod durable;
-pub mod operation;
+/// The `Operation` axis is the CONTRACT's (`busbar_contract::operation`, moved there verbatim as
+/// Track 4's operation step): the kernel, the units and every plane build against it there, and
+/// this spelling is kept only for the readers this crate still has while it is deleted.
+pub use busbar_contract::operation;
 mod redacted;
 mod secret;
 mod store;

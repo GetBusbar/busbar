@@ -150,31 +150,52 @@ busbar-voice = ["busbar-voice-codec"]
 
 # THE HOOKS-KIND FACE MOVED INTO THE CONTRACT (busbar-api -> busbar-contract, Track 4's hooks
 # step pulled forward so the hook policy engine is written against the contract and never against
-# the crate being deleted). `hooks.rs` + `signal.rs` are 291 surface lines the contract did not
-# carry at the base; the three ceilings that count the contract rise by exactly that, and by
-# nothing else. Each entry is one delta and expires the moment it lands.
+# the crate being deleted). `hooks.rs` + `signal.rs` are 291 surface lines (294 as the loc-ceilings
+# rule counts them) the contract did not carry at the base.
+#
+# THE SAME LINE CARRIES THE VIRTUAL-KEY DIRECTORY FACE AND ITS FUNDING. `busbar_contract::kinds::
+# {KeyScope, KeyFacts, VirtualKeyDirectory}` is 19 surface lines, and the two DELETIONS that
+# followed it (`Unit::{byte_counts, frame_counts, set_counts}` and their two fields, 21 lines the
+# kernel never wrote; unit-auth's ResolvedKey/KeyVerifier/RevocationView, 16 unit lines) took more
+# out than the face put in. A deletion is not a declaration — `by` is a raise — so the surplus it
+# left (2 contract lines; 2 + 16 = 18 union lines) is what pays for that many lines of the hooks-kind
+# face below, and the entries sum to exactly what the tree rose by. Each entry expires the moment
+# it lands.
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 291
-because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 291 surface lines moved in from busbar-api, verbatim, so the plugin-visible surface of the contract pair is measured with them and pinned there"
+by = 289
+because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 291 surface lines moved in from busbar-api verbatim, 2 of them paid for by the surplus the Unit-counts deletion left after funding the 19-line VirtualKeyDirectory face on this same line"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 294
-because = "the same move under the loc-ceilings counting rule: busbar-contract took the hooks-kind face from busbar-api, 294 lines as that rule counts them (the surface script reads 291 of the same lines)"
+by = 292
+because = "the same move under the loc-ceilings counting rule: busbar-contract took the hooks-kind face from busbar-api, 294 lines as that rule counts them, 2 of them paid for by the Unit-counts deletion's surplus after the 19-line VirtualKeyDirectory face"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 294
-because = "the union row sums caps/contract; it rises by the same 294 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the hooks-kind face move)"
+by = 276
+because = "the union row sums kernel + caps/contract + unit-*; the hooks-kind face is the same 294 lines the caps_contract row counts, 18 of them paid for by the two deletions' surplus (2 contract lines after the VirtualKeyDirectory face, 16 unit-auth lines) — kernel 5379 is unchanged"
 
-# NO OTHER ENTRY STANDS HERE. The virtual-key directory face (`busbar_contract::kinds::{KeyScope,
-# KeyFacts, VirtualKeyDirectory}`; 19 surface lines) landed under three declarations of exactly this
-# shape and the DELETION that followed it (`Unit::{byte_counts, frame_counts, set_counts}` and
-# their two fields, 21 lines the kernel never wrote) took the pair BELOW where it stood before the
-# face. A declaration that describes no rise at the base is stale and refused, so the three were
-# struck in that same deletion commit and the ceilings re-pinned to the measurement; the face is
-# paid for.
+# THE OPERATION AXIS MOVED INTO THE CONTRACT (`busbar_api::operation` -> `busbar_contract::operation`,
+# Track 4's operation step, pulled forward because the hook policy engine's own gate is written
+# against `IrFacts::verb()` and may not name the crate being deleted). `Operation`/`OpShape` moved
+# verbatim; the thirteen verb constants and the one variant gained the one-line doc comment the
+# contract's `#![deny(missing_docs)]` requires. 98 lines under both counters. `busbar-api` keeps the
+# spelling as a re-export until its last reader is drained.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 98
+because = "the Operation axis (Operation, OpShape, the thirteen verb constants and OpShape's own vocabulary) in busbar-contract/src/operation.rs: 98 surface lines measured by scripts/loc-surface.py, moved from busbar-api so the hook gate's IrFacts::verb() is a contract type"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 98
+because = "the Operation axis in busbar-contract/src/operation.rs: the same 98 lines as the surface-ceiling raise, as the loc-ceilings rule counts them (busbar-caps 1153 + busbar-contract 2717 = 3870)"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 98
+because = "the Operation axis in busbar-contract/src/operation.rs: the same 98 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms (23839)"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -182,7 +203,7 @@ because = "the union row sums caps/contract; it rises by the same 294 lines the 
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3767
+contract_caps = 3865
 grammar = 388
 contract_transport = 845
 
@@ -403,12 +424,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3772
+caps_contract_ceiling = 3870
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23741
+union_ceiling = 23839
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
