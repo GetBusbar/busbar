@@ -200,7 +200,12 @@ lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
   case "$want" in ''|*[!0-9]*) want=8 ;; esac
   [ "$want" -gt 4 ] || { echo "$want"; return 0; }
   if [ -f "$pp" ]; then
-    n="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$pp" | sort -u | grep -c . || true)"
+    # A CHAINED GREEN COUNTS. Its row keys by `<tip>@<predecessor picks>` and it was proven on
+    # THIS tip with those picks beneath it — which is the whole of what "eight lines each through the
+    # engine against this exact tip" asks for. Counting only the bare-tip rows would cap a batch of
+    # eight chained greens at four for want of eight LIVE ones, which is the arithmetic this engine
+    # exists to beat.
+    n="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && ($2 == tip || index($2, tip "@") == 1) {print $4}' "$pp" | sort -u | grep -c . || true)"
   fi
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   if [ "$n" -ge "$want" ]; then echo "$want"; else echo 4; fi
@@ -683,9 +688,121 @@ $files
 EOF
   return 0
 }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# CHAINED PRE-PROOFS — the arithmetic that made 121 of 123 queue lines invisible to the fleet
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED, 09-10: 123 queue lines, of which 2 are live and 121 are `#HOLD-after-<sha>` behind a line
+# that has not landed. The sweep pre-proves LIVE lines only, and the popper takes only lines
+# pre-proven at the exact tip — so every batch carries one or two lines, and each landing releases
+# ONE link of a chain fourteen deep at roughly three hours a cycle. The fleet is idle and the queue
+# is a linked list being walked one node per cycle.
+#
+# THE HOLD IS NOT A REASON NOT TO PROVE IT. `#HOLD-after-<sha>` says "this line's picks need <sha>'s
+# picks beneath them" — and <sha> is a pick of a line that is IN THE QUEUE. So the tree that line
+# will be judged on is knowable NOW: it is the tip, plus the predecessor line's picks, plus its own,
+# applied by the same `cherry-pick -x` path land.sh lands by. A box can prove exactly that tree
+# today. That is a CHAINED PRE-PROOF, and its verdict is evidence about one tree and no other:
+#
+#   * THE KEY IS (tip, the predecessor picks, the line itself). The ledger row's tip column carries
+#     `<tip>@<pred hash>+<pred hash>…` instead of a bare tip; a green is consulted only when the tip
+#     is unchanged AND the predecessor chain is the same picks in the same order. A tip move drops
+#     it exactly as it drops every other row (the prune matches the `<tip>@` prefix too), and a
+#     predecessor that is re-picked changes the key, so its dependent's green is simply never found.
+#   * THE ROOT IS A LIVE LINE. A chain is walked backwards from the held line to the first line that
+#     is live; a `#HOLD-<word>` tag (S2's `#HOLD-dialect-kind-mint`, R6's, F1's multi-dependency
+#     tags) is NOT a sha and is never chained — it names a thing this engine cannot resolve to picks.
+#   * DEPTH IS BOUNDED (`LAND_CHAIN_DEPTH`, default 4, counting the live root). Depth is what stops
+#     a fourteen-deep chain being proven as a fourteen-line union nobody would land in one batch,
+#     and what stops a `#HOLD-after-<sha>` cycle walking forever.
+#   * A BASE FIX IS NEVER IN A CHAIN (rule 2g). It re-pins what every other line is judged against
+#     and pops alone; a chain that contains one is refused outright, at both ends.
+#   * NOTHING IS UN-HELD BY THIS. The tag stays on the line (rule (c) strikes it when the sha
+#     lands); admission into a batch is a POP-TIME decision, taken beside the predecessor, and a
+#     dependent whose predecessor does not go into this batch stays exactly where it is.
+LAND_CHAIN_DEPTH="${LAND_CHAIN_DEPTH:-4}"
+case "$LAND_CHAIN_DEPTH" in ''|*[!0-9]*) LAND_CHAIN_DEPTH=4 ;; esac
+
+# THE LANDING LINE BEHIND THE TAGS. Every leading `#…` token is stripped; what is left is what
+# land.sh would be handed, and it is what a batch file and a ledger row carry.
+lq_line_payload() { # $1 = queue line
+  local rest="$1"
+  while : ; do
+    case "$rest" in '#'*) ;; *) break ;; esac
+    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+  done
+  printf '%s\n' "$rest"
+}
+# THE ONE SHA A HELD LINE WAITS FOR — and nothing else. The line must carry EXACTLY ONE tag (a
+# multi-dependency line such as `#HOLD-after-f3-E1-M4hooks-G1prime` names no single predecessor and
+# is the integrator's to un-hold), that tag must be `#HOLD-after-`, and its remainder must be a sha
+# and not a word (rule (6)). Anything else prints nothing, which is "not chainable".
+lq_hold_after_sha() { # $1 = queue line
+  local line="$1" tok rest sha
+  tok="${line%% *}"
+  case "$line" in *' '*) rest="${line#* }" ;; *) rest="" ;; esac
+  case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; *) return 0 ;; esac
+  printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' || return 0
+  case "$rest" in '--'*) ;; *) return 0 ;; esac
+  printf '%s\n' "$sha"
+}
+# THE QUEUE LINE WHOSE PICKS INCLUDE THAT SHA. The queue writes short shas and a tag may be shorter
+# or longer than the pick it names, so the match is a prefix in either direction.
+lq_line_naming() { # $1 = sha, $2 = queue file; prints the FIRST queue line whose payload names it
+  local sha="$1" qf="$2" line pay h
+  [ -n "$sha" ] && [ -f "$qf" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '') continue ;; '# '*) continue ;; '#'*) ;; '--'*) ;; *) continue ;; esac
+    pay="$(lq_line_payload "$line")"
+    case "$pay" in '--'*) ;; *) continue ;; esac
+    for h in $(lq_line_hashes "$pay"); do
+      case "$h" in "$sha"*) printf '%s\n' "$line"; return 0 ;; esac
+      case "$sha" in "$h"*) printf '%s\n' "$line"; return 0 ;; esac
+    done
+  done <"$qf"
+  return 1
+}
+# THE CHAIN A HELD LINE STANDS ON: the payloads, ROOT FIRST, ending with the line itself. Prints
+# nothing and fails when the line is not chainable — no sha tag, a word tag, a predecessor that is
+# not in the queue, a pick that does not resolve, a base fix anywhere in it, or a chain longer than
+# the depth (which also bounds a `#HOLD-after-` cycle).
+lq_chain_of() { # $1 = held queue line, $2 = queue file, $3 = repo (default $W), $4 = depth
+  local line="$1" qf="$2" repo="${3:-$W}" depth="${4:-$LAND_CHAIN_DEPTH}"
+  local cur="$line" chain="" sha pred p n=0
+  case "$line" in '#'*) ;; *) return 1 ;; esac
+  case "$depth" in ''|*[!0-9]*) depth=4 ;; esac
+  while : ; do
+    n=$((n + 1)); [ "$n" -le "$depth" ] || return 1
+    p="$(lq_line_payload "$cur")"
+    case "$p" in '--'*) ;; *) return 1 ;; esac
+    case "$(lq_line_files "$p" "$repo")" in '?'|'') return 1 ;; esac
+    lq_line_is_base_fix "$p" "$repo" && return 1
+    chain="$p
+$chain"
+    case "$cur" in '--'*) break ;; esac
+    sha="$(lq_hold_after_sha "$cur")"
+    [ -n "$sha" ] || return 1
+    pred="$(lq_line_naming "$sha" "$qf")" || return 1
+    [ -n "$pred" ] && [ "$pred" != "$cur" ] || return 1
+    cur="$pred"
+  done
+  printf '%s' "$chain"
+}
+# THE LEDGER KEY FOR A CHAINED VERDICT: the tip, then the picks that must be beneath the line, in
+# order. The ancestor payloads come in on stdin. A bare tip (no ancestors) is never written by this
+# path — an unchained row keys by the tip alone, and the two can never collide.
+lq_chain_key() { # $1 = tip; ancestor payload lines on stdin
+  local tip="$1" line h k=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    for h in $(lq_line_hashes "$line"); do k="$k$h+"; done
+  done
+  printf '%s@%s\n' "$tip" "${k%+}"
+}
+
 lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live line alone, all else kept in order; prints the count
   local line first=1
-  : >"$1"; : >"$2"
+  : >"$1"; : >"$2"; : >"$1.chain"    # no chain rides a base fix; and no stale map is left behind
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in --*) if [ "$first" = 1 ]; then printf '%s\n' "$line" >>"$1"; first=0; continue; fi ;; esac
     printf '%s\n' "$line" >>"$2"
@@ -747,6 +864,27 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
 }
+# ONE LINE'S OWN ROW OUT OF A UNION'S OUTCOME FILE. A chained pre-proof hands the box the WHOLE
+# chain — the predecessor's picks are the tree the dependent is judged on — so the batch's rc and
+# lq_outcome_green (which demands every row green) both speak for the union. The verdict wanted here
+# is the DEPENDENT's, which land.sh's own bisect already attributed per line.
+lq_outcome_row() { # $1 = per-line outcome file, $2 = the line text; prints that line's outcome, or nothing
+  local f="${1:-}" want="$2"
+  [ -n "$f" ] && [ -s "$f" ] || return 0
+  awk -F"$TAB" -v w="$want" '$2 == w { st = $1 } END { if (st != "") print st }' "$f"
+}
+# A CHAINED PRE-PROOF'S VERDICT. The dependent's own row first; a base-state red is still the base's
+# and is recorded NONE (rule 2g), never parked; and with no row at all the transport's rules stand
+# exactly as they do for an unchained sweep — with NO whole-file outcome, because a union that is
+# red in the predecessor says nothing about the dependent either way.
+lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $4 = the CHAINED line's own text
+  local own; own="$(lq_outcome_row "${3:-}" "$4")"
+  case "$own" in
+    GREEN) echo GREEN; return 0 ;;
+    RED|RED-*) if lq_base_state_red "$2"; then echo "NONE:base"; else echo RED; fi; return 0 ;;
+  esac
+  lq_preproof_verdict "$1" "$2" ""
+}
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE PREDICTED TIP — WHAT THE TREE WILL BE WHEN THE BATCH THAT IS PROVING RIGHT NOW LANDS
@@ -805,11 +943,12 @@ lq_preproof_rekey() { # $1 = predicted sha, $2 = predicted tree, $3 = landed sha
   [ -n "$psha" ] && [ -f "$pp" ] || return 1
   ltree="$(git -C "$tree" rev-parse -q --verify "$landed^{tree}" 2>/dev/null)"
   if [ -n "$ltree" ] && [ "$ltree" = "$ptree" ]; then
-    awk -F"$TAB" -v OFS="$TAB" -v p="$psha" -v l="$landed" '$2 == p { $2 = l } { print }' "$pp" >"$pp.tmp" \
+    awk -F"$TAB" -v OFS="$TAB" -v p="$psha" -v l="$landed" \
+      '$2 == p { $2 = l; print; next } index($2, p "@") == 1 { $2 = l substr($2, length(p) + 1) } { print }' "$pp" >"$pp.tmp" \
       && mv "$pp.tmp" "$pp"
     return 0
   fi
-  awk -F"$TAB" -v p="$psha" '$2 != p' "$pp" >"$pp.tmp" && mv "$pp.tmp" "$pp"
+  awk -F"$TAB" -v p="$psha" '!($2 == p || index($2, p "@") == 1)' "$pp" >"$pp.tmp" && mv "$pp.tmp" "$pp"
   return 1
 }
 
@@ -867,14 +1006,77 @@ lq_lock_release() { # $1 = my pid
 # it started from, so the tip land-remote.sh brings back is the tip it sent and the fast-forward is
 # a no-op. That is the whole safety argument, and it is proven by land.sh's own self-test
 # ("pre: the tree did NOT move").
+# THE HELD LINES WORTH A BOX, after the live ones have had theirs (see the chained pre-proof note).
+# In queue order, at most $1 of them, each one whose chain resolves and whose OWN files are free.
+#
+# ITS OWN FILES, LESS THE CHAIN'S. A dependent overlapping its predecessor is the ordinary case —
+# that overlap is usually WHY it is held — and those files are in its own batch by construction, so
+# they are not a clash. Overlapping anything ELSE the sweep is holding is a clash exactly as it is
+# for a live line: two boxes proving trees that will not both survive.
+lq_chain_candidates() { # $1 = max, $2 = queue file, $3 = repo, $4 = tip key, $5 = file of lines whose files are claimed
+  local max="$1" qf="$2" repo="${3:-$W}" tip="$4" claimf="${5:-}" line chain dep anc ancset claimed="" f n=0 clash
+  case "$max" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$max" -gt 0 ] || return 0
+  if [ -n "$claimf" ] && [ -f "$claimf" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$(lq_line_files "$(lq_line_payload "$line")" "$repo")
+EOF
+    done <"$claimf"
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$n" -lt "$max" ] || break
+    case "$line" in '#HOLD-after-'*) ;; *) continue ;; esac
+    chain="$(lq_chain_of "$line" "$qf" "$repo" "$LAND_CHAIN_DEPTH")" || continue
+    [ -n "$chain" ] || continue
+    dep="$(printf '%s' "$chain" | tail -n1)"
+    anc="$(printf '%s' "$chain" | sed '$d')"
+    [ -n "$anc" ] || continue
+    [ "$(lq_preproved_status "$(printf '%s\n' "$anc" | lq_chain_key "$tip")" "$dep")" = GREEN ] && continue
+    ancset="$TAB"
+    while IFS= read -r f; do [ -n "$f" ] && ancset="$ancset$f$TAB"; done <<EOF
+$(printf '%s\n' "$anc" | while IFS= read -r l; do [ -n "$l" ] && lq_line_files "$l" "$repo"; done)
+EOF
+    clash=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      case "$ancset" in *"$TAB$f$TAB"*) continue ;; esac
+      case "$TAB$claimed" in *"$TAB$f$TAB"*) clash=1; break ;; esac
+    done <<EOF
+$(lq_line_files "$dep" "$repo")
+EOF
+    [ "$clash" = 0 ] || continue
+    while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$(lq_line_files "$dep" "$repo")
+EOF
+    printf '%s\n' "$line"
+    n=$((n + 1))
+  done <"$qf"
+}
+
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
   local key="${2:-$tip}"
   local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$tree" "$key" "$inflight")"
-  [ -n "$lines" ] || { lq_log "pre-prove: no disjoint line to hand out at $(printf '%.9s' "$key")"; return 0; }
+  local nlive; nlive="$(printf '%s\n' "$lines" | grep -c . || true)"
+  case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
   local dir="$tree/target/gate/preprove-$key"
   mkdir -p "$dir"
+  # THE HELD LINES THAT CAN BE PROVEN TODAY (see the chained pre-proof note). They take the boxes the
+  # live lines leave, and their claim is checked against everything already spoken for: the batch in
+  # flight, the lines already green at this key, and the live lines this sweep is about to hand out.
+  local chained="" claimf="$dir/claimed.txt"
+  if [ "$LAND_CHAIN_DEPTH" -ge 2 ]; then
+    { if [ -n "$inflight" ] && [ -f "$inflight" ]; then cat "$inflight"; fi
+      if [ -f "$PP" ]; then awk -F"$TAB" -v tip="$key" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" | sort -u; fi
+      printf '%s\n' "$lines"; } >"$claimf"
+    chained="$(lq_chain_candidates $((PREPROVE_LINES - nlive)) "$Q" "$tree" "$key" "$claimf")"
+  fi
+  if [ -z "$lines" ] && [ -z "$chained" ]; then
+    lq_log "pre-prove: no disjoint line and no chained hold to hand out at $(printf '%.9s' "$key")"; return 0
+  fi
   # ONE BOX PER LINE, ALLOCATED BEFORE ANY OF THEM STARTS.
   #
   # `fleet_pick_host` is a read-modify-write of a cursor FILE shared by every agent on this host, so
@@ -920,6 +1122,43 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   done <<EOF
 $lines
 EOF
+  # ── THE CHAINED HELDS, on whatever boxes are left ────────────────────────────────────────────
+  # THE BATCH FILE IS THE WHOLE CHAIN, root first: land.sh applies the picks of every line in file
+  # order with `cherry-pick -x` and exports the BASE it started from to the gates (land_export_gate_base
+  # $base0), so the tree proven is the tip + the predecessor's picks + this line's, with the gates'
+  # merge-base at the tip — exactly the tree this line lands into, and exactly the rows the batch
+  # will carry. The dependent's own verdict comes out of the box's per-line outcome file, which
+  # land.sh's bisect has already attributed line by line.
+  local ck ctext
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    cand=""; try=0
+    while [ "$try" -lt $(( PREPROVE_LINES * 4 )) ]; do
+      try=$((try + 1))
+      local h2; h2="$( fleet_pick_host )" || h2=""
+      [ -n "$h2" ] || break
+      case " $hosts " in *" $h2 "*) continue ;; esac
+      cand="$h2"; hosts="$hosts $h2"; break
+    done
+    [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
+    local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
+    [ -n "$chain2" ] || continue
+    ctext="$(printf '%s' "$chain2" | tail -n1)"
+    ck="$(printf '%s' "$chain2" | sed '$d' | lq_chain_key "$key")"
+    i=$((i + 1))
+    local bf2="$dir/line-$i.batch"
+    printf '%s' "$chain2" >"$bf2"
+    printf '%s\n' "$ck" >"$dir/line-$i.chainkey"
+    printf '%s\n' "$ctext" >"$dir/line-$i.chaintext"
+    lq_log "pre-prove: chained $(printf '%.70s' "$ctext") on $(printf '%s' "$chain2" | grep -c .) line(s) at $(printf '%.9s' "$key")"
+    (
+      env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf2" \
+        >"$dir/line-$i.log" 2>&1 </dev/null
+      echo $? >"$dir/line-$i.rc"
+    ) &
+  done <<EOF
+$chained
+EOF
   lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$key")"
   wait
 
@@ -930,6 +1169,21 @@ EOF
   while [ "$j" -le "$i" ]; do
     local rc; rc="$(cat "$dir/line-$j.rc" 2>/dev/null || true)"
     local text; text="$(head -n1 "$dir/line-$j.batch")"
+    # A CHAINED SLOT IS KEYED BY (tip, the predecessor picks) AND SPEAKS FOR THE DEPENDENT ONLY.
+    # `key` is the whole ledger key and `text` is the line the row is about — the same two columns
+    # an unchained row carries, so every reader (lq_preproved_status, the popper, the prune) reads
+    # both kinds with the code it already has.
+    local rkey
+    if [ -f "$dir/line-$j.chainkey" ]; then
+      rkey="$(cat "$dir/line-$j.chainkey")"; text="$(cat "$dir/line-$j.chaintext")"
+      case "$(lq_chain_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result" "$text")" in
+        GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$rkey" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"
+               lq_log "pre-prove: chained GREEN for $(printf '%.70s' "$text") at $rkey" ;;
+        RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$rkey" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
+        NONE:*) lq_log "pre-prove: chained line $j not a verdict on the line; no record written (log: $dir/line-$j.log)" ;;
+      esac
+      j=$((j + 1)); continue
+    fi
     case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result")" in
       GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
@@ -984,16 +1238,76 @@ lq_status() { # $1 = queue (default $Q), $2 = done ledger (default $D), $3 = tre
 # else is popped exactly as it always was, in queue order.
 lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out; prints the count
   local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f moves="" m qarows=0 r bfix=0
-  : >"$batch"; : >"$keep"
+  local cand chained csha chain cdep canc ckey cin ca parked="$TAB"
+  : >"$batch"; : >"$keep"; : >"$batch.chain"
   greens="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" 2>/dev/null | sort -u | grep -c . || true)"
   case "$greens" in ''|*[!0-9]*) greens=0 ;; esac
+  local anychain=0
+  awk -F"$TAB" -v tip="$tip" 'index($2, tip "@") == 1 { f = 1; exit } END { exit !f }' "$PP" 2>/dev/null && anychain=1
   while IFS= read -r line || [ -n "$line" ]; do
+    cand=""; chained=0
     case "$line" in
-      ''|'#'*) printf '%s\n' "$line" >>"$keep"; continue ;;
-      --*) ;;
+      ''|'#'*)
+        # ── A CHAINED HELD LINE MAY RIDE ITS PREDECESSOR'S BATCH ──────────────────────────────
+        # Only beside the predecessor, only after it, and only on a chained green taken at THIS tip
+        # over THESE predecessor picks. The tag is not struck and the queue is not rewritten: this
+        # is a pop-time decision, and a dependent whose predecessor is not in this batch is written
+        # back to the keep file byte for byte, tag and all.
+        # THE CHEAP GATE FIRST. Resolving a chain costs a `git diff` per pick per member, and the
+        # queue is 121 held lines deep: with no chained row at this tip in the ledger there is
+        # nothing a chain could be admitted ON, and nothing parked could drop, so none is walked.
+        csha=""; chain=""
+        if [ "$anychain" = 1 ]; then
+          case "$line" in '#HOLD-after-'*) csha="$(lq_hold_after_sha "$line")" ;; esac
+        fi
+        if [ -n "$csha" ]; then
+          chain="$(lq_chain_of "$line" "$Q" "$W" "$LAND_CHAIN_DEPTH")" || chain=""
+        fi
+        if [ -z "$chain" ]; then printf '%s\n' "$line" >>"$keep"; continue; fi
+        cdep="$(printf '%s' "$chain" | tail -n1)"
+        canc="$(printf '%s' "$chain" | sed '$d')"
+        ckey="$(printf '%s\n' "$canc" | lq_chain_key "$tip")"
+        # EVERY ancestor already in this batch, in order — else there is no chain to ride.
+        cin=1
+        while IFS= read -r ca; do
+          [ -n "$ca" ] || continue
+          case "$parked" in *"$TAB$ca$TAB"*) cin=2; break ;; esac
+          grep -qxF -- "$ca" "$batch" || { cin=0; break; }
+        done <<EOF
+$canc
+EOF
+        if [ "$cin" = 2 ]; then
+          # ITS PREDECESSOR WAS PARKED THIS POP. The line goes back to held and its chained verdict
+          # goes with it: a green over picks nobody is landing is evidence about nothing.
+          awk -F"$TAB" -v t="$cdep" '!($4 == t && index($2, "@") > 0)' "$PP" >"$PP.tmp" 2>/dev/null && mv "$PP.tmp" "$PP"
+          lq_log "chained: $(printf '%.80s' "$cdep") stays held — its predecessor was parked; verdict dropped"
+          printf '%s\n' "$line" >>"$keep"; continue
+        fi
+        if [ "$cin" != 1 ] || [ "$(lq_preproved_status "$ckey" "$cdep")" != GREEN ]; then
+          printf '%s\n' "$line" >>"$keep"; continue
+        fi
+        cand="$cdep"; chained=1 ;;
+      --*) cand="$line" ;;
       *) printf '#MALFORMED %s\n' "$line" >>"$keep"
          lq_log "queue lint: parked a malformed line: $(printf '%.80s' "$line")"; continue ;;
     esac
+    if [ "$chained" = 1 ]; then
+      if [ "$n" -lt "$b" ] && lq_may_join "$cand" "$W" "$n" "$claimed" "$gates" "$alone" "$moves" "$qarows" "$bfix"; then
+        printf '%s\n' "$cand" >>"$batch"; n=$((n + 1))
+        printf '%s%s%s%s%s\n' "$cand" "$TAB" "$line" "$TAB" "$(printf '%s' "$canc" | tail -n1)" >>"$batch.chain"
+        lq_log "chained: $cand after $csha"
+        r="$(lq_line_qa_rows "$cand" "$W")"; [ "$r" = 0 ] || qarows=1
+        while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$(lq_line_files "$cand" "$W")
+EOF
+        while IFS= read -r m; do [ -n "$m" ] && [ "$m" != "?" ] && moves="$moves$m$TAB"; done <<EOF
+$(lq_line_ceiling_moves "$cand" "$W")
+EOF
+        lq_line_touches_gates "$cand" "$W" && gates=1
+        lq_line_was_red "$cand" && alone=1
+      else printf '%s\n' "$line" >>"$keep"; fi
+      continue
+    fi
     st="$(lq_preproved_status "$tip" "$line")"
     if [ "$st" = RED ]; then
       # PARKED WITH ITS LOG, so the marker names where the evidence is rather than only that there
@@ -1009,6 +1323,7 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
         st=NONE
       else
         printf '#RED-preproof %s %s\n' "${lg:-no-log}" "$line" >>"$keep"
+        parked="$parked$line$TAB"   # every line chained behind it goes back to held (see above)
         local why; why="$(lq_preproof_reason "$lg")"
         lq_log "pre-prove RED at $(printf '%.9s' "$tip"): parked $(printf '%.80s' "$line") (log: ${lg:-none})"
         lq_log "pre-prove RED reason: ${why:-<no reason line in the log>}"
@@ -1033,6 +1348,33 @@ EOF
     else printf '%s\n' "$line" >>"$keep"; fi
   done <"$Q"
   echo "$n"
+}
+
+# HOW A RED LINE GOES BACK, when the line rode a chain into the batch.
+#
+# A chained line was popped as a PAYLOAD — the `#HOLD-after-<sha>` tag is not in the batch file,
+# because land.sh is being asked to land it — and `#RED <payload>` would put it back into the queue
+# with its hold gone. If its PREDECESSOR went green the hold is moot (the sha is on the tree, and
+# rule (c) would strike the tag on the next loop), so the ordinary `#RED` park is right. If the
+# predecessor did NOT go green, the line is exactly as held as it was an hour ago and its own red is
+# a red over a union that was never the union it will land in: it goes back HELD, tag and all, and
+# its chained verdict is dropped. Never orphaned live, never orphaned un-held.
+lq_park_line() { # $1 = the line text as the batch result names it, $2 = batch file, $3 = red file
+  local text="$1" bf="$2" red="$3" held="" pred="" pst=""
+  if [ -f "$bf.chain" ]; then
+    held="$(awk -F"$TAB" -v t="$text" '$1 == t { h = $2 } END { print h }' "$bf.chain")"
+    pred="$(awk -F"$TAB" -v t="$text" '$1 == t { p = $3 } END { print p }' "$bf.chain")"
+  fi
+  if [ -n "$held" ] && [ -n "$pred" ] && [ -f "$bf.result" ]; then
+    pst="$(awk -F"$TAB" -v t="$pred" '$2 == t { s = $1 } END { print s }' "$bf.result")"
+  fi
+  if [ -n "$held" ] && [ "$pst" != GREEN ]; then
+    printf '%s\n' "$held" >>"$red"
+    awk -F"$TAB" -v t="$text" '!($4 == t && index($2, "@") > 0)' "$PP" >"$PP.tmp" 2>/dev/null && mv "$PP.tmp" "$PP"
+    lq_log "chained: $(printf '%.80s' "$text") back to HELD — its predecessor was not green; verdict dropped"
+    return 0
+  fi
+  printf '#RED %s\n' "$text" >>"$red"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1471,7 +1813,9 @@ lq_selftest() {
   _t "no live line: nothing popped"            0 "$(lq_pop_head_alone "$root/b14.txt" "$root/k14.txt")"
   Q="$savedQ3"
   _t "the main flow skips the sweep for a base-fix head" 1 "$(grep -c 'lq_line_is_base_fix "\$headline" "\$W"; then' "$0")"
-  _t "the main flow skips the sweep below two live lines" 1 "$(grep -c '\[ "\$(lq_live_lines "\$Q")" -lt 2 \]' "$0")"
+  _t "the main flow skips the sweep with no live line at all" 1 "$(grep -c '\[ "\$(lq_live_lines "\$Q")" -lt 1 \]' "$0")"
+  _t "  ...and no longer at two: one live line roots every chain behind it" 0 \
+     "$(grep -c '\[ "\$(lq_live_lines "\$Q")" -lt 2 \]' "$0")"
 
   echo "landq4 selftest: a pre-proof red against the base, or by the tree-moved guard, is NONE"
   printf 'ceiling-rose: rules.x.figure is 47 at the base and 60 here\n' >"$root/pl1.log"
@@ -1529,7 +1873,8 @@ lq_selftest() {
   lq_stage_engine
   _t "land.run.sh's root is the runner's tree, not the scratch" "here=$W" "$(bash "$W/target/gate/land.run.sh")"
   _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
-  _t "the sweep launches the staged engine"                     1 "$(grep -c 'bash "\$tree/target/gate/land.run.sh" --preprove' "$0")"
+  _t "the sweep launches the staged engine, live lines and chains alike" 2 \
+     "$(grep -c 'bash "\$tree/target/gate/land.run.sh" --preprove' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
   # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
   # the loop is still reading its list: a child that inherited that stdin ate the next line (three
@@ -1729,7 +2074,8 @@ lq_selftest() {
   lq_qunlock
   _t "unlocking releases it"                   1 "$( [ -d "$QLOCK" ]; echo $?)"
   _t "the main flow takes the lock before it pops" 1 "$(grep -c '^  if ! lq_qlock; then' "$0")"
-  _t "  ...drops its OWN loop when the rewrite is refused" 1 "$(grep -c '^  if \[ "\$qrc" = 2 \]; then rm -f "\$batch"; sleep 60; continue; fi' "$0")"
+  _t "  ...drops its OWN loop when the rewrite is refused" 1 \
+     "$(grep -c '^  if \[ "\$qrc" = 2 \]; then rm -f "\$batch" "\$batch.chain"; sleep 60; continue; fi' "$0")"
   _t "  ...and never rewrites the queue unconditionally" 0 "$(grep -c '^  mv "\$keep" "\$Q"' "$0")"
   Q="$savedQ5"; QLOCK="$savedQL"
   Q="$savedQ"; W="$savedW"
@@ -1889,6 +2235,36 @@ lq_selftest() {
   _t "try_push pushes over it"                      1 "$(grep -c '^    cancelled-in-progress)$' "$0")"
   _t "  ...and says why, in the log"                1 "$(grep -c '^      lq_log "push over in_progress CI on ' "$0")"
 
+  # ── A LANDED TIP REACHES ORIGIN BEFORE THE NEXT SWEEP, NOT AFTER IT ──────────────────────────
+  echo "landq4 selftest: a landed-but-unpushed tip is pushed at the loop top, before the sweep"
+  local savedW9="$W" savedL9="$L" savedBR9="$BR"
+  local orig="$root/origin.git" work="$root/pushwork"
+  git init -q --bare "$orig"
+  git clone -q "$repo" "$work" >/dev/null 2>&1
+  git -C "$work" config user.email landq@selftest; git -C "$work" config user.name landq
+  git -C "$work" config commit.gpgsign false; git -C "$work" config core.hooksPath "$root/nohooks"
+  git -C "$work" remote remove origin; git -C "$work" remote add origin "$orig"
+  BR=simbr; W="$work"; L="$root/pushlog.txt"; : >"$L"
+  git -C "$work" push -q origin "HEAD:$BR"
+  git -C "$work" fetch -q origin
+  # CI IS NOT ASKED OVER THE NETWORK HERE: the conclusion is stubbed, because what is under test is
+  # WHEN the push runs, not what GitHub says about the tip before it.
+  ci_conclusion() { echo none; }
+  _t "an already-pushed tip is a no-op"        0 "$(try_push; echo $?)"
+  _t "  ...and says nothing"                   0 "$(grep -c . "$L" || true)"
+  printf 'landed\n' >"$work/landed.txt"; git -C "$work" add -A; git -C "$work" commit -qm landed
+  try_push >/dev/null 2>&1
+  _t "a landed tip is pushed"                  "$(git -C "$work" rev-parse HEAD)" "$(git -C "$work" rev-parse "origin/$BR")"
+  _t "  ...and the log names it"               1 "$(grep -c "^pushed $(git -C "$work" rev-parse --short HEAD) " "$L" || true)"
+  unset -f ci_conclusion
+  W="$savedW9"; L="$savedL9"; BR="$savedBR9"
+  # THE ORDER IN THE LOOP: the push is above the census, the sweep and the pop, not below them.
+  _t "the loop pushes at its top, and still after the batch" 2 "$(grep -c '^  try_push$' "$0")"
+  _t "  ...before it reads the tip"            1 \
+     "$( [ "$(grep -n '^  try_push$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  tip="\$(git -C "\$W" rev-parse HEAD)"$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and before the sweep is handed out"  1 \
+     "$( [ "$(grep -n '^  try_push$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n 'lq_preprove_sweep; fi$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+
 
   # ── A PARK SAYS WHY, AND THE QUEUE SAYS WHERE IT STANDS, WITHOUT OPENING A LOG ────────────────
   echo "landq4 selftest: a #RED-preproof park carries its reason line"
@@ -1919,6 +2295,190 @@ lq_selftest() {
   printf -- '--prove %s\n' "$hb" >"$Q"; : >"$L"
   rn2="$(lq_pop tip1 4 "$root/rb2.txt" "$root/rk2.txt")"
   _t "a log with no sentence says so, in words" 1 "$(grep -cx 'pre-prove RED reason: <no reason line in the log>' "$L" || true)"
+
+  # ── CHAINED PRE-PROOFS: a held line proven on the tree its predecessor will make ───────────────
+  echo "landq4 selftest: chained pre-proofs (a #HOLD-after-<sha> line rides its predecessor)"
+  local savedQ8="$Q" savedPP8="$PP" savedL8="$L" savedW8="$W" savedD8="$D" savedCD8="$LAND_CHAIN_DEPTH"
+  Q="$root/chq.txt"; PP="$root/chpp.txt"; L="$root/chlog.txt"; D="$root/chdone.txt"; W="$repo"
+  : >"$D"
+  local cb="$root/chbatch.txt" ckp="$root/chkeep.txt" cn
+  # THE TAG IS READ, AND ONLY IN ITS SHA FORM (rule (6)).
+  _t "a #HOLD-after-<sha> tag names its predecessor" "$ha" "$(lq_hold_after_sha "#HOLD-after-$ha --prove $hb")"
+  _t "a short sha is a sha"                    "$(printf '%.9s' "$ha")" \
+     "$(lq_hold_after_sha "#HOLD-after-$(printf '%.9s' "$ha") --prove $hb")"
+  _t "a WORD-form hold is never chained"       "" "$(lq_hold_after_sha "#HOLD-dialect-kind-mint --prove $hb")"
+  _t "a two-tag line names no single predecessor" "" "$(lq_hold_after_sha "#HOLD-after-$ha #HOLD-arena --prove $hb")"
+  _t "a #RED park is not a hold"               "" "$(lq_hold_after_sha "#RED-preproof /l/1 --prove $hb")"
+  _t "a live line is not a hold"               "" "$(lq_hold_after_sha "--prove $hb")"
+  _t "the payload is the line behind the tags" "--prove $hb" "$(lq_line_payload "#HOLD-after-$ha --prove $hb")"
+  _t "  ...and a live line is its own payload" "--prove $hb" "$(lq_line_payload "--prove $hb")"
+  # THE CHAIN ITSELF, root first.
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hb" "$hb" "$hc" >"$Q"
+  _t "a two-line chain is root-then-self"  "--prove $ha
+--prove $hb" "$(lq_chain_of "#HOLD-after-$ha --prove $hb" "$Q" "$repo" 4)"
+  _t "a three-line chain walks transitively" "--prove $ha
+--prove $hb
+--prove $hc" "$(lq_chain_of "#HOLD-after-$hb --prove $hc" "$Q" "$repo" 4)"
+  _t "  ...and the depth is a wall"        "" "$(lq_chain_of "#HOLD-after-$hb --prove $hc" "$Q" "$repo" 2)"
+  _t "  ...refused, not truncated"         1 "$(lq_chain_of "#HOLD-after-$hb --prove $hc" "$Q" "$repo" 2 >/dev/null; echo $?)"
+  _t "a hold naming nothing in the queue is no chain" 1 \
+     "$(lq_chain_of "#HOLD-after-deadbeef1 --prove $hb" "$Q" "$repo" 4 >/dev/null; echo $?)"
+  _t "the ledger key is tip@picks"         "tip1@$ha" "$(printf -- '--prove %s\n' "$ha" | lq_chain_key tip1)"
+  _t "  ...in chain order, for two picks"  "tip1@$ha+$hb" "$(printf -- '--prove %s\n--prove %s\n' "$ha" "$hb" | lq_chain_key tip1)"
+
+  # (1) A TWO-LINE CHAIN LANDS IN ONE BATCH — and the log says so, in the shape a tick greps for.
+  : >"$L"
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hb" >"$Q"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "a two-line chain lands in ONE batch"      2 "$cn"
+  _t "  ...the predecessor first"               "--prove $ha" "$(sed -n 1p "$cb")"
+  _t "  ...the dependent after it"              "--prove $hb" "$(sed -n 2p "$cb")"
+  _t "  ...nothing left live"                   0 "$(grep -c '^--' "$ckp" || true)"
+  _t "  ...the log line shape"                  1 "$(grep -cx "chained: --prove $hb after $ha" "$L" || true)"
+  _t "  ...and the batch remembers where it came from" 1 \
+     "$(grep -cF -- "--prove $hb$TAB#HOLD-after-$ha --prove $hb$TAB--prove $ha" "$cb.chain" || true)"
+  # THE VERDICT IS KEYED BY THE PREDECESSOR'S PICKS: a green over other picks is not this line's.
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$hc" "$TAB" "$TAB" "$hb" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "a green over OTHER picks does not admit it" 1 "$cn"
+  _t "  ...and the line is still held, tag intact" 1 "$(grep -cx -- "#HOLD-after-$ha --prove $hb" "$ckp" || true)"
+  # (6) A TIP MOVE DROPS IT.
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
+  _t "a chained green is found at its own tip"  GREEN "$(lq_preproved_status "tip1@$ha" "--prove $hb")"
+  _t "  ...and at no other tip"                 NONE  "$(lq_preproved_status "tip2@$ha" "--prove $hb")"
+  _t "the prune keeps the new tip's chained rows" 1 \
+     "$(awk -F"$TAB" -v tip="tip1" '$2 == tip || index($2, tip "@") == 1' "$PP" | grep -c "tip1@$ha" || true)"
+  _t "  ...and drops the old tip's, chained and bare" 0 \
+     "$(awk -F"$TAB" -v tip="tip2" '$2 == tip || index($2, tip "@") == 1' "$PP" | grep -c . || true)"
+  _t "the runner's own prune is that expression" 1 \
+     "$(grep -cF "awk -F\"\$TAB\" -v tip=\"\$newtip\" '\$2 == tip || index(\$2, tip \"@\") == 1'" "$0")"
+  _t "  ...and the batch ceiling counts chained greens" 1 \
+     "$(grep -cF "'\$1 == \"GREEN\" && (\$2 == tip || index(\$2, tip \"@\") == 1) {print \$4}'" "$0")"
+  LAND_BATCH=8 _t "eight chained greens are eight" 8 "$( { printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hb"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hc"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hg1"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hg2"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hcb"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hfig"
+      printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hmint"
+      printf 'GREEN%stip1%s/l%s--prove %s\n' "$TAB" "$TAB" "$TAB" "$ha"; } >"$root/ch8.txt"; LAND_BATCH=8 lq_batch_size tip1 "$root/ch8.txt")"
+
+  # (2) A THREE-LINE CHAIN WITH DEPTH 2 LANDS THE FIRST TWO.
+  LAND_CHAIN_DEPTH=2
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hb" "$hb" "$hc" >"$Q"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\nGREEN%stip1@%s+%s%s/l/c%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" "$TAB" "$ha" "$hb" "$TAB" "$TAB" "$hc" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "depth 2: the first two of a three-line chain" 2 "$cn"
+  _t "  ...and the third is still held"          1 "$(grep -cx -- "#HOLD-after-$hb --prove $hc" "$ckp" || true)"
+  LAND_CHAIN_DEPTH=4
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "depth 4: all three ride one batch"         3 "$cn"
+  _t "  ...in chain order"                       "--prove $hc" "$(sed -n 3p "$cb")"
+
+  # (3) A RED PREDECESSOR RETURNS THE DEPENDENT TO HELD, WITH NO VERDICT LEFT.
+  : >"$L"
+  local credlog="$root/ch-red.log"; printf 'FAIL construction: legacy-reach 94 > 92\n' >"$credlog"
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hb" >"$Q"
+  printf 'RED%stip1%s%s%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$credlog" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "a parked predecessor pops nothing"        0 "$cn"
+  _t "  ...the predecessor is parked"           1 "$(grep -c "^#RED-preproof $credlog " "$ckp" || true)"
+  _t "  ...the dependent is back to held, tag intact" 1 "$(grep -cx -- "#HOLD-after-$ha --prove $hb" "$ckp" || true)"
+  _t "  ...and its chained verdict is dropped"  0 "$(grep -c "tip1@$ha" "$PP" || true)"
+  _t "  ...the bare-tip rows are untouched"     1 "$(grep -c "^RED${TAB}tip1${TAB}" "$PP" || true)"
+  _t "  ...and the log says why"                1 "$(grep -c 'stays held — its predecessor was parked; verdict dropped' "$L" || true)"
+
+  # (3, at the landing) A CHAINED LINE WHOSE PREDECESSOR CAME BACK RED GOES BACK HELD, NOT #RED.
+  : >"$L"
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hb" >"$Q"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  printf 'RED%s--prove %s\nRED%s--prove %s\n' "$TAB" "$ha" "$TAB" "$hb" >"$cb.result"
+  local cred="$root/ch-red.txt"; : >"$cred"
+  lq_park_line "--prove $ha" "$cb" "$cred"; lq_park_line "--prove $hb" "$cb" "$cred"
+  _t "the predecessor parks as #RED"            1 "$(grep -cx -- "#RED --prove $ha" "$cred" || true)"
+  _t "the dependent goes back HELD, not #RED"   1 "$(grep -cx -- "#HOLD-after-$ha --prove $hb" "$cred" || true)"
+  _t "  ...and never as a bare payload"         0 "$(grep -cx -- "#RED --prove $hb" "$cred" || true)"
+  _t "  ...its chained verdict dropped with it" 0 "$(grep -c "tip1@$ha" "$PP" || true)"
+  # ...AND WHEN THE PREDECESSOR WENT GREEN, THE HOLD IS MOOT AND THE ORDINARY PARK IS RIGHT.
+  printf 'GREEN%stip1@%s%s/l/b%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"
+  printf 'GREEN%s--prove %s\nRED%s--prove %s\n' "$TAB" "$ha" "$TAB" "$hb" >"$cb.result"
+  : >"$cred"; lq_park_line "--prove $hb" "$cb" "$cred"
+  _t "a green predecessor makes the hold moot"  1 "$(grep -cx -- "#RED --prove $hb" "$cred" || true)"
+  _t "  ...and an unchained line parks as it always did" 1 \
+     "$(: >"$cred"; lq_park_line "--prove $hc" "$cb" "$cred"; grep -cx -- "#RED --prove $hc" "$cred" || true)"
+  _t "the HALT requeue maps a payload back to its held line" 1 \
+     "$(grep -c 'print (($0 in m) ? m\[$0\] : $0)' "$0")"
+
+  # (4) A GATES+GATES CHAIN IS STILL TWO BATCHES — the judge is edited once per union or not at all.
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$hg1" "$hg1" "$hg2" >"$Q"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$hg1" "$TAB" "$hg1" "$TAB" "$TAB" "$hg2" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "a gates line beside a gates line is two batches" 1 "$cn"
+  _t "  ...the dependent stays held"             1 "$(grep -cx -- "#HOLD-after-$hg1 --prove $hg2" "$ckp" || true)"
+  # ...AND SO IS A CHAIN ON ONE FILE (lq_may_join is unchanged and is still asked).
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$ha2" >"$Q"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$ha" "$TAB" "$ha" "$TAB" "$TAB" "$ha2" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "two lines on one file are two batches, chained or not" 1 "$cn"
+
+  # (5) A BASE FIX IS NEVER IN A CHAIN, at either end.
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$hfig" "$hfig" "$hb" >"$Q"
+  _t "a base-fix predecessor is not chainable"  1 \
+     "$(lq_chain_of "#HOLD-after-$hfig --prove $hb" "$Q" "$repo" 4 >/dev/null; echo $?)"
+  printf 'GREEN%stip1%s/l/a%s--prove %s\nGREEN%stip1@%s%s/l/b%s--prove %s\n' \
+     "$TAB" "$TAB" "$TAB" "$hfig" "$TAB" "$hfig" "$TAB" "$TAB" "$hb" >"$PP"
+  cn="$(lq_pop tip1 4 "$cb" "$ckp")"
+  _t "  ...so the base fix pops alone"          1 "$cn"
+  _t "  ...and the dependent stays held"        1 "$(grep -cx -- "#HOLD-after-$hfig --prove $hb" "$ckp" || true)"
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n' "$ha" "$ha" "$hfig" >"$Q"
+  _t "a base-fix DEPENDENT is not chainable"    1 \
+     "$(lq_chain_of "#HOLD-after-$ha --prove $hfig" "$Q" "$repo" 4 >/dev/null; echo $?)"
+
+  # THE SWEEP'S SIDE: which held lines are worth a box, and what a chained box's verdict is.
+  printf -- '--prove %s\n#HOLD-after-%s --prove %s\n#HOLD-dialect-kind-mint --prove %s\n' "$ha" "$ha" "$hb" "$hc" >"$Q"
+  : >"$PP"; printf -- '--prove %s\n' "$ha" >"$root/chclaim.txt"
+  _t "the sweep offers the chained hold a box"  "#HOLD-after-$ha --prove $hb" \
+     "$(lq_chain_candidates 4 "$Q" "$repo" tip1 "$root/chclaim.txt")"
+  _t "  ...and never a word-form hold"          0 \
+     "$(lq_chain_candidates 4 "$Q" "$repo" tip1 "$root/chclaim.txt" | grep -c 'dialect-kind-mint' || true)"
+  _t "  ...nor one already green at that key"   "" \
+     "$(printf 'GREEN%stip1@%s%s/l%s--prove %s\n' "$TAB" "$ha" "$TAB" "$TAB" "$hb" >"$PP"; \
+        lq_chain_candidates 4 "$Q" "$repo" tip1 "$root/chclaim.txt")"
+  _t "  ...nor one whose OWN files are spoken for" "" \
+     "$(: >"$PP"; printf -- '--prove %s\n--prove %s\n' "$ha" "$hb" >"$root/chclaim.txt"; \
+        lq_chain_candidates 4 "$Q" "$repo" tip1 "$root/chclaim.txt")"
+  _t "  ...and no boxes means no candidates"    "" \
+     "$(printf -- '--prove %s\n' "$ha" >"$root/chclaim.txt"; lq_chain_candidates 0 "$Q" "$repo" tip1 "$root/chclaim.txt")"
+  # THE DEPENDENT'S OWN ROW OUT OF THE UNION'S OUTCOME FILE.
+  local cres="$root/ch-outcome.txt"
+  printf 'GREEN%s--prove %s\nRED%s--prove %s\n' "$TAB" "$ha" "$TAB" "$hb" >"$cres"
+  _t "the dependent's own row is read"          RED   "$(lq_outcome_row "$cres" "--prove $hb")"
+  _t "  ...and the predecessor's is its own"    GREEN "$(lq_outcome_row "$cres" "--prove $ha")"
+  _t "  ...a line not in the file has no row"   ""    "$(lq_outcome_row "$cres" "--prove $hc")"
+  _t "a chained RED is the dependent's"         RED   "$(lq_chain_preproof_verdict 1 "$rn" "$cres" "--prove $hb")"
+  _t "a chained GREEN under a red union is still green" GREEN \
+     "$(printf 'RED%s--prove %s\nGREEN%s--prove %s\n' "$TAB" "$ha" "$TAB" "$hb" >"$cres"; \
+        lq_chain_preproof_verdict 1 "$rn" "$cres" "--prove $hb")"
+  _t "a base-state red is the BASE's, chained too" "NONE:base" \
+     "$(printf 'RED%s--prove %s\n' "$TAB" "$hb" >"$cres"; \
+        printf 'ceiling-rose: the figure ROSE since the base\n' >"$root/ch-base.log"; \
+        lq_chain_preproof_verdict 1 "$root/ch-base.log" "$cres" "--prove $hb")"
+  _t "no outcome at all falls back to the rc rules" "NONE:never-reported" \
+     "$(lq_chain_preproof_verdict "" "$rn" "$root/nosuch" "--prove $hb")"
+  _t "  ...and a clean rc is green"             GREEN "$(lq_chain_preproof_verdict 0 "$rn" "$root/nosuch" "--prove $hb")"
+  _t "one live line is now worth a sweep"       1 \
+     "$(grep -c 'if \[ "$(lq_live_lines "\$Q")" -lt 1 \]' "$0")"
+  Q="$savedQ8"; PP="$savedPP8"; L="$savedL8"; W="$savedW8"; D="$savedD8"; LAND_CHAIN_DEPTH="$savedCD8"
 
   echo "landq4 selftest: the status line (a tick reads tail -n 1, not the log)"
   D="$root/status-done.txt"
@@ -1981,6 +2541,15 @@ while true; do
   lq_status >"$W/target/gate/landq4.status"
   lq_log "status: $(cat "$W/target/gate/landq4.status")"
 
+  # A LANDED TIP REACHES ORIGIN WITHIN THE MINUTE, and the sweep is not what it waits for.
+  # MEASURED 07:20 on 09-10: K1 landed, the loop went straight into a sweep, and `origin` sat at
+  # 76f1887af for over twenty minutes while eight boxes proved the next lines — until the
+  # integrator pushed by hand. The push at the BOTTOM of the loop only runs when the batch is
+  # over; a sweep is the better part of an hour, and every slot cutting a line in that window cut
+  # it on a tip that was already stale. `try_push` is a no-op when HEAD is origin's, so running it
+  # first costs one `rev-parse` on the ordinary loop and closes the window on every other one.
+  try_push
+
   tip="$(git -C "$W" rev-parse HEAD)"
   # ONE ENGINE IN THE TREE (see lq_census): strangers are killed and logged, and a tree that is not
   # settled — HEAD is not the last landed tip, or something tracked is modified — refuses the batch.
@@ -2017,7 +2586,10 @@ while true; do
     # THE SWEEP RUNS FIRST, and its cost is somebody else's cores. It is best-effort by construction:
     # a sweep that reaches no box writes no rows, and the pop below then behaves exactly as the
     # unaccelerated runner does. Fewer than two live lines: nothing to run in parallel, no sweep.
-    if [ "$(lq_live_lines "$Q")" -lt 2 ]; then lq_log "pre-prove: fewer than two live lines; sweep skipped"
+    # ONE LIVE LINE IS NOW WORTH A SWEEP. It was not, when only live lines were swept: one line and
+    # one box is the serial runner with extra steps. With chained pre-proofs a single live line is the
+    # ROOT of every chain behind it, and the sweep has as many boxes' worth of work as the queue is deep.
+    if [ "$(lq_live_lines "$Q")" -lt 1 ]; then lq_log "pre-prove: no live line to sweep or chain from; sweep skipped"
     else [ "${LANDQ_NO_PREPROVE:-}" = 1 ] || lq_preprove_sweep; fi
     B="$(lq_batch_size "$tip")"
     n="$(lq_pop "$tip" "$B" "$batch" "$keep")"
@@ -2029,9 +2601,9 @@ while true; do
   lq_qunlock
   while IFS= read -r s; do [ -n "$s" ] && lq_log "$s"; done <"$W/target/gate/landq4-qrw.$$.txt"
   rm -f "$W/target/gate/landq4-qrw.$$.txt"
-  if [ "$qrc" = 2 ]; then rm -f "$batch"; sleep 60; continue; fi
+  if [ "$qrc" = 2 ]; then rm -f "$batch" "$batch.chain"; sleep 60; continue; fi
   if [ "${n:-0}" -eq 0 ]; then
-    rm -f "$batch"; try_push; sleep 60; continue
+    rm -f "$batch" "$batch.chain"; try_push; sleep 60; continue
   fi
 
   lq_log "=== $(date +%H:%M:%S) batch of $n line(s) (size $B), head: $(head -n1 "$batch" | cut -c1-100)"
@@ -2071,11 +2643,17 @@ while true; do
   got="$(grep -c . "$batch.result" 2>/dev/null || true)"
   if [ "${got:-0}" != "${want:-0}" ]; then
     lq_qlock 60 || lq_log "queue: requeueing without the lock (it did not come free); the queue may have been edited"
-    cat "$batch" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; lq_qunlock
+    # LINES REQUEUED UNCHANGED — and for a chained line "unchanged" is the HELD line it was
+    # popped from, not the payload the batch file carried. A payload put back bare is a line that
+    # was never un-held going live with its predecessor still unlanded.
+    awk -F"$TAB" -v cf="$batch.chain" \
+      'BEGIN { while ((getline l < cf) > 0) { n = split(l, a, "\t"); if (n >= 2) m[a[1]] = a[2] } }
+       { print (($0 in m) ? m[$0] : $0) }' "$batch" >"$batch.requeue"
+    cat "$batch.requeue" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; rm -f "$batch.requeue"; lq_qunlock
     lq_log "=== HALT: land.sh --batch left ${got:-0} of ${want:-0} per-line outcomes (rc $rc); lines requeued unchanged"
     echo "HALT no-result $(date +%FT%T)" >>"$D"
     git -C "$W" cherry-pick --abort 2>/dev/null
-    rm -f "$batch"; exit 1
+    rm -f "$batch" "$batch.chain"; exit 1
   fi
 
   red="$W/target/gate/landq4-red.$$.txt"; : >"$red"
@@ -2084,9 +2662,9 @@ while true; do
     [ -n "$st" ] || continue
     case "$st" in
       GREEN) ngreen=$((ngreen + 1)) ;;
-      RED-CONFLICT) nred=$((nred + 1)); printf '#RED %s\n' "$text" >>"$red"
+      RED-CONFLICT) nred=$((nred + 1)); lq_park_line "$text" "$batch" "$red"
                     [ "$first" = 1 ] && head_conflict=1 ;;
-      *) nred=$((nred + 1)); printf '#RED %s\n' "$text" >>"$red" ;;
+      *) nred=$((nred + 1)); lq_park_line "$text" "$batch" "$red" ;;
     esac
     first=0
   done <"$batch.result"
@@ -2109,10 +2687,13 @@ while true; do
       lq_log "overlap: the landed tree is NOT the predicted tree (a bisect, or something else landed); the overlapped pre-proofs are dropped"
     fi
   fi
-  [ "$newtip" = "$tip" ] || { awk -F"$TAB" -v tip="$newtip" '$2 == tip' "$PP" >"$PP.tmp" 2>/dev/null; mv "$PP.tmp" "$PP"; }
+  # A CHAINED ROW KEYS BY `<tip>@<predecessor picks>`, so the prune matches that prefix too — and
+  # a row taken at the OLD tip goes whichever shape it has: a chained green is evidence about the
+  # tree it was taken on, and the tip moving is exactly what makes it not evidence any more.
+  [ "$newtip" = "$tip" ] || { awk -F"$TAB" -v tip="$newtip" '$2 == tip || index($2, tip "@") == 1' "$PP" >"$PP.tmp" 2>/dev/null; mv "$PP.tmp" "$PP"; }
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED; tip $(git -C "$W" rev-parse --short HEAD)"
-  rm -f "$batch" "$red"
+  rm -f "$batch" "$batch.chain" "$red"
 
   if [ "$head_conflict" = 1 ]; then
     consec_head_conflict=$((consec_head_conflict + 1))
