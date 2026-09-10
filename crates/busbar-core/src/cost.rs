@@ -378,14 +378,6 @@ impl CostModel {
         )
     }
 
-    /// Resolve a CONFIGURED model name to its rate-card key. 1.5.0: the rate card is keyed by the
-    /// CONFIG model name itself (two providers serving one upstream model are two `models:`
-    /// entries with two card entries), so this is the identity - kept as the one seam every
-    /// consumer resolves through, so a future re-aliasing lands in one place.
-    pub(crate) fn resolve_model_alias<'a>(&'a self, model: &'a str) -> &'a str {
-        model
-    }
-
     /// Whether a rate card is configured (token pricing active).
     ///
     /// `pub` (was crate-private): the first of the two questions the pre-admission pricing guard

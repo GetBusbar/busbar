@@ -96,8 +96,7 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
 /// the flat per-request fee x requests. Recomputed on every read (reprice-on-read: a rate-card
 /// correction changes historical figures on the next read; tokens are the stored truth). Metering
-/// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
-/// `upstream_model` alias resolution.
+/// rows attribute by the CONFIGURED model name, which is the card's own key.
 fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
@@ -112,8 +111,12 @@ fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &Usage
     .filter(|(_, v)| *v != 0)
     .map(|(k, v)| (k.to_string(), v))
     .collect();
-    let resolved = cost.resolve_model_alias(model);
-    cost.derive_spend_micros([(resolved, &units)].into_iter(), b.requests, true)
+    // The card is keyed by the CONFIGURED model name itself — two providers serving one upstream
+    // model are two `models:` entries with two card entries — so the row's model name IS the card
+    // key. The identity `resolve_model_alias` that used to stand between them was a seam held open
+    // for a re-aliasing the 1.5.0 keying decision made impossible; it named nothing this call site
+    // does not already have.
+    cost.derive_spend_micros([(model, &units)].into_iter(), b.requests, true)
 }
 
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
