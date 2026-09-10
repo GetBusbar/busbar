@@ -1045,6 +1045,16 @@ fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
     }
 }
 
+/// THE PROCESS-START SEED for core's OWN test binary. The config layer reads the plane list from its
+/// own crate, compiled without `cfg(test)` — it cannot route through the [`seeded`] shims below — so
+/// the built-in rows are installed once, before `main`, and every read in this binary (core's own
+/// through the shims, the config layer's through the contract and the substrate directly) sees the
+/// same list from the first test. Idempotent with the shims: both write the same rows once.
+#[ctor::ctor]
+fn seed_builtin_planes_before_any_test() {
+    seeded::seed();
+}
+
 /// THE SEEDING SHIM for core's OWN test binary: it carries [`TEST_BUILTIN_PLANE_DECLS`] and has no
 /// bootstrap that runs before an arbitrary test, so every read goes through here and installs the
 /// rows first (idempotent). The names mirror the production `use`s in `plane/registry.rs`.

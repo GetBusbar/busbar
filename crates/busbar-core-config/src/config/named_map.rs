@@ -40,7 +40,7 @@ pub enum NamedMapSection {
     /// `export:` — instance NAME → `{module, settings}`, the single telemetry-egress surface.
     Export,
     /// A PLANE-OWNED named-definition map, carrying the owning plane's declared config-section key
-    /// ([`PlaneDecl::config_section`](crate::plane::registry::PlaneDecl::config_section)) as OPAQUE
+    /// ([`PlaneDecl::config_section`](busbar_substrate::plane::registry::PlaneDecl::config_section)) as OPAQUE
     /// DATA. `tools:` (server NAME → `{url, pin, tools_allow, …}`, the MCP plane) and `agents:`
     /// (agent NAME → `{url, pin, reverify_ttl, …}`, the A2A plane) are its two 1.6.0 instances, and a
     /// registered plane declaring a `named_def_list` is another. The config key is LOCKED to the
@@ -70,7 +70,7 @@ impl NamedMapSection {
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane::registry::plane_behaviours() {
+        for decl in crate::planes::plane_behaviours() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -102,20 +102,18 @@ impl NamedMapSection {
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).
     ///
     /// The two 1.5.3-native sections carry their noun as a literal; a PLANE section reads it from the
-    /// owning plane's [`PlaneDecl::admin_noun`](crate::plane::registry::PlaneDecl::admin_noun) via the
+    /// owning plane's [`PlaneDecl::admin_noun`](busbar_substrate::plane::registry::PlaneDecl::admin_noun) via the
     /// registry, so core stamps a registered plane's audit/error noun without a hard-coded plane
     /// literal. With the owning plane compiled out (no registered decl) `singular` is never reached —
     /// a definition on an absent plane is refused before any noun is stamped — but it still answers
     /// the section key rather than panicking.
-    pub(crate) fn singular(self) -> &'static str {
+    pub fn singular(self) -> &'static str {
         match self {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
-            NamedMapSection::Plane(_) => {
-                crate::plane::registry::plane_decl_for_config_section(self.key())
-                    .map(|d| d.admin_noun)
-                    .unwrap_or_else(|| self.key())
-            }
+            NamedMapSection::Plane(_) => crate::planes::plane_decl_for_config_section(self.key())
+                .map(|d| d.admin_noun)
+                .unwrap_or_else(|| self.key()),
         }
     }
 
@@ -145,7 +143,7 @@ impl NamedMapSection {
     // Consumed by the error taxonomy + the doc audits, both of which are `test`/`openapi-schema`
     // gated; genuinely absent from a shipped build, so allow it there rather than deleting the seam.
     #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
-    pub(crate) fn parse_rel(rel: &str) -> Option<(NamedMapSection, NamedMapShape)> {
+    pub fn parse_rel(rel: &str) -> Option<(NamedMapSection, NamedMapShape)> {
         for section in NamedMapSection::sections() {
             let root = section.path_root();
             if rel == root.as_ref() {
@@ -165,7 +163,7 @@ impl NamedMapSection {
     /// Is `name` present in this section of `deploy`? Called on a FRESHLY disk-loaded (pre-overlay)
     /// `DeployCfg` to answer "is this entry base-config-defined?", the guard that stops the API
     /// silently shadowing operator file config (the same posture the hooks surface takes).
-    pub(crate) fn contains(self, deploy: &DeployCfg, name: &str) -> bool {
+    pub fn contains(self, deploy: &DeployCfg, name: &str) -> bool {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
@@ -187,11 +185,7 @@ impl NamedMapSection {
     /// ([`crate::config::patch::merge_entry`]), so the thing being patched has to be a document. The
     /// projection round-trips into the same struct it came from, so a field that survives the merge
     /// untouched parses back to exactly the value it had.
-    pub(crate) fn entry_as_document(
-        self,
-        deploy: &DeployCfg,
-        name: &str,
-    ) -> Option<serde_json::Value> {
+    pub fn entry_as_document(self, deploy: &DeployCfg, name: &str) -> Option<serde_json::Value> {
         match self {
             NamedMapSection::IdentityProviders => deploy
                 .identity_providers
@@ -213,7 +207,7 @@ impl NamedMapSection {
     /// Parse a raw definition document into this section's typed config and insert it under `name`.
     /// The typed structs are `deny_unknown_fields`, so a typo'd key is rejected HERE — the API can
     /// never store a definition that config.yaml would refuse.
-    pub(crate) fn insert(
+    pub fn insert(
         self,
         deploy: &mut DeployCfg,
         name: &str,
@@ -237,7 +231,7 @@ impl NamedMapSection {
     /// including tokens `config_validate` refuses to boot. So the VALUE-level rules that boot
     /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
     /// check below ([`busbar_substrate::config::auth::parse_max_admin_scope`]).
-    pub(crate) fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+    pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
@@ -275,7 +269,7 @@ impl NamedMapSection {
             // a present `tools:`/`agents:` section — naming the SECTION (its plane-declared grammar
             // key), not a hard-coded plane.
             NamedMapSection::Plane(_) => {
-                if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
+                if crate::planes::plane_decl_for_config_section(self.key()).is_none() {
                     let section = self.key();
                     return Err(format!(
                         "`{section}.{name}`: this build was compiled without the plane that owns the \
@@ -305,7 +299,7 @@ impl NamedMapSection {
     /// `export:` names are referenced from nowhere in 1.5.3 (an exporter is a leaf), so it returns
     /// empty — the check is not skipped for it, it simply has nothing to find. `tools:`/`agents:`
     /// will add their own reference sites here.
-    pub(crate) fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
+    pub fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
         let mut out = Vec::new();
         match self {
             NamedMapSection::IdentityProviders => {
@@ -338,7 +332,7 @@ impl NamedMapSection {
     /// This entry's CURRENT `max_admin_scope` ceiling token, or `None` for a section that has no
     /// ceiling / an entry that names none (⇒ the most restrictive default applies). Read from the
     /// EFFECTIVE map so the ceiling guard compares against what is actually live.
-    pub(crate) fn max_admin_scope(
+    pub fn max_admin_scope(
         self,
         providers: &super::IdentityProviders,
         name: &str,
@@ -354,7 +348,7 @@ impl NamedMapSection {
 }
 
 /// Validate a named-definition write through the OWNING PLANE's
-/// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
+/// [`config_validate`](busbar_substrate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a `tools:`/`agents:` write to the plane's own validator without naming a
 /// `crate::mcp`/`crate::a2a` validate function. A section whose plane declares no validator (none of
 /// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
@@ -364,8 +358,7 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    match crate::plane::registry::behaviour_for_config_section(section.key())
-        .and_then(|d| d.config_validate)
+    match crate::planes::behaviour_for_config_section(section.key()).and_then(|d| d.config_validate)
     {
         Some(f) => f(name, def),
         None => Ok(()),
@@ -375,7 +368,7 @@ fn plane_config_validate(
 /// One successfully-parsed named-map definition, still un-installed. The intermediate value of
 /// [`NamedMapSection::parse_def`] — it exists so "did this parse?" and "install it" are the SAME
 /// parse rather than two, which is what keeps the API's reject set identical to the file's.
-pub(crate) enum NamedDef {
+pub enum NamedDef {
     IdentityProvider(IdentityProviderCfg),
     Export(ExportDefCfg),
     // A PLANE SECTION'S entry, kept as the VALIDATED RAW document rather than the plane's typed config
@@ -431,7 +424,7 @@ impl NamedDef {
 // Same gating as `parse_rel`, which is its only producer.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NamedMapShape {
+pub enum NamedMapShape {
     /// `GET <root>` — the collection read.
     Collection,
     /// `GET|PUT|DELETE <root>/{name}` — one definition.
@@ -439,7 +432,3 @@ pub(crate) enum NamedMapShape {
     /// `PATCH <root>/{name}/settings` — the opaque settings bag of one definition.
     Settings,
 }
-
-#[cfg(test)]
-#[path = "tests/named_map_tests.rs"]
-mod named_map_tests;

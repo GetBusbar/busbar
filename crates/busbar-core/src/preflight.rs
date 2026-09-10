@@ -761,43 +761,12 @@ pub(crate) fn validate_secret_refs(
     Ok(())
 }
 
-/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
-///
-/// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the
-/// file is readable, because it runs before anything touches the environment. Without this,
-/// `--validate` reported a config VALID while boot would warn and then serve a gateway whose every
-/// upstream request fails on a missing credential: success reported for something that cannot work.
-///
-/// DELIBERATELY NOT IN `preflight_plugins_and_secrets`. That pre-flight is SHARED with boot and with
-/// the admin apply/reload path, where an unresolvable secret is a WARNING by design, not a refusal
-/// (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects` pins that). A live
-/// config change must not be rejected for a secret that may resolve on the next deploy. The operator
-/// asking `--validate` is asking a different question, and deserves the strict answer.
-///
-/// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
-///
-/// Walks the references boot RESOLVES, not every reference the config can hold: an
-/// `identity-providers:` definition's `token:` is only read through the resolved auth chains, so a
-/// defined-but-unreferenced provider whose token env var is unset boots fine and must pass here too
-/// (see `boot_resolved_secret_refs`). The exhaustive walk stays in use for the structural and
-/// module-existence checks, which cost nothing to run over a reference boot never reads.
-pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), String> {
-    let builtins = config::secret::SecretResolver::builtins_only();
-    for (what, r) in config_validate::boot_resolved_secret_refs(cfg) {
-        if r.module != config::secret::SECRET_MODULE_ENV
-            && r.module != config::secret::SECRET_MODULE_FILE
-        {
-            // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
-            // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
-            // be loadable here, and pre-flight covers it.
-            continue;
-        }
-        if let Err(e) = builtins.resolve(r) {
-            return Err(format!("{what}: {e}"));
-        }
-    }
-    Ok(())
-}
+// THE `--validate`-ONLY BUILT-IN SECRET RESOLUTION moved with the rest of the config layer: it reads
+// nothing but the config layer's own `SecretResolver` and `boot_resolved_secret_refs`, so it belongs
+// beside them rather than in the engine's pre-flight. Re-exported here at its historical
+// `busbar_core::preflight::validate_builtin_secrets_resolve` spelling, which is what `main.rs`'s
+// `--validate` arm calls.
+pub use config_validate::validate_builtin_secrets_resolve;
 
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`

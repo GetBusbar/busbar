@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/busbar",
     "crates/busbar-core",
+    "crates/busbar-core-config",
     "crates/busbar-timing",
     "crates/busbar-llm",
     "crates/busbar-llm-codec",
@@ -259,6 +260,9 @@ serde_urlencoded = "0.7"
 # `serde_yaml::from_str` call site unchanged. Renaming here states the substitution once for the
 # whole workspace instead of re-arguing it in each member.
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+# Test-only: a process-start hook for a test binary that must install its built-in plane rows before
+# any test's first read of the plane list (busbar-core's test binary; see its dev-dependencies).
+ctor = "0.10"
 sha2 = "0.11.0"
 smallvec = "1"
 # Raw socket options for the thread-per-core data plane: each per-worker listener sets SO_REUSEPORT

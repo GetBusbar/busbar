@@ -37,7 +37,7 @@ use super::RootCfg;
 ///    `config_validate::tests::secret_ref_coverage` reads the crate's own sources, finds every
 ///    field anywhere in the tree whose type mentions `SecretRef`, and requires the declaring type to
 ///    appear in [`SECRET_BEARING_TYPES`] below. A new one fails the test with the type named.
-pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+pub fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
     walk_secret_refs(cfg, TokenRefs::Every)
 }
 
@@ -58,7 +58,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
 /// exists are written within sight of each other. `tests::keyless_is_accepted_on_provider_api_keys_alone`
 /// drives it over the full walk of a fully-populated config, so a new secret-bearing path is
 /// classified by the test rather than by anyone remembering to look here.
-pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
+pub fn keyless_credential_allowed(what: &str) -> bool {
     // A provider name may itself contain dots (`providers.my.local.llama.api_key`), so this is a
     // prefix/suffix test, not a segment count. It cannot over-match: no other path this walk mints
     // both starts under `providers.` and ends in `.api_key`.
@@ -76,7 +76,7 @@ pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
 /// every definition's token would turn that into a refusal, so this walk keeps every OTHER reference
 /// (the full walk is still what the structural and module-existence checks use, so nothing is hidden
 /// from them) and narrows only the token set to what boot reads.
-pub(crate) fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+pub fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
     walk_secret_refs(cfg, TokenRefs::BootResolved)
 }
 
@@ -394,8 +394,8 @@ fn push_browser_login_refs<'a>(
 /// entry that is `Walked` must genuinely be destructured by `secret_refs`, and an entry that is
 /// `NotInResolvedConfig` must genuinely be unreachable from `RootCfg` — the test verifies both, so
 /// mislabelling a live type as unreachable fails just as loudly as leaving it out.
-#[cfg(test)]
-pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
+#[cfg(any(test, feature = "test-support"))]
+pub const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("TlsCfg", SecretBearing::Walked),
     ("ProviderCfg", SecretBearing::Walked),
     ("AuthCfg", SecretBearing::Walked),
@@ -441,9 +441,9 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SecretBearing {
+pub enum SecretBearing {
     /// Exhaustively destructured by [`secret_refs`], so every one of its `SecretRef` fields reaches
     /// the returned list and a new field is a compile error.
     Walked,
@@ -451,7 +451,3 @@ pub(crate) enum SecretBearing {
     /// that is LOWERED into a walked type before any validation runs.
     NotInResolvedConfig(&'static str),
 }
-
-#[cfg(test)]
-#[path = "tests/secret_ref_coverage.rs"]
-mod secret_ref_coverage;

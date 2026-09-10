@@ -49,7 +49,7 @@ pub use busbar_substrate::config::groups::{
 /// `pool_exists` abstracts the pool namespace so boot (`cfg.pools`), `--validate`, and the Admin
 /// API (`App.pools`) share this verbatim and cannot drift. Returns paste-ready errors in the
 /// config_validate style.
-pub(crate) fn validate_groups(
+pub fn validate_groups(
     groups: &std::collections::BTreeMap<String, GroupCfg>,
     pool_exists: &dyn Fn(&str) -> bool,
     errors: &mut Vec<String>,
@@ -126,7 +126,7 @@ pub(crate) fn validate_groups(
 /// bound is a principled backstop (a distinct-node walk cannot exceed the number of groups without
 /// revisiting one, i.e. a cycle) — deliberately NOT the arbitrary depth policy constant.
 // Wired by the mint auto-provision path (`admin::v1::json::handlers::resolve_mint_group`).
-pub(crate) fn resolve_child_default<'a>(
+pub fn resolve_child_default<'a>(
     groups: &'a BTreeMap<String, GroupCfg>,
     parent: &str,
 ) -> Option<&'a ChildDefault> {
@@ -149,7 +149,7 @@ pub(crate) fn resolve_child_default<'a>(
 /// `leaf ∩ parent ∩ ...`. Pure: does not mutate `groups`. `child_default` on the leaf itself is left
 /// unset (a per-user leaf is not itself a template source).
 // Wired by the mint auto-provision path (`admin::v1::json::handlers::resolve_mint_group`).
-pub(crate) fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str) -> GroupCfg {
+pub fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str) -> GroupCfg {
     let limits = resolve_child_default(groups, parent)
         .map(|cd| cd.limits.clone())
         .unwrap_or_default();
@@ -159,7 +159,3 @@ pub(crate) fn provision_child(groups: &BTreeMap<String, GroupCfg>, parent: &str)
         ..Default::default()
     }
 }
-
-#[cfg(test)]
-#[path = "tests/groups_tests.rs"]
-mod tests;

@@ -35,6 +35,12 @@ busbar-contract = { path = "../busbar-contract" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE CONFIG LAYER. The document grammar, the loader, the migrator, the overlay, the named-map, the
+# prepass, the `SecretResolver` and the validator moved OUT of this crate into their own home, which
+# depends on the substrate and never back on core — so the engine can retire out from under the
+# grammar rather than holding it hostage. Core re-exports both modules at their historical
+# `busbar_core::config` / `busbar_core::config_validate` spellings.
+busbar-core-config = { path = "../busbar-core-config" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
@@ -132,8 +138,8 @@ rustls-pki-types = { workspace = true }
 # dependency edge owned by the composition root. Moving that registration to the binary is the
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
-auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking"]
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens", "busbar-core-config/auth-admin-tokens"]
+hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-core-config/hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -216,7 +222,7 @@ egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-core-config/openapi-schema", "busbar-substrate/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
@@ -231,6 +237,15 @@ test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 timing = ["busbar-timing/timing"]
 
 [dev-dependencies]
+# THE CONFIG LAYER'S PROOFS run in this crate's test binary (see `src/lib.rs`), and reach the config
+# crate's `#[cfg(test)]` helpers through its `test-support` feature.
+busbar-core-config = { path = "../busbar-core-config", features = ["test-support"] }
+# THE ONE PROCESS-START HOOK this test binary has. The shipped plane set is this binary's built-in
+# plane rows, and every read of the plane list had to seed them first because a test binary has no
+# composition root and no bootstrap that runs ahead of an arbitrary test. The config layer now reads
+# the list from its own crate (compiled without `cfg(test)`, so it cannot route through the seeding
+# shims), so the seeding runs once, before `main`, from `plane/tests/registry_tests.rs`. Test-only.
+ctor = { workspace = true }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /

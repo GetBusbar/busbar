@@ -242,6 +242,14 @@ because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, f
 contract_caps = 3687
 grammar = 388
 contract_transport = 845
+# THE CONFIG LAYER'S OWN CRATE (`busbar-core-config`): the 1.5.5 document grammar, the loader, the
+# migrator and its corpus, the overlay, the named-definition map, the prepass, the SecretResolver and
+# the validator, moved out of busbar-core whole so the engine can retire out from under it. A budget
+# rather than a ratchet, like every figure in this table: the config grammar is allowed to GROW (a
+# release adds keys), and what the ceiling refuses is the layer quietly becoming the engine's second
+# home. Measured 6,397 the day the crate landed; the ceiling is the integrator's figure for the whole
+# layer including the room the 1.4.x->1.5.0 migrator's corpus and the 1.6.0 additions need.
+core_config = 11000
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -1049,7 +1057,11 @@ max_extra_sites = 0
 # card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
 # still caught.
 fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
-fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
+# busbar-core-config is the config GRAMMAR that declares the rate-card fields and the 1.4.x->1.5.0
+# migrator that renames them; it reads the field to carry it, never to price with it. It joined the
+# list the day the config layer left busbar-core (the same reads, moved), and it leaves the list
+# when the rate card's grammar moves to the cost unit that owns it.
+fee_reader_crates = ["busbar-unit-cost", "busbar-core", "busbar-core-config"]
 max_fee_readers = 0
 
 [rules.one-pricing-site.allowed.cost-unit]

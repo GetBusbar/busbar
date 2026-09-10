@@ -409,6 +409,13 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // names the missing class for it.
     ("core", "api"),
     ("core", "caps"),
+    // THE PLANE DECLARATION LIST IS CONTRACT DATA (M1c, the plane-list ruling): which planes exist,
+    // which one owns a config section, which is the fallback — written once by the composition
+    // root and read by every layer, the config grammar included, at `busbar_contract::plane::
+    // registry`. The core kind's sinks were stated before that list moved (it was the substrate's
+    // then), so the class is granted here on the same terms `legacy -> contract` already is: a
+    // core crate reads the face the drain is written against, and the face is the contract.
+    ("core", "contract"),
     ("core", "grammar"),
     ("core", "kernel"),
     ("core", "substrate"),
@@ -600,7 +607,7 @@ const DEP_HALVES: &[&str] = &["shipped", "test"];
 /// than gate it. These four are different: `busbar-core -> busbar-unit-audit` is the drain in
 /// flight and `busbar-core -> busbar-transport-ws` is the fusion, and nothing about "legacy is
 /// unscored" can tell them apart. A NAME can.
-const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "dialect", "transport", "control"];
+const DRAIN_TARGET_KINDS: &[&str] = &["unit", "plane", "dialect", "transport", "control", "core"];
 
 /// THE ONLY CRATES A CONTROL SURFACE MAY NAME.
 ///
@@ -776,8 +783,10 @@ struct Announced {
 /// * ONCE. A `[[minted]]` row the base already carries admits nothing more: the crate's rows are
 ///   history now, and a second mint under the same row is how a landed crate would grow new
 ///   ceilings for free.
-/// * `cells` is EXACT. The row records the size of the set it minted; a branch that mints one more
-///   cell than the number it wrote down has to write the number down again.
+/// * `cells` is EXACT. The row records the size of the set it minted — the crate's own `[[cell]]`
+///   rows AND the two a carve-out's own name creates in crates that already exist (the crate it
+///   was cut from, whose re-export shim names it, and the composition root); a branch that mints
+///   one more cell than the number it wrote down has to write the number down again.
 /// * `moved_from` is the ceiling for a CARVE-OUT. `busbar-core-config` is cut out of `busbar-core`,
 ///   so its cells are the old crate's cells under a new name — and a minted cell may not exceed the
 ///   same-kind count the base pinned for the crate it was moved from. A move cannot raise the union
@@ -2445,6 +2454,20 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     let announced = reg.announced_names();
     for e in &measured {
         if !announced.contains(e.from.as_str()) && !announced.contains(e.to.as_str()) {
+            continue;
+        }
+        // THE DRAIN INTO AN ANNOUNCED CRATE IS THE ONE EDGE THAT IS SUPPOSED TO EXIST: a crate
+        // carved out of `busbar-core` is named by the crate it was cut from (the re-export shim
+        // that keeps every historical spelling resolving), and that edge is a `[[transitional]]`
+        // row like every other step of the retirement — a LEGACY source, a drain-target kind, a
+        // reason, and an expiry at the ship sha. Scoring it as the announced crate's own class
+        // would refuse every carve-out on the day it lands, for the shim it cannot land without.
+        if e.class.0 == "legacy"
+            && reg
+                .transitional
+                .iter()
+                .any(|t| t.covers(&e.from, e.to.as_str()))
+        {
             continue;
         }
         if verdict_for(&e.class) == "not-allowed" {

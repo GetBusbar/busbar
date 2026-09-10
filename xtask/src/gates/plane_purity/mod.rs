@@ -703,7 +703,7 @@ impl Gate for PlanePurityGate {
             self,
             "a busbar_plane_<plane>:: symbol path in the config layer",
             &[ROW_SYMBOL],
-            "crates/busbar-core/src/config/planted_plane_crate_reach.rs",
+            "crates/busbar-core-config/src/config/planted_plane_crate_reach.rs",
             "use busbar_plane_llm::PlaneDeclThing;\n",
             &[ROW_SYMBOL, "planted_plane_crate_reach.rs:1"],
         ));
@@ -717,23 +717,32 @@ impl Gate for PlanePurityGate {
             self,
             "a plane crate whose key is legitimate config vocabulary",
             &[ROW_SYMBOL],
-            "crates/busbar-core/src/config_validate/planted_plane_crate_reach.rs",
+            "crates/busbar-core-config/src/config_validate/planted_plane_crate_reach.rs",
             "use busbar_plane_admin::Verb;\n",
             &[ROW_SYMBOL, "planted_plane_crate_reach.rs:1"],
         ));
 
-        // THE CONFIG LAYER LEAVING THE GATE'S SIGHT BY LEAVING THE CRATE. A `busbar-core-config`
-        // crate that arrives without its neutral-root entry is not a violation of any ban — it is
-        // the ABSENCE of every ban over the sources it carries away, which is why it needs a row of
-        // its own rather than a hit in one.
+        // A PIECE OF CORE LEAVING THE GATE'S SIGHT BY LEAVING THE CRATE. A `busbar-core-*` crate
+        // that arrives without its neutral-root entry is not a violation of any ban — it is the
+        // ABSENCE of every ban over the sources it carries away, which is why it needs a row of its
+        // own rather than a hit in one.
+        //
+        // The planted name is deliberately one no split will ever use. It was `busbar-core-config`
+        // until the config layer actually became that crate and was listed as a root — at which
+        // point this plant stopped going red and the row stopped being proven, silently, by the very
+        // event it exists to catch. A fixture that names a crate somebody might create is a fixture
+        // with an expiry date on it.
         report.push(create(
             cx,
             self,
             "a crate split off busbar-core with no neutral-root entry",
             &[ROW_CORE_SPLIT],
-            "crates/busbar-core-config/src/lib.rs",
-            "pub struct RootCfg;\n",
-            &[ROW_CORE_SPLIT, "crates/busbar-core-config/src"],
+            "crates/busbar-core-unlisted-split-fixture/src/lib.rs",
+            "pub struct Whatever;\n",
+            &[
+                ROW_CORE_SPLIT,
+                "crates/busbar-core-unlisted-split-fixture/src",
+            ],
         ));
 
         // A sixth plane crate the SYMBOL row's literal does not spell. Same failure mode one level

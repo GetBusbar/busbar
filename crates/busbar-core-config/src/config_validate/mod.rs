@@ -30,16 +30,15 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// below this bound that boots/applies TODAY keeps doing so unchanged; only values that were ALREADY
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
-const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.
 pub use busbar_substrate::net_guard::{
     extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
 };
-// Test-only: the alternate-IPv4 expander moved with the guards; its unit tests still name it here.
-#[cfg(test)]
-use busbar_substrate::net_guard::expand_alternate_ipv4;
 
 /// Validate the loaded configuration and collect all errors at once.
 /// Returns Ok(()) if valid; Err(Vec<String>) with all validation failures otherwise.
@@ -1063,7 +1062,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::planes::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1246,7 +1245,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
 /// Range-check the resolved operational limits. Pushes a message per violation (collect-all, like the
 /// rest of `validate`). The bounds are intentionally loose: each default is the production working
 /// value, so we only reject values that would make a subsystem non-functional.
-fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
     use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
 
     // Timeouts must be >= 1s — a 0s timeout fires instantly and breaks the path it guards.
@@ -1630,7 +1631,8 @@ fn admin_root_segment() -> &'static str {
 }
 
 /// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID (`admin`,
-/// the id the `admin-tokens` module mints — [`busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID`]).
+/// the id the `admin-tokens` module mints — [`busbar_substrate::config::auth::ADMIN_TOKENS_PRINCIPAL_ID`],
+/// which the engine pins equal to the module's own constant).
 ///
 /// A DIFFERENT reservation from [`reserved_admin_name`], and split from it deliberately: that one
 /// guards a URL path SEGMENT (`api`), this one guards an identity string (`admin`). They shared one
@@ -1641,7 +1643,7 @@ fn admin_root_segment() -> &'static str {
 fn reserved_operator_principal_id(role: &str) -> bool {
     #[cfg(feature = "auth-admin-tokens")]
     {
-        role == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
+        role == busbar_substrate::config::auth::ADMIN_TOKENS_PRINCIPAL_ID
     }
     #[cfg(not(feature = "auth-admin-tokens"))]
     {
@@ -1664,7 +1666,9 @@ fn reserved_operator_principal_id(role: &str) -> bool {
 /// moved to `/api` — the exact drift a customer's `api` pool would have walked through). A name
 /// containing a `/` could also smuggle an `api/` first segment, so the first-segment test covers
 /// that family too.
-fn reserved_admin_name(name: &str) -> bool {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn reserved_admin_name(name: &str) -> bool {
     name.split('/').next() == Some(admin_root_segment())
 }
 
@@ -1677,7 +1681,9 @@ fn reserved_admin_name(name: &str) -> bool {
 /// long-standing promise that `admin` is a management name no lane may take. Dropping it would let a
 /// config an earlier release refused boot cleanly here, and the reverse-compatibility oracle checks
 /// exactly that. Same first-segment test as the sibling so `admin/x` cannot slip through either.
-fn reserved_legacy_admin_name(name: &str) -> bool {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn reserved_legacy_admin_name(name: &str) -> bool {
     name.split('/').next() == Some("admin")
 }
 
@@ -1694,7 +1700,9 @@ fn reserved_legacy_admin_name(name: &str) -> bool {
 /// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
 /// resolution, in `config::resolve`, where the members are still visible before projection; this
 /// function is the name-uniqueness half that makes that inference unambiguous.)
-fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
     let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
     // The plane registry nouns read through their always-present type-erased seam. With the owning
@@ -1771,7 +1779,7 @@ fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
 /// value must be a BARE ORIGIN (`scheme://host[:port]`, optional trailing `/`) with no path, query,
 /// or fragment; and it must not target a cloud-metadata host. Uses the SAME host normalization the
 /// provider SSRF guard uses so the check sees the authority the connecting stack will.
-pub(crate) fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
+pub fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
     let is_https = scheme_is(url, "https");
     let is_http = scheme_is(url, "http");
     if !is_https && !is_http {
@@ -1861,8 +1869,8 @@ pub fn metadata_denylist_entries() -> Vec<String> {
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
-mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+pub mod secret_refs;
+pub use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
@@ -1876,7 +1884,9 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// is read at ONE site (`validate_with_unset`'s call to this function), and
 /// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
 /// the production code path, error ordering and all — against an empty set.
-fn validate_providers_with(
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn validate_providers_with(
     known: &'static [&'static str],
     cfg: &RootCfg,
     unset_env_vars: &[String],
@@ -2222,7 +2232,9 @@ fn validate_providers_with(
 /// So zero is its OWN refusal: once, naming the build, per provider. The empty-set test in
 /// `tests/tests.rs` (`an_empty_protocol_set_refuses_every_provider_naming_the_build`) was watched
 /// RED against the contains-only body before this arm existed; do not fold the arms back together.
-fn validate_provider_protocol_with(
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn validate_provider_protocol_with(
     known: &'static [&'static str],
     provider_name: &str,
     protocol: &str,
@@ -2243,6 +2255,46 @@ fn validate_provider_protocol_with(
     }
 }
 
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;
+/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
+///
+/// This module proves a reference is well-FORMED; it cannot prove the variable is set or the
+/// file is readable, because it runs before anything touches the environment. Without this,
+/// `--validate` reported a config VALID while boot would warn and then serve a gateway whose every
+/// upstream request fails on a missing credential: success reported for something that cannot work.
+///
+/// DELIBERATELY NOT IN the engine's `preflight_plugins_and_secrets`. That pre-flight is SHARED with
+/// boot and with the admin apply/reload path, where an unresolvable secret is a WARNING by design,
+/// not a refusal (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects` pins
+/// that). A live config change must not be rejected for a secret that may resolve on the next
+/// deploy. The operator asking `--validate` is asking a different question, and deserves the strict
+/// answer.
+///
+/// It lives HERE, with the config layer, because it reads nothing else: the config layer's own
+/// `SecretResolver` and its own [`boot_resolved_secret_refs`] walk. `busbar-core` re-exports it at
+/// its historical `busbar_core::preflight::validate_builtin_secrets_resolve` spelling, which is what
+/// the binary's `--validate` arm calls.
+///
+/// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
+///
+/// Walks the references boot RESOLVES, not every reference the config can hold: an
+/// `identity-providers:` definition's `token:` is only read through the resolved auth chains, so a
+/// defined-but-unreferenced provider whose token env var is unset boots fine and must pass here too
+/// (see [`boot_resolved_secret_refs`]). The exhaustive walk stays in use for the structural and
+/// module-existence checks, which cost nothing to run over a reference boot never reads.
+pub fn validate_builtin_secrets_resolve(cfg: &crate::config::RootCfg) -> Result<(), String> {
+    let builtins = crate::config::secret::SecretResolver::builtins_only();
+    for (what, r) in boot_resolved_secret_refs(cfg) {
+        if r.module != crate::config::secret::SECRET_MODULE_ENV
+            && r.module != crate::config::secret::SECRET_MODULE_FILE
+        {
+            // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
+            // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
+            // be loadable here, and pre-flight covers it.
+            continue;
+        }
+        if let Err(e) = builtins.resolve(r) {
+            return Err(format!("{what}: {e}"));
+        }
+    }
+    Ok(())
+}

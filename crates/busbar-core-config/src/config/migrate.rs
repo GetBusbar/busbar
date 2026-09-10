@@ -39,7 +39,7 @@ const DEFAULT_GOVERNANCE_DB_1_4: &str = "busbar-governance.db";
 /// `--migrate-config`" is advice that cannot help: they just did, and running it again reproduces
 /// the same file. So the message names that case explicitly and gives the action that actually
 /// resolves it (the migrator already emitted a `TODO` naming the exact path).
-pub(crate) fn legacy_config_error(markers: &[String]) -> String {
+pub fn legacy_config_error(markers: &[String]) -> String {
     format!(
         "this looks like a busbar 1.x config; run `busbar --migrate-config <config.yaml>` and \
          review the flagged items. 1.x markers found:\n  - {}\n\
@@ -61,7 +61,7 @@ pub(crate) fn legacy_config_error(markers: &[String]) -> String {
 /// incompatibility then fails through the normal deny-unknown-fields parse errors, which name the
 /// exact key). Called by boot AND `--validate` before `DeployCfg` deserializes, so nothing from
 /// 1.x ever boots-and-flips.
-pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
+pub fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     let mut markers = Vec::new();
     let Some(root) = doc.as_mapping() else {
         return markers;
@@ -2563,7 +2563,3 @@ fn migrate_identity_providers(
         root.insert("identity-providers".into(), Value::Mapping(defs));
     }
 }
-
-#[cfg(test)]
-#[path = "tests/migrate_tests.rs"]
-mod tests;

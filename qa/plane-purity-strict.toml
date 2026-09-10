@@ -20,7 +20,15 @@
 # today each ceiling equals the TEST-scope count only.
 [categories]
 PATH-INCLUDE = 0
-SYMBOL = 61
+# 2026-09-08, config-home cut: 61 -> 64. The config layer left busbar-core for its own crate
+# (busbar-core-config), and its tests left with it. A test binary has no composition root, so the new
+# crate carries one — `src/tests/planes.rs` — and it calls each shipped plugin's own
+# `install_test_seams()` exactly once, in layering order, which is three `busbar_<plane>::` mentions
+# that did not exist before. They are the WHOLE of the increase (the moved test files' existing
+# mentions were already counted under busbar-core/src, which is also a neutral root, so the move
+# itself is zero). PRODUCTION scope is still 0 for this class in every neutral crate — that is what
+# `cargo xtask gate plane-purity`'s SYMBOL row proves, and it stayed green through the cut.
+SYMBOL = 64
 TYPE = 13
 KEY = 377
 DIALECT = 456

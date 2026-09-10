@@ -51,6 +51,10 @@ pub use secret::{
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
 pub use busbar_secret_ref::SecretRef;
+// The three BUILT-IN secret modules a `SecretRef` may name (`env`, `file`, `none`), re-exported with
+// the type so the config layer — which may name this face and not the grammar crate behind it —
+// reads them at one address.
+pub use busbar_secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,

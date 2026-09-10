@@ -250,6 +250,20 @@ pub fn plane_sections() -> Vec<&'static str> {
         .unwrap_or_default()
 }
 
+/// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
+/// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
+/// operator attaches a control to everything.
+pub fn validate_section_hooks(
+    at: &str,
+    hooks: &[String],
+    sections: &[&'static str],
+) -> Result<(), String> {
+    for hook in hooks {
+        refuse_cross_plane_reference(at, hook, sections)?;
+    }
+    Ok(())
+}
+
 /// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
 /// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
 /// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's

@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 /// stored overlay entry onto the base entry of the same name. It is deliberately NOT wired into
 /// `PATCH <section>/{name}/settings`, whose contract is REPLACE the whole settings bag — merging
 /// there would quietly turn a documented replace into a merge on a frozen wire.
-pub(crate) fn merge_entry(target: &mut serde_json::Value, patch: &serde_json::Value) {
+pub fn merge_entry(target: &mut serde_json::Value, patch: &serde_json::Value) {
     let serde_json::Value::Object(patch_obj) = patch else {
         // A non-object patch replaces outright. This is the whole-entry-replace case.
         *target = patch.clone();
@@ -101,21 +101,21 @@ macro_rules! section_patch {
         $(#[$m])*
         #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
         #[serde(deny_unknown_fields)]
-        pub(crate) struct $patch {
+        pub struct $patch {
             $(
                 #[serde(default, skip_serializing_if = "Option::is_none")]
-                pub(crate) $field: Option<$ty>,
+                pub $field: Option<$ty>,
             )+
         }
 
         impl $patch {
             /// Splice the named fields onto a resolved base; unnamed fields keep the base's value.
-            pub(crate) fn apply(&self, base: &mut $src) {
+            pub fn apply(&self, base: &mut $src) {
                 $( if let Some(v) = &self.$field { base.$field = v.clone(); } )+
             }
 
             /// Accumulate a newer patch over an older one, per field, for the persisted overlay.
-            pub(crate) fn merge(self, older: Self) -> Self {
+            pub fn merge(self, older: Self) -> Self {
                 Self { $( $field: self.$field.or(older.$field), )+ }
             }
         }
@@ -183,11 +183,3 @@ section_patch!(
         default_policy_timeout_ms: u64,
     }
 );
-
-#[cfg(test)]
-#[path = "tests/entry_patch_tests.rs"]
-mod entry_patch_tests;
-
-#[cfg(test)]
-#[path = "tests/patch_tests.rs"]
-mod tests;

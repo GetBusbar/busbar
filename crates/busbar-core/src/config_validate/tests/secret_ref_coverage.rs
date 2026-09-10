@@ -290,11 +290,16 @@ fn extract_impl_block(path: &Path, header: &str) -> String {
 /// Walked types as undestructured — a false red that is really "look in the impl". This concatenation
 /// is what makes the Walked assertions track the destructure to wherever the plane put it.
 fn secret_refs_source() -> String {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // The walk lives in the config layer's own crate now; this proof stayed in the engine's test
+    // binary (see `config/tests/mod.rs`), so it reads the sibling crate's source.
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("busbar-core-config")
+        .join("src");
     let core = read_between(
         &src.join("config_validate").join("secret_refs.rs"),
-        "pub(crate) fn secret_refs(",
-        "pub(crate) const SECRET_BEARING_TYPES",
+        "pub fn secret_refs(",
+        "pub const SECRET_BEARING_TYPES",
     );
     // The MCP plane's `tools:` config moved to the `busbar-mcp` crate (Phase-B B2); its `secret_refs`
     // impl names the `PlaneCfg` trait through its public path from there. The trait itself relocated
@@ -463,7 +468,7 @@ auth:
         "boot reads no identity-provider token from this config, so the boot-resolved walk must \
          report none; got: {boot:?}"
     );
-    crate::preflight::validate_builtin_secrets_resolve(&cfg).unwrap_or_else(|e| {
+    crate::config_validate::validate_builtin_secrets_resolve(&cfg).unwrap_or_else(|e| {
         panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
     });
 
@@ -498,7 +503,7 @@ auth:
         vec![&"auth.admin_auth.admin-tokens.token".to_string()],
         "exactly the operator credential boot resolves must be reported; got: {boot:?}"
     );
-    let err = crate::preflight::validate_builtin_secrets_resolve(&cfg)
+    let err = crate::config_validate::validate_builtin_secrets_resolve(&cfg)
         .expect_err("the referenced operator token cannot resolve and must be refused");
     assert!(
         err.starts_with("auth.admin_auth.admin-tokens.token: ")

@@ -173,26 +173,32 @@ fn package_name(text: &str) -> Option<String> {
     None
 }
 
-/// THE GRAMMAR DIRECTORY OF ONE CORE ROOT — its `config/` module, or the crate's own `src/` when it
-/// has none.
+/// THE GRAMMAR DIRECTORY OF ONE CORE ROOT — its `config/` module, when that module carries Rust
+/// sources; `None` when it does not.
 ///
 /// A core crate that keeps its grammar in a `config` module is tracked there, exactly as
-/// `busbar-core` always was. A core crate that IS the config layer has no `config/` module to point
-/// at — its grammar sits at its root — so the root is what is tracked. Either way the directory
-/// walk is NON-RECURSIVE (see [`resolve_sources`]), so a crate's `src/tests/**` is not grammar and
-/// does not join the fingerprint.
+/// `busbar-core` always was. A core crate whose grammar has LEFT — `busbar-core` after the config
+/// layer moved to `busbar-core-config` — keeps a `config/` directory for the committed snapshot,
+/// the waivers and the proofs, and no `*.rs` directly inside it: that root contributes nothing to
+/// the fingerprint, and that is the move being read as a move. Two things keep this from being a
+/// silent skip: the census refuses when NO root contributes (below), and a root that DOES carry a
+/// `config/*.rs` is tracked whether or not anyone expected it to.
 ///
-/// THE HAZARD, STATED. A core crate with no `config/` module whose `src/` root also carries
-/// NON-grammar `Deserialize` types would pull them into the fingerprint. That does not fail
-/// silently: `config-schema:snapshot-drift` goes red and NAMES the type it did not expect. The
-/// answer is the one the drain wants anyway — give that crate's grammar its own `config` module.
-fn grammar_dir(cx: &Ctx, root: &str) -> String {
+/// THE HAZARD, STATED. A core crate that kept a config grammar OUTSIDE a `config/` module would not
+/// be tracked by this rule. That does not fail silently either: the types it declares are the ones
+/// the snapshot already freezes, so `config-schema:snapshot-drift` reports them REMOVED and names
+/// them. The answer is the one the drain wants anyway — give that crate's grammar a `config` module.
+fn grammar_dir(cx: &Ctx, root: &str) -> Option<String> {
     let sub = format!("{root}/config");
-    if cx.exists(&sub) {
-        sub
-    } else {
-        root.to_string()
+    if !cx.exists(&sub) {
+        return None;
     }
+    let listed = cx.walk(&WalkSpec::new([sub.clone()]).ext("rs")).ok()?;
+    listed
+        .iter()
+        .map(|f| f.rel_str())
+        .any(|p| p.rsplit_once('/').map(|(d, _)| d) == Some(sub.as_str()))
+        .then_some(sub)
 }
 
 /// A TRACKED LEAF FILE, WHEREVER THE CORE KIND CURRENTLY KEEPS IT.
@@ -234,12 +240,21 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     // THE CORE KIND, BY CENSUS. Each core-kind crate contributes its grammar directory; the three
     // leaf files below are resolved ACROSS the census rather than under one hardcoded crate.
     let core = core_roots(cx)?;
-    let mut out: Vec<String> = core.iter().map(|r| grammar_dir(cx, r)).collect();
+    let mut out: Vec<String> = core.iter().filter_map(|r| grammar_dir(cx, r)).collect();
     out.dedup();
+    if out.is_empty() {
+        return Err(format!(
+            "config-schema: no core-kind crate carries a `config/` module with Rust sources in it \
+             (census: {}). The config grammar lives in the core kind; a set with no grammar \
+             directory renders no types, and a render of no types answers every question this \
+             gate asks with \"no delta\".",
+            core.join(", ")
+        ));
+    }
     out.extend([
         // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
-        // 1.6.0 config-seam migration; the loaders and resolvers that consume them stayed in
-        // `busbar-core`, which re-exports every moved item at its historical `config::` path.
+        // 1.6.0 config-seam migration; the loaders and resolvers that consume them live in
+        // `busbar-core-config`, which `busbar-core` re-exports at its historical `config::` path.
         // Tracked as a DIRECTORY so a future file split under it is automatically covered.
         "crates/busbar-substrate/src/config".to_string(),
         // The `plugins:` block sits one layer FURTHER down, in the substrate's PURE half, because

@@ -12,12 +12,12 @@ pub mod overlay;
 pub mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector.
 pub mod migrate;
-pub(crate) mod migrate_export;
+pub mod migrate_export;
 /// The 1.5.3 named-DEFINITION map sections (`identity-providers:`, `export:`), described ONCE as
 /// data so every surface that serves the universal pattern is parameterized instead of copied.
 pub mod named_map;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
-pub(crate) mod patch;
+pub mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
@@ -26,23 +26,23 @@ pub mod secret;
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
 pub use groups::GroupCfg;
-pub(crate) use groups::LimitCfg;
+pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::planes::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 // Re-export status_class_from_str for config validation. Named at its NEUTRAL home
 // (`busbar_substrate::breaker`, re-exported from `busbar-substrate-values`) rather than through
 // `crate::breaker`'s shim: the config layer must not carry an edge into a busbar-core module for a
 // value that is already a leaf.
 //
-// DECLARED BELOW THE `use crate::…` GROUP, DELIBERATELY. rustfmt sorts `pub(crate) use` after
+// DECLARED BELOW THE `use crate::…` GROUP, DELIBERATELY. rustfmt sorts `pub use` after
 // plain `use`, so writing this line above the group made rustfmt move it BENEATH the
 // `crate::plane::config` import — and a trailing `// plane-purity: frozen-wire` pragma is
 // positional, so the reorder silently transferred `McpEndpointSection`'s excuse onto THIS line and
 // left the type it excuses uncovered. `plane-purity:type` caught it. Keeping the declaration in
 // the position rustfmt would put it in is what stops the reorder from happening again.
-pub(crate) use busbar_substrate::breaker::status_class_from_str;
+pub use busbar_substrate::breaker::status_class_from_str;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -210,7 +210,9 @@ pub fn interpolate_env_with(
 /// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
 /// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
 /// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
-fn structural_placeholder(occurrence_index: usize) -> String {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn structural_placeholder(occurrence_index: usize) -> String {
     format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
 }
 
@@ -338,9 +340,13 @@ fn assert_interpolation_preserves_structure(
 /// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
 /// closed into the ordinary "would change structure" rejection) rather than let a document too
 /// deep to safely verify slip through.
-const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
 
-fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
     use serde_yaml::Value;
     if depth > MAX_STRUCTURAL_COMPARE_DEPTH {
         return false;
@@ -387,7 +393,9 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: 
 /// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
 /// common case is exact; the fallback exists only so a non-string key (not expected in practice)
 /// degrades to a still-deterministic, still-comparable representation instead of panicking.
-fn mapping_key_repr(key: &serde_yaml::Value) -> String {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn mapping_key_repr(key: &serde_yaml::Value) -> String {
     match key {
         serde_yaml::Value::String(s) => s.clone(),
         other => format!("{other:?}"),
@@ -426,7 +434,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -509,7 +517,7 @@ pub struct RootCfg {
     // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
     // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
     // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
-    pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub agent_defs: Box<dyn busbar_substrate::plane::config::PlaneCfg>,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
@@ -563,7 +571,7 @@ pub use busbar_substrate::config::auth::{
 /// Derived from the crate version rather than written down, because the previous hardcoded "1.5.0"
 /// in the migrator's banner was still claiming 1.5.0 three releases after the target moved. A
 /// version string a human has to remember to bump is a version string that goes stale.
-pub(crate) const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Join each `auth.chain:` / `auth.admin_auth:` NAME to its `identity-providers:` definition, producing
 /// the RESOLVED [`AuthCfg`] every runtime consumer reads.
@@ -593,11 +601,7 @@ pub(crate) const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// resolved chain, so a provider defined through the admin API and not yet referenced escaped it
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
-pub(crate) fn validate_token_placement(
-    name: &str,
-    module: &str,
-    has_token: bool,
-) -> Result<(), String> {
+pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
     if has_token && module != ADMIN_TOKENS_MODULE {
         return Err(format!(
             "identity-providers.{name}: `token:` is the built-in `admin-tokens` operator \
@@ -607,7 +611,7 @@ pub(crate) fn validate_token_placement(
     Ok(())
 }
 
-pub(crate) fn resolve_auth(
+pub fn resolve_auth(
     auth: &AuthDeployCfg,
     providers: &IdentityProviders,
     errors: &mut Vec<String>,
@@ -697,7 +701,7 @@ pub(crate) fn resolve_auth(
 /// actionable guidance instead of serde's bare "unknown field `mode`, expected one of …". Additive:
 /// any other error is returned verbatim. (1.4.0 config compatibility — the key was renamed to
 /// `auth.chain:` / `auth.upstream_credentials:` but the failure gave no upgrade breadcrumb.)
-pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
+pub fn augment_config_error(err: impl std::fmt::Display) -> String {
     let msg = err.to_string();
     if msg.contains("unknown field `mode`") {
         format!(
@@ -754,7 +758,7 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
 /// is frozen additive-only afterwards.
-pub(crate) const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
+pub const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
     // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
     // retired leaves reports the block-level move (the leaves have nowhere left to live).
     (
@@ -775,7 +779,7 @@ pub(crate) const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
 
 /// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
 /// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
-pub(crate) const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
+pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
     ("route", "candidate"),
     ("attempt", "routing"),
     ("completion", "response"),
@@ -785,7 +789,7 @@ pub(crate) const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
 /// exporters), shared by `augment_config_error`'s loud-fail hint, `config::migrate::detect_legacy_markers`
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
-pub(crate) const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
+pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
     (
         "request_log_webhook_url",
         "export.request-log-webhook.settings.url",
@@ -814,22 +818,22 @@ pub(crate) const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 /// to come from `config::migrate::detect_legacy_markers` (which this table drives, together with
 /// `migrate_config`'s mechanical rewrite, so the two cannot drift) — without it the operator gets
 /// the loader's generic "does not match any plugin", which names neither the rename nor the fix.
-pub(crate) const RETIRED_STORE_MODULES_1_5_3: &[&str] =
+pub const RETIRED_STORE_MODULES_1_5_3: &[&str] =
     &["redis", "busbar-store-redis", "busbar-store-redis-plugin"];
 
 /// The config ALIAS the renamed first-party Valkey store plugin answers to (`store.module: valkey`).
-pub(crate) const STORE_MODULE_VALKEY: &str = "valkey";
+pub const STORE_MODULE_VALKEY: &str = "valkey";
 
 /// The renamed plugin's canonical MANIFEST NAME — what `busbar-plugin-pack --name` stamps and what a
 /// `plugins.min_versions` / `plugin_versions` anti-downgrade floor must be keyed by. It is the plugin
 /// CRATE name (`…-plugin`), which is how that repo's release workflow packs it.
-pub(crate) const STORE_MODULE_VALKEY_NAME: &str = "busbar-store-valkey-plugin";
+pub const STORE_MODULE_VALKEY_NAME: &str = "busbar-store-valkey-plugin";
 
 /// The renamed plugin's release-ASSET stem: the published tarball is
 /// `busbar-store-valkey-<ver>-<target>.tar.gz` (the WORKSPACE name, without the `-plugin` suffix the
 /// cdylib crate and the manifest carry). Two different strings on purpose — see that repo's
 /// `release.yml`, which passes `--name busbar-store-valkey-plugin --out busbar-store-valkey-…`.
-pub(crate) const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
+pub const STORE_MODULE_VALKEY_ASSET_STEM: &str = "busbar-store-valkey";
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
@@ -997,18 +1001,18 @@ fn check_failover_pool(
 /// named `hooks` or `upstream_credentials` — both are REJECTED at parse with a clear error. The custom
 /// `Deserialize` lifts the reserved keys out first, then parses the remainder as the pool map.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct PoolsCfg {
+pub struct PoolsCfg {
     /// The ALL-POOLS attach list — hook names that fire for EVERY pool (the reserved `pools.hooks:`
     /// key). Empty when absent. Firing order: these fire BEFORE a pool's own hooks. LIST ⇒ ADDITIVE
     /// a pool's own `hooks:` are appended to this, deduped by name (see
     /// [`combine_hook_refs`]).
-    pub(crate) all_pool_hooks: Vec<String>,
+    pub all_pool_hooks: Vec<String>,
     /// The ALL-POOLS `upstream_credentials:` default (the reserved `pools.upstream_credentials:`
     /// key). SCALAR ⇒ OVERRIDE: a pool's own value REPLACES this. `None` = absent ⇒ the
     /// built-in default (`own`).
-    pub(crate) all_pool_upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub all_pool_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The real pools, keyed by name (every top-level key except the two reserved section keys).
-    pub(crate) pools: HashMap<String, PoolCfg>,
+    pub pools: HashMap<String, PoolCfg>,
 }
 
 impl<'de> Deserialize<'de> for PoolsCfg {
@@ -1023,9 +1027,9 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         //
         // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
         // config, where they can see the cross-section references a single entry cannot.
-        let section = crate::plane::config::split_section::<D, PoolCfg>(
+        let section = crate::planes::split_section::<D, PoolCfg>(
             deserializer,
-            crate::plane::fallback_key(),
+            crate::planes::fallback_key(),
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -1053,7 +1057,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
 /// double-charge a gate's latency budget and double-count a tap's audit record. Deduping by NAME is
 /// safe precisely because the name IS the instance: two DIFFERENT configurations of one
 /// module are two different NAMES, so dedupe can never collapse two distinct hooks.
-pub(crate) fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
+pub fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + entity.len());
     for name in section.iter().chain(entity.iter()) {
         if !out.iter().any(|existing| existing == name) {
@@ -1070,7 +1074,7 @@ pub(crate) fn combine_hook_refs(section: &[String], entity: &[String]) -> Vec<St
 /// section level removed. Concatenating `section` with this result reproduces
 /// [`combine_hook_refs`] exactly — the property `hook_refs_combine_is_section_then_entity_only`
 /// pins, so the two can never drift.
-pub(crate) fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
+pub fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Vec<String> {
     combine_hook_refs(section, entity)
         .into_iter()
         .skip(combine_hook_refs(section, &[]).len())
@@ -1081,7 +1085,9 @@ pub(crate) fn entity_only_hook_refs(section: &[String], entity: &[String]) -> Ve
 // `busbar_substrate::config::sections`, re-exported at their historical `config::` path.
 pub use busbar_substrate::config::sections::{DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR};
 
-fn default_listen() -> String {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn default_listen() -> String {
     DEFAULT_LISTEN_ADDR.into()
 }
 
@@ -1100,7 +1106,7 @@ fn default_admin_require_mtls() -> bool {
 /// on it is unreachable from off-host. Drives the admin-plane boot-guard: a loopback admin listener
 /// is safe without mTLS; anything else is treated as network-exposed. Unclassifiable hostnames fail
 /// CLOSED (treated as exposed) so an ambiguous bind never silently waives the mTLS requirement.
-pub(crate) fn bind_is_loopback(addr: &str) -> bool {
+pub fn bind_is_loopback(addr: &str) -> bool {
     // Strip the trailing `:port`. IPv6 literals contain colons, so split from the RIGHT, then peel
     // the `[...]` brackets an IPv6 host carries in `[::1]:8081` form.
     let host = addr.rsplit_once(':').map_or(addr, |(h, _port)| h);
@@ -1122,32 +1128,32 @@ pub(crate) fn bind_is_loopback(addr: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
     #[serde(default = "default_listen")]
-    pub(crate) listen: String,
+    pub listen: String,
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
     /// default; required once a `browser_login` method or `/auth/token` link generation is in play.
     #[serde(default)]
     pub public_url: Option<String>,
     /// Optional native inbound TLS / mTLS. Absent ⇒ plain HTTP (unchanged default).
     #[serde(default)]
-    pub(crate) tls: Option<TlsCfg>,
+    pub tls: Option<TlsCfg>,
     /// SEPARATE listen address for the admin API (`/api/v1/admin/*`). The admin surface ALWAYS runs
     /// here and is NEVER mounted on the data `listen` — the management plane stays isolated so it can
     /// carry its own TLS/mTLS, bind, and firewall posture independent of public LLM traffic. Defaults
     /// to loopback (`127.0.0.1:8081`); set an exposed address (+ `admin_tls`) to manage off-host.
     #[serde(default = "default_admin_listen")]
-    pub(crate) admin_listen: String,
+    pub admin_listen: String,
     /// Config-MANAGEMENT policy (`config:` block, 1.5.3): whether the admin API may mutate config and
     /// WHERE those changes persist. Absent ⇒ durable-by-default (mutable + a file overlay next to
     /// config.yaml). See [`ConfigMgmtCfg`].
     #[serde(default)]
-    pub(crate) config: ConfigMgmtCfg,
+    pub config: ConfigMgmtCfg,
     /// Optional pointer to the providers CATALOG file (`providers_file:`, 1.5.3). Relative paths
     /// resolve against the config.yaml directory. Absent ⇒ `providers.yaml` next to the resolved
     /// config.yaml. The `--providers <path>` CLI flag overrides this (1.6.0). The two-file model is
     /// preserved: this names the vetted, shippable catalog that config.yaml's `providers:` map
     /// references.
     #[serde(default)]
-    pub(crate) providers_file: Option<String>,
+    pub providers_file: Option<String>,
     /// The top-level `mcp:` block (1.6.0): busbar's own MCP endpoint, as an OAuth 2.1 resource
     /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
     /// ingress and no `.well-known` document, and nothing joins the route table. See
@@ -1161,14 +1167,14 @@ pub struct DeployCfg {
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
     /// accepted key set and never named in its unknown-key refusal. See that module for why.
     #[serde(skip)]
-    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
+    pub mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub(crate) oauth_as: Option<busbar_substrate::config::oauth_as::OauthAsCfg>,
+    pub oauth_as: Option<busbar_substrate::config::oauth_as::OauthAsCfg>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
@@ -1186,13 +1192,13 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub(crate) tools: ToolsSection,
+    pub tools: ToolsSection,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
     /// `admin_require_mtls: false`.
     #[serde(default)]
-    pub(crate) admin_tls: Option<TlsCfg>,
+    pub admin_tls: Option<TlsCfg>,
     /// TOP-LEVEL boot-policy flag: does a network-exposed admin plane REQUIRE mTLS?
     /// `true` (the DEFAULT) ⇒ a non-loopback `admin_listen` without `admin_tls.client_ca` REFUSES to
     /// boot. `false` ⇒ the operator deliberately accepts a token-only admin plane on an exposed
@@ -1204,39 +1210,39 @@ pub struct DeployCfg {
     /// waiver unreachable for the deployment that needs it. It is NOT redundant with
     /// `admin_tls.client_ca`: that says "here is the CA", this says "an exposed plane must have one".
     #[serde(default = "default_admin_require_mtls")]
-    pub(crate) admin_require_mtls: bool,
-    pub(crate) auth: Option<AuthDeployCfg>,
+    pub admin_require_mtls: bool,
+    pub auth: Option<AuthDeployCfg>,
     /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3): provider NAME →
     /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from
     /// `auth.chain:`, `auth.admin_auth:` and `auth.role_bindings:`. Absent ⇒ only the bare built-ins
     /// (`keys` / `admin-tokens`) are referenceable.
     #[serde(default, rename = "identity-providers")]
-    pub(crate) identity_providers: IdentityProviders,
-    pub(crate) providers: HashMap<String, ProviderDeploy>,
-    pub(crate) models: HashMap<String, ModelCfg>,
+    pub identity_providers: IdentityProviders,
+    pub providers: HashMap<String, ProviderDeploy>,
+    pub models: HashMap<String, ModelCfg>,
     /// Pools are optional: a deployment can route to models directly (`/<model>/v1/messages`)
     /// without defining any pool. Carries the reserved `pools.hooks:` all-pools attach key (1.5.3);
     /// see [`PoolsCfg`].
     #[serde(default)]
-    pub(crate) pools: PoolsCfg,
+    pub pools: PoolsCfg,
     /// The top-level `hooks:` NAMED-DEFINITION map (1.5.3): instance name → [`HookDefCfg`]. This
     /// REPLACES the removed `global_hooks:` list — hooks are DEFINED here once (which plugin backs
     /// each, its `groups:`/`phase:` scope, its role/projection) and REFERENCED by bare name from the
     /// all-pools `pools.hooks:` list or a per-pool `hooks:` list. Absent ⇒ no hooks.
     #[serde(default)]
-    pub(crate) hooks: HookDefs,
+    pub hooks: HookDefs,
     /// The top-level `groups:` block - THE one limit tree. Optional; absent = no groups.
     #[serde(default)]
-    pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
+    pub groups: std::collections::BTreeMap<String, GroupCfg>,
     /// The top-level `rate_card:` - the ONLY cost source. Per-model entry; ALL-OR-NOTHING:
     /// absent => token pricing is 0 for every model; present => AUTHORITATIVE and COMPLETE (every
     /// configured model must have an entry or boot/`--validate` FAIL naming the missing models).
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
-    pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
+    pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
-    pub(crate) per_request_fee: i64,
+    pub per_request_fee: i64,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -1244,7 +1250,7 @@ pub struct DeployCfg {
     /// path a Vault-style secret plugin needs (address / namespace / auth token / CA). Absent = every
     /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
     #[serde(default)]
-    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    pub secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
@@ -1268,7 +1274,7 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub(crate) agents: AgentsSection,
+    pub agents: AgentsSection,
     /// The top-level `streams:` section (1.6.0) — THE VOICE PLANE's owned config: the locked session
     /// defaults (media/VAD/`SessionConfig`) plus the three session ceilings (wall-clock, context
     /// window, per-response output tokens). SINGULAR typed section (one live-voice posture per
@@ -1281,7 +1287,7 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub(crate) streams: StreamsSection,
+    pub streams: StreamsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
     // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -1300,13 +1306,13 @@ pub struct DeployCfg {
     /// Operator-tunable global operational limits ("NEVER CODED CAPS"). Whole block optional; each
     /// field defaults to its historical hardcoded value (absent = today's behavior).
     #[serde(default)]
-    pub(crate) limits: LimitsCfg,
+    pub limits: LimitsCfg,
     /// Process-wide active-probe fallbacks (per-lane overrides still win).
     #[serde(default)]
-    pub(crate) health: HealthDefaultsCfg,
+    pub health: HealthDefaultsCfg,
     /// Routing global default policy timeout (per-policy override still wins).
     #[serde(default)]
-    pub(crate) routing: RoutingCfg,
+    pub routing: RoutingCfg,
 }
 
 impl DeployCfg {
@@ -1325,10 +1331,10 @@ impl DeployCfg {
     /// `Some`; the section KEYS are read off the frozen static
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
-    pub(crate) fn plane_section(
+    pub fn plane_section(
         &self,
         section: &str,
-    ) -> Option<&dyn crate::plane::config::PlaneCfg> {
+    ) -> Option<&dyn busbar_substrate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)
@@ -1342,10 +1348,10 @@ impl DeployCfg {
     /// The mutable twin of [`DeployCfg::plane_section`] — the seam the named-map WRITE path installs a
     /// parsed `tools:`/`agents:` definition through, again resolved by config-section key so core
     /// names no plane field.
-    pub(crate) fn plane_section_mut(
+    pub fn plane_section_mut(
         &mut self,
         section: &str,
-    ) -> Option<&mut dyn crate::plane::config::PlaneCfg> {
+    ) -> Option<&mut dyn busbar_substrate::plane::config::PlaneCfg> {
         let mirror = busbar_substrate::plane::config::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&mut *self.tools.0)
@@ -1423,9 +1429,9 @@ pub struct ExportCfg {
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
     pub prometheus: Option<PrometheusSettings>,
     /// Every configured `request-log-webhook` instance, in config order. Empty ⇒ no webhook sink.
-    pub(crate) request_log_webhooks: Vec<WebhookSettings>,
+    pub request_log_webhooks: Vec<WebhookSettings>,
     /// Every configured `request-log-file` instance, in config order. Empty ⇒ no file sink.
-    pub(crate) request_log_files: Vec<FileSettings>,
+    pub request_log_files: Vec<FileSettings>,
     /// The `otlp` instance's settings, if one is configured. `None` ⇒ no tracer/span export.
     pub otlp: Option<OtlpSettings>,
 }
@@ -1436,7 +1442,7 @@ impl ExportCfg {
     /// same mechanism for hook signals), then read per request as the COMPUTE GATE: core generates a
     /// stream's records ONLY when some sink declared it. Supersedes the one-off
     /// `export::request_log_configured()` boolean — one mechanism, not two.
-    pub(crate) fn projection_union(&self) -> busbar_substrate::config::projection::ProjectionUnion {
+    pub fn projection_union(&self) -> busbar_substrate::config::projection::ProjectionUnion {
         busbar_substrate::config::projection::ProjectionUnion::of(
             self.prometheus
                 .iter()
@@ -1490,14 +1496,14 @@ pub struct PrometheusSettings {
     /// memory cost the operator names).
     pub buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
-    pub(crate) key_gauge_limit: usize,
+    pub key_gauge_limit: usize,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
     /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: busbar_substrate::config::projection::Projection,
+    pub projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
@@ -1506,48 +1512,48 @@ pub struct PrometheusSettings {
 /// (a SECOND webhook target) is what the named-instance map itself provides.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct WebhookSettings {
+pub struct WebhookSettings {
     /// The webhook target URL — REQUIRED, `https://`-only, SSRF-guarded (relocated from the retired
     /// `observability.request_log_webhook_url`).
-    pub(crate) url: String,
+    pub url: String,
     /// An optional auth header applied to every delivery from THIS instance (e.g.
     /// `{ name: Authorization, value: "Bearer ${WEBHOOK_TOKEN}" }`). The `value` rides the config's
     /// `${VAR}` env interpolation, so a secret is never stored literally.
     #[serde(default)]
-    pub(crate) auth_header: Option<ExportAuthHeader>,
+    pub auth_header: Option<ExportAuthHeader>,
     /// Max concurrent deliveries (default 64) — relocated from `max_inflight_webhook_deliveries`.
     #[serde(default = "default_max_inflight_webhook_deliveries")]
-    pub(crate) max_inflight_deliveries: usize,
+    pub max_inflight_deliveries: usize,
     /// Per-delivery timeout (seconds, default 2) — relocated from `webhook_delivery_timeout_secs`.
     /// Applied PER INSTANCE (each sink carries its own deadline), which is what having named
     /// instances is for.
     #[serde(default = "default_webhook_delivery_timeout_secs")]
-    pub(crate) delivery_timeout_secs: u64,
+    pub delivery_timeout_secs: u64,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
     /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: busbar_substrate::config::projection::Projection,
+    pub projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-file` instance.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct FileSettings {
+pub struct FileSettings {
     /// The JSONL file path each request-log line is appended to — REQUIRED.
-    pub(crate) path: String,
+    pub path: String,
     /// Optional size (MiB) at which the file is rotated (best-effort; absent ⇒ never rotate).
     #[serde(default)]
-    pub(crate) rotate_mb: Option<u64>,
+    pub rotate_mb: Option<u64>,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
     /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: busbar_substrate::config::projection::Projection,
+    pub projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -1565,15 +1571,15 @@ pub struct OtlpSettings {
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: busbar_substrate::config::projection::Projection,
+    pub projection: busbar_substrate::config::projection::Projection,
 }
 
 /// One `{ name, value }` auth header for a webhook export instance.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ExportAuthHeader {
-    pub(crate) name: String,
-    pub(crate) value: String,
+pub struct ExportAuthHeader {
+    pub name: String,
+    pub value: String,
 }
 
 /// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
@@ -1713,7 +1719,9 @@ pub use busbar_substrate::config::limits::{
 /// filter. The plugin reference must be non-empty; an unresolvable/wrong-kind reference is caught
 /// fail-closed at the plugin pre-flight (like a store/auth ref). A named hook attached to a pool is a
 /// decision point by default, so an unset `kind:` defaults to `gate`.
-fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     let plugin = def.module.trim().to_string();
     if plugin.is_empty() {
         return Err(
@@ -1888,7 +1896,7 @@ pub fn resolve(
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
-                return Some(crate::plane::fallback_key());
+                return Some(crate::planes::fallback_key());
             }
             // The plane registry sections read through the always-present type-erased seam, resolved
             // by config section. With the owning plane compiled out the seam holds a
@@ -2026,10 +2034,10 @@ pub fn resolve(
     // agent's own list are read through the neutral `container_gates` seam, in registry order.
     {
         let g = deploy.agents.0.container_gates();
-        if let Err(e) = crate::plane::config::validate_section_hooks(
+        if let Err(e) = busbar_substrate::plane::config::validate_section_hooks(
             "`agents.hooks`",
             &g.section_hooks,
-            &crate::plane::config::config_sections(),
+            &crate::planes::config_sections(),
         ) {
             errors.push(e);
         }
@@ -2139,10 +2147,10 @@ pub fn resolve(
     // below do nothing — the same as the per-plane feature gate compiling this out entirely.
     {
         let g = deploy.tools.0.container_gates();
-        if let Err(e) = crate::plane::config::validate_section_hooks(
+        if let Err(e) = busbar_substrate::plane::config::validate_section_hooks(
             "`tools.hooks`",
             &g.section_hooks,
-            &crate::plane::config::config_sections(),
+            &crate::planes::config_sections(),
         ) {
             errors.push(e);
         }
@@ -2188,7 +2196,7 @@ pub fn resolve(
         let present = deploy
             .plane_section(section)
             .is_some_and(|cfg| cfg.is_present());
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
+        if present && crate::planes::plane_decl_for_config_section(section).is_none() {
             errors.push(format!(
                 "`{section}:` is configured, but this build was compiled without the plane that \
                  owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
@@ -2204,7 +2212,7 @@ pub fn resolve(
     // this never fires; with it compiled out the `RawPlaneSection` reports `is_present()` for a
     // section the operator wrote, and there is no decl for it.
     if deploy.streams.0.is_present()
-        && crate::plane::registry::plane_decl_for_config_section("streams").is_none()
+        && crate::planes::plane_decl_for_config_section("streams").is_none()
     {
         errors.push(
             "`streams:` is configured, but this build was compiled without the plane that owns it, \
@@ -2273,7 +2281,7 @@ pub fn resolve(
                 // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
                 // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
                 // deletion-gate refusal below.
-                match crate::plane::registry::behaviour_for_config_section(
+                match crate::planes::behaviour_for_config_section(
                     busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                 )
                 .and_then(|d| d.lower_endpoint)
@@ -2397,19 +2405,3 @@ pub fn resolve(
         Err(errors)
     }
 }
-
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/named_map_merge_tests.rs"]
-mod named_map_merge_tests;
-
-// The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
-// 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads
-// the `pub(crate)` resolved fields (`limits.default_max_tokens`, `reasoning_effort_budgets`) that an
-// out-of-crate integration test cannot see.
-#[cfg(test)]
-#[path = "tests/config_backcompat_corpus.rs"]
-mod config_backcompat_corpus;

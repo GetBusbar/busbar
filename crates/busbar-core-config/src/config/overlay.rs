@@ -35,7 +35,7 @@ use super::{
 /// refusing runtime config mutation is exactly the point. Used both as the `persist_*` `None`-path
 /// error (the structural backstop that makes silent non-durable mutation impossible) and by the admin
 /// handlers' early locked-config refusals.
-pub(crate) const NO_WRITABLE_OVERLAY_MSG: &str =
+pub const NO_WRITABLE_OVERLAY_MSG: &str =
     "config mutation refused: this busbar has no writable config overlay. This is expected when \
      `config.locked: true` (an immutable/GitOps deployment) — edit config.yaml and POST /config/reload \
      to change it. If the config is meant to be mutable, give it a writable `config.overlay` backend \
@@ -43,28 +43,28 @@ pub(crate) const NO_WRITABLE_OVERLAY_MSG: &str =
 
 /// The default overlay filename, written next to `config.yaml` when `config.overlay` names no explicit
 /// path. One source of truth for the code + tests (the doc-comment prose in `config/mod.rs` mirrors it).
-pub(crate) const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
+pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 /// Filename prefix for the boot-time writability probe (a leading-dot temp file, pid-suffixed).
 const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
 
 /// The resolved config-management posture for a boot/reload: whether config is locked, and the
 /// writable overlay backend path (if any). Computed by [`resolve_backend`].
 #[derive(Debug, Clone)]
-pub(crate) struct OverlayResolution {
+pub struct OverlayResolution {
     /// `true` ⇒ `config.locked: true`: admin-API config mutations are refused at runtime.
-    pub(crate) locked: bool,
+    pub locked: bool,
     /// The writable file-backend path when the config is MUTABLE and its backend is writable; `None`
     /// when locked, and `None` when the config is mutable but its backend turned out to be UNWRITABLE
     /// (see `read_only_backend`). The boot invariant is therefore
     /// `(locked || read_only_backend) == path.is_none()` for a config that BOOTED.
-    pub(crate) path: Option<PathBuf>,
+    pub path: Option<PathBuf>,
     /// `true` ⇒ the config did NOT declare `config.locked: true`, but the resolved overlay backend is
     /// not writable on this filesystem — the classic case being a config directory mounted read-only
     /// (`docker run -v ./config.yaml:/etc/busbar/config.yaml:ro`). Busbar boots and serves, but with
     /// NO durable config overlay: every admin-API config mutation is refused up front with
     /// [`NO_WRITABLE_OVERLAY_MSG`] rather than applying in RAM and silently reverting on restart. The
     /// operator is told loudly at boot. Never `true` when `locked` is `true`.
-    pub(crate) read_only_backend: bool,
+    pub read_only_backend: bool,
 }
 
 /// Resolve the config-management posture + overlay backend from the `config:` block (1.5.3), enforcing
@@ -95,8 +95,8 @@ pub(crate) struct OverlayResolution {
 /// [`resolve_backend`] is the same resolution with no env override — the form the overlay tests
 /// exercise the precedence through (the disk loader is the only production caller, and it always
 /// threads the env value in).
-#[cfg(test)]
-pub(crate) fn resolve_backend(
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolve_backend(
     cfg: &ConfigMgmtCfg,
     config_path: &Path,
     probe_fs: bool,
@@ -108,7 +108,7 @@ pub(crate) fn resolve_backend(
 /// in. The disk loader reads that env var and calls this; it wins over the default path only when
 /// `config.overlay` is unset, and its presence is deprecation-warned here so the warning sits next
 /// to the precedence that honors it.
-pub(crate) fn resolve_backend_with_env(
+pub fn resolve_backend_with_env(
     cfg: &ConfigMgmtCfg,
     config_path: &Path,
     env_override: Option<&Path>,
@@ -201,7 +201,9 @@ fn resolve_rel(file: &str, config_dir: &Path) -> PathBuf {
 /// must open for write; a not-yet-created file needs a writable parent dir (create + immediately
 /// remove a probe file). This never routes through `crate::durable` because it writes nothing that
 /// must survive — it is a boot-time capability check, not a config write.
-fn is_backend_writable(p: &Path) -> bool {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn is_backend_writable(p: &Path) -> bool {
     if p.exists() {
         return std::fs::OpenOptions::new().write(true).open(p).is_ok();
     }
@@ -246,7 +248,7 @@ fn is_backend_writable(p: &Path) -> bool {
 /// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)
 /// reads as `1`, the additive baseline (hooks + the newly-added groups section, both backward
 /// compatible). Bump only on a BREAKING overlay-format change, and add a migration at `read` time.
-pub(crate) const OVERLAY_VERSION: u32 = 1;
+pub const OVERLAY_VERSION: u32 = 1;
 fn default_overlay_version() -> u32 {
     1
 }
@@ -261,7 +263,7 @@ fn default_overlay_version() -> u32 {
 /// durably record (a live-applied-but-unpersisted config that a restart would silently revert). A
 /// `None` path is NO LONGER a silent success: with the boot invariant it means the config is LOCKED,
 /// so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-pub(crate) fn persist(
+pub fn persist(
     path: Option<&Path>,
     hooks: &HashMap<String, HookCfg>,
     global_hooks: &[String],
@@ -319,7 +321,9 @@ pub(crate) fn persist(
 /// carried forward so a write to one section never clobbers another); `Unreadable` -> `None`, and the
 /// caller aborts the write, because overwriting a corrupt overlay would drop the deletion tombstones
 /// of EVERY section. `version` is stamped by the caller just before `write`.
-fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
+// `pub` for the engine-hosted proofs (see busbar-core's `config/tests`); not a runtime surface.
+#[doc(hidden)]
+pub fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
     match read_state(p) {
         OverlayReadState::Absent => Some(OverlayDoc::default()),
         OverlayReadState::Loaded(doc) => Some(*doc),
@@ -354,7 +358,7 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
 /// invariant it means the config is LOCKED, so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 /// `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both `None`,
 /// e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
-pub(crate) fn persist_groups(
+pub fn persist_groups(
     path: Option<&Path>,
     groups: &BTreeMap<String, GroupCfg>,
     deleted_add: Option<&str>,
@@ -403,33 +407,33 @@ pub(crate) fn persist_groups(
 /// typo'd key is a loud reject, never a silent no-op.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RootSettings {
+pub struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) listen: Option<String>,
+    pub listen: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tls: Option<TlsCfg>,
+    pub tls: Option<TlsCfg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) admin_listen: Option<String>,
+    pub admin_listen: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) admin_tls: Option<TlsCfg>,
+    pub admin_tls: Option<TlsCfg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) admin_require_mtls: Option<bool>,
+    pub admin_require_mtls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) rate_card: Option<BTreeMap<String, RateEntryCfg>>,
+    pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) per_request_fee: Option<i64>,
+    pub per_request_fee: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) store: Option<StoreCfg>,
+    pub store: Option<StoreCfg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) security: Option<crate::config::patch::SecurityPatch>,
+    pub security: Option<crate::config::patch::SecurityPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) limits: Option<crate::config::patch::LimitsPatch>,
+    pub limits: Option<crate::config::patch::LimitsPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) advanced: Option<crate::config::patch::AdvancedPatch>,
+    pub advanced: Option<crate::config::patch::AdvancedPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) health: Option<crate::config::patch::HealthPatch>,
+    pub health: Option<crate::config::patch::HealthPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) routing: Option<crate::config::patch::RoutingPatch>,
+    pub routing: Option<crate::config::patch::RoutingPatch>,
 }
 
 impl RootSettings {
@@ -442,7 +446,7 @@ impl RootSettings {
     /// until it is considered here. This predicate decides whether `persist_root` stores the section
     /// at all, so a field missing from it would make a `PUT /config/settings` naming ONLY that field
     /// compute "empty", store `None`, and return 200 — a SILENT DISCARD reported as a success.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         let RootSettings {
             listen,
             tls,
@@ -482,7 +486,7 @@ impl RootSettings {
     /// DRIFT GUARD: EXHAUSTIVE destructure with NO `..` (same idiom as `is_empty`), so a field added
     /// to `RootSettings` cannot be stored-but-never-applied by omission — the compiler forces it to
     /// be spliced onto `DeployCfg` here (or bound `_` with a stated reason).
-    pub(crate) fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
+    pub fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
         let RootSettings {
             listen,
             tls,
@@ -553,7 +557,7 @@ impl RootSettings {
 /// clobbered). `None` path is a no-op. `settings` is the full desired root state (the merge of the
 /// prior overlay root + this request's fields is computed by the caller, so a `PUT /config/settings`
 /// passes the already-merged desired state here — this fn just stores it).
-pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
+pub fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
     let Some(p) = path else {
         // 1.5.3: this is the exact silent-`Ok` that let handlers report durable storage that never
         // happened. It is now a hard error. The boot invariant guarantees a MUTABLE config has a
@@ -590,7 +594,7 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Resu
 /// every caller propagates the error rather than warning-and-continuing. A `None` path is likewise NOT
 /// a silent success (matching the sibling `persist_*`): it means the config is LOCKED, so the pin is
 /// refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-pub(crate) fn try_persist_plugin_versions(
+pub fn try_persist_plugin_versions(
     path: Option<&Path>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
@@ -618,7 +622,7 @@ pub(crate) fn try_persist_plugin_versions(
 /// clearing one reverts exactly that slice of the effective config to base `config.yaml` while the
 /// other section's overlay mutations survive untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OverlaySection {
+pub enum OverlaySection {
     Hooks,
     Groups,
     /// The single-value config sections (`RootSettings`) — the 1.5.0 full-config coverage slice.
@@ -643,7 +647,7 @@ impl OverlaySection {
     /// EVERY section, in wire order. The route's error message, the OpenAPI enum and the docs audit
     /// all read THIS, so the valid set is stated ONCE: a new section cannot be live in the parser and
     /// missing from what the API tells an operator, or from what the reference documents.
-    pub(crate) fn all() -> Vec<OverlaySection> {
+    pub fn all() -> Vec<OverlaySection> {
         let mut out = vec![
             OverlaySection::Groups,
             OverlaySection::Hooks,
@@ -660,14 +664,14 @@ impl OverlaySection {
 
     /// Parse a URL path segment into a section, or `None` for an unknown name (the caller 400s). The
     /// ONE place the valid section names live, so the route + the doc + the tests share one source.
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         OverlaySection::all().into_iter().find(|v| v.as_str() == s)
     }
 
     /// The section's wire/label name (the path segment). For a named map this is the section KEY,
     /// which is deliberately the same string as the config key and the CRUD path segment
     /// (`export:` ⇄ `/export` ⇄ `/overlay/export`).
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             OverlaySection::Hooks => "hooks",
             OverlaySection::Groups => "groups",
@@ -680,7 +684,7 @@ impl OverlaySection {
     /// The valid section names as a comma-separated, backticked list for an error message. Derived
     /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
     /// string is exactly what told operators `export` was not a section while it was becoming one.
-    pub(crate) fn valid_names() -> String {
+    pub fn valid_names() -> String {
         OverlaySection::all()
             .iter()
             .map(|s| format!("`{}`", s.as_str()))
@@ -697,7 +701,7 @@ impl OverlaySection {
 /// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
 /// swap a reset it could not durably record. `None` path is NO LONGER a silent success: with the boot
 /// invariant it means the config is LOCKED, so the reset is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
+pub fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
     let Some(p) = path else {
         // 1.5.3: NEVER a silent `Ok` (matches `persist`/`persist_groups`/`persist_root`). With the boot
         // invariant (`locked` XOR a writable overlay), a mutable busbar always has a backend here, so
@@ -728,26 +732,26 @@ pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Res
 pub struct OverlayDoc {
     /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
     #[serde(default = "default_overlay_version")]
-    pub(crate) version: u32,
+    pub version: u32,
     #[serde(default)]
-    pub(crate) hooks: HashMap<String, HookCfg>,
+    pub hooks: HashMap<String, HookCfg>,
     #[serde(default)]
-    pub(crate) global_hooks: Vec<String>,
+    pub global_hooks: Vec<String>,
     #[serde(default)]
-    pub(crate) deleted: Vec<String>,
+    pub deleted: Vec<String>,
     /// API-applied `groups:` entries (the second section on the spine). An overlay group with a base
     /// group's name WINS at merge (last-applied definition), matching hook semantics.
     #[serde(default)]
-    pub(crate) groups: BTreeMap<String, GroupCfg>,
+    pub groups: BTreeMap<String, GroupCfg>,
     /// Group tombstones — groups deleted via the API, subtracted from base config at boot.
     #[serde(default)]
-    pub(crate) deleted_groups: Vec<String>,
+    pub deleted_groups: Vec<String>,
     /// The `root` section (1.5.0 full-config coverage): API-set single-value config overrides
     /// (`listen`/`tls`/`rate_card`/`store`/`security`/`limits`/…). `None` = no root override (base
     /// `config.yaml` stands). Applied at the `DeployCfg` level BEFORE `resolve` — see
     /// `RootSettings::apply_to_deploy`. No tombstones: a single-value field is present-or-absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) root: Option<RootSettings>,
+    pub root: Option<RootSettings>,
     /// The `plugin_versions` section (1.5.0 rollback-friendly versioning): per-plugin VERSION PINS an
     /// operator set via an EXPLICIT, authenticated, audited rollback (`POST
     /// /api/v1/admin/plugins/rollback`). Maps a plugin's manifest `name` -> the version the operator
@@ -758,7 +762,7 @@ pub struct OverlayDoc {
     /// the full floor. See `PluginsCfg::to_policy_with_pins`. Empty (`{}`, the default) = no pins, the
     /// base floors stand unchanged. No tombstones: a pin is present-or-absent.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) plugin_versions: BTreeMap<String, String>,
+    pub plugin_versions: BTreeMap<String, String>,
     /// The `named_maps` section (1.5.3 universal named-DEFINITION pattern): API-applied entries of
     /// EVERY named map the generic admin CRUD serves, keyed `section key → entry name → the raw
     /// definition document` (`identity-providers`/`export` today; `tools`/`agents` in 1.6.0).
@@ -774,7 +778,7 @@ pub struct OverlayDoc {
     /// (409 `conflict`, edit config.yaml), so overlay names and base names are disjoint and a
     /// deletion is expressible as a plain removal from this map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) named_maps: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    pub named_maps: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
 
 impl OverlayDoc {
@@ -788,7 +792,7 @@ impl OverlayDoc {
     /// is a slice of config an operator can change and cannot revert, which is exactly what
     /// `named_maps` was: it shipped durable and API-writable while `OverlaySection` had four variants
     /// and none of them was it.
-    pub(crate) fn clear_section(&mut self, section: OverlaySection) {
+    pub fn clear_section(&mut self, section: OverlaySection) {
         let OverlayDoc {
             hooks,
             global_hooks,
@@ -831,7 +835,7 @@ impl OverlayDoc {
     /// reset of it is a clean no-op (the effective config already equals base for that section). Drives
     /// the idempotent-success short-circuit: resetting an untouched section changes nothing and must
     /// not bump the config version or re-run the boot pipeline.
-    pub(crate) fn section_is_empty(&self, section: OverlaySection) -> bool {
+    pub fn section_is_empty(&self, section: OverlaySection) -> bool {
         match section {
             OverlaySection::Hooks => {
                 self.hooks.is_empty() && self.global_hooks.is_empty() && self.deleted.is_empty()
@@ -854,7 +858,7 @@ impl OverlayDoc {
 /// re-apply. Unlike the old silent-soft read, a present-but-corrupt overlay is now logged LOUD at
 /// boot: silently starting on base config alone drops every API-applied hook AND group with no signal,
 /// which is exactly the failure that hides overlay corruption.
-pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
+pub fn read(path: &Path) -> Option<OverlayDoc> {
     match read_state(path) {
         OverlayReadState::Absent => None,
         OverlayReadState::Loaded(doc) => Some(*doc),
@@ -892,7 +896,7 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
 /// Classified overlay read for the read-modify-WRITE path (`persist`), which — unlike the fail-soft
 /// boot `read` — MUST tell "absent" (safe to start fresh) apart from "present but unreadable/corrupt"
 /// (must NOT overwrite, or accumulated tombstones are lost).
-pub(crate) enum OverlayReadState {
+pub enum OverlayReadState {
     Absent,
     // Boxed: `OverlayDoc` grew a large `root` section (1.5.0 full-config coverage), so an inline
     // variant would make the whole enum ~1 KiB regardless of the `Absent`/`Unreadable` common case
@@ -906,7 +910,7 @@ pub(crate) enum OverlayReadState {
     VersionTooNew(u32),
 }
 
-pub(crate) fn read_state(path: &Path) -> OverlayReadState {
+pub fn read_state(path: &Path) -> OverlayReadState {
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OverlayReadState::Absent,
         Err(_) => OverlayReadState::Unreadable,
@@ -1005,7 +1009,7 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
 /// during normal operation, and `write_with` already gives every call a per-call-unique
 /// `.<name>.<pid>-<seq>.tmp` temp name, so there is no fixed, guessable temp name for a pre-planted
 /// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
-pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
+pub fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
     busbar_api::durable::write_with(
         path,
@@ -1019,8 +1023,8 @@ pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
 
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
 /// (the live apply path builds the doc inline in `persist` so it can carry tombstones).
-#[cfg(test)]
-pub(crate) fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> OverlayDoc {
+#[cfg(any(test, feature = "test-support"))]
+pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> OverlayDoc {
     OverlayDoc {
         hooks: hooks.clone(),
         global_hooks: global_hooks.to_vec(),
@@ -1060,7 +1064,7 @@ pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
 /// earlier single global `first_party_floor` set to the LOWEST pin across all pins lowered the floor for
 /// EVERY first-party plugin — so a rollback of plugin A could silently admit an unpinned old first-party
 /// plugin B. Scoping the override to the pinned name closes that.
-pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     for (name, pinned) in &doc.plugin_versions {
         deploy
             .plugins
@@ -1085,7 +1089,7 @@ pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &Over
 /// overlay) is dropped with a LOUD error rather than aborting the whole boot: an unparseable exporter
 /// must not brick startup, and an unparseable identity provider that something still references fails
 /// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
-pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     use crate::config::named_map::NamedMapSection;
     for section in NamedMapSection::sections() {
         let Some(entries) = doc.named_maps.get(section.key()) else {
@@ -1122,9 +1126,9 @@ pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDo
 /// document, so the admin read can project the operator's own `module`/`settings` keys back at them
 /// instead of showing an anonymous hole.
 #[derive(Debug, Clone)]
-pub(crate) struct UnparseableNamedDef {
-    pub(crate) error: String,
-    pub(crate) raw: serde_json::Value,
+pub struct UnparseableNamedDef {
+    pub error: String,
+    pub raw: serde_json::Value,
 }
 
 /// Every definition STORED in the overlay at `path` under `section` that this binary CANNOT parse —
@@ -1148,7 +1152,7 @@ pub(crate) struct UnparseableNamedDef {
 /// this only about names that are NOT live, and a patch that merged successfully IS live. What a
 /// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
 /// some other reason. The flag itself is correct either way.
-pub(crate) fn unparseable_named_map_entries(
+pub fn unparseable_named_map_entries(
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
 ) -> BTreeMap<String, UnparseableNamedDef> {
@@ -1177,7 +1181,7 @@ pub(crate) fn unparseable_named_map_entries(
 /// and the `named_maps` definitions. One function so a caller that must NOT take the overlay's `root`
 /// (because it is applying a caller-supplied root, e.g. `PUT /config/settings`) still cannot forget a
 /// sibling pre-resolve section; adding the next one is an edit HERE, not at six rebuild sites.
-pub(crate) fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     apply_plugin_versions_to_deploy(deploy, doc);
     apply_named_maps_to_deploy(deploy, doc);
 }
@@ -1186,7 +1190,7 @@ pub(crate) fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDo
 /// read-modify-WRITE durability contract as `persist`/`persist_groups`/`persist_root` — every sibling
 /// section (and its tombstones) is carried forward verbatim, an unreadable overlay is REFUSED rather
 /// than clobbered, and a `None` path is the LOCKED config (refuse, never a silent `Ok`).
-pub(crate) fn persist_named_map(
+pub fn persist_named_map(
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
     name: &str,
@@ -1256,21 +1260,3 @@ pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
         cfg.groups.remove(name);
     }
 }
-
-#[cfg(test)]
-#[path = "tests/config_consolidation_tests.rs"]
-mod config_consolidation_tests;
-
-#[cfg(test)]
-#[path = "tests/version_gate_tests.rs"]
-mod version_gate_tests;
-
-#[cfg(test)]
-#[path = "tests/overlay_tests.rs"]
-mod tests;
-
-/// A read-only config mount must not stop busbar from serving: the degrade-and-warn posture, and the
-/// line between it and the config errors that DO still refuse to boot.
-#[cfg(test)]
-#[path = "tests/overlay_read_only_tests.rs"]
-mod overlay_read_only_tests;

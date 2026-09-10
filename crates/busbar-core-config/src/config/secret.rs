@@ -26,7 +26,7 @@
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
+pub use busbar_api::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
@@ -34,7 +34,7 @@ pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SE
 /// `{ file: … }` path, an `{ env: … }` variable name the plugin reads itself) — see
 /// [`resolve_settings`]. NOT part of `SecretRef` (see `busbar_secret_ref`'s crate docs): this key is
 /// interpreted one layer above `SecretRef` parsing, here, not inside the shared type.
-pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
+pub const SETTING_LITERAL_KEY: &str = "literal";
 
 /// The engine-facing SECRET RESOLVER seam: the engine holds a `SecretResolver` and asks it to
 /// turn a [`SecretRef`] into bytes, never touching a secret module's implementation. The built-in
@@ -56,7 +56,7 @@ pub struct SecretResolver {
 /// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
 /// JSON) -> secret bytes` (fail-closed on error). Boxed so `config` stays free of a `plugin-loader`
 /// dependency (the engine wires the registry in at `build_app`).
-pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+pub type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
 
 impl SecretResolver {
     /// A built-ins-only resolver (no plugin subsystem): `env` / `file` resolve, everything else is
@@ -68,7 +68,7 @@ impl SecretResolver {
 
     /// A resolver whose non-built-in modules resolve through `plugin` (a `kind: secret` plugin
     /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
-    pub(crate) fn with_plugin(plugin: PluginResolveFn) -> Self {
+    pub fn with_plugin(plugin: PluginResolveFn) -> Self {
         Self {
             plugin: Some(plugin),
         }
@@ -76,7 +76,7 @@ impl SecretResolver {
 
     /// Resolve a reference to raw bytes. `env` / `file` are built in; any other module delegates to
     /// the plugin resolver (fail-closed if none is wired or it fails).
-    pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+    pub fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         match secret.module.as_str() {
             // `none` routes to the built-in resolver too, which refuses it: it declares the
             // ABSENCE of a credential, so it must never be mistaken for a plugin module name and
@@ -113,7 +113,7 @@ impl SecretResolver {
 
     /// Resolve to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or empty).
     /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_builtin_string`].
-    pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
+    pub fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
         let bytes = self.resolve(secret)?;
         let s = String::from_utf8(bytes).map_err(|_| {
             format!(
@@ -138,12 +138,12 @@ impl SecretResolver {
 /// These names exist only so operators have a documented, first-class spelling; like any other
 /// setting they MAY be a [`SecretRef`], which [`resolve_settings`] resolves to the raw key before it
 /// crosses the ABI, so a license key never has to sit in plaintext config.
-pub(crate) const PLUGIN_LICENSE_KEYS: &[&str] = &["license", "licenseKey"];
+pub const PLUGIN_LICENSE_KEYS: &[&str] = &["license", "licenseKey"];
 
 /// What ONE unresolved plugin-settings value is, decided WITHOUT any I/O. The single classifier
 /// both [`resolve_settings`] (which then resolves the reference) and the drift READ path (which
 /// must not) share, so the two can never disagree about which fields are references.
-pub(crate) enum SettingShape<'a> {
+pub enum SettingShape<'a> {
     /// Delivered to the plugin exactly as this value — an ordinary setting, or the inner value of
     /// a `{ literal: … }` escape hatch already unwrapped.
     Verbatim(&'a serde_json::Value),
@@ -157,7 +157,7 @@ pub(crate) enum SettingShape<'a> {
 /// Mirrors, and is the sole definition of, the interpretation [`resolve_settings`] applies: a
 /// single-key `{ literal: … }` wrapper unwraps verbatim; anything else that parses as a whole
 /// [`SecretRef`] is a reference; everything else passes through.
-pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
+pub fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
     // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
     if let serde_json::Value::Object(obj) = value {
         // THE LITERAL ESCAPE HATCH. Ref-shape is a HEURISTIC: a plugin whose own settings
@@ -195,7 +195,7 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 /// FAIL-CLOSED: an unresolvable ref (unknown module, unset env, missing/empty file, plugin error) is
 /// a hard `Err` that must fail the plugin load/reload - the plugin is NEVER handed an unresolved ref
 /// or a silently-empty value. `field` names the settings key in the error (never the secret value).
-pub(crate) fn resolve_settings(
+pub fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
     resolver: &SecretResolver,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
@@ -268,17 +268,5 @@ impl busbar_api::SecretResolve for SecretResolver {
 /// `std::env`/`std::fs` + `busbar_secret_ref::SecretRef`, with no engine coupling, so a plane crate
 /// can resolve a built-in ref without reaching into `busbar`. Re-exported so every in-crate call
 /// site (the [`SecretResolver`] built-in fallback below) is unchanged.
-pub(crate) use busbar_api::resolve_builtin;
+pub use busbar_api::resolve_builtin;
 pub use busbar_api::resolve_builtin_string;
-
-#[cfg(test)]
-#[path = "tests/secret_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/resolver_tests.rs"]
-mod resolver_tests;
-
-#[cfg(test)]
-#[path = "tests/settings_resolution_tests.rs"]
-mod settings_resolution_tests;

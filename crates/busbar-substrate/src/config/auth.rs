@@ -433,6 +433,11 @@ impl AuthCfg {
 pub const KEYS_MODULE: &str = "keys";
 /// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
 pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
+/// The PRINCIPAL ID the built-in `admin-tokens` module mints for the operator — the identity string
+/// a `role_bindings` role name must not shadow. Stated here, beside the module name, so the config
+/// validator (which may not name an auth plugin) and the module (which may not name the substrate)
+/// read one literal; the engine pins the two equal.
+pub const ADMIN_TOKENS_PRINCIPAL_ID: &str = "admin";
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
 /// `identity-providers:` definition at all. A definition entry for one of these exists

@@ -39,7 +39,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 
 /// An all-default DeployCfg for struct-literal resolve() tests (DeployCfg has no Default because
 /// providers/models are required in YAML).
-pub(crate) fn base_deploy() -> DeployCfg {
+pub fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
@@ -857,9 +857,9 @@ fn test_shipped_providers_catalog_valid() {
     assert!(defs.len() >= 10, "catalog should be non-trivial");
     for (name, def) in &defs {
         assert!(
-            // Neutral registry seam: a protocol is KNOWN iff it has a registered declaration
-            // (`decl_for`), reached without naming the witnessed codec (`protocol_for`).
-            crate::proto::decl_for(&def.protocol).is_some(),
+            // Neutral registry seam: a protocol is KNOWN iff it is in the registered set, reached
+            // without naming the witnessed codec (`protocol_for`).
+            crate::proto::known_protocols().contains(&def.protocol.as_str()),
             "provider '{name}' names unknown protocol '{}'",
             def.protocol
         );
@@ -1827,7 +1827,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        busbar_substrate::config::limits::DEFAULT_MAX_TOKENS
+    );
     assert_eq!(
         l.max_inflight_webhook_deliveries,
         DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
@@ -3260,10 +3263,10 @@ fn pools_upstream_credentials_is_a_scalar_override() {
     )
     .expect("parses");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
-    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+    assert_eq!(cfg.upstream_credentials, busbar_api::UpstreamCreds::Own);
     assert_eq!(
         cfg.pools["fast"].upstream_credentials,
-        Some(crate::auth::UpstreamCreds::Passthrough),
+        Some(busbar_api::UpstreamCreds::Passthrough),
         "a pool's own value REPLACES the all-pools default"
     );
     assert_eq!(
@@ -3273,7 +3276,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 
     // Omitted at both levels ⇒ the built-in default, unchanged from pre-1.5.3 behavior.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolves");
-    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+    assert_eq!(cfg.upstream_credentials, busbar_api::UpstreamCreds::Own);
 }
 
 /// FREEZE BLOCKER — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
@@ -3385,8 +3388,8 @@ fn export_named_map_allows_two_instances_of_one_module() {
 /// the doc out of agreement with the code either.
 #[test]
 fn root_settings_doc_lists_only_fields_that_exist() {
-    let src = include_str!("../overlay.rs");
-    let anchor = "pub(crate) struct RootSettings {";
+    let src = include_str!("../../../../busbar-core-config/src/config/overlay.rs");
+    let anchor = "pub struct RootSettings {";
     let at = src.find(anchor).expect("RootSettings struct");
 
     // The struct's real field set.
@@ -3394,7 +3397,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
     let body = &body[..body.find("\n}").expect("struct end")];
     let fields: Vec<&str> = body
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub(crate) "))
+        .filter_map(|l| l.trim().strip_prefix("pub "))
         .filter_map(|l| l.split(':').next())
         .collect();
     assert!(
@@ -3589,22 +3592,22 @@ fn a_failover_pool_needs_two_members() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = busbar_substrate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        busbar_substrate::failover::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        busbar_substrate::failover::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        busbar_substrate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
+        busbar_substrate::failover::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }

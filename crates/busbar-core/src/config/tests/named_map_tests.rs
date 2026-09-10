@@ -5,7 +5,7 @@
 //! generic surface (router, OpenAPI, taxonomy, overlay) is parameterized by.
 
 use super::*;
-use crate::config::tests::base_deploy;
+use crate::config_tests::tests::base_deploy;
 
 /// The path grammar is derived from ONE key per section, so the config key and the admin path
 /// segment can never drift apart (`export:` ⇄ `/export`) — and every section's five routes parse

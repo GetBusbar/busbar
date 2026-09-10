@@ -58,10 +58,10 @@ use tree::{crate_name_of_dir, dirs_for_globs, Tree};
 
 pub const CEILINGS: &str = "qa/construction.toml";
 
-/// The three section 1.1 surface ceilings, each with the crates it sums and the words the row uses
+/// The four section 1.1 surface ceilings, each with the crates it sums and the words the row uses
 /// for them. The figures live in `[gate.surface_ceilings]`; only the labels are here, because a
 /// label is not a threshold.
-const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
+const SURFACE: [(&str, &str, &str, &str, i64); 4] = [
     (
         "contract+caps",
         "contract_caps",
@@ -82,6 +82,15 @@ const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
         "busbar-contract-transport",
         "the transport-facing contract's surface",
         1000,
+    ),
+    // The config layer's own crate: a BUDGET rather than a ratchet (the grammar is allowed to grow),
+    // whose job is to refuse the layer quietly becoming the engine's second home.
+    (
+        "core-config",
+        "core_config",
+        "busbar-core-config",
+        "the config layer's surface",
+        11000,
     ),
 ];
 
@@ -490,7 +499,7 @@ impl ConstructionGate {
     }
 }
 
-/// The three surface ceilings, as ledger rows. The shell turned `loc-surface.py`'s exit code into
+/// The four surface ceilings, as ledger rows. The shell turned `loc-surface.py`'s exit code into
 /// a row and nothing more; so does this, including the trailing space its `tr '\n' ' '` left on a
 /// failing detail — a byte the parity comparison would otherwise flag.
 fn surface_rows(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {

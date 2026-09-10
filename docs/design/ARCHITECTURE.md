@@ -88,7 +88,14 @@ them). Each axis is blind to the other two; only the kernel composes them.
   connection and listener handles, the detached stream, the closed transport failure and close
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
-  All `busbar-unit-*` ≤ 45k (incl. verbs
+  A fourth carries one for a different reason: `busbar-core-config` — the config layer, which is
+  neither contract surface nor engine residue but the product's own config GRAMMAR (the 1.5.5
+  document root, the loader, the 1.4.x→1.5.0 migrator, the overlay, the named-definition map, the
+  byte-identity prepass, the `SecretResolver` and the validator), split out of `busbar-core` into a
+  crate that depends on the neutral substrate and never back on the engine — ≤ **11k**, gated as
+  `surface-ceiling:core-config`. Its ceiling is a budget rather than a ratchet: the config grammar is
+  allowed to grow, and what the ceiling refuses is the layer quietly becoming the engine's second
+  home. All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 

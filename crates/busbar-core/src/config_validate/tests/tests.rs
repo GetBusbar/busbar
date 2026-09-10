@@ -24,7 +24,7 @@ fn make_root_cfg(
         providers,
         models,
         pools,
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
+        upstream_credentials: busbar_api::UpstreamCreds::Own,
         hooks: HashMap::new(),
         admin_auth: vec!["admin-tokens".to_string()],
         groups: std::collections::BTreeMap::new(),
@@ -631,7 +631,7 @@ fn test_validate_model_without_provider_error() {
 /// 1.5.3: `upstream` is no longer part of `auth:` at all (it moved to the `pools:` section)
 /// — callers that care set it on the `RootCfg`/pool instead; the parameter is kept so the
 /// dozens of call sites still read as "this chain, that egress posture".
-fn make_auth_chain(modules: &[&str], _upstream: crate::auth::UpstreamCreds) -> config::AuthCfg {
+fn make_auth_chain(modules: &[&str], _upstream: busbar_api::UpstreamCreds) -> config::AuthCfg {
     let mut auth = config::AuthCfg::default_none();
     auth.chain = modules
         .iter()
@@ -1713,7 +1713,7 @@ fn test_validate_chain_tokens_module_removed_message() {
     for legacy in ["tokens", "static-tokens"] {
         let (providers, models, pools) = valid_maps();
         let mut cfg = make_root_cfg(providers, models, pools);
-        cfg.auth = Some(make_auth_chain(&[legacy], crate::auth::UpstreamCreds::Own));
+        cfg.auth = Some(make_auth_chain(&[legacy], busbar_api::UpstreamCreds::Own));
         let errs = validate(&cfg)
             .unwrap_err_or_default(format!("chain module '{legacy}' must fail validation"));
         assert!(
@@ -1742,7 +1742,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // at the check that can actually tell.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&["okta"], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(&["okta"], busbar_api::UpstreamCreds::Own));
     assert!(
         validate(&cfg).is_ok(),
         "a plugin-shaped (non-keys, non-removed-legacy) chain module must NOT be rejected at this \
@@ -1754,10 +1754,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // without any registry access, so there's no reason to defer that one.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(
-        &["tokens"],
-        crate::auth::UpstreamCreds::Own,
-    ));
+    cfg.auth = Some(make_auth_chain(&["tokens"], busbar_api::UpstreamCreds::Own));
     let errs = validate(&cfg).expect_err("the removed 'tokens' module must still fail validation");
     assert!(
         errs.iter().any(|e| e.contains("was REMOVED in 1.5.0")),
@@ -1767,7 +1764,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // `keys` (the built-in signed-key verifier) is accepted.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&["keys"], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(&["keys"], busbar_api::UpstreamCreds::Own));
     assert!(
         validate(&cfg).is_ok(),
         "auth.chain: [keys] must validate; got: {:?}",
@@ -1777,7 +1774,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // The empty chain (open front door) carries no requirement.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(&[], busbar_api::UpstreamCreds::Own));
     assert!(
         validate(&cfg).is_ok(),
         "an empty auth chain must validate (open front door)"
@@ -1863,7 +1860,7 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
 fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&["oidc"], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(&["oidc"], busbar_api::UpstreamCreds::Own));
     let r = validate(&cfg);
     assert!(
         r.is_ok(),
@@ -1992,7 +1989,7 @@ models:
     );
 }
 
-use crate::test_support::warn_capture::WarnCapture;
+use busbar_substrate::testkit::warn_capture::WarnCapture;
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
@@ -2027,13 +2024,10 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
     models.insert("leakymodel".to_string(), make_model("leaky", 10));
     models.insert("bedrockmodel".to_string(), make_model("bedrock", 10));
     let mut cfg = make_root_cfg(providers, models, HashMap::new());
-    cfg.auth = Some(make_auth_chain(
-        &[],
-        crate::auth::UpstreamCreds::Passthrough,
-    ));
+    cfg.auth = Some(make_auth_chain(&[], busbar_api::UpstreamCreds::Passthrough));
     // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
     // resolved onto `RootCfg` — not a field of `auth:`.
-    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
+    cfg.upstream_credentials = busbar_api::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -2081,13 +2075,10 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
     let mut models = HashMap::new();
     models.insert("m".to_string(), make_model("p", 10));
     let mut cfg = make_root_cfg(providers, models, HashMap::new());
-    cfg.auth = Some(make_auth_chain(
-        &[],
-        crate::auth::UpstreamCreds::Passthrough,
-    ));
+    cfg.auth = Some(make_auth_chain(&[], busbar_api::UpstreamCreds::Passthrough));
     // 1.5.3: the credential MODE is the reserved `pools.upstream_credentials:` key now,
     // resolved onto `RootCfg` — not a field of `auth:`.
-    cfg.upstream_credentials = crate::auth::UpstreamCreds::Passthrough;
+    cfg.upstream_credentials = busbar_api::UpstreamCreds::Passthrough;
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -2107,7 +2098,7 @@ fn test_validate_empty_chain_carries_no_requirement() {
     // The 1.4.x "mode: none" posture is an EMPTY chain now: no auth module, no requirement.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.auth = Some(make_auth_chain(&[], crate::auth::UpstreamCreds::Own));
+    cfg.auth = Some(make_auth_chain(&[], busbar_api::UpstreamCreds::Own));
     assert!(
         validate(&cfg).is_ok(),
         "an empty auth chain carries no token requirement"
@@ -4061,7 +4052,7 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
 /// the model), NOT a hard error — validation still succeeds. A priced entry must NOT warn.
 #[test]
 fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_substrate::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     // Two models: one priced normally, one left at the all-zero default (the unfilled-stub case).
@@ -4336,7 +4327,7 @@ fn auth_with_binding(
     role: &str,
     binding: config::RoleBindingCfg,
 ) -> config::AuthCfg {
-    let mut auth = make_auth_chain(chain, crate::auth::UpstreamCreds::Own);
+    let mut auth = make_auth_chain(chain, busbar_api::UpstreamCreds::Own);
     auth.role_bindings.insert(
         module.to_string(),
         std::collections::BTreeMap::from([(role.to_string(), binding)]),
@@ -5344,7 +5335,7 @@ fn a_pool_named_like_a_tools_registration_is_refused() {
     cfg.tool_defs = Box::new(tools_with("search"));
     cfg.tool_pools.insert(
         "search".to_string(),
-        crate::failover::CandidatePoolCfg {
+        busbar_substrate::config::pools::CandidatePoolCfg {
             members: vec!["search-eu".into(), "search-us".into()],
             repeatable: Vec::new(),
         },

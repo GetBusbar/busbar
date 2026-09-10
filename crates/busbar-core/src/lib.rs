@@ -141,8 +141,23 @@ pub mod boot;
 pub mod calllog;
 pub use busbar_substrate::breaker;
 pub mod catalogue;
-pub mod config;
-pub mod config_validate;
+// THE CONFIG LAYER — the document grammar, the loader, the migrator, the overlay, the named-map, the
+// prepass, the `SecretResolver` and the validator — now lives in its own crate,
+// `busbar-core-config`, which depends on the neutral substrate and never on this one. It is not
+// engine residue with a replacement elsewhere; it is the product's own config grammar, and it needed
+// a HOME so the engine can retire out from under it. Re-exported here at both historical spellings so
+// every `busbar_core::config::…` / `busbar_core::config_validate::…` caller resolves unchanged.
+pub use busbar_core_config::{config, config_validate};
+// THE CONFIG LAYER'S PROOFS run HERE, in the engine's test binary, at their unmoved paths: a test
+// that writes a plane's own top-level section needs the plane that owns it registered, only a
+// composition root or a legacy crate may name a plane crate, and this binary already carries the
+// shipped plane set as its built-in rows (seeded at process start — see `plane/tests/registry_tests`).
+#[cfg(test)]
+#[path = "config/tests/mod.rs"]
+mod config_tests;
+#[cfg(test)]
+#[path = "config_validate/tests/mod.rs"]
+mod config_validate_tests;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
