@@ -48,7 +48,7 @@
 //! # THE VOCABULARY MODULES BELOW
 //!
 //! Every body in this crate was written against `crate::config::…`, `crate::ir::facts::…`,
-//! `crate::session::…`, `crate::store::…` and `crate::limits::…` while it lived in busbar-core, and
+//! `crate::session::…`, `crate::store::…` and `crate::limits::…` while it lived in the engine crate, and
 //! every one of those names now resolves to the neutral substrate. The four small modules at the
 //! foot of this file are those spellings, and they exist so the move could be BODY-FOR-BODY: a
 //! reviewer diffing this crate against the legacy crate's deleted `hooks` module sees import lines and
@@ -1298,12 +1298,12 @@ async fn gate_transport_offloaded(
 /// `false` means the hook resolved to nothing (an unloadable plugin) or is not eligible for
 /// publication at all — a hook carrying a `SecretRef` is resolved fresh every time by design, so
 /// there is no readiness to wait on and the caller should just proceed.
-// Reachable under `test-support`, not only under this crate's own `cfg(test)`: busbar-core's admin
+// Reachable under `test-support`, not only under this crate's own `cfg(test)`: the engine's admin
 // battery waits on this readiness signal too, and a `cfg(test)` here would not exist for it. Inert
 // in a production build, where the feature is off and nothing links it.
 /// The single-flight resolution key for `(name, hook)` under `env`, or `None` when the hook is not
 /// eligible for reuse (a `SecretRef` in its settings). Reachable under `test-support` for the
-/// dlopen battery in busbar-core, which pins the cache's ABA property against it.
+/// dlopen battery beside the seat adapter, which pins the cache's ABA property against it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn resolution_key(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> Option<u64> {
     resolution::key(name, hook, env)
@@ -1787,8 +1787,8 @@ pub(crate) mod limits {
     }
 }
 
-/// THE ENGINE INTERNALS THE DLOPEN BATTERY REACHES. That battery lives in busbar-core beside the
-/// seat adapter (the claim "the plugin answered this" is about adapter + loader + engine together),
+/// THE ENGINE INTERNALS THE DLOPEN BATTERY REACHES. That battery lives beside the seat adapter,
+/// in the crate that binds the registry (the claim "the plugin answered this" is about adapter + loader + engine together),
 /// and it pins engine behaviour that has no public face: the grant MEET, the inert-gate banner and
 /// its de-dup guard, the single-flight resolution, the bounded offload. Reachable under
 /// `test-support` only; inert in a production build, where the feature is off and nothing links it.

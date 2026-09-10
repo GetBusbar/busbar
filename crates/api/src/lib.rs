@@ -57,11 +57,10 @@ pub use secret::{
 };
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
-pub use busbar_secret_ref::SecretRef;
 // The reserved module names a secret reference may carry, with it: the substrate's resolver
 // reads them through this crate rather than through a direct edge to the leaf.
 pub use busbar_contract::{Signal, SignalBag, SignalValue};
-pub use busbar_secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
+pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,

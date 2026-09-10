@@ -32,7 +32,7 @@ use std::borrow::Cow;
 /// Each variant is a pure enumeration KEY, not a payload: its wire name comes from [`Signal::name`]
 /// (a fixed string table, never a `Display`/`Debug` derive, so the wire name is stable independent
 /// of Rust enum internals/renames) and its VALUE is produced by a phase-specific compute function
-/// that lives in busbar core (`busbar::proxy::signals`) — never here, since a compute fn reads
+/// that lives in the engine (`busbar::proxy::signals`) — never here, since a compute fn reads
 /// engine-internal state (`&dyn Store`, the pristine ingress body) this crate does not have.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]

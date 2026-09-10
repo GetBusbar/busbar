@@ -197,6 +197,33 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 98
 because = "the Operation axis in busbar-contract/src/operation.rs: the same 98 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms (23839)"
 
+# TWO KIND-ISOLATION CELLS RAISED BY IDENTITY — the MOVE form: the words one crate LOST are exactly
+# the words another GAINED, measured hit by hit against the merge-base's `--report` drain lists.
+#
+# `busbar-contract × plane` 42 -> 71 (+29): the Operation axis moved `busbar-api -> busbar-contract`
+# (64523b277) and carried its verb constants' plane words with it — `busbar-api × plane` lost a2a 6,
+# llm 12, mcp 11 in `operation.rs` (107 -> 78, re-pinned DOWN in the same ledger) and
+# `busbar-contract × plane` gained a2a 6, llm 12, mcp 11 in the same file. 29 lost = 29 gained.
+#
+# `busbar-substrate × secret` 35 -> 82 (+47): `config::secret` moved `busbar-core -> busbar-substrate`
+# verbatim (ff006d823) and the hook policy engine was carved out of `busbar-core` (5fe28f82a).
+# `busbar-core × secret` lost 66 (319 -> 253, re-pinned DOWN): 49 of them were the `secret-ref`
+# spellings of `config/secret.rs` and its three test files, of which 47 are the substrate's now and 2
+# (one doc-comment spelling of the leaf crate) were DRAINED on this line; the other 17 are the
+# engine's, minted under `[[minted]] busbar-core-policy` (`× secret = 17`). 66 lost = 47 + 17 gained
+# + 2 drained.
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 29
+because = "MOVE by identity: the Operation axis busbar-api -> busbar-contract carried its 29 plane words (a2a 6, llm 12, mcp 11 in operation.rs); busbar-api × plane lost exactly those 29 (107 -> 78) in the same ledger"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.secret.count"
+file = "qa/kind-isolation.toml"
+by = 47
+because = "MOVE by identity: config::secret came down busbar-core -> busbar-substrate verbatim, 49 secret-ref spellings in config/secret.rs and its three test files, 2 of them drained on this line; busbar-core × secret lost 66 (319 -> 253) = these 47 + the 17 the hook policy engine minted + the 2 drained"
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

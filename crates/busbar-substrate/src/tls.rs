@@ -17,8 +17,8 @@
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
 /// source-named message. Never logs contents.
 pub fn read_pem(
-    resolver: &dyn busbar_api::SecretResolve,
-    secret: &busbar_api::SecretRef,
+    resolver: &dyn crate::config::secret::SecretResolve,
+    secret: &crate::config::secret::SecretRef,
     what: &str,
 ) -> Result<Vec<u8>, String> {
     resolver

@@ -381,7 +381,7 @@ fn fmt_f64(v: f64) -> String {
     }
 }
 
-// The `GET /metrics/hooks` axum HANDLER stayed in busbar-core, because an axum route extracting
+// The `GET /metrics/hooks` axum HANDLER stayed with the composition, because an axum route extracting
 // `CurrentApp` is the composition root's business and naming `App` here is exactly the coupling this
 // crate exists without. It is four lines around this [`render`] and it is unchanged; the auth chain
 // still governs the route exactly like busbar's own `/metrics` (both carry operational topology, so
