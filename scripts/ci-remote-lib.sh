@@ -111,7 +111,10 @@ fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
     # four CI agents; a shard on top of that slows the landing everybody is waiting on and the shard
     # alike. The probe answers BUSY when the runner's engine is in the box's process list (measured:
     # the first allocation without this handed shard 2 to the box the queue runner was landing on).
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f "land.run.local.sh" >/dev/null 2>&1; then echo BUSY; else cut -d" " -f1 /proc/loadavg; fi' </dev/null 2>/dev/null || true)"
+    # THE PATTERN MUST NOT MATCH ITSELF: this probe travels as a shell command line that contains it,
+    # so an unbracketed pattern found its own shell on every box and the fleet "gave 0" (measured:
+    # a sharded pre-proof that degraded to unsharded on an idle fleet).
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f "[l]and.run.local.sh" >/dev/null 2>&1; then echo BUSY; else cut -d" " -f1 /proc/loadavg; fi' </dev/null 2>/dev/null || true)"
     case "$probe" in
       BUSY) rlog "fleet: $h skipped (a landing is running there)"; continue ;;
       ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;;
@@ -274,6 +277,8 @@ STUB
   _fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
   echo "ci-remote-lib selftest: this file"
   _t "parses (bash -n)" 0 "$(bash -n "${BASH_SOURCE[0]}"; echo $?)"
+  _t "the busy probe's pattern cannot match its own command line" 1 "$(grep -c 'pgrep -f "\[l\]and.run.local.sh"' "${BASH_SOURCE[0]}")"
+  _t "  ...and the self-matching form is gone" 0 "$(grep -cE 'pgrep -f "l(and)[.]run' "${BASH_SOURCE[0]}")"
   echo "ci-remote-lib selftest: the allocator (distinct, least loaded, prepared, never the excluded)"
   _t "three boxes, least loaded first"  "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; [ "$1" = "$SSH_WRAP" ] && { case "$*" in *box-d*) return 1 ;; esac; }; "$@"; }; fleet_pick_hosts 3 2>/dev/null)"
   _t "the primary is never chosen"      "$(printf 'box-c\nbox-a')"        "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 2 box-e 2>/dev/null)"
