@@ -5,11 +5,11 @@
 //! serde data.
 //!
 //! What is here is the GRAMMAR: what an operator may write and what a typo is. What is NOT here is
-//! any RESOLUTION of it — the fetch list becomes `busbar_plugin_loader::FetchSpec`s and the trust
-//! block becomes a `busbar_plugin_sign::TrustPolicy` in `busbar-plugin-loader`, which is where the
-//! policy those types belong to already lives. The split is what lets the config layer state the
-//! grammar without naming the loader, and lets the loader read an operator's block without naming
-//! the config layer.
+//! any RESOLUTION of it — the fetch list becomes the loader's own `FetchSpec`s and the trust block
+//! becomes its `TrustPolicy`, in the plugin-loading crate, which is where the policy those types
+//! belong to already lives. The split is what lets the config layer state the grammar without
+//! naming the loader, and lets the loader read an operator's block without naming the config
+//! layer — and it is why THIS file names neither of them.
 
 use serde::Deserialize;
 
@@ -41,7 +41,7 @@ pub struct PluginsCfg {
     pub trust: PluginsTrustCfg,
     /// ANTI-DOWNGRADE floors: plugin canonical `name` -> minimum acceptable `version`. Applies to
     /// first- and third-party alike, and is SEPARATE from the automatic first-party floor (the
-    /// per-name high-water mark maintained by `busbar_plugin_loader::HighWaterMarks`, which needs no
+    /// per-name high-water mark the plugin loader maintains for itself, which needs no
     /// configuration). A floored plugin must prove (trusted signature, version at/above the floor)
     /// that it meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a
     /// trust axis).
@@ -51,8 +51,9 @@ pub struct PluginsCfg {
     /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0). Empty (the default, and the ONLY value the
     /// automatic boot/reload path ever sees) = every first-party plugin faces its own automatic
     /// floor, the per-name HIGH-WATER MARK (the highest version of that name this deployment has
-    /// seen and loaded — `busbar_plugin_loader::HighWaterMarks`). An explicit, audited `POST /plugins/rollback` of a
-    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
+    /// seen and loaded — the loader's own high-water marks). An explicit, audited
+    /// `POST /plugins/rollback` of a FIRST-PARTY plugin adds a `name -> pinned target version` entry
+    /// so the signature verifier's admission check
     /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
     /// floor — replacing the earlier single global floor). Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is

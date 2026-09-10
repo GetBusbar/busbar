@@ -238,7 +238,7 @@ pub(crate) fn build_runtime(
                 // ABI-purity P5: store the neutral FailoverInput / AffinityInput carriers
                 // DIRECTLY — byte-identical mirrors of the retired config::FailoverCfg / AffinityCfg
                 // (affinity's only mode is `session`, so its presence IS the fact). Collapses the
-                // PlaneBuildInput -> core-config -> runtime round-trip to a clone.
+                // PlaneBuildInput -> config grammar -> runtime round-trip to a clone.
                 failover: p.failover.clone(),
                 upstream_credentials: p.upstream_credentials,
                 affinity: p.affinity.clone(),
@@ -259,8 +259,8 @@ pub(crate) fn build_runtime(
 
     // Per-pool on_exhausted policy table. The plane RUNTIME stores the neutral
     // `OnExhaustedInput` carried on `PlaneBuildInput` DIRECTLY — its variants are the byte-identical
-    // mirror of the retired core `config::OnExhausted` round-trip, so the lowering is a
-    // clone rather than a re-map (ABI-purity P5: the PlaneBuildInput -> core-config -> runtime
+    // mirror of the retired engine-side `config::OnExhausted` round-trip, so the lowering is a
+    // clone rather than a re-map (ABI-purity P5: the PlaneBuildInput -> config grammar -> runtime
     // round-trip collapses to PlaneBuildInput -> runtime).
     let mut on_exhausted_cfgs: HashMap<String, OnExhaustedInput> =
         HashMap::with_capacity(input.pools.len());

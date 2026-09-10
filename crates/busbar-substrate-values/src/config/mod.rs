@@ -6,9 +6,9 @@
 //!
 //! `busbar_substrate::config` is where the config grammar's pure shapes live, and it is the right
 //! home for every block the engine itself reads. The `plugins:` block is the exception: its
-//! consumers are `busbar-plugin-sign` (the trust policy) and `busbar-plugin-loader` (the fetch
-//! list), and neither is in the substrate's dependency closure — nor should the substrate be in
-//! theirs. Declaring the shapes HERE, in the PURE half, lets the loader read them without an edge
+//! consumers are the plugin SIGNATURE-TRUST crate (the trust policy) and the plugin LOADING crate
+//! (the fetch list), and neither is in the substrate's dependency closure — nor should the
+//! substrate be in theirs. Declaring the shapes HERE, in the PURE half, lets the loader read them without an edge
 //! to the whole engine substrate, while `busbar_substrate::config::plugins` re-exports them so the
 //! grammar still has ONE address to an operator and to `cargo xtask gate config-schema`.
 

@@ -28,8 +28,8 @@
 pub mod diagnostics;
 
 // Config VALUE SHAPES whose consumer is not the substrate. Today: the `plugins:` block, read by
-// `busbar-plugin-sign` and `busbar-plugin-loader` — neither of which is in `busbar-substrate`'s
-// dependency closure, nor should the substrate be in theirs. `busbar_substrate::config::plugins`
+// the plugin signature-trust and plugin loading crates — neither of which is in
+// `busbar-substrate`'s dependency closure, nor should the substrate be in theirs. `busbar_substrate::config::plugins`
 // re-exports it, so the grammar keeps ONE address.
 pub mod config;
 

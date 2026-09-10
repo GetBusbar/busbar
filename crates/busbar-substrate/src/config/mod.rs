@@ -6,7 +6,7 @@
 //!
 //! ABI-purity CONFIG-ENUMS: `PolicyOnError` (the resolved on_error/on_empty terminal) and
 //! `ProviderAuth` (the per-provider auth-style selector) are LLM-runtime concepts that sat in the
-//! core config grammar. They are fieldless serde enums — no reach into any core type — so they move
+//! engine's config grammar. They are fieldless serde enums — no reach into any core type — so they move
 //! DOWN here WITH their `#[derive(Serialize/Deserialize)]` + `#[serde(...)]` attrs VERBATIM (the
 //! serialized/deserialized wire form is byte-identical). Core re-exports each from its historical
 //! `busbar_core::config::` path so the frozen config-grammar call sites and every deserialization
