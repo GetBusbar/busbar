@@ -384,3 +384,53 @@ fn every_header_crosses_as_a_fact_of_this_transport_and_never_as_a_reserved_key(
     );
     assert_eq!(arrival.fact("host"), None);
 }
+
+/// **EVERY header goes back the way it came**, for a leg whose plane's walk takes a map.
+///
+/// The read half of the cell above, and it exists because a leg is now allowed to want the WHOLE of
+/// what arrived rather than one fact at a time. Two properties, and both are the ones a curation
+/// would break: every header that arrived comes back — including the ones this tree declares nothing
+/// about — and a name sent TWICE comes back twice, in the order it was sent, because a header that
+/// arrived as two values and left as one is a request nobody made.
+///
+/// The reserved keys stay out of it. They are the kernel's vocabulary, they were never headers, and
+/// a read-back that put `unit.path` on the wire would be inventing a header out of a fact.
+#[test]
+fn the_whole_header_map_comes_back_off_the_facts_it_was_published_as() {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/messages")
+        .header("host", "node.example")
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("accept-encoding", "gzip")
+        .header("accept-encoding", "br")
+        .body(axum::body::Body::empty())
+        .expect("a request builds");
+    let (parts, _) = request.into_parts();
+    let sent = parts.headers.clone();
+    let facts = mount_facts(&parts);
+    let pairs = fact_pairs(&facts);
+    let arrival = arrival_over(&pairs, b"{}");
+
+    let back = headers_of(&arrival);
+    assert_eq!(
+        back, sent,
+        "the map a mounted leg reads is the map the caller sent"
+    );
+    assert_eq!(
+        back.get_all("accept-encoding")
+            .iter()
+            .map(|v| v.to_str().expect("ascii"))
+            .collect::<Vec<_>>(),
+        vec!["gzip", "br"],
+        "a header sent twice arrived twice and goes back twice, in order"
+    );
+
+    // AND NOT ONE RESERVED KEY. Six of them are published beside the headers and none of them is a
+    // header; a read-back that took them would hand a plane a request target as a header value.
+    use busbar_contract::transport::facts;
+    assert!(back.get(facts::PATH).is_none());
+    assert!(back.get(facts::METHOD).is_none());
+    assert!(back.get("credential").is_none());
+}
