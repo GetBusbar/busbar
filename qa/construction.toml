@@ -383,10 +383,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14725
+unit_total_ceiling = 14795
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23615
+union_ceiling = 23685
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1339,3 +1339,30 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 5
 because = "FACE busbar-unit-cost::RateCard: the legacy engine's cost model reads its rate half off the cost unit's card through the one seam cost.rs (one import line, two spellings) and names the unit in its manifest (one dependency line, four spellings), less one prose spelling drained; the private RateNanos table, its projections and the nano constants are deleted (119 lines)"
+
+# FACE busbar_unit_cost::LaneRates::reserved_units_nanos (keep-core-delete-7). THE MAP-SHAPED HALF OF
+# THE PRICING THE COST UNIT ALREADY OWNS. A 1.5.5 ledger row stores a bucket's usage as
+# `class -> quantity`; the 1.6.0 usage report carries it as lines. The cost unit could price the
+# lines and nothing else, so the retiring engine — whose readers hold the stored rows — carried its
+# OWN fold over the reserved four, its own single divide, its own flat fee and its own floor, beside
+# this crate's. Two answers to "what did this request cost", each internally consistent, with the
+# ledger unable to say which one it recorded. The face is ADDITIVE: no wire change, no store ABI
+# bump, no backend migration and no allocation — the map fold sits beside the line fold against the
+# same card, and the accumulation and both projection tails are now written ONCE for both shapes
+# (`sum_nanos` takes the per-lane fold as its argument, so the three decisions in that loop cannot be
+# taken twice). The engine's fourteen pricing cells are COPIED into the unit in the same commit and
+# both sides run green, which is the byte-identity proof; the engine's body is deleted against them.
+#
+# Measured: busbar-unit-cost 938 -> 1008 surface lines, +70. No other busbar-unit-* crate moves.
+# busbar-core falls by ~110 in the commits this face funds, and core lines are in neither of these
+# unions, so both rise by the unit's 70 and by nothing else.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 70
+because = "FACE busbar_unit_cost::LaneRates::reserved_units_nanos plus derive_spend_minor_units / derive_spend_micros_units over it — the MAP-SHAPED derivation for the ledger rows the store keeps as class -> quantity, measured at +70 surface lines in busbar-unit-cost (938 -> 1008) and 0 anywhere else under the glob. Without it the retiring engine's readers cannot call the crate that owns money at all and keep a second fold, a second divide, a second fee and a second floor of their own, which is how a deployment comes to be admitted against one set of ledger cells and billed against another. Additive: no wire, no store ABI, no migration, no allocation; the accumulation and both projection tails are written once for both report shapes rather than twice, and the engine's fourteen pricing cells are copied to the unit in the same commit so the deletion that follows is proved before it happens"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 70
+because = "the same FACE as the unit_total_ceiling raise, busbar_unit_cost::LaneRates::reserved_units_nanos: +70 surface lines in busbar-unit-cost and nothing in busbar-caps, busbar-contract or busbar-kernel, so the union rises by exactly the unit rise. The lines the face funds come out of busbar-core, which this union does not carry"

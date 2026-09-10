@@ -102,8 +102,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
-  ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
-  slice/lease, cost, usage, ledger.
+  ≤ 15k); union ≤ 56k. Those two are the architectural bounds; the gated numbers
+  (`rules.loc-ceilings.unit_total_ceiling` and `union_ceiling` in `qa/construction.toml`) are PINS
+  held at zero slack against today's measurement, under the same discipline as the surface line
+  above: they move DOWN freely and UP only for a new-architecture face declared as
+  `[[gate.ceiling_raises]]` naming the face and its measured lines, with this paragraph amended in
+  the same commit. The first is **`busbar_unit_cost::LaneRates::reserved_units_nanos`** and its two
+  derivations (`derive_spend_minor_units`, `derive_spend_micros_units`; 70 measured lines): the
+  MAP-SHAPED face of the pricing this crate already owns. The 1.5.5 ledger row stores a bucket's
+  usage as `class → quantity`, the 1.6.0 report carries it as lines, and until this face existed a
+  reader of the stored rows could not call in here at all — so the retiring engine carried its own
+  fold, its own single divide, its own fee and its own floor beside these, which is two answers to
+  what a request cost with the ledger unable to say which one it recorded. The face is ADDITIVE: no
+  wire, no store ABI and no allocation changes, the accumulation and both projection tails are now
+  written once for both report shapes, and the engine's copy dies against it. 100 % (non-equivalent)
+  mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
 `docs/design/D33-legacy-retirement.md` §7 carries the measurement):

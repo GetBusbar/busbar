@@ -8,10 +8,12 @@
 //! which is still what the legacy endpoint does, except that the card it reprices against is now the
 //! one the history says was in force, rather than whatever is configured at the moment of the read.
 
+use std::collections::BTreeMap;
+
 use busbar_caps::UsageLine;
 
 use crate::currency::CurrencyCode;
-use crate::rate::RateCard;
+use crate::rate::{LaneRates, RateCard};
 use crate::{MICROS_PER_CENT, NANOS_PER_MICRO};
 
 /// **A nano-unit total in whole MINOR units of its currency**: one truncating divide, then floored
@@ -64,15 +66,13 @@ pub fn derive_spend_minor<'a>(
     fee_requests: u64,
     include_request_fee: bool,
 ) -> i64 {
-    let nanos = sum_nanos(card, currency, lanes);
-    let mut minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
-    if include_request_fee {
-        let fee = card
-            .per_request_fee(currency)
-            .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-        minor = minor.saturating_add(fee);
-    }
-    minor.max(0)
+    minor_of_derived(
+        card,
+        currency,
+        sum_nanos(card, currency, lanes, LaneRates::nanos),
+        fee_requests,
+        include_request_fee,
+    )
 }
 
 /// [`derive_spend_minor`] at the currency a 1.5.5 deployment's figures are in.
@@ -104,19 +104,13 @@ pub fn derive_spend_micros_in<'a>(
     fee_requests: u64,
     include_request_fee: bool,
 ) -> i64 {
-    let nanos = sum_nanos(card, currency, lanes);
-    let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
-    if include_request_fee {
-        let micros_per_minor =
-            i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
-        let fee_micros = card
-            .per_request_fee(currency)
-            .saturating_mul(micros_per_minor)
-            .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-        micros.saturating_add(fee_micros)
-    } else {
-        micros
-    }
+    micros_of_derived(
+        card,
+        currency,
+        sum_nanos(card, currency, lanes, LaneRates::nanos),
+        fee_requests,
+        include_request_fee,
+    )
 }
 
 /// [`derive_spend_micros_in`] at the currency a 1.5.5 deployment's figures are in.
@@ -135,18 +129,115 @@ pub fn derive_spend_micros<'a>(
     )
 }
 
-/// The shared accumulation both derivations run: sum nano-units over every (lane, lines) pair,
-/// skipping any lane the present card does not name.
-fn sum_nanos<'a>(
+/// **[`derive_spend_minor`] OVER MAP-SHAPED LEDGER ROWS**: the same derivation for a bucket whose
+/// usage is stored as `class -> quantity` per lane rather than as a slice of lines.
+///
+/// The 1.5.5 ledger row IS a map — the store's `usage_units` is name-keyed and nothing but a
+/// migration would change that — so a reader of those rows either gets this derivation or grows its
+/// own. It is the SAME function: the same lane lookup, the same per-lane fold (through
+/// [`LaneRates::reserved_units_nanos`] instead of [`LaneRates::nanos`], which is the one line that
+/// differs), the same single divide and the same fee, so a map-shaped bucket and a line-shaped one
+/// with the same quantities derive the same figure to the byte rather than by inspection.
+pub fn derive_spend_minor_units<'a>(
     card: &RateCard,
     currency: CurrencyCode,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
+    lanes: impl Iterator<Item = (&'a str, &'a BTreeMap<String, u64>)>,
+    fee_requests: u64,
+    include_request_fee: bool,
+) -> i64 {
+    minor_of_derived(
+        card,
+        currency,
+        sum_nanos(card, currency, lanes, LaneRates::reserved_units_nanos),
+        fee_requests,
+        include_request_fee,
+    )
+}
+
+/// [`derive_spend_micros_in`] over map-shaped ledger rows — the finer projection of the same sum.
+pub fn derive_spend_micros_units<'a>(
+    card: &RateCard,
+    currency: CurrencyCode,
+    lanes: impl Iterator<Item = (&'a str, &'a BTreeMap<String, u64>)>,
+    fee_requests: u64,
+    include_request_fee: bool,
+) -> i64 {
+    micros_of_derived(
+        card,
+        currency,
+        sum_nanos(card, currency, lanes, LaneRates::reserved_units_nanos),
+        fee_requests,
+        include_request_fee,
+    )
+}
+
+/// **THE ACCUMULATION, ONCE, FOR BOTH REPORT SHAPES**: sum nano-units over every (lane, report)
+/// pair, skipping any lane the present card does not name, saturating across lanes.
+///
+/// The report shape is the parameter and the per-lane fold is the argument, because the alternative
+/// is two loops that differ in one line — and the three decisions in this loop (which lanes are
+/// skipped, that a skipped lane contributes nothing, that the cross-lane sum saturates rather than
+/// wrapping) are exactly the kind that get changed in one copy and not the other. Written once, a
+/// map-shaped bucket and a line-shaped one cannot be accumulated by two policies.
+fn sum_nanos<'a, 'c, R: ?Sized + 'a>(
+    card: &'c RateCard,
+    currency: CurrencyCode,
+    lanes: impl Iterator<Item = (&'a str, &'a R)>,
+    price: impl Fn(&LaneRates<'c>, &R) -> u128,
 ) -> u128 {
     let mut nanos: u128 = 0;
-    for (lane, lines) in lanes {
+    for (lane, report) in lanes {
         if let Some(rates) = card.lane_rates(lane, currency) {
-            nanos = nanos.saturating_add(rates.nanos(lines));
+            nanos = nanos.saturating_add(price(&rates, report));
         }
     }
     nanos
+}
+
+/// **THE MINOR-UNIT TAIL, ONCE**: one truncating divide at the currency's scale, the flat fee times
+/// the billable count when asked for, and the floor at zero.
+///
+/// Both derivations end here rather than each carrying the three steps, because the divide, the fee
+/// and the floor are the part a reader gets subtly wrong: a per-lane floor undercharges every
+/// multi-lane bucket, an unclamped fee credits a bucket back toward headroom, and a wrapping cast
+/// turns an over-the-top ledger into a free one. With one tail, the map-shaped derivation cannot
+/// take a different one of those three decisions from the line-shaped one.
+fn minor_of_derived(
+    card: &RateCard,
+    currency: CurrencyCode,
+    nanos: u128,
+    fee_requests: u64,
+    include_request_fee: bool,
+) -> i64 {
+    let mut minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
+    if include_request_fee {
+        let fee = card
+            .per_request_fee(currency)
+            .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
+        minor = minor.saturating_add(fee);
+    }
+    minor.max(0)
+}
+
+/// The micro-unit tail, once, for the same reason — and with the same deliberate difference from
+/// the minor one: NO floor at zero.
+fn micros_of_derived(
+    card: &RateCard,
+    currency: CurrencyCode,
+    nanos: u128,
+    fee_requests: u64,
+    include_request_fee: bool,
+) -> i64 {
+    let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
+    if include_request_fee {
+        let micros_per_minor =
+            i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
+        let fee_micros = card
+            .per_request_fee(currency)
+            .saturating_mul(micros_per_minor)
+            .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
+        micros.saturating_add(fee_micros)
+    } else {
+        micros
+    }
 }

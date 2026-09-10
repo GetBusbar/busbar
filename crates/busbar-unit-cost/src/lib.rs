@@ -54,6 +54,13 @@
 //! read-time derivation over a whole bucket's lanes at one card, kept because the legacy usage
 //! projection still reads that way. A property test asserts the two agree: the lookup over a
 //! single-entry history equals the legacy derivation at that card, exactly.
+//!
+//! Each of those has a MAP-SHAPED twin — [`derive_spend_minor_units`] and
+//! [`derive_spend_micros_units`], over [`LaneRates::reserved_units_nanos`] — because the 1.5.5
+//! ledger row stores usage as `class -> quantity` rather than as lines, and a reader of those rows
+//! that cannot call in here grows a second pricing policy instead. The two shapes share the lane
+//! lookup, the single divide, the fee and the floor; the only line that differs is which fold reads
+//! the report.
 
 mod currency;
 mod history;
@@ -73,12 +80,12 @@ pub use posting::{
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
 pub use project::{
-    cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in, derive_spend_minor,
-    micros_of, minor_of,
+    cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in,
+    derive_spend_micros_units, derive_spend_minor, derive_spend_minor_units, micros_of, minor_of,
 };
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT, RESERVED_CLASSES,
 };
 
 /// Nano-units in one cent. A cent is a hundredth of one United States dollar, and a nano-unit is a

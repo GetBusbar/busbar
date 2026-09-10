@@ -16,6 +16,7 @@ mod currency_tests;
 mod derive_tests;
 mod history_tests;
 mod identity_tests;
+mod map_derive_tests;
 mod posting_tests;
 mod rate_tests;
 
