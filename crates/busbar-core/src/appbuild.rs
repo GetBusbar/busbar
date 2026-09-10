@@ -1418,6 +1418,11 @@ pub fn build_app_from_config(
             // verify-on-call gate and boot-resolved card transports off the prior `A2aPlane`) — the
             // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
             prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+            // THE NEUTRAL SECTION SLOTS. Nothing fills them on this commit: the seam is added
+            // here, on its own, so the row that reads it lands against a vocabulary that is
+            // already in the substrate rather than arriving with it.
+            resolved_section: None,
+            resolved_secret: None,
         };
         crate::plane::registry::plane_decls()
             .iter()

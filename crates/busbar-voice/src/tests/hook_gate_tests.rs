@@ -126,6 +126,10 @@ fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
         agent_defs: &unit,
         public_url: Some("https://voice.example"),
         prior: None,
+        // The neutral section slots: no row this rig builds configures a section, so both are the
+        // absence the seam is written for.
+        resolved_section: None,
+        resolved_secret: None,
     };
     crate::mount::voice_build(&ctx).expect("voice_build yields a slot for a public_url")
 }

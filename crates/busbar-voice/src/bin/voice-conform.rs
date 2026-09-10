@@ -1764,6 +1764,10 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         agent_defs: &unit,
         public_url: Some("https://gw.conform.example.com"),
         prior: None,
+        // The neutral section slots: no row this rig builds configures a section, so both are the
+        // absence the seam is written for.
+        resolved_section: None,
+        resolved_secret: None,
     };
     let Some(slot) = busbar_voice::mount::voice_build(&ctx) else {
         return ("FAIL", "voice_build produced no dispatch slot".into());
