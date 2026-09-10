@@ -18,7 +18,7 @@
 //! someone else's seed is not a property.
 
 use super::*;
-use crate::{cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP};
+use crate::{cents_of, derive_spend_micros_in, derive_spend_minor, micros_of, STANDARD_TIER_BP};
 use crate::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
 
 /// A deterministic sequence. Same numbers everywhere, forever.
@@ -78,14 +78,16 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
         let plain = lines(&reported);
 
         let posted = priced(&card, "lane", &report, fee_count, STANDARD_TIER_BP);
-        let derived_cents = derive_spend_cents(
+        let derived_cents = derive_spend_minor(
             &card,
+            CurrencyCode::USD,
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             true,
         );
-        let derived_micros = derive_spend_micros(
+        let derived_micros = derive_spend_micros_in(
             &card,
+            CurrencyCode::USD,
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             true,
@@ -105,8 +107,9 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
         // The fee and the usage also agree SEPARATELY, which is how the shadow comparison reads
         // them: the usage-only derivation against the posting's non-fee lines, and the fee against
         // its own line.
-        let usage_only = derive_spend_cents(
+        let usage_only = derive_spend_minor(
             &card,
+            CurrencyCode::USD,
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             false,
@@ -224,7 +227,13 @@ fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() 
     let c = card("m", 2.0, 5.0, 3);
     let report = usage(&[(INPUT, 3), (OUTPUT, 4)]);
     let plain = lines(&[(INPUT, 3), (OUTPUT, 4)]);
-    let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true);
+    let derived = derive_spend_minor(
+        &c,
+        CurrencyCode::USD,
+        [("m", plain.as_slice())].into_iter(),
+        1,
+        true,
+    );
 
     let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
     assert_eq!(derived, neutral.minor());

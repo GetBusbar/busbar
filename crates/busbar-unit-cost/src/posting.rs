@@ -350,16 +350,14 @@ pub fn price_at_card(
     // A card that names this currency but no FEE in it prices the fee at nothing AND SAYS SO, on
     // the line, exactly as a class the card is silent about does. Never a silent zero: a fee read
     // as zero out of a map that does not hold it is a request served for free with nothing said.
-    let (fee_unit_price_nanos, fee_unpriced) = match card.fee_unit_price_nanos(currency) {
-        Some(nanos) => (nanos, false),
-        None => (0u128, true),
-    };
+    let priced_fee = card.fee_unit_price_nanos(currency);
+    let fee_unit_price_nanos = priced_fee.unwrap_or(0);
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
         quantity: posting.fee_count,
         unit_price_nanos: fee_unit_price_nanos,
         amount_nanos: u128::from(posting.fee_count).saturating_mul(fee_unit_price_nanos),
-        unpriced: fee_unpriced,
+        unpriced: priced_fee.is_none(),
     });
 
     let pre_tier_nanos = lines
@@ -373,7 +371,7 @@ pub fn price_at_card(
         pre_tier_nanos,
         priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
         lane_unpriced: rates.is_none(),
-        fee_unpriced,
+        fee_unpriced: priced_fee.is_none(),
         tier_bp: posting.tier_bp,
         fee_count: posting.fee_count,
         estimated: posting.estimated,
@@ -402,10 +400,8 @@ pub fn price_fail_closed(
         });
     }
     if priced.fee_unpriced {
-        return Err(Unpriceable::FeeUnpriced {
-            card_seq: priced.card_seq,
-            currency,
-        });
+        let card_seq = priced.card_seq;
+        return Err(Unpriceable::FeeUnpriced { card_seq, currency });
     }
     Ok(priced)
 }

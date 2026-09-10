@@ -5,7 +5,7 @@
 //! projection still reprices at read time. Quantities are the truth; the amount is derived.
 
 use super::*;
-use crate::{derive_spend_cents, derive_spend_micros, LaneClass, RateCard};
+use crate::{derive_spend_micros_in, derive_spend_minor, LaneClass, RateCard};
 
 /// With NO card, quantities derive to nothing and only the flat fee counts. This is the
 /// all-or-nothing switch in its off position.
@@ -14,7 +14,13 @@ fn an_absent_card_prices_quantities_at_zero() {
     let c = RateCard::absent(3);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("anything", l.as_slice())].into_iter(), 5, true),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("anything", l.as_slice())].into_iter(),
+            5,
+            true
+        ),
         15,
         "quantities derive to nothing; five requests at three cents remain"
     );
@@ -28,11 +34,23 @@ fn a_present_card_derives_integer_spend() {
     let c = card("gpt-5", 2.5, 10.0, 0);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("gpt-5", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         1250
     );
     assert_eq!(
-        derive_spend_micros(&c, [("gpt-5", l.as_slice())].into_iter(), 0, false),
+        derive_spend_micros_in(
+            &c,
+            CurrencyCode::USD,
+            [("gpt-5", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         12_500_000
     );
 }
@@ -44,7 +62,13 @@ fn the_nano_scale_keeps_sub_micro_precision() {
     let c = card("m", 3.125, 0.0, 0);
     let l = lines(&[(INPUT, 8)]);
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        derive_spend_micros_in(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         25
     );
 }
@@ -59,7 +83,13 @@ fn an_unknown_lane_with_a_card_is_unpriced_and_derives_zero() {
     assert!(!c.lane_unpriced("gpt-5"));
     let l = lines(&[(INPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("mystery-lane", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("mystery-lane", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         0
     );
 }
@@ -72,11 +102,23 @@ fn repricing_on_read_recomputes_the_derived_spend() {
     let wrong = card("m", 10.0, 0.0, 0);
     let fixed = card("m", 5.0, 0.0, 0);
     assert_eq!(
-        derive_spend_cents(&wrong, [("m", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &wrong,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         1000
     );
     assert_eq!(
-        derive_spend_cents(&fixed, [("m", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &fixed,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         500,
         "the same quantities under a corrected rate halve on the next read"
     );
@@ -90,11 +132,23 @@ fn the_derivation_saturates_and_never_wraps_toward_free() {
     let c = card("m", 1e15, 0.0, 0);
     let l = lines(&[(INPUT, u64::MAX)]);
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         i64::MAX
     );
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        derive_spend_micros_in(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         i64::MAX
     );
 }
@@ -111,7 +165,13 @@ fn a_four_class_card_prices_each_class_against_its_own_rate() {
         (CACHE_WRITE, 500_000),
     ]);
     assert_eq!(
-        derive_spend_cents(&c, [("quad", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("quad", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         1500
     );
 }
@@ -123,7 +183,13 @@ fn the_cent_derivation_truncates_toward_zero() {
     let c = card("m", 1.0, 0.0, 0);
     let at = |tokens: u64| {
         let l = lines(&[(INPUT, tokens)]);
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false,
+        )
     };
     assert_eq!(at(19_999), 1);
     assert_eq!(at(20_000), 2);
@@ -145,13 +211,20 @@ fn sub_cent_contributions_across_lanes_sum_before_flooring() {
     let la = lines(&[(INPUT, 1_000)]);
     let lb = lines(&[(INPUT, 1_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("a", la.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("a", la.as_slice())].into_iter(),
+            0,
+            false
+        ),
         0,
         "one half-cent lane alone floors to nothing"
     );
     assert_eq!(
-        derive_spend_cents(
+        derive_spend_minor(
             &c,
+            CurrencyCode::USD,
             [("a", la.as_slice()), ("b", lb.as_slice())].into_iter(),
             0,
             false
@@ -173,7 +246,13 @@ fn an_explicit_zero_rate_lane_derives_zero() {
         (CACHE_WRITE, u64::MAX),
     ]);
     assert_eq!(
-        derive_spend_cents(&c, [("freebie", l.as_slice())].into_iter(), 0, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("freebie", l.as_slice())].into_iter(),
+            0,
+            false
+        ),
         0
     );
 }
@@ -188,8 +267,9 @@ fn a_partial_card_prices_the_known_lane_and_zeroes_the_missing_one() {
     let known = lines(&[(INPUT, 1_000_000)]);
     let absent = lines(&[(INPUT, 9_999_999)]);
     assert_eq!(
-        derive_spend_cents(
+        derive_spend_minor(
             &c,
+            CurrencyCode::USD,
             [("priced", known.as_slice()), ("absent", absent.as_slice())].into_iter(),
             0,
             false
@@ -206,11 +286,23 @@ fn the_flat_fee_saturates_and_is_gated_by_the_flag() {
     let c = RateCard::absent(i64::MAX);
     let l = lines(&[]);
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, true),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            u64::MAX,
+            true
+        ),
         i64::MAX
     );
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, false),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            u64::MAX,
+            false
+        ),
         0,
         "with the fee excluded it contributes nothing"
     );
@@ -224,7 +316,13 @@ fn a_negative_fee_can_never_credit_a_bucket() {
     let l = lines(&[]);
     assert_eq!(c.fee_for(CurrencyCode::USD), Some(0));
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 100, true),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            100,
+            true
+        ),
         0
     );
 }
@@ -236,15 +334,33 @@ fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
     let c = RateCard::absent(3);
     let l = lines(&[]);
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, true),
+        derive_spend_micros_in(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            5,
+            true
+        ),
         150_000
     );
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 5, true),
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            5,
+            true
+        ),
         15
     );
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, false),
+        derive_spend_micros_in(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            5,
+            false
+        ),
         0
     );
 }
@@ -257,7 +373,13 @@ fn the_derived_spend_lands_exactly_on_an_integer_cap() {
     let c = card("m", 1.0, 0.0, 0);
     let at = |tokens: u64| {
         let l = lines(&[(INPUT, tokens)]);
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
+        derive_spend_minor(
+            &c,
+            CurrencyCode::USD,
+            [("m", l.as_slice())].into_iter(),
+            0,
+            false,
+        )
     };
     assert_eq!(at(1_000_000), 100);
     assert_eq!(at(1_010_000), 101);

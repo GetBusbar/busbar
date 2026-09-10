@@ -182,14 +182,12 @@ impl RateCard {
     /// because there is no card to be missing from — attribution only. The fee is in the given
     /// currency's minor units, and that currency is the one currency such a card names.
     pub fn absent_in(currency: CurrencyCode, per_request_fee: i64) -> Self {
-        let mut fees = BTreeMap::new();
-        // A negative configured fee is clamped here, once: no request may ever bill a negative
-        // amount, which would credit a budget back toward headroom.
-        fees.insert(currency, per_request_fee.max(0));
         RateCard {
             present: false,
             prices: BTreeMap::new(),
-            fees,
+            // A negative configured fee is clamped here, once: no request may ever bill a negative
+            // amount, which would credit a budget back toward headroom.
+            fees: BTreeMap::from([(currency, per_request_fee.max(0))]),
             currencies: BTreeSet::from([currency]),
         }
     }
@@ -219,12 +217,10 @@ impl RateCard {
                 .or_default()
                 .set(currency, nano_rate(micro));
         }
-        let mut fees = BTreeMap::new();
-        fees.insert(currency, per_request_fee.max(0));
         RateCard {
             present: true,
             prices,
-            fees,
+            fees: BTreeMap::from([(currency, per_request_fee.max(0))]),
             currencies: BTreeSet::from([currency]),
         }
     }

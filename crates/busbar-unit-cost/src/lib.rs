@@ -50,10 +50,17 @@
 //!
 //! # The two readers
 //!
-//! [`price`] is the lookup. [`derive_spend_cents`] and [`derive_spend_micros`] are the legacy
+//! [`price`] is the lookup. [`derive_spend_minor`] and [`derive_spend_micros_in`] are the legacy
 //! read-time derivation over a whole bucket's lanes at one card, kept because the legacy usage
 //! projection still reads that way. A property test asserts the two agree: the lookup over a
 //! single-entry history equals the legacy derivation at that card, exactly.
+//!
+//! Each of those two takes ITS CURRENCY AS AN ARGUMENT, and there is no currency-defaulting
+//! spelling of either. There used to be — `derive_spend_cents` and `derive_spend_micros`, the same
+//! two functions at [`CurrencyCode::USD`] — and a spelling that supplies a currency the caller did
+//! not name is how a figure comes to be derived in one currency against a card priced in another.
+//! The currency is now written at the call site, where a reader can see which one is being asked
+//! for.
 
 mod currency;
 mod history;
@@ -67,10 +74,7 @@ pub use posting::{
     apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced, PricedLine,
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
-pub use project::{
-    cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in, derive_spend_minor,
-    micros_of, minor_of,
-};
+pub use project::{cents_of, derive_spend_micros_in, derive_spend_minor, micros_of, minor_of};
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,

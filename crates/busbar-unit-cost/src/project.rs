@@ -83,22 +83,6 @@ pub fn derive_spend_minor<'a>(
     minor.max(0)
 }
 
-/// [`derive_spend_minor`] at the currency a 1.5.5 deployment's figures are in.
-pub fn derive_spend_cents<'a>(
-    card: &RateCard,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
-    fee_requests: u64,
-    include_request_fee: bool,
-) -> i64 {
-    derive_spend_minor(
-        card,
-        CurrencyCode::USD,
-        lanes,
-        fee_requests,
-        include_request_fee,
-    )
-}
-
 /// As [`derive_spend_minor`] but in micro-units, for the finer projections. No floor at zero here.
 ///
 /// The fee is lifted from minor units to micro-units by the currency's own scale: a minor unit is
@@ -128,22 +112,6 @@ pub fn derive_spend_micros_in<'a>(
     } else {
         micros
     }
-}
-
-/// [`derive_spend_micros_in`] at the currency a 1.5.5 deployment's figures are in.
-pub fn derive_spend_micros<'a>(
-    card: &RateCard,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
-    fee_requests: u64,
-    include_request_fee: bool,
-) -> i64 {
-    derive_spend_micros_in(
-        card,
-        CurrencyCode::USD,
-        lanes,
-        fee_requests,
-        include_request_fee,
-    )
 }
 
 /// The shared accumulation both derivations run: sum nano-units over every (lane, lines) pair,

@@ -8,7 +8,7 @@ use busbar_caps::{Admit, AdmitToken};
 use busbar_caps::{Hold, LedgerToken, Usage, UsageToken};
 use busbar_caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_unit_cost::{
-    derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,
+    derive_spend_micros_in, price, CurrencyCode, History, LaneClass, Posting, RateCard,
     STANDARD_TIER_BP,
 };
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
@@ -193,10 +193,11 @@ fn drive(
         .into_iter()
         .map(|(row, (input, output, billable))| {
             let l = lines(input, output);
-            let spend_micros = derive_spend_micros(
+            let spend_micros = derive_spend_micros_in(
                 view.card_at(0)
                     .expect("the opening entry covers instant zero")
                     .1,
+                CurrencyCode::USD,
                 [(row.lane.as_str(), l.as_slice())].into_iter(),
                 billable,
                 true,
