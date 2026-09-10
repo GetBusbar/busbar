@@ -738,9 +738,6 @@ pub mod arrival_host;
 /// (`busbar_substrate::ingress::arrival`) so the dialect crate names the registration-pair type
 /// without reaching into `busbar-core`; this module is a thin core-test seeding veneer + re-exports.
 pub mod path_ingress;
-// The registration-pair fn-pointer type, re-exported at `busbar_core::ingress::PathIngress` so the
-// composition root names it without the `path_ingress::` qualifier.
-pub use path_ingress::PathIngress;
 
 /// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
 /// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
