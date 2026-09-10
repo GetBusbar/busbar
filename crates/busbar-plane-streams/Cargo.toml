@@ -4,16 +4,16 @@
 # extension) for busbar's duplex/live-voice surface (§6 of ARCHITECTURE.md): the openai-realtime,
 # gemini-live, twilio-media-streams and one-shot transcribe/tts dialects, with a turn as the unit,
 # a provider tool call as `Progress::OneShot`, an interrupt fact and a pacing fact. It calls
-# `busbar-voice`'s own dialect codecs to read and write bytes; it invents no wire shape of its own.
+# the voice crate's own dialect codecs to read and write bytes; it invents no wire shape of its own.
 #
-# THE SEAM, STATED HONESTLY. `busbar-voice` (Plane 4) is built against ITS OWN plane-declaration
+# THE SEAM, STATED HONESTLY. The retiring voice crate (Plane 4) is built against ITS OWN plane-declaration
 # surface (`busbar_substrate::PlaneDecl` / `ProtocolDecl`) rather than against `busbar-contract`'s
 # `Plane` trait — its own header says core/substrate/api "never learn the word audio", and it depends
 # on `busbar-substrate` and `busbar-api`, never on `busbar-contract`. This crate is the adapter that
-# closes that gap for the 1.6.0 contract world: it depends on `busbar-voice` for its dialect codecs
+# closes that gap for the 1.6.0 contract world: it depends on the codec crate for its dialect codecs
 # and IR types alone (the OpenAI Realtime / Gemini Live event readers and writers, the μ-law↔PCM16
 # transform, the tool-call and interrupt/pacing vocabulary) and never touches `PlaneDecl` or the T2
-# session runtime, which stay behind `busbar-voice`'s own `runtime` feature and its own mount path.
+# session runtime, which stay behind the voice crate's own `runtime` feature and its own mount path.
 [package]
 name = "busbar-plane-streams"
 version = "1.6.0"
@@ -21,7 +21,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
-description = "The voice plane for busbar: the plugin contract's plane and session-plane kinds implemented as a thin codec over the busbar-voice dialect codecs."
+description = "The voice plane for busbar: the plugin contract's plane and session-plane kinds implemented as a thin codec over the codec crate's dialect codecs."
 license = "Apache-2.0"
 
 [lib]
@@ -35,7 +35,7 @@ path = "src/lib.rs"
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. Read-only from here: this crate calls the dialect readers/writers and the IR types and
-# edits none of them. `busbar-voice-codec`, NOT `busbar-voice`: the IR and the dialect grammars split
+# edits none of them. `busbar-voice-codec`, NOT the plane crate it split out of: the IR and the dialect grammars split
 # out of the plugin so a PURE kind can name them, and the session runtime, the axum mount, the
 # WebSocket accept, the telephony dial and the HTTPS minter stayed behind. The
 # `default-features = false` that used to fence off the runtime feature is gone with the reason for
@@ -44,7 +44,7 @@ busbar-voice-codec = { path = "../busbar-voice-codec" }
 # The object notation the dialect wire (OpenAI Realtime, Gemini Live) is written in. The adapter
 # hands values across the seam and never invents a second parser.
 serde_json = { workspace = true }
-# THE MEDIA-FRAME CARRIER. `busbar_voice::ir::media::IrAudioFrame::media` and the tool IR's opaque
+# THE MEDIA-FRAME CARRIER. The voice IR's `media::IrAudioFrame::media` and the tool IR's opaque
 # payloads are `bytes::Bytes`; this crate reads and builds them at the same seam, so it names the
 # same crate rather than converting through an owned `Vec<u8>` at the boundary.
 bytes = { workspace = true }

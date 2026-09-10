@@ -316,7 +316,7 @@ impl<'de> serde::Deserialize<'de> for AgentsSection {
 
 /// THE `streams:` VOICE-PLANE SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] —
 /// the neutral seam the voice plane's `StreamsCfg` deserializes through, so `DeployCfg` names no
-/// `busbar_voice` type. Absent ⇒ the plane's `Default` (the empty `streams:`).
+/// voice-crate type. Absent ⇒ the plane's `Default` (the empty `streams:`).
 ///
 /// `streams` is a SINGULAR typed section (one live-voice posture per deployment), NOT a
 /// named-definition map, so it is keyed by the bare `"streams"` config-section literal rather than a

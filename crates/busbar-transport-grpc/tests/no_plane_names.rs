@@ -40,25 +40,31 @@
 //!
 //! ## What counts as a plane name
 //!
-//! Two lists. The plane CRATE names, in both spellings a manifest and a source file use, and the
+//! Two lists. The plane-crate PREFIX, in both spellings a manifest and a source file use, and the
 //! DIALECT words the architecture's own section 6 names. The dialect words are matched on word
-//! boundaries: a transport is allowed the letters, just not the word.
+//! boundaries: a transport is allowed the letters, just not the word. BOTH lists are applied to the
+//! source AND to the manifest, which is the second half of this rule and used to be missing.
+//!
+//! THE RETIRING 1.5.x CRATES ARE NOT LISTED BY NAME, AND THAT IS THE RULE RATHER THAN A GAP. Each
+//! of them is `busbar-<dialect>`, so every spelling of every one of them — the dashed one, the
+//! underscored one a `use` line writes, and the manifest's `busbar-<dialect> = { path = … }` —
+//! carries its dialect word on a word boundary and is refused by the list below that names the
+//! dialect, and the plant at the foot of this file derives itself from that list to prove it.
+//! Listing the crates as
+//! well was a SECOND SPELLING of one rule, and a second spelling goes stale: this file still named
+//! a plane crate by a modality months after the plane it belonged to had been renamed, and nothing
+//! reported it, because a denylist that must be hand-edited on every rename is wrong between
+//! renames. One rule, in the place the architecture states it.
 
 use std::path::{Path, PathBuf};
 
-/// The plane crate names, in the two spellings a manifest and a `use` line write.
-const PLANE_CRATES: &[&str] = &[
-    "busbar-plane-",
-    "busbar_plane_",
-    "busbar-llm",
-    "busbar_llm",
-    "busbar-mcp",
-    "busbar_mcp",
-    "busbar-a2a",
-    "busbar_a2a",
-    "busbar-voice",
-    "busbar_voice",
-];
+/// The plane-crate PREFIX, in the two spellings a manifest and a `use` line write.
+///
+/// A prefix rather than a roll-call: `busbar-plane-<anything>` is a plane crate whatever the plane
+/// is called this month, so a plane that lands, splits or is renamed needs no edit here. The
+/// retiring 1.5.x plane crates are `busbar-<dialect>` and are refused by [`DIALECT_WORDS`] instead
+/// — see the header for why one rule beats two spellings of it.
+const PLANE_CRATES: &[&str] = &["busbar-plane-", "busbar_plane_"];
 
 /// The dialect words, matched on word boundaries.
 ///
@@ -175,6 +181,15 @@ fn the_manifest_names_neither_a_plane_nor_core() {
             found.push(crate_name);
         }
     }
+    // AND THE DIALECT WORDS, on the same word boundaries the source scan uses. A dependency on a
+    // retiring plane crate is `busbar-<dialect> = { path = … }`, and the dialect is right there on
+    // a boundary — this is what makes the roll-call of crate names unnecessary rather than merely
+    // shorter, and leaving it out of the manifest half is what would have weakened the rule.
+    for word in DIALECT_WORDS {
+        if contains_word(&manifest, word) {
+            found.push(word);
+        }
+    }
     assert!(
         found.is_empty(),
         "a transport may name the two contract crates and its sibling transports and nothing else \
@@ -200,6 +215,22 @@ fn the_scan_would_catch_a_planted_name() {
     // The manifest form, for a plane and for core.
     let planted = "busbar-plane-a2a = { path = \"../busbar-plane-a2a\" }";
     assert!(PLANE_CRATES.iter().any(|c| planted.contains(c)));
+    // AND THE RETIRING 1.5.x FORM, which no crate name in this file spells — nor should it, since
+    // spelling one here is the coupling this file refuses. The plant is DERIVED from the dialect
+    // list instead, which is exactly the argument that makes the roll-call unnecessary: every one
+    // of those crates is `busbar-<dialect>`, in a manifest and in a `use` line alike, so the word
+    // is on a boundary in both and the scan that reads boundaries finds it.
+    for word in DIALECT_WORDS {
+        for planted in [
+            format!("busbar-{word} = {{ path = \"../busbar-{word}\" }}"),
+            format!("use busbar_{word}::mount::install;"),
+        ] {
+            assert!(
+                DIALECT_WORDS.iter().any(|w| contains_word(&planted, w)),
+                "the dialect scan must catch `{planted}` — it is the only thing that does"
+            );
+        }
+    }
     let planted_core = "busbar-kernel = { path = \"../busbar-kernel\" }";
     assert!(CORE_NAMES.iter().any(|c| planted_core.contains(c)));
     // And the one call a transport would make if it reached past the driver seam at all.

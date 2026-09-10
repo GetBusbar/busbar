@@ -2,7 +2,7 @@
 //! plane's session opens, and what it takes back when one commits a rewrite.
 //!
 //! These are the PROJECTION half of the two hook cells the 1.5.x mount carries
-//! (`busbar-voice`'s `hook_gate_tests` / `hook_tap_tests`). Those cells prove the two hops FIRE —
+//! (the voice crate's `hook_gate_tests` / `hook_tap_tests`). Those cells prove the two hops FIRE —
 //! a rejecting gate refuses an open, a committed rewrite reaches the wire — and they stay where the
 //! firing is. What could not be proven there, and is proven here, is that the payload the hops carry
 //! is THIS PLANE'S, rendered by the plane itself: an operator's configured gate matches bytes, so a

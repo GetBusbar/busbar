@@ -4,9 +4,9 @@
 //! (`connected`, `start`, `mark`, `dtmf`, `stop`) and a per-chunk `media` event whose `payload` is
 //! base64 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"..."}`.
 //!
-//! `busbar-voice` has no dialect codec for this wire (it is not one of its two duplex dialects), and
+//! The codec crate has no dialect codec for this wire (it is not one of its two duplex dialects), and
 //! the one Twilio-shaped module that exists in that crate's source tree
-//! (`busbar_voice_codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
+//! (`busbar_voice_codec::topology::twilio`) is gated behind that crate's `runtime` cargo feature, which
 //! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
 //! and cannot be named from here. This module is therefore written from the wire shape alone
 //! (confirmed against `docs/design/plane4-voice-dialect-landscape.md` and the public Twilio Media

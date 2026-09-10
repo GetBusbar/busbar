@@ -1494,7 +1494,8 @@ pub trait ContainerGateSink: PlaneSlots {
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // D3 WITNESS — the gauntlet siblings COEXIST and share ONE `admit_open` gate. (That `begin_session`
-// actually CALLS `run_gauntlet_session` at its call site is pinned in busbar-voice's topology tests.)
+// actually CALLS `run_gauntlet_session` at its call site is pinned in the voice crate's own
+// topology tests.)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 #[path = "tests/gauntlet_session_tests.rs"]

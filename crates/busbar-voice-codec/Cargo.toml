@@ -1,7 +1,7 @@
 # busbar-voice-codec — THE VOICE DUPLEX IR AND ITS DIALECT GRAMMARS, with nothing that opens
 # anything.
 #
-# WHY THIS CRATE EXISTS. `busbar-voice` was two things wearing one name: the realtime codecs — the
+# WHY THIS CRATE EXISTS. The voice plugin was two things wearing one name: the realtime codecs — the
 # plane-4 duplex/session intermediate representation and the dialect readers/writers that map a
 # provider's realtime wire onto it — and the runtime that carries them over a live socket (the axum
 # mount, the WebSocket accept, the tokio session tasks, the telephony dial, the HTTPS token minter).
@@ -13,11 +13,10 @@
 # THE RULE THIS CRATE KEEPS. No `hyper`, no `reqwest`, no `axum`, no `tokio` (and no
 # `tokio-tungstenite`), and no `std::{net,fs,process,env}` in its own dependencies or its own source.
 #
-# WHAT STAYED BEHIND in `busbar-voice`: the runtime — the session core and its carrier, the metering
-# lease, the scope gate, the route mount, the WebRTC and telephony topologies, the HTTPS minter and
-# the conformance binary. `busbar-voice` depends on this crate and re-exports every module that
-# moved, so a caller that named `busbar_voice::ir::…` or `busbar_voice::topology::twilio::…` still
-# resolves it.
+# WHAT STAYED BEHIND in the voice plugin: the runtime — the session core and its carrier, the
+# metering lease, the scope gate, the route mount, the WebRTC and telephony topologies, the HTTPS
+# minter and the conformance binary. That half depends on this crate and re-exports every module
+# that moved, so a caller that named its `ir::…` or its `topology::twilio::…` still resolves it.
 [package]
 name = "busbar-voice-codec"
 version = "1.6.0"
@@ -54,12 +53,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-# THE SAME `runtime` GATE THE MOVED TWILIO GRAMMAR WAS ALREADY BEHIND. `busbar_voice::topology` is
-# gated on `runtime` (OFF by default), so the Twilio Media Streams grammar and its tests were
+# THE SAME `runtime` GATE THE MOVED TWILIO GRAMMAR WAS ALREADY BEHIND. The voice plugin's
+# `topology` module is gated on `runtime` (OFF by default), so the Twilio Media Streams grammar and its tests were
 # compiled out of the default build; the gate travelled with the module so the move changes neither
 # what compiles nor what runs. It pulls NOTHING — the grammar is serde and `bytes`, both
 # unconditional above — it only decides whether the module exists, exactly as before.
-# `busbar-voice`'s own `runtime` forwards to this one so the two answers cannot diverge.
+# That crate's own `runtime` forwards to this one so the two answers cannot diverge.
 runtime = []
 
 [dev-dependencies]

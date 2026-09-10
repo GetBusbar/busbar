@@ -1,11 +1,11 @@
 //! Codec-path tests: fixtures decode to the expected turn units, interrupt facts and pacing facts.
 //!
 //! The OpenAI `session.update` fixture below restates (does not literally `include!`, because the
-//! entry point shape differs — busbar-voice's own test calls `OpenAiRealtimeCodec::read_up`
+//! entry point shape differs — the codec crate's own test calls `OpenAiRealtimeCodec::read_up`
 //! directly, this one calls `VoicePlane::decode_ingress`) the fixture at
-//! `crates/busbar-voice/src/ir/codec/tests.rs::ga_session_server_vad` (lines 52-74 at the time of
+//! the codec crate's own `src/ir/codec/tests.rs::ga_session_server_vad` (lines 52-74 at the time of
 //! writing). The audio-frame and `session.created`/usage fixtures are built from the same wire
-//! `type` tokens `crates/busbar-voice/src/ir/codec/mod.rs`'s `wire` module names
+//! `type` tokens that crate's own `src/ir/codec/mod.rs`'s `wire` module names
 //! (`input_audio_buffer.append`, `session.created`, `response.done`).
 
 use busbar_contract::bounded::{FactValue, Facts, Labels};
@@ -38,8 +38,8 @@ fn client_wire(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
 
-/// The `session.update` fixture restated from `busbar-voice`'s own `ga_session_server_vad` fixture
-/// (`crates/busbar-voice/src/ir/codec/tests.rs`, lines 52-74).
+/// The `session.update` fixture restated from the codec crate's own `ga_session_server_vad` fixture
+/// (its `src/ir/codec/tests.rs`, lines 52-74).
 fn session_update_fixture() -> Vec<u8> {
     serde_json::to_vec(&json!({
         "type": "session.update",

@@ -56,7 +56,7 @@ fn crates_dir() -> PathBuf {
 ///   because a type declared under `tests/` is not part of the config surface `--validate` walks.
 /// - `bin` holds `[[bin]]` target sources — standalone executables that are not part of the crate's
 ///   library surface `RootCfg` and its config-resolution walk can ever reach. Today the one `bin`
-///   target in the workspace, `busbar-voice/src/bin/voice-conform.rs`, is itself a conformance-test
+///   target in the workspace, the voice crate's own `src/bin/voice-conform.rs`, is itself a
 ///   harness that declares its own mock `SecretResolve` stand-in (`OneSecretResolver`) to probe the
 ///   plane's composition seams; that mock is exactly as test-only as a helper under `tests/`, and it
 ///   must be excluded for the same reason: it is code that CONSTRUCTS a stand-in to exercise the

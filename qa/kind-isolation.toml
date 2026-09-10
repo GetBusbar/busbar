@@ -2560,7 +2560,7 @@ count = "6"
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "plane"
-count = "47"
+count = "39"
 
 [[cell]]
 crate = "busbar-transport-grpc"
@@ -2590,7 +2590,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "35"
+count = "27"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2995,7 +2995,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "plane"
-count = "117"
+count = "108"
 
 [[cell]]
 crate = "busbar-voice-codec"

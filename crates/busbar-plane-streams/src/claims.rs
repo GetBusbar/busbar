@@ -11,7 +11,7 @@
 //! twice:
 //!
 //! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
-//!   (busbar-voice's WebRTC topology is `runtime`-gated and, per its own module documentation, is a
+//!   (the voice crate's WebRTC topology is `runtime`-gated and, per its own module documentation, is a
 //!   browser-sideband ferry over the same JSON event vocabulary rather than a distinct wire format —
 //!   but a plane cannot claim a transport it cannot decode frames from without lying about what it
 //!   reads).

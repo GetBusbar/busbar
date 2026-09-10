@@ -7,7 +7,7 @@
 //!
 //! A call for a tool **this node serves** is the tool moat the design is built around
 //! (the tool-moat section of `plane4-duplex-session.md`): the runtime accumulates the streamed arguments, executes the
-//! tool in-process through `busbar_voice::runtime::ToolExecutor`, and authors the `function_call_output`
+//! tool in-process through the voice crate's `runtime::ToolExecutor`, and authors the `function_call_output`
 //! itself. The client never sees it and could not forge it. Nothing about that path changes here.
 //!
 //! A call for a tool the node **does not** serve is the other half: the answer can only come from the
@@ -15,7 +15,7 @@
 //! call — not to the runtime. The root holds that table (`OpenToolCalls` on the voice node): it
 //! enters the wait where the leg is planned, wakes it when a reply names the call, and sweeps the
 //! ones nobody answered. The runtime's whole job is to be the thing that *tells* it — and this port
-//! is that telling, dependency-inverted the same way `busbar_voice::runtime::ToolExecutor` is, because a
+//! is that telling, dependency-inverted the same way that `runtime::ToolExecutor` is, because a
 //! plane crate that named the composition root would be the I/O half deciding which unit an answer
 //! belongs to.
 //!
