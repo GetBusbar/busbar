@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "121"
+count = "117"
 
 [[cell]]
 crate = "busbar"
@@ -1326,6 +1326,7 @@ kind = "caps"
 # declared class each and share ONE spelling of "what a unit spent in one class", in the root's own
 # module rather than three times over; the fourth reads the completion straight off the record.
 count = "309"
+count = "300"
 
 [[cell]]
 crate = "busbar"
@@ -1375,7 +1376,7 @@ count = "159"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "93"
+count = "94"
 
 [[cell]]
 crate = "busbar"
@@ -1387,6 +1388,7 @@ kind = "plane"
 # TOTALLED against one of them, which the shape now makes visible rather than hiding, and the
 # comment that says so names the plane's own declaration.
 count = "1807"
+count = "1800"
 
 [[cell]]
 crate = "busbar"
@@ -1420,7 +1422,7 @@ count = "944"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1177"
+count = "1193"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -2916,7 +2918,7 @@ count = "45"
 [[cell]]
 crate = "busbar-unit-usage"
 kind = "caps"
-count = "19"
+count = "22"
 
 [[cell]]
 crate = "busbar-unit-verbs"
