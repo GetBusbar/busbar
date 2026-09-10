@@ -532,3 +532,112 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
         "wss://h/p?key=<redacted>&alt=sse"
     );
 }
+
+/// A `streams:` block an operator actually WROTE — the plane's own defaults with one ceiling moved, so
+/// the neutral `PlaneCfg::is_present` answers `true` the way a real block does and `false` the way an
+/// absent one does. The value moved is a ceiling rather than a session field because a ceiling is read
+/// straight back off the built runtime, which is what the second cell below reads it with.
+#[cfg(feature = "test-support")]
+fn a_written_streams_section() -> crate::config::StreamsCfg {
+    crate::config::StreamsCfg {
+        session_max_secs: 120,
+        ..crate::config::StreamsCfg::default()
+    }
+}
+
+/// Build the voice dispatch slot the way `appbuild` does, from the two things the door is a function
+/// of: the plane's OWN parsed section, handed across the seam under the key this plane's declaration
+/// carries, and the deployment's receiving origin.
+#[cfg(feature = "test-support")]
+fn slot_from_declaration(
+    streams: &crate::config::StreamsCfg,
+    public_url: Option<&str>,
+) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    let sections: [(&'static str, &dyn std::any::Any); 1] =
+        [(crate::PLANE_DECL.config_section, streams)];
+    let ctx = BuildCtx {
+        mcp_slot: None,
+        sections: &sections,
+        public_url,
+        prior: None,
+    };
+    voice_build(&ctx)
+}
+
+/// A DECLARED `streams:` with no `public_url` is a BOOT REFUSAL, not seven silent 404s.
+///
+/// The shape this pins used to build no dispatch slot at all: the composition collected no voice
+/// entry, both route loops skipped every arrival spec the plane had installed, and all seven declared
+/// paths fell through to the catch-all — 401 to an anonymous caller, 404 to an admitted one — with
+/// nothing anywhere saying the plane the operator had configured was absent. A declaration that
+/// cannot be served has to say so.
+///
+/// It says so through the composition's own R2 ratchet rather than a refusal of this plane's
+/// invention: the mount CLAIMS its paths and binds NO admission, and a claimed path with no RFC 8707
+/// audience is what `build_dispatch` ends a boot on by name — because serving one would admit a token
+/// minted for any other resource. This cell pins the pair R2 reads, and that the silent-no-mount shape
+/// is gone; the plane also names both keys at ERROR on its way there, since the ratchet's own text
+/// names the rule and not the field an operator has to fix.
+#[cfg(feature = "test-support")]
+#[test]
+fn a_declared_streams_section_with_no_public_url_mounts_and_binds_no_admission() {
+    let written = a_written_streams_section();
+
+    let slot = slot_from_declaration(&written, None).expect(
+        "a written `streams:` DECLARES this plane, so it mounts — the silent no-mount is the defect",
+    );
+    assert!(
+        !voice_claims(slot.as_ref()).is_empty(),
+        "the mount claims the paths it declared; a plane absent from the claim set is a plane the \
+         route table never hears about, which is the 404 this cell exists to keep gone"
+    );
+    assert!(
+        voice_admission(slot.as_ref()).is_none(),
+        "and it binds no audience, because there is no receiving origin to derive one from — the \
+         pair `build_dispatch` refuses a boot on rather than serving an audience-less session door"
+    );
+
+    // The two shapes either side of it are UNMOVED. No declaration and no origin is still no slot —
+    // a 1.5.5-shaped config that never mentioned this plane boots exactly as it did.
+    assert!(
+        slot_from_public_url(None).is_none(),
+        "nothing declared and nothing to front ⇒ no slot, no claim, no admission, as before"
+    );
+    // And an origin still binds the audience, whether or not a block was written.
+    let addressed = slot_from_declaration(&written, Some(PUBLIC_URL))
+        .expect("a public_url ⇒ a dispatch slot, declaration or not");
+    assert!(
+        voice_admission(addressed.as_ref()).is_some(),
+        "an addressed mount binds its audience exactly as it always has"
+    );
+}
+
+/// The posture the slot carries is the section the ROOT parsed — read off this generation's
+/// `BuildCtx`, not off a copy the plane parked in process-global state and read back behind the
+/// composition's back. Two builds in one process, two different postures: a latch would give both the
+/// same one, and the last config parsed would win over the config being built.
+#[cfg(feature = "test-support")]
+#[test]
+fn the_slot_carries_the_section_this_generation_was_built_from() {
+    let written = a_written_streams_section();
+    let generation =
+        slot_from_declaration(&written, Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
+    let mount = generation
+        .downcast_ref::<super::VoiceMount>()
+        .expect("the voice dispatch slot is a VoiceMount");
+    assert_eq!(
+        mount.runtime.session_max_secs, written.session_max_secs,
+        "the ceiling the pump enforces is the one THIS generation's section wrote"
+    );
+
+    let unwritten = slot_from_public_url(Some(PUBLIC_URL)).expect("a public_url ⇒ a dispatch slot");
+    let defaults = unwritten
+        .downcast_ref::<super::VoiceMount>()
+        .expect("the voice dispatch slot is a VoiceMount");
+    assert_eq!(
+        defaults.runtime.session_max_secs,
+        crate::config::StreamsCfg::default().session_max_secs,
+        "and a generation built from no written section reads the plane's own defaults — which is \
+         byte-identically what a deployment that writes nothing already got"
+    );
+}

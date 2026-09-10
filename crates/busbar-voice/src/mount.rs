@@ -354,9 +354,12 @@ const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/v1/realtime";
 /// route handlers open governed sessions from.
 pub struct VoiceMount {
     /// The RFC 8707 audience every inbound voice token must carry — `<public_url>/v1/realtime`.
-    audience: String,
+    /// `None` when the deployment declared this plane but gave it NO RECEIVING ORIGIN to derive an
+    /// audience from: the mount then binds no admission and boot refuses (see [`voice_build`]).
+    audience: Option<String>,
     /// The absolute RFC 9728 metadata URL quoted into a refused caller's `WWW-Authenticate` challenge.
-    resource_metadata: String,
+    /// `None` under exactly the condition [`Self::audience`] is: both are ONE reading of `public_url`.
+    resource_metadata: Option<String>,
     /// The per-generation session runtime every route opens governed sessions from, carrying the
     /// operator's own `streams:` posture and ceilings. Its metering port is only the PRE-HOST default:
     /// each route rebinds the money hop onto the live host lease (`build_runtime_hosted`) once a
@@ -390,11 +393,15 @@ impl VoiceMount {
     /// This plane's admission facts — the audience a token at the voice door must carry and where a
     /// refused caller is sent for one. Both strings are ONE reading of `public_url`, so the audience a
     /// caller is told to ask for and the one busbar demands cannot drift apart (the A2A precedent).
-    fn admission(&self) -> PlaneAdmission {
-        PlaneAdmission {
-            audience: self.audience.clone(),
-            resource_metadata: self.resource_metadata.clone(),
-        }
+    ///
+    /// `None` for a mount with no receiving origin. That is not a quiet degradation: this mount CLAIMS
+    /// paths, and a claimed path with no admission is refused at boot by the composition's own R2
+    /// ratchet rather than served to a token minted for any other resource.
+    fn admission(&self) -> Option<PlaneAdmission> {
+        Some(PlaneAdmission {
+            audience: self.audience.clone()?,
+            resource_metadata: self.resource_metadata.clone()?,
+        })
     }
 }
 
@@ -472,17 +479,47 @@ pub fn voice_start(_ctx: &dyn PlaneBootCtx) -> Result<(), String> {
     Ok(())
 }
 
-/// [`PlaneDecl::build`] — construct the voice DISPATCH slot for one config generation. Reads the
-/// deployment's `public_url` (the receiving origin the plane fronts) and derives the plane's audience
-/// from it. `None` when there is no `public_url`: a deployment with no receiving origin fronts nothing,
-/// claims nothing and admits no one — the A2A delegation-only asymmetry, and what makes the plane bind
-/// no audience rather than mount a door that could only ever refuse.
+/// [`PlaneDecl::build`] — construct the voice DISPATCH slot for one config generation, from the two
+/// things this plane's door is a function of: the section THIS PLANE DECLARES (`streams:`, handed
+/// across [`BuildCtx::section`] by the key the decl carries) and the deployment's `public_url` — the
+/// receiving origin the plane fronts, and the only base an RFC 8707 audience for [`MOUNT_PATH`] can be
+/// derived from.
+///
+/// The three answers, and why none of them is silence:
+///
+/// * **origin present** ⇒ the mount, audience-bound, exactly as before. A deployment that wrote no
+///   `streams:` block still mounts here on the plane's own defaults, which is byte-identically what it
+///   already got.
+/// * **no origin, no declaration** ⇒ `None`. Nothing was declared, so nothing is mounted and nothing
+///   is claimed — the A2A delegation-only asymmetry, unchanged.
+/// * **no origin, but `streams:` DECLARES this plane** ⇒ the mount is built WITHOUT an audience. It
+///   claims its paths and binds no admission, which the composition's R2 ratchet refuses at boot with
+///   a named error. A declaration to serve that cannot be served is a boot refusal; what it must never
+///   be is a plane silently absent from the route table while every path it declared answers 404.
 #[must_use]
 pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
     let streams = crate::config::section_of(ctx);
-    let public = ctx.public_url?;
-    let audience = absolute(public, MOUNT_PATH)?;
-    let resource_metadata = absolute(public, METADATA_PATH)?;
+    let addressed = ctx.public_url.and_then(|public| {
+        Some((
+            absolute(public, MOUNT_PATH)?,
+            absolute(public, METADATA_PATH)?,
+        ))
+    });
+    let (audience, resource_metadata) = match addressed {
+        Some((audience, resource_metadata)) => (Some(audience), Some(resource_metadata)),
+        // The plane was declared and cannot be addressed. Say so in the plane's own words, naming both
+        // keys, because the boot refusal that follows is the composition's and names the ratchet.
+        None if busbar_substrate::plane::config::PlaneCfg::is_present(&streams) => {
+            tracing::error!(
+                section = crate::PLANE_DECL.config_section,
+                "voice: `streams:` declares this plane but no `public_url:` is configured, so no RFC \
+                 8707 audience can be derived for its mount — boot refuses rather than serving an \
+                 audience-less session door or silently mounting nothing"
+            );
+            (None, None)
+        }
+        None => return None,
+    };
     let mount = VoiceMount {
         audience,
         resource_metadata,
@@ -534,7 +571,8 @@ pub fn voice_claims(slot: &dyn Any) -> Vec<(String, &'static str)> {
 /// by construction here: a slot ⇒ a claim AND an admission, never one without the other.
 #[must_use]
 pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
-    slot.downcast_ref::<VoiceMount>().map(VoiceMount::admission)
+    slot.downcast_ref::<VoiceMount>()
+        .and_then(VoiceMount::admission)
 }
 
 /// [`PlaneDecl::routes`] — the voice plane's TWO one-shot HTTP ingress routes, described NEUTRALLY
