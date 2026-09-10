@@ -114,12 +114,12 @@ use crate::plane::store::{decode, PlaneStore, KIND_CALL};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
 
 use crate::audit::journal::NeutralBody;
-use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
 };
+use busbar_unit_audit::legacy::{verify_chain, ChainBreak, Framing};
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the MCP `call` durable stream is registered under and addressed by on
@@ -222,7 +222,7 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 // MCP-only re-export: these tokens name the MCP call stream's outcomes; the A2A relay uses its own
 // subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
 // MCP-only re-export of the hook-gate refusal reason (definition relocated to
-// `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
+// `crate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
 // without reaching into `busbar_core::calllog`); re-exported here so in-core call sites and
 // the legacy `busbar_core::calllog::REASON_HOOK_REJECTED` path are unchanged.
 #[allow(unused_imports)]
@@ -234,7 +234,7 @@ pub use crate::audit::vocab::{
 // D3 Phase-C: the neutral per-call record INPUT is now a substrate POD so a plane builds it without
 // naming `busbar_core::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core
 // call site is unchanged. `seq`/`prev_hash`/`hash` are still NOT on it — they are the chain's own
-// business, supplied by [`crate::audit::Chain::append`].
+// business, supplied by `Chain::append`.
 pub use busbar_substrate::plane::calllog::{CallInput, CallRecorded};
 
 // ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
@@ -255,7 +255,7 @@ const CALL_FRAMING: Framing = Framing::LengthPrefixed;
 const CALL_DIGESTS_SCOPE: bool = true;
 
 /// The MCP call's pre-framed content SUFFIX: the chained fields AFTER the prelude
-/// (`prev_hash`/`principal`/`seq`), framed LengthPrefixed EXACTLY as [`crate::audit::Digest`] frames
+/// (`prev_hash`/`principal`/`seq`), framed LengthPrefixed EXACTLY as `Digest` frames
 /// them, so `frame_prelude(prev_hash, principal, seq) ⧺ suffix` reproduces the call record's digest
 /// byte stream byte-for-byte. Every field is `len:u64-be ⧺ bytes`; a `num`
 /// is its eight big-endian bytes carried as one such length-prefixed field (matching `Digest::push`

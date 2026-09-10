@@ -39,7 +39,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::admin::audit::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::audit::journal::NeutralBody;
-use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
@@ -47,6 +46,7 @@ use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
 };
+use busbar_unit_audit::legacy::{verify_chain, ChainBreak, Framing};
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the admin `audit` durable stream is registered under and addressed by
@@ -481,7 +481,7 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
 /// neutral `plane_records` the durable seam now reads at boot, preserving each record's
 /// seq/prev_hash/hash and digest EXACTLY. The copied [`busbar_api::AuditRecord`] fields reproduce the
 /// seam's neutral body byte-for-byte (the write-side witness proves the seam digest byte-equals the
-/// legacy [`AuditEntry`] digest), so the migrated chain [`crate::audit::verify_chain`]-passes
+/// legacy [`AuditEntry`] digest), so the migrated chain [`verify_chain`]-passes
 /// identically — the migration copies bytes, it never re-seals.
 ///
 /// IDEMPOTENT and SELF-LIMITING:

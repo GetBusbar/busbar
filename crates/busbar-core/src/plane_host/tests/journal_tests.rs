@@ -78,7 +78,7 @@ fn append_two_and_verify(framing: AbiFraming, digests_scope: u8) {
     let map = lock();
     let st = map.get(&scope).expect("scope has rows");
     assert!(
-        crate::audit::verify_chain(&st.rows).is_ok(),
+        verify_chain(&st.rows).is_ok(),
         "the appended chain must verify byte-identically"
     );
     assert_eq!(st.rows.len(), 2);

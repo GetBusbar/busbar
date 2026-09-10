@@ -18,7 +18,7 @@
 //! real request through the real router and then looks.
 
 use super::*;
-use crate::audit::{digest, verify_window, ChainBreakKind};
+use busbar_unit_audit::legacy::{digest, verify_window, ChainBreakKind};
 
 const NOW: u64 = 1_770_000_000;
 

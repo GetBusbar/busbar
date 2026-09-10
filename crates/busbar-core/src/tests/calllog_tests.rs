@@ -24,9 +24,9 @@ use super::super::calllog::{
 // The chain, the verifier and the break vocabulary are CORE's — the neutral `CallRecorded` is the
 // only record type these tests name — so they reach for them where they live rather than through a
 // plane re-export.
-use crate::audit::ChainBreakKind;
 use crate::plane::store::KIND_CALL;
 use busbar_api::{PlaneSelector, Store, StoreResult};
+use busbar_unit_audit::legacy::ChainBreakKind;
 use std::sync::Arc;
 
 /// TEST-ONLY named-vocabulary call-log store extension — the per-call twin of the A2A task test-ext,

@@ -16,8 +16,8 @@
 //! hash         = sha256_hex(digest_input)
 //! ```
 //!
-//! and it is produced through the SAME [`crate::audit::Digest`] mechanism the verifier re-runs, so an
-//! appended chain [`crate::audit::verify_chain`]-passes byte-identically.
+//! and it is produced through the SAME [`Digest`] mechanism the verifier re-runs, so an
+//! appended chain `verify_chain`-passes byte-identically.
 //!
 //! ## The PipeSeparated landmine
 //!
@@ -25,7 +25,7 @@
 //! The prelude always writes `prev_hash` first (even when empty at genesis), so `started` is true by
 //! the time the suffix joins — meaning the plane must pre-frame its suffix WITH its leading `|`
 //! (Option A: `content = "|ts|kind|…"`), and the host does a pure byte concat via
-//! [`crate::audit::Digest::raw`]. If the suffix were framed in a fresh `Digest` (`started == false`)
+//! [`Digest::raw`]. If the suffix were framed in a fresh `Digest` (`started == false`)
 //! the join would be short exactly one `|` and every PipeSeparated chain would report `DigestMismatch`
 //! at the next boot. For [`Framing::LengthPrefixed`] every field self-delimits, so concatenation is
 //! exact with no separator. Both cases are handled uniformly here: the prelude is framed, the suffix is
@@ -34,7 +34,7 @@
 //! ## Durability
 //!
 //! This module holds the per-scope positions and rows in a PROCESS-LOCAL registry and wires
-//! FAITHFULLY to the existing [`crate::audit::Chain::append`] per scope — same seq authority, same
+//! FAITHFULLY to the existing [`Chain::append`] per scope — same seq authority, same
 //! seal/digest — producing byte-identical digests. No persisted byte format is changed. A generic
 //! store-backed `audit::Journal` (host-side seq-authority + per-scope position cache + LRU +
 //! store-resume, naming no plane type) is not yet wired; the two `// durable-store cleave point`
@@ -42,12 +42,14 @@
 
 use super::recover;
 use crate::audit::journal::{Journal, NeutralRecord};
-use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStoreView;
 use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
 use busbar_plugin::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
     ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
+};
+use busbar_unit_audit::legacy::{
+    frame_prelude, verify_chain, Chain, ChainLabels, ChainedRecord, Digest, Framing,
 };
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
@@ -709,7 +711,7 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
             Err(_) => return StatusClass::Fault,
         };
         // Verify before trusting the stored chain (mirrors the RAM `journal_read`).
-        if crate::audit::verify_chain(&rows).is_err() {
+        if verify_chain(&rows).is_err() {
             return StatusClass::Fault;
         }
         let encoded = encode_rows(&rows, from_seq, limit);
@@ -1021,7 +1023,7 @@ fn map_framing(f: RawFraming) -> Option<Framing> {
     })
 }
 
-/// WIRED `journal_append` → [`crate::audit::Chain::append`] for the scope. Frames the prelude in the
+/// WIRED `journal_append` → [`Chain::append`] for the scope. Frames the prelude in the
 /// [`FramingDesc`]'s framing, joins the plane's pre-framed content suffix, and appends to the real
 /// chain, returning the assigned [`Seq`]. Fail-closed: any panic / null POD → [`Seq::NONE`] (the
 /// reserved invalid handle), never a fabricated sequence.
@@ -1075,7 +1077,7 @@ pub(crate) extern "C-unwind" fn journal_append(
     .unwrap_or(Seq::NONE) // fail-closed: a panicked append yields no sequence.
 }
 
-/// WIRED `journal_read` → the real audit read path: [`crate::audit::verify_chain`] over the stored
+/// WIRED `journal_read` → the real audit read path: `verify_chain` over the stored
 /// rows, then the requested window encoded into the caller buffer. Fail-closed: a panic → `Fault`, a
 /// tamper-detected chain → `Fault`, a null query/out → `Refused`, a too-small buffer → `Refused` with
 /// the required length reported in `out_written`.
@@ -1104,7 +1106,7 @@ pub(crate) extern "C-unwind" fn journal_read(
         };
         // The real audit read path VERIFIES the stored chain before it is trusted — a tamper is
         // surfaced as a fault rather than silently handed back (mirrors `Chain::from_persisted`).
-        if crate::audit::verify_chain(&st.rows).is_err() {
+        if verify_chain(&st.rows).is_err() {
             return StatusClass::Fault;
         }
         // Durable-store cleave point: a store-backed Journal would make this window read a range scan.

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/audit/mod.rs` — THE ONE HASH CHAIN.
+//! Tests for THE ONE HASH CHAIN as this crate's three streams use it — the mechanism is
+//! the audit unit's legacy chain, the record types are core's.
 //!
 //! Two jobs, and the second is the one that makes the unification worth doing:
 //!
@@ -23,7 +24,7 @@
 //!    vectors below recompute each formula independently, the old way, and require the new
 //!    mechanism to agree byte for byte.
 
-use super::*;
+use busbar_unit_audit::legacy::*;
 
 use crate::admin::audit::{AuditEntry, AuditInput};
 
@@ -458,7 +459,7 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     let (prev_hash, task_id, seq) = (String::new(), "task-1", 1u64);
     let (ts, kind, context_id, principal, agent_id, state) = (
         1_700_000_000u64,
-        busbar_substrate::audit::vocab::EV_SUBMITTED,
+        crate::audit::vocab::EV_SUBMITTED,
         "ctx-1",
         "vk_alice",
         "planner",

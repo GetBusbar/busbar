@@ -17,9 +17,9 @@
 //!  4. **Tamper is reported, not deleted.** A corrupted stored row restores AND names the break.
 
 use super::{Journal, JournalRecord, NeutralRecord, Restored};
-use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::{decode, encode, PlaneStore};
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_unit_audit::legacy::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use std::sync::{Arc, Mutex};
 
 // ── THE THROWAWAY RECORD ────────────────────────────────────────────────────────────────────────
