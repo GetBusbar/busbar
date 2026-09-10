@@ -30,8 +30,9 @@ use busbar_contract::ids::OpClassId;
 
 use super::{
     cache_hints, initialize_result, instructions, ping_result, prompts_list_result, reads,
-    resource_templates_list_result, resources_list_result, tool_call_result, tools_list_result,
-    Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, PROTOCOL_VERSION, SERVER_NAME,
+    resource_templates_list_result, resources_list_result, task_ack_result, task_get_result,
+    tool_call_result, tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS,
+    PROTOCOL_VERSION, SERVER_NAME,
 };
 use crate::{ops, records};
 
@@ -191,8 +192,8 @@ fn every_answered_class_is_declared_and_read() {
     }
     assert_eq!(
         ANSWERED.len(),
-        7,
-        "the four that were first through the loop, and the three listings beside them"
+        10,
+        "the four that were first through the loop, the three listings, and the three task verbs"
     );
 }
 
@@ -346,4 +347,57 @@ fn an_empty_grant_lists_nothing_rather_than_refusing() {
         resource_templates_list_result(Vec::new())["resourceTemplates"],
         serde_json::json!([])
     );
+}
+
+/// The three task verbs read the ONE task the request names, and read nothing else.
+///
+/// One reading for three classes, and the reading is the READ half of their plans. Two of the three
+/// go on to write the task back, and that write is deliberately not named here: a write leg run from
+/// the root with no key and no body would put an empty record where a caller's task was.
+#[test]
+fn the_task_verbs_read_the_one_task_they_name() {
+    for op in [ops::OP_TASK_GET, ops::OP_TASK_UPDATE, ops::OP_TASK_CANCEL] {
+        assert_eq!(
+            reads(op),
+            Some(Reads::TaskRecord),
+            "{op} names a task and is not read as naming one"
+        );
+    }
+    let named: Vec<(&str, &str)> = Reads::TaskRecord
+        .legs()
+        .iter()
+        .map(|(schema, op)| (schema.as_str(), *op))
+        .collect();
+    assert_eq!(
+        named,
+        vec![(records::SCHEMA_TASK.as_str(), records::OP_GET)]
+    );
+}
+
+/// A task is handed back exactly as the record says it is, with no caching hint on it.
+///
+/// The absence of the hint is the assertion. A task is the one answer of this protocol whose whole
+/// purpose is to have CHANGED since the last time it was asked for, so a hint inviting a client to
+/// keep it would invite the client to poll a value it never re-reads.
+#[test]
+fn a_task_is_handed_back_as_the_record_says_it_is() {
+    let detailed = serde_json::json!({"taskId": "t-1", "status": "working"});
+    let answered = task_get_result(detailed.clone());
+    assert_eq!(answered, detailed);
+    assert!(answered.get("cacheScope").is_none());
+    assert!(answered.get("ttlMs").is_none());
+}
+
+/// Delivering to a task and cancelling one are ACKED with the empty document, and with nothing else.
+///
+/// One function for the two acks, because they are one ack. An ack carrying the task's own
+/// identifier or status would be a second, racing view of the task beside the one `tasks/get`
+/// answers, and a client would have to decide which of the two to believe.
+#[test]
+fn the_task_acks_are_the_empty_document() {
+    assert_eq!(task_ack_result(), serde_json::json!({}));
+    assert!(task_ack_result()
+        .as_object()
+        .expect("an ack is a document")
+        .is_empty());
 }

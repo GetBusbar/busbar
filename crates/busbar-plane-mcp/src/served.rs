@@ -86,6 +86,19 @@ pub enum Reads {
     /// That is where the reach is today, and moving it is a later stage's work, not a leg this
     /// module can invent.
     ServerRegistry,
+    /// The ONE long-running task the request names, as the kernel holds it.
+    ///
+    /// Every task verb of this protocol names its subject in `params.taskId` and answers about that
+    /// subject alone, so the reading is a single `get` and never a scan: a verb that scanned would
+    /// have read every caller's tasks in order to answer about one of them, and a task identifier is
+    /// the only credential a poll presents.
+    ///
+    /// **The write half is deliberately absent.** Delivering to a task and cancelling one both go on
+    /// to put the task back, and that leg carries a record key and a body the answer produces — so
+    /// naming it here would have the root run it with the empty key, which writes an empty record
+    /// over a caller's task. What an answer is COMPOSED FROM is a read; what it goes on to do is the
+    /// plan's, and the plan already has both.
+    TaskRecord,
 }
 
 impl Reads {
@@ -108,6 +121,7 @@ impl Reads {
                 (records::SCHEMA_CATALOGUE, records::OP_GET),
                 (records::SCHEMA_DEMOTION, records::OP_GET),
             ],
+            Reads::TaskRecord => &[(records::SCHEMA_TASK, records::OP_GET)],
         }
     }
 }
@@ -129,6 +143,9 @@ pub fn reads(op: OpClassId) -> Option<Reads> {
         | ops::OP_RESOURCES_LIST
         | ops::OP_RESOURCE_TEMPLATES_LIST => Some(Reads::CatalogueSnapshot),
         ops::OP_TOOL_CALL => Some(Reads::ServerRegistry),
+        // THE THREE TASK VERBS, one reading. All three name one task and answer about that task,
+        // and the two that go on to write it back declare that write on the plan rather than here.
+        ops::OP_TASK_GET | ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => Some(Reads::TaskRecord),
         _ => None,
     }
 }
@@ -152,6 +169,9 @@ pub const ANSWERED: &[OpClassId] = &[
     ops::OP_PROMPTS_LIST,
     ops::OP_RESOURCES_LIST,
     ops::OP_RESOURCE_TEMPLATES_LIST,
+    ops::OP_TASK_GET,
+    ops::OP_TASK_UPDATE,
+    ops::OP_TASK_CANCEL,
 ];
 
 /// Add the caching hints to a result that is CACHEABLE.
@@ -280,6 +300,37 @@ pub fn resource_templates_list_result(templates: Vec<serde_json::Value>) -> serd
 #[must_use]
 pub fn tool_call_result(upstream: serde_json::Value) -> serde_json::Value {
     upstream
+}
+
+/// The `tasks/get` answer: the task, as the record this plane keeps it in says it is.
+///
+/// NOT cached, and the absence of the hint is the declaration rather than an oversight: a task is
+/// the one answer of this protocol whose whole purpose is to have CHANGED since the last time it was
+/// asked for, so a hint inviting a client to keep it would invite it to poll a value it never
+/// re-reads.
+///
+/// There is no companion verb that fetches what a finished task finished WITH, and there must not
+/// be: a client that could observe a task as complete and then fail to fetch its result is a client
+/// that has paid for something it cannot collect. So whatever the task carries travels on this one
+/// answer, which is why the argument is the record's own document and not a status.
+#[must_use]
+pub fn task_get_result(task: serde_json::Value) -> serde_json::Value {
+    task
+}
+
+/// The answer to delivering into a task, and to asking one to stop: the empty document.
+///
+/// ONE function for the two verbs, because it is one ack. An ack carrying the task's own identifier
+/// or its status would be a second, racing view of the task beside the one `tasks/get` answers, and
+/// a client handed two views has to decide which of them to believe — so there is exactly one reader
+/// of a task's state and this is not it.
+///
+/// Distinct from [`ping_result`] despite the same bytes, for the reason every answer in this module
+/// is its own function: they are two facts that happen to agree today, and a shared function would
+/// make one of them change when the other did.
+#[must_use]
+pub fn task_ack_result() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 #[cfg(test)]
