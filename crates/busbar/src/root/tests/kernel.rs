@@ -70,7 +70,9 @@ fn an_apply_moves_the_price_a_data_plane_unit_is_admitted_against() {
         Arc::new(busbar_unit_cost::RateCard::absent(version, 3)),
         busbar_unit_admission::Pricer::flat(3),
     );
-    let admitted = holder.pin_rates().expect("the first apply put rates in place");
+    let admitted = holder
+        .pin_rates()
+        .expect("the first apply put rates in place");
     assert_eq!(admitted.pricer().price_per_request_cents(), 3);
 
     let version = busbar_unit_cost::RateCardVersion::new("root-llm");

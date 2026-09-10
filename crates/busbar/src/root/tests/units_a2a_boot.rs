@@ -104,7 +104,10 @@ fn no_row_names_a_configuration_key_this_grammar_does_not_have() {
 /// arrived at by a composition nobody looked at.
 #[test]
 fn one_agent_kept_off_private_addresses_keeps_the_whole_leg_off_them() {
-    let mixed = [agent("internal", true, false), agent("partner", false, false)];
+    let mixed = [
+        agent("internal", true, false),
+        agent("partner", false, false),
+    ];
     assert!(
         !narrowest_guard(&mixed).allow_private,
         "a leg-wide guard may not be looser than any agent's own configuration"
@@ -193,7 +196,10 @@ fn an_agents_address_is_reduced_to_its_host() {
         ("https://agent.example.com", "agent.example.com"),
         ("https://agent.example.com/", "agent.example.com"),
         ("https://agent.example.com:8443", "agent.example.com"),
-        ("https://agent.example.com:8443/a2a/rpc", "agent.example.com"),
+        (
+            "https://agent.example.com:8443/a2a/rpc",
+            "agent.example.com",
+        ),
         ("http://user:pass@agent.example.com/x", "agent.example.com"),
         ("agent.example.com", "agent.example.com"),
     ] {
@@ -209,11 +215,9 @@ fn an_agents_address_is_reduced_to_its_host() {
 #[test]
 fn a_deployment_that_named_no_position_gets_the_door_it_configured() {
     assert!(chain_positions(&[]).is_empty());
-    assert!(
-        data_chain(&[])
-            .expect("naming nothing is a posture, not a missing source")
-            .is_open()
-    );
+    assert!(data_chain(&[])
+        .expect("naming nothing is a posture, not a missing source")
+        .is_open());
 }
 
 /// **And every named position travels to the builder with BOTH halves.**

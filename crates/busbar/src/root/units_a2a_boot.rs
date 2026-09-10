@@ -175,8 +175,7 @@ pub struct DeclaredAgent {
 /// A section that is not this plane's answers with nothing — the honest reading of a deployment that
 /// has no `agents:` block at all, which is the same deployment the legacy plugin mounts no route for.
 fn declared_agents(section: &dyn std::any::Any) -> Vec<DeclaredAgent> {
-    let Some(agents) = section.downcast_ref::<busbar_a2a::a2a::config::AgentsCfg>()
-    else {
+    let Some(agents) = section.downcast_ref::<busbar_a2a::a2a::config::AgentsCfg>() else {
         return Vec::new();
     };
     agents
@@ -459,9 +458,8 @@ impl std::fmt::Debug for A2aConfigured {
 /// composition cannot honour, or this plane's own declared surface does not check. Each refusal is
 /// the operator-facing sentence of the thing that refused, never a summary written here.
 pub fn read(cfg: &config::RootCfg) -> Result<Option<A2aConfigured>, String> {
-    let chain = Arc::new(
-        PlaneChain::over(&busbar_plane_a2a::surface::SURFACE).map_err(|e| e.to_string())?,
-    );
+    let chain =
+        Arc::new(PlaneChain::over(&busbar_plane_a2a::surface::SURFACE).map_err(|e| e.to_string())?);
     // NO DECLARED IDENTITY IS NO RECEIVING SIDE, and it is the plane's own rule rather than this
     // file's: without a `public_url:` there is no canonical URI to bind an audience to, so the
     // plugin serves no route and this composition mounts nothing. Reading a bearer with no audience
@@ -480,10 +478,7 @@ pub fn read(cfg: &config::RootCfg) -> Result<Option<A2aConfigured>, String> {
     let auth = data_chain(
         &positions
             .iter()
-            .map(|(provider, module)| ChainPosition {
-                provider,
-                module,
-            })
+            .map(|(provider, module)| ChainPosition { provider, module })
             .collect::<Vec<_>>(),
     )
     .map_err(|e| e.to_string())?;

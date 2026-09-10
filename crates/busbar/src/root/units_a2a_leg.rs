@@ -69,9 +69,7 @@ use crate::root::durability::Durability;
 use crate::root::kernel::auth_bindings::AuthBindings;
 use crate::root::policy::{MeterPolicyHandle, ScopePolicy};
 use crate::root::registrations::{KindRules, Kinds, NetSeam, Pools};
-use crate::root::units_a2a::{
-    A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES,
-};
+use crate::root::units_a2a::{A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE FIELD → SOURCE TABLE

@@ -290,7 +290,10 @@ fn a_data_plane_unit_is_not_an_administrative_one() {
         (ctx.admin_listener, ctx.kernel_verb_only, ctx.origin)
     });
     assert!(!admin, "a data listener is not the administrative one");
-    assert!(!verb_only, "a unit of an ordinary plane is not a kernel verb");
+    assert!(
+        !verb_only,
+        "a unit of an ordinary plane is not a kernel verb"
+    );
     assert_eq!(origin, busbar_caps::OriginKind::Client);
 }
 
