@@ -751,7 +751,8 @@ land_shard_request() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
   t0="$(date +%s)"
   while :; do
     all=1; k=2
-    while [ "$k" -le "$n" ]; do [ -f "$dir/shard-$k.rc" ] || all=0; k=$((k + 1)); done
+    # -s, not -f: a .rc that exists and is still empty is a delivery in progress, not a verdict.
+    while [ "$k" -le "$n" ]; do [ -s "$dir/shard-$k.rc" ] || all=0; k=$((k + 1)); done
     [ "$all" = 1 ] && break
     [ $(( $(date +%s) - t0 )) -lt "$deadline" ] || {
       echo "land.sh: $g self-test: waited ${deadline}s for the siblings' verdicts; what arrived is what will be judged" >&2; break; }
@@ -1712,7 +1713,7 @@ land_selftest() {
     # landing, whose environment carries LAND_REMOTE_INNER=1; inherited, it turned "FANOUT without
     # INNER is refused" into a request arm that timed out — found by the box, not by the laptop.
     ( unset LAND_REMOTE_INNER LAND_SHARD_FANOUT
-      export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=3 LAND_SHARD_POLL_SECS=1
+      export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=4 LAND_SHARD_POLL_SECS=1
       [ -n "$2" ] && export LAND_SHARD_FANOUT="$2"; [ -n "$3" ] && export LAND_REMOTE_INNER=1
       eval "land_shard_publish() { return $5; }"
       # The leg names its own directory (land_shard_dir, sequence 1 of this subshell); the stand-in
@@ -1720,7 +1721,10 @@ land_selftest() {
       LAND_SHARD_SEQ=0
       local legdir="$here/target/land-shards-kind-isolation-$stamp-1"
       if [ "$4" = 1 ]; then
-        ( sleep 1; k=2; while [ "$k" -le "$1" ]; do printf '  shard %s/%s: %s of 152 case(s)\n' "$k" "$1" "$((152 / $1))" >"$legdir/shard-$k.log"; echo 0 >"$legdir/shard-$k.rc"; k=$((k + 1)); done ) &
+        # As the real laptop does it, with the race the first landing hit: the .rc EXISTS empty for a
+        # second before its verdict is in it. The wait must not end on the empty file.
+        ( sleep 1; k=2; while [ "$k" -le "$1" ]; do printf '  shard %s/%s: %s of 152 case(s)\n' "$k" "$1" "$((152 / $1))" >"$legdir/shard-$k.log"; : >"$legdir/shard-$k.rc"; k=$((k + 1)); done
+          sleep 1; k=2; while [ "$k" -le "$1" ]; do echo 0 >"$legdir/shard-$k.rc"; k=$((k + 1)); done ) &
       fi
       land_selftest_leg kind-isolation "$out/leg.log" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 )
   }
@@ -1739,6 +1743,36 @@ land_selftest() {
   _st "req: sequential when no laptop serves (INNER, no FANOUT)" 0 _req 2 "" 1 0 0
   _stgrep "req: ...and says it ran sequentially"     "$ST_OUT" 'sequentially'
   rm -rf "$here"/target/land-shards-kind-isolation-*
+
+  echo "land.sh selftest: the integration base (the box judges against the sha the laptop resolved)"
+  local brepo="$root/base-repo"; mkdir -p "$brepo" "$root/nohooks"; git -C "$brepo" init -q; git -C "$brepo" config commit.gpgsign false
+  git -C "$brepo" config core.hooksPath "$root/nohooks"
+  git -C "$brepo" config user.email s@t; git -C "$brepo" config user.name s; git -C "$brepo" commit -q --allow-empty -m one
+  local bsha; bsha="$(git -C "$brepo" rev-parse HEAD)"
+  git -C "$brepo" update-ref refs/remotes/origin/integration/oracle-phase0 "$bsha"
+  _bc() { ( here="$brepo"; export LAND_BASE_SHA="$1"; land_base_check ); }
+  _st "base: the laptop's sha, as the box holds it, is green" 0 _bc "$bsha"
+  _st "base: a box holding another sha is RED"               1 _bc "$(printf '%040d' 1)"
+  _stgrep "base: ...and names both"                         "$ST_OUT" 'refusing to judge the ceilings against a tree nobody chose'
+  _st "base: no LAND_BASE_SHA (off the box) checks nothing"  0 bash -c 'unset LAND_BASE_SHA; LAND_LIB_ONLY=1 . "$1"; land_base_check' _ "$0"
+  git -C "$brepo" update-ref -d refs/remotes/origin/integration/oracle-phase0
+  _st "base: a ref that does not resolve is RED"             1 _bc "$bsha"
+
+  echo "land.sh selftest: only the runner lands while landq4.sh holds its lock"
+  local lk="$root/landq4.lock"
+  _held() { ( export LANDQ_LOCK="$lk"; unset LANDQ_RUNNER_PID; [ -n "${1:-}" ] && export LANDQ_RUNNER_PID="$1"; land_runner_holds_lock ); }
+  printf '%s\n' "$$" >"$lk"
+  _st "lock: a live holder is a holder"            0 _held
+  _stgrep "lock: ...and is named"                  "$ST_OUT" "^$$\$"
+  _st "lock: the runner itself is exempt"          1 _held "$$"
+  printf '%s\n' 999999999 >"$lk"
+  _st "lock: a dead pid holds nobody"              1 _held
+  rm -f "$lk"
+  _st "lock: no lock file holds nobody"            1 _held
+  printf '%s\n' "$$" >"$lk"
+  _st "lock: --remote <sha> while held is REFUSED (rc 2)" 2 env LANDQ_LOCK="$lk" LAND_SELFTEST_ROOT="$repo" bash "$0" --remote box-x deadbeefcafe
+  _stgrep "lock: ...and says who holds it"          "$ST_OUT" "landq4.sh \(pid $$\) holds the landing lock"
+  rm -f "$lk"
 
   # THE LEG ITSELF, ON A REAL GATE. Everything above tests the arithmetic over fabricated logs; this
   # runs `cargo xtask gate <g> --selftest --shard k/n` for real and asserts the leg's own verdict,
@@ -2208,6 +2242,36 @@ EOF
   return 1
 }
 
+# THE INTEGRATION BASE, CHECKED. Under LAND_BASE_SHA (set by land-remote.sh on the box) the ref the
+# construction gate reads — LAND_BASE_REF, default the origin name of the integration branch — must
+# resolve to exactly that sha. Off the box (no LAND_BASE_SHA) there is nothing to check: the laptop's
+# own ref is the laptop's own business.
+land_base_check() {
+  [ -n "${LAND_BASE_SHA:-}" ] || return 0
+  local ref="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}" have
+  have="$(git -C "$here" rev-parse --verify --quiet "$ref")" || {
+    echo "land.sh: RED — the integration base $ref does not resolve here; the ceilings would be judged against HEAD~1" >&2; return 1; }
+  [ "$have" = "$LAND_BASE_SHA" ] || {
+    echo "land.sh: RED — the integration base $ref is $(printf '%.9s' "$have") here and $(printf '%.9s' "$LAND_BASE_SHA") on the laptop; refusing to judge the ceilings against a tree nobody chose" >&2; return 1; }
+  echo "land.sh: integration base $ref = $(printf '%.9s' "$have"), as the laptop resolved it"
+  return 0
+}
+
+# ONLY THE RUNNER LANDS. While scripts/landq4.sh holds its lock — a host-wide file naming its pid —
+# a `--remote` landing that is not a pre-proof is refused: two engines landing on one fleet from one
+# host is two tips racing for one integration branch. A slot proves its own branch with --preprove,
+# which publishes nothing. The runner is exempt by its own pid (LANDQ_RUNNER_PID, exported by
+# landq4.sh into everything it launches); a lock whose pid is dead is stale and holds nobody.
+land_runner_holds_lock() { # prints the holder's pid on yes
+  local lock="${LANDQ_LOCK:-$HOME/.busbar-landq4.lock}" pid
+  [ -f "$lock" ] || return 1
+  pid="$(head -n1 "$lock" 2>/dev/null | tr -d '[:space:]')"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$pid" != "${LANDQ_RUNNER_PID:-}" ] || return 1
+  printf '%s\n' "$pid"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -2243,6 +2307,10 @@ land_print_posture "$P_to"
 # land_parse_args, which would reset `P_preprove` to 0; the mode is a property of the RUN.
 [ "$P_preprove" = 1 ] && LAND_PREPROVE=1
 if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
+  if [ "${LAND_PREPROVE:-}" != 1 ] && holder="$(land_runner_holds_lock)"; then
+    echo "land.sh: REFUSED — landq4.sh (pid $holder) holds the landing lock; only the runner lands. Prove this branch with --preprove, which publishes nothing." >&2
+    exit 2
+  fi
   # THE PRE-PROVE MODE TRAVELS ON THE ARGV, because the environment does not travel at all: see
   # `--preprove` in land_parse_args. `LAND_PREPROVE=1 land.sh --remote <host>` used to prove on the
   # box in ORDINARY mode and fast-forward this tree onto the result.
@@ -2255,6 +2323,12 @@ if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1
 fi
 
 if [ "$P_selftest" = 1 ]; then land_selftest; exit $?; fi
+
+# THE BASE THE CEILINGS ARE JUDGED AGAINST IS THE ONE THE LAPTOP RESOLVED. scripts/land-remote.sh
+# pushes the integration branch as this repository holds it and tells this copy the sha; a box
+# whose ref says otherwise judges against a tree nobody chose. Checked here as well as by the
+# transport, because this is the process that runs the gate.
+land_base_check || exit 2
 
 if [ -n "$P_batch" ]; then
   land_run_batch "$P_batch"
