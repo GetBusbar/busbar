@@ -1195,7 +1195,7 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     }
     let now = cx.read(LEDGER).unwrap_or_default();
     let short = &base.commit[..8.min(base.commit.len())];
-    let (announced_at_base, cells_at_base, minted_at_base) = super::ledger_at(&base.registry);
+    let at_base = super::ledger_at(&base.registry);
 
     let mut out = Vec::new();
 
@@ -1206,7 +1206,7 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     // nothing at all, so every row it was written for stays `minted-row`.
     let mut admits: BTreeMap<&str, &super::Minted> = BTreeMap::new();
     for m in &reg.minted {
-        if !announced_at_base.contains_key(&m.krate) {
+        if !at_base.announced.contains_key(&m.krate) {
             out.push(format!(
                 "unannounced-mint\t[[minted]] {}\t`{}` is in no `[[announced]]` row of {LEDGER} at \
                  the merge-base {short}, so this branch is minting rows for a crate whose landing \
@@ -1217,7 +1217,7 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
             ));
             continue;
         }
-        if minted_at_base.contains(&m.krate) {
+        if at_base.minted.contains(&m.krate) {
             out.push(format!(
                 "second-mint\t[[minted]] {}\tthe merge-base {short} already carries a `[[minted]]` \
                  row for `{}`: its row set was minted once, at {}, and is HISTORY now, so this row \
@@ -1235,12 +1235,16 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     // the kind the BASE announced it as — never through a kind this branch assigned it.
     let mut minting_kind: BTreeMap<&str, &str> = BTreeMap::new();
     for name in admits.keys() {
-        if let Some(kind) = announced_at_base.get(*name) {
+        if let Some(kind) = at_base.announced.get(*name) {
             minting_kind.insert(kind.as_str(), name);
         }
     }
 
     // ── THE MINTED ROWS THEMSELVES ──────────────────────────────────────────────────────────────
+    //
+    // old name -> new name, the direction the BASE's keys have to be read in.
+    let renamed_to: BTreeMap<&str, &str> =
+        reg.base_names().into_iter().map(|(k, v)| (v, k)).collect();
     let mut minted_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (table, ids, what) in [
         (
@@ -1259,7 +1263,8 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
             "an excuse for the two scanners reading one cell differently",
         ),
     ] {
-        let was = super::base::row_keys(&base.registry, table, ids);
+        // A RENAMED CRATE'S ROWS ARE NOT MINTED ROWS — the base carries them under the OLD name.
+        let was = super::base::row_keys_as_now(&base.registry, table, ids, &renamed_to);
         // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A CEILING RISING.
         //
         // Every key here is `<row> \u{d7} <column>` — a crate and the kind it names, or an edge's two
@@ -1359,7 +1364,8 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         };
         for (krate, kind) in minted {
             let n = listed.get(&(krate.as_str(), kind.as_str())).copied();
-            let ceiling = cells_at_base
+            let ceiling = at_base
+                .cells
                 .get(&(from.to_string(), kind.clone()))
                 .copied()
                 .unwrap_or(0);
