@@ -21,7 +21,6 @@
 mod auth;
 pub mod durable;
 mod secret;
-pub mod usage_migration;
 
 pub use auth::{
     constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, CallerToken,

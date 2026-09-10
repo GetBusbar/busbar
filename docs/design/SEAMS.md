@@ -210,7 +210,6 @@ SDK / packaging seams: `plugin-sdk` `SecretHandle` `crates/plugin-sdk/src/lib.rs
 | A9 | `Signal` / `SignalBag` | in | `crates/api/src/signal.rs:44` / `:188` | breaker classify | — | 1.6.0 seam (value type). **Not OS signals** — these are upstream failure signals. |
 | A10 | `durable::write / write_with / remove / create_dir_all` | out | `crates/api/src/durable.rs:67,160,123,136` | overlay persist, keyset | std::fs | 1.6.0 seam (free fns) |
 | A11 | `Operation` / `OpShape` | in | `crates/api/src/operation.rs:192` / `:92` | dispatch | planes | legacy port |
-| A12 | `usage_migration::fold_v1_*` | — | `crates/api/src/usage_migration.rs:103,121` | migration | — | legacy port |
 
 `crates/api` is named `busbar-api` and depends only on serde/serde_json/async-trait/sha2/hex/zeroize
 plus `busbar-secret-grammar`.

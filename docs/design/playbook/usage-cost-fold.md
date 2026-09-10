@@ -163,8 +163,8 @@ label, unit, or constant is added.
   voice-only label — forbidden here.
 - **New reserved unit / `UsageComponent` variant** (e.g. `audio_input`): changes
   `RESERVED_UNITS: [&str; 4]` (`api/src/store.rs:572`), hence `reserved_nanos`' iteration, every
-  `price`/`derive_spend` byte, the store's `UNIT_*` schema, and the usage-migration fold
-  (`api/src/usage_migration.rs`). A schema + golden break. Separate rates come from separate
+  `price`/`derive_spend` byte, and the store's `UNIT_*` schema. A schema + golden break.
+  Separate rates come from separate
   rate-card MODEL entries, never a new unit.
 - **New nano constant** (a voice-only `NANOS_PER_*`): all money is already nanodollars end to end
   (`CostAmount`, `NANOS_PER_CENT`/`NANOS_PER_MICRO`, `cost.rs:57-61`). A second scale factor is a
