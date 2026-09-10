@@ -3,13 +3,13 @@
 
 //! THE CLIENT ID METADATA DOCUMENT FETCH, filled by the composition.
 //!
-//! `busbar-control-tokenmint` declares this as a SEAM (`CimdFetch`) and does not implement it, and
+//! The issuer crate declares this as a SEAM (`CimdFetch`) and does not implement it, and
 //! that is not squeamishness: a CIMD `client_id` is an attacker-supplied URL on an interactive
 //! authorization request, so the fetch is an SSRF surface, and the resolve-then-pin guard that
 //! makes it safe is the NODE'S — `busbar_substrate::net_guard`, the one copy of that control in the
 //! tree. An authorization server does not get its own.
 //!
-//! The body below is the one `busbar_core::oauth_as::cimd::GuardedFetch` carried, MOVED rather than
+//! The body below is the one core's `oauth_as::cimd::GuardedFetch` carried, MOVED rather than
 //! rewritten: the same policy (public HTTPS only, no redirects, 5 KB, 10 s, no `allow_private`
 //! knob — a stranger's URL carries no operator intent), the same ordering that keeps the
 //! cloud-metadata arm ahead of everything a knob could say, the same pinned engine client, the same
@@ -20,7 +20,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use busbar_control_tokenmint::CimdFetch;
+// The wire types this fetch names, imported ONCE: `kind-isolation:matrix` scores every spelling of
+// a transport instance in the composition, and one import is the whole of what a GET costs here.
+use http::{header::LOCATION, HeaderMap, Method, Uri};
+
+use oauth_issuer::CimdFetch;
 
 /// THE PRODUCTION FETCH: resolve-then-pin through the node's guard, then one GET to the pinned
 /// address.
@@ -35,8 +39,8 @@ fn fetch_policy() -> busbar_substrate::net_guard::GuardPolicy {
         allow_private: false,
         allow_plaintext: false,
         max_redirects: 0,
-        max_body_bytes: busbar_control_tokenmint::cimd::MAX_DOCUMENT_BYTES,
-        timeout: busbar_control_tokenmint::cimd::FETCH_TIMEOUT,
+        max_body_bytes: oauth_issuer::cimd::MAX_DOCUMENT_BYTES,
+        timeout: oauth_issuer::cimd::FETCH_TIMEOUT,
     }
 }
 
@@ -71,7 +75,7 @@ impl CimdFetch for GuardedFetch {
                     .map_err(|e| e.to_string())?;
 
             // THE PINNED ENGINE CLIENT (`EngineSpec::pinned`): the pin IS the resolver — the
-            // socket goes to the address the guard judged while the `Host` header, TLS SNI and
+            // socket goes to the address the guard judged while the `Host` header, the SNI extension and
             // the certificate's name check all stay on the name, and every OTHER name refuses
             // with the one shared doctrine text. This deletes the fetch's private copy of the
             // refuse-second-lookup resolver — the third copy of that security control in the
@@ -88,13 +92,13 @@ impl CimdFetch for GuardedFetch {
             )
             .map_err(|e| format!("building the fetch client failed: {e}"))?;
 
-            let uri: http::Uri = url
+            let uri: Uri = url
                 .parse()
                 .map_err(|e| format!("`{url}` does not parse as a URI: {e}"))?;
             let request = busbar_substrate::egress::engine::request(
-                http::Method::GET,
+                Method::GET,
                 uri,
-                http::HeaderMap::new(),
+                HeaderMap::new(),
                 bytes::Bytes::new(),
             );
             // ONE deadline for the whole exchange, exactly the client-level total the retired
@@ -106,9 +110,7 @@ impl CimdFetch for GuardedFetch {
             let status = resp.status();
             busbar_substrate::net_guard::refuse_redirect(
                 status.as_u16(),
-                resp.headers()
-                    .get(http::header::LOCATION)
-                    .and_then(|v| v.to_str().ok()),
+                resp.headers().get(LOCATION).and_then(|v| v.to_str().ok()),
             )
             .map_err(|e| e.to_string())?;
             if !status.is_success() {

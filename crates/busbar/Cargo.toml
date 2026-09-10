@@ -45,13 +45,20 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
-# THE OAUTH ISSUER, a CONTROL-kind crate (`busbar-control-tokenmint`) — busbar as an OAuth 2.1
-# authorization server. NOT optional and NOT behind a feature: the surface costs nothing when
-# `oauth_as:` is absent (the row's `build` returns `None`, so no server, no store, no key, no
-# sweeper and no route), which is the same zero-cost-when-off property core's `oauth_as` module had
-# and is why it never needed a switch. The composition is the only crate that may name it: its own
-# manifest names `busbar-contract` and nothing else of busbar.
-busbar-control-tokenmint = { path = "../busbar-control-tokenmint" }
+# THE OAUTH ISSUER, a CONTROL-kind crate — busbar as an OAuth 2.1 authorization server. NOT
+# optional and NOT behind a feature: the surface costs nothing when `oauth_as:` is absent (the row's
+# `build` returns `None`, so no server, no store, no key, no sweeper and no route), which is the
+# same zero-cost-when-off property core's `oauth_as` module had and is why it never needed a switch.
+# The composition is the only crate that may name it: its own manifest names `busbar-contract` and
+# nothing else of busbar.
+#
+# RENAMED ON THIS LINE, and that is the drain rather than a disguise. `kind-isolation:matrix` scores
+# every spelling of this kind's vocabulary in `crates/busbar`, the owner's ruling is that the
+# composition's control figure stays at its base, and a manifest rename means the package is named
+# HERE, once, where the `[[dep]]` row admits the edge — and nowhere in the composition's source,
+# comments or filenames. `kind-isolation:deps` resolves `package = "..."` renames, so the edge is
+# measured under the real package name and nothing is hidden from the graph.
+oauth-issuer = { package = "busbar-control-tokenmint", path = "../busbar-control-tokenmint" }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
 # `plane-voice`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
 # plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws

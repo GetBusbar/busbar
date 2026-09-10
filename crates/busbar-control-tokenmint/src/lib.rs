@@ -31,12 +31,12 @@
 //!
 //! ## It costs nothing when it is not configured
 //!
-//! The composition holds an `Option<`[`TokenMint`]`>`: `None` constructs no server, allocates
+//! The composition holds an `Option<`[`TokenIssuer`]`>`: `None` constructs no server, allocates
 //! no store, generates or reads no signing key, spawns no sweeper and mounts no route.
 //!
 //! ## The three registration mechanisms: ALL THREE ON, NO TOGGLES
 //!
-//! Pre-registration ([`TokenMint::server`]), RFC 7591 DCR ([`policy`], confined by a ceiling
+//! Pre-registration ([`TokenIssuer::server`]), RFC 7591 DCR ([`policy`], confined by a ceiling
 //! the registrant cannot move) and Client ID Metadata Documents ([`cimd`]) are on whenever the
 //! crate is. The CIMD FETCH is not this crate's: the URL is attacker-supplied and the
 //! resolve-then-pin guard that makes it safe belongs to the node, so the fetch is a seam
@@ -67,4 +67,4 @@ pub use answer::{Request, Response};
 pub use catalog::catalog;
 pub use cimd::CimdFetch;
 pub use config::{Identity, Section};
-pub use surface::{spawn_sweeper, SweepFault, TokenMint};
+pub use surface::{spawn_sweeper, SweepFault, TokenIssuer};

@@ -64,15 +64,15 @@ pub struct BuildCtx<'a> {
     /// values the composition ALREADY validated and derived at config resolution, handed across
     /// TYPE-ERASED so this seam names no row's configuration type and carries no row's vocabulary.
     ///
-    /// The two section slots above (`mcp_slot`, `agent_defs`) are each named for the one row that
-    /// reads them, which is why a third row needed a third field. This one is not: it is keyed by
-    /// nothing and named for nothing, so the row whose `build` reads it is the row that knows what
-    /// it put here, and it downcasts inside its own module exactly as the A2A `build` downcasts
-    /// `agent_defs`. A row that configures no section ignores it.
+    /// The two section slots above are each named for the one row that reads them, which is why a
+    /// third row needed a third field. This one is not: it is keyed by nothing and named for
+    /// nothing, so the row whose `build` reads it is the row that knows what it put here, and it
+    /// downcasts inside its own module exactly as the sibling slot above is downcast by the one row
+    /// that filled it. A row that configures no section ignores it.
     pub resolved_section: Option<&'a dyn std::any::Any>,
     /// THE SECRET MATERIAL [`Self::resolved_section`]'s section referenced, ALREADY RESOLVED by the
-    /// composition against the deployment's secret provider — never a `SecretRef`, never a provider
-    /// handle, and never a type a row could use to resolve a SECOND secret.
+    /// composition against the deployment's secret provider — never a reference type, never a
+    /// provider handle, and never a type a row could use to resolve a SECOND secret.
     ///
     /// A `&str` rather than a resolver, deliberately: the one place that reads operator secrets
     /// stays the composition's config layer, and a row that signs with this cannot reach anything
