@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "c250d49d0af6896a6465ca4d6f1c7b59af245d96e87ce869c812cdd9eaac71ac",
+  "harness_rev": "b3283d4ef56e4229fb2255169811243dc931cdcc1e104ab3401148217e6d784f",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -89,6 +89,11 @@
         "from": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
         "to": "c250d49d0af6896a6465ca4d6f1c7b59af245d96e87ce869c812cdd9eaac71ac",
         "why": "2026-09-10 documentation-only: accepted-differences.json is a harness_rev file, and F-011b (the openapi.json document) gained `description_corrections` naming ONE leaf: `NamedDefView.max_admin_scope`, whose PUBLISHED text offers a `none` ceiling token `Scope::parse_ceiling` has never accepted and cannot. Four sibling leaves on the same document were fixed in the TREE rather than registered; a sixth (the overlay-reset 409 description) is left RED and named for the owner, because it can be neither frozen (the v1 router panics on an emission the taxonomy does not declare) nor addressed (the tool's pointer resolver splits on `/`, so no leaf under `paths` is nameable). `description_corrections` forgives only the pointers it names, so the rest of the document is still proven a superset. No cell re-recorded and no cell byte changed."
+      },
+      {
+        "from": "c250d49d0af6896a6465ca4d6f1c7b59af245d96e87ce869c812cdd9eaac71ac",
+        "to": "b3283d4ef56e4229fb2255169811243dc931cdcc1e104ab3401148217e6d784f",
+        "why": "2026-09-10 documentation-only: pin moved to busbar-oracle v0.3.11 (JSON pointers are RFC 6901 in both directions, so a leaf under an OpenAPI `paths` key is addressable at all; the seam is asserted by the tool's own self-test; /v1/responses streams on the fault verbs) and the register named the overlay-reset 409 leaf and gained M-2b; no cell re-recorded, no cells/*.json byte changed"
       }
     ]
   },
