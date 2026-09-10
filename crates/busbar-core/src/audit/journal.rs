@@ -539,8 +539,8 @@ impl<R: NeutralRecord> Journal<R> {
                     Ok(r) => records.push(r),
                     Err(e) => {
                         out.unreadable += 1;
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
+                        busbar_substrate::diag_error!(
+                            busbar_substrate::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
                             scope = %scope,
                             error = %e,
                             "a persisted journal record could NOT be reframed on restore; it is being \

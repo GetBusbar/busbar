@@ -11,13 +11,13 @@ use axum::{
 };
 
 use crate::config::AuthCfg;
-use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED,
-    ADMIN_FORBIDDEN_SUPPRESSED, ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED,
-    AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED, AUTH_OFFLOAD_SATURATED,
-    KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
-};
 use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
+use busbar_substrate::diagnostics::{
+    ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED, ADMIN_FORBIDDEN_SUPPRESSED,
+    ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED, AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED,
+    AUTH_OFFLOAD_SATURATED, KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
+};
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 /// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
 /// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts

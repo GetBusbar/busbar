@@ -4,9 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
-use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
+    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
