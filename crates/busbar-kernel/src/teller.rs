@@ -587,9 +587,7 @@ pub trait Units {
     /// The default drops it, which is what every plane did before there was a seam to hand it to. A
     /// plane whose book is posted by the caller has to implement this or its abandoned units post
     /// nowhere.
-    fn abandoned(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, ended: Ended) {
-        let _ = (token, ctx, ended);
-    }
+    fn abandoned(&self, _token: &UnitToken<Audit>, _ctx: &UnitCtx, _ended: Ended) {}
 }
 
 /// The Route step, as the loop AWAITS it.
@@ -756,47 +754,16 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // The door's sizing is read and discarded: whatever a real door would reserve for an
         // established caller, a handshake reaches no destination and holds nothing. What the door
         // is asked for is its REFUSAL, not its reservation.
-        .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => {
-                let anonymous = PrincipalId::anonymous();
-                units
-                    .verify(
-                        &UnitToken::<Verify>::mint(seal),
-                        &TrustToken::mint(seal),
-                        ctx,
-                        &anonymous,
-                    )
-                    .into_result(seal)
-                    .and_then(|destinations: Vec<VerifiedDestination>| {
-                        units
-                            .approve(
-                                &UnitToken::<Approve>::mint(seal),
-                                ctx,
-                                &anonymous,
-                                &destinations,
-                            )
-                            .into_result(seal)
-                            .map(|_| destinations)
-                    })
-                    .and_then(|destinations: Vec<VerifiedDestination>| {
-                        // A round takes no lease and the slip it names its groups on goes nowhere:
-                        // there is no admitted unit here to count, so nothing is drawn and there is
-                        // nothing for either of the unit's two ends to give back.
-                        let groups = GroupLeaseSlip::new();
-                        units
-                            .admit(
-                                &UnitToken::<Admit>::mint(seal),
-                                &AdmitToken::<Admit>::mint(seal),
-                                ctx,
-                                &anonymous,
-                                &destinations,
-                                &groups,
-                            )
-                            .into_result(seal)
-                    })
-                    .map(|_| Admission::ZeroHold)
-            }
-            Authenticated::Principal(principal) => units
+        .and_then(|authenticated| {
+            // ONE SUBJECT, ONE CHAIN. A challenge round and an established caller differ in WHO the
+            // steps run for and in what the door's answer is worth — not in which steps run — so the
+            // subject is resolved first and the three steps are written once. A round's subject is
+            // the arrival principal the design names: anonymous, with no bucket.
+            let (principal, challenge) = match authenticated {
+                Authenticated::Challenge(_) => (PrincipalId::anonymous(), true),
+                Authenticated::Principal(principal) => (principal, false),
+            };
+            units
                 .verify(
                     &UnitToken::<Verify>::mint(seal),
                     &TrustToken::mint(seal),
@@ -804,48 +771,49 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     &principal,
                 )
                 .into_result(seal)
-                .map(|destinations| (principal, destinations))
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
-                            .approve(
-                                &UnitToken::<Approve>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                            )
-                            .into_result(seal)
-                            .map(|_| (principal, destinations))
-                    },
-                )
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        // The slip the door names its capped groups on, for the length of the one
-                        // call. It lives here rather than on the unit's context because it is not
-                        // something the unit IS: it is what the door said, read once, on the next
-                        // line, by the draw.
-                        let groups = GroupLeaseSlip::new();
-                        let admitted = units
-                            .admit(
-                                &UnitToken::<Admit>::mint(seal),
-                                &AdmitToken::<Admit>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                                &groups,
-                            )
-                            .into_result(seal);
+                .and_then(|destinations: Vec<VerifiedDestination>| {
+                    units
+                        .approve(
+                            &UnitToken::<Approve>::mint(seal),
+                            ctx,
+                            &principal,
+                            &destinations,
+                        )
+                        .into_result(seal)
+                        .map(|_| destinations)
+                })
+                .and_then(|destinations: Vec<VerifiedDestination>| {
+                    // The slip the door names its capped groups on, for the length of the one call.
+                    // It lives here rather than on the unit's context because it is not something
+                    // the unit IS: it is what the door said, read once, on the next line, by the
+                    // draw. A round's slip goes nowhere: nothing is admitted, so nothing is drawn
+                    // and there is nothing for either of its two ends to give back.
+                    let groups = GroupLeaseSlip::new();
+                    let admitted = units
+                        .admit(
+                            &UnitToken::<Admit>::mint(seal),
+                            &AdmitToken::<Admit>::mint(seal),
+                            ctx,
+                            &principal,
+                            &destinations,
+                            &groups,
+                        )
+                        .into_result(seal);
+                    // THE ROUND'S ANSWER IS THE REFUSAL, NOT THE RESERVATION. Whatever a real door
+                    // would size for an established caller, a handshake reaches no destination and
+                    // holds nothing, so its sizing is read and discarded.
+                    if challenge {
+                        admitted.map(|_| Admission::ZeroHold)
+                    } else {
                         // THE LEASE, drawn on the one answer that entitles a unit to it. The door
                         // said yes, so from here until this unit's end the node is running it, and
-                        // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and a unit that never reached this step, a challenge round, is
-                        // never here to draw one.
+                        // the lease is what says so. A refusal draws nothing — no slot to count.
                         if admitted.is_ok() {
                             draw_lease(ctx, &run, &groups);
                         }
                         admitted
-                    },
-                ),
+                    }
+                })
         });
 
     match opened {
@@ -911,7 +879,14 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
+                    // ARMED: the terminal goes into the guard for the length of the await, and the
+                    // one path back out of the await is `reached`.
+                    let mut abandoned = Abandoned {
+                        kernel,
+                        units,
+                        ctx,
+                        ending: Some((run, settling)),
+                    };
                     let outcome = under_hold(kernel, units, route, ctx, meter).await;
                     abandoned.reached(outcome)
                 }
@@ -1011,22 +986,6 @@ struct Abandoned<'k, 'r, U: Units> {
 }
 
 impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
-    /// Take the terminal, for the length of the await.
-    fn arm(
-        kernel: &'k Kernel,
-        units: &'k U,
-        ctx: &'k UnitCtx,
-        run: Run<'r>,
-        settling: Settling,
-    ) -> Self {
-        Abandoned {
-            kernel,
-            units,
-            ctx,
-            ending: Some((run, settling)),
-        }
-    }
-
     /// The unit reached its own end: take the terminal back out and run it there.
     fn reached(&mut self, outcome: Outcome) -> Ended {
         match self.ending.take() {
