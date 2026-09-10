@@ -31,6 +31,7 @@
 //! **The end decides the amount.** How a unit ended, and which evidence survived, together pick a
 //! row of one table. See [`settle`].
 
+mod accrual;
 mod evidence;
 mod lane;
 mod meter;
@@ -38,6 +39,7 @@ mod series;
 mod settlement;
 mod source;
 
+pub use accrual::{report_from_units, CanonicalClass, Folded};
 pub use evidence::{
     KernelCounts, KernelLine, LocatedValue, MeterPolicy, RetainedLocatorValues,
     DEFAULT_LOCATOR_FLOOR_RATIO, DEFAULT_VARIANCE_TOLERANCE_BP,
