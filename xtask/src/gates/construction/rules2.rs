@@ -1839,3 +1839,123 @@ pub fn no_test_doubles_in_production(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
         ),
     ])
 }
+
+// ── ts-reads-the-clock ───────────────────────────────────────────────────────────────────────────
+
+pub fn ts_reads_the_clock(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("ts-reads-the-clock")?;
+    let max_zeros = need_int(c, "max_zero_stamps", "ts-reads-the-clock")?;
+    let max_defaults = need_int(c, "max_default_derives", "ts-reads-the-clock")?;
+    let fields = c.list_of("timestamp_fields");
+    if fields.is_empty() {
+        return Err("ts-reads-the-clock: timestamp_fields is empty".to_string());
+    }
+    let exempt = c.list_of("exempt_sites");
+    let files = scoped_files(tree, &c.list_of("scope_globs"));
+    let names = fields
+        .iter()
+        .map(|f| rx::escape(f))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    // HALF ONE: a literal zero written into a timestamp field. `0` is not a time; it is the unix
+    // epoch, which on the retention axis is "infinitely old".
+    let zero_rx = Regex::new(&format!(r"^\s*(?:{names})\s*:\s*0\s*,?\s*$"))?;
+    let zeros: Vec<String> = tree
+        .grep(&zero_rx, true, Some(&files))
+        .into_iter()
+        .map(|(rel, l)| format!("{rel}:{}", l.no))
+        .filter(|site| !exempt.contains(site))
+        .collect();
+
+    // HALF TWO: a `Default` derive on a struct that carries one. `Default::default()` on such a
+    // struct mints a zero without any construction site spelling one, and `..Default::default()`
+    // does it in the middle of a constructor that looks complete.
+    let field_rx = Regex::new(&format!(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:{names})\s*:"))?;
+    let struct_rx = Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)")?;
+    let mut derived: Vec<String> = Vec::new();
+    for rel in &files {
+        let Some(lines) = tree.files.get(rel) else {
+            continue;
+        };
+        let mut attrs = String::new();
+        let mut open: Option<(String, usize, bool)> = None;
+        for l in lines.iter() {
+            if l.intest {
+                continue;
+            }
+            let code = l.code.trim_end();
+            if let Some(m) = struct_rx.search_str(code) {
+                let name = m
+                    .str_of(code.as_bytes(), 1)
+                    .unwrap_or_else(|| "<unnamed>".to_string());
+                let has_default = attrs.contains("Default");
+                open = Some((name, l.no, has_default));
+                attrs.clear();
+                continue;
+            }
+            if code.trim_start().starts_with("#[") {
+                attrs.push_str(code);
+                continue;
+            }
+            if code.starts_with('}') {
+                open = None;
+                attrs.clear();
+                continue;
+            }
+            if code.trim().is_empty() {
+                attrs.clear();
+                continue;
+            }
+            if let Some((name, no, true)) = open.as_ref().map(|(n, no, d)| (n.clone(), *no, *d)) {
+                if field_rx.is_match_str(code) {
+                    let site = format!("{rel}:{no} {name}");
+                    if !exempt.contains(&site) && !derived.contains(&site) {
+                        derived.push(site);
+                    }
+                }
+            }
+        }
+    }
+
+    let vacuous = files.is_empty();
+    let zero_detail = if vacuous {
+        format!("{VACUOUS}no scanned source is present in the tree")
+    } else {
+        format!(
+            "{} timestamp field(s) written as a literal zero (ceiling {max_zeros}): {}",
+            zeros.len(),
+            join_or_none(&zeros)
+        )
+    };
+    let derive_detail = if vacuous {
+        format!("{VACUOUS}no scanned source is present in the tree")
+    } else {
+        format!(
+            "{} struct(s) carrying a timestamp field under a Default derive (ceiling \
+             {max_defaults}): {}",
+            derived.len(),
+            join_or_none(&derived)
+        )
+    };
+    Ok(vec![
+        plain(
+            "ts-reads-the-clock",
+            zeros.len() as i64 <= max_zeros,
+            "a timestamp field is a clock reading, never a literal zero",
+            zero_detail,
+            zeros.len() as i64,
+            max_zeros,
+            zeros,
+        ),
+        plain(
+            "ts-reads-the-clock:default-derive",
+            derived.len() as i64 <= max_defaults,
+            "no struct mints a timestamp from a Default derive",
+            derive_detail,
+            derived.len() as i64,
+            max_defaults,
+            derived,
+        ),
+    ])
+}
