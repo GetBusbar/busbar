@@ -256,3 +256,7 @@ pub fn native_policy(name: &str) -> Option<std::sync::Arc<dyn RoutingPolicy>> {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/pricing_face_tests.rs"]
+mod pricing_face_tests;
