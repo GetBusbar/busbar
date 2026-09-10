@@ -1539,6 +1539,22 @@ pub struct McpDraft {
     pub under_scheme: bool,
     /// Whether this is a new unit, and therefore whether the revocation set applies.
     pub new_unit: bool,
+    /// THE IDENTIFIER THE REQUEST CARRIED, as the raw bytes it arrived as -- quotes included on a
+    /// string one, because those are the bytes an answer must echo.
+    ///
+    /// Copied out of the plane's own facts rather than re-read off the body. The plane resolves the
+    /// identifier at the one step entitled to read the bytes and reports it under
+    /// [`busbar_plane_mcp::facts::FACT_RPC_ID`]; a second reading here would be a second grammar
+    /// over the same document, and the one that drifts is the one nobody re-derived.
+    ///
+    /// It is OWNED where the fact is borrowed, and that is the whole reason it is a field. The
+    /// plane's facts borrow the arena the decode ran in and the draft outlives that arena, so the
+    /// step that composes the answer cannot reach them -- exactly as [`McpDraft::presented`] is
+    /// owned for the authenticate step.
+    ///
+    /// `None` is an arrival that carried no identifier, which on this protocol is a notice. The
+    /// answer path omits the member for it, which is the success envelope's own asymmetry.
+    pub rpc_id: Option<String>,
 }
 
 impl McpDraft {
@@ -1624,6 +1640,21 @@ impl McpDraft {
             presented: presented.map(ToString::to_string),
             under_scheme,
             new_unit: true,
+            // ASKED of the plane's own facts, at the one moment they are still in scope. The decode
+            // that produced them is the only reader of the body in this whole walk, so the
+            // identifier travels forward as a copy of what that reader found rather than as a second
+            // look at bytes the arena is about to reclaim.
+            rpc_id: match read {
+                Ok(Read::Unit(decoded)) => {
+                    match decoded.facts.get(busbar_plane_mcp::facts::FACT_RPC_ID) {
+                        Some(busbar_contract::bounded::FactValue::Str(raw)) => {
+                            Some((*raw).to_string())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
         }
     }
 }
@@ -1916,7 +1947,54 @@ impl<'r> McpUnits<'r> {
         }
         Ok(ran)
     }
+
+    /// **THE ANSWER THIS PLANE WROTE ITSELF**, where it writes one.
+    ///
+    /// `None` is a class whose bytes are still the mounted surface's — the routing step falls through
+    /// to [`crate::root::transports::collected`] for it, exactly as it did for every class before this
+    /// function existed. Which classes those are is not decided here: the set is
+    /// `busbar_plane_mcp::served::composed`'s own, and this root neither keeps a copy of it nor asks
+    /// about it twice. A list here would be a second answer to whose bytes reach the caller, and the
+    /// two readers would go on to disagree about which arms of the legacy body are still reachable.
+    ///
+    /// The STATUS and the CONTENT TYPE are the plane's own two constants for a document it composed,
+    /// and they are the pair the mounted surface answers the same condition with: a successfully
+    /// composed result is `200 application/json` there, so it is that here. Neither is invented by
+    /// this file — a root that chose a status for a plane's document would be the one axis with no
+    /// business deciding it.
+    ///
+    /// `Err(())` is the identifier the plane read failing to be written back. It carries no detail
+    /// because there is none to carry that this step is entitled to state: what the caller is owed is
+    /// a refusal, and the refusal's own reason is chosen by the one call site above.
+    fn own_answer(&self) -> Option<Result<PlaneAnswer, ()>> {
+        let op = self.draft.op?;
+        let composed = busbar_plane_mcp::served::composed(
+            op,
+            self.draft.rpc_id.as_deref().map(str::as_bytes),
+        )?;
+        Some(match composed {
+            Ok(body) => Ok(PlaneAnswer {
+                status: OWN_ANSWER_STATUS,
+                headers: vec![(
+                    CONTENT_TYPE.to_string(),
+                    busbar_plane_mcp::surface::MEDIA_JSON.to_string(),
+                )],
+                body,
+            }),
+            Err(_) => Err(()),
+        })
+    }
 }
+
+/// The status a successfully composed document of this protocol is answered with.
+///
+/// One value, written once, because it is the same statement the mounted surface makes: every
+/// result of this protocol that is not a refusal is a successful HTTP answer, and the protocol's own
+/// error codes travel inside the document rather than on the frame.
+const OWN_ANSWER_STATUS: u16 = 200;
+
+/// The header the answer's media type travels under.
+const CONTENT_TYPE: &str = "content-type";
 
 /// How many nano-units one cent is.
 ///
@@ -2158,8 +2236,30 @@ impl Units for McpUnits<'_> {
         // this plane's exit path carries bytes. `collected` is the generic buffering over the seam's
         // two methods, so the mount does not read a body on every plane's behalf — one that streamed
         // its answer would otherwise be buffered against its will.
-        if let (Some(dispatch), Some(op)) = (self.bindings.dispatch, self.draft.op) {
-            let answered = crate::root::transports::collected(dispatch, op);
+        //
+        // AND IT IS ASKED ONLY FOR WHAT THIS PLANE DOES NOT ANSWER ITSELF. A class in
+        // `served::COMPOSED` has its ANSWER BYTES written by the plane's own encoder over the plane's
+        // own reading, so the surface is not asked about it at all and its arm there is unreachable —
+        // which is the difference between a class whose UNIT the loop owns and a class whose BYTES it
+        // owns, and the difference the deletion list exists to keep visible.
+        let answered = match self.own_answer() {
+            Some(Ok(answered)) => Some(answered),
+            // The plane could not write back the identifier the plane itself read. The reader admits
+            // only identifiers this can write, so the two disagreeing is a defect in the pair rather
+            // than a caller's fault — and it is refused rather than fallen through to the surface,
+            // because a fall-through here would answer from a body this step has already declared
+            // unreachable for the class.
+            Some(Err(())) => {
+                return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+            }
+            None => match (self.bindings.dispatch, self.draft.op) {
+                (Some(dispatch), Some(op)) => {
+                    Some(crate::root::transports::collected(dispatch, op))
+                }
+                _ => None,
+            },
+        };
+        if let Some(answered) = answered {
             let mut progress = read_through_poison(&self.progress);
             progress.encoded = answered.body.len() as u64;
             progress.answer = Some(answered);

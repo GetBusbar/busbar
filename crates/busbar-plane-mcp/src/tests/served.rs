@@ -29,10 +29,10 @@
 use busbar_contract::ids::OpClassId;
 
 use super::{
-    cache_hints, completion_result, initialize_result, instructions, ping_result,
+    cache_hints, completion_result, composed, initialize_result, instructions, ping_result,
     prompt_get_result, prompts_list_result, reads, resource_read_result,
     resource_templates_list_result, resources_list_result, task_ack_result, task_get_result,
-    tool_call_result, tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS,
+    tool_call_result, tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, COMPOSED,
     PROTOCOL_VERSION, SERVER_NAME,
 };
 use crate::{ops, records};
@@ -507,4 +507,96 @@ fn completion_reads_nothing_and_answers_the_empty_set() {
         })
     );
     assert!(answered.get("cacheScope").is_none());
+}
+
+/// **WHOSE BYTES THE ANSWER IS, asserted as bytes.**
+///
+/// The document below is what a caller reads, and it is written out in full rather than rebuilt from
+/// the same helpers the subject uses — a cell that composed its expectation the way the subject
+/// composes its answer asserts that a function equals itself. Every member is pinned: the version,
+/// the echoed identifier, the empty candidate set stated in full, and the discriminator this node
+/// stamps rather than passes through.
+///
+/// The member ORDER is the serializer's and not this crate's: the document type sorts its members,
+/// so the bytes below are sorted, and a build that turned insertion order on would go red here
+/// rather than silently reshape every answer this node gives.
+#[test]
+fn completion_bytes_are_composed_by_this_plane() {
+    let bytes = composed(ops::OP_COMPLETION, Some(b"1"))
+        .expect("completion is a composed class")
+        .expect("a numeric identifier writes");
+    assert_eq!(
+        core::str::from_utf8(&bytes).expect("the answer is text"),
+        r#"{"id":1,"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
+    );
+}
+
+/// A STRING identifier is echoed as the string it is, and the quotes travel with it.
+///
+/// Its own cell beside the numeric one because the two are different arms of the reader and the
+/// difference is invisible in the answer's shape: an identifier read as a number and echoed as a
+/// string is an answer no client correlates.
+#[test]
+fn a_string_identifier_is_echoed_as_the_string_it_arrived_as() {
+    let bytes = composed(ops::OP_COMPLETION, Some(br#""abc""#))
+        .expect("completion is a composed class")
+        .expect("a string identifier writes");
+    assert_eq!(
+        core::str::from_utf8(&bytes).expect("the answer is text"),
+        r#"{"id":"abc","jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
+    );
+}
+
+/// An arrival with NO identifier gets no identifier member, which is the success path's asymmetry.
+///
+/// The refusal path always writes the member and writes the empty value where there is none; this
+/// one omits it. Pinned here because a peer's own test for "is this a response" is whether the
+/// member is there at all.
+#[test]
+fn a_composed_answer_with_no_identifier_omits_the_member() {
+    let bytes = composed(ops::OP_COMPLETION, None)
+        .expect("completion is a composed class")
+        .expect("no identifier writes");
+    assert_eq!(
+        core::str::from_utf8(&bytes).expect("the answer is text"),
+        r#"{"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
+    );
+}
+
+/// **[`COMPOSED`] and [`composed`] are one statement, and this cell holds them to it.**
+///
+/// The root derives its fall-through gate from the LIST and takes its bytes from the FUNCTION, so a
+/// class the function answers without the list declaring it is a class whose legacy arm the deletion
+/// list would still call reachable while it was not — and a class the list declares without the
+/// function answering it is a fall-through the root has been told not to take. Either way one of the
+/// two readers is wrong about which bytes reach the caller.
+#[test]
+fn every_composed_class_is_declared_and_every_declared_class_composes() {
+    for op in ops::OP_CLASSES {
+        assert_eq!(
+            composed(*op, Some(b"1")).is_some(),
+            COMPOSED.contains(op),
+            "{op} answers and declares differently"
+        );
+    }
+}
+
+/// Composing the BYTES is a stricter claim than answering the UNIT, so [`COMPOSED`] is inside
+/// [`ANSWERED`].
+///
+/// A class whose bytes this plane wrote but whose unit the loop does not answer would be a document
+/// composed for a request nothing decided: no reading was declared for it, so no record leg ran, and
+/// the answer would be assembled from state the unit never read.
+#[test]
+fn composed_is_a_subset_of_answered() {
+    for op in COMPOSED {
+        assert!(
+            ANSWERED.contains(op),
+            "{op} composes bytes without being answered"
+        );
+        assert!(
+            reads(*op).is_some(),
+            "{op} composes bytes without declaring a reading"
+        );
+    }
 }

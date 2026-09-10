@@ -2080,6 +2080,123 @@ fn the_assembled_unit_walks_a_call_through_the_loop() {
     );
 }
 
+/// **THE SURFACE IS NEVER ASKED, AND THE BYTES ARE THE LEG'S OWN.**
+///
+/// This is the probe the MCP deletion list asks for, kept rather than discarded: the double below
+/// counts every time the mounted surface is reached and answers with a body no other path writes, so
+/// a class whose answer came from the legacy body is a class whose bytes are `SURFACE_BODY` and whose
+/// count is one. Completion's count is ZERO and its bytes are the plane's own document, which is the
+/// statement "the arm in `busbar-mcp`'s `method.rs` is unreachable for this class" written as a cell
+/// rather than as a measurement somebody has to re-run.
+///
+/// The class still walks all twelve steps and still settles. Owning the BYTES does not move the unit
+/// off the loop — it moves where the loop's answer is composed, which is the whole of this cut.
+#[test]
+fn a_composed_class_answers_from_the_plane_and_never_reaches_the_surface() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":4,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"p"}}}"#,
+    );
+    assert_eq!(draft.op, Some(ops::OP_COMPLETION));
+    assert_eq!(
+        draft.rpc_id.as_deref(),
+        Some("4"),
+        "the identifier travels forward as the bytes the plane read"
+    );
+
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("the unit settled here: {ended:?}");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Completed,
+        "every one of the twelve answered"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "the legacy body is UNREACHABLE for a class the plane composes the bytes of"
+    );
+
+    let answer = units.answer().expect("a unit that reached Route has one");
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        answer.headers,
+        vec![("content-type".to_string(), "application/json".to_string())],
+        "the media type is the plane's own, framed the way the surface framed it"
+    );
+    assert_ne!(answer.body, SURFACE_BODY, "and not the double's");
+    assert_eq!(
+        core::str::from_utf8(&answer.body).expect("the answer is text"),
+        r#"{"id":4,"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#
+    );
+    assert!(
+        units.audit_hash().is_some(),
+        "and the ending is sealed on the chain"
+    );
+}
+
+/// **A class the plane does NOT compose the bytes of still falls through to the surface.**
+///
+/// The other half of the gate, and the half that keeps this cut honest as it grows. Every class of
+/// this plane is driven; the ones `served::COMPOSED` names must never reach the double, and every
+/// other class the loop reaches Route for must reach it exactly once. A class that stopped falling
+/// through without being declared would be a class answered by nothing, and a class that fell through
+/// while being declared would be the legacy arm still writing the wire.
+#[test]
+fn the_fall_through_is_taken_by_exactly_the_classes_the_plane_does_not_compose() {
+    for (body, op) in [
+        (
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            ops::OP_TOOLS_LIST,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#,
+            ops::OP_PROMPTS_LIST,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#,
+            ops::OP_RESOURCES_LIST,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"grep"}}"#,
+            ops::OP_TOOL_CALL,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":6,"method":"completion/complete"}"#,
+            ops::OP_COMPLETION,
+        ),
+    ] {
+        let node = Node::new();
+        let pools = node.pools(None);
+        let surface = CountingSurface::default();
+        let draft = draft_for(&node.plane, body);
+        assert_eq!(draft.op, Some(op), "the plane read {op}");
+
+        let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+        let _ = node.walk(&units);
+
+        let composed = busbar_plane_mcp::served::COMPOSED.contains(&op);
+        assert_eq!(
+            surface.asked(),
+            usize::from(!composed),
+            "{op} is composed={composed} and the surface was asked {} times",
+            surface.asked()
+        );
+        assert_eq!(
+            units.answer().map(|a| a.body == SURFACE_BODY),
+            Some(!composed),
+            "{op}'s bytes came from the wrong half"
+        );
+    }
+}
+
 /// **A method this server does not answer never reaches a step, and never reaches the surface.**
 ///
 /// The plane's decode is what says so, and the refusal is at the step that read the bytes. What this
