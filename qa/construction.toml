@@ -104,14 +104,36 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # `ceiling-rose` refuses any integer in this file or in qa/kind-isolation.toml that is higher than
 # it is at this branch's base. A ratchet with NO route through it is a ratchet somebody edits the
-# rule to get past, and there is one raise that is legitimate and cannot be avoided: the FIRST
-# gating figure of a row that was not gating before.
+# rule to get past, and there are raises that are legitimate and cannot be avoided: the FIRST
+# gating figure of a row that was not gating before, and a face landed under a ceiling that
+# measures the very lines the face is made of.
 #
-# A declaration is not a waiver. It names the exact dotted path and BOTH numbers, so it describes
-# one edit rather than a direction; it carries a reason long enough to be one; and it EXPIRES BY
-# ITSELF, because the moment its commit lands the base carries the new number, the rise disappears,
-# and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
-# cover the next raise of the same ceiling.
+# A declaration is not a waiver. It is ONE DELTA PER FACE, in an array of tables, so that several
+# faces declared off the same base each carry their own and the entries SUM: the tree is green when
+# the ceiling rose by exactly the sum. A `by` above what the tree rose by is over-declared and red;
+# a `by` below leaves the remainder undeclared and red. The figure in the file is still pinned to
+# the exact measurement by `ceiling-slack` — a declared raise moves the ratchet, it does not loosen
+# it.
+#
+# It EXPIRES BY ITSELF. The entry rides in the face's commit; once that commit is in the base, the
+# base's copy of this file carries the entry too, and `ceiling-rose` reports it as a warning (never
+# red — the strike cannot ride in the same batch as the face) until `cargo xtask gate construction
+# --write` strikes it. An entry the base does NOT carry, naming a ceiling that did not rise, is a
+# deleted face's leftover and IS red.
+#
+# THE SHAPE a face commit carries (the `[gate.ceiling_raises."<key>"]` `from`/`to` header this
+# table used to take is refused by name — it could name one face per key and never expired):
+#
+#   [[gate.ceiling_raises]]
+#   key = "rules.loc-ceilings.caps_contract_ceiling"   # the dotted path of the integer that rose
+#   by = 10                                            # the lines the face measured, exactly
+#   because = "governance virtual-key face: KeyFacts + VirtualKeyDirectory, +10 lines in ..."
+#   # optional: file = "qa/kind-isolation.toml"  (default: this file);  commit = "<sha>"
+#
+# A qa/kind-isolation.toml row is keyed by its IDENTITY — `cell.<crate>.<kind>.count`,
+# `dep.<from>.<to>.<half>.count`, `face.<crate>.<face>.count` — never by its ordinal, because
+# striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
+# the face.
 
 # HISTORY. `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47
 # calibration while the commit that needed it was in flight. That commit LANDED: the base carried
