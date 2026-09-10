@@ -639,3 +639,152 @@ fn the_reply_carries_the_loops_own_ending_and_not_this_drivers() {
         "and its ending is what came back"
     );
 }
+
+// ── THROWAWAY RIG (slot A1): a frame reaches a PLANE's unit over the shipping arena ─────────────
+//
+// NOT FOR LANDING. Everything above this line names no plane and must stay that way; the module
+// below is a rig on the arena tip proving ONE thing: with a real per-unit arena, a driver-shaped
+// path can build the contract `Ctx` around an inbound frame, hand the frame to a plane, get the
+// plane's UNIT back, run the loop for that frame, and hand back an answer the plane rendered out of
+// the same arena. `drive` still answers an empty frame on its own; the rig makes the two calls
+// around it that the plane-call commit will fold in, and the arena is the only new thing between
+// the two.
+#[cfg(feature = "plane-voice")]
+mod rig {
+    use super::*;
+    use busbar_contract::bounded::{Arena as _, Labels, SlabBytes};
+    use busbar_contract::ids::{LaneId, StreamId};
+    use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
+    use busbar_contract::unit::{Clock, ConfigView, Ctx, RefusalReason, Step, TransportView};
+    use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
+    use busbar_plane_voice::claims::Dialect;
+    use busbar_plane_voice::session::VoiceSessionState;
+    use busbar_plane_voice::{Upstream, VoicePlane};
+
+    use crate::root::arena::{ArenaSpace, UnitArena, ARENA_BYTES};
+
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("voice-realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+
+    /// A plugin's own block, for a call not told which plugin it is for: every key answers `None`.
+    struct NoConfig;
+
+    impl ConfigView for NoConfig {
+        fn get_str(&self, _: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// The stack under the rig's upgrade, as the plane reads it.
+    struct RigTransport;
+
+    impl TransportView for RigTransport {
+        fn key(&self) -> &'static str {
+            "ws"
+        }
+        fn chain(&self) -> &[&'static str] {
+            &["tcp", "ws"]
+        }
+        fn fact(&self, _: &str) -> Option<&str> {
+            None
+        }
+    }
+
+    /// ONE FRAME IN, THE PLANE'S UNIT OUT, THE LOOP RUN, THE PLANE'S ANSWER BACK — over one
+    /// `ArenaSpace` on this task's stack, opened for this unit and dropped at its end.
+    #[test]
+    fn a_frame_reaches_the_planes_unit_and_the_planes_answer_comes_back_over_the_shipping_arena() {
+        let node = Node::new();
+        let driver = node.driver();
+        let facts = [(tfacts::CREDENTIAL, "sk-rig")];
+        let handle = driver
+            .open(upgrade(RUN_BINDING, Bar::Credential, &facts), &RUN_SURFACE)
+            .expect("a declared run opens");
+
+        let payload: &[u8] = br#"{"type":"session.update","session":{}}"#;
+
+        // THE PLANE CALL, over the arena that ships.
+        let mut space = ArenaSpace::new();
+        let arena = UnitArena::new(&mut space);
+        let config = NoConfig;
+        let transport = RigTransport;
+        let labels = Labels::new();
+        let clock = Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        };
+        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let plane = VoicePlane::new(UPSTREAMS);
+        let mut state =
+            PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
+        let frames = vec![Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(std::sync::Arc::from(payload)),
+            meta: FrameMeta::default(),
+        }];
+        let mut cursor = FrameCursor::new(&frames);
+        let ingress = plane
+            .decode_ingress(&mut cursor, Some(&mut state), &ctx)
+            .expect("the plane reads its own client event");
+        let Ingress::Open(draft) = ingress else {
+            panic!("the first client event opens the plane's unit, got {ingress:?}");
+        };
+        // The unit's draft borrows the frame's own slab bytes, so reading it costs the arena
+        // nothing: the arena is spent by what the plane WRITES, below, and the number is exact.
+        assert_eq!(arena.remaining(), ARENA_BYTES);
+
+        // THE LOOP, for that frame, on the driver as it stands.
+        let reply = driver.drive(handle, SessionFrame { payload, seq: 0 });
+        assert_eq!(
+            node.units.sessions().len(),
+            1,
+            "one frame, one unit, on this session"
+        );
+        assert_eq!(
+            reply.outcome,
+            Outcome::NotFound,
+            "the rig's units refuse at Arrival"
+        );
+        assert!(
+            reply.frames.is_empty(),
+            "what `drive` still answers on its own: nothing — the plane-call commit folds the two \
+             calls around it into it"
+        );
+
+        // THE ANSWER: the plane's own rendering of the loop's ending, out of the SAME arena.
+        let refusal = busbar_contract::unit::Refusal {
+            step: Step::Arrival,
+            reason: RefusalReason::NoDestination,
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let answer = plane
+            .encode_refusal(&refusal, Some(&draft), Some(&state), &ctx)
+            .expect("the plane renders the ending");
+        let text = std::str::from_utf8(answer.as_slice()).expect("the plane's frames are JSON");
+        assert!(
+            text.contains("\"error\""),
+            "the plane's own rendering, not the driver's prose: {text}"
+        );
+        assert_eq!(
+            arena.remaining(),
+            ARENA_BYTES - answer.len(),
+            "the answer came out of the shipping arena, byte for byte, and out of nothing else"
+        );
+
+        driver.close(handle, CLIENT_WENT);
+        // `space` drops here. Every borrow the plane took — the draft, the answer — died first, or
+        // this function would not compile: that is the reset at unit end.
+    }
+}
