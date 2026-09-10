@@ -55,15 +55,15 @@
     }
   ],
   "counts": {
-    "total": 2330,
+    "total": 2332,
     "by_plane": {
-      "a2a": 468,
+      "a2a": 470,
       "core": 789,
       "llm": 161,
       "mcp": 912
     },
     "by_family": {
-      "a2a": 468,
+      "a2a": 470,
       "admin.ops": 240,
       "auth.lifecycle": 3,
       "billing": 14,
@@ -4130,6 +4130,18 @@
       "why": "undecodable request -> refused at decode (native 400)"
     },
     {
+      "id": "a2a|jsonrpc|client|client|SendMessage|no-agents-configured",
+      "plane": "a2a",
+      "method": "SendMessage",
+      "originator": "client",
+      "role": "client",
+      "transport": "jsonrpc",
+      "obligation": "issue",
+      "outcome": "no-agents-configured",
+      "why": "a task for which NO AGENT is configured resolves to an upstream-shaped destination with no lane behind it. 1.5.5 read the destination's SHAPE and charged the caller a flat per-request fee for an exchange that never happened; 1.6.0 reads the lane, and the visit is charged for the visit alone. Expected effects.usage: {\"requests\": 1} with no spend key, exactly as the 45 requests-only rows of the 1.5.5 ledger record for a unit that drew a slot and bought nothing. Recorded BEFORE and AFTER the change, so it is visible in the corpus rather than argued from a test.",
+      "needs_fixture": true
+    },
+    {
       "id": "a2a|jsonrpc|client|client|SendMessage|ok",
       "plane": "a2a",
       "method": "SendMessage",
@@ -4172,6 +4184,18 @@
       "obligation": "issue",
       "outcome": "unauthenticated",
       "why": "no / bad credential -> refused at Authenticate (native 401)"
+    },
+    {
+      "id": "a2a|jsonrpc|client|client|SendMessage|undecodable-body",
+      "plane": "a2a",
+      "method": "SendMessage",
+      "originator": "client",
+      "role": "client",
+      "transport": "jsonrpc",
+      "obligation": "issue",
+      "outcome": "undecodable-body",
+      "why": "a body this plane cannot decode is refused at decode, before any destination is resolved: no visit reached a destination, so there is no exchange and no transaction fee, and the flat fee 1.5.5 charged off the destination's shape was charged for a request it never carried. Expected effects.usage: {} beside a native decode refusal, the shape a2a|*|malformed already records. With no-agents-configured it is the whole observable surface of the reachability change.",
+      "needs_fixture": true
     },
     {
       "id": "a2a|jsonrpc|client|client|SendMessage|upstream_down",
