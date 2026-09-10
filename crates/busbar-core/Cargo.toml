@@ -40,6 +40,10 @@ busbar-unit-cost = { path = "../busbar-unit-cost" }
 # and a request READS the result — so the edge costs the admission path no allocation at all. It is
 # the drain named by `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
 busbar-unit-admission = { path = "../busbar-unit-admission" }
+# The sink guard: the operator-supplied-URL policy for the two sinks this crate still owns (the
+# request-log webhook and the OTLP collector) lives in the unit that owns whether a destination may
+# be dialled at all. This crate calls it; it does not keep a copy.
+busbar-unit-egress = { path = "../busbar-unit-egress" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

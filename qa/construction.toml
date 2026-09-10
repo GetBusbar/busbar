@@ -432,15 +432,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5397
+kernel_ceiling = 5398
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3528
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14933
+unit_total_ceiling = 15146
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23858
+union_ceiling = 24072
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1533,3 +1533,89 @@ key = "cell.busbar.kernel.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "BY IDENTITY: the composition root composes the maintenance tick it now drives. One `use busbar_kernel::tick::{maintenance_tick, Maintenance};` in crates/busbar/src/root/metrics_drain.rs, and nothing else - the doc text names the function without spelling the crate, deliberately, so the cell rises by the import and by nothing prose could have avoided. The root spending one more kernel name to take a loop off a raw detached OS thread is the retirement working: what it replaces named no crate at all because nobody composed it"
+
+# THE SINK GUARD MOVE (keep-core-delete-10). The operator-supplied-URL guard suite left the retiring
+# engine's `observability` module for `busbar_unit_egress::sink_guard`. It is a MOVE BY IDENTITY and
+# the ledger reads as one: the source cells FALL by what the destination cells RISE by, in the same
+# commit, because the same words travelled.
+#
+#   busbar-core         x transport  2117 -> 2037   (-80)
+#   busbar-unit-egress  x transport    59 ->  139   (+80)
+#   busbar-core         x plane      3031 -> 3029    (-2)
+#   busbar-unit-egress  x plane          1 ->    3    (+2)
+#
+# The `transport` hits are the words `http` and `https` — a URL guard is made of them, and they are
+# transport instance vocabulary wherever they sit. Eighty on each side, exactly.
+#
+# Two rises are NOT paid by a fall, and both are the edges the move needs rather than the move
+# itself. `busbar-unit-egress x unit` +30 is the crate naming `busbar_unit_trust::net` for the
+# internal-address predicates — the alternative was a copy, and duplicated security logic is the one
+# place a documented divergence does not neutralize drift. `busbar-core x unit` +9 is the Cargo
+# dependency name and the two `use` lines that replace the deleted bodies; the same commit takes
+# busbar-core DOWN by 82 across the two cells above, so core's total coupling falls by 73.
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-egress.transport.count"
+file = "qa/kind-isolation.toml"
+by = 80
+because = "MOVE BY IDENTITY: the sink guard suite (mask_userinfo, scheme_is, validate_webhook_url, host_is_internal, validate_otlp_endpoint and the otlp_* atoms) left busbar-core/src/observability.rs for busbar-unit-egress/src/sink_guard.rs with its thirty-two tests ported. The hits are the words `http` and `https`, which a URL guard is made of. busbar-core x transport falls 2117 -> 2037 in this same commit, by the same eighty"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-egress.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "MOVE BY IDENTITY, the same sink-guard suite as the transport row above: two plane-vocabulary words travelled with the guard's text into busbar-unit-egress, and busbar-core x plane falls 3031 -> 3029 in this same commit, by the same two. Nothing was added on either side"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-egress.unit.count"
+file = "qa/kind-isolation.toml"
+by = 30
+because = "the EDGE the sink-guard move needs, not the move: busbar-unit-egress names busbar_unit_trust::net for ipv4_is_internal, ipv6_is_internal, ip_is_internal and is_alternate_ipv4_encoding rather than copying them. Twenty-six spellings in sink_guard.rs plus the Cargo dependency name. Duplicated SECURITY logic is the one place a documented divergence does not neutralize drift - the engine the guard came from called the same predicates through a shim for exactly this reason"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "the EDGE the sink-guard move needs: the busbar-unit-egress Cargo dependency name and the two `use busbar_unit_egress::sink_guard::{...}` lines that replace the deleted bodies in observability.rs and export/webhook.rs. The same commit takes busbar-core DOWN by 82 across x transport (2117 -> 2037) and x plane (3031 -> 3029), so this crate's total coupling falls by 73 on the commit that spends these nine"
+
+# THE SINK GUARD, measured: 213 surface lines in busbar-unit-egress/src/sink_guard.rs against 454
+# RAW production lines deleted from busbar-core/src/observability.rs (819 -> 365). The engine is in
+# none of these unions, so the deletion pays nothing back here and the whole 213 is declared.
+#
+# WHAT IT IS. Two POLICIES over one threat: what a request-log webhook may target (https only,
+# loopback and localhost BLOCKED - no webhook should POST to a co-located process) and what a trace
+# collector may target (http permitted to loopback ONLY, because the standard deployment is a
+# sidecar; everything else the webhook blocks is still blocked). They diverge deliberately on the
+# localhost family and on plaintext, each documents its own divergence, and that divergence is why
+# they are two functions and not one with a flag. Under them are the URL-shaped atoms the policies
+# are written over - the trailing-FQDN-dot strip, the IPv4-mapped-IPv6 arm, the alternate-encoding
+# parity mirror, the loopback carve-out - and the userinfo masker every logging site runs first.
+#
+# WHY IT IS A UNIT AND NOT A LEAF. The question the suite answers is "may this deployment send
+# there at all?", and that is the egress unit's question: it is the crate that owns the pool, the
+# walk and the one attempt, and a sink URL an operator typed is a destination like any other. It is
+# NOT the substrate, which the owner froze on 2026-09-10.
+#
+# WHAT DID NOT TRAVEL. The range predicates. `ipv4_is_internal`, `ipv6_is_internal`,
+# `ip_is_internal` and `is_alternate_ipv4_encoding` are called from busbar_unit_trust::net, exactly
+# as the engine called them through its own shim, so no fifth copy exists and a contributor
+# hardening one guard against a new range cannot miss this one.
+#
+# ONE SIGNATURE CHANGED, and it is the only line of this move that is not identity.
+# `validate_otlp_endpoint` resolves the collector's NAME as well as reading its text, because a name
+# pointed at an internal address passes every textual check. A unit does no I/O, so the lookup
+# enters as an argument and the DECISION about what a resolved address means stays with the policy.
+# All thirty-two tests are PORTED, not rewritten, and pass.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 213
+because = "the SINK GUARD busbar_unit_egress::sink_guard (src/sink_guard.rs, 213 surface lines): the operator-supplied-URL policy for a webhook sink and for a trace-collector sink, moved whole out of busbar-core/src/observability.rs (819 -> 365 raw production lines) because whether a destination may be dialled at all is the egress unit's question and no other's. The range predicates did NOT travel and were NOT copied - they are called from busbar_unit_trust::net as the engine called them through its shim. One signature changed: validate_otlp_endpoint takes the resolver as an argument, because a unit does no I/O; the verdict on a resolved address stays with the policy. Thirty-two tests ported and green"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 214
+because = "the same SINK GUARD as the unit_total_ceiling raise: its 213 surface lines, plus the ONE line the kernel row below counts a second time here because a busbar-unit-* file reachable from the Teller loop by name spends kernel budget as well as its own crate's. busbar-core is in neither union, so the 454 raw lines it loses pay nothing back"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 1
+because = "the same SINK GUARD as the unit_total_ceiling raise, and ONE line of it: the kernel's reachability set is a conservative NAME-MATCH approximation, not a true call graph, so a busbar-unit-egress file that defines a function sharing a name with something the Teller loop calls is counted whether or not the call reaches it. The rule's own why states that it over-counts rather than under-counts; this is that, by one line"
