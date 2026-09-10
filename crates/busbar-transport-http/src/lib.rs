@@ -7,15 +7,22 @@
 //! response frame (`STATUS_CLASS = Some(FirstFrame)`) — the kernel-derived leg of the fee decision
 //! the design's settlement table reads. It composes over `tcp`/`tls` for its byte stream.
 //!
-//! ## What moved here, byte-identical
+//! ## The client is HANDED IN, never built here
 //!
-//! [`HttpTransport::dial`] builds ONE pooled `hyper_util` client per transport instance, with the
-//! exact posture 1.5.5's egress client used (`busbar_substrate::egress::engine`, read before this
-//! was written): redirects never followed (hyper's client is structurally incapable of following
-//! one — no policy to set), `connect_timeout` 10s, TCP keepalive 60s + nodelay, HTTP/2 keep-alive
-//! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
-//! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
-//! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
+//! This transport used to build a pooled client of its own inside [`HttpTransport::new`] — a
+//! second pool, with a second posture, beside the one the node's data path already dials through.
+//! Two clients are two postures and the difference is visible on the wire: the composed client
+//! resolves a destination through the pin it was built with, so a name no nameserver answers
+//! still reaches the address that was already judged, and it carries its own tunnel, keep-alive
+//! and peer-observation stances. A transport that kept a connector of its own reached a different
+//! upstream with the same request.
+//!
+//! So it keeps none. [`EgressExchange`] is the face the dial side is written against, and a
+//! composed instance ([`HttpTransport::over_egress`]) holds one and dials through it and through
+//! nothing else. What KIND of client it is handed, this crate does not know and may not ask: the
+//! face is the whole of what it sees. An instance built by [`HttpTransport::new`] is composed
+//! over no client at all — it serves, and it refuses a dial rather than opening a pool nobody
+//! composed.
 //!
 //! ## Bodies larger than one call
 //!
@@ -63,11 +70,11 @@
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use busbar_contract::{
     ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
@@ -88,9 +95,6 @@ use busbar_contract_transport::wire::WireStatus;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
@@ -158,7 +162,31 @@ impl Default for ClientSettings {
     }
 }
 
-type EgressClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+/// One outbound request, as the client that sends it takes it.
+pub type EgressRequest = http::Request<Full<Bytes>>;
+
+/// The answer that client hands back — head in hand, body still arriving.
+pub type EgressAnswer = http::Response<hyper::body::Incoming>;
+
+/// Why an exchange did not complete, as an error OBJECT with its cause chain intact. The chain is
+/// what this transport classifies against ([`TransportError`]), so a flattened string here would
+/// turn every fault into the same one.
+pub type EgressFault = Box<dyn std::error::Error + Send + Sync>;
+
+/// The future one exchange returns.
+pub type EgressFuture = Pin<Box<dyn Future<Output = Result<EgressAnswer, EgressFault>> + Send>>;
+
+/// THE CLIENT THIS TRANSPORT DIALS THROUGH, declared rather than built.
+///
+/// The composition root holds the client this node's outbound hops actually go through — with its
+/// pool, its resolver stance, its tunnel stance and its keep-alive stances already decided — and
+/// hands it here. This crate never learns which one it is: a second client built behind this face
+/// would be the very thing the face exists to prevent, and a transport that could name the client
+/// could grow a preference about it.
+pub trait EgressExchange: Send + Sync + 'static {
+    /// Send one request and answer with the response head, the body still streaming behind it.
+    fn exchange(&self, req: EgressRequest) -> EgressFuture;
+}
 
 /// One frame, or the transport error that ended the stream in its place.
 type FrameResult = Result<(StreamId, Frame), TransportError>;
@@ -202,7 +230,7 @@ enum Inner {
     /// drain.
     Egress {
         uri: http::Uri,
-        client: Arc<EgressClient>,
+        client: Arc<dyn EgressExchange>,
         resp_tx: Mutex<Option<RespSender>>,
         resp_rx: AsyncMutex<RespReceiver>,
         /// What `write` has been handed so far, and not yet sent. A body arrives across as many
@@ -258,7 +286,9 @@ pub struct HttpTransport {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
-    egress_client: Arc<EgressClient>,
+    /// The client this instance was COMPOSED OVER, where it was composed over one. `None` is an
+    /// instance that serves and does not dial: it was handed no client, and it opens none.
+    egress: Option<Arc<dyn EgressExchange>>,
     /// The operator's body cap, carried from [`ClientSettings`] and applied to both accumulators.
     max_body_bytes: usize,
     /// The cap on one exchange's response body, carried from [`ClientSettings`].
@@ -272,15 +302,34 @@ impl std::fmt::Debug for HttpTransport {
 }
 
 impl HttpTransport {
-    /// Build the transport, and with it the ONE pooled egress client this instance dials through
-    /// — see the crate doc for the byte-identical posture this reproduces.
+    /// Build a SERVING instance: it listens, accepts and answers, and it is composed over no
+    /// egress client.
+    ///
+    /// It therefore does not dial. That is a statement, not a gap: the alternative — building a
+    /// client here so that `dial` has something to send through — is the second pool this crate
+    /// used to carry, with a posture nobody composed and no relation to the one the node's own
+    /// outbound hops go through. A caller that needs the dial side composes the instance over the
+    /// client the root holds, through [`HttpTransport::over_egress`].
     #[must_use]
     pub fn new(settings: ClientSettings) -> Self {
+        Self::compose(None, settings)
+    }
+
+    /// Build an instance COMPOSED OVER the client it dials through.
+    ///
+    /// This is the whole of how a client reaches this transport. What kind of client it is, the
+    /// crate does not know: [`EgressExchange`] is the face and the face is all it sees.
+    #[must_use]
+    pub fn over_egress(egress: Arc<dyn EgressExchange>, settings: ClientSettings) -> Self {
+        Self::compose(Some(egress), settings)
+    }
+
+    fn compose(egress: Option<Arc<dyn EgressExchange>>, settings: ClientSettings) -> Self {
         Self {
             next_id: AtomicU64::new(1),
             conns: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
-            egress_client: Arc::new(build_egress_client(&settings)),
+            egress,
             max_body_bytes: settings.request_body_max_bytes,
             max_response_bytes: settings.response_body_max_bytes,
         }
@@ -328,10 +377,22 @@ impl HttpTransport {
     }
 }
 
-/// Build the pinned egress client. Free function (not a method) so a battery test can build one
-/// without a whole transport, to assert the posture directly.
+/// THE BATTERY'S OWN UPSTREAM CLIENT — a real pooled client, for the tests that need one.
+///
+/// A transport battery has to exchange with a real upstream, and this transport dials only through
+/// the client it was composed over, so a battery needs a client to compose it over. This is that
+/// client, and it is REACHABLE ONLY FROM A TEST BUILD: `#[cfg(test)]` inside this crate, and the
+/// `test-support` feature for the sibling transport batteries that compose over `http` and dial
+/// through it. A shipped build carries none of it — which is the whole point of the face, and the
+/// reason the client that serves is the composition root's and not this crate's.
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
-pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
+pub fn battery_exchange(settings: &ClientSettings) -> Arc<dyn EgressExchange> {
+    use hyper_util::client::legacy::connect::HttpConnector;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+    use std::time::Duration;
+
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut http = HttpConnector::new();
     http.enforce_http(false);
@@ -339,8 +400,10 @@ pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
     http.set_keepalive(Some(Duration::from_secs(60)));
     http.set_nodelay(true);
 
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls = rustls::ClientConfig::builder()
-        .with_root_certificates(webpki_roots_store())
+        .with_root_certificates(roots)
         .with_no_client_auth();
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
     let https = if settings.upstream_http1_only {
@@ -362,13 +425,21 @@ pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
     if settings.upstream_h2_prior_knowledge && !settings.upstream_http1_only {
         builder.http2_only(true);
     }
-    builder.build(https)
+    struct BatteryExchange(Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>);
+    impl EgressExchange for BatteryExchange {
+        fn exchange(&self, req: EgressRequest) -> EgressFuture {
+            let fut = self.0.request(req);
+            Box::pin(async move { fut.await.map_err(|e| Box::new(e) as EgressFault) })
+        }
+    }
+    Arc::new(BatteryExchange(builder.build(https)))
 }
 
-fn webpki_roots_store() -> rustls::RootCertStore {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    roots
+/// A transport the battery can DIAL through: composed over [`battery_exchange`].
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn battery_transport(settings: ClientSettings) -> HttpTransport {
+    HttpTransport::over_egress(battery_exchange(&settings), settings)
 }
 
 fn status_class(status: u16) -> StatusClass {
@@ -620,12 +691,16 @@ impl Transport for HttpTransport {
                 }
                 _ => return Err(TransportError::AddressRefused),
             };
+            // The client this instance was composed over. An instance handed none has nothing to
+            // dial THROUGH — and the honest answer to that is the refusal, not a pool built here
+            // so the call could return something.
+            let client = Arc::clone(self.egress.as_ref().ok_or(TransportError::Refused)?);
             let uri: http::Uri = host.parse().map_err(|_| TransportError::AddressRefused)?;
             let (tx, rx) = mpsc::unbounded_channel();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let inner = Arc::new(Inner::Egress {
                 uri,
-                client: self.egress_client.clone(),
+                client,
                 resp_tx: Mutex::new(Some(tx)),
                 resp_rx: AsyncMutex::new(rx),
                 pending: AsyncMutex::new(Vec::new()),
@@ -767,7 +842,10 @@ impl Transport for HttpTransport {
                     let req = builder
                         .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
-                    let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
+                    let resp = client
+                        .exchange(req)
+                        .await
+                        .map_err(|e| map_egress_err(&*e))?;
                     let status = resp.status().as_u16();
                     // Read against the instant the answer arrived: an HTTP-date `Retry-After`
                     // means "until then", and only this layer still holds both the header and the

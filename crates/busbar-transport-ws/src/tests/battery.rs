@@ -69,7 +69,7 @@ async fn upgrade_then_round_trip_byte_exact() {
 /// — and the composed chain the adopted connection reports is the real one, not a name for itself.
 #[tokio::test]
 async fn an_in_band_upgrade_over_http_with_cleared_facts() {
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+    let http = Arc::new(busbar_transport_http::battery_transport(
         busbar_transport_http::ClientSettings::default(),
     ));
     let ws = Arc::new(WsTransport::new());
@@ -125,7 +125,7 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
 /// thing it owns — the WebSocket handshake — on the streams they give up.
 #[tokio::test]
 async fn a_composed_round_trip_over_the_layers_below() {
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+    let http = Arc::new(busbar_transport_http::battery_transport(
         busbar_transport_http::ClientSettings::default(),
     ));
     let server_t = Arc::new(WsTransport::over(http));
@@ -177,7 +177,7 @@ async fn a_composed_round_trip_over_the_layers_below() {
 async fn the_layer_reported_is_one_the_transport_declares() {
     use busbar_contract::TransportMeta;
 
-    let over_http = WsTransport::over(Arc::new(busbar_transport_http::HttpTransport::new(
+    let over_http = WsTransport::over(Arc::new(busbar_transport_http::battery_transport(
         busbar_transport_http::ClientSettings::default(),
     )));
     let over_tcp = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
