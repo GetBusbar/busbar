@@ -437,3 +437,138 @@ fn a_drifted_bank_reads_as_a_drift() {
     };
     assert!(drift.to_string().contains("drifted"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE PORT'S OWN WIDTH — what the served path hands the adapter, driven through the adapter
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// The breaker unit already answers all three of these (the equivalence cells in
+// `crates/busbar/tests/breaker_equivalence.rs` d2, d3 and d10 prove it against the legacy book).
+// What these three cells ask is whether the answer SURVIVES THE SEAM: the egress unit's port is
+// what the walk speaks, and a port narrower than the unit behind it hands the unit the defaults
+// on every call — so the exemption, the operator's rule and the reason are all there, and none
+// of them is reachable from the path that serves.
+
+/// A passthrough 401 is the CALLER's own key failing, not this destination's: the classifier
+/// exempts it from any breaker penalty. Through the port, the same answer.
+#[test]
+fn a_passthrough_401_crosses_the_port_as_the_callers_own_fault() {
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(11);
+
+    let owned = breaker.classify(dest, shim::status(401, false, None, None));
+    assert_eq!(
+        owned.disposition,
+        Disposition::HardDown,
+        "busbar's own credential refused is the destination's fault and must hard-down it"
+    );
+
+    let passthrough = breaker.classify(dest, shim::status(401, true, None, None));
+    assert_eq!(
+        passthrough.disposition,
+        Disposition::ClientFault,
+        "a caller's own key refused is relayed with no breaker penalty; hard-downing the \
+         destination here benches a healthy upstream for every other caller"
+    );
+    assert_eq!(passthrough.outcome, Outcome::RecordNothing);
+}
+
+/// An operator's `error_map` rule is keyed on the provider's OWN vocabulary — the code the dialect
+/// read out of the response body — and only falls back to the HTTP status string where the body
+/// carried none. Through the port, the body-derived key still fires.
+#[test]
+fn a_body_derived_error_map_key_crosses_the_port_and_fires() {
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(12);
+    breaker.unit().set_error_map(
+        dest,
+        HashMap::from([("insufficient_quota".to_string(), "billing".to_string())]),
+    );
+
+    let out = breaker.classify(
+        dest,
+        shim::status(429, false, Some("insufficient_quota"), None),
+    );
+    assert_eq!(
+        out.disposition,
+        Disposition::HardDown,
+        "the operator's rule names the provider code the dialect read, and a 429 carrying it is a \
+         billing hard-down, not a rate limit"
+    );
+
+    let unmapped = breaker.classify(dest, shim::status(429, false, None, None));
+    assert_eq!(
+        unmapped.disposition,
+        Disposition::TransientUpstream,
+        "with no provider code the status string stands in, and 429 is a transient"
+    );
+}
+
+/// What the upstream said when the destination went down is the whole value of the event to
+/// whoever has to explain it. The classifier decides the reason; `observe` is the only call the
+/// walk makes after it; so the reason must ride the outcome across the port or it is lost at the
+/// one seam between the two.
+#[test]
+fn a_hard_down_carries_its_reason_across_the_port_into_the_unit() {
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(13);
+
+    let classified = breaker.classify(dest, shim::status(403, false, None, None));
+    assert_eq!(classified.disposition, Disposition::HardDown);
+    assert!(
+        breaker.observe("pool", dest, classified.outcome, 0, &route_token()),
+        "the first hard-down is a fresh trip"
+    );
+    assert_eq!(
+        breaker.unit().hard_down_reason(dest).as_deref(),
+        Some("auth rejected (HTTP 403)"),
+        "the reason the previous release recorded lane-wide, in its words, recorded here"
+    );
+
+    let billing = adapter_for("pool");
+    billing.unit().set_error_map(
+        dest,
+        HashMap::from([("1113".to_string(), "billing".to_string())]),
+    );
+    let classified = billing.classify(dest, shim::status(1113, false, None, None));
+    assert!(billing.observe("pool", dest, classified.outcome, 0, &route_token()));
+    assert_eq!(
+        billing.unit().hard_down_reason(dest).as_deref(),
+        Some("billing / insufficient balance"),
+    );
+}
+
+mod shim {
+    //! One function for the status the cells above want to hand the port. Where the port has the
+    //! field, the shim fills it. Where it does not, the shim hands over what the port CAN carry
+    //! and its doc comment names the gap — the cell then fails on the difference, which is the
+    //! red we want, rather than on a missing field, which is a red nobody can run.
+    //!
+    //! A shim never implements the missing behaviour. Widening the port means repointing the shim
+    //! at the real field and deleting the note.
+
+    use busbar_unit_egress::ports::UpstreamStatus;
+
+    /// An HTTP status as the served path reads it: the number, whose credential it refused, and
+    /// the two body-derived signals the dialect read out of the response.
+    ///
+    /// GAP: the port carries none of the last three. `passthrough`, `provider_code` and
+    /// `structured_type` are accepted and dropped here, so every cell that turns on one of them
+    /// reads the port's default — a declared credential and a body that said nothing.
+    pub fn status(
+        code: u16,
+        passthrough: bool,
+        provider_code: Option<&'static str>,
+        structured_type: Option<&'static str>,
+    ) -> UpstreamStatus {
+        let _ = (passthrough, provider_code, structured_type);
+        UpstreamStatus {
+            class: None,
+            code: Some(busbar_contract::WireStatus::new(
+                busbar_contract::transport::status_ns::HTTP,
+                u32::from(code),
+            )),
+            retry_after: None,
+        }
+    }
+}
