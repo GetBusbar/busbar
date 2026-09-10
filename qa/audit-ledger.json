@@ -1433,83 +1433,16 @@
    "paths": [
     "crates/busbar-plane-streams/src"
    ],
-   "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-   "round": 8,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "NIT": 1
-   },
-   "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency",
-   "auditor": "opus-plane-auditor-b",
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-streams/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 4
-     },
-     "report": "findings against plane-voice; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "e770cb46b434dc34c1b196a0af0f9f62c89e196fe7258283fc333e4b5ebb2dbf",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 2,
-      "LOW": 1,
-      "NIT": 4
-     },
-     "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-streams-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-     "counts": {
-      "HIGH": 2,
-      "MEDIUM": 8,
-      "LOW": 3
-     },
-     "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding"
-    },
-    {
-     "round": 8,
-     "result": "findings",
-     "auditor": "opus-plane-auditor-b",
-     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 3,
-      "NIT": 1
-     },
-     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency"
-    }
    ]
   },
   {
@@ -4584,25 +4517,14 @@
    "paths": [
     "crates/busbar-plane-streams/src/tests"
    ],
-   "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-streams/tests",
@@ -4610,25 +4532,14 @@
    "paths": [
     "crates/busbar-plane-streams/tests"
    ],
-   "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plugin/src/tests",
