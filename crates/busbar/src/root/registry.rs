@@ -98,9 +98,12 @@ use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;
-// The WS transport is the voice plane's edge and the one transport that leaves with its plane, so
-// its crate — and everything below it — is compiled only when voice is.
-#[cfg(feature = "plane-voice")]
+// THE SWITCH IS THE CRATE EDGE, not any plane's name. This wire is compiled when something in this
+// build needs it — a plane that declares a route on it, the generic duplex acceptor, both — and the
+// honest condition for "is the wire here" is whether the wire's crate is linked. Gating it on one
+// plane's feature made the wire that plane's property, which is a thing to re-gate the day the
+// second one declares a session, and a thing to argue about in the meantime.
+#[cfg(feature = "duplex-wire")]
 use busbar_transport_ws::WsTransport;
 
 /// Why a node will not boot.
@@ -162,7 +165,7 @@ pub struct ComposedTransports {
     pub sse: Arc<SseTransport>,
     /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
     /// upgrade arrives on, and the one registered under the `ws` key.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     pub ws: Arc<WsTransport>,
     /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
     ///
@@ -170,7 +173,7 @@ pub struct ComposedTransports {
     /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
     /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
     /// cannot be both.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
@@ -189,9 +192,9 @@ impl ComposedTransports {
     /// which is a fact of the dial rather than of the registry.
     #[must_use]
     pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
-        #[cfg(not(feature = "plane-voice"))]
+        #[cfg(not(feature = "duplex-wire"))]
         let _ = address;
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "duplex-wire")]
         let secure = address
             .authority()
             .is_some_and(|authority| authority.starts_with("wss://"));
@@ -200,11 +203,11 @@ impl ComposedTransports {
             TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
             HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
             SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
-            #[cfg(feature = "plane-voice")]
+            #[cfg(feature = "duplex-wire")]
             <WsTransport as TransportMeta>::KEY if secure => {
                 Arc::clone(&self.ws_tls) as Arc<dyn Transport>
             }
-            #[cfg(feature = "plane-voice")]
+            #[cfg(feature = "duplex-wire")]
             <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
             GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
             StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
@@ -269,13 +272,13 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // continuation frames before anything above the transport sees it, so the ceiling has to be
     // stated at the handshake or it is not stated at all — and a node that refuses a body of a
     // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     let max_message_bytes = client_settings.request_body_max_bytes;
     let tcp = Arc::new(TcpTransport::new());
     let tls = Arc::new(TlsTransport::new());
     let http = Arc::new(HttpTransport::new(client_settings));
     let sse = Arc::new(SseTransport::new(Arc::clone(&http)));
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     let ws = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&http) as Arc<dyn Transport>,
         max_message_bytes,
@@ -285,7 +288,7 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
     // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
     // the refusal is the whole voice plane's answer.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&tls) as Arc<dyn Transport>,
         max_message_bytes,
@@ -297,9 +300,9 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         tls,
         http,
         sse,
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "duplex-wire")]
         ws,
-        #[cfg(feature = "plane-voice")]
+        #[cfg(feature = "duplex-wire")]
         ws_tls,
         grpc,
         stdio,
@@ -339,9 +342,9 @@ fn registered_rows() -> Vec<Registered> {
             composed_over: Some(HttpTransport::KEY),
         },
     ];
-    // WS goes in beside the others when the voice plane is compiled, and leaves with it: a row for a
+    // WS goes in beside the others when its crate is linked, and leaves with it: a row for a
     // transport this build does not carry would be the root stating a composition it did not make.
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     rows.push(Registered {
         key: WsTransport::KEY,
         composes_over: WsTransport::COMPOSES_OVER,
@@ -441,7 +444,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
         Arc::clone(&transports.http) as Arc<dyn Plugin>,
         Arc::clone(&transports.sse) as Arc<dyn Plugin>,
     ];
-    #[cfg(feature = "plane-voice")]
+    #[cfg(feature = "duplex-wire")]
     to_register.push(Arc::clone(&transports.ws) as Arc<dyn Plugin>);
     to_register.push(Arc::clone(&transports.grpc) as Arc<dyn Plugin>);
     to_register.push(Arc::clone(&transports.stdio) as Arc<dyn Plugin>);
