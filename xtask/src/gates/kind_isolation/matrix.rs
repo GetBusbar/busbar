@@ -1885,7 +1885,12 @@ pub fn selftest(
         "a vendor name in a neutral crate is dialect vocabulary, scored like any other kind",
         &[ROW_MATRIX],
         plant(
-            "crates/busbar-store-memory/src/vendor.rs",
+            // THE DIRECTORY, NOT THE PACKAGE NAME. `busbar-store-memory` lives at
+            // `crates/store-memory`, and a plant at `crates/busbar-store-memory/src/vendor.rs` is a
+            // file under no crate at all: `owning_dir` finds no manifest above it, the scan skips
+            // it, and the case went GREEN while asserting RED. The fixture has to name the path the
+            // tree really has.
+            "crates/store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
         ),
         &["busbar-store-memory", "dialect"],
