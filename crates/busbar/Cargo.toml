@@ -383,3 +383,26 @@ criterion = { workspace = true }
 [[bench]]
 name = "hook_path"
 harness = false
+
+# ── SERVING SWITCHES HELD OFF `default`, AND WHAT EACH ONE WAITS ON ─────────────────────────────
+# A `root-<plane>-serve` feature is the switch that decides whether the root's leg for that plane is
+# on the request path OF THE BINARY AN OPERATOR RUNS. A plane whose crate is in `default`, whose
+# bindings are in `default`, and whose SERVING switch is not, ships as a plane this binary knows how
+# to answer and does not: every rig judges the leg, and none of them judge the binary, because the
+# binary never reaches the leg. Default-off is an ORDERING — the leg is built before it is switched
+# on — and an ordering that nothing retires is indistinguishable from a leg that was never finished.
+#
+# So the ordering is written down. `every_serving_switch_is_shipped_or_declares_its_blocker`
+# (tests/plane_isomorphism.rs) reads the `[features]` section, finds every `root-<plane>-serve`, and
+# requires each to be EITHER in `default` OR to have a row here naming the thing it waits on. It
+# names no plane and this table is data, so a plane that grows a serving switch tomorrow is held to
+# the same rule without a line of Rust changing. A row whose switch no longer exists is red too: a
+# hold that outlives its switch is a hold nobody retired.
+#
+# THIS TABLE ONLY SHRINKS. Every row is a line somebody has to delete, which is the point.
+[package.metadata.busbar.serving-switches-held-off]
+"root-mcp-serve" = """
+the MCP plane's own default flip is a queued cut on the mcp line (its `[SEAM]` manifest commit \
+joins `root-mcp-serve` to `default` and retires this row); the switch flips with that cut and not \
+ahead of it. On this base the plane's mount row still refuses by name (`source: "auth"`), so the \
+flip alone would change which path is compiled and not which path a request takes."""
