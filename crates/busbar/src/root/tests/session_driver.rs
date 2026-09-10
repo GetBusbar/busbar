@@ -257,8 +257,11 @@ impl Plane for MadeUpPlane {
             .ok_or(busbar_contract::wire::Encode::Unrepresentable)?;
         opened.frames += 1;
         let spelled = format!(
-            "up:{}:{}:{}",
+            "up:{}:{}:{}:{}",
             u.key().get(),
+            // WHO the view says the write is for. A dash where it says nobody, so the anonymous
+            // answer is a value a cell can assert rather than an absence it has to infer.
+            u.principal().map_or("-", PrincipalId::as_str),
             opened.frames,
             String::from_utf8_lossy(f.bytes.as_slice())
         );
@@ -479,6 +482,9 @@ struct RecordingUnits {
     /// Where this session's units seal their leg to, once a unit has completed. `None` is a session
     /// that relays nothing, which is every session the driver served before this line.
     dest: Option<PlaneDestination>,
+    /// Who this composition's authenticate step resolved. `None` is the anonymous posture, which
+    /// has to stay representable and is what every cell above runs under.
+    principal: Option<PrincipalId>,
 }
 
 impl RecordingUnits {
@@ -530,6 +536,10 @@ impl SessionUnits for RecordingUnits {
 
     fn destination(&self, _session: u64) -> Option<PlaneDestination> {
         self.dest.clone()
+    }
+
+    fn principal(&self, _session: u64) -> Option<PrincipalId> {
+        self.principal.clone()
     }
 
     fn closed(&self, session: u64) {
@@ -1396,7 +1406,7 @@ async fn a_relayed_frame_goes_out_under_the_open_units_own_view() {
     let written = offers.lock().expect("the log").clone();
     assert_eq!(
         written,
-        vec![b"up:2:1:relay".to_vec()],
+        vec![b"up:2:-:1:relay".to_vec()],
         "the plane wrote the relay against the view of the unit that SEALED the leg — key 2, the \
          unit the client's first frame opened (key 1 was the opening unit at the upgrade) — and \
          not a key minted at write time"
@@ -1681,4 +1691,54 @@ async fn a_providers_reply_that_cannot_be_written_ends_the_session() {
         "a client at depth is 'try again later' and not anybody's fault"
     );
     assert_eq!(driver.open_sessions(), 0);
+}
+
+/// THE LEG'S VIEW NAMES THE PRINCIPAL THE AUTHENTICATE STEP RESOLVED, and it names it because the
+/// COMPOSITION published it — not because the driver worked it out.
+///
+/// The driver has no credential, no chain and no standing to resolve one: the authenticate step's
+/// answer belongs to the chain, the loop opens it, and a composition that recorded it at the first
+/// step it is lent one is the only thing on this seam that knows. So the question is asked of the
+/// composition, and what comes back travels on the identity the leg's writes are made under.
+///
+/// The cell reads it back through the PLANE, which is the only vantage outside the kernel that sees
+/// a view: what the made-up plane writes is the principal the view carries, and the string is the
+/// composition's own. A leg filed under nobody is a bill nobody can be shown and a revocation
+/// nobody can be traced through — and the cell above this one holds the other half, that `-` is
+/// still what an anonymous session's leg says, because a seam that could not answer "nobody" would
+/// be one that made every composition invent a caller.
+#[tokio::test]
+async fn the_legs_view_names_the_principal_the_composition_resolved() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    node.units.principal = Some(PrincipalId::new("made-up-caller"));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    let offers = Arc::new(Mutex::new(Vec::new()));
+    let dialler = FakeDialler {
+        offers: Arc::clone(&offers),
+        finished: Arc::new(Mutex::new(false)),
+        lease_answer: None,
+        dial_answer: None,
+        dials: Arc::new(Mutex::new(0)),
+    };
+    driver.drive(session, frame(0, OPENS_A_UNIT));
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted([RELAYS_A_FRAME].into_iter().collect()),
+        &driver,
+        session,
+        &dialler,
+    );
+    let _ = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+    driver.drive(session, frame(1, RELAYS_A_FRAME));
+
+    assert_eq!(
+        offers.lock().expect("the log").clone(),
+        vec![b"up:2:made-up-caller:1:relay".to_vec()],
+        "the view the plane wrote against names the caller the composition's own authenticate step \
+         resolved, beside the key of the unit that sealed the leg"
+    );
 }

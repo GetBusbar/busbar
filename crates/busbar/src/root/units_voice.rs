@@ -762,6 +762,14 @@ pub struct SessionBinding {
     /// The upstream leg Verify sealed for the session, in the shape the PLANE reads: what the
     /// plane's upstream half of the codec state is opened for.
     pub destination: Option<busbar_contract::dest::VerifiedDestination>,
+    /// WHO THE SESSION IS FOR, as the chain resolved the caller at the open.
+    ///
+    /// Settled in the same breath as the chain and the leg, and for the same reason all three are
+    /// settled at once: this is the first step the loop hands a principal to, and it is the only
+    /// step of unit zero that holds one. Every later unit of the session is that caller's, and the
+    /// composition publishes it back to the driver so that the leg's own writes carry it — a relay
+    /// filed under nobody is a bill nobody can be shown.
+    pub principal: PrincipalId,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -1605,6 +1613,7 @@ impl Units for VoiceUnit<'_> {
                         dialect: self.dialect,
                         chain: std::sync::Arc::new(chain),
                         destination,
+                        principal: principal.clone(),
                     },
                 );
             }
@@ -2202,6 +2211,15 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
         self.node
             .bound(session)
             .and_then(|binding| binding.destination)
+    }
+
+    /// The caller unit zero authenticated, off the same settlement the leg came off.
+    ///
+    /// The same read as the destination beside it and deliberately from the same row: the leg and
+    /// the caller it is for were decided in one step, by one token, at one moment, and answering
+    /// them out of two places would be two answers that can disagree about one session.
+    fn principal(&self, session: u64) -> Option<PrincipalId> {
+        self.node.bound(session).map(|binding| binding.principal)
     }
 
     fn closed(&self, session: u64) {

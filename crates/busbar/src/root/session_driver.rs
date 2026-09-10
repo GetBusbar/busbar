@@ -274,6 +274,26 @@ pub trait SessionUnits: Send + Sync {
         None
     }
 
+    /// WHO THIS SESSION IS FOR, as the composition's own authenticate step resolved it.
+    ///
+    /// The one fact about a session that is decided INSIDE the loop and needed OUTSIDE it. The
+    /// authenticate step's answer belongs to the chain and nothing may open it there; the loop
+    /// opens it and hands the principal to the steps that are lent one, and a composition that
+    /// records it at the first of those has it. This is where it comes back across.
+    ///
+    /// It is needed outside the loop because the leg's WRITES are a unit's writes, and a unit has a
+    /// principal. A view minted for the relay with `None` here is a view that says the frames going
+    /// upstream are for nobody — which is a bill nobody can be shown and a revocation nobody can be
+    /// traced through, arrived at not by deciding it but by failing to carry it.
+    ///
+    /// `None` until a unit of this session has been through authenticate, and `None` from a
+    /// composition that resolves none — the anonymous posture has to stay representable, and a seam
+    /// that could not answer `None` would be one that made every composition invent a principal.
+    fn principal(&self, session: u64) -> Option<PrincipalId> {
+        let _ = session;
+        None
+    }
+
     /// The session is over. Whatever the units held for it across moments can go.
     fn closed(&self, session: u64) {
         let _ = session;
@@ -381,6 +401,10 @@ impl SessionUnits for crate::root::kernel::ProductionUnits {
 
     fn destination(&self, session: u64) -> Option<PlaneDestination> {
         self.duplex.as_ref().and_then(|c| c.destination(session))
+    }
+
+    fn principal(&self, session: u64) -> Option<PrincipalId> {
+        self.duplex.as_ref().and_then(|c| c.principal(session))
     }
 
     fn closed(&self, session: u64) {
@@ -1380,13 +1404,14 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
                         stream: Some(StreamId(0)),
                         // Outbound: this is the half that leaves this node.
                         direction: Direction::Outbound,
-                        // THE ONE FIELD THIS DRIVER CANNOT YET ANSWER. The principal the
-                        // authenticate step resolved lives on the unit that ran, and the session's
-                        // units do not publish it back across this seam. `None` is the honest
-                        // answer rather than a guess — a view that named the wrong principal would
-                        // be worse than one that names none — and closing it is a `SessionUnits`
-                        // question, recorded in the deletion list.
-                        principal: None,
+                        // WHO THE LEG'S WRITES ARE FOR, as the composition's own authenticate
+                        // step resolved it and published back across the seam. Asked of the
+                        // COMPOSITION and never guessed here: this driver has no credential, no
+                        // chain and no standing to resolve one, and a view that named the wrong
+                        // principal would be worse than one that named none. `None` stays
+                        // representable and stays honest — it is what an anonymous session's leg
+                        // is, and what a composition that resolves no principal answers.
+                        principal: self.units.principal(session.0),
                     },
                     op: draft.op,
                 });
