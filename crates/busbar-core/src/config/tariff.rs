@@ -184,3 +184,7 @@ pub struct ResolvedTariff {
     /// Whether such a unit owes the quantities its meter reported.
     pub disputed_charges_units: bool,
 }
+
+#[cfg(test)]
+#[path = "tests/tariff_tests.rs"]
+mod tariff_tests;

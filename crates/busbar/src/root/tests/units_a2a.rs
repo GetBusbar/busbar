@@ -723,6 +723,74 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
     );
 }
 
+/// **A DESTINATION WITH NO LANE IS NOT A DESTINATION, AND ITS VISIT HOLDS NO TRANSACTION.**
+///
+/// A task for which no agent is configured still resolves to an upstream-SHAPED destination — the
+/// shape says which family would carry it, and that is what the shape is for — with no lane behind
+/// it, because there was nothing to name. This leg used to read the SHAPE and charge the caller as
+/// though an exchange had happened: a phantom fee, on the one plane whose recorded corpus could not
+/// see it. It reads the lane now. No lane is no leg, and no leg is no exchange.
+///
+/// Written over the two upstream shapes rather than the one, because a session's own upstream
+/// carries a lane copied from the leg that opened it and can lose it the same way.
+#[test]
+fn an_upstream_shaped_destination_with_no_lane_is_no_destination() {
+    let reachable = draft(ops::OP_MESSAGE_SEND);
+    assert!(
+        reachable.has_upstream(),
+        "the configured agent is reachable"
+    );
+
+    for empty in [
+        DestinationFacts::Upstream {
+            transport: "http",
+            address: busbar_contract::UpstreamAddress::socket("agent.example:443"),
+            lane: LaneId::new(""),
+        },
+        DestinationFacts::SessionUpstream {
+            upstream: busbar_contract::UpstreamIdx(0),
+            stream: None,
+            lane: LaneId::new(""),
+        },
+    ] {
+        let mut no_agent = reachable.clone();
+        no_agent.destination = empty;
+        assert!(
+            !no_agent.has_upstream(),
+            "an upstream shape with nothing behind it is not somewhere the task went"
+        );
+        assert_eq!(
+            crate::root::kernel::default_fee(&fee_evidence(
+                &no_agent,
+                busbar_caps::OriginKind::Client,
+                true
+            ))
+            .0,
+            0,
+            "a visit that held no exchange is charged for the visit and nothing else"
+        );
+    }
+}
+
+/// The legs are read the same way the destination is: one reachable leg makes the unit reachable,
+/// and a list of lane-less ones does not.
+#[test]
+fn a_leg_with_no_lane_does_not_make_a_unit_reachable() {
+    let mut only_empty_legs = draft(ops::OP_MESSAGE_SEND);
+    only_empty_legs.destination = DestinationFacts::PlaneRecord {
+        schema: records::SCHEMA_TASK,
+        op: records::OP_SCAN,
+    };
+    only_empty_legs.legs = vec![Leg {
+        destination: DestinationFacts::Upstream {
+            transport: "http",
+            address: busbar_contract::UpstreamAddress::socket("agent.example:443"),
+            lane: LaneId::new(""),
+        },
+    }];
+    assert!(!only_empty_legs.has_upstream());
+}
+
 /// The four endings map one for one onto the audit unit's own four.
 #[test]
 fn every_ending_has_an_audited_spelling() {

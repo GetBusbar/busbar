@@ -385,6 +385,55 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "the fee schedule's install and its holder in the composition root: boot closes over the deployment's `tariff:` section and hands the root a resolver, and the holder answers it. Both lines are control vocabulary because the root is where a deployment's configuration becomes a running node, and there is nowhere else the schedule could be installed from without a plane or a unit reading configuration for itself."
 
+# ── THE TARIFF'S CELLS: one knob, one count, every plane ─────────────────────────────────────────
+#
+# The knobs are proven ONCE and driven over the plane DECLARATIONS, never once per plane: a cell per
+# plane is a place for the five to be allowed to differ, and they may not. Every field the cells
+# read is read through `busbar_contract::plane::PlaneMeta` off the plane's own meta.rs, so a sixth
+# plane joins the proof by existing.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "crates/busbar/tests/tariff_knobs.rs: the five shipped plane types, named once each in one table, plus the golden's own `llm.stream` family segment in the cell that counts the recorded contradictions. That table IS the parametrisation — six cells drive it and each asserts that a knob moves the same number on all five — so the figure is 20 and not five cells' worth. A cell per plane would have cost more and proved less: it would have made a plane that priced differently expressible."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the same cells naming `busbar_kernel::teller`'s schedule types — `charge`, `TariffCell`, `Charge` — which is the face under proof. A cell that drove a transcription of the rule instead of the rule would be a proof about the transcription."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "`busbar_caps::PostingFlags::METER_DISPUTED` in the knob cells: the mark is half the answer a dispute policy gives, and a cell that asserted the count without the mark would pass over the half that puts a disagreement on the disputes report."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the composition root's own cells for the schedule it holds and for the A2A leg's reachability, which are root vocabulary because the root is where a deployment's configuration becomes a running node."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "`StatusAt` and `StatusClass` in the knob cells: where a dialect reports its status is a TRANSPORT fact the plane declares, and the evidence cube cannot be built without naming both ends of it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the `tariff:` section's plane scope, and the resolver cells that read the registered plane keys off `plane::plane_keys()` rather than listing them. Listing them would have cost more and would have had to be edited the day a plane was added — which is the one thing a plane-agnostic schedule exists to make unnecessary."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the boot validator's refusal for a tariff scope naming a pool, group or plane that is not defined: a schedule nothing would ever select is a deployment billed the default while its configuration file says otherwise."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
