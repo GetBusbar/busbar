@@ -345,6 +345,7 @@ dependencies = [
  "busbar-plane-admin",
  "busbar-plane-llm",
  "busbar-plane-llm-openai",
+ "busbar-plane-llm-responses",
  "busbar-plane-mcp",
  "busbar-plane-voice",
  "busbar-plugin-loader",
