@@ -178,6 +178,72 @@ key = "cell.busbar-unit-ledger.unit.count"
 by = 2
 because = "FACE: the ledger's balance key interns its three names (busbar-unit-ledger/src/totals.rs, migration.rs); 2 more namings of unit vocabulary"
 file = "qa/kind-isolation.toml"
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 338
+because = "FACE: ledger hydration and the ledger tick (ARCHITECTURE.md PB-14/PB-42/PB-59/PB-99, the boot hydrate; A0, the ledger's own tick owns pruning and checkpoint anchoring) — busbar-unit-ledger/src/hydrate.rs and tick.rs, the door's carry-in in busbar-unit-admission/src/decide.rs and the cost projection in busbar-unit-cost/src/project.rs; 338 lines measured across the unit crates"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 338
+because = "FACE: ledger hydration and the ledger tick — the same 338 unit lines, counted once more by the union row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+by = 3
+because = "FACE: ledger hydration — tests/ledger_hydration_identity.rs compares the unit chain's boot recovery with the previous release's over busbar_api::{Store, VirtualKey, UsageLedger}; 3 namings, all in the proof (dev-only edge)"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+by = 1
+because = "FACE: ledger hydration — the root's durability wiring hands the hydrated spend in through the door (root/durability.rs); 1 more naming of caps vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+by = 1
+because = "FACE: the ledger tick — the root schedules the ledger's own tick beside the node tick (root/durability.rs, main.rs); 1 more naming of control vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+by = 3
+because = "FACE: ledger hydration — the identity proof names the previous release's recovery it compares against (tests/ledger_hydration_identity.rs); 3 namings, all in the proof"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+by = 1
+because = "FACE: ledger hydration — 1 more naming of plane vocabulary in root/durability.rs where the hydrated spend is keyed"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+by = 73
+because = "FACE: ledger hydration and the ledger tick — root/durability.rs (467 lines) composes the ledger unit's hydrate and tick and carries the spend into the admission door; 73 more namings of unit vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-admission.unit.count"
+by = 12
+because = "FACE: ledger hydration — the door carries the hydrated spend in (busbar-unit-admission/src/decide.rs names the ledger and cost units); 12 more namings"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-cost.unit.count"
+by = 4
+because = "FACE: ledger hydration — busbar-unit-cost/src/project.rs projects the hydrated spend for the door; 4 more namings"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-ledger.unit.count"
+by = 6
+because = "FACE: ledger hydration and the ledger tick — hydrate.rs and tick.rs name the admission door and the wal they anchor; 6 more namings"
+file = "qa/kind-isolation.toml"
+
 
 
 
@@ -400,10 +466,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14607
+unit_total_ceiling = 14945
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23466
+union_ceiling = 23804
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
