@@ -3,6 +3,8 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use busbar_api::ScopeRef;
+use busbar_core::cost::CostModel;
 use busbar_unit_scope::required_scope;
 
 const POOL: &str = "pool-main";
@@ -332,9 +334,9 @@ fn a_metric_written_twice_keeps_the_tighter_amount() {
 #[test]
 fn a_pool_scoped_limit_gets_its_own_row() {
     let mut cheap = limit(LimitMetric::Budget, 500, Some(LimitWindow::Month));
-    cheap.scope = Some(busbar_api::ScopeRef::pool("value"));
+    cheap.scope = Some(ScopeRef::pool("value"));
     let mut dear = limit(LimitMetric::Budget, 500, Some(LimitWindow::Month));
-    dear.scope = Some(busbar_api::ScopeRef::pool("frontier"));
+    dear.scope = Some(ScopeRef::pool("frontier"));
     let groups = BTreeMap::from([configured("team", vec![cheap, dear])]);
     let table = group_table(&groups, &BTreeMap::new());
     let buckets = &table.groups()[0].buckets;
@@ -393,4 +395,177 @@ fn a_group_this_node_does_not_have_is_fail_closed() {
         table.chain_for("vk_one", None).is_ok(),
         "a principal bound to no group walks its attribution bucket alone"
     );
+}
+
+// ── the byte-identity cell: two live projections of the money topology ──────────────────────────
+
+/// **The hazard.** The `groups:` section is projected into enforcement buckets TWICE while the
+/// retirement is in flight: once by the retiring core's `CostModel::resolve_parts`, and once by
+/// [`group_table`] here, into the table the door walks. Both are shipped, both are internally
+/// consistent, and neither knows the other exists. Two projections of the MONEY topology that
+/// disagree by one field is how a deployment comes to be admitted against one set of ledger cells
+/// and billed against another — with no error, no refusal and nothing on any surface to say so.
+///
+/// So the cell drives the SAME `(rate_card, fee, groups)` inputs through both and compares every
+/// field of the resolved value: the group order, the freeze flag, the gauge, the parent index, and
+/// for every bucket its ledger id, its window, all seven caps, its scope and its downgrade target.
+/// Not a summary and not a spot check — a divergence the comparison cannot express is a divergence
+/// nobody catches.
+///
+/// The scope reference is the one field the two do not both keep: core carries `(kind, value)` and
+/// the door's table carries the value alone, because the configuration grammar can produce no kind
+/// but `pool` and the door compares by pool name. The cell asserts BOTH halves — that the value
+/// matches and that the kind core kept is the one the door's reading assumes — so the day a second
+/// scope kind lands, this is what goes red rather than a bill.
+fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
+    let core = CostModel::resolve_parts(None, fee, groups);
+    let core_view = core.resolved_view();
+    let table = group_table(groups, &BTreeMap::new());
+    let door = table.groups();
+
+    assert_eq!(
+        core_view.len(),
+        door.len(),
+        "the two projections resolved a different number of groups"
+    );
+    for (c, d) in core_view.iter().zip(door.iter()) {
+        assert_eq!(c.name, d.name, "group order or naming diverged");
+        assert_eq!(c.enabled, d.enabled, "freeze flag diverged for {}", c.name);
+        assert_eq!(
+            c.concurrent_cap, d.concurrent_cap,
+            "in-flight gauge diverged for {}",
+            c.name
+        );
+        assert_eq!(c.parent, d.parent, "parent index diverged for {}", c.name);
+        assert_eq!(
+            c.buckets.len(),
+            d.buckets.len(),
+            "bucket count diverged for {}",
+            c.name
+        );
+        for (cb, db) in c.buckets.iter().zip(d.buckets.iter()) {
+            assert_eq!(cb.bucket_id, db.bucket_id, "ledger cell diverged");
+            assert_eq!(cb.window, db.window, "window diverged for {}", cb.bucket_id);
+            assert_eq!(
+                cb.requests_cap, db.requests_cap,
+                "requests cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.tokens_cap, db.tokens_cap,
+                "tokens cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.tokens_input_cap, db.tokens_input_cap,
+                "input cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.tokens_output_cap, db.tokens_output_cap,
+                "output cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.tokens_cache_read_cap, db.tokens_cache_read_cap,
+                "cache-read cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.tokens_cache_write_cap, db.tokens_cache_write_cap,
+                "cache-write cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.budget_cap, db.budget_cap,
+                "budget cap diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.scope.as_ref().map(|(_, v)| v.clone()),
+                db.scope,
+                "bucket scope diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.scope.as_ref().map(|(k, _)| k.as_str()),
+                cb.scope.as_ref().map(|_| "pool"),
+                "a scope kind the door's table cannot express reached {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.downgrade_to.as_ref().map(|(_, v)| v.clone()),
+                db.downgrade_to,
+                "downgrade target diverged for {}",
+                cb.bucket_id
+            );
+            assert_eq!(
+                cb.downgrade_to.as_ref().map(|(k, _)| k.as_str()),
+                cb.downgrade_to.as_ref().map(|_| "pool"),
+                "a downgrade kind the door's table cannot express reached {}",
+                cb.bucket_id
+            );
+        }
+    }
+
+    // The flat fee is the third configured money value and it is clamped on the way through, so
+    // the clamp is part of what has to agree; with no card every class prices at nothing and the
+    // fee is the whole of what a request bills.
+    assert_eq!(core.resolved_fee(), fee.max(0), "the clamped fee diverged");
+    assert!(
+        !core.pricing_enabled() && !core.model_unpriced("anything"),
+        "with no card nothing is unpriced, because there is nothing to be missing from"
+    );
+}
+
+/// The whole topology, over one configuration that exercises every arm the projection has: a
+/// nested chain, a frozen group, a gauge folded across repeats, a metric folded to the tighter
+/// amount, two pool-scoped budgets on their own rows, and a downgrade on the tighter of two.
+#[test]
+fn the_two_group_projections_resolve_the_same_topology() {
+    let mut cheap = limit(LimitMetric::Budget, 500, Some(LimitWindow::Month));
+    cheap.scope = Some(ScopeRef::pool("value"));
+    cheap.downgrade_to = Some(ScopeRef::pool("value"));
+    let mut dear = limit(LimitMetric::Budget, 5_000, Some(LimitWindow::Month));
+    dear.scope = Some(ScopeRef::pool("frontier"));
+
+    let (root_name, root_cfg) = configured(
+        "root",
+        vec![
+            limit(LimitMetric::Concurrent, 8, None),
+            limit(LimitMetric::Concurrent, 2, None),
+            limit(LimitMetric::Requests, 40, Some(LimitWindow::Minute)),
+            limit(LimitMetric::Requests, 10, Some(LimitWindow::Minute)),
+            limit(LimitMetric::Tokens, 1_000, Some(LimitWindow::Hour)),
+            limit(LimitMetric::TokensInput, 700, Some(LimitWindow::Hour)),
+            limit(LimitMetric::TokensOutput, 300, Some(LimitWindow::Hour)),
+            limit(LimitMetric::TokensCacheRead, 200, Some(LimitWindow::Day)),
+            limit(LimitMetric::TokensCacheWrite, 100, Some(LimitWindow::Day)),
+            cheap,
+            dear,
+        ],
+    );
+    let (leaf_name, mut leaf_cfg) = configured(
+        "leaf",
+        vec![limit(LimitMetric::Budget, 25, Some(LimitWindow::Total))],
+    );
+    leaf_cfg.parent = Some(root_name.clone());
+    leaf_cfg.enabled = false;
+    let (bare_name, bare_cfg) = configured("bare", Vec::new());
+
+    let groups = BTreeMap::from([
+        (root_name, root_cfg),
+        (leaf_name, leaf_cfg),
+        (bare_name, bare_cfg),
+    ]);
+    identity_case(&groups, 7);
+}
+
+/// The empty and the clamped ends, which are where a projection that "obviously agrees" stops
+/// agreeing: no groups at all, and a negative configured fee that must clamp to nothing rather
+/// than credit a budget back toward headroom.
+#[test]
+fn the_two_group_projections_agree_on_the_empty_and_clamped_ends() {
+    identity_case(&BTreeMap::new(), -1);
+    identity_case(&BTreeMap::from([configured("solo", Vec::new())]), 0);
 }

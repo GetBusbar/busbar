@@ -6,6 +6,7 @@ use super::*;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
+use busbar_core::config::groups::{LimitCfg, LimitMetric, LimitWindow};
 use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_kernel::teller::Ended;
 
@@ -177,10 +178,10 @@ async fn rig(fixture: Fixture) -> Rig {
             busbar_core::config::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![LimitCfg {
+                    metric: LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
