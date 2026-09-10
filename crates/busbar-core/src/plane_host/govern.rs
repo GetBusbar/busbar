@@ -30,9 +30,9 @@ use busbar_plugin::hot::{
 use busbar_plugin::read_sized_field;
 
 /// Nanodollars per micro-currency unit — the projection from a [`Usage`]'s `unit_cost_micros` money
-/// scalar into the engine's nanodollar ledger unit ([`CostAmount`]). Mirrors `cost::NANOS_PER_MICRO`
-/// (a private const there); duplicated as a local so this module takes no new pub surface on `cost`.
-const NANOS_PER_MICRO: u128 = 1_000;
+/// scalar into the engine's nanodollar ledger unit ([`CostAmount`]): the cost unit's one constant,
+/// reached through `cost`, the engine's one seam onto that unit, not a local copy of it.
+use crate::cost::NANOS_PER_MICRO;
 
 /// Default bounded lifetime stamped onto a resolved credential reference until the real
 /// credential-store lookup (Phase 2) supplies the mint's true expiry.

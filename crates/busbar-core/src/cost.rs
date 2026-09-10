@@ -28,18 +28,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use busbar_api::{
-    ScopeRef, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+use busbar_api::{ScopeRef, RESERVED_UNITS};
+// The engine's one seam onto the cost unit: every other module in this crate that needs one of the
+// unit's constants reads it through here rather than naming the unit itself.
+pub(crate) use busbar_unit_cost::{
+    CurrencyCode, LaneRates, RateCard, TierRates, NANOS_PER_CENT, NANOS_PER_MICRO,
 };
 
 use crate::config::groups::LimitMetric;
-
-/// Nano-units (1e-9 abstract cost unit) per cent (1e-2 unit): the divisor that lands a derived
-/// nano-unit total in whole cents.
-const NANOS_PER_CENT: u128 = 10_000_000;
-
-/// Nano-units per micro-unit, for the hook seam's `spend_micros` projection.
-const NANOS_PER_MICRO: u128 = 1_000;
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
@@ -83,74 +79,17 @@ pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
         .any(|w| w.as_str() == window)
 }
 
-/// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
-/// once at resolve). All hot-path math is integer over these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct RateNanos {
-    pub(crate) input: u64,
-    pub(crate) output: u64,
-    pub(crate) cache_read: u64,
-    pub(crate) cache_write: u64,
-}
-
-impl RateNanos {
-    /// Project the NEUTRAL raw-rate view ([`busbar_substrate::billing::RawTierRates`]) — the four raw
-    /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. This is
-    /// the ONE projection: config micro-units × 1000, rounded once, with the defense-in-depth clamp.
-    /// Core reads rates through this NEUTRAL view so the projection names no plane config type; the
-    /// arithmetic (and thus every derived figure) is byte-identical to the pre-seam `from_cfg`.
-    pub(crate) fn from_raw(raw: &busbar_substrate::billing::RawTierRates) -> Self {
-        // Config values are validated finite + >= 0; the clamp here is defense-in-depth so a NaN
-        // or negative that slipped past validation becomes 0, never a huge/garbage integer rate.
-        fn nanos(utok: f64) -> u64 {
-            let v = (utok * 1000.0).round();
-            if v.is_finite() && v > 0.0 {
-                v as u64
-            } else {
-                0
-            }
-        }
-        Self {
-            input: nanos(raw.input),
-            output: nanos(raw.output),
-            cache_read: nanos(raw.cache_read),
-            cache_write: nanos(raw.cache_write),
-        }
-    }
-
-    /// Project a core `RateEntryCfg` by first taking its neutral raw-rate view, then
-    /// [`from_raw`](Self::from_raw). A thin BYTE-IDENTICAL adapter kept while the `rate_card:` grammar
-    /// still lives in core (S2a): the map values ARE the raw micro-floats. Once the grammar relocates
-    /// to the owning plane (S2b) this adapter goes and callers hand [`from_raw`] the plane-filled view.
-    pub(crate) fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
-        Self::from_raw(&r.raw_tier_rates())
-    }
-
-    /// The nano rate for one RESERVED tier key (0 for a non-reserved key — opens price via the
-    /// separate `ExtraRates` table, never here).
-    #[inline]
-    pub(crate) fn reserved_rate(&self, unit: &str) -> u64 {
-        match unit {
-            UNIT_INPUT => self.input,
-            UNIT_OUTPUT => self.output,
-            UNIT_CACHE_READ => self.cache_read,
-            UNIT_CACHE_WRITE => self.cache_write,
-            _ => 0,
-        }
-    }
-
-    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: the four multiply-adds in u128
-    /// (a u64 count times a u64 nano rate cannot overflow u128). Byte-identical to the pre-M1b
-    /// `cost_nanos(&TierTokens)` — the map values ARE the old struct fields. Opens are NOT priced
-    /// here (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
-    /// reserved four, exactly as before M1b.
-    #[inline]
-    pub(crate) fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_UNITS.iter().fold(0u128, |acc, u| {
-            let n = units.get(*u).copied().unwrap_or(0);
-            acc + (n as u128) * (self.reserved_rate(u) as u128)
-        })
-    }
+/// The nano-unit price of a usage map's RESERVED FOUR at one lane's rates: the four multiply-adds in
+/// u128 (a u64 count times a u64 nano rate cannot overflow u128), in canonical reserved order — the
+/// enforcement/derive summation, byte-identical to the private rate table it replaced: the map
+/// values are the counts, the card's per-class nano rate is the rate, and a class the lane does not
+/// price is 0. Opens are NOT priced here; the summation prices only the reserved four.
+#[inline]
+fn reserved_nanos(lane: &LaneRates<'_>, units: &BTreeMap<String, u64>) -> u128 {
+    RESERVED_UNITS.iter().fold(0u128, |acc, u| {
+        let n = units.get(*u).copied().unwrap_or(0);
+        acc + (n as u128) * (lane.nanos_per_unit(u) as u128)
+    })
 }
 
 /// One (group, window, pool?) ENFORCEMENT BUCKET, resolved from the group's windowed limits:
@@ -327,9 +266,10 @@ fn scope_pair(s: &ScopeRef) -> (String, String) {
 /// The resolved cost model: the effective integer rate table + the group limit topology + the
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
 pub struct CostModel {
-    /// `None` = `rate_card` absent = token pricing 0 for every model. `Some` = the AUTHORITATIVE
-    /// effective table, straight from the top-level `rate_card:` (the ONLY cost source).
-    rates: Option<HashMap<String, RateNanos>>,
+    /// The cost unit's card: absent = token pricing 0 for every model; present = the AUTHORITATIVE
+    /// effective table, straight from the top-level `rate_card:` (the ONLY cost source), with the
+    /// flat per-request fee. The unit's `nano_rate` is the one micro-to-nano projection.
+    card: RateCard,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
     /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
@@ -337,7 +277,6 @@ pub struct CostModel {
     /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
     /// the ids the model produces?) instead of a parse of the id's internal structure.
     capped_bucket_ids: std::collections::HashSet<String>,
-    price_per_request_cents: i64,
 }
 
 impl CostModel {
@@ -351,18 +290,32 @@ impl CostModel {
     ) -> Self {
         // rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
         // GONE (cost lives on no pool member; routing derives its scalar from the card).
-        let rates = rate_card.map(|card| {
-            card.iter()
-                .map(|(model, r)| (model.clone(), RateNanos::from_cfg(r)))
-                .collect::<HashMap<String, RateNanos>>()
-        });
+        // The card's rows are the config's `_utok` micro-floats lifted through their neutral raw
+        // view (`raw_tier_rates`), so this names no plane config grammar; the unit rounds once to
+        // nano-units and clamps the fee, exactly as the private table did.
+        let card = RateCard::from_config(
+            rate_card.map(|card| {
+                card.iter().map(|(model, r)| {
+                    let raw = r.raw_tier_rates();
+                    (
+                        model.as_str(),
+                        TierRates {
+                            input: raw.input,
+                            output: raw.output,
+                            cache_read: raw.cache_read,
+                            cache_write: raw.cache_write,
+                        },
+                    )
+                })
+            }),
+            per_request_fee,
+        );
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            rates,
+            card,
             groups,
             group_idx,
-            price_per_request_cents: per_request_fee.max(0),
         }
     }
 
@@ -377,10 +330,9 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            rates: self.rates.clone(),
+            card: self.card.clone(),
             groups,
             group_idx,
-            price_per_request_cents: self.price_per_request_cents,
         }
     }
 
@@ -580,18 +532,17 @@ impl CostModel {
     /// configured number and the clamp is part of what has to agree.
     #[cfg(any(test, feature = "test-support"))]
     pub fn resolved_fee(&self) -> i64 {
-        self.price_per_request_cents
+        self.price_per_request_cents()
     }
 
     /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
     #[cfg(any(test, feature = "test-support"))]
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
-            rates: None,
+            card: RateCard::absent(price_per_request_cents),
             groups: Vec::new(),
             group_idx: HashMap::new(),
             capped_bucket_ids: std::collections::HashSet::new(),
-            price_per_request_cents: price_per_request_cents.max(0),
         }
     }
 
@@ -610,11 +561,12 @@ impl CostModel {
     /// [`BudgetHost::cost_pricing_enabled`](busbar_substrate::plane_host::BudgetHost::cost_pricing_enabled)
     /// seam, which downcasts the opaque cost handle and drives this same read.
     pub fn pricing_enabled(&self) -> bool {
-        self.rates.is_some()
+        self.card.pricing_enabled()
     }
 
+    /// The flat per-request fee in abstract cents, clamped at zero by the card.
     pub(crate) fn price_per_request_cents(&self) -> i64 {
-        self.price_per_request_cents
+        self.card.per_request_fee(CurrencyCode::USD)
     }
 
     pub(crate) fn groups(&self) -> &[GroupRuntime] {
@@ -625,29 +577,26 @@ impl CostModel {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
 
-    /// The effective rate for `model` (post-`upstream_model` resolution). Semantics of the three
-    /// outcomes:
+    /// The effective rates for `model` (post-`upstream_model` resolution), read off the card.
+    /// Semantics of the three outcomes, which are the card's own:
     /// - card absent: `Some(zero)` - every model prices at 0.
-    /// - card present, model priced: `Some(rate)`.
+    /// - card present, model priced: `Some(rates)`.
     /// - card present, model UNKNOWN: `None` - fail-closed; the admission path rejects an
-    ///   unpriced passthrough model, and the derive paths price it at 0 with a warn (it can only
-    ///   arise from ledger rows written before a config change).
+    ///   unpriced passthrough model, and the derive paths price it at 0 (it can only arise from
+    ///   ledger rows written before a config change).
     #[inline]
-    pub(crate) fn rate_for(&self, model: &str) -> Option<RateNanos> {
-        match &self.rates {
-            None => Some(RateNanos::default()),
-            Some(table) => table.get(model).copied(),
-        }
+    fn lane(&self, model: &str) -> Option<LaneRates<'_>> {
+        self.card.lane_rates(model, CurrencyCode::USD)
     }
 
     /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
     /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
     /// seam a live carrier (voice) drives folds through. Byte-for-byte the SAME arithmetic the
-    /// enforcement/derive summation uses ([`Self::rate_for`] → [`RateNanos::reserved_nanos`], exactly as
+    /// enforcement/derive summation uses ([`Self::lane`] → [`reserved_nanos`], exactly as
     /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
     /// so this is a new READER over the existing pricer — the LLM money path is untouched.
     ///
-    /// The three `rate_for` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
+    /// The three `lane` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
     /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
     /// caller fails closed on an unpriced passthrough model). Only the reserved four price here — the
     /// carrier maps its own unit classes onto the reserved keys before calling, so no open-key
@@ -657,8 +606,8 @@ impl CostModel {
         model: &str,
         usage: &busbar_substrate::billing::Usage,
     ) -> Option<u128> {
-        self.rate_for(model)
-            .map(|rate| rate.reserved_nanos(&usage.usage_units))
+        self.lane(model)
+            .map(|lane| reserved_nanos(&lane, &usage.usage_units))
     }
 
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
@@ -671,10 +620,7 @@ impl CostModel {
     /// seam over the same opaque handle.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
-        match &self.rates {
-            None => false,
-            Some(table) => !table.contains_key(model),
-        }
+        self.card.lane_unpriced(model)
     }
 
     /// DERIVE the spend (in cents, abstract minor units) of a ledger view: a few multiply-adds
@@ -696,8 +642,8 @@ impl CostModel {
     ) -> i64 {
         let mut nanos: u128 = 0;
         for (model, units) in models {
-            if let Some(rate) = self.rate_for(model) {
-                nanos = nanos.saturating_add(rate.reserved_nanos(units));
+            if let Some(lane) = self.lane(model) {
+                nanos = nanos.saturating_add(reserved_nanos(&lane, units));
             }
         }
         // SATURATE into i64 (never `as`-cast): an adversarially large ledger (u64-scale token
@@ -708,7 +654,7 @@ impl CostModel {
         let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
         if include_request_fee {
             let fee = self
-                .price_per_request_cents
+                .price_per_request_cents()
                 .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
             cents = cents.saturating_add(fee);
         }
@@ -724,15 +670,15 @@ impl CostModel {
     ) -> i64 {
         let mut nanos: u128 = 0;
         for (model, units) in models {
-            if let Some(rate) = self.rate_for(model) {
-                nanos = nanos.saturating_add(rate.reserved_nanos(units));
+            if let Some(lane) = self.lane(model) {
+                nanos = nanos.saturating_add(reserved_nanos(&lane, units));
             }
         }
         let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
         if include_request_fee {
             // 1 cent = 10_000 micro-units.
             let fee_micros = self
-                .price_per_request_cents
+                .price_per_request_cents()
                 .saturating_mul(10_000)
                 .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
             micros.saturating_add(fee_micros)

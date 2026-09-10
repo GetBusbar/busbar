@@ -1273,3 +1273,17 @@ transport = 7
 loader = 1
 abi = 1
 
+
+# DELETION funded by the FACE busbar-unit-cost::RateCard (keep-core-delete-4). The legacy engine's
+# `cost::CostModel` no longer keeps a private nano-rate table (`RateNanos`, its two projections and
+# the two nano constants, 119 lines): its rate half IS the cost unit's card, read through the one
+# seam `cost.rs`. Naming the unit costs spellings the matrix counts — the manifest line (four: the
+# dependency name and its path, each seen by both needles) and the one import line (two) — less the
+# one prose spelling the deletion drained, so the cell rises by exactly five. Nothing else rises: the
+# edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`, recorded as a
+# `[[dep]]` row at count 1.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "FACE busbar-unit-cost::RateCard: the legacy engine's cost model reads its rate half off the cost unit's card through the one seam cost.rs (one import line, two spellings) and names the unit in its manifest (one dependency line, four spellings), less one prose spelling drained; the private RateNanos table, its projections and the nano constants are deleted (119 lines)"

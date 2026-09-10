@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 /// Exact money in **nanodollars** (1e-9 USD), the same integer unit the engine's per-token pricing
-/// already settles in (`cost::RateNanos`/`cost_nanos`). Integer so accounting is lossless — a
+/// already settles in (the cost unit's card, read through `cost::CostModel`). Integer so accounting is lossless — a
 /// caller's `0.0078345` USD is exactly `7_834_500` nanodollars, with no float drift on the way to
 /// the ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]

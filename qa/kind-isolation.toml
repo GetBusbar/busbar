@@ -1679,7 +1679,7 @@ count = "2117"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "10"
+count = "15"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3729,6 +3729,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-cost"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
+why     = "busbar-core names busbar-unit-cost: declared normal in the shipped graph, 1 declaration(s) at this commit. The legacy engine's cost model reads the cost unit's RateCard for its rate half (the private nano-rate table is deleted) through the one seam `cost.rs`. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the group half of its cost model (chain_for, with_groups, the budget engine's readers in governance/state.rs) moves onto busbar-unit-cost::CostModel and busbar-unit-admission::ChainWalk, and cost.rs goes with it. `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

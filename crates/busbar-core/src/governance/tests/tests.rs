@@ -1886,7 +1886,7 @@ async fn test_admission_charge_write_behind_under_runtime() {
 fn test_negative_fee_and_rate_clamp_to_zero() {
     // A hostile/misconfigured NEGATIVE per-request fee or per-token rate must clamp to 0, never
     // derive negative spend that could evade a cap. (`CostModel::flat` clamps the fee;
-    // `RateNanos::from_cfg` clamps a negative rate.)
+    // the cost unit's `nano_rate` clamps a negative rate.)
     let store = Arc::new(MemoryStore::new());
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
