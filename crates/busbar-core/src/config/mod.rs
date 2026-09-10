@@ -1690,9 +1690,9 @@ pub use busbar_substrate::config::sections::{
 // entry, and the `export:` NAMED-DEFINITION entry (+ its module vocabulary) are plain serde data.
 // Moved to `busbar_substrate::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_substrate::config::sections::{
-    rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_PROMETHEUS,
-    EXPORT_MODULE_REQUEST_LOG_FILE, EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg, RateEntryCfg,
+    EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_PROMETHEUS, EXPORT_MODULE_REQUEST_LOG_FILE,
+    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
 };
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives

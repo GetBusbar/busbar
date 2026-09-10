@@ -129,13 +129,3 @@ pub struct RawTierRates {
     /// Raw micro-units per token for the `cache_write` reserved tier (`busbar_api::UNIT_CACHE_WRITE`).
     pub cache_write: f64,
 }
-
-impl RawTierRates {
-    /// The ROUTING cost scalar (abstract units per MILLION tokens) the `cheapest` policy and the hook
-    /// `Candidate.cost_per_mtok` signal read: the blended `(input + output) / 2` (1 micro-unit/token
-    /// == 1 unit/mtok, so no further scaling). Byte-identical to the pre-seam
-    /// `busbar_core::config::rate_entry_per_mtok`, which now delegates here.
-    pub fn blended_per_mtok(&self) -> f64 {
-        (self.input + self.output) / 2.0
-    }
-}

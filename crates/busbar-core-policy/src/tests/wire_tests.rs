@@ -142,6 +142,20 @@ use super::*;
 // reply-side `wire` module `super::*` re-exports, so name them at their (core-re-exported) home.
 use crate::{ArgumentProjection, CallerIdentity, RoutingContext, RoutingRequest};
 
+/// The member's card rates: two classes, priced 2.0 and 4.0 per unit. The wire key they project
+/// through is the same key at the same value it has always carried, and the pair rather than a
+/// single line is the point — the figure on the wire is READ off the rates here, not copied.
+const RATES: &[busbar_contract::ClassRate] = &[
+    busbar_contract::ClassRate {
+        class: busbar_contract::MeterClassId::new(busbar_contract::store::UNIT_INPUT),
+        micros_per_unit: 2.0,
+    },
+    busbar_contract::ClassRate {
+        class: busbar_contract::MeterClassId::new(busbar_contract::store::UNIT_OUTPUT),
+        micros_per_unit: 4.0,
+    },
+];
+
 fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
     Candidate {
         idx,
@@ -150,7 +164,7 @@ fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
         weight: 1,
         context_max: None,
         tier: Some("large"),
-        cost_per_mtok: Some(3.0),
+        price: RATES,
         tags,
         latency_ms: Some(42.0),
         available_concurrency: 4,
@@ -224,6 +238,8 @@ fn opt_in_payload_carries_prompt_identity_tags() {
     assert_eq!(v["request"]["user"]["key_id"], "k-123");
     assert_eq!(v["request"]["user"]["key_name"], "sales-team");
     assert_eq!(v["request"]["user"]["user"], "alice@example.com");
+    // BYTE-IDENTITY at the member's cost: the same key, the same value, now read off the rates.
+    assert_eq!(v["candidates"][0]["cost_per_mtok"], 3.0);
     assert_eq!(v["candidates"][0]["tags"][0], "team-a");
     assert_eq!(v["candidates"][0]["tags"][1], "eu");
     // The identity projection is built from the key RECORD: no token/secret field exists.

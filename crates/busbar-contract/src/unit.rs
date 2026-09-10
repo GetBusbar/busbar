@@ -326,6 +326,26 @@ pub struct UsageLocator {
     pub lane: Option<LaneId>,
 }
 
+/// What the metering step charges for one class, where a card prices it.
+///
+/// The other half of [`UsageLocator`], and the same discipline: a locator says WHERE the quantity
+/// of a class was found, this says what ONE UNIT of that quantity costs, and neither is an amount.
+/// The pair is the whole of what pricing is — a class, a quantity, a rate — and it is stated in the
+/// class's own unit, so a class counted in seconds carries a rate per second and one counted in
+/// tokens a rate per token, with no dialect's unit standing in for the others.
+///
+/// In micro-units per unit of quantity, which is the figure a card is configured in and the one the
+/// kernel's integer rate is derived from exactly once. It is deliberately the SAME scalar the
+/// metering seam already carries per charge, so a rate read here and a rate charged there cannot be
+/// two different readings of one card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClassRate {
+    /// The class this rate prices — the class a [`UsageLocator`] reports a quantity against.
+    pub class: MeterClassId,
+    /// Micro-units per unit of that class's own quantity.
+    pub micros_per_unit: f64,
+}
+
 /// Every locator one unit's metering step folds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UsageLocators {

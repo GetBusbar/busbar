@@ -2607,8 +2607,10 @@ advanced:
     assert_eq!(claude.input_utok, 3.0);
     assert_eq!(claude.output_utok, 15.0);
     assert_eq!(claude.cache_read_utok, 0.0, "omitted tier prices at 0");
-    // The routing scalar is the blended (input + output) / 2.
-    assert_eq!(rate_entry_per_mtok(claude), 9.0);
+    // The two rates the routing comparison is made over are the card's own, unblended here: the
+    // averaging happens where the comparison does, not at the config boundary.
+    assert_eq!(claude.raw_tier_rates().input, 3.0);
+    assert_eq!(claude.raw_tier_rates().output, 15.0);
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
     assert_eq!(deploy.groups["eng-batch"].parent.as_deref(), Some("eng"));

@@ -181,7 +181,7 @@ fn cand(idx: usize) -> Candidate<'static> {
         weight: 1,
         context_max: None,
         tier: None,
-        cost_per_mtok: None,
+        price: &[],
         tags: &[],
         latency_ms: None,
         available_concurrency: 1,

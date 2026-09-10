@@ -702,7 +702,7 @@ pub(crate) async fn decide_policy_order(
                 weight: wl.weight,
                 context_max: lane.context_max,
                 tier: meta.and_then(|m| m.tier.as_deref()),
-                cost_per_mtok: meta.and_then(|m| m.cost_per_mtok),
+                price: meta.map(|m| m.price.as_slice()).unwrap_or(&[]),
                 tags: meta.map(|m| m.tags.as_slice()).unwrap_or(&[]),
                 latency_ms: host.lane_store().lane_latency_ms(wl.idx),
                 available_concurrency: host.lane_store().available_permits(wl.idx),

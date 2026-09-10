@@ -21,6 +21,7 @@
 //! picked" is a comparison against something recorded rather than against something re-derived.
 
 use super::*;
+use busbar_api::{ClassRate, MeterClassId, UNIT_INPUT, UNIT_OUTPUT};
 
 /// The recorded rate cards, and what `cheapest` makes of each.
 ///
@@ -71,16 +72,14 @@ const RECORDED: &[RecordedDecision] = &[
         order: Some(&[0]),
     },
     RecordedDecision {
-        recorded_at: "the backcompat corpus's tiered card \
-                      (crates/busbar-core/src/config/tests/backcompat-corpus/\
-                      02_rate_card_tiers.yaml): 3.0/15.0 then 2.5/10.0",
+        recorded_at: "the backcompat corpus's tiered card (02_rate_card_tiers.yaml): 3.0/15.0 \
+                      then 2.5/10.0",
         members: &[Some((3.0, 15.0)), Some((2.5, 10.0))],
         order: Some(&[1, 0]),
     },
     RecordedDecision {
         recorded_at: "the backcompat corpus's full billing surface \
-                      (crates/busbar-core/src/config/tests/backcompat-corpus/\
-                      05_full_billing_surface.yaml): four priced members",
+                      (05_full_billing_surface.yaml): four priced members",
         members: &[
             Some((0.8, 4.0)),
             Some((3.0, 15.0)),
@@ -95,14 +94,14 @@ const RECORDED: &[RecordedDecision] = &[
         order: Some(&[1, 0]),
     },
     RecordedDecision {
-        recorded_at: "the deployment card recorded by busbar-core's config tests: one entry at \
-                      3.0/15.0, whose routing scalar those tests pin at 9.0",
+        recorded_at: "the deployment card the engine's own config battery records: one entry at \
+                      3.0/15.0, whose comparable price that battery pins at 9.0",
         members: &[Some((3.0, 15.0))],
         order: Some(&[0]),
     },
     RecordedDecision {
-        recorded_at: "the card recorded by busbar-core's cost tests: one entry at 2.5/10.0, whose \
-                      routing scalar those tests pin at 6.25",
+        recorded_at: "the card the engine's own cost battery records: one entry at 2.5/10.0, \
+                      whose comparable price that battery pins at 6.25",
         members: &[Some((2.5, 10.0))],
         order: Some(&[0]),
     },
@@ -121,8 +120,26 @@ const RECORDED: &[RecordedDecision] = &[
     },
 ];
 
+/// The recorded rates of one member, as the metering step's rate face states them.
+fn rate_lines(rates: Option<(f64, f64)>) -> Vec<ClassRate> {
+    rates
+        .map(|(input, output)| {
+            vec![
+                ClassRate {
+                    class: MeterClassId::new(UNIT_INPUT),
+                    micros_per_unit: input,
+                },
+                ClassRate {
+                    class: MeterClassId::new(UNIT_OUTPUT),
+                    micros_per_unit: output,
+                },
+            ]
+        })
+        .unwrap_or_default()
+}
+
 /// One candidate carrying a recorded member's rates and nothing else that `cheapest` reads.
-fn cand_priced(idx: usize, rates: Option<(f64, f64)>) -> Candidate<'static> {
+fn cand_priced(idx: usize, price: &[ClassRate]) -> Candidate<'_> {
     Candidate {
         idx,
         model: "m",
@@ -130,7 +147,7 @@ fn cand_priced(idx: usize, rates: Option<(f64, f64)>) -> Candidate<'static> {
         weight: 1,
         context_max: None,
         tier: None,
-        cost_per_mtok: rates.map(|(input, output)| (input + output) / 2.0),
+        price,
         tags: &[],
         latency_ms: None,
         available_concurrency: 1,
@@ -175,11 +192,11 @@ fn ctx() -> RoutingContext<'static> {
 async fn every_recorded_routing_decision_picks_the_same_candidate() {
     let policy = native_policy("cheapest").expect("the shipped cheapest ranking hook");
     for row in RECORDED {
-        let cands: Vec<Candidate<'_>> = row
-            .members
+        let priced: Vec<Vec<ClassRate>> = row.members.iter().map(|m| rate_lines(*m)).collect();
+        let cands: Vec<Candidate<'_>> = priced
             .iter()
             .enumerate()
-            .map(|(idx, rates)| cand_priced(idx, *rates))
+            .map(|(idx, price)| cand_priced(idx, price))
             .collect();
         let decided = policy
             .decide(&req(), &cands, &ctx(), Duration::from_secs(1))

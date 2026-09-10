@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use busbar_api::{ClassRate, MeterClassId, UNIT_INPUT, UNIT_OUTPUT};
+
 use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
@@ -802,13 +804,30 @@ pub fn build_app_from_config(
                 reasoning: m.reasoning,
                 attempt_timeout_ms: m.attempt_timeout_ms,
                 tier: m.tier.clone(),
-                // The routing cost scalar derives from the member's MODEL's rate_card entry — cost
-                // lives on no pool member; resolved core-side (the plane has no rate card).
-                cost_per_mtok: cfg
+                // The member's price is its MODEL's rate_card entry, read out as the metering
+                // step's own rate face — cost lives on no pool member, and the card is the root's
+                // (a plane has never held one). The two classes named here are the two a routing
+                // comparison has always been made over; a card that also prices cache classes
+                // prices them for the METER, and widening what a comparison averages would move
+                // deployments' traffic, which is a line of its own and not a side effect of this.
+                price: cfg
                     .rate_card
                     .as_ref()
                     .and_then(|card| card.get(&m.model))
-                    .map(crate::config::rate_entry_per_mtok),
+                    .map(|entry| {
+                        let rates = entry.raw_tier_rates();
+                        vec![
+                            ClassRate {
+                                class: MeterClassId::new(UNIT_INPUT),
+                                micros_per_unit: rates.input,
+                            },
+                            ClassRate {
+                                class: MeterClassId::new(UNIT_OUTPUT),
+                                micros_per_unit: rates.output,
+                            },
+                        ]
+                    })
+                    .unwrap_or_default(),
                 tags: m.tags.clone(),
             });
         }

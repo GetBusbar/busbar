@@ -172,8 +172,10 @@ pub struct PoolMemberInput {
     pub attempt_timeout_ms: Option<u64>,
     /// Operator-declared member tier (routing metadata).
     pub tier: Option<String>,
-    /// The member's rate-card-derived cost per Mtok, resolved core-side (the plane has no rate card).
-    pub cost_per_mtok: Option<f64>,
+    /// What the metering step would charge a unit routed to this member, one line per class the
+    /// card prices it on — resolved core-side, because the card is the composition root's and a
+    /// plane has never held one. Empty where no card covers the member.
+    pub price: Vec<busbar_api::ClassRate>,
     /// Operator-declared member tags (routing metadata).
     pub tags: Vec<String>,
 }

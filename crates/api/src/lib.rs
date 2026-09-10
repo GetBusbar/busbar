@@ -40,9 +40,9 @@ pub use auth::{
 // reader: every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`, and
 // this block goes with the crate.
 pub use busbar_contract::{
-    ArgumentProjection, BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError,
-    PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
-    TransformOutcome,
+    ArgumentProjection, BudgetBucketState, CallerIdentity, Candidate, ClassRate, HookStatus,
+    MeterClassId, PolicyError, PolicyResult, RewriteReply, RoutingContext, RoutingDecision,
+    RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 // THE RESIDUE IS THE CONTRACT'S TOO: the `Operation` axis (`operation`), the secret carrier
 // (`Redacted`) and the signal catalog belong to no kind and moved to busbar-contract. Re-exported

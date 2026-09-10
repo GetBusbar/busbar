@@ -30,6 +30,7 @@ pub fn keys_chain_auth() -> std::sync::Arc<crate::auth::AuthMiddleware> {
     std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg))
 }
 
+use busbar_api::{ClassRate, MeterClassId, UNIT_INPUT, UNIT_OUTPUT};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -810,7 +811,7 @@ pub struct TestApp {
     failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool NEUTRAL overrides the `PoolInput` carrier fields the fixture assembles: the pool's
     /// own `failover:` / `affinity:` / resolved `breaker:` / `upstream_credentials:` override, plus its
-    /// per-member `(tier, cost_per_mtok, tags)` routing metadata. Keyed by pool name; absent ⇒ the
+    /// per-member `(tier, price, tags)` routing metadata. Keyed by pool name; absent ⇒ the
     /// carrier default (`None` / no metadata). The former `.pool_runtime(PoolRuntime{…})` fixture method
     /// (which named the plane's `PoolRuntime`) is replaced by the granular setters that fill these.
     pool_failover: std::collections::HashMap<String, crate::config::FailoverCfg>,
@@ -820,7 +821,7 @@ pub struct TestApp {
     #[allow(clippy::type_complexity)]
     pool_member_meta: std::collections::HashMap<
         String,
-        std::collections::HashMap<usize, (Option<String>, Option<f64>, Vec<String>)>,
+        std::collections::HashMap<usize, (Option<String>, Vec<ClassRate>, Vec<String>)>,
     >,
     /// The pool-hook facade maps (money-path Phase 3-4 C) the built `App` carries — the resolved
     /// per-pool routing policy / decision gates / rewrite chains the engine reads via `App::pool_*`.
@@ -1447,14 +1448,15 @@ impl TestApp {
         self.pool_upstream_creds.insert(name.into(), uc);
         self
     }
-    /// Set a pool member's routing metadata `(tier, cost_per_mtok, tags)` keyed by lane index — the
-    /// projection the routing `Candidate` reads inside the policy arm.
+    /// Set a pool member's routing metadata `(tier, price, tags)` keyed by lane index — the
+    /// projection the routing `Candidate` reads inside the policy arm. `rates` is the member's
+    /// `(input, output)` card rates in micro-units per unit, or `None` for a member no card prices.
     pub fn pool_member_meta(
         mut self,
         name: &str,
         lane_idx: usize,
         tier: Option<&str>,
-        cost_per_mtok: Option<f64>,
+        rates: Option<(f64, f64)>,
         tags: &[&str],
     ) -> Self {
         self.pool_member_meta
@@ -1464,7 +1466,20 @@ impl TestApp {
                 lane_idx,
                 (
                     tier.map(str::to_string),
-                    cost_per_mtok,
+                    rates
+                        .map(|(input, output)| {
+                            vec![
+                                ClassRate {
+                                    class: MeterClassId::new(UNIT_INPUT),
+                                    micros_per_unit: input,
+                                },
+                                ClassRate {
+                                    class: MeterClassId::new(UNIT_OUTPUT),
+                                    micros_per_unit: output,
+                                },
+                            ]
+                        })
+                        .unwrap_or_default(),
                     tags.iter().map(|t| (*t).to_string()).collect(),
                 ),
             );
@@ -1640,7 +1655,7 @@ impl TestApp {
                     reasoning: None,
                     attempt_timeout_ms: None,
                     tier: meta.and_then(|m| m.0.clone()),
-                    cost_per_mtok: meta.and_then(|m| m.1),
+                    price: meta.map(|m| m.1.clone()).unwrap_or_default(),
                     tags: meta.map(|m| m.2.clone()).unwrap_or_default(),
                 }
             };

@@ -225,7 +225,7 @@ pub(crate) fn build_runtime(
                     m.lane_idx,
                     MemberMeta {
                         tier: m.tier.clone(),
-                        cost_per_mtok: m.cost_per_mtok,
+                        price: m.price.clone(),
                         tags: m.tags.clone(),
                     },
                 )

@@ -4,10 +4,30 @@
 //! Tests for `crates/hooks-ranking/src/lib.rs`.
 
 use super::*;
+use busbar_api::{ClassRate, MeterClassId, UNIT_INPUT};
+
+/// One priced class, which is all any case below needs: a member's comparable price over a single
+/// class IS that class's rate, so every recorded cost in this battery keeps its exact figure.
+const fn priced(micros_per_unit: f64) -> ClassRate {
+    ClassRate {
+        class: MeterClassId::new(UNIT_INPUT),
+        micros_per_unit,
+    }
+}
+
+/// A member no card prices: the empty rate list, which reads back as no comparable price at all.
+const UNPRICED: &[ClassRate] = &[];
+const P15: &[ClassRate] = &[priced(15.0)];
+const P5: &[ClassRate] = &[priced(5.0)];
+const P3: &[ClassRate] = &[priced(3.0)];
+const P1: &[ClassRate] = &[priced(1.0)];
+const P0_5: &[ClassRate] = &[priced(0.5)];
+const P_NAN: &[ClassRate] = &[priced(f64::NAN)];
+const P_INF: &[ClassRate] = &[priced(f64::INFINITY)];
 
 fn cand(
     idx: usize,
-    cost: Option<f64>,
+    cost: &'static [ClassRate],
     lat: Option<f64>,
     conc: usize,
     budget: Option<i64>,
@@ -19,7 +39,7 @@ fn cand(
 
 fn cand_rate(
     idx: usize,
-    cost: Option<f64>,
+    cost: &'static [ClassRate],
     lat: Option<f64>,
     conc: usize,
     budget: Option<i64>,
@@ -32,7 +52,7 @@ fn cand_rate(
         weight: 1,
         context_max: None,
         tier: None,
-        cost_per_mtok: cost,
+        price: cost,
         tags: &[],
         latency_ms: lat,
         available_concurrency: conc,
@@ -71,7 +91,7 @@ async fn weighted_native_abstains() {
     let d = WeightedPolicy
         .decide(
             &req(),
-            &[cand(0, None, None, 1, None)],
+            &[cand(0, UNPRICED, None, 1, None)],
             &ctx(),
             Duration::from_millis(10),
         )
@@ -83,9 +103,9 @@ async fn weighted_native_abstains() {
 #[tokio::test]
 async fn cheapest_orders_by_cost_demoting_unknown() {
     let cands = [
-        cand(0, Some(15.0), None, 1, None),
-        cand(1, Some(3.0), None, 1, None),
-        cand(2, None, None, 1, None), // no cost -> demoted to last
+        cand(0, P15, None, 1, None),
+        cand(1, P3, None, 1, None),
+        cand(2, UNPRICED, None, 1, None), // no cost -> demoted to last
     ];
     let d = CheapestPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -96,7 +116,10 @@ async fn cheapest_orders_by_cost_demoting_unknown() {
 
 #[tokio::test]
 async fn cheapest_all_unknown_abstains() {
-    let cands = [cand(0, None, None, 1, None), cand(1, None, None, 1, None)];
+    let cands = [
+        cand(0, UNPRICED, None, 1, None),
+        cand(1, UNPRICED, None, 1, None),
+    ];
     let d = CheapestPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
         .await
@@ -107,9 +130,9 @@ async fn cheapest_all_unknown_abstains() {
 #[tokio::test]
 async fn fastest_orders_by_latency() {
     let cands = [
-        cand(0, None, Some(120.0), 1, None),
-        cand(1, None, Some(40.0), 1, None),
-        cand(2, None, Some(80.0), 1, None),
+        cand(0, UNPRICED, Some(120.0), 1, None),
+        cand(1, UNPRICED, Some(40.0), 1, None),
+        cand(2, UNPRICED, Some(80.0), 1, None),
     ];
     let d = FastestPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -121,9 +144,9 @@ async fn fastest_orders_by_latency() {
 #[tokio::test]
 async fn least_busy_prefers_most_headroom() {
     let cands = [
-        cand(0, None, None, 2, None),
-        cand(1, None, None, 9, None),
-        cand(2, None, None, 5, None),
+        cand(0, UNPRICED, None, 2, None),
+        cand(1, UNPRICED, None, 9, None),
+        cand(2, UNPRICED, None, 5, None),
     ];
     let d = LeastBusyPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -137,10 +160,10 @@ async fn least_busy_prefers_most_headroom() {
 #[tokio::test]
 async fn usage_orders_by_rate_headroom_demoting_unknown() {
     let cands = [
-        cand_rate(0, None, None, 1, None, Some(0.10)), // nearly at the cap
-        cand_rate(1, None, None, 1, None, Some(0.90)), // most headroom
-        cand_rate(2, None, None, 1, None, None),       // no signal -> demoted to last
-        cand_rate(3, None, None, 1, None, Some(0.50)),
+        cand_rate(0, UNPRICED, None, 1, None, Some(0.10)), // nearly at the cap
+        cand_rate(1, UNPRICED, None, 1, None, Some(0.90)), // most headroom
+        cand_rate(2, UNPRICED, None, 1, None, None),       // no signal -> demoted to last
+        cand_rate(3, UNPRICED, None, 1, None, Some(0.50)),
     ];
     let d = UsagePolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -154,9 +177,9 @@ async fn usage_orders_by_rate_headroom_demoting_unknown() {
 #[tokio::test]
 async fn usage_all_unknown_abstains() {
     let cands = [
-        cand_rate(0, None, None, 1, Some(100), None),
-        cand_rate(1, None, None, 1, None, None),
-        cand_rate(2, None, None, 1, Some(5000), None),
+        cand_rate(0, UNPRICED, None, 1, Some(100), None),
+        cand_rate(1, UNPRICED, None, 1, None, None),
+        cand_rate(2, UNPRICED, None, 1, Some(5000), None),
     ];
     let d = UsagePolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -217,7 +240,7 @@ async fn single_candidate_prefers_it() {
     let d = CheapestPolicy
         .decide(
             &req(),
-            &[cand(0, Some(5.0), None, 1, None)],
+            &[cand(0, P5, None, 1, None)],
             &ctx(),
             Duration::from_millis(10),
         )
@@ -228,7 +251,7 @@ async fn single_candidate_prefers_it() {
     let d = FastestPolicy
         .decide(
             &req(),
-            &[cand(0, None, Some(30.0), 1, None)],
+            &[cand(0, UNPRICED, Some(30.0), 1, None)],
             &ctx(),
             Duration::from_millis(10),
         )
@@ -239,7 +262,7 @@ async fn single_candidate_prefers_it() {
     let d = LeastBusyPolicy
         .decide(
             &req(),
-            &[cand(0, None, None, 3, None)],
+            &[cand(0, UNPRICED, None, 3, None)],
             &ctx(),
             Duration::from_millis(10),
         )
@@ -250,7 +273,7 @@ async fn single_candidate_prefers_it() {
     let d = UsagePolicy
         .decide(
             &req(),
-            &[cand_rate(0, None, None, 1, None, Some(0.5))],
+            &[cand_rate(0, UNPRICED, None, 1, None, Some(0.5))],
             &ctx(),
             Duration::from_millis(10),
         )
@@ -266,9 +289,9 @@ async fn single_candidate_prefers_it() {
 #[tokio::test]
 async fn least_busy_all_saturated_ranks_by_idx() {
     let cands = [
-        cand(0, None, None, 0, None),
-        cand(1, None, None, 0, None),
-        cand(2, None, None, 0, None),
+        cand(0, UNPRICED, None, 0, None),
+        cand(1, UNPRICED, None, 0, None),
+        cand(2, UNPRICED, None, 0, None),
     ];
     let d = LeastBusyPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -282,8 +305,8 @@ async fn least_busy_all_saturated_ranks_by_idx() {
 #[tokio::test]
 async fn usage_all_at_cap_ranks_by_idx() {
     let cands = [
-        cand_rate(0, None, None, 1, None, Some(0.0)),
-        cand_rate(1, None, None, 1, None, Some(0.0)),
+        cand_rate(0, UNPRICED, None, 1, None, Some(0.0)),
+        cand_rate(1, UNPRICED, None, 1, None, Some(0.0)),
     ];
     let d = UsagePolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -296,9 +319,9 @@ async fn usage_all_at_cap_ranks_by_idx() {
 /// → fall through to SWRR). Weight is irrelevant to `cheapest`; it ranks on cost.
 #[tokio::test]
 async fn cheapest_all_weight_zero_no_cost_abstains() {
-    let mut a = cand(0, None, None, 1, None);
+    let mut a = cand(0, UNPRICED, None, 1, None);
     a.weight = 0;
-    let mut b = cand(1, None, None, 1, None);
+    let mut b = cand(1, UNPRICED, None, 1, None);
     b.weight = 0;
     let d = CheapestPolicy
         .decide(&req(), &[a, b], &ctx(), Duration::from_millis(10))
@@ -310,7 +333,10 @@ async fn cheapest_all_weight_zero_no_cost_abstains() {
 /// `fastest` with EVERY candidate lacking a latency sample Abstains (mirrors `cheapest_all_unknown`).
 #[tokio::test]
 async fn fastest_all_unknown_latency_abstains() {
-    let cands = [cand(0, None, None, 1, None), cand(1, None, None, 1, None)];
+    let cands = [
+        cand(0, UNPRICED, None, 1, None),
+        cand(1, UNPRICED, None, 1, None),
+    ];
     let d = FastestPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
         .await
@@ -323,9 +349,9 @@ async fn fastest_all_unknown_latency_abstains() {
 #[tokio::test]
 async fn fastest_orders_by_latency_demoting_unknown() {
     let cands = [
-        cand(0, None, Some(120.0), 1, None),
-        cand(1, None, None, 1, None), // no latency sample -> demoted to last
-        cand(2, None, Some(40.0), 1, None),
+        cand(0, UNPRICED, Some(120.0), 1, None),
+        cand(1, UNPRICED, None, 1, None), // no latency sample -> demoted to last
+        cand(2, UNPRICED, Some(40.0), 1, None),
     ];
     let d = FastestPolicy
         .decide(&req(), &cands, &ctx(), Duration::from_millis(10))
@@ -341,10 +367,10 @@ async fn fastest_orders_by_latency_demoting_unknown() {
 #[tokio::test]
 async fn cheapest_treats_a_non_finite_key_as_an_absent_signal() {
     let cands = [
-        cand(0, Some(1.0), None, 1, None),
-        cand(1, Some(f64::NAN), None, 1, None),
-        cand(2, Some(0.5), None, 1, None),
-        cand(3, Some(f64::INFINITY), None, 1, None),
+        cand(0, P1, None, 1, None),
+        cand(1, P_NAN, None, 1, None),
+        cand(2, P0_5, None, 1, None),
+        cand(3, P_INF, None, 1, None),
     ];
     let expected = RoutingDecision::Prefer(vec![2, 0, 1, 3]);
     // Same answer every run: an order that depends on the comparator's accidents is not an order.
@@ -366,8 +392,8 @@ async fn cheapest_treats_a_non_finite_key_as_an_absent_signal() {
 #[tokio::test]
 async fn usage_ranks_a_nan_headroom_last_and_abstains_when_all_are_nan() {
     let ranked = [
-        cand_rate(0, None, None, 1, None, Some(f64::NAN)),
-        cand_rate(1, None, None, 1, None, Some(0.25)),
+        cand_rate(0, UNPRICED, None, 1, None, Some(f64::NAN)),
+        cand_rate(1, UNPRICED, None, 1, None, Some(0.25)),
     ];
     let d = UsagePolicy
         .decide(&req(), &ranked, &ctx(), Duration::from_millis(10))
@@ -376,8 +402,8 @@ async fn usage_ranks_a_nan_headroom_last_and_abstains_when_all_are_nan() {
     assert_eq!(d, RoutingDecision::Prefer(vec![1, 0]));
 
     let all_nan = [
-        cand_rate(0, None, None, 1, None, Some(f64::NAN)),
-        cand_rate(1, None, None, 1, None, Some(f64::NAN)),
+        cand_rate(0, UNPRICED, None, 1, None, Some(f64::NAN)),
+        cand_rate(1, UNPRICED, None, 1, None, Some(f64::NAN)),
     ];
     let d = UsagePolicy
         .decide(&req(), &all_nan, &ctx(), Duration::from_millis(10))

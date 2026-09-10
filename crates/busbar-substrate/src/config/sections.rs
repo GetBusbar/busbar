@@ -347,17 +347,6 @@ impl RateEntryCfg {
     }
 }
 
-/// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
-/// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
-/// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
-///
-/// Delegates to the NEUTRAL raw-rate view ([`crate::billing::RawTierRates::blended_per_mtok`])
-/// so the routing scalar is computed through the same seam the pricing oracle projects through;
-/// byte-identical to the pre-seam `(r.input_utok + r.output_utok) / 2.0`.
-pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
-    r.raw_tier_rates().blended_per_mtok()
-}
-
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the
 /// exporter INSTANCE name; `module:` says which built-in exporter backs it and `settings:` is the
 /// opaque per-module bag — the SAME shape as `hooks:` / `identity-providers:` / `store:`.

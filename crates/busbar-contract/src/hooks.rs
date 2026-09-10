@@ -219,8 +219,14 @@ pub struct Candidate<'a> {
     // ── operator-declared member metadata (config) ───────────────────────────────────────────────
     /// Operator-declared tier label, when configured.
     pub tier: Option<&'a str>,
-    /// Operator-declared cost per million tokens, when configured.
-    pub cost_per_mtok: Option<f64>,
+    /// What the METERING step would charge a unit routed here, one line per class the operator's
+    /// card prices — the rate face ([`crate::ClassRate`]), not a scalar of this crate's own. EMPTY
+    /// where no card covers the member, which is not a price of zero: it is a member nobody has
+    /// said what to charge for, and [`Candidate::comparable_price`] answers `None` for it.
+    ///
+    /// Borrowed, like `tags`, because the rates are the operator's configuration and are resolved
+    /// once at build rather than per request.
+    pub price: &'a [crate::ClassRate],
     /// Free-form operator tags. Projected to the hook wire (omitted when empty).
     pub tags: &'a [String],
     // ── live signals (read per-request from the store at the seam) ───────────────────────────────
@@ -246,6 +252,22 @@ pub struct Candidate<'a> {
     /// consumer explicitly declared (e.g. `CandidateBreakerState`/`CandidateErrorRate`), computed
     /// ONLY when declared. See [`RoutingRequest::signals`] for the full contract; identical here.
     pub signals: crate::SignalBag,
+}
+
+impl Candidate<'_> {
+    /// This member's COMPARABLE price: what one metered unit costs here, across the classes the
+    /// card prices for it. `None` where the card prices none of them.
+    ///
+    /// Comparable is the whole of it — the figure exists to put two members in an order and never
+    /// to bill anything, which is why it is derived here, at the moment of the comparison, and is
+    /// stored nowhere. The mean rather than a sum so that a member priced on two classes is not
+    /// made to look twice as expensive as one priced on a single class; over the same classes,
+    /// either answers the same order.
+    #[must_use]
+    pub fn comparable_price(&self) -> Option<f64> {
+        let total: f64 = self.price.iter().map(|rate| rate.micros_per_unit).sum();
+        (!self.price.is_empty()).then(|| total / self.price.len() as f64)
+    }
 }
 
 /// One bucket of the request's BUDGET-CHAIN state, exposed read-only into the pre-forward routing

@@ -80,9 +80,9 @@ pub use transport::{
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
 };
 pub use unit::{
-    AbortBy, AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FailureReason, FinishClass, LegResult,
-    Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step, TransportView,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AbortBy, AdmitFacts, AuditFacts, ClassRate, Clock, ConfigView, Ctx, FailureReason, FinishClass,
+    LegResult, Origin, Refusal, RefusalReason, ResourceLocator, ScopeFacts, SessionView, Step,
+    TransportView, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,

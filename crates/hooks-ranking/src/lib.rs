@@ -60,7 +60,7 @@ impl RoutingPolicy for WeightedPolicy {
 }
 
 /// A ranking key that can be put in a TOTAL order. The float signals a routing policy ranks by
-/// (`cost_per_mtok`, `latency_ms`, `rate_headroom`) arrive from operator config and from measured
+/// (the card's rates, `latency_ms`, `rate_headroom`) arrive from operator config and from measured
 /// telemetry, and a float has one value that is not orderable at all: `NaN` compares false against
 /// everything, including itself. A comparator that reaches for `partial_cmp().unwrap_or(Equal)` on a
 /// `NaN` is not merely arbitrary, it is NON-TRANSITIVE (`NaN == 1.0` and `NaN == 0.5` while
@@ -152,8 +152,10 @@ fn rank_descending_by<K: RankKey>(
     RoutingDecision::Prefer(keyed.into_iter().map(|(idx, _)| idx).collect())
 }
 
-/// `cheapest` — prefer the lowest operator-declared `cost_per_mtok`. Members with no declared cost
-/// are demoted (but reachable). Proof-of-completeness for the `cost` signal.
+/// `cheapest` — prefer the member whose metered unit costs least, read off the card's rates through
+/// the candidate's own comparable price. A member the card does not price is demoted (and still
+/// reachable), because an unpriced member is one nobody has said what to charge for, never a free
+/// one. Proof-of-completeness for the `cost` signal.
 struct CheapestPolicy;
 
 #[async_trait::async_trait]
@@ -165,7 +167,7 @@ impl RoutingPolicy for CheapestPolicy {
         _ctx: &RoutingContext<'_>,
         _budget: Duration,
     ) -> PolicyResult {
-        Ok(rank_ascending_by(candidates, |c| c.cost_per_mtok))
+        Ok(rank_ascending_by(candidates, |c| c.comparable_price()))
     }
     fn name(&self) -> &'static str {
         POLICY_NAME_CHEAPEST

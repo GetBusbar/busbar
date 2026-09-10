@@ -257,6 +257,60 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 2
 because = "the hook subject's READING in busbar-contract/src/hooks.rs less the three deleted reserved members: the same net 2 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms -- kernel 5379 and unit-* 14590 are both unchanged by this line, which adds no kernel and no unit code at all"
 
+# THE METERING STEP'S RATE FACE (`busbar_contract::ClassRate`) AND THE ROUTABLE MEMBER'S PRICE. The
+# last member of the routable-member face still spelled in one dialect's unit of quantity was its
+# COST: a price per million TOKENS. Tokens are what one kind of traffic is counted in; a duplex leg
+# is counted in seconds and a relay in frames, and each has a rate off the same card -- so the one
+# pricing member a neutral face had was a member three kinds could not answer, and they route
+# without one. The rate face is the other half of `UsageLocator`, and the same discipline: a locator
+# says WHERE a class's quantity was found, a rate says what ONE UNIT of that quantity costs, and
+# neither is an amount. TWELVE lines by every counter -- scripts/loc-surface.py measures
+# busbar-contract 3611 -> 3623 with busbar-caps 1151 unmoved, and the loc-ceilings rule's own
+# counter measures busbar-caps 1153 + busbar-contract 3624 = 4777 -- and that figure is already NET
+# of the deleted member, because the rate list replaces it in place. Two DELETIONS land beside it
+# and are not claimed here: the blended per-million-token scalar in the substrate's config sections
+# and the neutral raw-rate view's method behind it, both of which computed a routing figure at the
+# config boundary that is now read at the comparison and stored nowhere. Counted three times below
+# because three ceilings sum the same crate; ARCHITECTURE.md 1.1 is amended on this commit,
+# 4762 -> 4774.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 12
+because = "the metering step's RATE FACE (`ClassRate`, with its `class`/`micros_per_unit` members) in busbar-contract/src/unit.rs, and the routable member's `price` list plus the `comparable_price` reading over it in busbar-contract/src/hooks.rs, NET of the per-million-token member they replace: 12 lines by scripts/loc-surface.py (3611 -> 3623, busbar-caps 1151 unmoved). What it buys is a pricing vocabulary every kind of traffic can answer -- a class and what one unit of that class's own quantity costs, in the micro-units a card is configured in -- where the face could previously state only what a TOKEN costs, which is a fact about one dialect's unit of quantity offered to four planes"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 12
+because = "the metering step's rate face and the routable member's price, less the per-million-token member deleted in the same line: the same 12 lines as the surface-ceiling raise, as the loc-ceilings rule's own counter measures them (busbar-caps 1153 + busbar-contract 3624 = 4777). The comparable price is DERIVED at the moment of the comparison and stored nowhere, because a figure that exists to put two members in an order is not a price anything is billed at"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 12
+because = "the metering step's rate face and the routable member's price: the same 12 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms -- kernel 5379 and unit-* 14590 are both unchanged by this line, which adds no kernel and no unit code at all"
+
+# THE SAME FACE, SEEN AS COUPLING. A member's cost stopped being a bare `f64` and became the
+# contract's rate face, so the crates that construct or carry one now NAME a type where they used to
+# name a primitive, and the kind matrix counts exactly that. What it costs is the minimum: ONE
+# import line in the composition root's build, one in its fixture, one type name on the neutral
+# member carrier, one on the plane's member table, and one import line in each of the ranking hook's
+# two batteries. Nothing became qualified that could have been imported, and the battery that states
+# recorded rates names no retiring crate at all. Against THIS BRANCH'S BASE only two of the five
+# cells rise and are declared below; the other three do not need a declaration and are re-pinned:
+# busbar-core x api is far below its base figure (603 -> 579) and busbar-substrate x api is exactly
+# at it, while busbar-substrate-values x legacy FALLS 134 -> 133 because the blended
+# per-million-token method that cited the retiring engine's config path went with it.
+[[gate.ceiling_raises]]
+key = "cell.busbar-hooks-ranking.api.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the shipped ranking hook's two batteries state a member's RATES where they used to state a blended scalar, so each takes one import line for the rate face and names nothing qualified after it. The hook's own production source is unchanged in this count: it reads the member's comparable price through the face rather than reaching for a member of its own, which is the whole point of the re-cut"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the plane's per-member routing table carries the rate face instead of a per-million-token float: ONE type name, on the member metadata the plane already held. The plane still holds no card and derives no price -- it carries the rates the root resolved, exactly as it carried the scalar the root blended, and hands them to the seam"
+
 # THE VIRTUAL-KEY DIRECTORY FACE (`busbar_contract::kinds::{KeyScope, KeyFacts,
 # VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
 # posture, the revocation denylist and the operator credential digest, inside the loop. It
@@ -364,7 +418,7 @@ because = "busbar-contract x plane. operation.rs's header is the table that deri
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 4762
+contract_caps = 4774
 grammar = 388
 contract_transport = 845
 # THE HOOK POLICY ENGINE (`busbar-core-policy`, kind core) — not a plugin-author budget but the
@@ -592,12 +646,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4765
+caps_contract_ceiling = 4777
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24734
+union_ceiling = 24746
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

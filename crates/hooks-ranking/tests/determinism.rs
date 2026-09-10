@@ -18,8 +18,24 @@
 //! This crate only exports `native_policy`, so exercising it via that public entry point is also
 //! the most representative path: it is exactly what `resolve_policy` calls in production.
 
-use busbar_api::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
+use busbar_api::{
+    Candidate, ClassRate, MeterClassId, RoutingContext, RoutingDecision, RoutingRequest, UNIT_INPUT,
+};
 use std::time::Duration;
+
+/// One priced class is all a cost tie needs, and the rate face is what carries it.
+const fn priced(micros_per_unit: f64) -> ClassRate {
+    ClassRate {
+        class: MeterClassId::new(UNIT_INPUT),
+        micros_per_unit,
+    }
+}
+
+/// The tied rate every candidate below is priced at.
+const TIED: &[ClassRate] = &[priced(7.0)];
+/// The two distinct rates the partial-tie case needs.
+const RATE_3: &[ClassRate] = &[priced(3.0)];
+const RATE_1: &[ClassRate] = &[priced(1.0)];
 
 fn cand_tied(idx: usize, rate: Option<f64>) -> Candidate<'static> {
     Candidate {
@@ -30,7 +46,7 @@ fn cand_tied(idx: usize, rate: Option<f64>) -> Candidate<'static> {
         context_max: None,
         tier: None,
         // Identical primary key for cheapest/fastest across every candidate.
-        cost_per_mtok: Some(7.0),
+        price: TIED,
         tags: &[],
         latency_ms: Some(50.0),
         // Identical primary key for least_busy across every candidate.
@@ -107,17 +123,17 @@ async fn partial_tie_group_is_ordered_by_idx_within_the_group() {
         // idx 5 and idx 2 tie on cost (3.0); idx 9 is strictly cheaper.
         Candidate {
             idx: 5,
-            cost_per_mtok: Some(3.0),
+            price: RATE_3,
             ..cand_tied(5, None)
         },
         Candidate {
             idx: 9,
-            cost_per_mtok: Some(1.0),
+            price: RATE_1,
             ..cand_tied(9, None)
         },
         Candidate {
             idx: 2,
-            cost_per_mtok: Some(3.0),
+            price: RATE_3,
             ..cand_tied(2, None)
         },
     ];

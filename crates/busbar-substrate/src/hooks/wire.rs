@@ -310,7 +310,7 @@ pub fn build<'a>(
                 weight: c.weight,
                 context_max: c.context_max,
                 tier: c.tier,
-                cost_per_mtok: c.cost_per_mtok,
+                cost_per_mtok: c.comparable_price(),
                 latency_ms: c.latency_ms,
                 available_concurrency: c.available_concurrency,
                 budget_remaining: c.budget_remaining,

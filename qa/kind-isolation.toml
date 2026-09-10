@@ -1669,7 +1669,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "577"
+count = "579"
 
 [[cell]]
 crate = "busbar-core"
@@ -1794,7 +1794,7 @@ count = "4"
 [[cell]]
 crate = "busbar-hooks-ranking"
 kind = "api"
-count = "4"
+count = "6"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -1824,7 +1824,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+count = "302"
 
 [[cell]]
 crate = "busbar-llm"
@@ -2449,7 +2449,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "api"
-count = "133"
+count = "134"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2529,7 +2529,7 @@ count = "121"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "134"
+count = "133"
 
 [[cell]]
 crate = "busbar-substrate-values"

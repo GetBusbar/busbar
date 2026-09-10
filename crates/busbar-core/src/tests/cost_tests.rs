@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::VirtualKey;
+use busbar_api::{Candidate, ClassRate, MeterClassId, VirtualKey, UNIT_INPUT, UNIT_OUTPUT};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -196,9 +196,10 @@ fn derive_spend_cents_saturates_never_wraps_free() {
     );
 }
 
-/// rate_card is the ONLY cost source - pool members carry no cost, and the routing
-/// scalar (`cheapest` / hook Candidate.cost_per_mtok) derives from a model's card entry as
-/// the blended (input + output) / 2 in units/mtok.
+/// rate_card is the ONLY cost source - pool members carry no cost, and a member's COMPARABLE
+/// price (what `cheapest` ranks on, and what the hook wire's member cost is read off) is the
+/// metering step's rate face over that model's card entry: one line per priced class, averaged at
+/// the moment of the comparison and stored nowhere.
 #[test]
 fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let c = card(&[("gpt-5", 2.5, 10.0)]);
@@ -209,8 +210,37 @@ fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
         (2_500, 10_000),
         "nano-unit rates come straight from the card"
     );
-    // The routing scalar projection: (2.5 + 10.0) / 2 = 6.25 units/mtok.
-    let scalar = crate::config::rate_entry_per_mtok(&c["gpt-5"]);
+    // The comparable price, read through the rate face: (2.5 + 10.0) / 2 = 6.25 micro-units per
+    // metered unit — the same figure, off the same card entry, in the metering step's vocabulary.
+    let rates = c["gpt-5"].raw_tier_rates();
+    let price = [
+        ClassRate {
+            class: MeterClassId::new(UNIT_INPUT),
+            micros_per_unit: rates.input,
+        },
+        ClassRate {
+            class: MeterClassId::new(UNIT_OUTPUT),
+            micros_per_unit: rates.output,
+        },
+    ];
+    let member = Candidate {
+        idx: 0,
+        model: "gpt-5",
+        provider: "openai",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        price: &price,
+        tags: &[],
+        latency_ms: None,
+        available_concurrency: 1,
+        budget_remaining: None,
+        rate_headroom: None,
+        signals: Default::default(),
+    };
+    let scalar = member
+        .comparable_price()
+        .expect("a priced member has a comparable price");
     assert!((scalar - 6.25).abs() < f64::EPSILON);
     // A pool member no longer parses a cost field at all (fail-closed on the removed key).
     let err = serde_yaml::from_str::<crate::config::PoolCfg>(

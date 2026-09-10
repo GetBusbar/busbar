@@ -142,7 +142,7 @@ pub(crate) struct WeightedLane {
 #[derive(Clone, Default)]
 pub(crate) struct MemberMeta {
     pub(crate) tier: Option<String>,
-    pub(crate) cost_per_mtok: Option<f64>,
+    pub(crate) price: Vec<busbar_api::ClassRate>,
     pub(crate) tags: Vec<String>,
 }
 
