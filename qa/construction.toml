@@ -209,6 +209,37 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 2
 because = "contract face `RecordSink`: the same 2 net kinds.rs surface lines, summed into the kernel + caps/contract + unit-* union"
 
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 20
+because = "caps face `UnitEnd::lend_posting` / `PostingLent`: the ledger-side IMPLEMENTOR of the face declared in the same chain — a lend the books take while the exit path still owns the posting, refusing the second settlement — because a face without its implementor is a declaration nobody can call; 20 surface lines in busbar-unit-ledger settle.rs (253 -> 273); counted in the busbar-unit-* total"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 14
+because = "MOVE by identity, root -> ledger: `group_bucket` / `group_bucket_scoped` are the row identity the root's policy.rs used to COMPOSE inline with format!(\"{GROUP_BUCKET_PREFIX}{name}@{window}...\"); the root lost those words and now reaches the name instead, so one place spells a budget's cell and a producer cannot spend a second balance against one budget by naming it slightly wrong; the spelling is byte-identical either side of the move; 14 surface lines, rows.rs 0 -> 12 and lib.rs 42 -> 44; counted in the busbar-unit-* total"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "busbar-unit-egress `ports.rs`: the route walk's boxed future is not Send, and the line that says so — the same form as A1's +1, a single surface line carrying a bound the caller must read; 1 surface line in ports.rs (179 -> 180); counted in the busbar-unit-* total"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 20
+because = "caps face `UnitEnd::lend_posting` / `PostingLent`: the ledger-side IMPLEMENTOR of the face declared in the same chain — a lend the books take while the exit path still owns the posting, refusing the second settlement — because a face without its implementor is a declaration nobody can call; 20 surface lines in busbar-unit-ledger settle.rs (253 -> 273); summed into the kernel + caps/contract + unit-* union"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 14
+because = "MOVE by identity, root -> ledger: `group_bucket` / `group_bucket_scoped` are the row identity the root's policy.rs used to COMPOSE inline with format!(\"{GROUP_BUCKET_PREFIX}{name}@{window}...\"); the root lost those words and now reaches the name instead, so one place spells a budget's cell and a producer cannot spend a second balance against one budget by naming it slightly wrong; the spelling is byte-identical either side of the move; 14 surface lines, rows.rs 0 -> 12 and lib.rs 42 -> 44; summed into the kernel + caps/contract + unit-* union"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "busbar-unit-egress `ports.rs`: the route walk's boxed future is not Send, and the line that says so — the same form as A1's +1, a single surface line carrying a bound the caller must read; 1 surface line in ports.rs (179 -> 180); summed into the kernel + caps/contract + unit-* union"
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -438,10 +469,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3504
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 14641
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23499
+union_ceiling = 23534
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
