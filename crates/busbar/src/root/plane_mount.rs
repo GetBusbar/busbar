@@ -716,6 +716,27 @@ pub fn headers_of(arrival: &busbar_contract::transport::Arrival<'_>) -> axum::ht
     headers
 }
 
+/// EVERY header of one arrival as BORROWED name/value pairs, in the order they were published.
+///
+/// The same read-back as [`headers_of`] and the same non-curation, for a caller that needs the pairs
+/// rather than a `HeaderMap`: the deployment's identity door is asked about the whole arrival, and
+/// what it is asked with must be neutral — a door that took this transport's header type would be a
+/// door only this transport could knock on.
+///
+/// BORROWED, so asking the door costs a mounted request no copy of what it already holds. The prefix
+/// is stripped here, at the read half of [`header_fact`], so nothing downstream carries this
+/// transport's fact vocabulary.
+#[must_use]
+pub fn header_pairs<'a>(
+    arrival: &'a busbar_contract::transport::Arrival<'a>,
+) -> Vec<(&'a str, &'a str)> {
+    arrival
+        .facts
+        .iter()
+        .filter_map(|(key, value)| Some((key.strip_prefix(HEADER_FACT_PREFIX)?, *value)))
+        .collect()
+}
+
 /// The facts this mount publishes for one arrival: the kernel's reserved keys, then this
 /// transport's own headers.
 ///

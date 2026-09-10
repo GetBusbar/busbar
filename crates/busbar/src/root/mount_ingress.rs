@@ -58,10 +58,16 @@ use busbar_substrate::plane_host::EngineHost;
 /// host minted over one deployment beside a key resolved on a second, and nothing about the two
 /// reads would say so.
 ///
-/// The argument is the credential AS PRESENTED — the whole header value, scheme word included,
-/// exactly as the mount published it under the kernel's reserved key. Deciding what a scheme means
-/// belongs to the side that resolves it, which is the same rule the mount's own fact publication
-/// follows when it declines to split one.
+/// The argument is WHAT ARRIVED — the credential as presented, and the request it was presented on.
+/// The credential is the whole header value, scheme word included, exactly as the mount published
+/// it under the kernel's reserved key; deciding what a scheme means belongs to the side that
+/// resolves it, which is the same rule the mount's own fact publication follows when it declines to
+/// split one.
+///
+/// The REST of the request is there because for one family of credentials the credential alone is
+/// not an answerable question: a credential can be a signature over the arrival, and a door handed
+/// only the string has nothing to check it against. Which families those are is not this seam's
+/// statement and not this file's — see [`Presented`].
 ///
 /// The answer is the substrate's SEALED arrival context — the same opaque box the catch-all would
 /// have built for this request had the mount not answered first — carrying the engine host, the
@@ -76,7 +82,40 @@ pub trait ArrivalSource: Send + Sync + 'static {
     /// identity provider, and the driven path's middleware awaits it for exactly the same reason. A
     /// synchronous answer here could only be a SECOND, weaker resolution — which is what this seam
     /// used to hold, and what [`Admitted::Refused`] exists to retire.
-    async fn arrival(&self, credential: Option<&str>) -> Admitted;
+    async fn arrival(&self, presented: Presented<'_>) -> Admitted;
+}
+
+/// **WHAT ONE CALLER PRESENTED, WHOLE** — read back off the facts the mount published, and nothing
+/// re-derived.
+///
+/// Five borrowed fields rather than a credential, because "who is calling" is not always a question
+/// about a credential ALONE. A caller can present a SIGNATURE OVER THE ARRIVAL — one that binds the
+/// method, the target, a declared subset of the headers and a hash of the body — and a door handed
+/// only the string after the scheme word is being asked to verify a signature without the thing it
+/// signs. That door fails closed and refuses callers the driven path admits, which is exactly what
+/// a mounted surface did until this widened.
+///
+/// **THIS FILE NAMES NO SCHEME AND NO ALGORITHM.** It does not know which credentials are signatures
+/// and does not ask; it forwards what arrived to the deployment's own door, which runs the same fork
+/// the driven path's middleware runs. A root that listed the signing families would be a second
+/// statement about them, and the first one to go stale.
+///
+/// Borrowed for the length of one call: every field is already held by the mount for this arrival,
+/// so nothing here copies a body.
+pub struct Presented<'a> {
+    /// The credential as presented, whole — scheme word included — or `None` where none arrived.
+    pub credential: Option<&'a str>,
+    /// The request method.
+    pub method: &'a str,
+    /// The request target: the path AND the query together, as the request line carried them. Whole,
+    /// because a signature over an arrival covers both and a caller who sent a query signed it.
+    pub target: &'a str,
+    /// Every header that arrived, in arrival order, under its own bare name. Not a subset: which
+    /// headers a credential covers is the credential's statement, and a curation here would be this
+    /// file deciding it.
+    pub headers: &'a [(&'a str, &'a str)],
+    /// The bytes as received.
+    pub body: &'a [u8],
 }
 
 /// **WHAT THE DEPLOYMENT'S OWN IDENTITY DOOR SAID ABOUT ONE CALLER.**
@@ -149,25 +188,43 @@ impl std::fmt::Debug for BootIngress {
 
 #[async_trait::async_trait]
 impl ArrivalSource for BootIngress {
-    async fn arrival(&self, credential: Option<&str>) -> Admitted {
+    async fn arrival(&self, arrived: Presented<'_>) -> Admitted {
         // FLATTENED TO THE SECRET, because that is what the driven path carries: the catch-all
         // boxes the resolved caller token, not the header value it came in on. A passthrough that
         // forwarded the scheme word as part of the token would send `Bearer Bearer sk-…` upstream,
         // which is a credential no destination has ever accepted. The SAME flattening feeds the
         // chain below, because the chain is handed a candidate credential and not a header either.
-        let presented = credential.and_then(presented_secret).map(str::to_string);
+        //
+        // The flattening is the CHAIN's half only. A credential that is a signature over the
+        // arrival is read by the door off the headers, where it arrived and where the driven path's
+        // own middleware reads it — this is not a second reading of it, it is the reading the chain
+        // arm has always taken.
+        let presented = arrived
+            .credential
+            .and_then(presented_secret)
+            .map(str::to_string);
         // **THE DATA PLANE'S OWN RESOLUTION, NOT A SECOND ONE.** `identity_admit` is this node's
         // configured auth chain followed by the ONE verdict resolution the HTTP middleware runs —
         // the same two steps, over the same live governance state, reached through the plane ABI so
         // this file names no auth vocabulary and holds no credential rule of its own.
         //
-        // NO EXPECTED AUDIENCE, spelled as the empty string the seam reads as absent. That is the
-        // DATA-plane boundary: RFC 8707 audience binding is what an admission-bearing plane asks
-        // for, and a dialect surface has no resource canonical URI to bind against. The driven
-        // path's own middleware passes `expected_aud: None` here for the same reason.
+        // NO EXPECTED AUDIENCE, and the seam takes none: that is the DATA-plane boundary. RFC 8707
+        // audience binding is what an admission-bearing plane asks for, and a dialect surface has no
+        // resource canonical URI to bind against. The driven path's own middleware passes
+        // `expected_aud: None` here for the same reason.
+        //
+        // THE WHOLE ARRIVAL, not the credential alone, because the door's answer depends on it for
+        // the signing families — and because handing over less than arrived would be this file
+        // deciding which parts of a request identify a caller.
         match self
             .identity
-            .identity_admit(presented.clone(), String::new(), String::new())
+            .identity_admit_arrival(
+                presented.as_deref(),
+                arrived.method,
+                arrived.target,
+                arrived.headers,
+                arrived.body,
+            )
             .await
         {
             // The chain admitted. The context is the chain's — `key: Some` for an identified
@@ -223,10 +280,14 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
 ///   revoked, minted by another node — came back `key: None`, which every step downstream reads as
 ///   the ungoverned open posture rather than as a denial. A mounted node answered `200` where the
 ///   driven path answers a vendor-native `401`.
-/// - It had **no SigV4 arm**, so an inbound `AWS4-HMAC-SHA256` credential — the Bedrock SDK's own
-///   model, and the only way that dialect authenticates — flattened to the leftovers after the
-///   first space and resolved to nothing. Every mounted Bedrock-ingress request was therefore
-///   anonymous: unbilled, unscoped and unbudgeted.
+/// - It could not answer a credential that is a **signature over the arrival** — the model one of
+///   this tree's dialect SDKs signs with, and the only way that dialect authenticates — because it
+///   was handed a string and a signature is not verifiable against one. It flattened to the
+///   leftovers after the first space and resolved to nothing, so every such mounted request was
+///   anonymous: unbilled, unscoped and unbudgeted. The seam's ARGUMENT was the hole: the question
+///   was asked about a credential where the answer depends on the arrival. It now carries
+///   [`Presented`] — what arrived, whole — and the door runs the same fork the driven path's
+///   middleware runs over it.
 /// - It ran **only the keys arm**, so an operator's configured chain — their own identity provider,
 ///   their role bindings — decided nothing on a mounted surface.
 ///

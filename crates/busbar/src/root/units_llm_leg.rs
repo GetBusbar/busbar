@@ -55,7 +55,7 @@ use std::sync::Arc;
 use busbar_llm::arrival::PathModelFacts;
 use busbar_llm::unit::walk::WalkArrival;
 
-use crate::root::mount_ingress::{Admitted, ArrivalSource};
+use crate::root::mount_ingress::{Admitted, ArrivalSource, Presented};
 // The payload the substrate declares, under the ONE spelling this plane's root module already
 // carries: the leg reads a sealed context by downcasting to it, as the driven path's readers do.
 use crate::root::plane_mount;
@@ -204,11 +204,28 @@ impl LlmLeg {
         // at the one place a mounted arrival is made, and it is the deployment's OWN door: the same
         // chain and the same verdict resolution the middleware runs, reached through the ingress
         // seam. See `mount_ingress::Admitted`.
-        let sealed = match self
-            .ingress
-            .arrival(arrival.fact(busbar_contract::transport::facts::CREDENTIAL))
-            .await
-        {
+        // WHAT ARRIVED, WHOLE, and not the credential alone. One of this plane's six dialects
+        // authenticates by SIGNING THE REQUEST — the method, the target, the headers it names and a
+        // hash of the body — so a door handed only the string after the scheme word is being asked
+        // to check a signature without the thing it signs, and can only fail closed. Every field
+        // here is read back off the facts the mount already published; nothing is re-derived and
+        // nothing new crosses.
+        let headers = plane_mount::header_pairs(arrival);
+        let presented = Presented {
+            credential: arrival.fact(busbar_contract::transport::facts::CREDENTIAL),
+            method: arrival
+                .fact(busbar_contract::transport::facts::METHOD)
+                .unwrap_or_default(),
+            // THE TARGET WHOLE — path and query together, as the request line carried them and as
+            // the mount published them. The ladder is asked about the path alone (see `path_of`);
+            // a signature is over both.
+            target: arrival
+                .fact(busbar_contract::transport::facts::PATH)
+                .unwrap_or_default(),
+            headers: &headers,
+            body: arrival.body,
+        };
+        let sealed = match self.ingress.arrival(presented).await {
             Admitted::Arrival(sealed) => sealed,
             // REFUSED, and the ending is `AlreadySettled` because that is the true statement: the
             // chain refused before any unit opened, so no hold exists, nothing ran, and there is no

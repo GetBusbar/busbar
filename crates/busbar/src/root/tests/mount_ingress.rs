@@ -88,13 +88,32 @@ impl AdmitsOneCaller {
 
 #[async_trait::async_trait]
 impl ArrivalSource for AdmitsOneCaller {
-    async fn arrival(&self, credential: Option<&str>) -> Admitted {
+    async fn arrival(&self, presented: Presented<'_>) -> Admitted {
         Admitted::Arrival((self.mint)(
             PlaneRequestCtx {
                 key: self.key.clone(),
             },
-            credential.and_then(presented_secret).map(str::to_string),
+            presented
+                .credential
+                .and_then(presented_secret)
+                .map(str::to_string),
         ))
+    }
+}
+
+/// ONE CALLER PRESENTING A CREDENTIAL AND NOTHING ELSE — the shape every cell below whose subject is
+/// the credential asks with.
+///
+/// The request line and the headers are a plain unsigned arrival, deliberately: a cell about what a
+/// chain makes of a bearer must not accidentally take the signature arm, and a cell about the
+/// signature arm builds the arrival it is actually about rather than editing this one.
+pub(crate) fn presenting(credential: Option<&str>) -> Presented<'_> {
+    Presented {
+        credential,
+        method: "POST",
+        target: "/v1/chat/completions",
+        headers: &[],
+        body: b"{}",
     }
 }
 
@@ -130,13 +149,15 @@ async fn a_credential_the_chain_denies_is_refused_rather_than_admitted_as_anonym
 
     assert!(
         matches!(
-            source.arrival(Some("Bearer sk-not-a-key")).await,
+            source
+                .arrival(presenting(Some("Bearer sk-not-a-key")))
+                .await,
             Admitted::Refused
         ),
         "a credential this node never minted is a REFUSAL, not the anonymous actor"
     );
     assert!(
-        matches!(source.arrival(None).await, Admitted::Refused),
+        matches!(source.arrival(presenting(None)).await, Admitted::Refused),
         "and presenting nothing at all to a governed node is refused for the same reason"
     );
 }
@@ -152,7 +173,7 @@ async fn a_credential_the_chain_denies_is_refused_rather_than_admitted_as_anonym
 async fn the_chain_the_deployment_configured_is_the_one_that_answers() {
     let open = TestApp::new().build();
     let open_source = BootIngress::new(minted(engine_host(&open)), engine_host(&open));
-    let ctx = admitted(open_source.arrival(Some("Bearer sk-one")).await);
+    let ctx = admitted(open_source.arrival(presenting(Some("Bearer sk-one"))).await);
     assert!(
         payload(&ctx).gov.key.is_none(),
         "an empty chain answers Open, which is ungoverned and not a refusal renamed"
@@ -165,7 +186,9 @@ async fn the_chain_the_deployment_configured_is_the_one_that_answers() {
     let governed_source = BootIngress::new(minted(engine_host(&governed)), engine_host(&governed));
     assert!(
         matches!(
-            governed_source.arrival(Some("Bearer sk-one")).await,
+            governed_source
+                .arrival(presenting(Some("Bearer sk-one")))
+                .await,
             Admitted::Refused
         ),
         "the same caller, on a node that configured governance, is refused by that node's chain"
@@ -184,8 +207,8 @@ async fn every_arrival_on_one_mount_reaches_the_one_host_the_boot_sealed() {
     let source = BootIngress::new(minted(Arc::clone(&host)), Arc::clone(&host));
 
     let (first, second) = (
-        admitted(source.arrival(Some("Bearer sk-one")).await),
-        admitted(source.arrival(Some("Bearer sk-two")).await),
+        admitted(source.arrival(presenting(Some("Bearer sk-one"))).await),
+        admitted(source.arrival(presenting(Some("Bearer sk-two"))).await),
     );
     assert!(
         Arc::ptr_eq(&payload(&first).host, &host) && Arc::ptr_eq(&payload(&second).host, &host),
@@ -207,7 +230,7 @@ async fn the_caller_token_is_the_secret_the_driven_path_carries() {
     let token = |credential: Option<&'static str>| {
         let source = &source;
         async move {
-            payload(&admitted(source.arrival(credential).await))
+            payload(&admitted(source.arrival(presenting(credential)).await))
                 .caller_token
                 .clone()
         }
@@ -231,4 +254,176 @@ async fn the_caller_token_is_the_secret_the_driven_path_carries() {
     assert_eq!(token(None).await, None);
     assert_eq!(token(Some("Bearer   ")).await, None);
     assert_eq!(token(Some("   ")).await, None);
+}
+
+/// A GOVERNED deployment holding ONE key that carries a signing credential, and the two secrets a
+/// client signs with. `create_key_with_aws` is the same mint the admin surface calls, so the
+/// credential the cell signs with is a credential this node really issued.
+fn a_state_with_a_signing_key() -> (Arc<busbar_core::governance::GovState>, String, String) {
+    let gov = a_governed_state();
+    let (_key, _bearer, access_key_id, secret) = gov
+        .create_key_with_aws(
+            busbar_substrate::governance::NewKeySpec {
+                name: "signed".to_string(),
+                allowed_pools: None,
+                group: None,
+                ..Default::default()
+            },
+            busbar_substrate::store::now(),
+        )
+        .expect("a governed node mints a signing credential");
+    (gov, access_key_id, secret)
+}
+
+/// ONE ARRIVAL SIGNED THE WAY A VENDOR SDK SIGNS ONE, with the SAME signer a real client uses
+/// (`busbar_substrate::sigv4::sign_v4`) rather than a hand-written header — a fixture that spelled
+/// a signature out would be asserting against itself.
+///
+/// Returns the credential as presented and the headers as sent, borrowed the way the mount publishes
+/// them.
+fn signed(
+    secret: &str,
+    access_key_id: &str,
+    target: &str,
+    body: &[u8],
+) -> (String, Vec<(String, String)>) {
+    let (amzdate, datestamp) =
+        busbar_substrate::sigv4::format_amz_time(busbar_substrate::store::now());
+    let payload_hash = busbar_substrate::sigv4::sha256_hex(body);
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let headers = vec![
+        (
+            "host".to_string(),
+            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+        ),
+        ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+        ("x-amz-date".to_string(), amzdate.clone()),
+    ];
+    let (signature, signed_headers) = busbar_substrate::sigv4::sign_v4(
+        secret,
+        "us-east-1",
+        "bedrock",
+        "POST",
+        &busbar_substrate::sigv4::uri_encode_path(path),
+        query,
+        &headers,
+        &payload_hash,
+        &amzdate,
+        &datestamp,
+    );
+    let credential = format!(
+        "AWS4-HMAC-SHA256 Credential={access_key_id}/{datestamp}/us-east-1/bedrock/aws4_request, \
+         SignedHeaders={signed_headers}, Signature={signature}"
+    );
+    // AND THE CREDENTIAL AMONG THE HEADERS, because that is where it arrived and where the mount
+    // publishes it. A signature is not a header a signature covers — `SignedHeaders` never names
+    // `authorization` — but it is read off the same map the signed ones are, by the door, exactly as
+    // the driven middleware reads it off the request.
+    let mut headers = headers;
+    headers.insert(0, ("authorization".to_string(), credential.clone()));
+    (credential, headers)
+}
+
+/// **A CREDENTIAL THAT IS A SIGNATURE OVER THE ARRIVAL IS ADMITTED — AND A TAMPERED ONE IS NOT.**
+///
+/// THE CELL THE SEAM'S ARGUMENT MADE UNWRITABLE. The door used to be asked about a credential
+/// STRING, and one whole family of credentials cannot be answered from one: a signature binds the
+/// method, the target, the headers it names and a hash of the body, so a door handed the leftovers
+/// after the first space has nothing to verify against and can only fail closed. Every mounted
+/// request signed that way was therefore REFUSED where the driven path admits it — the fail-closed
+/// half of the same hole the refusal arm closed, and just as wrong.
+///
+/// Three statements, and the third is the one that makes the first two worth anything:
+///
+/// - a correctly signed arrival is admitted, and admitted AS THE KEY THAT OWNS THE CREDENTIAL —
+///   not as the ungoverned anonymous posture, which is what "admitted" would mean if the key were
+///   `None`. The money and the scope guard downstream both read that key.
+/// - the SAME signature over a DIFFERENT body is refused. That is the payload bind: the signature
+///   only covers the bytes if the bytes are re-hashed and compared, and a door that skipped it
+///   would leave a MitM free to rewrite the request in flight and still authenticate.
+/// - and a credential this node never minted, signed with a secret that is not the key's, is
+///   refused. So "admitted" above is a statement about the signature and not about the shape.
+///
+/// None of it is this file's opinion: the verification is the deployment's own, reached through the
+/// plane-host ABI, and it is the SAME verifier the driven middleware runs for the same request.
+#[tokio::test]
+async fn a_credential_that_signs_the_whole_arrival_is_admitted_and_a_tampered_one_is_not() {
+    busbar_llm::testkit::install_test_seams();
+    let (gov, access_key_id, secret) = a_state_with_a_signing_key();
+    let app = TestApp::new().keys_chain().governance(gov).build();
+    let source = BootIngress::new(minted(engine_host(&app)), engine_host(&app));
+
+    let target = "/model/anthropic.claude-3-5-sonnet/converse";
+    let body = br#"{"messages":[]}"#;
+    let (credential, headers) = signed(&secret, &access_key_id, target, body);
+    let borrowed: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    fn arrived<'a>(
+        credential: &'a str,
+        target: &'a str,
+        headers: &'a [(&'a str, &'a str)],
+        body: &'a [u8],
+    ) -> Presented<'a> {
+        Presented {
+            credential: Some(credential),
+            method: "POST",
+            target,
+            headers,
+            body,
+        }
+    }
+
+    let admitted_ctx = admitted(
+        source
+            .arrival(arrived(&credential, target, &borrowed, body))
+            .await,
+    );
+    assert_eq!(
+        payload(&admitted_ctx)
+            .gov
+            .key
+            .as_ref()
+            .map(|key| key.name.clone()),
+        Some("signed".to_string()),
+        "a signed arrival is admitted as the key that owns the credential, never as the anonymous \
+         actor a `key: None` context would make it"
+    );
+
+    assert!(
+        matches!(
+            source
+                .arrival(arrived(
+                    &credential,
+                    target,
+                    &borrowed,
+                    br#"{"messages":[{"tampered":true}]}"#
+                ))
+                .await,
+            Admitted::Refused
+        ),
+        "the signature binds the payload: the same signature over other bytes is not this caller"
+    );
+
+    let (forged, forged_headers) = signed("not-this-nodes-secret", &access_key_id, target, body);
+    let forged_borrowed: Vec<(&str, &str)> = forged_headers
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    assert!(
+        matches!(
+            source
+                .arrival(Presented {
+                    credential: Some(&forged),
+                    method: "POST",
+                    target,
+                    headers: &forged_borrowed,
+                    body,
+                })
+                .await,
+            Admitted::Refused
+        ),
+        "a signature made with a secret this node never issued is refused"
+    );
 }

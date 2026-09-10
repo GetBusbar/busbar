@@ -233,7 +233,7 @@ struct RefusesEveryCaller;
 
 #[async_trait::async_trait]
 impl crate::root::mount_ingress::ArrivalSource for RefusesEveryCaller {
-    async fn arrival(&self, _credential: Option<&str>) -> Admitted {
+    async fn arrival(&self, _presented: crate::root::mount_ingress::Presented<'_>) -> Admitted {
         Admitted::Refused
     }
 }
