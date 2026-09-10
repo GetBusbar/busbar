@@ -69,7 +69,7 @@ const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
 /// It is an EXEMPTION WITH A NUMBER ATTACHED, not a silence: `:matrix` counts every one of those
 /// feature names against `[cell.busbar.plane]`, at an exact ceiling, so the root's plane words are
 /// measured here as debt even while they are legal there.
-const ROOT_KIND: &str = "root";
+pub(super) const ROOT_KIND: &str = "root";
 
 /// Normalise `base/rel` — the path a file at `base` writes — resolving `.` and `..`.
 fn resolve(base: &str, rel: &str) -> String {
