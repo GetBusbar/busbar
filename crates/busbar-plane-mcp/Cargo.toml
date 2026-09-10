@@ -16,7 +16,7 @@
 #
 # THE DEPENDENCY EDGE, STATED HONESTLY. The contract crate is the surface a plugin is written
 # against and it stands alone. `busbar-mcp` is named here for the codec vocabulary only, and it is
-# a heavier crate than a pure plane's dependency rule would like: it carries an HTTP stack, an
+# a heavier crate than a pure plane's dependency rule would like: it carries a whole web stack, an
 # async runtime and the engine that still lives beside its codec. That is a finding about where the
 # codec sits today, not a decision taken here — the adapter itself names no runtime, opens nothing,
 # holds no connection and reads no clock but the one the context hands it.
@@ -42,7 +42,7 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 # THE CODEC. Read-only from here: this crate calls the JSON-RPC envelope vocabulary, the method
 # names and the notification codec, and edits none of them. `busbar-mcp-codec`, NOT `busbar-mcp`:
-# the codec split out of the plugin so a PURE kind can name it; the axum routes, the stdio serve
+# the codec split out of the plugin so a PURE kind can name it; the routing layer, the console serve
 # loop and the tokio client transports stayed in `busbar-mcp`, and this edge names only the codec.
 busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents

@@ -81,7 +81,7 @@ const DECODE_WITH_METADATA_ALLOCS: u64 = 2;
 #[test]
 fn reading_the_metadata_block_builds_no_search_text() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(busbar_plane_mcp::claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let body = body_with_metadata();
     let frames = vec![frame(&body)];

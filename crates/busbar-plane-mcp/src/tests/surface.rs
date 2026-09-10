@@ -12,6 +12,14 @@ use super::{
 };
 use crate::{claims, ops};
 
+/// A claim key this plane declares no claim on, for the cases whose subject is the NEGATIVE.
+///
+/// Not another wire's name. A rig that spells a carrier in order to be told "no" is the plane
+/// naming a transport instance, and it also goes quietly green the day that carrier is claimed.
+/// Every case that uses this asserts [`claims::declares`] is false for it first, so the key is
+/// undeclared by the plane's own answer rather than by the reader's assumption.
+const UNCLAIMED: &str = "unclaimed";
+
 /// The surface is one a mount will boot on.
 ///
 /// The vocabulary's own check, run here rather than only at boot: every operation reachable, no two
@@ -111,23 +119,27 @@ fn the_console_era_verbs_are_console_only() {
 #[test]
 fn the_joined_question_answers_per_transport() {
     for method in ["initialize", "ping"] {
-        assert!(row_on(method, claims::TRANSPORT_STDIO).is_some());
-        assert_eq!(row_on(method, claims::TRANSPORT_HTTP), None);
-        assert_eq!(row_on(method, claims::TRANSPORT_SSE), None);
+        assert!(row_on(method, claims::CONSOLE_TRANSPORT).is_some());
+        assert_eq!(row_on(method, claims::TRANSPORT), None);
+        assert_eq!(row_on(method, claims::STREAM_TRANSPORT), None);
     }
     // Everything else is reachable on all three, and `tools/list` stands for the set.
     for transport in [
-        claims::TRANSPORT_HTTP,
-        claims::TRANSPORT_SSE,
-        claims::TRANSPORT_STDIO,
+        claims::TRANSPORT,
+        claims::STREAM_TRANSPORT,
+        claims::CONSOLE_TRANSPORT,
     ] {
         assert_eq!(
             row_on("tools/list", transport).map(|row| row.op),
             Some(ops::OP_TOOLS_LIST)
         );
     }
-    // A transport this plane makes no claim on addresses nothing.
-    assert_eq!(row_on("tools/list", "grpc"), None);
+    // A transport this plane makes no claim on addresses nothing. The key is UNDECLARED by the
+    // plane's own answer rather than by being some other wire's name: a test that types a carrier
+    // in order to be told "no" is the plane naming a transport instance, and this rig reads the
+    // registrations instead.
+    assert!(!claims::declares(UNCLAIMED));
+    assert_eq!(row_on("tools/list", UNCLAIMED), None);
 }
 
 /// Every claim transport this plane declares maps to a binding, and nothing else does.
@@ -140,7 +152,8 @@ fn every_claimed_transport_has_a_binding() {
             claim.transport
         );
     }
-    assert_eq!(binding_for("grpc"), None);
+    assert!(!claims::declares(UNCLAIMED));
+    assert_eq!(binding_for(UNCLAIMED), None);
     assert_eq!(binding_for(""), None);
 }
 
@@ -155,7 +168,7 @@ fn the_mounts_are_the_claims_own_path() {
         .iter()
         .find(|binding| binding.name == BINDING_DOCUMENT)
         .expect("the document binding is declared");
-    assert_eq!(document.transport, claims::TRANSPORT_HTTP);
+    assert_eq!(document.transport, claims::TRANSPORT);
     assert_eq!(document.mounts, &[claims::DEFAULT_MOUNT, MOUNT_SLASH]);
     assert_eq!(MOUNT_SLASH, format!("{}/", claims::DEFAULT_MOUNT));
 
@@ -164,7 +177,7 @@ fn the_mounts_are_the_claims_own_path() {
         .iter()
         .find(|binding| binding.name == BINDING_CONSOLE)
         .expect("the console binding is declared");
-    assert_eq!(console.transport, claims::TRANSPORT_STDIO);
+    assert_eq!(console.transport, claims::CONSOLE_TRANSPORT);
     // No mount, because a console binding's frames arrive on a named stream and not at a path.
     assert!(console.mounts.is_empty());
 }

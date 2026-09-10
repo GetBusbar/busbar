@@ -107,7 +107,7 @@ impl McpPlane {
                 lane: server.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::TRANSPORT_HTTP,
+                transport: crate::claims::TRANSPORT,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },
@@ -837,8 +837,12 @@ impl Plane for McpPlane {
     fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // A locally launched server has no request to carry a header on: its credential is handed to
         // it when it starts. Everything on the document transport presents a bearer credential.
-        let over_stdio = crate::claims::is_stdio(ctx.transport().key());
-        let alt = if over_stdio { "environment" } else { "bearer" };
+        let over_console = crate::claims::is_console(ctx.transport().key());
+        let alt = if over_console {
+            "environment"
+        } else {
+            "bearer"
+        };
         // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
         // alternative for that reason. A notice arrives on the SAME claim a request does, though,
         // and that claim declares a scheme; the surface that genuinely carries no credential is the

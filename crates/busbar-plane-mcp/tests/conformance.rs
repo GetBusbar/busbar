@@ -26,7 +26,7 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::wire::{Decode, DiscardCode, FrameCursor};
-use busbar_plane_mcp::{facts, jsonrpc, ops, McpPlane};
+use busbar_plane_mcp::{claims, facts, jsonrpc, ops, McpPlane};
 use common::{frame, response_frame, Scaffold};
 use std::path::{Path, PathBuf};
 
@@ -109,7 +109,7 @@ fn notification(method: &str) -> Vec<u8> {
 
 /// Drive one body through the decode step and hand back what the plane made of it.
 fn decode(plane: &McpPlane, body: &[u8]) -> Result<Ingress<'static>, Decode> {
-    decode_on(plane, body, "http")
+    decode_on(plane, body, claims::TRANSPORT)
 }
 
 /// The same read, on a named claim transport.
@@ -185,9 +185,9 @@ fn rows_of(sender: ops::Sender) -> Vec<&'static ops::MethodRow> {
 /// did not. The mounted request surface is asked first, so the answer for everything except the two
 /// console-era verbs is the one the rig has always used.
 fn transport_of(method: &str) -> &'static str {
-    for transport in ["http", "stdio"] {
-        if busbar_plane_mcp::surface::row_on(method, transport).is_some() {
-            return transport;
+    for claim in McpPlane::CLAIMS {
+        if busbar_plane_mcp::surface::row_on(method, claim.transport).is_some() {
+            return claim.transport;
         }
     }
     panic!("{method} is reachable on no binding this surface declares")
@@ -405,7 +405,7 @@ fn the_metadata_keys_are_the_batterys_own() {
 #[test]
 fn an_answer_goes_back_as_it_arrived() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#;
     let r = Response {
@@ -423,7 +423,7 @@ fn an_answer_goes_back_as_it_arrived() {
 #[test]
 fn a_composed_answer_is_stamped_and_wrapped() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let mut facts_map = busbar_contract::bounded::Facts::new();
     facts_map
@@ -448,7 +448,7 @@ fn a_composed_answer_is_stamped_and_wrapped() {
 #[test]
 fn a_servers_own_request_opens_a_provider_unit() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let asked = br#"{"jsonrpc":"2.0","id":42,"method":"sampling/createMessage","params":{}}"#;
     let frames = vec![response_frame(asked)];
@@ -472,7 +472,7 @@ fn a_servers_own_request_opens_a_provider_unit() {
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     for (kind, expected) in [
         (
@@ -506,7 +506,7 @@ fn a_result_that_asks_for_something_is_a_turn() {
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let draft = draft_of(decode(&plane, &request("8", "tools/call")).expect("it decodes"));
     let refusal = busbar_contract::unit::Refusal {
@@ -530,7 +530,7 @@ fn a_refusal_is_rendered_in_this_dialect() {
 #[test]
 fn a_refusal_that_implies_a_wait_says_so() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let refusal = busbar_contract::unit::Refusal {
         step: busbar_contract::unit::Step::Admit,
@@ -584,7 +584,7 @@ const EXPECTED_LEGS: &[(&str, usize)] = &[
 #[test]
 fn every_operation_routes_somewhere() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
     let mut covered = 0usize;
@@ -648,7 +648,7 @@ fn every_operation_routes_somewhere() {
 #[test]
 fn a_call_spends_its_grant_before_the_hop() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
     let unit = busbar_contract::unit::Unit::new(
@@ -692,7 +692,7 @@ fn a_call_spends_its_grant_before_the_hop() {
 #[test]
 fn the_metering_step_reports_what_it_read() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete"}}"#;
@@ -748,7 +748,7 @@ fn the_metering_step_reports_what_it_read() {
 #[test]
 fn the_introspection_verb_answers_only_what_is_declared() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let facts = plane
         .plane_facts(busbar_plane_mcp::meta::VERB_TOOLS, None, &ctx)
@@ -778,17 +778,17 @@ fn the_per_name_projection_answers_for_the_named_registration() {
             id: "alpha",
             lane: busbar_contract::ids::LaneId::new("mcp-a"),
             host: "alpha.invalid:443",
-            transport: "http",
+            transport: claims::TRANSPORT,
         },
         busbar_plane_mcp::Server {
             id: "beta",
             lane: busbar_contract::ids::LaneId::new("mcp-b"),
             host: "",
-            transport: "stdio",
+            transport: claims::CONSOLE_TRANSPORT,
         },
     ];
     let plane = McpPlane::new(SERVERS);
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let verb = busbar_plane_mcp::meta::VERB_SERVER;
 
@@ -805,7 +805,7 @@ fn the_per_name_projection_answers_for_the_named_registration() {
     );
     assert_eq!(
         alpha.facts.get("transport"),
-        Some(busbar_contract::bounded::FactValue::Str("http"))
+        Some(busbar_contract::bounded::FactValue::Str(claims::TRANSPORT))
     );
     assert_eq!(
         alpha.facts.get("local"),
@@ -837,7 +837,7 @@ fn the_per_name_projection_answers_for_the_named_registration() {
 #[test]
 fn the_session_halves_open_fresh() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let client = plane.open_session(&ctx);
     let upstream = plane.open_upstream(&sealed_destination(), &ctx);
@@ -867,7 +867,10 @@ fn a_local_server_narrows_to_the_environment_alternative() {
         busbar_contract::bounded::Facts::new(),
         None,
     );
-    for (transport, expected) in [("stdio", "environment"), ("http", "bearer")] {
+    for (transport, expected) in [
+        (claims::CONSOLE_TRANSPORT, "environment"),
+        (claims::TRANSPORT, "bearer"),
+    ] {
         let scaffold = Scaffold::new(transport);
         let ctx = scaffold.ctx();
         let locator = plane.authenticate(&unit, &ctx);
@@ -896,7 +899,8 @@ fn every_narrowing_is_declared() {
     let plane = McpPlane::EMPTY;
     let seal = common::TestSeal;
     for op in McpPlane::OP_CLASSES {
-        for transport in ["http", "sse", "stdio"] {
+        for claim in McpPlane::CLAIMS {
+            let transport = claim.transport;
             let scaffold = Scaffold::new(transport);
             let ctx = scaffold.ctx();
             let unit = busbar_contract::unit::Unit::new(
@@ -933,7 +937,7 @@ fn every_narrowing_is_declared() {
 #[test]
 fn a_request_larger_than_the_arena_is_relayed() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
     let argument = "x".repeat(busbar_contract::bounded::ARENA_BYTES * 2);
@@ -975,7 +979,7 @@ fn a_request_larger_than_the_arena_is_relayed() {
 #[test]
 fn every_operation_is_verified_for_a_destination_its_plan_reaches() {
     let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
+    let scaffold = Scaffold::new(claims::TRANSPORT);
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
     for op in <McpPlane as PlaneMeta>::OP_CLASSES {
@@ -1010,11 +1014,11 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
     busbar_contract::dest::VerifiedDestination::seal(
         &seal,
         busbar_contract::dest::DestinationFacts::Upstream {
-            transport: "http",
+            transport: claims::TRANSPORT,
             address: busbar_contract::UpstreamAddress::socket("server.example"),
             lane: busbar_contract::ids::LaneId::new("standard"),
         },
-        "http",
+        claims::TRANSPORT,
         None,
     )
 }

@@ -9,7 +9,7 @@
 //! Four methods are the first through the loop, and the four are not alike. Two of them —
 //! `initialize` and `ping` — are answered by the existing server from COMPILE-TIME CONSTANTS: no
 //! catalogue, no registry, no clock, no session. They were written inside a console serve loop
-//! (`busbar-mcp`'s `stdio_serve`), which is the one place in the tree that could not be reached
+//! (`busbar-mcp`'s console serve entry), which is the one place in the tree that could not be reached
 //! without opening a process's standard input. That is a wire fact living inside an I/O loop, and
 //! this module is where it belongs: it is what the bytes MEAN, and it is a `fn` over nothing.
 //!

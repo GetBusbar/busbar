@@ -23,29 +23,38 @@
 use busbar_contract::grammar::{Claim, Selector};
 
 /// The request transport this plane's document claims are made against.
-pub const TRANSPORT_HTTP: &str = "http";
+///
+/// THE ROLE IS THE NAME, and the wire's own name appears exactly once — here, in the value. A
+/// constant spelled after the carrier puts the carrier's name at every call site as well as at the
+/// declaration, and a plane that says the carrier's name at every call site is a plane naming a
+/// transport INSTANCE rather than claiming a wire through its face. This is the form every plane's
+/// claim face is spelled in; ARCHITECTURE.md 1.1 states it and names the files it holds for.
+pub const TRANSPORT: &str = "http";
 
 /// The framing a streamed answer arrives on.
 ///
 /// A streamed answer is the same request's own event framing rather than a second request, so the
 /// claim is made against this key and the request is made against the one above.
-pub const TRANSPORT_SSE: &str = "sse";
+pub const STREAM_TRANSPORT: &str = "sse";
 
 /// The transport a locally launched server speaks over.
-pub const TRANSPORT_STDIO: &str = "stdio";
+///
+/// The CONSOLE role: a server the node launches itself, whose frames arrive on a named stream
+/// rather than at an address.
+pub const CONSOLE_TRANSPORT: &str = "stdio";
 
 /// Whether `key` is the locally-launched-server claim key above.
 ///
 /// A NAMED QUESTION rather than a comparison at each call site, and the naming is the whole point.
 /// These constants are `&str` CLAIM KEYS — the vocabulary a claim is made against — and not the
 /// engine's `Transport` axis, but they are spelled with the word "transport" in them, so every
-/// `if transport == claims::TRANSPORT_STDIO` reads to a type-blind reader (and to the axis lint,
+/// `if transport == claims::CONSOLE_TRANSPORT` reads to a type-blind reader (and to the axis lint,
 /// which is one) as the agnostic core forking on the wire carrier it is forbidden to see. Asking
 /// the question by name states what is actually being asked, and leaves exactly one line in the
 /// tree that compares against this constant: this one, in the plane that owns it.
 #[must_use]
-pub fn is_stdio(key: &str) -> bool {
-    key == TRANSPORT_STDIO
+pub fn is_console(key: &str) -> bool {
+    key == CONSOLE_TRANSPORT
 }
 
 /// The credential scheme this plane's claims sit under.
@@ -76,7 +85,7 @@ pub const DEFAULT_MOUNT: &str = "/mcp";
 pub const DEFAULT_METADATA: &str = "/.well-known/oauth-protected-resource/mcp";
 
 /// The named stream a locally launched server's frames arrive on.
-pub const STDIO_STREAM: &str = "mcp";
+pub const CONSOLE_STREAM: &str = "mcp";
 
 /// Build one claim over a selector on a named transport.
 const fn claim(transport: &'static str, selector: Selector) -> Claim {
@@ -114,17 +123,17 @@ const fn open(transport: &'static str, selector: Selector) -> Claim {
 pub const CLAIMS: &[Claim] = &[
     // The discovery document is deliberately open: it is what a caller reads to find out how to
     // authenticate, so requiring a credential for it would be a closed loop.
-    open(TRANSPORT_HTTP, Selector::ExactPath(DEFAULT_METADATA)),
-    claim(TRANSPORT_HTTP, Selector::ExactPath(DEFAULT_MOUNT)),
+    open(TRANSPORT, Selector::ExactPath(DEFAULT_METADATA)),
+    claim(TRANSPORT, Selector::ExactPath(DEFAULT_MOUNT)),
     // The streamed answer arrives on the same path, framed as events.
-    claim(TRANSPORT_SSE, Selector::ExactPath(DEFAULT_MOUNT)),
+    claim(STREAM_TRANSPORT, Selector::ExactPath(DEFAULT_MOUNT)),
     // A locally launched server has no path at all: its frames arrive on a named stream.
-    claim(TRANSPORT_STDIO, Selector::StreamName(STDIO_STREAM)),
+    claim(CONSOLE_TRANSPORT, Selector::StreamName(CONSOLE_STREAM)),
 ];
 
 /// Whether this plane declares a claim on `key`.
 ///
-/// A NAMED QUESTION on the plane's own declaration, for the same reason `is_stdio` above is one.
+/// A NAMED QUESTION on the plane's own declaration, for the same reason `is_console` above is one.
 /// The arrival step must establish that the claim it was handed is one of THIS plane's — a plane
 /// may not answer a unit on a surface it never declared — and the only honest source for that
 /// answer is the claim table itself. Asked at the call site it reads as `claim.transport ==

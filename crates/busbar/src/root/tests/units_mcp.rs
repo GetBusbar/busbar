@@ -129,7 +129,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
     let decision = arrival(
         &Arrived {
             record: &record,
-            claim_transport: claims::TRANSPORT_HTTP,
+            claim_transport: claims::TRANSPORT,
         },
         &UnitToken::mint(&seal),
     );
@@ -144,8 +144,8 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
     // The streamed surface is one layer further up, and the locally launched one is a stack of
     // one. Both are claims this plane makes, and both are the top of their own chain.
     for (chain, transport) in [
-        (vec!["tcp", "tls", "http", "sse"], claims::TRANSPORT_SSE),
-        (vec!["stdio"], claims::TRANSPORT_STDIO),
+        (vec!["tcp", "tls", "http", "sse"], claims::STREAM_TRANSPORT),
+        (vec!["stdio"], claims::CONSOLE_TRANSPORT),
     ] {
         let record = over_tls(chain);
         assert!(
@@ -186,7 +186,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
     let refusal = arrival(
         &Arrived {
             record: &sse,
-            claim_transport: claims::TRANSPORT_HTTP,
+            claim_transport: claims::TRANSPORT,
         },
         &UnitToken::mint(&seal),
     )
@@ -221,7 +221,7 @@ struct CellTransport;
 
 impl busbar_contract::unit::TransportView for CellTransport {
     fn key(&self) -> &'static str {
-        claims::TRANSPORT_HTTP
+        claims::TRANSPORT
     }
     fn chain(&self) -> &[&'static str] {
         &["tcp", "tls", "http"]
@@ -415,7 +415,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
     let bindings = AuthBindings::new(std::sync::Arc::new(OneKey));
     let arriving = Arriving {
         presented: Some("tok"),
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         under_scheme: true,
         now: 100,
         new_unit: true,
@@ -433,9 +433,9 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
 /// the document transports presents a bearer.
 #[test]
 fn the_narrowing_follows_the_transport() {
-    assert_eq!(narrowed_scheme(claims::TRANSPORT_STDIO), "environment");
-    assert_eq!(narrowed_scheme(claims::TRANSPORT_HTTP), "bearer");
-    assert_eq!(narrowed_scheme(claims::TRANSPORT_SSE), "bearer");
+    assert_eq!(narrowed_scheme(claims::CONSOLE_TRANSPORT), "environment");
+    assert_eq!(narrowed_scheme(claims::TRANSPORT), "bearer");
+    assert_eq!(narrowed_scheme(claims::STREAM_TRANSPORT), "bearer");
 }
 
 /// Every narrowing the root can produce is inside the set the claims declare.
@@ -446,9 +446,9 @@ fn the_narrowing_follows_the_transport() {
 fn every_narrowing_is_within_the_declared_set() {
     let declared = declared_schemes();
     for transport in [
-        claims::TRANSPORT_HTTP,
-        claims::TRANSPORT_SSE,
-        claims::TRANSPORT_STDIO,
+        claims::TRANSPORT,
+        claims::STREAM_TRANSPORT,
+        claims::CONSOLE_TRANSPORT,
     ] {
         assert!(
             declared.contains(&narrowed_scheme(transport)),
@@ -495,7 +495,7 @@ fn a_record_leg_is_judged_against_the_planes_own_declaration() {
 fn an_unregistered_hop_is_not_allow_listed() {
     let facts = Catalogue::upstream_only(McpPlane::EMPTY, seam());
     let nowhere = DestinationFacts::Upstream {
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         address: busbar_contract::UpstreamAddress::socket(""),
         lane: LaneId::new(""),
     };
@@ -509,12 +509,12 @@ fn a_registered_hop_is_allow_listed() {
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let plane = McpPlane::new(SERVERS);
     let facts = Catalogue::upstream_only(plane, seam());
     let hop = DestinationFacts::Upstream {
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
         lane: LaneId::new("fs-lane"),
     };
@@ -538,10 +538,10 @@ fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard(
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "fs.internal:443",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let hop = DestinationFacts::Upstream {
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         address: busbar_contract::UpstreamAddress::socket("fs.internal:443"),
         lane: LaneId::new("fs-lane"),
     };
@@ -583,18 +583,18 @@ fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
             id: "first",
             lane: LaneId::new("first-lane"),
             host: "127.0.0.1:9",
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
         },
         Server {
             id: "second",
             lane: LaneId::new("second-lane"),
             host: "127.0.0.1:10",
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
         },
     ];
     let facts = Catalogue::upstream_only(McpPlane::new(SERVERS), seam());
     let second = DestinationFacts::Upstream {
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         address: busbar_contract::UpstreamAddress::socket("127.0.0.1:10"),
         lane: LaneId::new("second-lane"),
     };
@@ -629,7 +629,7 @@ fn an_explicit_empty_scope_list_denies_every_pool() {
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let plane = McpPlane::new(SERVERS);
 
@@ -653,7 +653,7 @@ fn a_call_names_the_tool_as_well_as_the_server() {
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let plane = McpPlane::new(SERVERS);
 
@@ -695,7 +695,7 @@ fn silence_is_a_refusal() {
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let plane = McpPlane::new(SERVERS);
     let silent = crate::root::policy::ScopePolicy::new();
@@ -711,7 +711,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
         id: "fs",
         lane: LaneId::new("fs-lane"),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     let plane = McpPlane::new(SERVERS);
     let mut policy = crate::root::policy::ScopePolicy::new();
@@ -804,7 +804,7 @@ fn every_planned_kind_classifies() {
     );
     assert!(matches!(
         classify(&DestinationFacts::Upstream {
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
             address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
             lane: LaneId::new("fs-lane"),
         }),
@@ -1083,7 +1083,7 @@ fn the_shape_reads_the_hop_off_the_plan() {
             op: records::OP_GET,
         },
         LegKind::Upstream {
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
             lane: LaneId::new("fs-lane"),
         },
     ];
@@ -1554,7 +1554,7 @@ static ONE_GOOD: &[Server] = &[Server {
     id: "fs",
     lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
-    transport: claims::TRANSPORT_HTTP,
+    transport: claims::TRANSPORT,
 }];
 
 /// A deployment with nothing registered seals, and so does one with a good registration.
@@ -1584,13 +1584,13 @@ fn two_registrations_under_one_name_are_refused() {
             id: "fs",
             lane: LaneId::new("a"),
             host: "127.0.0.1:9",
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
         },
         Server {
             id: "fs",
             lane: LaneId::new("b"),
             host: "127.0.0.1:10",
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
         },
     ];
     assert_eq!(
@@ -1622,9 +1622,9 @@ fn a_registration_on_an_unclaimed_transport_is_refused() {
     // And each of the three the claims DO declare is accepted, so the check is the claim table's
     // answer rather than one transport that happens to pass.
     for transport in [
-        claims::TRANSPORT_HTTP,
-        claims::TRANSPORT_SSE,
-        claims::TRANSPORT_STDIO,
+        claims::TRANSPORT,
+        claims::STREAM_TRANSPORT,
+        claims::CONSOLE_TRANSPORT,
     ] {
         assert!(claims::declares(transport));
     }
@@ -1640,7 +1640,7 @@ fn a_registration_with_no_lane_is_refused() {
         id: "fs",
         lane: LaneId::new(""),
         host: "127.0.0.1:9",
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
     }];
     assert_eq!(
         seal(&McpPlane::new(SERVERS)),
@@ -1702,7 +1702,7 @@ static ONE_SERVER: &[Server] = &[Server {
     id: "fs",
     lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
-    transport: claims::TRANSPORT_HTTP,
+    transport: claims::TRANSPORT,
 }];
 
 /// A breaker with every cell open, which is what a node with no recent failure has.
@@ -1953,7 +1953,7 @@ fn draft_for(plane: &McpPlane, body: &str) -> McpDraft {
         body.len() as u64,
         &Arrived {
             record: &record,
-            claim_transport: claims::TRANSPORT_HTTP,
+            claim_transport: claims::TRANSPORT,
         },
         None,
         // The OPEN posture. The audience this plane demands, and the refusal a token minted for

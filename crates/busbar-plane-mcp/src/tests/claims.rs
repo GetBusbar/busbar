@@ -3,8 +3,8 @@
 //! super::*` reaches the private items it always did.
 
 use super::{
-    CLAIMS, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME, SCHEME_ALTS, TRANSPORT_HTTP, TRANSPORT_SSE,
-    TRANSPORT_STDIO,
+    CLAIMS, CONSOLE_TRANSPORT, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME, SCHEME_ALTS,
+    STREAM_TRANSPORT, TRANSPORT,
 };
 use busbar_contract::grammar::Selector;
 use busbar_mcp_codec::{
@@ -62,7 +62,7 @@ fn the_plane_key_is_the_codecs_own() {
 fn every_claim_names_a_declared_transport() {
     for c in CLAIMS {
         assert!(
-            [TRANSPORT_HTTP, TRANSPORT_SSE, TRANSPORT_STDIO].contains(&c.transport),
+            [TRANSPORT, STREAM_TRANSPORT, CONSOLE_TRANSPORT].contains(&c.transport),
             "a claim names the undeclared transport {}",
             c.transport
         );
@@ -72,7 +72,7 @@ fn every_claim_names_a_declared_transport() {
 /// All three transports are claimed, because the codec serves on all three.
 #[test]
 fn all_three_transports_are_claimed() {
-    for transport in [TRANSPORT_HTTP, TRANSPORT_SSE, TRANSPORT_STDIO] {
+    for transport in [TRANSPORT, STREAM_TRANSPORT, CONSOLE_TRANSPORT] {
         assert!(
             CLAIMS.iter().any(|c| c.transport == transport),
             "{transport} is served and not claimed"

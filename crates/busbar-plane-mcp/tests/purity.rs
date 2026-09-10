@@ -174,10 +174,12 @@ fn the_decode_step_is_deterministic() {
         .iter()
         .filter(|r| r.sender == busbar_plane_mcp::ops::Sender::Client)
         .map(|row| {
-            let transport = ["http", "stdio"]
-                .into_iter()
-                .find(|t| busbar_plane_mcp::surface::row_on(row.method, t).is_some())
-                .unwrap_or_else(|| panic!("{} is reachable on no binding", row.method));
+            let transport =
+                <busbar_plane_mcp::McpPlane as busbar_contract::plane::PlaneMeta>::CLAIMS
+                    .iter()
+                    .map(|c| c.transport)
+                    .find(|t| busbar_plane_mcp::surface::row_on(row.method, t).is_some())
+                    .unwrap_or_else(|| panic!("{} is reachable on no binding", row.method));
             (
                 format!(
                     r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
@@ -228,7 +230,7 @@ fn the_encode_step_is_deterministic() {
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"a":1,"b":2}}"#;
     let mut written = Vec::new();
     for _ in 0..8 {
-        let scaffold = Scaffold::new("http");
+        let scaffold = Scaffold::new(busbar_plane_mcp::claims::TRANSPORT);
         let ctx = scaffold.ctx();
         let r = busbar_contract::plane::Response {
             ir: busbar_contract::bounded::Ir::new(answer, &[]),
@@ -257,7 +259,7 @@ fn the_answer_does_not_move_with_the_clock() {
     let body = br#"{"jsonrpc":"2.0","id":9,"method":"tasks/get","params":{"id":"t1"}}"#;
     let mut answers = Vec::new();
     for unix_secs in [2_000_000_000_u64, 1_000_000_000] {
-        let scaffold = Scaffold::new("http");
+        let scaffold = Scaffold::new(busbar_plane_mcp::claims::TRANSPORT);
         let ctx = scaffold.ctx_at(unix_secs);
         assert_eq!(
             ctx.clock().unix_secs,

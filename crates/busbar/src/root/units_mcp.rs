@@ -313,15 +313,15 @@ pub fn declared_schemes() -> Vec<&'static str> {
 /// plane's own answer, restated over the claim key because the root reaches the plane's
 /// `authenticate` only with a live unit in hand and the narrowing depends on nothing else.
 ///
-/// The question is asked by NAME (`claims::is_stdio`) rather than compared here. What arrives is a
+/// The question is asked by NAME (`claims::is_console`) rather than compared here. What arrives is a
 /// `&str` claim key out of the plane's own claim vocabulary, never the engine's `Transport` axis —
-/// but a bare `if transport == claims::TRANSPORT_STDIO` is indistinguishable, to a reader and to the
+/// but a bare `if transport == claims::CONSOLE_TRANSPORT` is indistinguishable, to a reader and to the
 /// axis lint alike, from the agnostic root forking on the wire carrier it may not see. Asking the
 /// plane its own named question says what is meant and leaves the comparison in the plane that owns
 /// the constant.
 #[must_use]
 pub fn narrowed_scheme(claim_key: &str) -> &'static str {
-    if claims::is_stdio(claim_key) {
+    if claims::is_console(claim_key) {
         "environment"
     } else {
         "bearer"
@@ -420,9 +420,9 @@ const MCP_RULES: KindRules = KindRules {
     // The three transports a hop of this protocol is made over. A spawned server's "address" is a
     // program, which is why stdio is in the list.
     transports: &[
-        claims::TRANSPORT_HTTP,
-        claims::TRANSPORT_SSE,
-        claims::TRANSPORT_STDIO,
+        claims::TRANSPORT,
+        claims::STREAM_TRANSPORT,
+        claims::CONSOLE_TRANSPORT,
     ],
     // This plane reaches no administrative verb. Its two introspection verbs are read through the
     // administrative plane's own surface, under that plane's claim and that plane's scope.
@@ -862,7 +862,7 @@ pub fn classify(dest: &DestinationFacts) -> LegKind {
             transport, lane, ..
         } => LegKind::Upstream { transport, lane },
         DestinationFacts::SessionUpstream { lane, .. } => LegKind::Upstream {
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
             lane,
         },
         DestinationFacts::NestedPlane { plane, op } => LegKind::Nested { plane, op },
@@ -1488,9 +1488,9 @@ impl McpDraft {
 /// refuses as a handoff mismatch.
 fn claim_transport_of(transport: &str) -> &'static str {
     for declared in [
-        claims::TRANSPORT_HTTP,
-        claims::TRANSPORT_SSE,
-        claims::TRANSPORT_STDIO,
+        claims::TRANSPORT,
+        claims::STREAM_TRANSPORT,
+        claims::CONSOLE_TRANSPORT,
     ] {
         if declared == transport {
             return declared;

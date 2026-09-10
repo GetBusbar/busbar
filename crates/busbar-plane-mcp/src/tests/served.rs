@@ -11,12 +11,9 @@
 //! this manifest does not name and must not. It left the plane unable to be BUILT or DELETED on its
 //! own, which is not a style complaint — `scripts/plane-delete-test.sh mcp` builds this crate with
 //! `busbar-mcp` physically removed, and two `include_str!` lines were the whole of why that build
-//! failed:
-//!
-//! ```text
-//! error: couldn't read `crates/busbar-plane-mcp/src/tests/../../../busbar-mcp/src/mcp/stdio_serve.rs`
-//! error: couldn't read `crates/busbar-plane-mcp/src/tests/../../../busbar-mcp/src/mcp/method.rs`
-//! ```
+//! failed. The two lines named two files of `busbar-mcp` that were not on disk, and the build
+//! stopped on `error: couldn't read` for each of them, quoting the relative path each `include_str!`
+//! had spelled.
 //!
 //! So they go, on the same terms `claims.rs`, `facts.rs`, `ops.rs` and `jsonrpc.rs` retired theirs
 //! on. Every value assertion stays — each of the five already read the member and its value off

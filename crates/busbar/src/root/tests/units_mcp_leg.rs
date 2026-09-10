@@ -97,7 +97,7 @@ static ONE_SERVER: &[busbar_plane_mcp::Server] = &[busbar_plane_mcp::Server {
     id: "fs",
     lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
-    transport: claims::TRANSPORT_HTTP,
+    transport: claims::TRANSPORT,
 }];
 
 /// A kernel to lend the sealed origin from.
@@ -305,7 +305,7 @@ fn arrival_at<'a>(facts: &'a [(&'static str, &'a str)], body: &'a [u8]) -> Arriv
     Arrival {
         facts,
         body,
-        transport: claims::TRANSPORT_HTTP,
+        transport: claims::TRANSPORT,
         chain: &CHAIN,
         // The address named no operation: this is a MOUNT, and which operation these bytes are is
         // the plane's to say off the document.
@@ -534,15 +534,15 @@ fn the_driven_path_runs_the_same_twelve_and_produces_no_bytes() {
 #[test]
 fn the_scheme_is_a_question_about_the_address_and_not_only_the_carrier() {
     assert!(
-        claims::declares_scheme(claims::TRANSPORT_HTTP, claims::DEFAULT_MOUNT),
+        claims::declares_scheme(claims::TRANSPORT, claims::DEFAULT_MOUNT),
         "the request surface carries a credential"
     );
     assert!(
-        !claims::declares_scheme(claims::TRANSPORT_HTTP, claims::DEFAULT_METADATA),
+        !claims::declares_scheme(claims::TRANSPORT, claims::DEFAULT_METADATA),
         "and the discovery document deliberately does not"
     );
     assert!(
-        !claims::declares_scheme(claims::TRANSPORT_HTTP, "/mcpx"),
+        !claims::declares_scheme(claims::TRANSPORT, "/mcpx"),
         "and an address no claim of this plane matches declares nothing"
     );
 }

@@ -173,7 +173,7 @@ static ONE_SERVER: &[Server] = &[Server {
     id: "fs",
     lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
-    transport: claims::TRANSPORT_HTTP,
+    transport: claims::TRANSPORT,
 }];
 
 /// A breaker that benches nothing, so a cell about the mount is not also a cell about readiness.

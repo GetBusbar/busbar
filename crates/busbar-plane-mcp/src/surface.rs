@@ -44,7 +44,7 @@
 //! ## Where the strings come from
 //!
 //! The mount is [`crate::claims::DEFAULT_MOUNT`], the stream name is
-//! [`crate::claims::STDIO_STREAM`], the operation classes are [`crate::ops`]'s and every method
+//! [`crate::claims::CONSOLE_STREAM`], the operation classes are [`crate::ops`]'s and every method
 //! name is the row's own. Nothing is spelled twice here that is spelled anywhere else, and the
 //! tests below walk [`crate::ops::METHODS`] against this table in both directions — so a method
 //! added to the vocabulary and not declared here is red, and a row here naming a method the
@@ -62,7 +62,11 @@ pub const BINDING_DOCUMENT: &str = "jsonrpc";
 
 /// The console binding's name: the frames of a locally launched server, which arrive on a named
 /// stream and carry no path at all.
-pub const BINDING_CONSOLE: &str = "stdio";
+///
+/// The binding is named for the ROLE it serves, never for the carrier underneath it: a binding name
+/// is this plane's own vocabulary, and spelling it after a wire would be the plane naming a
+/// transport instance in the one table a reader treats as the plane's own words.
+pub const BINDING_CONSOLE: &str = "console";
 
 /// The member of a posted document that names the operation.
 pub const METHOD_MEMBER: &str = "method";
@@ -80,7 +84,7 @@ const POST: &str = "POST";
 
 /// The same mount with the trailing separator a great many clients send.
 ///
-/// Not cosmetic and not a guess: an HTTP client handed `/mcp` as a BASE URL resolves a request for
+/// Not cosmetic and not a guess: a client handed `/mcp` as a BASE URL resolves a request for
 /// `/` against it and sends `/mcp/`. A mount declared only one way leaves that spelling answering
 /// 404.
 const MOUNT_SLASH: &str = "/mcp/";
@@ -240,15 +244,15 @@ pub const SURFACE: WireSurface = WireSurface {
     bindings: &[
         BindingDecl {
             name: BINDING_DOCUMENT,
-            transport: claims::TRANSPORT_HTTP,
+            transport: claims::TRANSPORT,
             mounts: &[claims::DEFAULT_MOUNT, MOUNT_SLASH],
         },
         // No mount, and that is what a console binding IS: its frames arrive on the named stream
-        // `claims::STDIO_STREAM` rather than at a path, so there is no target for a mount to match
+        // `claims::CONSOLE_STREAM` rather than at a path, so there is no target for a mount to match
         // and declaring one would be a route nothing could ever address.
         BindingDecl {
             name: BINDING_CONSOLE,
-            transport: claims::TRANSPORT_STDIO,
+            transport: claims::CONSOLE_TRANSPORT,
             mounts: &[],
         },
     ],
@@ -287,10 +291,10 @@ pub const SURFACE: WireSurface = WireSurface {
 /// second address.
 #[must_use]
 pub fn binding_for(transport: &str) -> Option<&'static str> {
-    if transport == claims::TRANSPORT_HTTP || transport == claims::TRANSPORT_SSE {
+    if transport == claims::TRANSPORT || transport == claims::STREAM_TRANSPORT {
         return Some(BINDING_DOCUMENT);
     }
-    if claims::is_stdio(transport) {
+    if claims::is_console(transport) {
         return Some(BINDING_CONSOLE);
     }
     None
