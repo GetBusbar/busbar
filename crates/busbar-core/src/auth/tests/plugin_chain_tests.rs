@@ -467,7 +467,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 /// Proves role_bindings resolution + the module ceiling both work when `<module>` is a plugin name.
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
-    use crate::admin::v1::contract::Scope;
+    use busbar_unit_scope::Scope;
 
     let dir = tmp_plugin_dir("auth-plugin-policy");
     if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "static-auth") {
@@ -515,7 +515,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         crate::auth::admin_scope_for(Some("static-auth"), Some(&principal), &cfg.role_bindings);
     assert_eq!(
         bound,
-        crate::admin::v1::contract::Grants::of(Scope::Full),
+        busbar_unit_scope::Grants::of(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
     // ..but the module's `max_admin_scope: read-only` ceiling caps the effective scope. Calling the
@@ -525,7 +525,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     let capped = bound.capped_by(Scope::ReadOnly);
     assert_eq!(
         capped,
-        crate::admin::v1::contract::Grants::of(Scope::ReadOnly),
+        busbar_unit_scope::Grants::of(Scope::ReadOnly),
         "max_admin_scope caps the plugin module"
     );
 

@@ -262,12 +262,11 @@ file = "qa/kind-isolation.toml"
 by = 56
 because = "busbar-core/src/admin/rate.rs DELETED against busbar-unit-verbs::rate; the one enforcement chokepoint every admin request crosses now names the unit's MutationLimiter, MutationClass::for_path and ConfigClassRule instead of a second copy of them. 12 in Cargo.toml (the dependency and its drain note), 12 in auth/mod.rs, 12 in auth/tests/tests.rs (the byte-identity test for the 429), 8 in state.rs, 6 in admin/tests/tests.rs (the doc-table cross-check now judged against the live classifier), the rest in appbuild.rs, config/named_map.rs and test_support."
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-core.transport.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "one occurrence, and it is the transport family's bare id `http` inside `axum::http::header::RETRY_AFTER` in the new byte-identity test for the 429 refusal: the advertised back-off is asserted to be the unit's own window constant rather than a literal beside it, and the header name is how a test reads it. No new transport reach; one spelling of a header."
-
+# The 429 test's one `http` spelling and the two in the scope cells were each declared here as a
+# raise on `cell.busbar-core.transport.count`, and the deletion that followed took that cell BELOW
+# the base (2117 -> 2116): the engine's own `axum::http::Method` matrix is gone and the two spellings
+# it cost went with more than they brought. A declaration that describes no rise at the base is
+# stale and refused, so both are struck here and the cell is re-pinned to the measurement.
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
@@ -299,14 +298,8 @@ because = "two more references to the retiring engine by name in rate.rs's own d
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 18
-because = "the engine names busbar-unit-scope so its own matrix can be deleted against it: 4 in Cargo.toml (the dependency and its drain note), 12 in admin/v1/contract/tests/tests.rs (the cross-product cell that is the licence to delete one of the two matrices), 2 in admin/v1/json/tests/tests.rs (the cell that reads x-busbar-required-scope off the SERVED document and checks every published bar against the matrix the node now spends)."
-
-[[gate.ceiling_raises]]
-key = "cell.busbar-core.transport.count"
-file = "qa/kind-isolation.toml"
-by = 2
-because = "one in each of the two new cells, where each has to say which wire the question is asked on: the cross-product cell names the method type it builds its extension methods through, and the served-document cell names the request whose response body it is reading the published scope out of. Neither is new machinery -- both are prose in a test that already had to name the surface it serves."
+by = 80
+because = "busbar-core/src/admin/v1/contract's Scope, Grants and required_scope DELETED against busbar-unit-scope, and every reader re-pointed in the same commit; the engine names the scope unit where it used to name a second copy of it. Heaviest: 24 more in auth/mod.rs (the chain verdict's cap, the grant resolution, the module ceiling, the forbidden refusal and the one enforcement chokepoint's approve), 8 in auth/tests/tests.rs, 8 in admin/tests/tests.rs, 4 in Cargo.toml (the dependency and its drain note), the rest one or two each in the taxonomy, the openapi stamp, json/named_map.rs, config/mod.rs, config_validate, test_support/engine_kit.rs and the served-document cell. It is a NET FALL in reach, not a rise: the engine's control cell falls 5187 -> 5131 and its transport cell 2120 -> 2116 with the same deletion, both re-pinned down in this commit."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-unit-scope.control.count"

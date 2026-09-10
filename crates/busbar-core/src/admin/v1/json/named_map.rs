@@ -753,7 +753,7 @@ fn check_trust_ceiling(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), Rejection> {
-    use crate::admin::v1::contract::Scope;
+    use busbar_unit_scope::Scope;
     if !section.has_trust_ceiling() {
         return Ok(());
     }

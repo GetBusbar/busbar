@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5187"
+count = "5131"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2120"
+count = "2116"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "111"
+count = "173"
 
 [[cell]]
 crate = "busbar-export-example-plugin"

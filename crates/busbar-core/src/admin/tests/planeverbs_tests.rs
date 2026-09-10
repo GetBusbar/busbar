@@ -113,9 +113,9 @@ fn a_resolved_lookup_is_returned_untouched() {
 /// spec cannot ship a mutation that DECLARES `ReadOnly` either.
 #[test]
 fn the_admin_route_table_method_path_scope_is_byte_identical() {
-    use crate::admin::v1::contract::{required_scope, Scope};
     use busbar_plugin::cold::http_endpoint::RouteMethod;
     use busbar_substrate::admin_verbs::AdminScope;
+    use busbar_unit_scope::{admin_required_scope, Scope};
 
     // The FROZEN rows the mcp + a2a admin verbs mount at, with the scope the middleware enforces. Reads
     // are `read-only`; both `connect`s and `approve` are mutations at `full`.
@@ -144,7 +144,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
                 RouteMethod::Delete => axum::http::Method::DELETE,
             };
             // The ENFORCED scope, derived by the same fn the auth middleware runs — over the real row.
-            let enforced = required_scope(&method, &abs);
+            let enforced = admin_required_scope(method.as_str(), &abs);
             let declared = match spec.scope {
                 AdminScope::ReadOnly => Scope::ReadOnly,
                 AdminScope::Full => Scope::Full,

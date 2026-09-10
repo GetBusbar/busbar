@@ -285,7 +285,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
-            needed: crate::admin::v1::contract::Scope::Full,
+            needed: busbar_unit_scope::Scope::Full,
         },
         AdminError::MethodNotAllowed,
         AdminError::Validation(String::new()),
@@ -486,7 +486,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         (AdminError::Conflict(String::new()), ErrKind::Conflict),
         (
             AdminError::Forbidden {
-                needed: crate::admin::v1::contract::Scope::Full,
+                needed: busbar_unit_scope::Scope::Full,
             },
             ErrKind::Forbidden,
         ),

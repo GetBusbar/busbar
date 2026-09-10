@@ -9477,8 +9477,8 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
     // The scope matrix requires `full` for DELETE /overlay/{section} — a read-only (or
     // hooks-register) principal cannot pass it.
     for section in ["groups", "hooks"] {
-        let scope = crate::admin::v1::contract::required_scope(
-            &axum::http::Method::DELETE,
+        let scope = busbar_unit_scope::admin_required_scope(
+            axum::http::Method::DELETE.as_str(),
             &format!("/api/v1/admin/overlay/{section}"),
         );
         assert_eq!(
@@ -10813,21 +10813,30 @@ fn test_persist_root_without_an_overlay_errs() {
 fn test_config_settings_scope_matrix() {
     use axum::http::Method;
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::PUT, "/api/v1/admin/config/settings")
-            .as_str(),
+        busbar_unit_scope::admin_required_scope(
+            Method::PUT.as_str(),
+            "/api/v1/admin/config/settings"
+        )
+        .as_str(),
         "full",
         "PUT /config/settings is a full-scope mutation"
     );
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::GET, "/api/v1/admin/config/settings")
-            .as_str(),
+        busbar_unit_scope::admin_required_scope(
+            Method::GET.as_str(),
+            "/api/v1/admin/config/settings"
+        )
+        .as_str(),
         "read-only",
         "GET /config/settings is read-only"
     );
     // And `root` is a valid reset section requiring full scope.
     assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::DELETE, "/api/v1/admin/overlay/root")
-            .as_str(),
+        busbar_unit_scope::admin_required_scope(
+            Method::DELETE.as_str(),
+            "/api/v1/admin/overlay/root"
+        )
+        .as_str(),
         "full",
         "a root reset is a full-scope mutation"
     );

@@ -573,6 +573,38 @@ pub(crate) const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// ceiling rather than re-deriving it: absent ⇒ [`DEFAULT_MAX_ADMIN_SCOPE`] for every provider except
 /// the built-in `admin-tokens` operator credential, which stays `None` (exempt, full by definition) —
 /// byte-identical to the pre-1.5.3 semantics.
+/// THE ONE `max_admin_scope:` CEILING-TOKEN CHECK, with the one error message. `subject` is the
+/// human path of the site that carries the token (`auth chain entry 'ad'`,
+/// `identity-providers.corp-ad`) — everything else is identical, because the accepted-value list
+/// must be.
+///
+/// Both surfaces that can introduce a ceiling call THIS: `config_validate`'s chain-entry rule
+/// (boot / `--validate`) and the named-map write path (`NamedMapSection::parse_def`). They used to
+/// disagree — the API accepted any string (the write path only ran the `serde` type-check, and
+/// `Option<String>` accepts every string), persisted it, answered 200, and the gateway then refused
+/// to BOOT on the next restart with "unknown max_admin_scope". A successful write that leaves the
+/// deployment unbootable is the failure mode a second copy of the accepted-value list buys you;
+/// there is only one copy.
+///
+/// It is a CONFIG rule and it lives with the config vocabulary: the accepted values are the scope
+/// model's, read from the one place that model lives, but the token, the default it points at and
+/// the sentence an operator reads when it is wrong are this file's.
+pub(crate) fn parse_admin_scope_ceiling(
+    subject: &str,
+    token: &str,
+) -> Result<busbar_unit_scope::Scope, String> {
+    busbar_unit_scope::Scope::parse(token).ok_or_else(|| {
+        format!(
+            "{subject} has unknown max_admin_scope '{token}': expected read-only or full. \
+             There is no `none`: omit the key for the most restrictive default \
+             (`{}`), and to grant NO admin authority through this identity source grant no \
+             `admin_scope` under its `role_bindings:` — the ceiling caps what a grant can \
+             reach, it cannot express the absence of one.",
+            DEFAULT_MAX_ADMIN_SCOPE
+        )
+    })
+}
+
 /// THE ONE `identity-providers.<name>.token:` PLACEMENT RULE. `token:` is the built-in
 /// `admin-tokens` operator credential; on any other module it is inert, so it is almost certainly a
 /// MISPLACED SECRET and must fail loud rather than sit in config doing nothing.

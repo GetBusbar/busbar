@@ -937,7 +937,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     ));
                 }
                 if let Some(scope) = binding.admin_scope.as_deref() {
-                    if crate::admin::v1::contract::Scope::parse(scope).is_none() {
+                    if busbar_unit_scope::Scope::parse(scope).is_none() {
                         errors.push(format!(
                             "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
                              expected read-only or full"
@@ -961,14 +961,14 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // external chain - is a LOUD boot warning: it is the explicit opt-in requires.
         for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
             if let Some(scope) = entry.max_admin_scope.as_deref() {
-                // The SAME check the admin named-map write path runs (`Scope::parse_ceiling`), so
+                // The SAME check the admin named-map write path runs (`config::parse_admin_scope_ceiling`), so
                 // the API can never accept a ceiling this rule would refuse to boot.
-                match crate::admin::v1::contract::Scope::parse_ceiling(
+                match crate::config::parse_admin_scope_ceiling(
                     &format!("auth chain entry '{}'", entry.module),
                     scope,
                 ) {
                     Err(e) => errors.push(e),
-                    Ok(crate::admin::v1::contract::Scope::Full) => diag_warn!(
+                    Ok(busbar_unit_scope::Scope::Full) => diag_warn!(
                         CONFIG_AUTH_CHAIN_FULL_SCOPE,
                         module = %entry.module,
                         "auth chain entry grants max_admin_scope: full - principals identified by \

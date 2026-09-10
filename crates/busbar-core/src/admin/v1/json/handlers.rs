@@ -2214,7 +2214,7 @@ pub(crate) async fn put_auth(
             .filter(|t| !t.is_empty())
             .map(str::to_string);
         let survives = crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref())
-            .contains(crate::admin::v1::contract::Scope::Full);
+            .contains(busbar_unit_scope::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -4380,7 +4380,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     _ => continue,
                 };
                 if let Some(op) = op.as_object_mut() {
-                    let scope = crate::admin::v1::contract::required_scope(&m, path);
+                    let scope = busbar_unit_scope::admin_required_scope(m.as_str(), path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
                     // Both accepted credential carriers, on every op.
                     op.insert(

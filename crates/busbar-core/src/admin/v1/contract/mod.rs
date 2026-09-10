@@ -3,9 +3,9 @@
 
 //! The Admin API v1 CONTRACT — transport-agnostic types shared by every adapter.
 //!
-//! This is the frozen surface expressed in Rust: the operation VIEWS (what a read returns), the
-//! stable ERROR taxonomy (`AdminError` → stable `code` + HTTP status), and the authorization SCOPE
-//! model. It knows nothing about HTTP, JSON, or GraphQL — a transport adapter (`super::transport`)
+//! This is the frozen surface expressed in Rust: the operation VIEWS (what a read returns) and the
+//! stable ERROR taxonomy (`AdminError` → stable `code` + HTTP status). It knows nothing about HTTP,
+//! JSON, or GraphQL — a transport adapter (`super::transport`)
 //! projects these into a wire format, and the service (`super::service`) produces them. Because the
 //! contract lives here as typed Rust, a second transport reuses it verbatim and `openapi.json` can be
 //! generated from the same structs.
@@ -14,6 +14,11 @@
 //! never removed or repurposed once shipped. Serde `Serialize` derives give the JSON projection for
 //! free; a non-JSON transport maps the same fields differently.
 
+// THE AUTHORIZATION SCOPE MODEL IS NOT HERE. The two-rung chain, the grant set and the
+// `(method, path)` matrix were all spelled here as well as in the APPROVE step's own crate, and one
+// authorization matrix answered in two places is one authorization matrix too many; the taxonomy
+// below names the scope a refusal reports, and it names the one that is enforced.
+use busbar_unit_scope::Scope;
 use serde::Serialize;
 
 // SCHEMA-ONLY response views for the ad-hoc-`json!` endpoints (keys, config mutations, hook
@@ -60,195 +65,6 @@ pub(crate) const LIST_LIMIT_DEFAULT: usize = 200;
 /// carries full config-version metadata, heavier than a key/audit row. The hard cap is still the
 /// shared `LIST_LIMIT_MAX`.
 pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
-
-/// The built-in authorization scopes — a strict two-rung chain: `ReadOnly` at the bottom, `Full`
-/// at the top. Authorization is checked on the PRINCIPAL per endpoint and is NEVER derived from the
-/// request body, so a crafted request cannot escalate.
-///
-/// 1.5.2 COLLAPSED the former four-variant diamond (the delegated `HooksRegister`/`Mint` sibling
-/// scopes) down to these two: every read is `ReadOnly`, every mutation is `Full`. The delegated
-/// mint path is now the token-exchange seam (`POST /auth/token`), not a narrow admin scope.
-///
-/// The variant set is the FROZEN authorization contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
-    /// Every read (`GET`) across config, keys, hooks, versions, audit, usage, info — plus the two
-    /// stateless dry-run POSTs (`config/validate`, `plugins/inspect`).
-    ReadOnly,
-    /// Everything: keys, config apply/rollback, auth chains, group_map, cache — every mutation.
-    Full,
-}
-
-impl Scope {
-    /// The stable wire token for this scope (used in `openapi.json` annotations and `info`).
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Scope::ReadOnly => "read-only",
-            Scope::Full => "full",
-        }
-    }
-
-    /// Parse a config-side scope token (`role_bindings.<m>.<role>.admin_scope`, `max_admin_scope:`).
-    /// `None` = unknown token — config_validate rejects it at boot; runtime callers treat it as no
-    /// grant (fail closed). The retired `hooks-register`/`mint` tokens now parse to `None` (migrate
-    /// maps them to `full`).
-    pub(crate) fn parse(token: &str) -> Option<Self> {
-        match token {
-            "read-only" => Some(Scope::ReadOnly),
-            "full" => Some(Scope::Full),
-            _ => None,
-        }
-    }
-
-    /// THE ONE `max_admin_scope:` CEILING-TOKEN CHECK, with the one error message. `subject` is the
-    /// human path of the site that carries the token (`auth chain entry 'ad'`,
-    /// `identity-providers.corp-ad`) — everything else is identical, because the accepted-value list
-    /// must be.
-    ///
-    /// Both surfaces that can introduce a ceiling call THIS: `config_validate`'s chain-entry rule
-    /// (boot / `--validate`) and the admin named-map write path (`NamedMapSection::parse_def`). They
-    /// used to disagree — the API accepted any string (the write path only ran the `serde`
-    /// type-check, and `Option<String>` accepts every string), persisted it, answered 200, and the
-    /// gateway then refused to BOOT on the next restart with "unknown max_admin_scope". A successful
-    /// admin write that leaves the deployment unbootable is the failure mode a second copy of the
-    /// accepted-value list buys you; there is now only one copy.
-    pub(crate) fn parse_ceiling(subject: &str, token: &str) -> Result<Self, String> {
-        Scope::parse(token).ok_or_else(|| {
-            format!(
-                "{subject} has unknown max_admin_scope '{token}': expected read-only or full. \
-                 There is no `none`: omit the key for the most restrictive default \
-                 (`{}`), and to grant NO admin authority through this identity source grant no \
-                 `admin_scope` under its `role_bindings:` — the ceiling caps what a grant can \
-                 reach, it cannot express the absence of one.",
-                crate::config::DEFAULT_MAX_ADMIN_SCOPE
-            )
-        })
-    }
-
-    /// Whether a principal holding `self` may call an endpoint requiring `needed`. A strict chain:
-    /// `ReadOnly` is satisfied by anything (every grant can read); `Full` is satisfied only by
-    /// `Full`.
-    pub(crate) fn allows(self, needed: Scope) -> bool {
-        match needed {
-            // Every grant can read.
-            Scope::ReadOnly => true,
-            // Only the god-mode grant satisfies a full requirement.
-            Scope::Full => self == Scope::Full,
-        }
-    }
-
-    /// Every scope, for the closure operations below. Adding a variant means adding it here too
-    /// (the compiler cannot enforce that — `dominates`/`meet`/`Grants` are all derived by iterating
-    /// this array, not by matching on `Scope`), and `bit`'s `u8` needs to stay wide enough for it.
-    const ALL: [Scope; 2] = [Scope::ReadOnly, Scope::Full];
-
-    /// This scope's bit in a [`Grants`] bitset — its position in `ALL`. Never exposed: callers
-    /// combine scopes through `Grants`, never through the bit pattern directly.
-    fn bit(self) -> u8 {
-        1u8 << Scope::ALL
-            .iter()
-            .position(|s| *s == self)
-            .expect("Scope::ALL enumerates every variant")
-    }
-
-    /// Does holding `self` confer everything holding `other` confers? DERIVED from `allows` (never
-    /// a hand-written table — a second encoding of the scope model is the exact drift hazard
-    /// `Grants` exists to remove): `self` dominates `other` iff every requirement `other` satisfies,
-    /// `self` also satisfies. In the two-rung chain `Full` dominates `ReadOnly` (and itself);
-    /// `ReadOnly` dominates only itself.
-    fn dominates(self, other: Scope) -> bool {
-        Scope::ALL
-            .iter()
-            .all(|n| !other.allows(*n) || self.allows(*n))
-    }
-
-    /// The greatest scope conferring no more than EITHER operand — the ceiling operator (the MEET of
-    /// the two-rung chain): the lower of the two, i.e. `ReadOnly` unless both are `Full`.
-    fn meet(self, other: Scope) -> Scope {
-        if self.dominates(other) {
-            other
-        } else if other.dominates(self) {
-            self
-        } else {
-            Scope::ReadOnly
-        }
-    }
-}
-
-/// The EFFECTIVE authority of a principal: a SET of scopes. Roles UNION into it (`with`); a module
-/// ceiling MEETS each member (`capped_by`). Bitset over `Scope::ALL` — `Copy`, no allocation. Kept
-/// as a set (rather than a single `Scope`) so role aggregation and ceiling arithmetic go through the
-/// same drift-proof `allows`/`meet` seam the scope model derives from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Grants(u8);
-
-impl Grants {
-    /// The single-scope grant.
-    pub(crate) fn of(s: Scope) -> Self {
-        Grants(s.bit())
-    }
-
-    /// UNION — add `s` to the held grants. Replaces `.max()`: folding a principal's role bindings
-    /// with `with` keeps EVERY scope a role grants, so a `hooks-register` role and a `mint` role
-    /// together keep both, instead of an ordinal `max` collapsing to one and losing the other.
-    pub(crate) fn with(self, s: Scope) -> Self {
-        Grants(self.0 | s.bit())
-    }
-
-    /// Pointwise `meet` against a ceiling — replaces `std::cmp::min`. Each held scope is capped
-    /// independently, so a principal capped below one of two incomparable grants doesn't lose the
-    /// other, and a ceiling incomparable with a grant reduces that grant to `ReadOnly` rather than
-    /// inventing or preserving hook/mint authority the ceiling was meant to cut.
-    pub(crate) fn capped_by(self, cap: Scope) -> Self {
-        Scope::ALL
-            .iter()
-            .filter(|s| self.contains(**s))
-            .fold(Grants::default(), |acc, s| acc.with(s.meet(cap)))
-    }
-
-    /// The authorization check: does ANY held scope satisfy `needed`? This is the disjunction
-    /// `allows` was always meant to be evaluated as once a principal can hold more than one grant.
-    pub(crate) fn allows(self, needed: Scope) -> bool {
-        Scope::ALL
-            .iter()
-            .any(|s| self.contains(*s) && s.allows(needed))
-    }
-
-    /// Exact membership — for the few callers that must name one specific scope (the operator-only
-    /// `Full` checks), not "does this authorize X".
-    pub(crate) fn contains(self, s: Scope) -> bool {
-        self.0 & s.bit() != 0
-    }
-}
-
-/// The AUTHORIZATION MATRIX: the scope an admin endpoint requires, derived from METHOD + PATH —
-/// never from the body (a crafted request cannot escalate). A strict two-rung split (1.5.2 scope
-/// collapse): every read (`GET`/`HEAD`) plus the two stateless dry-run POSTs (`config/validate`,
-/// `plugins/inspect`) is `read-only`; every mutation — config apply/rollback, auth chains, keys,
-/// hooks, group_map, cache — needs `full`. Unknown methods fail closed to `full`. Body-derived
-/// refinements (a non-`full` caller must not register a hook wired into a security-critical path)
-/// remain at the service layer as defense-in-depth.
-// `pub` (not `pub(crate)`): the extracted plane crates' admin-verb conformance tests assert their
-// declared route scope equals the bar this one function ENFORCES (`busbar_substrate::admin_verbs`
-// documents the invariant), so they name it across the honest crate boundary. A pure `(method, path)
-// → Scope` function with no state to leak.
-pub fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
-    use axum::http::Method;
-    if method == Method::GET || method == Method::HEAD {
-        return Scope::ReadOnly;
-    }
-    // Match RELATIVE to the one true prefix so the matrix can never drift from the mount grammar.
-    // A path outside the prefix (impossible for a mounted admin route) fails closed to `full`.
-    let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    // `POST /config/validate` (and `POST /plugins/inspect`) are STATELESS DRY-RUNS — reads in POST
-    // clothing (the body is the config to lint / tarball to preview, far past URL length limits). A
-    // read-only CI token must be able to lint configs.
-    if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
-        return Scope::ReadOnly;
-    }
-    // Every other mutation (and any non-read extension method) is full-only.
-    Scope::Full
-}
 
 /// The stable v1 error taxonomy. Each variant maps to a fixed `code` (the machine-stable branch key
 /// tooling switches on — NEVER `message`) and an HTTP status the JSON-REST adapter uses. A non-HTTP
