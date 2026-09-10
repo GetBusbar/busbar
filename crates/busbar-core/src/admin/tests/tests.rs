@@ -10079,6 +10079,15 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The half of the restart note that does NOT name fields: the reason a stored-but-not-live field
+/// is stored-but-not-live. Copied from the recorded 1.5.5 golden cell, em dash included, and read by
+/// both locks below — the one that pins the whole sentence for the recorded cell and the one that
+/// pins the rule for every field the table names — so the two can never drift into agreeing with
+/// each other while disagreeing with the wire.
+const RESTART_NOTE_WHY: &str = " — stored in the overlay, effective on the next RESTART (a socket \
+                                rebind / TLS bind is read once at process start, and the store \
+                                backend is reused across a hot reload; none can hot-swap)";
+
 /// WIRE-BYTE LOCK for the `documented|changelog|admin-restart` oracle cell: the exact body the
 /// recorded 1.5.5 golden captured for
 /// `PUT /config/settings {"advanced":{"response_headers":{"server_timing":true}}}`. The sibling
@@ -10106,11 +10115,7 @@ async fn test_admin_v1_config_settings_restart_note_wire_bytes() {
 
     assert_eq!(
         body["note"].as_str(),
-        Some(
-            "applied live except advanced.response_headers — stored in the overlay, effective on \
-             the next RESTART (a socket rebind / TLS bind is read once at process start, and the \
-             store backend is reused across a hot reload; none can hot-swap)"
-        ),
+        Some(format!("applied live except advanced.response_headers{RESTART_NOTE_WHY}").as_str()),
         "the served note must be byte-identical to the 1.5.5 golden; got {}",
         serde_json::to_string(&body).unwrap()
     );
@@ -10188,9 +10193,7 @@ async fn test_admin_v1_config_settings_note_names_every_flagged_field() {
         body["note"].as_str(),
         Some(
             format!(
-                "applied live except {} — stored in the overlay, effective on the next RESTART (a \
-                 socket rebind / TLS bind is read once at process start, and the store backend is \
-                 reused across a hot reload; none can hot-swap)",
+                "applied live except {}{RESTART_NOTE_WHY}",
                 flagged.join(", ")
             )
             .as_str()
