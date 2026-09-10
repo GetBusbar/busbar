@@ -161,6 +161,22 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 1
 because = "The same single `Denied` variant, seen a second time: the union sums caps/contract in with the kernel and the units, so a +1 in the pair is a +1 here by arithmetic rather than by a second change. Nothing in the kernel or in any unit crate moved on this commit."
 
+# A FOURTH, AND IT IS ABOUT A TYPE'S NAME RATHER THAN ABOUT COUPLING. `kind-isolation:matrix`
+# scores a crate's naming of another kind's vocabulary over the WHOLE TEXT, and `busbar-secret-ref`
+# is a crate of kind `secret`, so the identifier `SecretRef` reads as naming it. The secret kind's
+# face type in `busbar-contract` is called `SecretRef`, and the loader is the crate that implements
+# that face for a dlopened plugin -- so every signature and every construction of a reference in
+# `busbar-plugin-loader` scores as a hit against a crate the loader does not depend on and never
+# names. The spellings were already collapsed as far as they go (one helper in the battery, one
+# import in the source); what is left is the type appearing in the two trait signatures that MUST
+# name it. The number falls again when `busbar-secret-ref` is deleted, which is this same
+# retirement's own next step.
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.secret.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "busbar-plugin-loader x secret. The loader now implements busbar_contract::kinds::Secret for DynSecret, and the face's reference type is spelled `SecretRef` -- which the matrix reads as the loader naming the `busbar-secret-ref` package. It does not: the loader has no such dependency and the ledger's dep rows show none. Eight hits, every one of them the face's own type name in a signature, a construction or the single import; the battery's five call sites were already collapsed behind one helper. It falls when busbar-secret-ref is deleted, later in this same retirement."
+
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
 by = 1

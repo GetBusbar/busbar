@@ -577,6 +577,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
+    // THE EDGE THE `busbar-api` RETIREMENT MOVES ONTO, and it is the same class as the `api` line
+    // above rather than a new permission. The loader's job is to bridge a loaded plugin's face
+    // across the ABI, so it holds a face on both sides by definition; which crate DECLARES that
+    // face is what 1.6.0 changes. Leaving this out would have made the retirement itself
+    // inadmissible — the loader cannot stop naming `busbar-api` without naming what replaces it —
+    // and the ship twin still refuses the whole TCB hole, so nothing here becomes permanent.
+    ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),
