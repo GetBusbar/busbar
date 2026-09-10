@@ -33,20 +33,20 @@ pub use busbar_contract::DestinationId;
 ///
 /// Same reasoning as the transport axis in the contract crate: an asynchronous trait method has to
 /// box its future, and one box per port call is the price of the seam being a trait at all.
+pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The boxed future of the ONE port call that borrows a unit's own context: the route walk.
 ///
-/// NOT `Send`, and the reason is the per-unit arena. This future borrows the plane's `Ctx`, and a
-/// `Ctx` reaches the one resource a plugin is given: a bump cursor, which is `Send` and cannot be
-/// `Sync` — a cursor two threads carve at once is not a cursor. Rust reads a shared borrow crossing
-/// an await in a `Send` future as "another thread may touch this while it is suspended", and for an
-/// arena that reading is correct, so the honest answer is to say the future is not `Send` rather
-/// than to claim a `Sync` for the arena that no implementation can honour. This matches what a unit
-/// IS: one task owns it end to end, and the route walk is that task's own work.
+/// NOT `Send`, and the reason is the per-unit arena. The walk borrows the plane's `Ctx` across the
+/// upstream await, and a `Ctx` reaches the one resource a plugin is given — a bump cursor, which is
+/// `Send` and cannot be `Sync`, because a cursor two threads carve at once is not a cursor. Rust
+/// reads a shared borrow crossing an await inside a `Send` future as "another thread may touch this
+/// while it is suspended", and for an arena that reading is correct. So this future says what a
+/// unit already IS: one task owns it end to end, and the route walk is that task's own work.
 ///
-/// The price is stated rather than hidden: a caller that wants to hand this future to a
-/// work-stealing executor cannot, and must drive it on the task that owns the unit. Nothing in the
-/// tree builds a `RouteRequest` outside this crate today, so no caller pays it yet; the caller that
-/// eventually does is the one that has to own the unit's arena, which is the same rule.
-pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+/// Scoped to this one call rather than to [`BoxFut`]: a permit acquisition and a clock sleep borrow
+/// no unit's arena, and a port that could be driven from any thread keeps saying so.
+pub type UnitFut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 // ── the breaker seam ────────────────────────────────────────────────────────────────────────────
 

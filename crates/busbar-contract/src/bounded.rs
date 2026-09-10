@@ -290,16 +290,16 @@ impl SlabBytes {
 /// does not grow the arena.
 ///
 /// # Threading
-/// An arena is PER UNIT. The task running the unit owns it for the length of that unit and hands
-/// it to no other thread while a borrow it produced is alive, so the bound here is `Send` alone.
+/// An arena is PER UNIT. The task running the unit owns it for the length of that unit and shares
+/// it with no thread while a borrow it produced is alive, so the bound here is `Send` alone.
 ///
-/// `Sync` was here and could not be honoured. These allocators take `&self` and return slices
-/// borrowed FROM `self`, which is exactly a bump allocator's signature, and a bump allocator is not
-/// `Sync`: sharing one across threads means two threads carving the same cursor. A lock does not
-/// rescue it either — a borrow cannot escape the guard that made it. So the two clauses together
-/// were unsatisfiable in safe Rust, and every implementor in the tree was a double that leaked its
-/// allocations to fake a lifetime it could not produce. Removing the clause the design never needed
-/// is what makes a real one implementable; `busbar-kernel`'s `UnitArena` is that one.
+/// `Sync` stood here and could not be honoured. These allocators take `&self` and answer with
+/// slices borrowed FROM `self` — a bump allocator's signature — and every crate in the tree is
+/// `forbid(unsafe_code)`. A lock cannot lend a borrow past its guard, an atomic byte has no `&[u8]`
+/// view, and a write-once slot cannot type the span-table pairs by the caller's lifetime. So under
+/// `Sync` every implementor was a double that leaked to fake a lifetime it could not produce, and
+/// no serving path could build a `Ctx`. The clause the design never needed is gone; the one that
+/// matters stays.
 ///
 /// # Errors
 /// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left

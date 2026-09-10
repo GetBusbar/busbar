@@ -100,8 +100,8 @@ impl Arena for NoArena {
 /// interior mutability — and a `Sync` clause on top of that says two threads may carve the same
 /// cursor at once, which no lock can rescue because a borrow cannot escape its guard. While the
 /// clause stood, every implementor in the tree was a double that leaked to fake a lifetime it could
-/// not produce. A cursor-shaped implementor is what a shipping arena looks like, so if it stops
-/// compiling here the bound is back and nothing can be served again.
+/// not produce. A cursor-shaped implementor is what a shipping arena looks like, so if this stops
+/// compiling the bound is back and nothing can be served again.
 struct CursorArena {
     used: std::cell::Cell<usize>,
 }
@@ -135,7 +135,7 @@ impl Arena for CursorArena {
     }
 }
 
-/// The trait takes one, as a value and through the context's own handle.
+/// The trait takes a cursor-shaped arena, as a value and through the context's own handle.
 #[test]
 fn a_cursor_shaped_arena_is_what_the_trait_takes() {
     let arena = CursorArena {
