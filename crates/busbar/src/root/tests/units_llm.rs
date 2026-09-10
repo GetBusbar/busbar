@@ -2410,3 +2410,101 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
         failures.join("\n")
     );
 }
+
+// =================================================================================================
+// THE BYTE-IDENTITY CELL FOR THE DUAL BOOK
+// =================================================================================================
+
+/// **THE TWO BOOKS, OVER THE SAME RECORDED REPORT.**
+///
+/// One delivered response is accrued twice today. The legacy book takes the plane's neutral report
+/// WHOLE — `ledger_and_meter` hands `tier` to `EngineHost::meter_ledger`, which is
+/// `GovState::record_usage`, which folds EVERY entry of `usage_units` into the budget cell and skips
+/// only the zeros (`busbar-core/src/governance/mod.rs:205-211`). The unit book takes the same report
+/// through [`usage_record`], which walks a HARD-CODED LIST of four token class names and leaves every
+/// other class off.
+///
+/// So the books are byte-identical only for as long as a report carries nothing but those four
+/// names. This cell replays recorded reports through both and compares the classes and the
+/// quantities each one ends up holding. It is the proof obligation the dual-book collapse has to
+/// meet before the legacy accrual can be deleted: whatever the one book is, it has to hold what both
+/// of them held.
+fn legacy_book(report: &busbar_substrate::billing::Usage) -> std::collections::BTreeMap<String, u64> {
+    // WHAT THE LEGACY ACCRUAL FOLDS: every entry, zeros skipped. Not a restatement of a rule — it is
+    // the whole of `BudgetCell::accrue`'s loop over the map `record_usage` was handed, and the map is
+    // handed over by `ledger_and_meter` verbatim.
+    report
+        .usage_units
+        .iter()
+        .filter(|(_, quantity)| **quantity > 0)
+        .map(|(class, quantity)| (class.clone(), *quantity))
+        .collect()
+}
+
+/// What the UNIT book holds for the same report, read off the real reader rather than restated.
+fn unit_book(report: &busbar_substrate::billing::Usage) -> std::collections::BTreeMap<String, u64> {
+    let token = busbar_caps::UsageToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+    usage_record(&token, report)
+        .lines()
+        .iter()
+        .map(|line| (line.class.as_str().to_string(), line.quantity))
+        .collect()
+}
+
+/// One recorded delivered-response report, named by what the destination said.
+fn report(units: &[(&str, u64)]) -> busbar_substrate::billing::Usage {
+    busbar_substrate::billing::Usage {
+        usage_units: units
+            .iter()
+            .map(|(class, quantity)| ((*class).to_string(), *quantity))
+            .collect(),
+    }
+}
+
+/// **RED BEFORE GREEN.** Every recorded report has to leave the two books holding the same classes
+/// at the same quantities. A report that carries a class the unit book's list does not name accrues
+/// on one book and vanishes on the other, and the two spend figures that come out of them can never
+/// be reconciled — which is exactly what the dual book is.
+#[test]
+fn the_two_books_hold_the_same_report() {
+    // THE RECORDED FIXTURES. The first four are what a token-metered delivery reports; the fifth is
+    // a delivery metered in a unit that is not a token, which the neutral report is open for and the
+    // rate card is open for (`busbar_unit_cost::LaneRates`'s open classes) and which every
+    // non-llm plane's meter step produces.
+    let recorded = [
+        ("plain delivery", report(&[("input", 11), ("output", 7)])),
+        (
+            "cached delivery",
+            report(&[
+                ("input", 11),
+                ("output", 7),
+                ("cache_read", 5),
+                ("cache_write", 3),
+            ]),
+        ),
+        ("nothing reported", report(&[])),
+        ("zero tiers only", report(&[("input", 0), ("output", 0)])),
+        (
+            "a delivery metered in seconds",
+            report(&[("input", 11), ("output", 7), ("seconds", 42)]),
+        ),
+    ];
+
+    let mut findings = Vec::new();
+    for (why, recorded) in &recorded {
+        let legacy = legacy_book(recorded);
+        let unit = unit_book(recorded);
+        if legacy != unit {
+            findings.push(format!(
+                "{why}: the legacy book holds {legacy:?} and the unit book holds {unit:?}"
+            ));
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "{} recorded report(s) land differently on the two books:\n{}",
+        findings.len(),
+        findings.join("\n")
+    );
+}
