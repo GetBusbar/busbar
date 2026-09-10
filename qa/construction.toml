@@ -135,8 +135,177 @@ busbar-voice = ["busbar-voice-codec"]
 # striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
 # the face.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
-# every entry that ever stood here was struck once the base carried it.
+# THE ENTRIES THAT STAND ON THIS BRANCH: twenty-four, and every one of them the SAME declaration,
+# which is why they read alike. None of them is a face. None of them is new coupling. Each is an
+# INSTRUMENT CORRECTION -- the count was always there, and the scanner that reported the base's
+# figure could not see it.
+#
+# WHAT THE INSTRUMENT WAS DOING. `matrix::vocabulary` struck any needle that is a proper
+# segment-prefix of another package name in the census, whole: `busbar-llm` was unmatchable because
+# `busbar-llm-codec` exists, `busbar-substrate` because of `busbar-substrate-values`,
+# `busbar-unit-egress` because of `busbar-unit-egress-auth`. A crate spelling one of those names ten
+# thousand times read ZERO. b715da57e replaces the blanket strike with LONGEST MATCH -- a needle
+# loses only the hits a longer census name claims -- and 1fefb82e9 re-pins the cells the strike had
+# been hiding, admitting the two live columns through the `[[unmasked]]` leaf of qa/kind-isolation.toml.
+#
+# SO THE `by` OF EACH ENTRY IS THE UNMASKED NEEDLES' OWN HITS, exactly, and nothing else: not one
+# line of source moved on the commits that produced these numbers, and every hit each entry pays for
+# is older than this branch. The counts themselves are NOT touched here -- `ceiling-slack` still pins
+# them to today's measurement, and these entries only say why today's measurement is above the base's.
+#
+# AND THEY ARE RECORDED, NEVER GRANTED. Each entry names the deletion track the cell falls on, the
+# same track qa/kind-isolation.toml's own comment block names per column: busbar-llm on the L-SERIES,
+# busbar-mcp and busbar-a2a on the MOUNT CHAIN, busbar-voice on VT-3, busbar-core on the CORE-HOMES
+# drain, busbar-substrate on its dissolution. The only thing that lowers one of these columns is
+# `git rm -r`. The two `x unit` entries are the exception that proves it: `busbar-unit-egress` is the
+# crate that STAYS, and it was shadowed by the dead twin the EGA-DEL line deletes.
+#
+# They expire the way every entry here expires: once the base carries this commit, `cargo xtask gate
+# construction --write` strikes all twenty-four in one pass.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 185
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-voice`, `busbar-mcp`, `busbar-a2a` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec`, `busbar-voice-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar x legacy` 98 -> 283, +185, and the delta is exactly the unmasked needles' own hits (busbar-llm 72, busbar-voice 63, busbar-mcp 30, busbar-a2a 20) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-voice -> VT-3 (the streams mount seam and the body deletion behind it); busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 126
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-substrate` went unmatched for as long as `busbar-substrate-values` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` substrate leaf. Measured, on a tree whose source did not move: `[[cell]] busbar x substrate` 9 -> 135, +126, and the delta is exactly the unmasked needles' own hits (busbar-substrate 126) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-substrate -> the DISSOLUTION to plugin/units/transports/contract, the crate frozen and going away rather than growing."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 11
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-unit-egress` went unmatched for as long as `busbar-unit-egress-auth` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the automatic longest-match reading alone -- no `[[unmasked]]` leaf is spent, because `busbar-unit-egress` is a needle of a column that was never emptied. Measured, on a tree whose source did not move: `[[cell]] busbar x unit` 1169 -> 1180, +11, and the delta is exactly the unmasked needles' own hits (busbar-unit-egress 11) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. NO DELETION TRACK, and that is the point: `busbar-unit-egress` is the unit crate that STAYS. The shadow was `busbar-unit-egress-auth`, the dead twin the EGA-DEL line deletes; this number falls only as the naming crate's own spellings of the unit kind fall, never by an edit here."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-mcp`, `busbar-llm` went unmatched for as long as `busbar-llm-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-a2a x legacy` 60 -> 74, +14, and the delta is exactly the unmasked needles' own hits (busbar-mcp 10, busbar-llm 4) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a-codec.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-a2a` went unmatched for as long as `busbar-a2a-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-a2a-codec x legacy` 1 -> 18, +17, and the delta is exactly the unmasked needles' own hits (busbar-a2a 17) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 919
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-substrate` went unmatched for as long as `busbar-substrate-values` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` substrate leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-core x substrate` 1 -> 920, +919, and the delta is exactly the unmasked needles' own hits (busbar-substrate 919) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-substrate -> the DISSOLUTION to plugin/units/transports/contract, the crate frozen and going away rather than growing."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-mcp`, `busbar-a2a` went unmatched for as long as `busbar-a2a-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-llm x legacy` 79 -> 93, +14, and the delta is exactly the unmasked needles' own hits (busbar-mcp 12, busbar-a2a 2) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm-codec.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 48
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-mcp` went unmatched for as long as `busbar-llm-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-llm-codec x legacy` 60 -> 108, +48, and the delta is exactly the unmasked needles' own hits (busbar-llm 41, busbar-mcp 7) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm-codec.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-substrate` went unmatched for as long as `busbar-substrate-values` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` substrate leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-llm-codec x substrate` 904 -> 910, +6, and the delta is exactly the unmasked needles' own hits (busbar-substrate 6) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-substrate -> the DISSOLUTION to plugin/units/transports/contract, the crate frozen and going away rather than growing."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-a2a` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-mcp x legacy` 57 -> 73, +16, and the delta is exactly the unmasked needles' own hits (busbar-llm 14, busbar-a2a 2) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp-codec.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 26
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-mcp` went unmatched for as long as `busbar-mcp-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-mcp-codec x legacy` 8 -> 34, +26, and the delta is exactly the unmasked needles' own hits (busbar-mcp 26) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp-codec.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-substrate` went unmatched for as long as `busbar-substrate-values` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` substrate leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-mcp-codec x substrate` 38 -> 41, +3, and the delta is exactly the unmasked needles' own hits (busbar-substrate 3) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-substrate -> the DISSOLUTION to plugin/units/transports/contract, the crate frozen and going away rather than growing."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-a2a.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-a2a` went unmatched for as long as `busbar-a2a-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-plane-a2a x legacy` 2 -> 10, +8, and the delta is exactly the unmasked needles' own hits (busbar-a2a 8) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-llm.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm` went unmatched for as long as `busbar-llm-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-plane-llm x legacy` 1 -> 7, +6, and the delta is exactly the unmasked needles' own hits (busbar-llm 6) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-mcp.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-mcp` went unmatched for as long as `busbar-mcp-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-plane-mcp x legacy` 2 -> 12, +10, and the delta is exactly the unmasked needles' own hits (busbar-mcp 10) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-a2a`, `busbar-mcp`, `busbar-llm` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-plugin x legacy` 2 -> 5, +3, and the delta is exactly the unmasked needles' own hits (busbar-a2a 1, busbar-mcp 1, busbar-llm 1) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-a2a -> the MOUNT CHAIN, the same seam one crate over; busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 48
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec`, `busbar-voice-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-substrate x legacy` 298 -> 346, +48, and the delta is exactly the unmasked needles' own hits (busbar-llm 29, busbar-mcp 12, busbar-a2a 6, busbar-voice 1) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over; busbar-voice -> VT-3 (the streams mount seam and the body deletion behind it)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 43
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-mcp`, `busbar-a2a` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-substrate-values x legacy` 134 -> 177, +43, and the delta is exactly the unmasked needles' own hits (busbar-llm 28, busbar-mcp 11, busbar-a2a 4) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-transport-http.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec`, `busbar-voice-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-transport-http x legacy` 2 -> 10, +8, and the delta is exactly the unmasked needles' own hits (busbar-llm 2, busbar-mcp 2, busbar-a2a 2, busbar-voice 2) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain); busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over; busbar-voice -> VT-3 (the streams mount seam and the body deletion behind it)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-breaker.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-llm` went unmatched for as long as `busbar-llm-codec` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-unit-breaker x legacy` 5 -> 8, +3, and the delta is exactly the unmasked needles' own hits (busbar-llm 3) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-breaker.unit.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-unit-egress` went unmatched for as long as `busbar-unit-egress-auth` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the automatic longest-match reading alone -- no `[[unmasked]]` leaf is spent, because `busbar-unit-egress` is a needle of a column that was never emptied. Measured, on a tree whose source did not move: `[[cell]] busbar-unit-breaker x unit` 4 -> 5, +1, and the delta is exactly the unmasked needles' own hits (busbar-unit-egress 1) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. NO DELETION TRACK, and that is the point: `busbar-unit-egress` is the unit crate that STAYS. The shadow was `busbar-unit-egress-auth`, the dead twin the EGA-DEL line deletes; this number falls only as the naming crate's own spellings of the unit kind fall, never by an edit here."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-mcp`, `busbar-a2a`, `busbar-llm` went unmatched for as long as `busbar-a2a-codec`, `busbar-llm-codec`, `busbar-mcp-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-voice x legacy` 11 -> 23, +12, and the delta is exactly the unmasked needles' own hits (busbar-mcp 6, busbar-a2a 5, busbar-llm 1) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-mcp -> the MOUNT CHAIN (MCP-T and the mount seam that follows it); busbar-a2a -> the MOUNT CHAIN, the same seam one crate over; busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice-codec.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-voice`, `busbar-llm` went unmatched for as long as `busbar-llm-codec`, `busbar-voice-codec` sat in the census beside them, and this cell was measured with those needles missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` legacy leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-voice-codec x legacy` 1 -> 18, +17, and the delta is exactly the unmasked needles' own hits (busbar-voice 15, busbar-llm 2) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-voice -> VT-3 (the streams mount seam and the body deletion behind it); busbar-llm -> the L-SERIES (L1b/L2/L6/L6b/L7 and the MOVE chain)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice-codec.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """INSTRUMENT CORRECTION, NOT NEW COUPLING. The count was always there and the old scanner could not see it: `matrix::vocabulary` struck every needle that is a proper segment-prefix of another census package name, so `busbar-substrate` went unmatched for as long as `busbar-substrate-values` sat in the census beside it, and this cell was measured with that needle missing. The strike is fixed in b715da57e (longest match wins: a needle loses only the hits a LONGER census name claims) and the re-pin lands in 1fefb82e9 under the `[[unmasked]]` substrate leaf. Measured, on a tree whose source did not move: `[[cell]] busbar-voice-codec x substrate` 15 -> 17, +2, and the delta is exactly the unmasked needles' own hits (busbar-substrate 2) -- every one of them file:line in the drain list of `cargo xtask gate kind-isolation --report`, every one of them older than this branch. Nothing is minted, no dependency edge is created, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS. DELETION TRACKS: busbar-substrate -> the DISSOLUTION to plugin/units/transports/contract, the crate frozen and going away rather than growing."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
