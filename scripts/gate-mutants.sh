@@ -26,6 +26,7 @@
 #
 # USAGE
 #   scripts/gate-mutants.sh --scope            print the in-scope changed files; exit 0 always
+#   scripts/gate-mutants.sh --gates            print the gate self-proofs this diff needs
 #   scripts/gate-mutants.sh --diff FILE        write the scoped merge-base..HEAD diff to FILE
 #   scripts/gate-mutants.sh --shard K/N        run shard K of N; red if any mutant SURVIVES
 #   scripts/gate-mutants.sh --selftest         prove the scoping, the base and the verdict
@@ -38,6 +39,9 @@
 #   GATE_MUTANTS_BASELINE  `run` (default, and what CI uses) or `skip` for hand debugging only —
 #                          see the long comment by the `cargo mutants` invocation for why skipping
 #                          it turns the whole campaign green over nothing
+#   GATE_MUTANTS_GATES     override the computed gate list (comma-separated). Widening is always
+#                          safe; narrowing by hand is how a mutant gets measured against a proof
+#                          that could not have caught it. CI never sets this.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,6 +80,68 @@ xtask/src/manifest.rs
 xtask/src/scan.rs
 xtask/src/ctx.rs
 PATHS
+}
+
+# THE GATE SELF-PROOFS THE TEST COMMAND RUNS, AND WHY IT IS NOT ALWAYS ALL FOUR.
+#
+# The test command's cost is four gate self-proofs, and a shard pays it once for its baseline and
+# once for every mutant it holds. `kind-isolation --selftest` alone is the better part of twenty
+# minutes. But `kind-isolation --selftest` cannot go red on a stub inside `gates/construction/` —
+# it does not run that code — so on a diff that touches only construction, three quarters of every
+# shard's wall clock is spent proving the mutant is not somewhere it could not be.
+#
+# So the list is computed from the diff. THE DEFAULT DIRECTION IS WIDE: any changed target file
+# that is not inside exactly one gate's own directory — `manifest.rs`, `scan.rs`, `ctx.rs`,
+# `gates/mod.rs`, any other gate source — is SHARED code that all four self-proofs run through,
+# and it puts all four back. A file this mapping has never heard of is shared by definition, and
+# widens. There is no input to this function that narrows the proof by accident.
+gm_gates_all() { printf 'kind-isolation,kind-isolation-ship,construction,design-bindings\n'; }
+
+# The gate self-proofs a single changed path requires. Empty output means "this path says nothing
+# about which gates to run"; the caller treats that as ALL, never as none.
+gm_gates_for_path() {
+  case "$1" in
+    xtask/src/gates/kind_isolation.rs|xtask/src/gates/kind_isolation/*)
+      # The ship twin is the same rules read on a promotion posture: a stub in the shared
+      # kind-isolation body can be held by either self-proof, so both run.
+      printf 'kind-isolation kind-isolation-ship\n' ;;
+    xtask/src/gates/construction.rs|xtask/src/gates/construction/*)
+      printf 'construction\n' ;;
+    xtask/src/gates/design_bindings.rs|xtask/src/gates/design_bindings/*)
+      printf 'design-bindings\n' ;;
+    *)
+      # SHARED, OR UNKNOWN, WHICH IS THE SAME ANSWER. `mod.rs`, `manifest.rs`, `scan.rs`, `ctx.rs`
+      # and every gate without a directory of its own are read by all four proofs.
+      gm_gates_all | tr ',' ' ' ;;
+  esac
+}
+
+# THE LIST FOR THIS PUSH. Printed comma-separated, in the fixed order the proof harness declares,
+# so the string is stable for a given diff and can be compared between the baseline job and a shard.
+gm_gates() {
+  local root="${1:-$here}"
+  if [ -n "${GATE_MUTANTS_GATES:-}" ]; then printf '%s\n' "$GATE_MUTANTS_GATES"; return 0; fi
+  local diff="$here/target/gate-mutants.gates.diff"
+  mkdir -p "$here/target"
+  gm_diff "$diff" "$root" >/dev/null || return 2
+  # NO RUST CHANGED IS NOT NO GATES. `--gates` is also read by the baseline job, which runs the
+  # command on the checkout whether or not there are mutants to test; all four is the honest answer
+  # to "which proofs does a diff I cannot narrow require".
+  [ -s "$diff" ] || { gm_gates_all; return 0; }
+  local want=" " f g
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    for g in $(gm_gates_for_path "$f"); do
+      case "$want" in *" $g "*) : ;; *) want="$want$g " ;; esac
+    done
+  done < <(gm_diff_files "$diff")
+  [ "$want" != " " ] || { gm_gates_all; return 0; }
+  # Emitted in the harness's own order, not in the order the diff happened to mention them.
+  local out="" g2
+  for g2 in $(gm_gates_all | tr ',' ' '); do
+    case "$want" in *" $g2 "*) out="$out${out:+,}$g2" ;; esac
+  done
+  printf '%s\n' "$out"
 }
 
 gm_log() { printf '[gate-mutants] %s\n' "$*"; }
@@ -191,6 +257,11 @@ gm_run_shard() {
   fi
   gm_log "diff over: $(gm_diff_files "$diff" | tr '\n' ' ')"
 
+  # THE NARROWED TEST COMMAND. See gm_gates: this is the single largest lever on the wall clock,
+  # because the same list is paid once as the shard's baseline and once per mutant.
+  local gates; gates="$(gm_gates)" || return 2
+  gm_log "gate self-proofs in the test command: $gates"
+
   local outdir="$here/mutants.out"
   rm -rf "$outdir"
   # --cap-lints: the workspace builds under `-D warnings`, and a stub that leaves a variable unused
@@ -221,7 +292,8 @@ gm_run_shard() {
   #   reachable by `GATE_MUTANTS_BASELINE` for hand debugging and is never what CI uses.
   local jobs="${GATE_MUTANTS_JOBS:-4}" tmo="${GATE_MUTANTS_TIMEOUT:-5400}"
   local baseline="${GATE_MUTANTS_BASELINE:-run}"
-  ( cd "$here" && XTASK_GATE_MUTATION_PROOF=1 XTASK_GATE_CEILING_SECS=3600 cargo mutants \
+  ( cd "$here" && XTASK_GATE_MUTATION_PROOF=1 XTASK_GATE_CEILING_SECS=3600 \
+      XTASK_GATE_MUTATION_GATES="$gates" cargo mutants \
       --in-diff "$diff" \
       --shard "$shard" \
       --sharding round-robin \
@@ -291,6 +363,51 @@ gm_selftest() {
   # -- a shard that is not K/N is a runner error, not a green shard
   _c "a --shard that is not K/N is refused" 2 gm_run_shard "seven"
 
+  # -- THE GATE NARROWING. Every case here is about the same property: the mapping may only ever
+  #    be wrong in the WIDE direction. A path it does not recognise, a path outside a gate, and a
+  #    path in shared code all put all four proofs back.
+  _pg() { # name, path, regex the gate list must match
+    local got; got="$(gm_gates_for_path "$2" | tr '\n' ' ')"
+    if printf '%s' "$got" | grep -qE "$3"; then printf '  ok   %-58s\n' "$1"
+    else printf '  FAIL %-58s (got "%s", wanted /%s/)\n' "$1" "$got" "$3"; fails=$((fails+1)); fi
+  }
+  _pg "kind_isolation.rs asks for BOTH kind-isolation proofs" \
+      xtask/src/gates/kind_isolation.rs '^kind-isolation kind-isolation-ship $'
+  _pg "a file under kind_isolation/ asks for both too" \
+      xtask/src/gates/kind_isolation/matrix.rs '^kind-isolation kind-isolation-ship $'
+  _pg "construction/ asks for construction only" \
+      xtask/src/gates/construction/rules.rs '^construction $'
+  _pg "design_bindings/ asks for design-bindings only" \
+      xtask/src/gates/design_bindings/mod.rs '^design-bindings $'
+  _pg "gates/mod.rs is SHARED and widens to all four" \
+      xtask/src/gates/mod.rs 'kind-isolation .*construction .*design-bindings'
+  _pg "manifest.rs is SHARED and widens to all four" \
+      xtask/src/manifest.rs 'kind-isolation .*construction .*design-bindings'
+  _pg "scan.rs is SHARED and widens to all four" \
+      xtask/src/scan.rs 'kind-isolation .*construction .*design-bindings'
+  _pg "ctx.rs is SHARED and widens to all four" \
+      xtask/src/ctx.rs 'kind-isolation .*construction .*design-bindings'
+  _pg "a gate with no directory of its own widens to all four" \
+      xtask/src/gates/ship_ready.rs 'kind-isolation .*construction .*design-bindings'
+  _pg "a path this mapping has never heard of widens to all four" \
+      some/path/nobody/mapped.rs 'kind-isolation .*construction .*design-bindings'
+
+  # -- the list the job actually computes is non-empty and in the harness's order. An empty list
+  #    would make the test command prove NO gate, which the harness panics on rather than run.
+  local gl; gl="$(gm_gates "$here" 2>/dev/null)"
+  if printf '%s' "$gl" | grep -qE '^[a-z-]+(,[a-z-]+)*$'; then
+    printf '  ok   %-58s (%s)\n' "--gates prints a non-empty comma list" "$gl"
+  else
+    printf '  FAIL %-58s (got "%s")\n' "--gates prints a non-empty comma list" "$gl"; fails=$((fails+1))
+  fi
+  if [ "$(GATE_MUTANTS_GATES=construction gm_gates "$here")" = "construction" ]; then
+    printf '  ok   %-58s\n' "GATE_MUTANTS_GATES overrides the computed list"
+  else
+    printf '  FAIL %-58s\n' "GATE_MUTANTS_GATES overrides the computed list"; fails=$((fails+1))
+  fi
+  _c "--gates refuses a base that does not resolve" 2 \
+      _with_base refs/heads/no-such-base-ever gm_gates "$here"
+
   # -- THE VERDICT, on fixtures. Each of the outcomes proven on its own: proving them together
   #    proves only that at least one of them reds.
   local o="$root/out"; mkdir -p "$o"
@@ -320,6 +437,7 @@ gm_selftest() {
 
 case "${1:---help}" in
   --scope)    gm_scope "$here" ;;
+  --gates)    gm_gates "$here" ;;
   --diff)     shift; [ $# -ge 1 ] || { echo "gate-mutants: --diff wants a FILE" >&2; exit 2; }
               gm_diff "$1" "$here" >/dev/null ;;
   --shard)    shift; [ $# -ge 1 ] || { echo "gate-mutants: --shard wants K/N" >&2; exit 2; }
