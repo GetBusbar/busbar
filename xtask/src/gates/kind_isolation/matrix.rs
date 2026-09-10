@@ -275,16 +275,41 @@ fn needles_for<'a>(vocab: &'a [Needle], c: &CrateInfo) -> Vec<&'a Needle> {
 // ------------------------------------------------------------------------------------------------
 
 /// Reduce a line to lowercase alphanumeric segments, splitting at every non-alphanumeric byte and
-/// at BOTH camel-case transitions (`voiceServe` and `HTTPTransport` both split).
+/// at BOTH camel-case transitions (`voiceServe` and `HTTPTransport` both split). The segments half
+/// of [`split_line`]; the scanner itself needs the path joints too, so only the split's own proofs
+/// read the segments alone.
+#[cfg(test)]
 fn line_segments(line: &str) -> Vec<String> {
+    split_line(line).0
+}
+
+/// The segments of a line, and — one flag per segment, same length — whether the separator run that
+/// OPENED that segment carried a Rust path separator `::`.
+///
+/// THE PATH JOINT IS THE MIRROR OF THE CARVE-OUT SHADOW. A crate cut out of `busbar-core` is named
+/// after the MODULE it hosts, so `busbar-core-config` and the engine's historical path
+/// `busbar_core::config` reduce to the same three segments and the raw text runs them together at
+/// the same joints. The shadow keeps the longer name from reading as the shorter one; this keeps
+/// the module PATH from reading as the crate name. A package name is ONE identifier: `busbar-core`,
+/// `busbar_core`, `BusbarCore` — never `busbar_core::config`, which is the retiring crate naming
+/// its own module and is already counted as such against the crate that owns the module.
+///
+/// A camel-case joint is not a path joint: `BusbarCoreConfig` is one identifier and still matches.
+fn split_line(line: &str) -> (Vec<String>, Vec<bool>) {
     let chars: Vec<char> = line.chars().collect();
     let mut out: Vec<String> = Vec::new();
+    let mut joints: Vec<bool> = Vec::new();
     let mut cur = String::new();
+    // Whether the separator run since the last segment closed has carried a `:` yet.
+    let mut sep_path = false;
     for i in 0..chars.len() {
         let ch = chars[i];
         if !ch.is_ascii_alphanumeric() {
             if !cur.is_empty() {
                 out.push(std::mem::take(&mut cur));
+            }
+            if ch == ':' {
+                sep_path = true;
             }
             continue;
         }
@@ -302,12 +327,17 @@ fn line_segments(line: &str) -> Vec<String> {
         if (camel || acronym_end) && !cur.is_empty() {
             out.push(std::mem::take(&mut cur));
         }
+        if cur.is_empty() {
+            joints.push(sep_path);
+            sep_path = false;
+        }
         cur.push(ch.to_ascii_lowercase());
     }
     if !cur.is_empty() {
         out.push(cur);
     }
-    out
+    debug_assert_eq!(out.len(), joints.len());
+    (out, joints)
 }
 
 /// The two-letter buckets a line offers, one per position a segment OPENS at — the only positions
@@ -343,18 +373,35 @@ fn line_buckets(chars: &[char]) -> Vec<Bucket> {
     out
 }
 
-/// How many times `needle`'s segment run appears in the segment stream.
-fn count_by_segments(segs: &[String], needle: &[String], shadows: &[Vec<String>]) -> usize {
+/// How many times `needle`'s segment run appears in the segment stream, with `joints` the path-joint
+/// flags [`split_line`] read off the same line.
+fn count_by_segments(
+    segs: &[String],
+    joints: &[bool],
+    needle: &[String],
+    shadows: &[Vec<String>],
+) -> usize {
     if needle.is_empty() || needle.len() > segs.len() {
         return 0;
     }
+    // A run whose own joints include a `::` is a MODULE PATH, not a package name (see
+    // `split_line`): `busbar_core::config` is the engine naming its module, never the crate that
+    // was cut out of it.
+    let one_identifier = |i: usize, len: usize| {
+        joints
+            .get(i + 1..i + len)
+            .is_none_or(|j| !j.contains(&true))
+    };
     (0..=(segs.len() - needle.len()))
         .filter(|&i| segs[i..i + needle.len()] == *needle)
+        .filter(|&i| one_identifier(i, needle.len()))
         // A hit a longer core-crate name extends at the same position is THAT crate's name.
         .filter(|&i| {
-            !shadows
-                .iter()
-                .any(|sh| segs.len() >= i + sh.len() && segs[i..i + sh.len()] == sh[..])
+            !shadows.iter().any(|sh| {
+                segs.len() >= i + sh.len()
+                    && segs[i..i + sh.len()] == sh[..]
+                    && one_identifier(i, sh.len())
+            })
         })
         .count()
 }
@@ -386,6 +433,12 @@ fn window_at(chars: &[char], start: usize, needle: &[String]) -> Option<usize> {
         if n > 0 {
             let sep_start = i;
             while i < chars.len() && !chars[i].is_ascii_alphanumeric() {
+                // THE PATH JOINT, read off the raw characters with no segment model near it: a
+                // package name is one identifier, so a run joined by `::` is a module path and not
+                // this crate's name. See `split_line`.
+                if chars[i] == ':' {
+                    return None;
+                }
                 i += 1;
             }
             if i == sep_start
@@ -647,10 +700,10 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         }
         candidates.sort_unstable();
         candidates.dedup();
-        let segs = line_segments(raw);
+        let (segs, joints) = split_line(raw);
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts, &n.shadows);
+            let by_segments = count_by_segments(&segs, &joints, &n.parts, &n.shadows);
             let by_windows = count_by_windows(&chars, &n.parts, &n.shadows);
             if by_segments == 0 && by_windows == 0 {
                 continue;
@@ -902,6 +955,22 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let renamed_to: BTreeMap<&str, &str> =
         reg.base_names().into_iter().map(|(k, v)| (v, k)).collect();
     let mut minted_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    // THE CELLS A CARVE-OUT'S OWN NAME CREATES IN CRATES THAT ALREADY EXIST, keyed by the minting
+    // crate. A crate cut out of `busbar-core` is named by exactly two crates that predate it: the
+    // crate it was cut from (the re-export shim that keeps every historical spelling resolving — a
+    // `[[transitional]]` drain, not a coupling) and the composition root (which names every axis by
+    // definition, and whose dependency simply moves from the old crate to the new one). Both are
+    // `0 -> N` rows for a crate the mint does not name, and both are the landing's own arithmetic:
+    // they are admitted through the SAME `[[minted]]` row — the shim's cell only when that row says
+    // `moved_from` is the crate carrying it — and priced in its `cells` count with the rest.
+    let mut carve_out_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let carve_out_minter = |krate: &str, kind: &str| -> Option<&str> {
+        let minter = *minting_kind.get(kind)?;
+        let m = admits.get(minter)?;
+        let is_source = m.moved_from.as_deref() == Some(krate);
+        let is_root = super::kind_of_name(krate) == Some("root");
+        (is_source || is_root).then_some(minter)
+    };
     for (table, ids, what) in [
         (
             "cell",
@@ -926,18 +995,30 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
                 continue;
             }
             let (left, right) = key.split_once(" \u{d7} ").unwrap_or((key.as_str(), ""));
+            let carve_out = match table {
+                "cell" => carve_out_minter(left, right),
+                _ => None,
+            };
             let admitted = match table {
-                // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name.
-                "cell" | "disagreement" => admits.contains_key(left),
+                // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name — or, for a cell,
+                // about the two crates a carve-out's own name lands in (see `carve_out_cells`).
+                "cell" | "disagreement" => admits.contains_key(left) || carve_out.is_some(),
                 // An `[[edge]]` row is about a CLASS, so either end may be the kind being minted.
                 _ => minting_kind.contains_key(left) || minting_kind.contains_key(right),
             };
             if admitted {
                 if table == "cell" {
-                    minted_cells
-                        .entry(left.to_string())
-                        .or_default()
-                        .push((left.to_string(), right.to_string()));
+                    if let Some(minter) = carve_out.filter(|_| !admits.contains_key(left)) {
+                        carve_out_cells
+                            .entry(minter.to_string())
+                            .or_default()
+                            .push((left.to_string(), right.to_string()));
+                    } else {
+                        minted_cells
+                            .entry(left.to_string())
+                            .or_default()
+                            .push((left.to_string(), right.to_string()));
+                    }
                 }
                 continue;
             }
@@ -962,21 +1043,24 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         .collect();
     for (name, m) in &admits {
         let minted = minted_cells.get(*name).map(Vec::as_slice).unwrap_or(&[]);
-        if minted.len() as i64 != m.cells {
+        let carved = carve_out_cells.get(*name).map(Vec::as_slice).unwrap_or(&[]);
+        let priced = minted.len() + carved.len();
+        if priced as i64 != m.cells {
+            let listed = minted.iter().chain(carved);
             out.push(format!(
                 "mint-count\t[[minted]] {name}\tthe row is recorded at {} and says `cells = {}`, \
-                 and this branch minted {} `[[cell]]` row(s) for `{name}` ({}). The number is the \
-                 size of the set the admission covers, so a branch that minted a different number \
-                 of cells than it wrote down has an admission nobody priced: write the number the \
-                 branch actually mints.",
+                 and this branch minted {} `[[cell]]` row(s) through it — `{name}`'s own and the \
+                 carve-out's shim/root cells together ({}). The number is the size of the set the \
+                 admission covers, so a branch that minted a different number of cells than it \
+                 wrote down has an admission nobody priced: write the number the branch actually \
+                 mints.",
                 m.commit,
                 m.cells,
-                minted.len(),
-                if minted.is_empty() {
+                priced,
+                if priced == 0 {
                     "none".to_string()
                 } else {
-                    minted
-                        .iter()
+                    listed
                         .map(|(k, kind)| format!("{k} × {kind}"))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -1302,16 +1386,6 @@ fn ledger_plus(cx: &Ctx, rows: &str) -> crate::ctx::Overlay {
     plant(LEDGER, &format!("{}\n\n{}\n", text.trim_end(), rows.trim()))
 }
 
-/// One `[[edge]]` class row, with the three sentences its reader owes.
-fn edge_row(from: &str, to: &str) -> String {
-    format!(
-        "[[edge]]\nfrom = \"{from}\"\nto = \"{to}\"\ncite = \"ARCHITECTURE.md 1.1 — the \
-         composition root names every axis\"\nwhy = \"crates of kind {from} naming {to} \
-         vocabulary\"\ndrain = \"the class falls when the root mounts the crate off the registry \
-         rather than by name\"\n"
-    )
-}
-
 /// One `[[minted]]` row, with or without its carve-out ceiling.
 fn minted_row(krate: &str, cells: usize, moved_from: Option<&str>) -> String {
     let mut out =
@@ -1463,28 +1537,61 @@ pub fn selftest(
         },
     ));
 
-    // …AND THE `[[edge]]` HALF OF THE SAME LANDING, which is the one a FIRST-of-its-kind crate
-    // needs: `busbar-core-config` is the first `core` crate, so the class rows naming `core` are in
-    // no base either. They are admitted through the KIND the base announced the crate as, and the
-    // class is not scored DEAD while that kind has no crate — the same window `[[announced]]`
-    // already opens for the dead-kind ratchet, with the same expiry.
-    //
-    // This is `root -> core`: the composition root names every axis, and `core` is the carve-out of
-    // the crate it already names as `legacy`. `PENDING_EDGES` grants the dependency class; this row
-    // is the vocabulary class beside it.
+    // …AND THE SECOND ANNOUNCED CRATE OF A KIND. `busbar-core-config` landed as the first `core`
+    // crate and minted the class rows naming `core` with it (`root -> core`, `legacy -> core`), so
+    // `busbar-core-hooks` — still announced, not yet on disk — arrives into a kind whose classes the
+    // tree already has: it mints its own (here empty) cell set and needs no class row at all.
     report.push(prove_rows_green(
         cx,
         gate,
-        "the first crate of a kind mints its [[edge]] class too, and the class is not scored dead",
+        "a second announced crate of a kind mints its own row set; the kind's class rows are already the tree's",
+        &[ROW_MATRIX],
+        {
+            let mut ov = landed_crate(
+                "busbar-core-hooks",
+                "//! The hook policy engine, carved out of the retiring core. Names nothing.\n",
+            );
+            ov.set(
+                LEDGER,
+                format!(
+                    "{}\n\n{}",
+                    cx.read(LEDGER).unwrap_or_default().trim_end(),
+                    minted_row("busbar-core-hooks", 0, None),
+                ),
+            );
+            ov
+        },
+    ));
+
+    // THE CELLS A CARVE-OUT'S OWN NAME CREATES IN CRATES THAT ALREADY EXIST. `busbar-core` names
+    // `busbar_core_config` (the re-export shim that keeps every `busbar_core::config::…` spelling
+    // resolving) and the composition root names it too; both cells are `0 -> N` rows for crates the
+    // mint does not name, admitted through `busbar-core-config`'s own `[[minted]]` row because it
+    // says `moved_from = "busbar-core"`. Strike the `moved_from` and the shim's cell is a minted
+    // row again — the door admits the carve-out's arithmetic, not any old crate naming a new kind.
+    // EXPIRES WITH THE MINT: when the integration line carries the `[[minted]]` row this case
+    // edits, strike it together with the row (its cells are history then).
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a carve-out's shim cell is admitted only by the `moved_from` on the crate's own mint",
+        &[ROW_MATRIX],
+        ledger_with(cx, "moved_from = \"busbar-core\"\n", ""),
+        &["minted-row", "busbar-core \u{d7} core"],
+    ));
+    // …and a crate that is neither the source nor the root gets no such admission, `moved_from` or
+    // not: a `busbar-substrate × core` cell is a coupling the landing created, and it is refused as
+    // the minted row it is.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a carve-out admits no cell for a crate that is neither its source nor the root",
         &[ROW_MATRIX],
         ledger_plus(
             cx,
-            &format!(
-                "{}\n{}",
-                edge_row("root", "core"),
-                minted_row("busbar-core-config", 0, None),
-            ),
+            &format!("[[cell]]\n{}", cell_row("busbar-substrate", "core", "1")),
         ),
+        &["minted-row", "busbar-substrate \u{d7} core"],
     ));
 
     // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger
@@ -1743,8 +1850,9 @@ mod tests {
     fn shadowed(line: &str, needle: &str, shadows: &[&str]) -> (usize, usize) {
         let n = needle_segments(needle);
         let sh: Vec<Vec<String>> = shadows.iter().map(|s| needle_segments(s)).collect();
+        let (segs, joints) = split_line(line);
         (
-            count_by_segments(&line_segments(line), &n, &sh),
+            count_by_segments(&segs, &joints, &n, &sh),
             count_by_windows(&line.chars().collect::<Vec<char>>(), &n, &sh),
         )
     }
@@ -1780,6 +1888,59 @@ mod tests {
             both("busbar_core::hooks and busbar_core_policy", "busbar-core"),
             (2, 2)
         );
+    }
+
+    /// THE PATH JOINT, the mirror of the shadow above. `busbar-core-config` is named after the
+    /// module it hosts, so the engine's historical `busbar_core::config` reduces to the same three
+    /// segments — and it is the RETIRING crate naming its own module, already counted against it.
+    /// A package name is one identifier: every spelling that runs the parts together still counts,
+    /// and every spelling joined by `::` does not.
+    #[test]
+    fn a_module_path_is_not_the_crate_named_after_the_module() {
+        for line in [
+            "use busbar_core::config::RootCfg;",
+            "//! reaching back into `busbar_core::config::`.",
+            "/// `busbar_core::config_validate::secret_refs` walks `RootCfg`",
+            "busbar_core :: config",
+        ] {
+            assert_eq!(both(line, "busbar-core-config"), (0, 0), "{line}");
+        }
+        // …and the crate's own name, in every spelling a crate name is written in, still counts.
+        for line in [
+            "use busbar_core_config::config::RootCfg;",
+            "crates/busbar-core-config/src/lib.rs",
+            "BusbarCoreConfig",
+        ] {
+            assert_eq!(both(line, "busbar-core-config"), (1, 1), "{line}");
+        }
+        // A Cargo row names it twice, once per side, and both sides still count.
+        assert_eq!(
+            both(
+                "busbar-core-config = { path = \"../busbar-core-config\" }",
+                "busbar-core-config"
+            ),
+            (2, 2)
+        );
+        // The joint is only refused INSIDE the run: a path that STARTS at the crate name is the
+        // crate being named, and the legacy needle beside it is untouched.
+        assert_eq!(
+            both("busbar_core_config::config::RootCfg", "busbar-core-config"),
+            (1, 1)
+        );
+        assert_eq!(both("busbar_core::config", "busbar-core"), (1, 1));
+    }
+
+    #[test]
+    fn a_path_joint_is_recorded_only_for_a_colon_run() {
+        assert_eq!(
+            split_line("busbar_core::config").1,
+            vec![false, false, true]
+        );
+        assert_eq!(
+            split_line("busbar-core-config").1,
+            vec![false, false, false]
+        );
+        assert_eq!(split_line("BusbarCoreConfig").1, vec![false, false, false]);
     }
 
     #[test]
