@@ -136,7 +136,7 @@ fn needle_segments(word: &str) -> Vec<String> {
 }
 
 /// The instance a crate is an instance OF, spelled as this row's needles spell it.
-fn own_id(c: &CrateInfo) -> Option<String> {
+pub(super) fn own_id(c: &CrateInfo) -> Option<String> {
     match c.family {
         // A DIALECT'S ID IS ITS PLANE'S. `busbar-plane-streams-voice` is the streams plane's
         // dialect; counting `voice` as a fifth plane would invent an instance the tree has not.
@@ -200,6 +200,50 @@ fn alias_of(a: &str, b: &str) -> bool {
 /// name and is not counted, and the needle scores everywhere the longer name does not reach.
 /// `busbar-voice-codec` scores as the codec and never as `legacy` + `codec`, while `busbar-voice`
 /// in any other spelling scores as what it is.
+/// THE BARE IDS THAT ARE ORDINARY ENGLISH AND NOT AN INSTANCE'S NAME.
+///
+/// Owner ruling, 2026-09-10: the matrix scores a plane — and every kind member — BY ITS CRATE AND
+/// MODULE IDENTIFIERS: `busbar-plane-streams`, `busbar_plane_streams`, `BusbarPlaneStreams`, the
+/// kind-qualified `plane-streams`, the config section key AS A KEY. It never scores the bare
+/// English noun. `streams`, in a tree whose whole subject is moving bytes, is a word every crate
+/// owns: an SSE body is a stream, `tokio::io` yields streams, a byte stream is a byte stream, and
+/// a file that says "the byte stream" is not a file naming a plane.
+///
+/// The blindness rule is about a crate naming an INSTANCE — the thing `root/units_llm.rs` does when
+/// it spells `llm` — and `llm`, `mcp` and `a2a` are names of protocols and nothing else, so they
+/// stay. What is struck here is the id that is ALSO a common noun of this tree's own domain, and it
+/// is struck as a bare word only: the package name and the kind-qualified id are identifiers, and
+/// they still score everywhere they appear.
+///
+/// The list is DATA and each entry carries the sentence that admits it, on the same terms as every
+/// other reviewed list in this gate. An entry whose word is nobody's instance id any more is dead
+/// weight, and `dead-ordinary-noun` says so.
+pub(super) const ORDINARY_NOUNS: &[(&str, &str)] = &[
+    (
+        "streams",
+        "the streams plane's id is the plural of what every transport in the tree moves. An SSE \
+         body, a `tokio` stream, a byte stream and a WebSocket's two halves are all streams, in \
+         crates that have never heard of the plane. Owner ruling, 2026-09-10.",
+    ),
+    (
+        "stream",
+        "the singular, for the alias window: the same word one letter shorter, and no more a \
+         plane's name than the plural is. Owner ruling, 2026-09-10.",
+    ),
+    (
+        "streaming",
+        "the participle, likewise — `streaming = true`, a streaming response, a streaming codec. \
+         Owner ruling, 2026-09-10.",
+    ),
+];
+
+/// Whether `id` is an ordinary noun of this tree rather than an instance's name — see
+/// [`ORDINARY_NOUNS`]. Only the BARE-id needle asks; the package name and the kind-qualified id are
+/// identifiers and are never struck.
+fn is_ordinary_noun(id: &str) -> bool {
+    ORDINARY_NOUNS.iter().any(|(w, _)| *w == id)
+}
+
 fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
     let mut out: BTreeMap<&'static str, Vec<Needle>> = BTreeMap::new();
     for c in crates {
@@ -227,7 +271,11 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
                 id: id.clone(),
                 shadows: Vec::new(),
             });
-            if c.family != Family::Neutral {
+            // THE BARE ID, and never when it is an ordinary noun of this tree (owner ruling,
+            // 2026-09-10): a crate that says "the byte stream" is not a crate naming the streams
+            // plane, while `busbar_plane_streams::` and `plane-streams` are identifiers and score
+            // above whatever this arm decides.
+            if c.family != Family::Neutral && !is_ordinary_noun(&id) {
                 entry.push(Needle {
                     word: id.clone(),
                     owner: c.name.clone(),
@@ -1128,6 +1176,10 @@ fn duplicates(reg: &super::KindRegistry) -> Vec<String> {
     for m in &reg.minted_kinds {
         *seen.entry(format!("minted_kind\t{}", m.kind)).or_default() += 1;
     }
+    // …AND TWO UNMASKINGS FOR ONE COLUMN IS TWO INSTRUMENT FIXES. An instrument is fixed once.
+    for u in &reg.unmasked {
+        *seen.entry(format!("unmasked\t{}", u.kind)).or_default() += 1;
+    }
     seen.into_iter()
         .filter(|(_, n)| *n > 1)
         .map(|(k, n)| {
@@ -1280,6 +1332,12 @@ fn minted_rows(
         return Vec::new();
     }
     let now = cx.read(LEDGER).unwrap_or_default();
+    // The census's package names, in the shape the needle rules read them: what the `[[unmasked]]`
+    // rows below are checked against.
+    let names: Vec<Vec<String>> = crates
+        .iter()
+        .map(|c| needle_segments(&c.name.to_lowercase()))
+        .collect();
     let short = &base.commit[..8.min(base.commit.len())];
     let at_base = super::ledger_at(&base.registry);
 
@@ -1363,6 +1421,73 @@ fn minted_rows(
         kind_admits.insert(kind, mk);
     }
 
+    // ── WHICH `[[unmasked]]` ROWS ADMIT ANYTHING ────────────────────────────────────────────────
+    //
+    // THE THIRD LEAF, and the only one that is about the INSTRUMENT rather than the tree. A needle
+    // the old vocabulary rule struck — a package name some longer sibling extended — produced no
+    // hits anywhere, so its cells read zero in a column that otherwise had rows and the automatic
+    // new-column carve-out cannot see them. Three tests, on the same terms as the other two leaves,
+    // and a row failing any of them admits NOTHING:
+    //
+    //   * every named needle is a crate ON DISK of this kind — an admission about a name that is
+    //     not in the tree is an admission about nothing;
+    //   * every named needle is really MASKED — some OTHER package name in the census extends it.
+    //     That is the whole of what "the old rule struck it" meant, it is a property of the census
+    //     and not of this branch, and it is why the row cannot be written about a needle nobody
+    //     ever hid. It stops being writable the day the extending sibling is renamed away;
+    //   * once means once: a column the base already unmasked is history.
+    let mut unmask_admits: BTreeMap<&str, &super::Unmasked> = BTreeMap::new();
+    for u in &reg.unmasked {
+        let kind = u.kind.as_str();
+        if at_base.unmasked.contains(kind) {
+            out.push(format!(
+                "second-unmask\t[[unmasked]] {kind}\tthe merge-base {short} already carries an \
+                 `[[unmasked]]` row for `{kind}`: its column was unmasked once, at {}, and is \
+                 HISTORY now, so this row admits nothing. An instrument is fixed once; every cell \
+                 after that is a 0 -> N raise like any other and lands in a commit that says why.",
+                u.commit
+            ));
+            continue;
+        }
+        let mut bad = false;
+        for needle in &u.needles {
+            let Some(c) = crates.iter().find(|c| &c.name == needle) else {
+                out.push(format!(
+                    "unlanded-unmask\t[[unmasked]] {kind}\t`{needle}` is no crate on disk, so the \
+                     needle this row says was masked spells nothing and the rows it admits answer \
+                     to no measurement. An unmasking names the package names the instrument could \
+                     not see, by name."
+                ));
+                bad = true;
+                continue;
+            };
+            if c.kind != Some(kind) {
+                out.push(format!(
+                    "wrong-kind-unmask\t[[unmasked]] {kind}\t`{needle}` is a crate of kind `{}`, \
+                     not `{kind}`. A needle belongs to the column it is measured in; naming one \
+                     kind's crate under another kind's row would admit rows in a column that \
+                     needle never fed.",
+                    c.kind.unwrap_or("none")
+                ));
+                bad = true;
+                continue;
+            }
+            if extensions_of(&needle_segments(&needle.to_lowercase()), &names).is_empty() {
+                out.push(format!(
+                    "unmasked-nothing\t[[unmasked]] {kind}\tno package name in the census extends \
+                     `{needle}`, so the old blanket strike never struck it and it has been \
+                     measured all along. This row admits rows that are ordinary 0 -> N raises \
+                     wearing an instrument fix's clothes."
+                ));
+                bad = true;
+            }
+        }
+        if bad {
+            continue;
+        }
+        unmask_admits.insert(kind, u);
+    }
+
     // ── THE MINTED ROWS THEMSELVES ──────────────────────────────────────────────────────────────
     //
     // old name -> new name, the direction the BASE's keys have to be read in.
@@ -1372,6 +1497,9 @@ fn minted_rows(
     // What each COLUMN admitted: the cells of OTHER crates in it, and the classes naming it.
     let mut column_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     let mut column_edges: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    // What each UNMASKING admitted, on the same terms.
+    let mut unmasked_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut unmasked_edges: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (table, ids, what) in [
         (
             "cell",
@@ -1443,6 +1571,33 @@ fn minted_rows(
                     ("edge", Some(kind)) => {
                         column_edges.entry(kind.to_string()).or_default().push(row)
                     }
+                    _ => {}
+                }
+                continue;
+            }
+            // THE UNMASKING ADMISSION IS READ LAST OF THE THREE, and it is read the same way the
+            // column admission is: a `[[cell]]`/`[[disagreement]]` belongs to the column it is
+            // measured in, an `[[edge]]` to whichever end is being unmasked. It is priced by the
+            // same arithmetic below, so a branch that unmasks more rows than its row says has an
+            // admission nobody counted.
+            let by_unmask: Option<&str> = if table == "edge" {
+                [left, right]
+                    .into_iter()
+                    .find(|k| unmask_admits.contains_key(k))
+            } else {
+                unmask_admits.contains_key(right).then_some(right)
+            };
+            if let Some(kind) = by_unmask {
+                let row = (left.to_string(), right.to_string());
+                match table {
+                    "cell" => unmasked_cells
+                        .entry(kind.to_string())
+                        .or_default()
+                        .push(row),
+                    "edge" => unmasked_edges
+                        .entry(kind.to_string())
+                        .or_default()
+                        .push(row),
                     _ => {}
                 }
                 continue;
@@ -1577,6 +1732,62 @@ fn minted_rows(
                      it as a FIRST MEASUREMENT, which is the only thing a minted column is. A count \
                      above the measurement is slack minted with the row, and slack is how drift \
                      hides: write the measured number."
+                ));
+            }
+        }
+    }
+
+    // ── WHAT EACH UNMASKING ACTUALLY ADMITTED, AGAINST WHAT ITS ROW SAYS ────────────────────────
+    //
+    // The same arithmetic the two mint leaves are held to, for the same reason: the number is the
+    // SIZE OF THE SET the admission covers, and an admission nobody priced is an open door.
+    for (kind, u) in &unmask_admits {
+        let cells = unmasked_cells.get(*kind).map(Vec::as_slice).unwrap_or(&[]);
+        let edges = unmasked_edges.get(*kind).map(Vec::as_slice).unwrap_or(&[]);
+        let spelled = |rows: &[(String, String)], joint: &str| {
+            if rows.is_empty() {
+                "none".to_string()
+            } else {
+                rows.iter()
+                    .map(|(a, b)| format!("{a} {joint} {b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        for (field, said, got, what) in [
+            ("cells", u.cells, cells.len(), spelled(cells, "\u{d7}")),
+            ("edges", u.edges, edges.len(), spelled(edges, "->")),
+        ] {
+            if said != got as i64 {
+                out.push(format!(
+                    "unmask-count\t[[unmasked]] {kind}\tthe row is recorded at {} and says \
+                     `{field} = {said}`, and this branch unmasked {got} under it ({what}). The \
+                     number is the size of the set the admission covers, so a branch that unmasked \
+                     a different number than it wrote down has an admission nobody priced: write \
+                     the number the branch actually unmasks.",
+                    u.commit
+                ));
+            }
+        }
+        // AN UNMASKED CELL IS A FIRST MEASUREMENT AND NOTHING ELSE, exactly as a minted column's
+        // is: the instrument moved, the tree did not, so the tree is the only ceiling there is.
+        for (krate, kd) in cells {
+            let said = listed
+                .get(&(krate.as_str(), kd.as_str()))
+                .copied()
+                .unwrap_or(0);
+            let measured = matrix
+                .iter()
+                .find(|((k, kk), _)| k == krate && *kk == kd.as_str())
+                .map(|(_, c)| c.count)
+                .unwrap_or(0);
+            if said > measured as i64 {
+                out.push(format!(
+                    "unmask-over-measure\t[[cell]] {krate} \u{d7} {kd} = {said}\tthe tree \
+                     measures {measured} for this cell, and the `[[unmasked]]` row for `{kind}` \
+                     admits it as a FIRST MEASUREMENT, which is the only thing an unmasked cell \
+                     is. A count above the measurement is slack admitted with the row, and slack \
+                     is how drift hides: write the measured number."
                 ));
             }
         }
@@ -1944,6 +2155,14 @@ fn minted_row(krate: &str, cells: usize, moved_from: Option<&str>) -> String {
         out.push_str(&format!("moved_from = \"{from}\"\n"));
     }
     out
+}
+
+/// One `[[unmasked]]` row — the third leaf's, for the arms that break one of its tests at a time.
+fn unmasked_row(kind: &str, needles: &str, cells: usize, edges: usize) -> String {
+    format!(
+        "[[unmasked]]\nkind = \"{kind}\"\nneedles = \"{needles}\"\ncommit = \
+         \"468bad131\"\ncells = \"{cells}\"\nedges = \"{edges}\"\n"
+    )
 }
 
 /// One `[[minted_kind]]` row.
@@ -2439,6 +2658,71 @@ pub fn selftest(
             ),
         ),
         &["duplicate-row", "core", "`[[minted_kind]]` rows"],
+    ));
+
+    // ── THE THIRD LEAF: `[[unmasked]]` ──────────────────────────────────────────────────────────
+    //
+    // The instrument fix's own door, and every one of its three tests is about the CENSUS rather
+    // than about this file — which is what makes it a door and not a hole. The green arm is the
+    // tree itself: `qa/kind-isolation.toml`'s two `[[unmasked]]` rows are what makes the ordinary
+    // run above green, and every arm below breaks exactly one of the tests.
+
+    // A NEEDLE NOBODY EVER HID UNMASKS NOTHING. `busbar-kernel` is a package name no other package
+    // name extends, so the old blanket strike never touched it and its cells have been measured all
+    // along: a row claiming otherwise is an ordinary raise in an instrument fix's clothes.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an [[unmasked]] row for a needle no sibling extends admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &unmasked_row("kernel", "busbar-kernel", 0, 0)),
+        &["unmasked-nothing", "[[unmasked]] kernel", "busbar-kernel"],
+    ));
+
+    // A NEEDLE THAT IS NO CRATE ON DISK SPELLS NOTHING.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an [[unmasked]] row naming a needle that is no crate on disk admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(
+            cx,
+            &unmasked_row("legacy", "busbar-there-is-no-such-crate", 0, 0),
+        ),
+        &["unlanded-unmask", "[[unmasked]] legacy"],
+    ));
+
+    // A NEEDLE BELONGS TO THE COLUMN IT IS MEASURED IN. `busbar-substrate` is a substrate crate;
+    // naming it under the `legacy` column would admit rows in a column it never fed.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an [[unmasked]] row naming another kind's crate as its needle admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &unmasked_row("unit", "busbar-substrate", 0, 0)),
+        &["wrong-kind-unmask", "[[unmasked]] unit", "busbar-substrate"],
+    ));
+
+    // AN ADMISSION NOBODY PRICED IS AN OPEN DOOR. `busbar-unit-egress` really is masked — by
+    // `busbar-unit-egress-auth` — so the row passes all three tests and is held to its arithmetic
+    // instead: it says one cell and admits none.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an [[unmasked]] row is held to the exact size of the set it admits",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &unmasked_row("unit", "busbar-unit-egress", 1, 0)),
+        &["unmask-count", "[[unmasked]] unit", "cells = 1"],
+    ));
+
+    // TWO ROWS FOR ONE COLUMN ARE TWO INSTRUMENT FIXES.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a second [[unmasked]] row for the same column is two admissions, not one",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &unmasked_row("legacy", "busbar-llm", 0, 0)),
+        &["duplicate-row", "legacy", "`[[unmasked]]` rows"],
     ));
 
     // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger
@@ -3038,6 +3322,60 @@ mod tests {
             ),
             (0, 0)
         );
+    }
+
+    /// A PLANE IS SCORED BY ITS IDENTIFIERS, NEVER BY THE ENGLISH NOUN ITS ID HAPPENS TO BE.
+    ///
+    /// Owner ruling, 2026-09-10. `streams` is what every transport in this tree moves: an SSE body
+    /// is a stream, `tokio::io` yields streams, and a file that says "the byte stream" is a file
+    /// about bytes. The identifiers are what name the plane — `busbar-plane-streams`,
+    /// `busbar_plane_streams`, `BusbarPlaneStreams`, the kind-qualified `plane-streams`, the config
+    /// section key as a KEY — and they still score everywhere they appear.
+    #[test]
+    fn the_bare_english_noun_is_not_the_plane_and_the_identifier_still_is() {
+        // THE RED CASE: ordinary English, in the spellings that used to score.
+        assert!(is_ordinary_noun("streams"));
+        assert!(is_ordinary_noun("stream"));
+        assert!(is_ordinary_noun("streaming"));
+        // …and the words really are what the scanners would have counted, which is why the strike
+        // has to happen in the VOCABULARY: the scanner itself is blind to what a word means.
+        assert_eq!(both("read the byte stream to the end", "stream"), (1, 1));
+        assert_eq!(both("let s: BoxStream<'_, Frame> = ...;", "stream"), (1, 1));
+
+        // THE GREEN CASE: the identifiers, which are not ordinary English and still score.
+        assert!(!is_ordinary_noun("plane-streams"));
+        assert!(!is_ordinary_noun("busbar-plane-streams"));
+        assert_eq!(
+            both("use busbar_plane_streams::Ir;", "busbar-plane-streams"),
+            (1, 1)
+        );
+        assert_eq!(
+            both(
+                "busbar-plane-streams = { path = \"..\" }",
+                "busbar-plane-streams"
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            both("a BusbarPlaneStreams handle", "busbar-plane-streams"),
+            (1, 1)
+        );
+        assert_eq!(
+            both("mount(plane_streams::ROUTES);", "plane-streams"),
+            (1, 1)
+        );
+        // The config section key, AS A KEY, is an identifier too.
+        assert_eq!(
+            both("  plane_streams:\n    enabled: true", "plane-streams"),
+            (1, 1)
+        );
+
+        // AND THE PROTOCOL NAMES STAY: `llm`, `mcp` and `a2a` are names and nothing else, which is
+        // what makes `root/units_llm.rs` a hit and "the byte stream" not one.
+        assert!(!is_ordinary_noun("llm"));
+        assert!(!is_ordinary_noun("mcp"));
+        assert!(!is_ordinary_noun("a2a"));
+        assert_eq!(both("crates/busbar/src/root/units_llm.rs", "llm"), (1, 1));
     }
 
     /// THE ONE SPELLING THAT IS STRUCK OUTRIGHT, and the test that says why it is the only one.

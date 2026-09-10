@@ -829,6 +829,44 @@ struct MintedKind {
     edges: i64,
 }
 
+/// One `[[unmasked]]` row: A COLUMN THE INSTRUMENT COULD NOT SEE THE WHOLE OF.
+///
+/// The third leaf of the vault door, and the narrowest. `[[minted]]` admits a NEW CRATE's rows and
+/// `[[minted_kind]]` a NEW KIND's column; both are about something arriving. This one is about
+/// something that was HERE ALL ALONG and could not be measured: `matrix::vocabulary` used to strike
+/// any needle a longer sibling package name extended, so `busbar-llm` was invisible for as long as
+/// `busbar-llm-codec` existed, and every cell those needles would have produced read zero. The day
+/// the strike is fixed those cells read what they always were — a `0 -> N` raise on paper, and a
+/// first measurement in fact.
+///
+/// The automatic new-COLUMN carve-out in `matrix` cannot cover it: `legacy` and `substrate` both
+/// have rows at the base, measured with the needles the old rule left alive, so a needle arriving
+/// inside a live column is a mint like any other and is refused. Widening that carve-out would be a
+/// permanent hole — `busbar-llm` keeps its codec sibling, so every future legacy coupling would
+/// walk through it — which is why this is a ROW, priced and spent once.
+///
+///   kind    — the column. Its rows are what this admits.
+///   needles — the package names the old rule struck, comma-separated. Each must be a crate ON DISK
+///             of that kind, and each must be a name ANOTHER PACKAGE NAME EXTENDS: that is what
+///             "the old rule struck it" means, it is checked against the tree's own census, and it
+///             is why the row cannot be written about a needle that was never masked. When the
+///             extending sibling is deleted or renamed the row stops being writable at all.
+///   commit  — where the unmasking landed, for the reader.
+///   cells   — EXACTLY how many `[[cell]]` rows this admits.
+///   edges   — EXACTLY how many `[[edge]]` classes this admits.
+///
+/// ONCE MEANS ONCE, on the same terms as the other two leaves: a row the merge-base already carries
+/// admits nothing, and every cell after that is an ordinary `0 -> N` raise landing in a commit that
+/// says which number went up.
+#[derive(Debug)]
+struct Unmasked {
+    kind: String,
+    needles: Vec<String>,
+    commit: String,
+    cells: i64,
+    edges: i64,
+}
+
 /// One `[[renamed]]` row: A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME.
 ///
 /// Every rule in this gate that reads history keys a crate BY NAME against the merge-base, and none
@@ -973,6 +1011,8 @@ struct KindRegistry {
     minted: Vec<Minted>,
     /// The `:matrix` row's COLUMN admission table — see [`MintedKind`].
     minted_kinds: Vec<MintedKind>,
+    /// The `:matrix` row's UNMASKING admission table — see [`Unmasked`].
+    unmasked: Vec<Unmasked>,
     /// The base-name translation table — see [`Renamed`].
     renamed: Vec<Renamed>,
     registered: Vec<Registered>,
@@ -1307,6 +1347,74 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 edges: counts[1],
             });
         }
+        // THE UNMASKING ADMISSION — the row a column carries when the INSTRUMENT, not the tree,
+        // changed. Read here on the same terms as the two above: that the row reads, that its two
+        // numbers are numbers, that its kind is one of the table's, and that it names at least one
+        // needle. Whether those needles were really masked is a question about the CENSUS, so it is
+        // asked in `matrix`, where the census is.
+        "unmasked" => {
+            let Some(v) = take_row(
+                fields,
+                &["kind", "needles", "commit", "cells", "edges"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let mut counts = [0i64; 2];
+            for (slot, (field, raw)) in [("cells", &v[3]), ("edges", &v[4])]
+                .into_iter()
+                .enumerate()
+            {
+                let Ok(n) = raw.parse::<i64>() else {
+                    reg.errors.push(format!(
+                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[unmasked]] {field} = \"{raw}\"` is \
+                         not a number. An admission that cannot be counted admits any number of rows"
+                    ));
+                    return;
+                };
+                if n < 0 {
+                    reg.errors.push(format!(
+                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[unmasked]] {field} = \"{raw}\"` is \
+                         negative. No row set has a negative size, so a negative admission is not \
+                         an admission — it is this column's ratchet switched off in a value that \
+                         reads like a reviewed figure"
+                    ));
+                    return;
+                }
+                counts[slot] = n;
+            }
+            if !KINDS.iter().any(|d| d.kind == v[0]) {
+                reg.errors.push(format!(
+                    "unknown-kind\t{REGISTRY_FILE}:{at}\t`[[unmasked]] kind = \"{}\"` is in no \
+                     kind table row. An unmasking opens one of the table's columns; it cannot \
+                     invent a kind — {MAKE_A_NEW_KIND}",
+                    v[0]
+                ));
+                return;
+            }
+            let needles: Vec<String> = v[1]
+                .split(',')
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .collect();
+            if needles.is_empty() {
+                reg.errors.push(format!(
+                    "empty-field\t{REGISTRY_FILE}:{at}\t`[[unmasked]] needles` names no package \
+                     name. The needles ARE the reason the column could not be measured; a row \
+                     without them is an admission with no subject"
+                ));
+                return;
+            }
+            reg.unmasked.push(Unmasked {
+                kind: v[0].clone(),
+                needles,
+                commit: v[2].clone(),
+                cells: counts[0],
+                edges: counts[1],
+            });
+        }
         // THE BASE-NAME TRANSLATION TABLE. What it buys is that every rule asking history about
         // `to` asks about `from` instead; what it is REFUSED for is being anything more than that.
         // The kind check is here rather than downstream because it is a property of the two NAMES
@@ -1558,7 +1666,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
              `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]`, \
-             `[[minted]]`, `[[minted_kind]]` and `[[renamed]]` rows and nothing else"
+             `[[minted]]`, `[[minted_kind]]`, `[[unmasked]]` and `[[renamed]]` rows and nothing \
+             else"
         )),
     }
 }
@@ -1594,8 +1703,8 @@ fn parse_registry(text: &str) -> KindRegistry {
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
                  `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[patch]]`, `[[minted]]`, \
-                 `[[minted_kind]]` and \
-                 `[[renamed]]` rows and nothing else",
+                 `[[minted_kind]]`, \
+                 `[[unmasked]]` and `[[renamed]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -1639,6 +1748,8 @@ pub(super) struct BaseLedger {
     pub minted: BTreeSet<String>,
     /// The kinds whose COLUMN the BASE already minted. Once means once here too.
     pub minted_kinds: BTreeSet<String>,
+    /// The columns the BASE already UNMASKED. Once means once for the third leaf as well.
+    pub unmasked: BTreeSet<String>,
 }
 
 pub(super) fn ledger_at(text: &str) -> BaseLedger {
@@ -1656,6 +1767,7 @@ pub(super) fn ledger_at(text: &str) -> BaseLedger {
             .collect(),
         minted: reg.minted.iter().map(|m| m.krate.clone()).collect(),
         minted_kinds: reg.minted_kinds.iter().map(|m| m.kind.clone()).collect(),
+        unmasked: reg.unmasked.iter().map(|u| u.kind.clone()).collect(),
     }
 }
 
@@ -3554,6 +3666,31 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
                 "alias-retired\t{crate_name}\tthe `{from}` -> `{to}` plane alias outlived \
                  `{crate_name}`. The rename has landed; strike the alias."
             ));
+        }
+    }
+
+    // THE ORDINARY-NOUN RATCHET. A word struck from the bare-id vocabulary because it is ordinary
+    // English is struck for a LIVE instance id; when no crate and no alias spells it any more, the
+    // entry excuses nothing and is a hole with no floor under it.
+    {
+        let mut spoken: BTreeSet<String> = crates
+            .iter()
+            .filter_map(matrix::own_id)
+            .collect::<BTreeSet<String>>();
+        for (from, to, _) in PLANE_ALIASES {
+            spoken.insert((*from).to_string());
+            spoken.insert((*to).to_string());
+        }
+        for (word, _) in matrix::ORDINARY_NOUNS {
+            let stem = word.trim_end_matches("ing").trim_end_matches('s');
+            if !spoken.iter().any(|id| id == word || id.starts_with(stem)) {
+                offenders.push(format!(
+                    "dead-ordinary-noun\tORDINARY_NOUNS\t`{word}` is nobody's instance id and no \
+                     alias of one: the bare-id vocabulary never offers it, so the entry strikes \
+                     nothing. Strike the entry — a reviewed exemption that excuses nothing is a \
+                     hole nobody re-reads."
+                ));
+            }
         }
     }
 
