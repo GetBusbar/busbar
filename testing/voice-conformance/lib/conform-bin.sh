@@ -26,6 +26,7 @@ _vc_harness_trees() {
   printf '%s\n' \
     "$VC_ROOT/crates/busbar-voice/src" \
     "$VC_ROOT/crates/busbar-streams-codec/src" \
+    "$VC_ROOT/crates/busbar-plane-streams/src" \
     "$VC_DIR/legs" \
     "$VC_DIR/lib"
 }

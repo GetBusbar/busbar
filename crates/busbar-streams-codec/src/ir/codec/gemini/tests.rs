@@ -904,47 +904,6 @@ fn distinct_tool_call_ids_mint_distinct_refs() {
 }
 
 #[test]
-fn a_result_bridged_to_gemini_names_the_originating_call() {
-    // Gemini REQUIRES `functionResponse.name`; OpenAI's `function_call_output` does not carry one, so
-    // the name is remembered from the call that opened and travels on the result.
-    let oa = crate::ir::codec::OpenAiRealtimeCodec;
-    let ge = GeminiLiveCodec;
-    let mut st = DecodeState::default();
-    let _ = oa.read_down(
-        wire(
-            &json!({
-                "type": "response.output_item.added",
-                "item": { "type": "function_call", "call_id": "call_abc", "name": "get_weather" }
-            })
-            .to_string(),
-        ),
-        &mut st,
-    );
-    let ir = oa.read_up(
-        wire(
-            &json!({
-                "type": "conversation.item.create",
-                "item": {
-                    "type": "function_call_output",
-                    "call_id": "call_abc",
-                    "output": "{\"temp\":72}"
-                }
-            })
-            .to_string(),
-        ),
-        &mut st,
-    );
-    let bridged = as_value(&up(&ge, ir[0].clone()));
-    let fr = &bridged["toolResponse"]["functionResponses"][0];
-    assert_eq!(fr["id"], "call_abc");
-    assert_eq!(
-        fr["name"], "get_weather",
-        "the originating tool name rides the result"
-    );
-    assert_eq!(fr["response"], json!({ "temp": 72 }));
-}
-
-#[test]
 fn a_gemini_tool_response_keeps_its_name_across_the_round_trip() {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();

@@ -2164,7 +2164,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "codec"
-count = "28"
+count = "40"
 
 [[cell]]
 crate = "busbar-plane-streams"
@@ -2969,7 +2969,7 @@ count = "65"
 [[cell]]
 crate = "busbar-voice"
 kind = "codec"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-voice"
@@ -2984,7 +2984,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+count = "815"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3014,12 +3014,12 @@ count = "1"
 [[cell]]
 crate = "busbar-streams-codec"
 kind = "plane"
-count = "108"
+count = "95"
 
 [[cell]]
 crate = "busbar-streams-codec"
 kind = "substrate"
-count = "15"
+count = "14"
 
 [[cell]]
 crate = "busbar-streams-codec"

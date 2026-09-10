@@ -1457,3 +1457,28 @@ key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 51
 because = "THE PRINCIPAL ON THE LEG'S VIEW extends this by 3 (1018 -> 1021): the cell that reads the published principal back does it the only way it can be read \u2014 through the plane, over a relay, which means through the duplex mount's `FrameSource` and the decorator that dials in front of it. THE LEG'S INBOUND HALF extends this by 9 (1009 -> 1018): the leg is READ through the duplex mount's own `FrameSource`, the same face the client is read through and the same one the decorator beside it wraps, plus the one mapping from a carrier failure to a close reason that every pump in this tree shares. No wire is named: the pump is handed a frame source and could not say whose. THE UPSTREAM LEG ON THE DRIVER'S SLOT extends this by 23 (986 -> 1009): the dial happens in the gap between two frames, which means it happens inside a `FrameSource`, which is the duplex mount's own face \u2014 named by the decorator, by the battery's scripted source and by the cells that drive both. No wire is named: what dials is a seam (`LegDialer`) the composition supplies. THE PLANE CALL extends this by 6 (980 -> 986): the transport view the driver hands the plane is built over the upgrade's own key, chain and published facts, and the served-session cell names the wire the row is carried on. cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs what it accepts through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. Neither names a wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, the manifest switch that says this build carries a duplex wire, and, for the driver, the declared wire surface a session's row is read off, the registry key an upgrade arrived on and the published transport facts the credential bar is resolved against. All of that is data the plane declared, and none of it is a wire's type."
+
+# ── declared raises: THE DIALECT READER'S MOVE, BY IDENTITY. The OpenAI Realtime wire reader/writer
+# and its cells left the codec crate — where they sat beside the IR every dialect maps into, which is
+# the IR wearing one instance's shape — for the dialect module of the plane that serves them. Not one
+# arm, token, helper or asserted byte changed crossing the boundary: the same file, in a new home.
+# The three rises below are that one file's use-lines, read from the other side; the two falls the
+# same file's spellings leaving the codec crate, re-pinned on the same commit. Each entry expires
+# when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-streams.codec.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "cell (crate = \"busbar-plane-streams\", kind = \"codec\"): the MOVE form, by identity (28 -> 40). The dialect wire reader/writer arrived in this crate's dialect module and reaches the shared IR the way every dialect must — `busbar_streams_codec::ir::{codec, control, event, media, tool, usage}` use-lines in the moved reader and its cells, plus the module declaration and the plane's own now-local spelling of the codec it drives. NOT A COUPLING THIS LANDING GREW: the same names were spelled inside the codec crate as `super::`/`crate::` one commit ago and are spelled through the crate path now purely because the file changed crate. The count is the file's imports, not a codec written in a plane: no wire token moved, no serde shape moved, and the conformance battery reads byte-identical on both sides of the move."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.codec.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "cell (crate = \"busbar-voice\", kind = \"codec\"): the MOVE form, by identity (10 -> 11). The retiring crate re-exports the duplex IR under the path its callers always spelled, and the reader's move splits that one re-export into two — the IR crate's `ir::*` and, one module down, its `ir::codec::*` — so that `busbar_voice::ir::codec::…` still resolves what it always did. One added use-line naming the codec crate, and nothing else in this crate changes: the legacy paths are the same paths, and the legacy reach does not rise anywhere it was not already at."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "cell (crate = \"busbar-voice\", kind = \"plane\"): the MOVE form, by identity (811 -> 815). The dialect reader's new home is the plane's dialect module, so the facade that keeps `busbar_voice::ir::codec::OpenAiRealtimeCodec` resolving has to name that home. It names it ONCE — a single `pub use busbar_plane_streams::openai_realtime::OpenAiRealtimeCodec;`, with the inner module re-exporting through `super::` rather than spelling the plane a second time — and the prose above it says why. This crate already depends on the plane under the drain's declared transitional edge; what rises is one re-export and the sentence that explains it, on the crate whose whole line is deletion."

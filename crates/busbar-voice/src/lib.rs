@@ -33,7 +33,21 @@
 /// linking this crate's axum mount, WebSocket accept, tokio session tasks and telephony dial. They
 /// are re-exported HERE, under their old name, so every caller that spells `busbar_voice::ir::…`
 /// resolves exactly what it always did. The split is a MOVE: no item changed shape crossing it.
-pub use busbar_streams_codec::ir;
+///
+/// The OpenAI Realtime reader/writer took the same road one step further: it is one dialect's
+/// vocabulary, not the IR, so it moved to its dialect module and is re-exported here under the path
+/// this crate always spelled for it. Its new home is named ONCE, on the line below.
+pub mod ir {
+    pub use busbar_plane_streams::openai_realtime::OpenAiRealtimeCodec;
+    pub use busbar_streams_codec::ir::*;
+
+    /// The reader/writer contract, the per-session state and the JSON helpers, plus the one dialect
+    /// reader this crate reaches under its old path.
+    pub mod codec {
+        pub use super::OpenAiRealtimeCodec;
+        pub use busbar_streams_codec::ir::codec::*;
+    }
+}
 
 /// THE `streams:` CONFIG SECTION — the voice plane's owned config grammar ([`config::StreamsCfg`]) and
 /// its `parse_section` / `default_section` seam hooks. UNCONDITIONAL (outside the `runtime` gate):

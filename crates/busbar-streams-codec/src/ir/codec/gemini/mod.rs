@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE SECOND DIALECT — Google **Gemini Live** (`BidiGenerateContent`), mapped to/from the SAME
-//! shared voice IR that [`super::OpenAiRealtimeCodec`] targets. Design `plane4-duplex-session.md`.
+//! shared duplex IR every dialect of this plane targets. Design `plane4-duplex-session.md`.
 //!
 //! This is the codec that turns the voice plugin into a real voice *translator*: a Gemini-Live wire event
 //! is decoded into the plane-owned IR ([`IrClientEvent`] / [`IrServerEvent`]), and the OpenAI codec
@@ -102,8 +102,8 @@ fn pcm_mime(fmt: AudioFormat, dir: UpDown) -> Option<&'static str> {
 }
 
 /// THE Gemini Live DIALECT CODEC — the plane's SECOND dialect. A unit struct: all per-session state
-/// lives in the shared [`DecodeState`], so the codec is stateless and shareable, exactly like
-/// [`super::OpenAiRealtimeCodec`].
+/// lives in the shared [`DecodeState`], so the codec is stateless and shareable, exactly like every
+/// dialect reader over this IR.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GeminiLiveCodec;
 

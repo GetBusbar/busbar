@@ -9,9 +9,8 @@
 //! The two routes must agree about what they read before either count means anything, so that is
 //! asserted first.
 
-use busbar_streams_codec::ir::{
-    DecodeState, DuplexReader, OpenAiRealtimeCodec, WireEvent, WireRef,
-};
+use busbar_plane_streams::openai_realtime::OpenAiRealtimeCodec;
+use busbar_streams_codec::ir::{DecodeState, DuplexReader, WireEvent, WireRef};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 

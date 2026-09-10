@@ -57,6 +57,7 @@ pub mod claims;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;
+pub mod openai_realtime;
 pub mod plane;
 pub mod session;
 pub mod surface;

@@ -81,12 +81,11 @@ use busbar_streams_codec::ir::control::IrDuplexControl;
 use busbar_streams_codec::ir::event::{IrClientEvent, IrServerEvent};
 use busbar_streams_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use busbar_streams_codec::ir::tool::IrDuplexTool;
-use busbar_streams_codec::ir::{
-    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
-};
+use busbar_streams_codec::ir::{DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, WireRef};
 
 use crate::claims::{self, Dialect};
 use crate::meta;
+use crate::openai_realtime::OpenAiRealtimeCodec;
 use crate::session::{Pending, VoiceSessionState};
 use crate::{twilio, ulaw, VoicePlane};
 

@@ -22,9 +22,9 @@
 //! `busbar-llm`'s chat IR — the load-bearing delta is a client→server event vocabulary
 //! ([`event::IrClientEvent`]) the LLM `IrStreamEvent` structurally lacks (`plane4-duplex-session.md`).
 //!
-//! Both dialect codecs ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]) implement the reader/writer pair
-//! over these types; the T2 session pump and session store live in `crate::runtime` behind the `runtime`
-//! feature. The shapes mirror `plane4-duplex-session.md`.
+//! Every dialect codec implements the reader/writer pair over these types; the shapes mirror
+//! `plane4-duplex-session.md`. Only [`GeminiLiveCodec`] still lives beside the IR — its own line moves
+//! it out the way the OpenAI Realtime reader already went, into the plane's dialect module.
 
 pub mod codec;
 pub mod config;
@@ -35,7 +35,7 @@ pub mod tool;
 pub mod usage;
 
 pub use codec::gemini::GeminiLiveCodec;
-pub use codec::{DecodeState, DuplexReader, DuplexWriter, OpenAiRealtimeCodec, WireEvent, WireRef};
+pub use codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent, WireRef};
 pub use config::{MaxOutputTokens, SessionConfig};
 pub use control::{Eagerness, IrDuplexControl, IrVad};
 pub use event::{IrClientEvent, IrServerEvent};
