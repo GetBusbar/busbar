@@ -610,7 +610,10 @@ fn register_protocols() {
     // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
     // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
     #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
+    let mut path_ingress: Vec<(
+        &'static str,
+        busbar_substrate::ingress::arrival::PathIngress,
+    )> = Vec::new();
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
@@ -819,11 +822,13 @@ fn mount_root_voice(
             std::process::exit(2);
         }
     };
-    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
-    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
-    // node nothing on a socket could name — a client-served tool call's wait was entered where the
-    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
+    // THE OTHER HALF OF THE MOUNT is NOT here. The node this root serves the plane's units on needs
+    // a journal, and the only journal this deployment has is the one the configured store ships to —
+    // which is resolved further down `run()`, after the plugin graph loads. Composing it here could
+    // only mean composing it out of a shipper that writes nowhere, so it is composed at that later
+    // slot instead (still before any listener binds), and on a deployment that configured no store
+    // it is not composed at all: a governed-call node whose postings go nowhere is not a node this
+    // binary should serve a client through.
     // THE COMPOSED TRANSPORTS GO BACK TO THE CALLER, because the transport-key unit provisions into
     // THESE objects and not into copies of them: a config registered in a slot of a transport the
     // seal dropped is a config nothing will ever look in. This is the only thing the seal produces
@@ -843,7 +848,8 @@ fn mount_root_voice(
 /// So the parts below are the ones the table's own two answers need, and the rest are the root's
 /// unbound posture: the plane with the upstream list configuration composed (none today — the
 /// `streams:` reader that fills it is the same work that switches the serving path onto these units),
-/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// a flat pricer and an unbound auth chain — over the DEPLOYMENT'S OWN journal shipper, which is an
+/// argument because there is exactly one store this process ships to. That posture is honest for
 /// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
 /// the switch that routes a frame through it is the one that has to thread the deployment's real
 /// auth, rate cards and data directory in, and it fails to compile until it does.
@@ -851,18 +857,23 @@ fn mount_root_voice(
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
 ///
-/// CALLED ON THE BOOT PATH, by [`mount_root_voice`]. It was `cfg(test)` while the table had no
+/// CALLED ON THE BOOT PATH from `run()`, in the slot where this deployment's journal shipper exists
+/// and ONLY where it exists — a deployment that configured no store never reaches this call, so the
+/// default binary composes no node whose postings write nowhere. It was `cfg(test)` while the table had no
 /// `planned` caller behind it — an installed-but-empty table refuses every reply a served session
 /// carries — and the switch that gives it units to hold has since landed: a served session is
 /// governed only where the table has something to answer with, so installing it is now the thing
 /// that makes a client's tool answer reach the model rather than the thing that stops it.
-#[cfg(feature = "root-voice")]
-fn compose_voice_governed_calls() {
+#[cfg(all(
+    feature = "root-voice",
+    any(feature = "root-admin", feature = "root-llm")
+))]
+fn compose_voice_governed_calls(shipper: Box<dyn busbar_unit_wal::Shipper>) {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
 
     let durability = match root::durability::build(
         &root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
+        shipper,
         Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
     ) {
         Ok(d) => d,
@@ -1708,6 +1719,17 @@ async fn run(data_workers: usize) {
     )
     .unwrap_or_else(|e| die(format!("the node's book did not open: {e}")));
 
+    // THE VOICE NODE'S GOVERNED-CALL TABLE, composed HERE and not at the seal: this is the first
+    // slot where the deployment's own journal shipper exists, and it is still several hundred lines
+    // before any listener binds. A deployment that configured no store gets no node at all rather
+    // than a node journalling into a shipper that writes nowhere — see `compose_voice_governed_calls`.
+    #[cfg(feature = "root-voice")]
+    if let Some(adapter) = store_adapter.as_ref() {
+        compose_voice_governed_calls(busbar_plugin_loader::store_adapter::StoreAdapter::shipper(
+            adapter,
+        ));
+    }
+
     // THE OPENING BALANCES, sealed in the one slot the migration step's own preamble names: after
     // the durability build, because the opening is a checkpoint the ledger seals and there is no
     // ledger until the book is open; and before anything binds an address, because the first
@@ -1724,7 +1746,7 @@ async fn run(data_workers: usize) {
     // every row as out for the life of the deployment, so it refuses instead.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
     if let Some(adapter) = store_adapter.as_ref() {
-        let now = busbar_substrate::store::now();
+        let now = busbar_substrate_values::store::now();
         let migration = root::migration::at_boot(
             adapter,
             &book.durability,
@@ -1742,7 +1764,7 @@ async fn run(data_workers: usize) {
                 // The metering day this boot lands in. Earlier days are the observability view of
                 // consumption already counted in the enforcement ledger above, so reading them too
                 // would open every bucket at twice what it spent.
-                metering_days: vec![busbar_substrate::governance::metering_bucket(now)],
+                metering_days: vec![busbar_substrate_values::governance::metering_bucket(now)],
                 // The opening entries carry no card version: they are balances carried forward from
                 // a release that had no card version to record, not priced lines this node made.
                 rate_card_version: 0,
