@@ -185,6 +185,42 @@ pub fn mount(
     plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE ROW THE BOOT READS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **THIS PLANE'S MOUNT, AS ONE DATA ROW** — the only thing the boot reads to serve it.
+///
+/// Declared here, beside the leg it assembles, rather than spelled out in the composition step: the
+/// boot folds rows and names no plane, so this plane's presence on the shipped serving path is a row
+/// in this file and not a line in `main.rs`.
+pub const MOUNT_ROW: crate::root::registry::MountRow = crate::root::registry::MountRow {
+    plane: <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::KEY,
+    compose,
+};
+
+/// Assemble this plane's leg over what the boot holds.
+///
+/// **NO SOURCE OF THIS PLANE'S CAN BE ABSENT, so this never refuses** — and that is the same fact
+/// the leg's own `assemble` states by having no `MissingSource` arm. The two things a walk here
+/// needs are a node, which this composes, and the deployment's ingress source, which the boot holds
+/// by definition at the instant it calls this.
+///
+/// **THE NODE IS BOUND TO THE PROCESS'S BOOK BEFORE THE LEG IS BUILT.** An unbound node settles its
+/// postings nowhere, and a node whose postings go nowhere serves traffic that looks healthy and
+/// prices nothing — so the binding happens here, where the book is in hand, rather than being left
+/// to a caller who might not know this plane settles at all.
+fn compose(
+    inputs: &crate::root::registry::MountInputs,
+) -> Result<Arc<dyn plane_mount::MountedLeg>, crate::root::registry::MountAbsent> {
+    let node = crate::root::units_llm::LlmNode::new();
+    node.bind_book(Arc::clone(&inputs.book));
+    Ok(Arc::new(LlmLeg::assemble(
+        node,
+        Arc::clone(&inputs.ingress),
+    )))
+}
+
 #[cfg(test)]
 #[path = "tests/units_llm_mount.rs"]
 mod tests;

@@ -116,6 +116,45 @@ pub fn mount(
     plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE ROW THE BOOT READS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **THIS PLANE'S MOUNT, AS ONE DATA ROW.** See the LLM plane's row for what the boot does with one.
+pub const MOUNT_ROW: crate::root::registry::MountRow = crate::root::registry::MountRow {
+    plane: <busbar_plane_a2a::A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+    compose,
+};
+
+/// The first source of [`crate::root::units_a2a_leg::A2aLegSources`] the boot has no answer for.
+///
+/// The plane's own assembly refuses field by field and names the field; this names the FIRST one, so
+/// the boot's report reads as the next thing to resolve rather than as a list of everything left.
+const UNRESOLVED_SOURCE: &str = "auth";
+
+/// Assemble this plane's leg over what the boot holds — or say which source it has not resolved.
+///
+/// **THIS PLANE REFUSES TODAY, and the refusal is the honest answer rather than a stub.** Its leg
+/// assembles a dozen boot-resolved bindings — the node's authentication chain, its credential cache
+/// and revocation view, its breaker, its door, its group table, its pricer, its store, its two
+/// policies and this deployment's RFC 8707 canonical audience — and the composition root resolves
+/// NONE of them today: the only caller `A2aLeg::assemble` has ever had is this plane's own cells,
+/// which build every one of those from a fixture. Handing the mount a leg assembled from anything
+/// less would put a plane's money and its door on the serving path with a chain nothing configured,
+/// which is the one failure this seam exists to make impossible to reach by accident.
+///
+/// So the row is present and it refuses BY NAME. The boot composes no wrap for this plane, its
+/// claimed paths stay on the surface underneath — the released behaviour, unchanged — and the report
+/// says which source has to exist for that to stop being true.
+fn compose(
+    _inputs: &crate::root::registry::MountInputs,
+) -> Result<Arc<dyn plane_mount::MountedLeg>, crate::root::registry::MountAbsent> {
+    Err(crate::root::registry::MountAbsent {
+        plane: <busbar_plane_a2a::A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+        source: UNRESOLVED_SOURCE,
+    })
+}
+
 #[cfg(test)]
 #[path = "tests/units_a2a_mount.rs"]
 mod tests;

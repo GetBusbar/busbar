@@ -117,6 +117,34 @@ pub fn mount(
     plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE ROW THE BOOT READS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **THIS PLANE'S MOUNT, AS ONE DATA ROW.** See the LLM plane's row for what the boot does with one.
+pub const MOUNT_ROW: crate::root::registry::MountRow = crate::root::registry::MountRow {
+    plane: <busbar_plane_mcp::McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+    compose,
+};
+
+/// The first source of [`crate::root::units_mcp_leg::McpLegSources`] the boot has no answer for.
+const UNRESOLVED_SOURCE: &str = "auth";
+
+/// Assemble this plane's leg over what the boot holds — or say which source it has not resolved.
+///
+/// **THIS PLANE REFUSES TODAY**, for the reason its A2A sibling's row does and with the same shape:
+/// its leg assembles a dozen boot-resolved bindings that the composition root does not resolve, its
+/// only `assemble` caller is its own cells, and a leg built from less than the deployment configured
+/// would put this plane's door and its money on the serving path with a chain nothing configured.
+fn compose(
+    _inputs: &crate::root::registry::MountInputs,
+) -> Result<Arc<dyn plane_mount::MountedLeg>, crate::root::registry::MountAbsent> {
+    Err(crate::root::registry::MountAbsent {
+        plane: <busbar_plane_mcp::McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+        source: UNRESOLVED_SOURCE,
+    })
+}
+
 #[cfg(test)]
 #[path = "tests/units_mcp_mount.rs"]
 mod tests;
