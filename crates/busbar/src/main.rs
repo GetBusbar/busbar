@@ -1311,9 +1311,21 @@ async fn run(data_workers: usize) {
     // from a key this deployment already has, and a source it does not have refuses boot by name;
     // `None` is the deployment with no `public_url:`, which fronts no inbound A2A surface and which
     // the legacy plugin likewise mounts no route for. Behind the serving switch, which the shipped
-    // binary does NOT carry: with it off the line is not compiled and the binary is what it was.
+    // binary now carries: with it off the line is not compiled and the binary is what it was.
+    //
+    // THE REFUSAL IS KEPT AND THE VALUE IS NOT, and that is a measurement rather than a choice. The
+    // plane joins the serving path through its mount row (`units_a2a_mount::MOUNT_ROW`, folded by
+    // `plane_mount::compose_mounts` below), and on this base that row refuses by name — its `auth`
+    // source has no boot answer, and `MountInputs` carries no deployment configuration for a row to
+    // read one from. So nothing composes the value this read resolves; holding it in a binding
+    // would be a value with no consumer, which the compiler says out loud. What this line keeps is
+    // the half that IS shipped behaviour: a deployment whose A2A section names a source this
+    // composition cannot honour refuses boot by name. The read moves into the row the day the row
+    // composes, and this line goes with it.
     #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
-    let a2a_configured = root::units_a2a_boot::read(&cfg).unwrap_or_else(|e| die(e));
+    if let Err(refused) = root::units_a2a_boot::read(&cfg) {
+        die(refused);
+    }
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
