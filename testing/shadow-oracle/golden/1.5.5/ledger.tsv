@@ -2330,8 +2330,16 @@ teller|verify-refusal	PASS	script teller-verify-refusal.sh: status 0
 voice.mount|VOICE-M-streams-section|validate	PASS	exit 1; 	
 voice.mount|gemini	PASS	HTTP 404; usage Δ {}	
 voice.mount|gemini-live-declared	PASS	HTTP 404; usage Δ {}	
+voice.mount|mint-client-secrets	PASS	HTTP 404; usage Δ {}	
+voice.mount|mint-client-secrets-unauth	PASS	HTTP 401; usage Δ {}	
+voice.mount|oauth-metadata	PASS	HTTP 401; usage Δ {}	
 voice.mount|realtime-root	PASS	HTTP 404; usage Δ {}	
+voice.mount|sdp-calls	PASS	HTTP 404; usage Δ {}	
+voice.mount|sdp-calls-unauth	PASS	HTTP 401; usage Δ {}	
 voice.mount|sessions-mint	PASS	HTTP 404; usage Δ {}	
 voice.mount|sideband	PASS	HTTP 404; usage Δ {}	
+voice.mount|sideband-broke	PASS	HTTP 404; usage Δ {}	
+voice.mount|sideband-noscope	PASS	HTTP 404; usage Δ {}	
+voice.mount|sideband-unauth	PASS	HTTP 401; usage Δ {}	
 voice.mount|telephony	PASS	HTTP 404; usage Δ {}	
 voice.mount|twilio-declared	PASS	HTTP 404; usage Δ {}	
