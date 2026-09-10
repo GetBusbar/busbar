@@ -121,7 +121,13 @@ impl Reads {
 pub fn reads(op: OpClassId) -> Option<Reads> {
     match op {
         ops::OP_INITIALIZE | ops::OP_PING => Some(Reads::Nothing),
-        ops::OP_TOOLS_LIST => Some(Reads::CatalogueSnapshot),
+        // THE FOUR LISTINGS, one reading. A listing of this protocol is the same sentence four
+        // times over — what was approved, minus what is quarantined — and the member it is rendered
+        // under is the whole of what makes them four answers rather than one.
+        ops::OP_TOOLS_LIST
+        | ops::OP_PROMPTS_LIST
+        | ops::OP_RESOURCES_LIST
+        | ops::OP_RESOURCE_TEMPLATES_LIST => Some(Reads::CatalogueSnapshot),
         ops::OP_TOOL_CALL => Some(Reads::ServerRegistry),
         _ => None,
     }
@@ -129,14 +135,23 @@ pub fn reads(op: OpClassId) -> Option<Reads> {
 
 /// Every operation class this module composes an answer for, in declaration order.
 ///
-/// The FIRST four through the loop. It is a list rather than a predicate because the composition
-/// root prints it at boot and the mount's own shadow predicate is built from it — and a set two
-/// readers derive separately is a set they can derive differently.
+/// It is a list rather than a predicate because the composition root prints it at boot and the
+/// mount's own shadow predicate is built from it — and a set two readers derive separately is a set
+/// they can derive differently.
+///
+/// A class here is a class the LEG answers; a class absent from here is one the mount hands to the
+/// surface that already answers it, which on this node is the protocol's legacy body. So this list
+/// growing is the only thing that makes that body unreachable, and it grows one coherent group at a
+/// time rather than all at once, because each group has its own reading and its own wire shape to
+/// be right about.
 pub const ANSWERED: &[OpClassId] = &[
     ops::OP_INITIALIZE,
     ops::OP_PING,
     ops::OP_TOOLS_LIST,
     ops::OP_TOOL_CALL,
+    ops::OP_PROMPTS_LIST,
+    ops::OP_RESOURCES_LIST,
+    ops::OP_RESOURCE_TEMPLATES_LIST,
 ];
 
 /// Add the caching hints to a result that is CACHEABLE.
@@ -223,6 +238,34 @@ pub fn ping_result() -> serde_json::Value {
 #[must_use]
 pub fn tools_list_result(tools: Vec<serde_json::Value>) -> serde_json::Value {
     cache_hints(serde_json::json!({ "tools": tools }))
+}
+
+/// The `prompts/list` answer, over the prompts the caller may see.
+///
+/// Its own function rather than an argument to a shared one, for the reason each of the four
+/// listings has its own: the MEMBER is the answer's identity on the wire, and a listing rendered
+/// under a member computed from a parameter is a listing one wrong argument turns into a different
+/// protocol's answer. The entitlement walk, the trust filter and the render are not here and are not
+/// this plane's — [`Reads::CatalogueSnapshot`] names the record legs they are composed from.
+#[must_use]
+pub fn prompts_list_result(prompts: Vec<serde_json::Value>) -> serde_json::Value {
+    cache_hints(serde_json::json!({ "prompts": prompts }))
+}
+
+/// The `resources/list` answer, over the resources the caller may read.
+#[must_use]
+pub fn resources_list_result(resources: Vec<serde_json::Value>) -> serde_json::Value {
+    cache_hints(serde_json::json!({ "resources": resources }))
+}
+
+/// The `resources/templates/list` answer, over the URI templates the caller may expand.
+///
+/// A resource template is an approval of a SHAPE rather than of an address, so it is a listing of
+/// its own and not a variety of the one above: the two are approved by different operator
+/// declarations and a client expands one and reads the other.
+#[must_use]
+pub fn resource_templates_list_result(templates: Vec<serde_json::Value>) -> serde_json::Value {
+    cache_hints(serde_json::json!({ "resourceTemplates": templates }))
 }
 
 /// The `tools/call` answer, over what the server that was reached said.
