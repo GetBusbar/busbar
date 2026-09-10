@@ -236,13 +236,19 @@ impl LlmLeg {
 /// them as the body-model shape hands the loop a request with no model, and the client is answered
 /// `Missing required parameter: 'model'` for a parameter it had nowhere to put.
 ///
-/// The reading is the PLANE's, not this file's: [`busbar_plane_llm::url::path_model_facts`] is the
+/// The reading is the PLANE's, not this file's: [`busbar_plane_llm::url::url_model`] is the
 /// same statement about the same URL space the driven path's arrival reads, and it is reached here
 /// without a host because it needs none. Which two dialects those are is not a list in this file
 /// either — the plane's dialect table declares each row's model location, and this leg asks.
 ///
 /// The target is passed WITHOUT its query and the query separately, the way the ladder is asked:
-/// the model is in the path, and one dialect's stream framing is in the query.
+/// the model is in the path, and one dialect's framing selector is in the query.
+///
+/// KNOWN GAP, named rather than papered over: `/model/{model}/invoke` names a model and leaves the
+/// OPERATION to the body, so its model is a routing HINT and not a path-model arrival. The driven
+/// path threads that hint into the body-model forward; this leg does not thread one for anything
+/// yet, so a mounted `invoke` still routes on the body alone. It is not this fix's cell and it is
+/// not asserted here.
 fn url_model(
     dialect: &'static str,
     target: &str,
