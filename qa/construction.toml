@@ -357,14 +357,21 @@ Zero slack; the next face declares its own raise."""
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 65
-because = """The same 116 lines, counted a third time: the union row is kernel + caps/contract + \
-unit-* and the caps/contract term is the one that moved (5379 + 3596 + 14606 = 23581). No kernel \
-or unit line changed. Declared separately because it is a separate integer `ceiling-rose` compares, \
-and pinned at the measurement for the same reason the pair is."""
+by = 12
+because = """The pair's 116 lines counted a third time, LESS the 53 unit lines the same series \
+deleted: the union row is kernel + caps/contract + unit-* (5379 + 3596 + 14553 = 23528). The \
+caps/contract term rose by 116 (the dialect kind's face, then the upstream status table); the unit \
+term FELL by 53 because busbar-unit-breaker and busbar-unit-egress stopped declaring their own \
+copies of the status class and the disposition and now name the table (`unit_total_ceiling` was \
+re-pinned downward by `--write`, 14606 -> 14553). Declared separately because it is a separate \
+integer `ceiling-rose` compares, and pinned at the measurement for the same reason the pair is."""
 
 # TWENTY-NINE ENTRIES STAND HERE TODAY (K7 re-key). Twenty-six are the dialect column, keyed by
-# row identity. The other three describe ONE rise measured three ways: two contract
+# row identity (`cell.<crate>.<kind>.count`, `file` naming the ledger) rather than by slot, per
+# db7f08cca, and they carry the R6 dialect lines' rises for THIS base. The four such entries
+# keep-status-table wrote on its own base were DROPPED in the re-key: they name four of the same
+# keys, entries SUM, and the deltas measured here already include them -- keeping both would be
+# over-declared and red. The other three describe ONE rise measured three ways: two contract
 # faces — the dialect kind's (51 lines) and the upstream status table's (65) — as the contract
 # pair's surface, as the pair's LOC row, and as the term they add to the union. They expire together the moment this commit is the base. The previous
 # occupant — `rules.legacy-reach.prefixes.busbar_substrate.figure`, the one-time 26 -> 47
@@ -627,12 +634,12 @@ contract_crate = "busbar-contract"
 # own declared raise naming its own measured lines, never out of this one.
 caps_contract_ceiling = 3596
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 14553
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-# 23465 -> 23581: the caps/contract term above rose by 116 (the dialect kind's face, then the
-# upstream status table) and nothing else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
-union_ceiling = 23581
+# 23465 -> 23528: the caps/contract term above rose by 116 (the dialect kind's face, then the
+# upstream status table) and the unit term fell by 53 (two units stopped declaring their own copies). Declared under `[gate.ceiling_raises]` with the pair.
+union_ceiling = 23528
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

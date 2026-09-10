@@ -7714,7 +7714,6 @@ fn responses_url_citation_survives_a_responses_round_trip() {
 //    owns the enum.
 #[test]
 fn status_word_golden_responses() {
-    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
     let golden: [(StatusClass, &str); 9] = [
         (StatusClass::RateLimit, "rate_limit_error"),
         (StatusClass::Overloaded, "server_error"),

@@ -5768,7 +5768,6 @@ fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
 //    cell says the same thing whichever crate owns the enum.
 #[test]
 fn status_word_golden_openai_chat() {
-    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
     let golden: [(StatusClass, &str); 9] = [
         (StatusClass::RateLimit, "rate_limit_error"),
         (StatusClass::Overloaded, "server_error"),

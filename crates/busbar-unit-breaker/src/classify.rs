@@ -22,76 +22,19 @@
 /// Anthropic as their server-overloaded signal, distinct from 503.
 const HTTP_OVERLOADED: u16 = 529;
 
-/// Protocol-neutral, dialect-normalized status class emitted by the (out-of-scope, per-protocol)
-/// Stage 1 normalizer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusClass {
-    /// Rate limit / slow down — transient, may recover with retry-after.
-    RateLimit,
-    /// Overloaded server — transient.
-    Overloaded,
-    /// Server error (5xx) — transient.
-    ServerError,
-    /// Request timeout — transient.
-    Timeout,
-    /// Network failure — transient.
-    Network,
-    /// Authentication failure (401/403) — hard down, key invalid.
-    Auth,
-    /// Billing / insufficient balance — hard down, account issue.
-    Billing,
-    /// Client error (4xx other than 401/403) — client fault, do not penalize the lane.
-    ClientError,
-    /// Request exceeds this destination's context window — the destination is healthy; fail over
-    /// (ideally to a larger-context sibling) WITHOUT penalizing the breaker.
-    ContextLength,
-}
-
-/// The final disposition that drives the breaker's write path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Disposition {
-    /// The caller's bad input: relay verbatim, record nothing against the breaker.
-    ClientFault,
-    /// A transient failure: cooldown + error counter.
-    TransientUpstream,
-    /// A definitive signal (bad key, billing exhausted): sticky cooldown, recovered by a probe.
-    HardDown,
-    /// The request was too big for this destination: fail over, record nothing (the lane is
-    /// healthy).
-    ContextLength,
-}
-
-/// Every declared status class paired with its disposition, as data.
-/// `classify` is still an exhaustive match (so the compiler catches a class the table forgot), but
-/// this array is what the port test below checks the match against, and what a future caller can
-/// render/audit without re-deriving it from the match arms.
-pub const DISPOSITION_TABLE: &[(StatusClass, Disposition)] = &[
-    (StatusClass::RateLimit, Disposition::TransientUpstream),
-    (StatusClass::Overloaded, Disposition::TransientUpstream),
-    (StatusClass::ServerError, Disposition::TransientUpstream),
-    (StatusClass::Timeout, Disposition::TransientUpstream),
-    (StatusClass::Network, Disposition::TransientUpstream),
-    (StatusClass::Auth, Disposition::HardDown),
-    (StatusClass::Billing, Disposition::HardDown),
-    (StatusClass::ClientError, Disposition::ClientFault),
-    (StatusClass::ContextLength, Disposition::ContextLength),
-];
+/// The status class and the disposition, as the contract owns them.
+///
+/// This unit used to declare both, byte-for-byte the substrate's, and keep the metric labels in
+/// step with the egress unit's by hand. The rows live in `busbar_contract::upstream` now — the one
+/// crate this unit and the planes whose dialects read the class can both name — and this module
+/// keeps its historical paths as re-exports so every caller matching on `classify::StatusClass`
+/// still does.
+pub use busbar_contract::upstream::{Disposition, StatusClass};
 
 /// Convert a wire token to a [`StatusClass`]. `None` for anything unrecognized (e.g. a typo'd
 /// operator `error_map` entry).
 pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    match s {
-        "rate_limit" => Some(StatusClass::RateLimit),
-        "overloaded" => Some(StatusClass::Overloaded),
-        "server_error" => Some(StatusClass::ServerError),
-        "timeout" => Some(StatusClass::Timeout),
-        "network" => Some(StatusClass::Network),
-        "auth" => Some(StatusClass::Auth),
-        "billing" => Some(StatusClass::Billing),
-        "client_error" => Some(StatusClass::ClientError),
-        "context_length" => Some(StatusClass::ContextLength),
-        _ => None,
-    }
+    StatusClass::parse(s)
 }
 
 /// A sink for the one diagnostic this module raises: an operator `error_map` entry names a string
@@ -153,19 +96,10 @@ impl<S: Diagnostics + ?Sized> Diagnostics for std::sync::Arc<S> {
     }
 }
 
-/// Classify a [`CanonicalSignal`] into a [`Disposition`]. Exhaustive over [`StatusClass`] — no
-/// wildcard arm, so a class added to the enum without a table row fails to compile.
+/// Classify a [`CanonicalSignal`] into a [`Disposition`]: the disposition column of the contract's
+/// table, read for the signal's class.
 pub fn classify(sig: &CanonicalSignal) -> Disposition {
-    match sig.class {
-        StatusClass::RateLimit
-        | StatusClass::Overloaded
-        | StatusClass::ServerError
-        | StatusClass::Timeout
-        | StatusClass::Network => Disposition::TransientUpstream,
-        StatusClass::Auth | StatusClass::Billing => Disposition::HardDown,
-        StatusClass::ClientError => Disposition::ClientFault,
-        StatusClass::ContextLength => Disposition::ContextLength,
-    }
+    sig.class.disposition()
 }
 
 /// Every `grpc-status` code paired with the [`StatusClass`] this unit reads it as, as data.

@@ -6879,12 +6879,11 @@ fn test_writer_open_tools_capped_in_entry_count() {
     );
 }
 
-// ── GOLDEN PARITY CELL: the (class -> (HTTP status, google.rpc.Code word)) pair this dialect
+// ── GOLDEN PARITY CELL: the (class -> (status code, google.rpc.Code word)) pair this dialect
 //    renders, pinned as bytes; the nine classes are spelled by hand so the cell says the same thing
 //    whichever crate owns the enum.
 #[test]
 fn status_word_golden_gemini() {
-    use busbar_substrate_values::breaker::StatusClass;
     let golden: [(StatusClass, u16, &str); 9] = [
         (StatusClass::RateLimit, 429, "RESOURCE_EXHAUSTED"),
         (StatusClass::Overloaded, 503, "UNAVAILABLE"),
