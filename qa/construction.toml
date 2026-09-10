@@ -309,7 +309,19 @@ file = "qa/kind-isolation.toml"
 by = 14
 because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-voice-codec x dialect: 257 -> 271)"""
 
-# TWENTY-FOUR ENTRIES STAND HERE TODAY (K7 re-key). Three describe ONE rise measured three ways: the dialect
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = """R6 dialect face, second crate: busbar-plane-llm-responses is the second crate of the dialect kind and the first copy of the D36 pattern, so the census contributes its package name to the dialect column's needle list on top of the first crate's. Every hit counted here already stood in the tree and is counted by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar x dialect: 587 -> 600)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = """R6 dialect face, second crate: busbar-plane-llm-responses is the second crate of the dialect kind and the first copy of the D36 pattern, so the census contributes its package name to the dialect column's needle list on top of the first crate's. Every hit counted here already stood in the tree and is counted by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar x plane: 1826 -> 1835)"""
+
+# TWENTY-SIX ENTRIES STAND HERE TODAY (K7 re-key). Three describe ONE rise measured three ways: the dialect
 # kind's contract face (51 lines) as the contract pair's surface, as the pair's LOC row, and as the
 # term it adds to the union. They expire together the moment this commit is the base. The previous
 # occupant — `rules.legacy-reach.prefixes.busbar_substrate.figure`, the one-time 26 -> 47
