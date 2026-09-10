@@ -5,7 +5,7 @@
 //! forms this plane declares, and the forms it is handed no facts to answer.
 
 use busbar_contract::grammar::{PathSeg, Selector};
-use busbar_plane_llm::claims::{dialect_for, matches_selector};
+use busbar_plane_llm::claims::dialect_for;
 
 fn no_headers(_: &str) -> Option<&'static str> {
     None
@@ -18,13 +18,9 @@ fn no_headers(_: &str) -> Option<&'static str> {
 fn the_pattern_form_is_the_contracts_own_answer() {
     const P: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
     let s = Selector::PathPattern(P);
-    assert!(matches_selector(&s, "/model/a.claude/invoke", &no_headers));
-    assert!(!matches_selector(&s, "/model/a.claude", &no_headers));
-    assert!(!matches_selector(
-        &s,
-        "/model/a.claude/invoke/extra",
-        &no_headers
-    ));
+    assert!(s.matches("/model/a.claude/invoke", &no_headers));
+    assert!(!s.matches("/model/a.claude", &no_headers));
+    assert!(!s.matches("/model/a.claude/invoke/extra", &no_headers));
     assert_eq!(
         dialect_for("/model/a.claude/invoke", &no_headers),
         Some("bedrock")
@@ -44,7 +40,7 @@ fn a_form_this_plane_is_handed_no_facts_for_never_matches() {
         Selector::Port(443),
     ] {
         assert!(
-            !matches_selector(&s, "/v1/chat/completions", &no_headers),
+            !s.matches("/v1/chat/completions", &no_headers),
             "{s:?} was answered from facts this plane does not have"
         );
     }

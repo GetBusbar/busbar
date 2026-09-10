@@ -171,6 +171,11 @@ busbar_contract::claims_from_ladder! {
 /// The kernel does this walk itself from the declared claims; the same walk is exposed here so the
 /// decode step can name the dialect it is about to read without a second, differently-ordered
 /// answer existing anywhere.
+///
+/// Whether a rung's selector matches is [`Selector::matches`] — the contract's own reading, beside
+/// the contract's own overlap rule, not a copy of it here. A copy is how a plane comes to answer a
+/// form differently from the boot that sealed the claim; this crate had one, form for form, and
+/// what it bought over reading the owner's was a second place to edit.
 #[must_use]
 pub fn dialect_for<'h>(
     path: &str,
@@ -178,42 +183,6 @@ pub fn dialect_for<'h>(
 ) -> Option<&'static str> {
     LADDER
         .iter()
-        .find(|c| matches_selector(&c.claim.selector, path, header))
+        .find(|c| c.claim.selector.matches(path, header))
         .map(|c| c.dialect)
-}
-
-/// Whether one selector matches a request's path and headers.
-///
-/// PUBLIC so the crate's own conformance tests can walk every form; this crate compiles no
-/// conditionally-compiled item, so a test of a private helper has nowhere to live.
-///
-/// EVERY form is answered explicitly. A wildcard arm here would silently answer "no match" for a
-/// form added to the vocabulary later, which is the one way a claim this plane declares could stop
-/// being evaluated without anything failing to compile.
-///
-/// The forms this plane cannot answer are the ones about the CONNECTION rather than the request --
-/// the handshake name, the client certificate, the stream, the protocol, the local port. Nothing
-/// here is given any of them, so `false` is the honest answer and not a default: a plane that
-/// guessed at a fact it was never handed would be routing on something it made up.
-#[must_use]
-pub fn matches_selector<'h>(
-    s: &Selector,
-    path: &str,
-    header: &dyn Fn(&str) -> Option<&'h str>,
-) -> bool {
-    match s {
-        Selector::ExactPath(p) => path == *p,
-        Selector::PrefixOneLevel(prefix) => busbar_contract::grammar::one_level_under(prefix, path),
-        Selector::PathPattern(pattern) => busbar_contract::grammar::pattern_matches(pattern, path),
-        Selector::PathSuffix(suffix) => path.ends_with(suffix),
-        Selector::PathContains(needle) => path.contains(needle),
-        Selector::HeaderExact(name, value) => header(name) == Some(*value),
-        Selector::HeaderPresent(name) => header(name).is_some(),
-        Selector::HeaderPrefix(name, prefix) => header(name).is_some_and(|v| v.starts_with(prefix)),
-        Selector::Sni(_)
-        | Selector::ClientCertSubject(_)
-        | Selector::StreamName(_)
-        | Selector::Alpn(_)
-        | Selector::Port(_) => false,
-    }
 }

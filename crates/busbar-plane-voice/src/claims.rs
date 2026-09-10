@@ -30,7 +30,7 @@
 //! without touching any other one, because claims are declared independently and the boot's own
 //! overlap check is what proves they stay disjoint.
 
-use busbar_contract::grammar::{one_level_under, Claim, Selector};
+use busbar_contract::grammar::{Claim, Selector};
 
 /// The transport both JSON duplex dialects (`openai-realtime`, `gemini-live`) are claimed against.
 pub const WS_TRANSPORT: &str = "ws";
@@ -203,24 +203,26 @@ const _: () = assert!(CLAIMS.len() == DIALECT_CLAIMS.len());
 /// The same walk the kernel runs itself from the declared claims, exposed here so the decode step
 /// can name the dialect it is about to read without a second, differently-ordered answer existing
 /// anywhere.
+/// Whether a claim's selector matches is [`Selector::matches`] — the contract's own reading, which
+/// is the same reading the boot's overlap check is written against. What was here answered three
+/// forms and shrugged `false` at the other ten through a wildcard. That was correct only for as
+/// long as [`DIALECT_CLAIMS`] used exactly those three: a claim added in this file in any other
+/// form would have stopped being matched, silently, with nothing failing to compile. A form this
+/// plane cannot answer is now a stated `false` in the owner's table rather than a wildcard's shrug
+/// here, and a form the vocabulary grows is answered in one place for every plane at once.
 #[must_use]
 pub fn dialect_for(path: &str) -> Option<Dialect> {
     DIALECT_CLAIMS
         .iter()
-        .find(|c| matches_selector(&c.claim.selector, path))
+        .find(|c| c.claim.selector.matches(path, &no_header))
         .map(|c| c.dialect)
 }
 
-/// Whether one selector matches a request path.
+/// The header lookup this plane's walk is given: none.
 ///
-/// Only the forms this plane's claims actually use are answered.
-pub(crate) fn matches_selector(s: &Selector, path: &str) -> bool {
-    match s {
-        Selector::PathSuffix(suffix) => path.ends_with(suffix),
-        Selector::PathContains(needle) => path.contains(needle),
-        // The contract's rule, read rather than restated: a second spelling here could hand a
-        // request to a dialect the boot's overlap check never saw this plane claim.
-        Selector::PrefixOneLevel(prefix) => one_level_under(prefix, path),
-        _ => false,
-    }
+/// The claims this plane declares read the request TARGET and nothing else, so there is no header
+/// to look up, and saying so once is what lets the shared matcher be asked the header forms at all
+/// rather than have them cut out of the question.
+pub(crate) fn no_header(_: &str) -> Option<&'static str> {
+    None
 }
