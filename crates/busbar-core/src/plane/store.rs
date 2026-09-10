@@ -4,7 +4,7 @@
 //! THE PLANE STORE SEAM — the narrowing adapter that lets a plane persist its own trust state
 //! WITHOUT ever holding a handle that can write the append-only audit chain.
 //!
-//! [`busbar_api::Store`] is ONE trait that carries two unrelated authorities at once: the durable
+//! [`busbar_contract::store::Store`] is ONE trait that carries two unrelated authorities at once: the durable
 //! governance AUDIT CHAIN (`append_audit`/`list_audit`/`list_audit_tail`) and the per-plane durable
 //! state (the A2A task table, the MCP per-call log, the MCP demotion record, the spent-approval
 //! ledger). Handing a plane an `Arc<dyn Store>` to persist its rows would, by the same handle, let it
@@ -33,10 +33,10 @@
 //! wrapper — receives an already-sealed row and persists it verbatim; it never computes or recomputes
 //! a digest.
 
-use busbar_api::{StoreError, StoreResult};
+use busbar_contract::store::{StoreError, StoreResult};
 
 // THE NARROWING ADAPTER — the `PlaneStore` trait a plane persists through and the `PlaneStoreView`
-// that narrows a real `busbar_api::Store` to it — lives in the neutral substrate so a plane crate
+// that narrows a real `busbar_contract::store::Store` to it — lives in the neutral substrate so a plane crate
 // holds an `Arc<dyn PlaneStore>` without naming core. Re-exported here so every in-core call site is
 // unchanged.
 pub use busbar_substrate::plane::store::{PlaneStore, PlaneStoreView};

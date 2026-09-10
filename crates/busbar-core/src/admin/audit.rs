@@ -107,7 +107,7 @@ impl ChainedRecord for AuditEntry {
         scope: "log",
     };
     /// PIPE-SEPARATED because that is how the entries already on disk were written, and
-    /// `busbar_api::AuditRecord`'s own doc publishes the formula. A new record type takes
+    /// `busbar_contract::store::AuditRecord`'s own doc publishes the formula. A new record type takes
     /// [`Framing::LengthPrefixed`] instead — see [`crate::audit::Framing`].
     const FRAMING: Framing = Framing::PipeSeparated;
 
@@ -147,7 +147,7 @@ impl ChainedRecord for AuditEntry {
     }
 
     /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the formula
-    /// `busbar_api::AuditRecord` publishes, fed field by field instead of being formatted here.
+    /// `busbar_contract::store::AuditRecord` publishes, fed field by field instead of being formatted here.
     /// Note there is no scope field: this chain has exactly one scope, so nothing distinguishes it.
     fn digest_fields(&self, d: &mut Digest) {
         d.text(&self.prev_hash)

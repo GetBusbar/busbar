@@ -263,7 +263,7 @@ extern "C-unwind" fn neutral_reframe(
 /// plane-record verbs generically by `(kind, parent)` — exactly what a durable backend does.
 struct GenericPlaneStore {
     inner: busbar_store_memory::MemoryStore,
-    rows: Mutex<Vec<busbar_api::PlaneRecord>>,
+    rows: Mutex<Vec<busbar_contract::store::PlaneRecord>>,
 }
 
 impl GenericPlaneStore {
@@ -273,71 +273,96 @@ impl GenericPlaneStore {
             rows: Mutex::new(Vec::new()),
         }
     }
-    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_api::PlaneRecord>> {
+    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_contract::store::PlaneRecord>> {
         self.rows.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-impl busbar_api::Store for GenericPlaneStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for GenericPlaneStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ─────────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.rows().push(record.clone());
         Ok(())
     }
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.rows().push(record.clone());
         Ok(())
     }
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         Ok(self
             .rows()
             .iter()
             .filter(|r| r.kind == kind)
             .filter(|r| match selector {
-                busbar_api::PlaneSelector::All => true,
-                busbar_api::PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                busbar_contract::store::PlaneSelector::All => true,
+                busbar_contract::store::PlaneSelector::Parent(p) => {
+                    r.parent.as_deref() == Some(p.as_str())
+                }
             })
             .map(|r| r.body.clone())
             .collect())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::store::StoreResult<Vec<String>> {
         let mut parents: Vec<String> = self
             .rows()
             .iter()
@@ -493,7 +518,7 @@ fn durable_append_two_and_verify(framing: AbiFraming) {
 /// the same scope, then asserts `journal_restore` reports `unreadable == 1` (and `records == 1`).
 #[test]
 fn journal_restore_surfaces_the_unreadable_row_count() {
-    use busbar_api::Store as _;
+    use busbar_contract::store::Store as _;
     let store = Arc::new(GenericPlaneStore::new());
     let app = durable_app_over(store.clone());
     let kind_id = fresh_kind_id();
@@ -516,13 +541,13 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
         // A raw UNDECODABLE body under the SAME (kind, parent) — decodes as neither a neutral body nor
         // a legacy row. The registered kind is `durable_test_event` (see `register`).
         store
-            .append_plane_record(&busbar_api::PlaneRecord {
+            .append_plane_record(&busbar_contract::store::PlaneRecord {
                 kind: "durable_test_event".to_string(),
                 id: String::from_utf8_lossy(scope).to_string(),
                 parent: Some(String::from_utf8_lossy(scope).to_string()),
                 seq: 2,
                 ts: 0,
-                disposition: busbar_api::PlaneDisposition::Active,
+                disposition: busbar_contract::store::PlaneDisposition::Active,
                 body: b"{ not a neutral body".to_vec(),
             })
             .unwrap();
@@ -748,7 +773,7 @@ extern "C-unwind" fn admin_reframe(
 }
 
 fn put_frozen(store: &GenericPlaneStore, kind: &str, parent: &str, seq: u64, body: &[u8]) {
-    use busbar_api::{PlaneDisposition, PlaneRecord, Store};
+    use busbar_contract::store::{PlaneDisposition, PlaneRecord, Store};
     store
         .append_plane_record(&PlaneRecord {
             kind: kind.to_string(),

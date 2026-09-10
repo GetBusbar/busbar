@@ -67,13 +67,13 @@ pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
 /// and so the deterministic subject id derives under a stable, non-attacker-chosen prefix.
 pub(crate) const SELF_KEY_GROUP_PREFIX: &str = "user:";
 
-/// The [`busbar_api::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
+/// The [`busbar_contract::store::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
 /// PERSONAL user-bound token (records the IdP subject for attribution, short-lived). Matches the
 /// `auth.policy` `BindingMode::UserBound` wire spelling (`"user-bound"`). App/service tokens minted
 /// through the admin API carry a different (or absent) mode.
 pub(crate) const SELF_KEY_BINDING_MODE: &str = "user-bound";
 
-/// The [`busbar_api::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
+/// The [`busbar_contract::store::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
 /// TIME-BOUND (bounded by its `exp`, no IdP-subject tie), the app-token lifecycle that deliberately
 /// OUTLIVES its minter (review H2/H3). Matches the `auth.policy` `BindingMode::TimeBound` wire
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
@@ -249,23 +249,23 @@ impl BudgetCell {
 
     /// Current UNCACHED-INPUT tokens across models — the `tokens_input` per-tier cap's counter.
     fn total_input(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_INPUT)
+        self.total_tier(busbar_contract::store::UNIT_INPUT)
     }
 
     /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
     fn total_output(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_OUTPUT)
+        self.total_tier(busbar_contract::store::UNIT_OUTPUT)
     }
 
     /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
     fn total_cache_read(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_READ)
+        self.total_tier(busbar_contract::store::UNIT_CACHE_READ)
     }
 
     /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
     /// per-tier cap's counter.
     fn total_cache_write(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_WRITE)
+        self.total_tier(busbar_contract::store::UNIT_CACHE_WRITE)
     }
 }
 
@@ -493,7 +493,7 @@ impl<V> Sharded<V> {
 /// shape, so this is the only key index needed — bearer auth is never represented in
 /// `by_credential`, see that field's doc). `by_credential` is the ROW-LOOKED-UP credential index
 /// (today: SigV4 only) for inbound resolution on the Bedrock-ingress hot path, generalized from the
-/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_api::CredentialMeta`]'s doc for
+/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_contract::store::CredentialMeta`]'s doc for
 /// why a kind belongs here at all. Both are rebuilt by `refresh` from the SAME store snapshot, so a
 /// disabled/deleted/re-minted key or revoked credential is reflected in both — visible to readers
 /// atomically (the one lock guarantees no reader sees a half-applied swap).
@@ -782,8 +782,11 @@ pub(crate) fn synthesize_principal_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_scopes: allowed_pools
-            .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+        allowed_scopes: allowed_pools.map(|list| {
+            list.into_iter()
+                .map(busbar_contract::store::ScopeRef::pool)
+                .collect()
+        }),
         enabled: true,
         created_at: 0,
         group,
@@ -801,14 +804,14 @@ pub(crate) fn synthesize_principal_key(
 /// so an extracted plane crate names it without a path back to core; re-exported here so every
 /// in-core call site (`governance::PlaneRequestCtx`, and the [`GovCtx`] alias) is unchanged.
 ///
-/// The re-export is `pub(crate)`: the canonical public spelling is `busbar_api::PlaneRequestCtx`,
+/// The re-export is `pub(crate)`: the canonical public spelling is `busbar_contract::store::PlaneRequestCtx`,
 /// and a caller outside this crate names it there. Nothing outside busbar-core reaches this path.
-pub(crate) use busbar_api::PlaneRequestCtx;
+pub(crate) use busbar_contract::store::PlaneRequestCtx;
 
 /// The name core uses internally for the resolved governance context. Core owns the governance
-/// concept and keeps its own spelling; a plane names [`busbar_api::PlaneRequestCtx`] instead so an
+/// concept and keeps its own spelling; a plane names [`busbar_contract::store::PlaneRequestCtx`] instead so an
 /// extracted plane carries no core-private governance type.
-pub type GovCtx = busbar_api::PlaneRequestCtx;
+pub type GovCtx = busbar_contract::store::PlaneRequestCtx;
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
 /// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit
@@ -972,13 +975,13 @@ pub(crate) use busbar_api::{
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.
 #[cfg(test)]
-pub(crate) use busbar_api::UsageLedger;
-// `ScopeRef` is constructed directly via `busbar_api::ScopeRef` on every production call site
+pub(crate) use busbar_contract::store::UsageLedger;
+// `ScopeRef` is constructed directly via `busbar_contract::store::ScopeRef` on every production call site
 // (cost.rs, config/groups.rs, governance/state.rs); this re-export exists only so test code that
 // does `use super::*` from within `governance::tests` can name it unqualified, same reasoning as
 // `UsageLedger` above.
 #[cfg(test)]
-pub(crate) use busbar_api::ScopeRef;
+pub(crate) use busbar_contract::store::ScopeRef;
 
 // The metering-bucket time base (`METERING_BUCKET_SECS` + the `metering_bucket` floor fn below) is
 // pure arithmetic — moved to the neutral substrate so a plane crate names it without reaching into

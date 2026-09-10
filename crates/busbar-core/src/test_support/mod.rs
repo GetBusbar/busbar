@@ -800,7 +800,7 @@ pub struct TestApp {
     /// one, which is what every pre-existing test expects and what the gating proof in
     /// `oauth_as::tests::mount_tests` asserts costs nothing.
     oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
-    mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
+    mcp_durable_store: Option<std::sync::Arc<dyn busbar_contract::store::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
@@ -1298,7 +1298,10 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
+    pub fn mcp_durable_store(
+        mut self,
+        store: std::sync::Arc<dyn busbar_contract::store::Store>,
+    ) -> Self {
         self.mcp_durable_store = Some(store);
         self
     }

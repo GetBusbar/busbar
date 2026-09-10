@@ -51,53 +51,67 @@ impl SlowStore {
     }
 }
 
-impl busbar_api::Store for SlowStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for SlowStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(self.delay);
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     fn put_key_with_credential(
         &self,
-        key: &busbar_api::VirtualKey,
-        secret: &busbar_api::CredentialSecret,
-    ) -> busbar_api::StoreResult<()> {
+        key: &busbar_contract::store::VirtualKey,
+        secret: &busbar_contract::store::CredentialSecret,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key_with_credential(key, secret)
     }
     fn list_credentials(
         &self,
         key_id: &str,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::CredentialMeta>> {
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::CredentialMeta>> {
         self.inner.list_credentials(key_id)
     }
 }

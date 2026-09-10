@@ -487,7 +487,7 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
 }
 
 /// The admin audit digest is byte-for-byte what `admin/audit.rs` computed before the unification,
-/// and byte-for-byte the formula `busbar_api::AuditRecord` publishes.
+/// and byte-for-byte the formula `busbar_contract::store::AuditRecord` publishes.
 #[test]
 fn the_admin_audit_digest_is_unchanged_by_the_unification() {
     let entry: AuditEntry = seal(

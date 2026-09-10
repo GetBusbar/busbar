@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/governance/revocation.rs`.
 
 use super::*;
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, MeteringDelta, MeteringRow, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_store_memory::MemoryStore;
@@ -77,7 +77,9 @@ struct BrokenDenylistStore {
 impl Store for BrokenDenylistStore {
     fn list_denylist(&self) -> StoreResult<Vec<String>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(busbar_api::StoreError("connection refused".into()))
+        Err(busbar_contract::store::StoreError(
+            "connection refused".into(),
+        ))
     }
     fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
         self.inner.put_key(k)

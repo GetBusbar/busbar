@@ -117,7 +117,7 @@ pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
 ///   need no timing skill at all — they are ordinary sequential requests to a load balancer.
 ///
 /// So the record that the first redemption happened lives where both of those can see it: the
-/// configured governance store, through [`busbar_api::Store::redeem_ask_state`]. The store's answer
+/// configured governance store, through [`busbar_contract::store::Store::redeem_ask_state`]. The store's answer
 /// is authoritative and the local map is consulted first purely to avoid a round trip on the
 /// obvious replay.
 ///

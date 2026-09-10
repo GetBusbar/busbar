@@ -179,8 +179,11 @@ fn workhandle_open_null_desc_yields_none() {
 
 // ── entitlement_check: the caller key's scope grant ─────────────────────────────────────────
 
-fn scoped_key(id: &str, scopes: Option<Vec<busbar_api::ScopeRef>>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn scoped_key(
+    id: &str,
+    scopes: Option<Vec<busbar_contract::store::ScopeRef>>,
+) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: id.to_string(),
         generation_hash: String::new(),
         name: "test".to_string(),
@@ -197,8 +200,8 @@ fn scoped_key(id: &str, scopes: Option<Vec<busbar_api::ScopeRef>>) -> busbar_api
 }
 
 /// An app whose governance holds `key`, built so `lookup_by_sub` resolves it from the loaded cache.
-fn app_with_key(key: &busbar_api::VirtualKey) -> Arc<crate::state::App> {
-    use busbar_api::Store;
+fn app_with_key(key: &busbar_contract::store::VirtualKey) -> Arc<crate::state::App> {
+    use busbar_contract::store::Store;
     let store = Arc::new(busbar_store_memory::MemoryStore::new());
     store.put_key(key).expect("memory store accepts the key");
     let gov = Arc::new(crate::governance::GovState::new(store, None).expect("gov constructs"));
@@ -207,7 +210,10 @@ fn app_with_key(key: &busbar_api::VirtualKey) -> Arc<crate::state::App> {
 
 #[test]
 fn entitlement_check_allows_a_target_the_grant_covers() {
-    let key = scoped_key("k-1", Some(vec![busbar_api::ScopeRef::pool("fast")]));
+    let key = scoped_key(
+        "k-1",
+        Some(vec![busbar_contract::store::ScopeRef::pool("fast")]),
+    );
     let app = app_with_key(&key);
     with_dispatch_scope(&app, |host, _vt| {
         let caller = caller_ref(b"k-1", 0);
@@ -221,7 +227,10 @@ fn entitlement_check_allows_a_target_the_grant_covers() {
 
 #[test]
 fn entitlement_check_denies_a_target_outside_the_grant() {
-    let key = scoped_key("k-1", Some(vec![busbar_api::ScopeRef::pool("fast")]));
+    let key = scoped_key(
+        "k-1",
+        Some(vec![busbar_contract::store::ScopeRef::pool("fast")]),
+    );
     let app = app_with_key(&key);
     with_dispatch_scope(&app, |host, _vt| {
         let caller = caller_ref(b"k-1", 0);
@@ -251,7 +260,7 @@ fn entitlement_check_mcp_server_grant_does_not_cover_a_pool() {
     // `mcp_server` is index 1, `pool` is index 0 — so the two kinds never alias each other.
     let key = scoped_key(
         "k-1",
-        Some(vec![busbar_api::ScopeRef {
+        Some(vec![busbar_contract::store::ScopeRef {
             kind: "mcp_server".to_string(),
             value: "fast".to_string(),
         }]),

@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 
 // Glob, so a name only a plane consumer or a test uses (e.g. `reason`, `Ask`, `Standing`, `Lapsed`)
 // never reads as an unused import when that consumer is compiled out. The standing-permission types

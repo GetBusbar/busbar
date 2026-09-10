@@ -1,6 +1,6 @@
 use super::*;
 use axum::http::header::CONTENT_TYPE;
-use busbar_api::ScopeRef;
+use busbar_contract::store::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(

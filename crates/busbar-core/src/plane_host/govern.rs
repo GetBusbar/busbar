@@ -14,7 +14,7 @@
 //! ## What is faithful today, and what is Phase 2
 //!
 //! The hot PODs the plane hands back ([`Facts`], [`Usage`], [`AuthQuery`]) carry the SHAPE of a
-//! request but not yet the resolved core identity (the real [`VirtualKey`](busbar_api::VirtualKey),
+//! request but not yet the resolved core identity (the real [`VirtualKey`](busbar_contract::store::VirtualKey),
 //! the `(key_id, model, provider)` metering attribution, the credential-store lookup). So each fn
 //! here drives the real primitive as far as is cleanly additive — the budget gate, the RAII grant,
 //! the `try_admit` chain engine, the `CostBreakdown` "parts add up" invariant, the write-behind
@@ -146,12 +146,12 @@ pub(super) fn admit_reason(state: &HostState, facts: &Facts) -> Result<(), GovBl
     }
 }
 
-/// Reconstruct the caller's [`VirtualKey`](busbar_api::VirtualKey) from the [`Facts`] identity tail,
+/// Reconstruct the caller's [`VirtualKey`](busbar_contract::store::VirtualKey) from the [`Facts`] identity tail,
 /// or `None` when the tail is absent (an older sender, per the sized-struct guard) or carries no key
 /// id. Only the fields `try_admit`/`chain_for` actually read are populated — `id` (the attribution
 /// bucket) and `group` (the enforcement chain) — so the reconstructed key drives the identical chain
 /// resolution; every other field is an inert default `chain_for` never consults.
-fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
+fn resolved_key(facts: &Facts) -> Option<busbar_contract::store::VirtualKey> {
     let id_ptr = read_sized_field!(facts, facts.size, Facts, identity_id_ptr)?;
     let id_len = read_sized_field!(facts, facts.size, Facts, identity_id_len)?;
     let id = borrowed_str(id_ptr, id_len);
@@ -170,16 +170,16 @@ fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
     Some(virtual_key(id, group))
 }
 
-/// A minimal ungrouped [`VirtualKey`](busbar_api::VirtualKey) synthesized from a tenant id — the
+/// A minimal ungrouped [`VirtualKey`](busbar_contract::store::VirtualKey) synthesized from a tenant id — the
 /// fallback when the [`Facts`] identity tail is absent (see [`grant_for`]).
-fn synth_key(tenant_id: u64) -> busbar_api::VirtualKey {
+fn synth_key(tenant_id: u64) -> busbar_contract::store::VirtualKey {
     virtual_key(format!("plane:tenant:{tenant_id}"), None)
 }
 
-/// Build the minimal [`VirtualKey`](busbar_api::VirtualKey) `chain_for` reads: `id` + `group`. Every
+/// Build the minimal [`VirtualKey`](busbar_contract::store::VirtualKey) `chain_for` reads: `id` + `group`. Every
 /// other field is an inert default the enforcement chain never consults.
-fn virtual_key(id: String, group: Option<String>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn virtual_key(id: String, group: Option<String>) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         generation_hash: String::new(),
         name: id.clone(),
         id,

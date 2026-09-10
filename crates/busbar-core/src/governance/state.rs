@@ -284,9 +284,11 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
             // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::store::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -335,9 +337,11 @@ impl GovState {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::store::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -548,7 +552,7 @@ impl GovState {
     ///   arrives here at epoch 0 — the same epoch, therefore the same id, therefore the tombstoned
     ///   row. Writing over it would silently undo the admin's deletion and revive every token
     ///   minted before it. This is the live instance of the resurrection hazard
-    ///   [`busbar_api::Store::put_key`] now refuses at the row, and skipping is what makes the
+    ///   [`busbar_contract::store::Store::put_key`] now refuses at the row, and skipping is what makes the
     ///   refusal a correct outcome here rather than a dead end.
     /// - [`GovState::refresh_self`]'s documented rollback tombstones the just-written binding so
     ///   the client keeps its working token and can retry. The retry re-derives that very id, so
@@ -573,8 +577,11 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: format!("self-serve key ({user_sub})"),
             // Intent carried intact: None = all pools; Some([]) = none.
-            allowed_scopes: allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::store::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
@@ -624,7 +631,7 @@ impl GovState {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = allowed_pools.clone().map(|list| {
                     list.into_iter()
-                        .map(busbar_api::ScopeRef::pool)
+                        .map(busbar_contract::store::ScopeRef::pool)
                         .collect::<Vec<_>>()
                 });
                 if new_scopes != existing.allowed_scopes {
@@ -1144,9 +1151,11 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::store::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1202,9 +1211,11 @@ impl GovState {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_scopes: spec
-                .allowed_pools
-                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            allowed_scopes: spec.allowed_pools.map(|list| {
+                list.into_iter()
+                    .map(busbar_contract::store::ScopeRef::pool)
+                    .collect()
+            }),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -2127,7 +2138,7 @@ impl GovState {
                 if !cell.dirty {
                     continue;
                 }
-                let models: Vec<busbar_api::ModelTokensDelta> = cell
+                let models: Vec<busbar_contract::store::ModelTokensDelta> = cell
                     .models
                     .iter()
                     .filter_map(|m| {
@@ -2146,7 +2157,7 @@ impl GovState {
                                 units.insert(k.clone(), d);
                             }
                         }
-                        (!units.is_empty()).then(|| busbar_api::ModelTokensDelta {
+                        (!units.is_empty()).then(|| busbar_contract::store::ModelTokensDelta {
                             model: m.model.to_string(),
                             usage_units: units,
                         })

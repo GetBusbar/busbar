@@ -19,7 +19,9 @@
 use super::{Journal, JournalRecord, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::{decode, encode, PlaneStore};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult,
+};
 use std::sync::{Arc, Mutex};
 
 // ── THE THROWAWAY RECORD ────────────────────────────────────────────────────────────────────────
@@ -483,7 +485,7 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
             parent: Some("acme".to_string()),
             seq: 3,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::store::PlaneDisposition::Active,
             body: b"{ not a neutral body".to_vec(),
         })
         .unwrap();
@@ -575,7 +577,7 @@ fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
                 parent: Some("acme".to_string()),
                 seq,
                 ts: 0,
-                disposition: busbar_api::PlaneDisposition::Active,
+                disposition: busbar_contract::store::PlaneDisposition::Active,
                 body: b"{ not a neutral body".to_vec(),
             })
             .unwrap();

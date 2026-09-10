@@ -26,6 +26,10 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
+# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
+# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
+busbar-contract = { path = "../busbar-contract" }
 # The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the

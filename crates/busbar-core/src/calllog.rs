@@ -33,7 +33,7 @@
 //! [`crate::a2a`]'s durable substrate settled this same problem — "make a stateful thing survive a
 //! restart without breaking every already-signed store plugin" — and this is that shape:
 //!
-//! - the [`busbar_api::Store`] methods are DEFAULTED, so a plugin built before they existed keeps
+//! - the [`busbar_contract::store::Store`] methods are DEFAULTED, so a plugin built before they existed keeps
 //!   compiling and simply provides no durability;
 //! - the defaults ACCEPT AND KEEP NOTHING, which makes a write's return value worthless as evidence:
 //!   the engine learns whether a deployment is durable by READING BACK, never from an `Ok(())`;
@@ -111,7 +111,7 @@
 use std::sync::Arc;
 
 use crate::plane::store::{decode, PlaneStore, KIND_CALL};
-use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{PlaneSelector, StoreError, StoreResult};
 
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
@@ -484,7 +484,7 @@ pub(crate) enum CallLogError {
     /// The durable write failed. SURFACED rather than swallowed: an evidence record that is not
     /// durable is one a restart will lose, and the caller has to be able to decide whether that is
     /// acceptable for the call it is recording.
-    Store(busbar_api::StoreError),
+    Store(busbar_contract::store::StoreError),
 }
 
 impl std::fmt::Display for CallLogError {
@@ -970,7 +970,7 @@ impl CallTestHarness {
     /// Fresh isolated harness over `store` (the chain sink, via registration against an app whose
     /// governance wraps it). A "restart" is just a second `over` the SAME store — the chain persists
     /// in the store, so the fresh log reads it back through its own rehydrate.
-    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub(crate) fn over(store: Arc<dyn busbar_contract::store::Store>) -> Self {
         let kind_id = fresh_test_kind_id();
         let gov =
             Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));

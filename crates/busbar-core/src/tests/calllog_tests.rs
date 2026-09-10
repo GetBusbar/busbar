@@ -26,7 +26,7 @@ use super::super::calllog::{
 // plane re-export.
 use crate::audit::ChainBreakKind;
 use crate::plane::store::KIND_CALL;
-use busbar_api::{PlaneSelector, Store, StoreResult};
+use busbar_contract::store::{PlaneSelector, Store, StoreResult};
 use std::sync::Arc;
 
 /// TEST-ONLY named-vocabulary call-log store extension — the per-call twin of the A2A task test-ext,
@@ -35,13 +35,13 @@ use std::sync::Arc;
 /// body into the neutral [`CallRecorded`] the seam persists.
 trait CallStoreTestExt: Store {
     fn append_mcp_call(&self, rec: &CallRecorded) -> StoreResult<()> {
-        self.append_plane_record(&busbar_api::PlaneRecord {
+        self.append_plane_record(&busbar_contract::store::PlaneRecord {
             kind: KIND_CALL.to_string(),
             id: rec.principal.clone(),
             parent: Some(rec.principal.clone()),
             seq: rec.seq,
             ts: rec.ts,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::store::PlaneDisposition::Active,
             body: call_record_to_journal_body(rec)?,
         })
     }
@@ -145,42 +145,59 @@ impl DurableCallStore {
 }
 
 impl Store for DurableCallStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ──────────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         match record.kind.as_str() {
             crate::plane::store::KIND_CALL => self.append_event_body(record),
             _ => Ok(()),
@@ -189,10 +206,10 @@ impl Store for DurableCallStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => {
+            (crate::plane::store::KIND_CALL, busbar_contract::store::PlaneSelector::Parent(p)) => {
                 // The stored BODIES verbatim, in `(principal, seq)` order — exactly what a durable
                 // backend returns; the caller (log or test ext) reframes/decodes them.
                 Ok(self
@@ -207,7 +224,10 @@ impl Store for DurableCallStore {
             _ => Ok(Vec::new()),
         }
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::store::StoreResult<Vec<String>> {
         match kind {
             crate::plane::store::KIND_CALL => {
                 let calls = self.calls.lock().unwrap();
@@ -218,7 +238,11 @@ impl Store for DurableCallStore {
             _ => Ok(Vec::new()),
         }
     }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_contract::store::StoreResult<u64> {
         match kind {
             crate::plane::store::KIND_CALL => {
                 let mut calls = self.calls.lock().unwrap();
@@ -248,9 +272,12 @@ impl DurableCallStore {
     /// RECONSTRUCTED chained record (ignoring `request_id`, the join key the neutral body drops), so a
     /// legitimate retry — the same call, whether it arrives as a neutral or a legacy body — succeeds,
     /// and a DIFFERENT record on an occupied `(principal, seq)` is a forked log and errors.
-    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_event_body(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         if let Some(why) = self.fail_appends.lock().unwrap().as_ref() {
-            return Err(busbar_api::StoreError(why.clone()));
+            return Err(busbar_contract::store::StoreError(why.clone()));
         }
         let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
         let slot = (principal.clone(), record.seq);
@@ -265,7 +292,7 @@ impl DurableCallStore {
                 } else {
                     // Two DIFFERENT records claiming one chain position: a forked or tampered log,
                     // and the single most important thing this store can tell an operator.
-                    Err(busbar_api::StoreError(format!(
+                    Err(busbar_contract::store::StoreError(format!(
                         "MCP call log fork: a DIFFERENT record already occupies ({}, {})",
                         principal, record.seq
                     )))
@@ -326,37 +353,51 @@ impl RamDefaultStore {
 }
 
 impl Store for RamDefaultStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
 }
@@ -984,40 +1025,57 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
 struct NamesOnePrincipalWithNoRows;
 
 impl Store for NamesOnePrincipalWithNoRows {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         Ok(Vec::new())
     }
-    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
     fn get_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
+        Ok(busbar_contract::store::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        _ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         Ok(Vec::new())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::store::StoreResult<Vec<String>> {
         match kind {
             crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
             _ => Ok(Vec::new()),
@@ -1026,7 +1084,7 @@ impl Store for NamesOnePrincipalWithNoRows {
 }
 
 impl NamesOnePrincipalWithNoRows {
-    fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_mcp_call_principals(&self) -> busbar_contract::store::StoreResult<Vec<String>> {
         Ok(vec![P.to_string()])
     }
 }

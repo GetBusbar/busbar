@@ -2006,7 +2006,10 @@ struct GatedKeyStore {
     fired: std::sync::atomic::AtomicBool,
 }
 impl crate::governance::Store for GatedKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> crate::governance::StoreResult<()> {
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return self.inner.put_key(key);
         }
@@ -2024,10 +2027,13 @@ impl crate::governance::Store for GatedKeyStore {
         let _ = self.landed.try_send(());
         out
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> crate::governance::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
     fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
@@ -2037,14 +2043,14 @@ impl crate::governance::Store for GatedKeyStore {
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> crate::governance::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
+        ledger: &busbar_contract::store::UsageLedger,
     ) -> crate::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
@@ -2073,17 +2079,23 @@ struct SlowNthPutKeyStore {
     slow_on_call: usize,
 }
 impl crate::governance::Store for SlowNthPutKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> crate::governance::StoreResult<()> {
         let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if n == self.slow_on_call {
             std::thread::sleep(self.delay);
         }
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> crate::governance::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
     fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
@@ -2093,14 +2105,14 @@ impl crate::governance::Store for SlowNthPutKeyStore {
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> crate::governance::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
+        ledger: &busbar_contract::store::UsageLedger,
     ) -> crate::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
@@ -5621,15 +5633,21 @@ impl CountingStore {
     }
 }
 impl crate::governance::Store for CountingStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> crate::governance::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> crate::governance::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.get_key_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.list_keys_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.list_keys()
@@ -5641,14 +5659,14 @@ impl crate::governance::Store for CountingStore {
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> crate::governance::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
+        ledger: &busbar_contract::store::UsageLedger,
     ) -> crate::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
@@ -6106,14 +6124,14 @@ impl crate::governance::Store for BarrierStore {
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> crate::governance::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
+        ledger: &busbar_contract::store::UsageLedger,
     ) -> crate::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }

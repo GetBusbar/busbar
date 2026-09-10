@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use busbar_api::{
+use busbar_contract::store::{
     ScopeRef, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 
@@ -788,7 +788,7 @@ impl CostModel {
     /// durable store whose keys reference a group another node's config no longer has).
     pub(crate) fn chain_for<'a>(
         &'a self,
-        key: &'a busbar_api::VirtualKey,
+        key: &'a busbar_contract::store::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
         let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
         buckets.push(ChainBucket {

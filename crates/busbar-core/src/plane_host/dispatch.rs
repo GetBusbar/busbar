@@ -9,7 +9,7 @@
 //! |---|---|---|---|
 //! | [`nested_dispatch`] | the operation router ([`crate::ingress::operation_resolved`]) | dispatch, DEPTH-BOUND | `Refused` / `Fault` |
 //! | [`workhandle_open`] / [`workhandle_resume`] | the durable unit-of-work registry ([`crate::plane::taskstore`] shape) | [`DurableScope`](super::DurableScope) — SURVIVES the dispatch future | `WorkHandleId::NONE` / `Gone` |
-//! | [`entitlement_check`] | the caller key's scope grant ([`busbar_api::VirtualKey::scope_allowed`]) | — | `false` |
+//! | [`entitlement_check`] | the caller key's scope grant ([`busbar_contract::store::VirtualKey::scope_allowed`]) | — | `false` |
 //! | [`gate_scan`] | the streaming content-governance gate ([`crate::hooks::gate::decide`]) | — | `Block` |
 //!
 //! Every fn follows the boundary discipline reused from the wired proof-of-life slots (see
@@ -217,7 +217,7 @@ pub(crate) extern "C-unwind" fn workhandle_resume(
 // entitlement_check — may this caller use this target? (VirtualKey scope grant, fail-closed).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Map a [`TargetRef::scope_kind`] discriminant to the [`busbar_api::ScopeRef`] kind string the caller
+/// Map a [`TargetRef::scope_kind`] discriminant to the [`busbar_contract::store::ScopeRef`] kind string the caller
 /// key's grant is partitioned by — resolved from REGISTRY DATA (see
 /// [`crate::plane::registry::scope_kind_at`]): index `0` is core's neutral admission-pool kind, `1..`
 /// are the installed planes' declared `scope_kinds` in registration order, so core spells no plane's
@@ -229,7 +229,7 @@ fn scope_kind_str(scope_kind: u32) -> Option<&'static str> {
 
 /// WIRED `entitlement_check` → does the CALLER's scope grant permit this TARGET? The host owns the
 /// caller's scopes/keys: the [`CallerRef`] identity bytes name a governance key id, which is resolved
-/// to its [`busbar_api::VirtualKey`] and asked [`busbar_api::VirtualKey::scope_allowed`] for the
+/// to its [`busbar_contract::store::VirtualKey`] and asked [`busbar_contract::store::VirtualKey::scope_allowed`] for the
 /// target's `(kind, value)`.
 ///
 /// FAIL-CLOSED (`false`) on every non-affirmative path: a null caller/target POD, governance disabled,
@@ -474,7 +474,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
         };
         // The caller's key identity — the gate reads ONLY `id`/`name`, so a reconstruction from those two
         // is byte-identical to the resolved key the in-process site passes.
-        let key = (s.key_present != 0).then(|| busbar_api::VirtualKey {
+        let key = (s.key_present != 0).then(|| busbar_contract::store::VirtualKey {
             // SAFETY: borrowed ranges live for the call (ABI).
             id: unsafe { borrow_str(s.key_id_ptr, s.key_id_len) }
                 .unwrap_or("")
@@ -589,7 +589,7 @@ mod tests;
 /// A resolved governance key as the contract's [`crate::hooks::KeyFacts`]: its posture and
 /// nothing that could be presented again (the same projection the composition root's directory
 /// makes for the authenticate step).
-fn key_facts(key: &busbar_api::VirtualKey) -> crate::hooks::KeyFacts {
+fn key_facts(key: &busbar_contract::store::VirtualKey) -> crate::hooks::KeyFacts {
     crate::hooks::KeyFacts {
         id: key.id.clone(),
         name: key.name.clone(),

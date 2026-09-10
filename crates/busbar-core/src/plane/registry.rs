@@ -386,7 +386,7 @@ pub(crate) fn merged_boot_plane_decls(
     // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
     for d in &decls {
         for kind in d.scope_kinds {
-            busbar_api::register_scope_kind(kind);
+            busbar_contract::store::register_scope_kind(kind);
         }
     }
     // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes

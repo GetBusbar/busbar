@@ -42,7 +42,9 @@ use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult,
+};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
@@ -190,7 +192,7 @@ fn reframe_audit(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
             AUDIT_DIGESTS_SCOPE,
         ));
     }
-    let row: busbar_api::AuditRecord = decode(body)?;
+    let row: busbar_contract::store::AuditRecord = decode(body)?;
     let content = audit_suffix(
         row.ts,
         &row.action,
@@ -229,7 +231,7 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
             recorded_here: false,
         });
     }
-    let row: busbar_api::AuditRecord = decode(body)?;
+    let row: busbar_contract::store::AuditRecord = decode(body)?;
     Ok(AuditEntry {
         seq: row.seq,
         ts: row.ts,
@@ -479,7 +481,7 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
 
 /// ONE-TIME DATA MIGRATION: copy the legacy durable audit TABLE (`list_audit`/`append_audit`) into the
 /// neutral `plane_records` the durable seam now reads at boot, preserving each record's
-/// seq/prev_hash/hash and digest EXACTLY. The copied [`busbar_api::AuditRecord`] fields reproduce the
+/// seq/prev_hash/hash and digest EXACTLY. The copied [`busbar_contract::store::AuditRecord`] fields reproduce the
 /// seam's neutral body byte-for-byte (the write-side witness proves the seam digest byte-equals the
 /// legacy [`AuditEntry`] digest), so the migrated chain [`crate::audit::verify_chain`]-passes
 /// identically — the migration copies bytes, it never re-seals.
@@ -496,7 +498,7 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
 /// caller (logged at boot) and the migration retries on the next boot, because the idempotency check
 /// still finds `plane_records` empty.
 pub(crate) fn migrate_legacy_table_to_plane_records(
-    store: &dyn busbar_api::Store,
+    store: &dyn busbar_contract::store::Store,
 ) -> StoreResult<usize> {
     // IDEMPOTENCY GATE: the seam already holds this scope's history (migrated, or written since) — do
     // nothing. Checking the admin scope's RECORDS (not merely the enumerated parents) means a prior
@@ -544,7 +546,7 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
 /// boot diagnostic.
 pub(crate) fn register_and_migrate(
     app: &Arc<crate::state::App>,
-    store: &Arc<dyn busbar_api::Store>,
+    store: &Arc<dyn busbar_contract::store::Store>,
 ) {
     register_audit_stream(app);
     // ONE-TIME DATA MIGRATION: copy any pre-existing legacy audit table into the neutral `plane_records`
@@ -744,7 +746,7 @@ pub(crate) struct AuditTestHarness {
 
 #[cfg(test)]
 impl AuditTestHarness {
-    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub(crate) fn over(store: Arc<dyn busbar_contract::store::Store>) -> Self {
         let kind_id = fresh_test_kind_id();
         let gov =
             Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));

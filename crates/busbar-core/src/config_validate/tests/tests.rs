@@ -4238,7 +4238,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     // and its child_default template are covered; a valid pool passes.
     let mut cfg = cost_cfg(&["m"]);
     let mut bad = limit_requests_per_minute(5);
-    bad.scope = Some(busbar_api::ScopeRef::pool("nope"));
+    bad.scope = Some(busbar_contract::store::ScopeRef::pool("nope"));
     cfg.groups
         .insert("team".to_string(), group(None, vec![bad]));
     let errs = validate(&cfg).expect_err("a dangling pool qualifier must fail");
@@ -4249,7 +4249,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
     let mut cfg = cost_cfg(&["m"]);
     let mut tmpl = limit_requests_per_minute(5);
-    tmpl.scope = Some(busbar_api::ScopeRef::pool("nope"));
+    tmpl.scope = Some(busbar_contract::store::ScopeRef::pool("nope"));
     let mut g = group(None, vec![limit_requests_per_minute(5)]);
     g.child_default = Some(config::groups::ChildDefault { limits: vec![tmpl] });
     cfg.groups.insert("team".to_string(), g);
@@ -4261,7 +4261,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
     let mut cfg = cost_cfg(&["m"]);
     let mut ok = limit_requests_per_minute(5);
-    ok.scope = Some(busbar_api::ScopeRef::pool("pool1"));
+    ok.scope = Some(busbar_contract::store::ScopeRef::pool("pool1"));
     cfg.groups.insert("team".to_string(), group(None, vec![ok]));
     validate(&cfg).expect("a pool qualifier naming a real pool must pass");
 

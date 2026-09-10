@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 
 // Re-exported so `use super::*;` in this module's tests (which construct a `ScopeRef` directly,
 // matching what the pre-move `groups.rs` imported for the same purpose) keeps resolving.
-pub use busbar_api::ScopeRef;
+pub use busbar_contract::store::ScopeRef;
 
 pub use busbar_substrate::config::groups::{
     ChildDefault, GroupCfg, LimitCfg, LimitMetric, LimitWindow, OnExhaust,

@@ -58,7 +58,7 @@ use serde_json::Value;
 ///   default fields (see [`produced_fields`]).
 /// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
 ///   module.
-/// - `events` — the hash-chained admin records in `crate::admin::audit` (`busbar_api::AuditRecord`:
+/// - `events` — the hash-chained admin records in `crate::admin::audit` (`busbar_contract::store::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
 ///
@@ -102,7 +102,7 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
         // per-field projection to apply to them. An operator asking to project trace FIELDS is
         // asking for something this release cannot do — loudly, not silently.
         ExportStream::Traces => &[],
-        // `busbar_api::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
+        // `busbar_contract::store::AuditRecord`, mapped onto the stream's field names: seq → seq, ts → ts,
         // prev_hash → prev_hash, action → kind, principal → actor, resource → resource,
         // outcome → outcome.
         ExportStream::Events => &[

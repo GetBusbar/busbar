@@ -429,10 +429,16 @@ pub fn refresh_scrape_gauges(app: &App) {
             {
                 let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                 for (tier, v) in [
-                    ("input", tier_v(busbar_api::UNIT_INPUT)),
-                    ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                    ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                    ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
+                    ("input", tier_v(busbar_contract::store::UNIT_INPUT)),
+                    ("output", tier_v(busbar_contract::store::UNIT_OUTPUT)),
+                    (
+                        "cache_read",
+                        tier_v(busbar_contract::store::UNIT_CACHE_READ),
+                    ),
+                    (
+                        "cache_write",
+                        tier_v(busbar_contract::store::UNIT_CACHE_WRITE),
+                    ),
                 ] {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
@@ -489,10 +495,16 @@ pub fn refresh_scrape_gauges(app: &App) {
                 {
                     let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                     for (tier, v) in [
-                        ("input", tier_v(busbar_api::UNIT_INPUT)),
-                        ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                        ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                        ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
+                        ("input", tier_v(busbar_contract::store::UNIT_INPUT)),
+                        ("output", tier_v(busbar_contract::store::UNIT_OUTPUT)),
+                        (
+                            "cache_read",
+                            tier_v(busbar_contract::store::UNIT_CACHE_READ),
+                        ),
+                        (
+                            "cache_write",
+                            tier_v(busbar_contract::store::UNIT_CACHE_WRITE),
+                        ),
                     ] {
                         metrics::gauge!(
                             BUCKET_TOKENS,

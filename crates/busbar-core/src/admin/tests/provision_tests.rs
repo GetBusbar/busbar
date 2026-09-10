@@ -20,45 +20,63 @@ use crate::test_support::TestApp;
 /// config half (which never touches the store) commits normally. Everything else delegates.
 struct RefusesKeyWrites(MemoryStore);
 
-impl busbar_api::Store for RefusesKeyWrites {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError("key write unavailable".into()))
+impl busbar_contract::store::Store for RefusesKeyWrites {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
+        Err(busbar_contract::store::StoreError(
+            "key write unavailable".into(),
+        ))
     }
     fn put_key_with_credential(
         &self,
-        _key: &busbar_api::VirtualKey,
-        _secret: &busbar_api::CredentialSecret,
-    ) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError("key write unavailable".into()))
+        _key: &busbar_contract::store::VirtualKey,
+        _secret: &busbar_contract::store::CredentialSecret,
+    ) -> busbar_contract::store::StoreResult<()> {
+        Err(busbar_contract::store::StoreError(
+            "key write unavailable".into(),
+        ))
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.0.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.0.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.0.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.0.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.0.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.0.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.0.list_metering(bucket)
     }
 }

@@ -1494,7 +1494,7 @@ fn build_without_group_not_found() {
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
     use crate::governance::{GovState, MemoryStore};
-    use busbar_api::Store as _;
+    use busbar_contract::store::Store as _;
     let store = std::sync::Arc::new(MemoryStore::new());
     store
         .put_key(&crate::governance::VirtualKey {
@@ -1549,7 +1549,7 @@ fn usage_group_cfg() -> GroupCfg {
         metric,
         amount,
         per: Some(per),
-        scope: pool.map(busbar_api::ScopeRef::pool),
+        scope: pool.map(busbar_contract::store::ScopeRef::pool),
         on_exhaust: None,
         downgrade_to: None,
     };
@@ -1603,7 +1603,7 @@ fn usage_key(group: &str) -> VirtualKey {
 fn input_toks(n: u64) -> std::collections::BTreeMap<String, u64> {
     let mut m = std::collections::BTreeMap::new();
     if n != 0 {
-        m.insert(busbar_api::UNIT_INPUT.to_string(), n);
+        m.insert(busbar_contract::store::UNIT_INPUT.to_string(), n);
     }
     m
 }
@@ -1763,39 +1763,45 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
 struct FailingMeteringStore {
     inner: MemoryStore,
 }
-impl busbar_api::Store for FailingMeteringStore {
-    fn put_key(&self, key: &VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for FailingMeteringStore {
+    fn put_key(&self, key: &VirtualKey) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<VirtualKey>> {
+    fn get_key(&self, id: &str) -> busbar_contract::store::StoreResult<Option<VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<VirtualKey>> {
+    fn list_keys(&self) -> busbar_contract::store::StoreResult<Vec<VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
-        Err(busbar_api::StoreError(
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
+        Err(busbar_contract::store::StoreError(
             "simulated metering store outage".to_string(),
         ))
     }

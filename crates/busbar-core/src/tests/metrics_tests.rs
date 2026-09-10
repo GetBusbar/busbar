@@ -133,13 +133,13 @@ fn test_scrape_gauges_key_spend_and_remaining() {
         .put_usage(
             &key.id,
             0,
-            &busbar_api::UsageLedger {
+            &busbar_contract::store::UsageLedger {
                 requests: 200,
                 billable_requests: 200,
-                models: vec![busbar_api::ModelTokens {
+                models: vec![busbar_contract::store::ModelTokens {
                     model: "m".to_string(),
                     usage_units: std::collections::BTreeMap::from([(
-                        busbar_api::UNIT_INPUT.to_string(),
+                        busbar_contract::store::UNIT_INPUT.to_string(),
                         5000u64,
                     )]),
                 }],
@@ -279,10 +279,10 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         "",
         "gpt-5",
         &std::collections::BTreeMap::from([
-            (busbar_api::UNIT_INPUT.to_string(), 100u64),
-            (busbar_api::UNIT_OUTPUT.to_string(), 40),
-            (busbar_api::UNIT_CACHE_READ.to_string(), 7),
-            (busbar_api::UNIT_CACHE_WRITE.to_string(), 3),
+            (busbar_contract::store::UNIT_INPUT.to_string(), 100u64),
+            (busbar_contract::store::UNIT_OUTPUT.to_string(), 40),
+            (busbar_contract::store::UNIT_CACHE_READ.to_string(), 7),
+            (busbar_contract::store::UNIT_CACHE_WRITE.to_string(), 3),
         ]),
         1_700_000_000,
     );
@@ -593,14 +593,14 @@ impl Store for ScrapeTimeBrokenKeyListStore {
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+    ) -> crate::governance::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
+        ledger: &busbar_contract::store::UsageLedger,
     ) -> crate::governance::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
@@ -910,13 +910,13 @@ fn test_key_gauge_limit_truncation() {
             .put_usage(
                 &id,
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::store::UsageLedger {
                     requests: 1,
                     billable_requests: 1,
-                    models: vec![busbar_api::ModelTokens {
+                    models: vec![busbar_contract::store::ModelTokens {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
-                            busbar_api::UNIT_INPUT.to_string(),
+                            busbar_contract::store::UNIT_INPUT.to_string(),
                             10u64,
                         )]),
                     }],
@@ -987,13 +987,13 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
             .put_usage(
                 &id,
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::store::UsageLedger {
                     requests: 1,
                     billable_requests: 1,
-                    models: vec![busbar_api::ModelTokens {
+                    models: vec![busbar_contract::store::ModelTokens {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
-                            busbar_api::UNIT_INPUT.to_string(),
+                            busbar_contract::store::UNIT_INPUT.to_string(),
                             1u64,
                         )]),
                     }],

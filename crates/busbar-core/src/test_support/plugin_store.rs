@@ -32,7 +32,7 @@
 //! with the crate's RLIB and never emits the cdylib, because nothing in the build graph consumes it
 //! — the load is by path at runtime, which cargo cannot see.
 
-use busbar_api::Store;
+use busbar_contract::store::Store;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

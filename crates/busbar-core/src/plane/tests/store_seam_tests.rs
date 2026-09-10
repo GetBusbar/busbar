@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Invariant (a) proof for the plane store seam: `PlaneStore` carries EXACTLY the plane methods and
-//! provably NONE of the audit-chain authority `busbar_api::Store` also holds, and `PlaneStoreView`
+//! provably NONE of the audit-chain authority `busbar_contract::store::Store` also holds, and `PlaneStoreView`
 //! forwards to the real backend.
 
 use super::super::store::{PlaneStore, PlaneStoreView};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
 use std::sync::Arc;
 
 /// A throwaway opaque body for the `demotion` kind — this seam names no plane record type, so the
@@ -56,7 +56,7 @@ fn plane_method_set_is_exactly_the_plane_methods() {
 // is what proves the fallback — not a real audit method — is the one that resolved.
 struct Sentinel;
 trait AuditChainAbsent {
-    fn append_audit(&self, _entry: &busbar_api::AuditRecord) -> Sentinel {
+    fn append_audit(&self, _entry: &busbar_contract::store::AuditRecord) -> Sentinel {
         Sentinel
     }
     fn list_audit(&self) -> Sentinel {
@@ -70,7 +70,7 @@ impl<T: ?Sized> AuditChainAbsent for T {}
 
 #[allow(clippy::let_unit_value)]
 fn plane_store_reaches_no_audit_method(s: &dyn PlaneStore) {
-    let rec = busbar_api::AuditRecord {
+    let rec = busbar_contract::store::AuditRecord {
         seq: 0,
         ts: 0,
         action: String::new(),
@@ -107,34 +107,38 @@ struct RecordingStore {
     redemptions: std::sync::atomic::AtomicUsize,
 }
 
-impl busbar_api::Store for RecordingStore {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> StoreResult<()> {
+impl busbar_contract::store::Store for RecordingStore {
+    fn put_key(&self, _key: &busbar_contract::store::VirtualKey) -> StoreResult<()> {
         Ok(())
     }
-    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_contract::store::VirtualKey>> {
         Ok(None)
     }
-    fn list_keys(&self) -> StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         Ok(Vec::new())
     }
     fn delete_key(&self, _id: &str) -> StoreResult<()> {
         Ok(())
     }
-    fn get_usage(&self, _bucket: &str, _win: u64) -> StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    fn get_usage(
+        &self,
+        _bucket: &str,
+        _win: u64,
+    ) -> StoreResult<busbar_contract::store::UsageLedger> {
+        Ok(busbar_contract::store::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket: &str,
         _win: u64,
-        _ledger: &busbar_api::UsageLedger,
+        _ledger: &busbar_contract::store::UsageLedger,
     ) -> StoreResult<()> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &busbar_contract::store::MeteringDelta) -> StoreResult<()> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         Ok(Vec::new())
     }
     // The neutral plane verbs the forwarding test observes.

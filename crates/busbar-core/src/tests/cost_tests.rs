@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {

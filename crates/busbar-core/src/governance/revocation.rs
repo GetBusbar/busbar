@@ -50,7 +50,7 @@
 //! write still fails loud.
 
 use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
-use busbar_api::Store;
+use busbar_contract::store::Store;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};

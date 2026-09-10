@@ -791,7 +791,7 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,
         cost: &busbar_substrate::plane_host::CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64> {
@@ -812,7 +812,7 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,
         cost: &busbar_substrate::plane_host::CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
         let (Ok(g), Ok(c)) = (
@@ -878,7 +878,7 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,
         cost: &busbar_substrate::plane_host::CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         pool: &str,
         model: &str,
         usage: &busbar_substrate::billing::Usage,
@@ -941,7 +941,7 @@ impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>> {
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_contract::store::VirtualKey>> {
         self.app
             .governance
             .as_ref()
@@ -963,8 +963,13 @@ impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
         token: Option<String>,
         audience: String,
         resource: String,
-    ) -> Result<(busbar_api::AuthPrincipal, busbar_api::PlaneRequestCtx), busbar_api::IdentityRefusal>
-    {
+    ) -> Result<
+        (
+            busbar_api::AuthPrincipal,
+            busbar_contract::store::PlaneRequestCtx,
+        ),
+        busbar_api::IdentityRefusal,
+    > {
         // The veneer already spawns a blocking closure that mints + consumes the `HostCtx` on a
         // blocking thread; this only awaits the join, so no `HostCtx` crosses the `.await` and the
         // future stays `Send`.
@@ -976,8 +981,10 @@ impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
         standing: &busbar_substrate::trust::validate::Standing,
         live_gen: u64,
         now: u64,
-    ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_substrate::trust::validate::Lapsed>
-    {
+    ) -> Result<
+        Option<Arc<busbar_contract::store::VirtualKey>>,
+        busbar_substrate::trust::validate::Lapsed,
+    > {
         // Inject the host's live `GovState` through the `GovResolve` seam so the plane holds only the
         // `Standing`. Byte-identical to the pre-relocation `Standing::still_permitted(app.governance, …)`.
         standing.still_permitted(
@@ -1055,7 +1062,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 
     fn destination_guard(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         started: std::time::Instant,
@@ -1066,7 +1073,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 
     fn admission_door(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         started: std::time::Instant,
@@ -1097,7 +1104,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 
     fn admission_check(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         proto: &'static str,
         pool: &str,
         charged_at: u64,
@@ -1128,7 +1135,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 
     fn finish_admitted(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         ingress_protocol: &str,
         pool: &str,
         started: std::time::Instant,
@@ -1150,7 +1157,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 
     fn finish_rejected(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         ingress_protocol: &str,
         pool: &str,
         started: std::time::Instant,
@@ -1183,7 +1190,7 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
 impl busbar_substrate::plane_host::CompletionHost for EngineHostImpl {
     async fn synthesize_completion(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,

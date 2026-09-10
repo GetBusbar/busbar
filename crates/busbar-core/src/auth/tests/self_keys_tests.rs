@@ -321,7 +321,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
 /// forever.
 #[test]
 fn re_login_updates_allowed_pools_when_they_change() {
-    use busbar_api::ScopeRef;
+    use busbar_contract::store::ScopeRef;
     let gov = gov();
     let (b1, _t1) = gov
         .issue_self("sam", Some(vec!["poolA".into()]), 5000, 1000)

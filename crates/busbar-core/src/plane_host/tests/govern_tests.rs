@@ -59,10 +59,10 @@ fn disabled_group_cost(name: &str) -> crate::cost::CostModel {
     crate::cost::CostModel::resolve_parts(None, 1, &groups)
 }
 
-/// The minimal [`VirtualKey`](busbar_api::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
+/// The minimal [`VirtualKey`](busbar_contract::store::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
 /// — so a direct `try_admit` and the host `govern_admit_reason` drive the identical chain.
-fn test_key(id: &str, group: Option<&str>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn test_key(id: &str, group: Option<&str>) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         generation_hash: String::new(),
         name: id.to_string(),
         id: id.to_string(),
@@ -97,7 +97,7 @@ fn admit_over_facts_matches_try_admit() {
     let cost = group_cost("team", 5); // 5c cap, 1c/request → 5 requests fit
     let now = busbar_substrate::store::now_ms() / 1_000;
     // The real key the plane would resolve: `chain_for` reads only `id` + `group`.
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         generation_hash: String::new(),
         name: "k".to_string(),
         id: "vk_faithful_admit".to_string(),

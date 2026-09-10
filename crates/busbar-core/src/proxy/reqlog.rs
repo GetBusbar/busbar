@@ -52,7 +52,7 @@
 //! made). Dispatches and refusals alike: a governance refusal is evidence, and it is the half a log
 //! that only records successes cannot provide.
 //!
-//! NOT WRITTEN — durability. `busbar_api::Store` carries no model-request method, and adding one is
+//! NOT WRITTEN — durability. `busbar_contract::store::Store` carries no model-request method, and adding one is
 //! a plugin-ABI change fanned out to four external store repositories; it is deliberately not made
 //! here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT. That is the same floor
 //! `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are documented with, it is

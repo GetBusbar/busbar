@@ -111,7 +111,7 @@ type PlaneRows = std::collections::HashMap<(String, Option<String>), Vec<Vec<u8>
 
 struct DualDurableStore {
     inner: busbar_store_memory::MemoryStore,
-    audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_api::AuditRecord>>,
+    audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_contract::store::AuditRecord>>,
     plane: std::sync::Mutex<PlaneRows>,
 }
 
@@ -125,49 +125,68 @@ impl DualDurableStore {
     }
 }
 
-impl busbar_api::Store for DualDurableStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for DualDurableStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // ── the legacy audit table ──
-    fn append_audit(&self, entry: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+    fn append_audit(
+        &self,
+        entry: &busbar_contract::store::AuditRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.audit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(entry.seq, entry.clone());
         Ok(())
     }
-    fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::AuditRecord>> {
         Ok(self
             .audit
             .lock()
@@ -176,7 +195,10 @@ impl busbar_api::Store for DualDurableStore {
             .cloned()
             .collect())
     }
-    fn list_audit_tail(&self, limit: u64) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::AuditRecord>> {
         let limit = limit as usize;
         let audit = self.audit.lock().unwrap_or_else(|e| e.into_inner());
         let len = audit.len();
@@ -187,7 +209,10 @@ impl busbar_api::Store for DualDurableStore {
             .collect())
     }
     // ── the neutral plane_records ──
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.plane
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -199,11 +224,11 @@ impl busbar_api::Store for DualDurableStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         let parent = match selector {
-            busbar_api::PlaneSelector::All => None,
-            busbar_api::PlaneSelector::Parent(p) => Some(p.clone()),
+            busbar_contract::store::PlaneSelector::All => None,
+            busbar_contract::store::PlaneSelector::Parent(p) => Some(p.clone()),
         };
         Ok(self
             .plane
@@ -213,7 +238,10 @@ impl busbar_api::Store for DualDurableStore {
             .cloned()
             .unwrap_or_default())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(
+        &self,
+        kind: &str,
+    ) -> busbar_contract::store::StoreResult<Vec<String>> {
         let mut parents: Vec<String> = self
             .plane
             .lock()
@@ -234,7 +262,8 @@ impl busbar_api::Store for DualDurableStore {
 /// output BYTE-IDENTICAL to the legacy admin ring for the same fields at the same positions.
 #[test]
 fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
-    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
+        std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_000_500u64, "hook:rt", "applied", "admin");
 
     // Process 1: two mutations through the seam. This PERSISTS the neutral bodies to `plane_records`.
@@ -255,7 +284,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     let bodies = store
         .list_plane_records(
             KIND_AUDIT,
-            &busbar_api::PlaneSelector::Parent(ADMIN_LOG.to_string()),
+            &busbar_contract::store::PlaneSelector::Parent(ADMIN_LOG.to_string()),
         )
         .unwrap();
     assert_eq!(
@@ -363,17 +392,18 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
     const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
-    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
+        std::sync::Arc::new(DualDurableStore::new());
     // Seed the LEGACY table only — plane_records is empty, exactly like an OLD store on first boot.
-    let ad1: busbar_api::AuditRecord = crate::plane::store::decode(AD_1).unwrap();
-    let ad2: busbar_api::AuditRecord = crate::plane::store::decode(AD_2).unwrap();
+    let ad1: busbar_contract::store::AuditRecord = crate::plane::store::decode(AD_1).unwrap();
+    let ad2: busbar_contract::store::AuditRecord = crate::plane::store::decode(AD_2).unwrap();
     store.append_audit(&ad1).unwrap();
     store.append_audit(&ad2).unwrap();
     assert!(
         store
             .list_plane_records(
                 KIND_AUDIT,
-                &busbar_api::PlaneSelector::Parent(ADMIN_LOG.to_string())
+                &busbar_contract::store::PlaneSelector::Parent(ADMIN_LOG.to_string())
             )
             .unwrap()
             .is_empty(),
@@ -474,7 +504,8 @@ where
 #[test]
 fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
+        std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
 
     // Process 1: one GOOD mutation through the seam persists a decodable neutral body to plane_records.
@@ -486,13 +517,13 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
     // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
     store
-        .append_plane_record(&busbar_api::PlaneRecord {
+        .append_plane_record(&busbar_contract::store::PlaneRecord {
             kind: KIND_AUDIT.to_string(),
             id: ADMIN_LOG.to_string(),
             parent: Some(ADMIN_LOG.to_string()),
             seq: 2,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::store::PlaneDisposition::Active,
             body: b"{ not an audit body".to_vec(),
         })
         .unwrap();
@@ -542,7 +573,8 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
 /// fork the chain. This test pins BOTH: the restore returns Ok, and the chain resumes at seq 2.
 #[test]
 fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
-    let store: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(DualDurableStore::new());
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
+        std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_001_100u64, "hook:fork", "applied", "admin");
 
     // Process 1: one GOOD genesis mutation persists a decodable neutral body to plane_records.
@@ -552,13 +584,13 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
 
     // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
     store
-        .append_plane_record(&busbar_api::PlaneRecord {
+        .append_plane_record(&busbar_contract::store::PlaneRecord {
             kind: KIND_AUDIT.to_string(),
             id: ADMIN_LOG.to_string(),
             parent: Some(ADMIN_LOG.to_string()),
             seq: 2,
             ts: 0,
-            disposition: busbar_api::PlaneDisposition::Active,
+            disposition: busbar_contract::store::PlaneDisposition::Active,
             body: b"{ not an audit body".to_vec(),
         })
         .unwrap();
