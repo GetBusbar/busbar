@@ -95,7 +95,7 @@ fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) \
   >"$W/stdout.log" 2>"$W/stderr.log" &
 pid=$!; track_pid $pid
-if wait_for_http "http://127.0.0.1:${LP}/healthz" 30; then
+if wait_for_busbar "${LP}" "${AP}" 30; then
   stepbool booted true
 else
   stepbool booted false

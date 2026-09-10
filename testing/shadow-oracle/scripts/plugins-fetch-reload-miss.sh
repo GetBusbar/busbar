@@ -85,7 +85,7 @@ wait_for_http "http://127.0.0.1:${FP}/${asset}" 8 || fail "throwaway file server
 
 spawn_() { ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >>"$W/busbar.log" 2>&1 & echo $!; }
 pid="$(spawn_)"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail "busbar did not come up (boot-time fetch must succeed): $(tail -c 400 "$W/busbar.log")"
+wait_for_busbar "${LP}" "${AP}" 30 || fail "busbar did not come up (boot-time fetch must succeed): $(tail -c 400 "$W/busbar.log")"
 grep -q "plugins.fetch: downloaded" "$W/busbar.log" 2>/dev/null || true  # informational only
 
 # kill the file server: the NEXT fetch attempt (the reload below) now misses.

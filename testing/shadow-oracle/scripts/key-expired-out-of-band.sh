@@ -120,7 +120,7 @@ spend() {  # spend <token> -> writes $W/spend.body, prints status
 
 # ── boot 1: mint (future expires_at, passes admin validation) + spend once ──────────────────────
 pid="$(spawn "$W/busbar1.log")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 1 "$(tail -c 500 "$W/busbar1.log")"
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" || fail 1 "$(tail -c 500 "$W/busbar1.log")"
 
 future="$(( $(date +%s) + 3600 ))"
 mint="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" \
@@ -182,7 +182,7 @@ step expires_at_moved_into_past "$([ -n "$expires_now" ] && [ "$expires_now" -lt
 
 # ── boot 2: restart on the SAME db, spend again with the SAME token ────────────────────────────
 pid="$(spawn "$W/busbar2.log")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 4 "$(tail -c 500 "$W/busbar2.log")"
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" || fail 4 "$(tail -c 500 "$W/busbar2.log")"
 
 spend_after="$(spend "$tok")"; step spend_after "$spend_after"
 body_after="$(jq -c . "$W/spend.body" 2>/dev/null || jq -n --arg raw "$(cat "$W/spend.body" 2>/dev/null)" '{raw:$raw}')"

@@ -67,6 +67,16 @@ while [ $i -lt 200 ]; do
 done
 [ $i -lt 200 ] || fail "busbar did not come up ($(tr '\n' '|' <"$W/busbar.log" | tail -c 300))"
 
+# AND THE ADMIN LISTENER, which the very next line mints through. The loop above proves the DATA
+# plane accepts, and that is not the same fact: `run()` spawns the per-core data workers first and
+# binds the admin address only afterwards, so a data worker can be answering `/healthz` while the
+# admin socket does not exist yet. This cell then died inside `oracle_mint_keys` with a connection
+# error — a cooldown cell reporting on its own start-up. The fence is kept as its own poll rather
+# than folded into the loop above because that loop's 25 ms cadence is this cell's own (it wants
+# the data plane the instant it answers); this one only has to be there before the mint.
+wait_for_answer "http://127.0.0.1:${ADMIN_PORT}/healthz" 30 \
+  || fail "the admin listener never answered ($(tr '\n' '|' <"$W/busbar.log" | tail -c 300))"
+
 oracle_mint_keys "$ADMIN_PORT" || fail "could not mint oracle keys"
 
 BODY='{"model":"oracle-cd","messages":[{"role":"user","content":"ping"}]}'

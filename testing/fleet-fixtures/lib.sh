@@ -94,6 +94,43 @@ wait_for_http() {  # wait_for_http <url> <max-seconds> — returns 0 the moment 
   return 1
 }
 
+wait_for_answer() {  # wait_for_answer <url> <max-seconds> — returns 0 the moment ANY status comes back
+  # SAME LOOP, DIFFERENT QUESTION. `wait_for_http` asks "is this URL healthy"; this one asks the
+  # weaker and more basic "is anything listening here yet", which is what a readiness fence on a
+  # plane whose routes may legitimately answer 401 or 404 actually needs. curl writes `000` when it
+  # never got an HTTP response at all (connection refused, reset, timeout); anything else is a
+  # server that accepted the connection and spoke, which is the fact being waited for.
+  local url="$1" max="${2:-30}" i=0
+  while [ "$i" -lt "$max" ]; do
+    if [ "$(curl -s -o /dev/null -m 3 -w '%{http_code}' "$url" 2>/dev/null)" != "000" ]; then
+      return 0
+    fi
+    sleep 1; i=$((i + 1))
+  done
+  return 1
+}
+
+# BOTH PLANES, NOT WHICHEVER ONE COMES UP FIRST — the one readiness fence a script that boots
+# busbar and then talks to the admin plane may use.
+#
+# busbar brings its two listeners up in a FIXED ORDER, and the admin one is LAST: `run()` calls
+# `serve_thread_per_core`, which only SPAWNS the per-core data threads, and `bind_listener` for the
+# admin address runs after that on the control runtime. A data worker can therefore bind, accept,
+# and answer `/healthz` while the admin socket does not exist yet. Every caller below used to wait
+# on the data port and then, on the very next line, POST to the admin port — so the wait proved
+# nothing about the listener the request was actually going to, and under parallel load the request
+# hit a port nothing was bound to and the cell died with a connection error inside its own
+# start-up. A harness that reds on its own boot race reports on the boot race, not on its subject.
+#
+# The fence is per-listener because that is the only shape that is a fact rather than a hope: it
+# asks each address the question the script is about to ask it for real. A fixed `sleep` cannot do
+# this — it is the same guess whether the box is idle or running eight of these at once, and the
+# race is likeliest exactly when the box is busy.
+wait_for_busbar() {  # wait_for_busbar <data-port> <admin-port> <max-seconds>
+  wait_for_http "http://127.0.0.1:$1/healthz" "$3" || return 1
+  wait_for_answer "http://127.0.0.1:$2/healthz" "$3" || return 1
+}
+
 # THE PORT MUST BE PROVEN FREE BEFORE A PROBE BINDS IT. Probing a port something else already
 # answers on returns a cheerful 200 from the wrong process while the thing under test is dead. This
 # happened while consumer-verify was being written and briefly reported a bundle healthy that had

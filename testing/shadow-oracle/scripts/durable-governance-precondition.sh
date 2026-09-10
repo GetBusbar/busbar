@@ -118,7 +118,7 @@ spawn_() { local log="$1" cfg="$2"; ( exec env BUSBAR_CONFIG="$cfg" BUSBAR_PROVI
 
 # ---- boot 1: create the durable store + mint one key under group `oracle` -------------------------
 pid="$(spawn_ "$W/busbar1.log" "$W/boot1.yaml")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail "busbar1 did not come up: $(tail -c 400 "$W/busbar1.log")"
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" || fail "busbar1 did not come up: $(tail -c 400 "$W/busbar1.log")"
 mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"gov-oracle","group":"oracle"}')"
 kid="$(jq -r '.id // empty' <<<"$mint")"
 [ -n "$kid" ] || fail "mint failed: $mint"

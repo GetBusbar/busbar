@@ -121,7 +121,7 @@ step validate_tail "$(sed -e "s|${RAW}|<WORK>|g" -e "s|${BIN}|<WORK>|g" -e "s|${
 env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w "$alias_" "$W/plugins.log" | head -1 | tr '\n' ' ')"
 
 pid="$(spawn_ "$W/busbar1.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" \
   || fail 2 "boot 1 (first, fresh) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar1.log")"
 # THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
 # `mint_status` below is what this binary answered rather than what the harness
@@ -151,7 +151,7 @@ if ! assert_port_free "$LP" || ! assert_port_free "$AP"; then
 fi
 
 pid="$(spawn_ "$W/busbar2.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" \
   || fail 4 "boot 2 (restart against the same store) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar2.log")"
 k2="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}")"
 step key_after_restart "$k2"

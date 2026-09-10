@@ -82,7 +82,7 @@ boot() {  # <stdout-file> <stderr-file>
 }
 
 pid="$(boot "$W/boot1.stdout" "$W/boot1.stderr")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 1 "$(tail -c 800 "$W/boot1.stdout")$(tail -c 800 "$W/boot1.stderr")"
+wait_for_busbar "${LP}" "${AP}" "$BOOT_BOUND" || fail 1 "$(tail -c 800 "$W/boot1.stdout")$(tail -c 800 "$W/boot1.stderr")"
 step booted "true"
 
 # advanced.response_headers.server_timing (PB-73): RESTART-scoped, default false — the config

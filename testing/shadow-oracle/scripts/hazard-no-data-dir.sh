@@ -129,7 +129,7 @@ before_cfg="$(list_dir "$W/cfg")"
     "$BIN" ) >"$W/busbar.log" 2>&1 &
 pid=$!
 track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "busbar did not come up: $(tail -c 400 "$W/busbar.log")"
+wait_for_busbar "${LP}" "${AP}" 30 || fail 1 "busbar did not come up: $(tail -c 400 "$W/busbar.log")"
 
 mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" \
   -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \

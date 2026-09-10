@@ -103,7 +103,7 @@ fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >"$W/busbar.log" 2>&1 &
 pid=$!; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 500 "$W/busbar.log")"
+wait_for_busbar "${LP}" "${AP}" 30 || fail 1 "$(tail -c 500 "$W/busbar.log")"
 
 # THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
 

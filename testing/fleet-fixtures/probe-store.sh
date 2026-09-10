@@ -139,7 +139,7 @@ boot() {
 }
 
 boot
-if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
+if ! wait_for_busbar "${LISTEN_PORT}" "${ADMIN_PORT}" 30; then
   fail_here "busbar did not come up with the ${ALIAS} store plugin" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
 fi
@@ -209,7 +209,7 @@ done
 # only now, with both listeners proven gone, is this wait bounded
 wait "$PID" 2>/dev/null || true
 boot
-if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
+if ! wait_for_busbar "${LISTEN_PORT}" "${ADMIN_PORT}" 30; then
   fail_here "busbar did not restart against the ${ALIAS} store" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
 fi
