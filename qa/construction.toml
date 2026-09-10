@@ -275,6 +275,46 @@ file = "qa/kind-isolation.toml"
 by = 6
 because = "the llm leg reads the CLASS at the frame the plane named, through busbar_transport_http::status_class — the wire's own bands, made public on the transport that owns them, rather than a second copy of 200..=299 in the composition root. The alternative was for the root to hold its own opinion of what an HTTP status means, which is how two parts of a node come to disagree about whether a request succeeded. Six hits: the leg's use of it, and the money cell that drives the leg's evidence shape."
 
+# THE PREMISE UNDER TWO MOVED MONEY CELLS, PINNED: crates/busbar/tests/two_legs_serve_no_byte.rs.
+#
+# The landing above moved two counts in the a2a and voice legs, and defended the move with one
+# sentence — neither leg serves a byte today. The sentence is true and it was checked three ways.
+# What it was not is a GATE: the day a line switches either leg onto the wire, two counts that
+# describe an unreachable path become live billed amounts and nothing says so. The a2a leg is
+# DEFAULT ON, and what keeps it off the wire is not a flag but the internal fact that the serving
+# path is still the one the plugin mounts.
+#
+# So the sentence becomes three assertions against the tree's own source: neither leg's `Units`
+# implementor is named by any production file but its own; the kernel's loop is entered from three
+# production files and one cfg-gated harness, none of them these legs; and the streams plane still
+# mounts no dispatch slot without a deployment receiving origin, which is the second and independent
+# door the recorded boot found. Each was proven to RED by perturbing the fact it stands on and
+# watching it fail, then reverted.
+#
+# THE COUNT IS WHAT IT COSTS TO NAME WHAT IT GUARDS. A cell that asserts two named legs do not serve
+# has to name them, and has to name the two files it reads to check the second door. A guard written
+# without those names would be a guard nobody could act on. The legacy router file it reads is
+# named too and is NOT declared: that cell had been taken one below the base by an earlier landing,
+# so naming the file spends slack that was already given back rather than raising anything.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "the premise guard, crates/busbar/tests/two_legs_serve_no_byte.rs: it names the two legs whose money cells were moved (A2aUnits, VoiceUnit and their files), the streams plane's mount and the arrival specs the router drops, because an assertion that two named planes do not serve cannot be written without naming them. Twenty hits buys a red line under a money premise that was a sentence in a commit message."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "the same guard: the admin surface's mount is one of the three production files that DO enter the kernel's loop, and the assertion lists all of them rather than filtering any out — a guard that hid a file would be a guard somebody could hide a leg behind."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the same guard: the transport ingress driver is the third of the three files that enter the kernel's loop, listed by name for the same reason as the other two."
+
 # THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
 # (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
 # crate's lib.rs = 138 measured). Every chain a resolved `GroupTable` can produce, walked ONCE at
