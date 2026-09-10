@@ -135,9 +135,9 @@ reason = "the admin CONTROL surface — an unmetered served surface on the contr
 #   commit = "0000000"
 
 [[announced]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "control"
-reason = "the OAuth issuer being extracted from busbar-core/src/oauth_as; a control surface, not an auth VERIFIER (the verifier plugins stay the auth kind)"
+reason = "the OAuth issuer being extracted from busbar-core/src/oauth_as; a control surface, not an auth VERIFIER (the verifier plugins stay the auth kind). Announced under `busbar-control-oauth2` until the C1'' ruling renamed the instance: `oauth2` was a bare needle that caught Microsoft's and Google's token URLs wherever core or the substrate mentioned them, and the replacement `issuer` collided with five kinds' RFC vocabulary at once (RFC 8414/OIDC, the X.509 certificate field, the A2A card issuer, the substrate's CardIssuer face). `tokenmint` has zero pre-existing hits in crates/ and xtask/. The crate lands under THIS name, so this is the name the door must be able to see."
 
 [[announced]]
 crate = "busbar-core-config"
