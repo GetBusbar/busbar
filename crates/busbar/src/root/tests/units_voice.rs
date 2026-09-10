@@ -1991,12 +1991,6 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 // it from a shape this module chose would be asserting its own answer. These build the four
 // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
 // handed a real frame.
-//
-// The arena is the KERNEL'S, not a double. The leaking stand-in that used to sit here said in its
-// own doc comment that an honest one either leaks or is unsafe; that was true only while the
-// contract's `Arena` demanded `Sync`, which no bump allocator can be. With the clause gone the
-// shipping arena is a plain value the cell can own, so what the plane is handed in this test is the
-// same 4 KiB with the same fixed ceiling the serving path will hand it.
 
 struct CellConfig;
 
@@ -2058,12 +2052,11 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
-    use busbar_kernel::arena::{ArenaSpace, UnitArena};
     use busbar_plane_voice::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let mut space = ArenaSpace::new();
-    let arena = UnitArena::new(&mut space);
+    let mut space = crate::root::arena::ArenaSpace::new();
+    let arena = crate::root::arena::UnitArena::new(&mut space);
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();
