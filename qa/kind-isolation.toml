@@ -236,10 +236,27 @@ reason = "the Google Gemini dialect of the LLM plane, extracted from busbar-plan
 # rows are history and every ceiling after that moves through `ceiling-rose`, in a commit that says
 # which number went up. Two [[minted]] rows for one crate are two admissions and are refused.
 #
-# THE TABLE IS EMPTY TODAY, AND THAT IS THE POINT: a crate mints its rows on the branch that CREATES
-# it, so the row and the crate land together. Writing one ahead of the crate would spend the crate's
-# one admission on the branch that did not need it — the landing would then be a SECOND mint and
-# refused, which is the rule working exactly as written and against the wrong branch.
+# A CRATE MINTS ITS ROWS ON THE BRANCH THAT CREATES IT, so the row and the crate land together.
+# Writing one ahead of the crate would spend the crate's one admission on the branch that did not
+# need it — the landing would then be a SECOND mint and refused, which is the rule working exactly
+# as written and against the wrong branch.
+#
+# THE FIRST TWO ROWS ARE THE EXCEPTION THE DOOR WAS BUILT FOR: the two dialect crates landed before
+# the door existed, their cells were written by hand at measurement (commit cd7a4a0fb), and the
+# announcement that should have preceded them is the [[announced]] rows above, landed one commit
+# earlier. `cells` is the count of [[cell]] rows each crate carries in this file, exactly: openai
+# names its own kind once and the plane kind twice (2 rows); responses names its own kind once
+# (1 row). Neither is a carve-out, so neither has a `moved_from` ceiling.
+
+[[minted]]
+crate = "busbar-plane-llm-openai"
+commit = "cd7a4a0fb"
+cells = "2"
+
+[[minted]]
+crate = "busbar-plane-llm-responses"
+commit = "cd7a4a0fb"
+cells = "1"
 
 # ------------------------------------------------------------------------------------------------
 # [[minted_kind]] — THE COLUMN A KIND THAT DID NOT EXIST BRINGS WITH IT
