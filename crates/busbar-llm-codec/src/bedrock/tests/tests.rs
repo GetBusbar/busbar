@@ -6668,7 +6668,6 @@ fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
 //    owns the enum.
 #[test]
 fn status_word_golden() {
-    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
     let golden: [(StatusClass, &str); 9] = [
         (StatusClass::RateLimit, "ThrottlingException"),
         (StatusClass::Overloaded, "ServiceUnavailableException"),

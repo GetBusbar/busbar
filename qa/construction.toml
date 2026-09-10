@@ -139,18 +139,23 @@ once. Zero slack; the next face declares its own raise."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23335
-to = 23400
-because = """The same 65 lines, counted a third time: the union row is kernel + caps/contract + \
-unit-*, and the caps/contract term is the only one that moved here (5379 + 3545 + 14476 = 23400). \
-No kernel and no unit line changes in this commit — the commit that deletes the three copies lowers \
-the unit term, and lowers this one with it, by measurement. Declared separately because it is a \
-separate integer `ceiling-rose` compares, and pinned at the measurement for the same reason the \
-pair is. RE-KEYED on cherry-pick onto 143db6db6: the line was cut when unit_total_ceiling read \
-14606 (union base 23465); LK-ALL's landed commits independently lowered unit_total_ceiling to \
-14476 by the time this line reached the tip, moving the union base to 23335. The +65 delta this \
-line measured for the upstream status table is unchanged and is re-applied on top of the new base: \
-23335 + 65 = 23400. The unit-side drop that produced 14476 is a separate, already-landed change; \
-this entry does not re-litigate it, only re-bases its own raise onto it."""
+to = 23347
+because = """The union row is kernel + caps/contract + unit-*. Across this line's two loc-ceilings \
+commits the caps/contract term rose by 65 (the upstream status table) and the unit term fell by 53 \
+(busbar-unit-breaker and busbar-unit-egress stopped declaring their own copies of the class and the \
+disposition and now name the one table), a net rise of 12 (5379 + 3545 + 14423 = 23347). \
+`ceiling-rose` compares this declaration against the real base, not against either commit's own \
+intermediate figure, so this entry (the one that survives to the tip) is keyed base -> tip: \
+23335 -> 23347. RE-KEYED on cherry-pick onto 143db6db6: the line was cut against a base whose \
+union_ceiling read 23465 (unit_total 14606), landing its own two intermediate values (23465->23477 \
+via 23400->23347 in this worktree's replay) that no longer match 143db6db6's actual union_ceiling of \
+23335 (unit_total 14476, independently lowered by LK-ALL's landed commits before this line reached \
+the tip). The net delta the line measures across both commits (+65, then -53, i.e. +12 overall) is \
+exact and unchanged; it is re-applied directly onto the real base: 23335 + 12 = 23347. \
+`unit_total_ceiling` itself is NOT re-keyed by an amount that changes here: its own commit-local \
+delta (-53) is applied on top of whatever `unit_total_ceiling` reads at that commit in the replay \
+(14476 -> 14423, see the value below), which is a plain ratchet with no base-comparison of its own; \
+only `union_ceiling`, which `ceiling-rose` checks directly, needed this re-key."""
 
 [gate.ceiling_raises."cell.338.count"]
 file = "qa/kind-isolation.toml"
@@ -163,18 +168,6 @@ renderers they pin, and four of those calls spell a pre-split dialect's own func
 hits are the cell existing at all and not new coupling: no production line changes here and the crate \
 gains no dependency. The cells' own names carry no vendor word — each already sits in its dialect's \
 own module — which is why the rise is four and not nine. Pinned at the measurement, exactly."""
-
-[gate.ceiling_raises."cell.105.count"]
-file = "qa/kind-isolation.toml"
-from = 904
-to = 909
-because = """busbar-llm-codec x substrate. TRANSIENT, AND STRUCK TWO COMMITS LATER BY MEASUREMENT. \
-Five of the golden cells name `busbar_substrate_values::breaker::StatusClass` in a `use` line \
-because, at THIS commit, that is where the nine-way class is declared — pinning the bytes before the \
-move is the whole point of the cell, and a cell written against the table the move creates would be \
-re-pointed by the same commit it is supposed to judge. The commit that gives the class one owner \
-re-points these five imports at `busbar_contract::upstream` and `--write` puts this row back to 904, \
-at which point this entry describes no rise and is deleted. Pinned at the measurement, exactly."""
 
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
@@ -426,15 +419,20 @@ contract_crate = "busbar-contract"
 # next face comes with its own declared raise naming its own measured lines, never out of this one.
 caps_contract_ceiling = 3545
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14476
+# RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
+# declaring their own copies), measured against whatever unit_total_ceiling read when the line was
+# cut (14606, via the prior commit's context). By the time this pick lands here the running base
+# (after the prior commit in this same pick sequence) is 14476, not 14606, because LK-ALL's landed
+# commits independently moved it; re-applying the same -53 delta gives 14476 - 53 = 14423.
+unit_total_ceiling = 14423
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-# 23335 -> 23400: the caps/contract term above rose by 65 (the upstream status table) and nothing
-# else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED on
-# cherry-pick onto 143db6db6: the base's union_ceiling read 23335 here (unit_total_ceiling having
-# independently dropped to 14476 via LK-ALL's landed commits), not the 23465 this line was cut
-# against; the +65 delta is exact and re-applied onto the current base.
-union_ceiling = 23400
+# 23400 -> 23347: the caps/contract term above is unchanged (raised in the prior commit of this
+# pick) and the unit term fell by 53, because two units stopped declaring their own copies of the
+# class and the disposition. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED for the
+# same reason as `unit_total_ceiling` above: running base 23400, not the 23477 this line was cut
+# against, because LK-ALL's landed commits moved the unit term underneath this pick sequence.
+union_ceiling = 23347
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

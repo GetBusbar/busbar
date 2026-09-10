@@ -268,7 +268,7 @@ fn status_class_from_str_maps_known_values_and_rejects_unknown() {
 
 #[test]
 fn disposition_table_matches_the_classify_match() {
-    for (class, disposition) in crate::classify::DISPOSITION_TABLE {
+    for class in crate::classify::StatusClass::ALL {
         let sig = CanonicalSignal {
             class: *class,
             provider_signal: None,
@@ -276,7 +276,7 @@ fn disposition_table_matches_the_classify_match() {
         };
         assert_eq!(
             classify(&sig),
-            *disposition,
+            class.disposition(),
             "table row for {class:?} disagrees with classify()"
         );
     }

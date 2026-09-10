@@ -1384,7 +1384,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+count = "1166"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1834,7 +1834,7 @@ count = "285"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "substrate"
-count = "909"
+count = "904"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -2774,7 +2774,7 @@ count = "59"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "51"
+count = "47"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -4339,6 +4339,16 @@ verdict = "owner-ruling-pending"
 cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
 why     = "busbar-substrate names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-timing dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 — (substrate, contract) is a granted class: a substrate crate is written against the contract face, never against another kind's crate."
+why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the edge this landing CREATES, and it creates it by DELETING a declaration: `breaker::{StatusClass, Disposition}` was a nine-row copy of the upstream status class declared here, and is now the contract's one table re-exported at its historical path. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-substrate-values"

@@ -51,9 +51,7 @@ use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
-use busbar_unit_egress::ports::{
-    Admit, Breaker, Classified, Disposition, Outcome, Unavailable, UpstreamStatus,
-};
+use busbar_unit_egress::ports::{Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -255,18 +253,6 @@ fn from_breaker_outcome(outcome: busbar_unit_breaker::Outcome) -> Outcome {
     }
 }
 
-fn from_breaker_disposition(
-    disposition: busbar_unit_breaker::classify::Disposition,
-) -> Disposition {
-    use busbar_unit_breaker::classify::Disposition as B;
-    match disposition {
-        B::ClientFault => Disposition::ClientFault,
-        B::TransientUpstream => Disposition::TransientUpstream,
-        B::HardDown => Disposition::HardDown,
-        B::ContextLength => Disposition::ContextLength,
-    }
-}
-
 impl Breaker for BreakerAdapter {
     fn try_admit(
         &self,
@@ -337,7 +323,7 @@ impl Breaker for BreakerAdapter {
             },
         );
         Classified {
-            disposition: from_breaker_disposition(classified.disposition),
+            disposition: classified.disposition,
             outcome: from_breaker_outcome(classified.outcome),
             label: classified.label,
         }

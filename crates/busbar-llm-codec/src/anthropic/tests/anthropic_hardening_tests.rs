@@ -4094,7 +4094,6 @@ fn content_block_start_carries_seed_fields() {
 //    say the same nine words on both sides, so it names nothing about where the enum lives.
 #[test]
 fn status_word_golden() {
-    use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
     let golden: [(StatusClass, &str); 9] = [
         (StatusClass::RateLimit, "rate_limit_error"),
         (StatusClass::Overloaded, "overloaded_error"),
