@@ -31,6 +31,13 @@
 # delete the ratchet. The expiry is the SHIP SHA: `kind-isolation-ship` (the DONE oracle) is RED for
 # any row here whose `from` crate STILL EXISTS. A legacy crate that survives to the tag is the
 # retirement having failed, and this row is where that is reported, by name.
+#
+# THE MOVE FORM. A row whose `to` is an EXACT crate (no glob) that a `[[minted]]` row below mints
+# with `moved_from = <from>` also admits ONE `[[cell]]` in the SOURCE: `<from> × <kind of to>`, at
+# the measured count. A carve-out leaves that cell behind in the crate that was drained — the
+# re-export and the adapter it keeps over what it lost — and no other row can answer for it: the
+# `[[minted]]` row is about the new crate's cells, and `minted-row` refuses a cell the base never
+# carried. The source names the crate it minted; a glob names a family and admits nothing here.
 
 [[transitional]]
 from = "busbar-core"
@@ -186,7 +193,9 @@ reason = "the configuration surface being carved out of busbar-core; core kind, 
 #                number than it wrote down has an admission nobody priced.
 #   moved_from — optional, and the ceiling for a CARVE-OUT: a minted cell may not exceed the count
 #                the merge-base pinned for the same kind in the crate the vocabulary was moved from.
-#                A move carries vocabulary across, it does not create it.
+#                A move carries vocabulary across, it does not create it. Read with the
+#                `[[transitional]]` row that names `moved_from -> crate` exactly, it is also what
+#                lets the SOURCE carry its one cell naming this crate's kind (the MOVE form above).
 #
 # ONCE MEANS ONCE. A [[minted]] row the merge-base already carries admits nothing more — the crate's
 # rows are history and every ceiling after that moves through `ceiling-rose`, in a commit that says
