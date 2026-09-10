@@ -42,6 +42,7 @@ Q="${LANDQ_QUEUE:-$W/target/gate/land-queue.txt}"
 D="${LANDQ_DONE:-$W/target/gate/land-done.txt}"
 L="${LANDQ_LOG:-$W/target/gate/landq.out}"
 PP="${LANDQ_PREPROVED:-$W/target/gate/preproved.txt}"
+QLOCK="${LANDQ_QUEUE_LOCK:-$W/target/gate/land-queue.lock}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
@@ -495,6 +496,61 @@ lq_tree_settled() { # $1 = tree, $2 = last-landed-tip file; 0 = HEAD is that tip
 # live lines exist — a sweep of one line is the serial runner plus a box.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE QUEUE IS A SHARED FILE, AND THE RUNNER IS NOT ITS ONLY WRITER
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The runner rewrote land-queue.txt IN FULL from its own snapshot on every loop — after every pop
+# attempt, on the HALT requeue, on the red park — unlocked and unchecked. So an integrator's edit
+# made inside the read→rewrite window was silently REVERTED: no error, no log line, the runner
+# simply idled on a queue that no longer said what its owner had just told it to say. (Audit 14.)
+#
+# Three rules, and only the third of them needs the clock:
+#
+#   * REWRITE ONLY WHAT CHANGED. A loop that popped nothing, parked nothing and released nothing
+#     produces a `keep` file byte-identical to the queue; writing it back is a no-op that can only
+#     ever lose somebody else's edit. Compared with cmp, so "did the runner change anything" is a
+#     measurement rather than a flag somebody has to remember to set.
+#   * ONE WRITER. `$W/target/gate/land-queue.lock` is a mkdir-lock (atomic on every filesystem the
+#     fleet has, unlike flock, which is not on macOS's coreutils path) holding the writer's pid; a
+#     lock whose holder is dead is taken over, because a runner killed mid-rewrite must not stop
+#     the queue forever.
+#   * THE FILE MUST BE THE ONE THAT WAS READ. A stamp is taken when the queue is read and checked
+#     again before the rewrite; different means somebody edited it, and the runner then DROPS ITS
+#     OWN LOOP — the hand edit stands, the pop is taken again next loop against what the file now
+#     says. The stamp is mtime AND size AND cksum, because mtime alone has one-second granularity
+#     and the window this exists to close is usually shorter than that.
+lq_qstamp() { # prints a stamp of the queue file as it is right now
+  local m
+  m="$(stat -f %m "$Q" 2>/dev/null || stat -c %Y "$Q" 2>/dev/null || echo 0)"
+  printf '%s:%s\n' "$m" "$(cksum <"$Q" 2>/dev/null || echo 0)"
+}
+lq_qlock() { # $1 = seconds to wait (default 30); 0 when this shell holds the queue lock
+  local wait="${1:-30}" i=0 owner
+  while ! mkdir "$QLOCK" 2>/dev/null; do
+    owner="$(cat "$QLOCK/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && [ "$owner" != "$$" ] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$QLOCK"           # the holder is dead; a corpse does not hold a queue
+    fi
+    i=$((i + 1)); [ "$i" -lt "$wait" ] || return 1
+    sleep 1
+  done
+  printf '%s\n' "$$" >"$QLOCK/pid"
+  return 0
+}
+lq_qunlock() { rm -rf "$QLOCK"; }
+lq_queue_rewrite() { # $1 = candidate file, $2 = stamp taken at the read
+  # rc 0 = rewritten, 1 = nothing to write (identical), 2 = REFUSED, the file moved under us
+  local now
+  if cmp -s "$1" "$Q" 2>/dev/null; then rm -f "$1"; return 1; fi
+  now="$(lq_qstamp)"
+  if [ "$now" != "$2" ]; then
+    printf 'queue: REFUSED to rewrite land-queue.txt — it changed under the runner since it was read (%s -> %s). The edit stands; this loop is dropped and the pop is taken again next loop.\n' "$2" "$now"
+    rm -f "$1"; return 2
+  fi
+  mv "$1" "$Q"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # A HOLD THAT NAMES A SHA RELEASES ITSELF
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # A line held behind another line is tagged `#HOLD-after-<thing>` and is a comment until somebody
@@ -510,8 +566,9 @@ lq_tree_settled() { # $1 = tree, $2 = last-landed-tip file; 0 = HEAD is that tip
 # when nothing is left in front of the `--`. A tag that is not a sha, and a sha the tree has never
 # heard of (merge-base fails), are both left exactly as they were found.
 lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per release
-  local line rest tok out sha tmp released=0
+  local line rest tok out sha tmp released=0 stamp log=""
   [ -f "$Q" ] || return 0
+  stamp="$(lq_qstamp)"           # the same read→rewrite window the popper has, and the same guard
   tmp="$Q.release.$$"; : >"$tmp"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -527,14 +584,20 @@ lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per re
       case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; esac
       if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' \
          && git -C "$1" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
-        printf 'released %s: landed\n' "$tok"; released=$((released + 1))
+        log="$log""released $tok: landed
+"; released=$((released + 1))
       else
         out="$out$tok "
       fi
     done
     printf '%s%s\n' "$out" "$rest" >>"$tmp"
   done <"$Q"
-  if [ "$released" -gt 0 ]; then mv "$tmp" "$Q"; else rm -f "$tmp"; fi
+  # THE RELEASES ARE ANNOUNCED ONLY IF THEY HAPPENED. Held back until the rewrite is taken, so a
+  # refusal (the file moved under us) never leaves "released …" in the log for a queue that still
+  # holds the line.
+  if [ "$released" -gt 0 ]; then
+    if lq_queue_rewrite "$tmp" "$stamp"; then printf '%s' "$log"; fi
+  else rm -f "$tmp"; fi
   return 0
 }
 lq_live_lines() { grep -cE '^--' "$1" 2>/dev/null || true; }
@@ -1218,6 +1281,7 @@ lq_selftest() {
   printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
   n="$(lq_pop tipX 4 "$root/b2.txt" "$root/k2.txt")"
   _t "no records at this tip -> the ordinary pop" 3 "$n"
+
   Q="$savedQ"; PP="$savedPP"; L="$savedL"; W="$savedW"
 
   # ── A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) ─────────────────────────────
@@ -1257,6 +1321,49 @@ lq_selftest() {
   _t "nothing to release: the queue is untouched" "$before" "$(cksum <"$Q")"
   _t "  ...and nothing is logged"              0 "$(grep -c . "$root/rel2.txt" || true)"
   _t "the main flow releases holds before it reads the head" 1 "$(grep -c '^  lq_release_holds "\$W" | while' "$0")"
+
+  # ── THE QUEUE IS REWRITTEN BY ITS READER, ONLY IF IT MOVED, AND ONLY IF NOBODY ELSE MOVED IT ───
+  # The runner used to rewrite land-queue.txt in full from its own snapshot on EVERY loop, unlocked:
+  # an integrator's edit inside the read→rewrite window was reverted with no error and no log line,
+  # and the runner then idled on a queue that no longer said what its owner had just said. (Audit 14.)
+  echo "landq4 selftest: the queue rewrite (only what changed, under a lock, and only if it did not move)"
+  local savedQ5="$Q" savedQL="$QLOCK"
+  Q="$root/lockq.txt"; QLOCK="$root/lockq.lock"; rm -rf "$QLOCK"
+  printf -- '--prove one\n--prove two\n' >"$Q"
+  _t "the stamp moves when the file does"      1 "$(a="$(lq_qstamp)"; printf -- '--prove one\n' >>"$Q"; b="$(lq_qstamp)"; [ "$a" != "$b" ] && echo 1 || echo 0)"
+  printf -- '--prove one\n--prove two\n' >"$Q"
+  # A LOOP THAT CHANGED NOTHING WRITES NOTHING. This is the whole of the first rule: the file that
+  # would be written back is compared with the one on disk, so "did this loop change the queue" is
+  # measured rather than remembered.
+  cp "$Q" "$root/keep-same.txt"
+  _t "a loop that popped, parked and released nothing does not rewrite" 1 "$(lq_queue_rewrite "$root/keep-same.txt" "$(lq_qstamp)"; echo $?)"
+  _t "  ...and its candidate is dropped"       1 "$( [ -f "$root/keep-same.txt" ]; echo $?)"
+  local st1; st1="$(lq_qstamp)"
+  printf -- '--prove two\n' >"$root/keep-popped.txt"
+  _t "a loop that popped a line does rewrite"  0 "$(lq_queue_rewrite "$root/keep-popped.txt" "$st1"; echo $?)"
+  _t "  ...and the queue is what it wrote"     "--prove two" "$(cat "$Q")"
+  # THE CASE THIS EXISTS FOR: the runner reads, the integrator edits, the runner writes back.
+  printf -- '--prove one\n--prove two\n' >"$Q"
+  st1="$(lq_qstamp)"                                                    # the runner reads the queue
+  printf -- '--prove two\n' >"$root/keep-race.txt"                       # ...and decides to pop line one
+  printf -- '--prove one\n--prove two\n--prove THREE-by-hand\n' >"$Q"   # the integrator edits it meanwhile
+  local qr; lq_queue_rewrite "$root/keep-race.txt" "$st1" >"$root/qrw.txt" 2>&1; qr=$?
+  _t "an edit made between the read and the rewrite is REFUSED" 2 "$qr"
+  _t "  ...and it SURVIVES"                    1 "$(grep -cx -- '--prove THREE-by-hand' "$Q" || true)"
+  _t "  ...with every line it had"             3 "$(grep -c . "$Q" || true)"
+  _t "  ...and the refusal is logged, in words" 1 "$(grep -c 'REFUSED to rewrite land-queue.txt' "$root/qrw.txt" || true)"
+  # ONE WRITER.
+  rm -rf "$QLOCK"
+  _t "the queue lock is taken"                 0 "$(lq_qlock 2; echo $?)"
+  _t "  ...and a second writer does not get it" 1 "$(lq_qlock 1; echo $?)"
+  printf '999999999\n' >"$QLOCK/pid"
+  _t "a lock whose holder is dead is taken over" 0 "$(lq_qlock 3; echo $?)"
+  lq_qunlock
+  _t "unlocking releases it"                   1 "$( [ -d "$QLOCK" ]; echo $?)"
+  _t "the main flow takes the lock before it pops" 1 "$(grep -c '^  if ! lq_qlock; then' "$0")"
+  _t "  ...drops its OWN loop when the rewrite is refused" 1 "$(grep -c '^  if \[ "\$qrc" = 2 \]; then rm -f "\$batch"; sleep 60; continue; fi' "$0")"
+  _t "  ...and never rewrites the queue unconditionally" 0 "$(grep -c '^  mv "\$keep" "\$Q"' "$0")"
+  Q="$savedQ5"; QLOCK="$savedQL"
   Q="$savedQ"; W="$savedW"
 
   rm -rf "$root"
@@ -1310,9 +1417,18 @@ while true; do
     sleep 60; continue
   fi
   batch="$W/target/gate/landq4-batch.$$.txt"; keep="$W/target/gate/landq4-keep.$$.txt"
+  # ONE WRITER OF THE QUEUE (see lq_qlock). Taken here and dropped the moment the rewrite is taken
+  # or refused; the pre-prove sweep below runs INSIDE it only because the pop that follows must read
+  # the file the sweep judged. A lock this runner cannot get is not an error: somebody else is
+  # editing, and the loop is simply taken again.
+  if ! lq_qlock; then
+    lq_log "queue: the queue lock is held by pid $(cat "$QLOCK/pid" 2>/dev/null || echo '?'); nothing popped this loop"
+    sleep 60; continue
+  fi
   # A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) — before the head is read, so a
   # line freed by the last batch can be this batch's head, base fix and all.
   lq_release_holds "$W" | while IFS= read -r s; do [ -n "$s" ] && lq_log "queue: $s"; done
+  qstamp="$(lq_qstamp)"
   headline="$(lq_head_line "$Q")"
   if [ -n "$headline" ] && lq_line_is_base_fix "$headline" "$W"; then
     # A BASE FIX POPS ALONE (see lq_line_is_base_fix): no sweep, the head by itself, nothing behind it.
@@ -1327,10 +1443,17 @@ while true; do
     B="$(lq_batch_size "$tip")"
     n="$(lq_pop "$tip" "$B" "$batch" "$keep")"
   fi
+  # THE REWRITE, ONCE, GUARDED (see lq_queue_rewrite): only when this loop actually changed the
+  # queue, and only if the file is still the one that was read. A refusal drops THIS RUNNER'S loop,
+  # never the edit — the batch is thrown away unlanded and the pop is taken again next loop.
+  lq_queue_rewrite "$keep" "$qstamp" >"$W/target/gate/landq4-qrw.$$.txt" 2>&1; qrc=$?
+  lq_qunlock
+  while IFS= read -r s; do [ -n "$s" ] && lq_log "$s"; done <"$W/target/gate/landq4-qrw.$$.txt"
+  rm -f "$W/target/gate/landq4-qrw.$$.txt"
+  if [ "$qrc" = 2 ]; then rm -f "$batch"; sleep 60; continue; fi
   if [ "${n:-0}" -eq 0 ]; then
-    mv "$keep" "$Q"; rm -f "$batch"; try_push; sleep 60; continue
+    rm -f "$batch"; try_push; sleep 60; continue
   fi
-  mv "$keep" "$Q"
 
   lq_log "=== $(date +%H:%M:%S) batch of $n line(s) (size $B), head: $(head -n1 "$batch" | cut -c1-100)"
   rm -f "$batch.result"
@@ -1345,7 +1468,8 @@ while true; do
   want="$(grep -c . "$batch" || true)"
   got="$(grep -c . "$batch.result" 2>/dev/null || true)"
   if [ "${got:-0}" != "${want:-0}" ]; then
-    cat "$batch" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"
+    lq_qlock 60 || lq_log "queue: requeueing without the lock (it did not come free); the queue may have been edited"
+    cat "$batch" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; lq_qunlock
     lq_log "=== HALT: land.sh --batch left ${got:-0} of ${want:-0} per-line outcomes (rc $rc); lines requeued unchanged"
     echo "HALT no-result $(date +%FT%T)" >>"$D"
     git -C "$W" cherry-pick --abort 2>/dev/null
@@ -1364,7 +1488,11 @@ while true; do
     esac
     first=0
   done <"$batch.result"
-  [ -s "$red" ] && { cat "$red" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; }
+  # Read UNDER the lock and written back at once: there is no read→rewrite window to lose an edit
+  # in, and a red line is never dropped for want of a lock.
+  [ -s "$red" ] && {
+    lq_qlock 60 || lq_log "queue: parking reds without the lock (it did not come free)"
+    cat "$red" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; lq_qunlock; }
   # THE PRE-PROVE LEDGER IS DROPPED WHEN THE TIP MOVES. Every row is keyed by the tip it was taken
   # on and would be ignored anyway; deleting them keeps the file from becoming a history nobody
   # reads and keeps `lq_batch_size` honest about what is CURRENT.
