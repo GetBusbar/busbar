@@ -100,8 +100,8 @@ spelling change with no behavioural surface at all.
 | 1 | `proto::registry::install_protocols_with_path_ingress`, 1 `install_protocols`, 1 `proto::ProtocolDecl` | RE-EX (`busbar_substrate::proto::registry`) → REPLACE | `http\|`, `llm\|`, `route\|` | cut 2 |
 | 1 | `profile::enabled`, 1 `profile::dump` | RE-EX (`busbar_substrate::profile`) → REPLACE | `ops\|` | cut 2 |
 | 1 | `metrics::init` | RE-EX (`busbar_substrate::metrics`) → REPLACE | `ops\|` | cut 2 |
-| 1 | `ingress::PathIngress` | RE-EX (`busbar_substrate::ingress::arrival::PathIngress`) → REPLACE — the root *already* names the substrate spelling one line away | `llm\|`, `route\|` | cut 2 |
-| 1 | `proxy::configure_route_policy_headers` | RE-EX (`busbar_substrate::proxy`) → REPLACE | `http\|`, `route\|` | cut 2 |
+| 1 | `ingress::PathIngress` | **LANDED (slot D1, 2026-09-09).** The root now names NEITHER spelling: the annotation was dropped and the element type is fixed by `install_protocols_with_path_ingress`'s parameter, so no `busbar_substrate::` symbol was added. The `ingress::PathIngress` re-export is deleted; `path_ingress.rs`'s substrate re-export stays until `proto/registry.rs` ([M1c]'s file) re-points — that edit is on `wip/d1-registry-repoint`. | `llm\|`, `route\|` | done |
+| 1 | `proxy::configure_route_policy_headers` | RE-EX (`busbar_substrate::proxy`) → REPLACE — **held back by the gate, not by code (slot D1).** `busbar_substrate::proxy::configure_route_policy_headers` is not one of the 47 substrate symbols the root spells, so the re-point is −1 `busbar_core` / +1 `busbar_substrate`: total flat, one gating sub-row UP. A call cannot be un-named the way the row above was. Lands when a landing is allowed to re-pin the substrate figure upward by one, or when `advanced.response_headers` is read through the plane config seam instead. | `http\|`, `route\|` | blocked on a legacy-reach re-pin ruling |
 | 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE, but blocked.** `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature, and its one true owner is the composition root (it *is* the process). But the module is a set of process **globals** that core's own legacy admin handler still writes — `crate::admin::restart::{supervisor_detected, can_restart, begin_drain}` at `busbar-core/src/admin/v1/json/handlers.rs:2494,2506,2517`. Moving the module to the root would split one static across two crates and silently break `POST /admin/restart` → drain-release. The move lands **with the admin plane**, when `busbar-plane-admin` owns the restart verb and core's handler is deleted. | `documented-admin-restart\|`, `admin.ops\|` | blocked on the admin plane owning the restart verb |
 | 1 | `admin::planeverbs::CorePlaneAdminEnvelope` | REPLACE by `busbar_substrate::admin_verbs::install_plane_admin_envelope` (root names both today) | `admin.ops\|` | cut 3 |
 | 1 | `egress::seam::CoreHostlessEgress` | REPLACE by `busbar_substrate::egress::seam::HostlessEgress` (root names both today) | `llm\|`, `mcp\|` | cut 3 |
@@ -610,3 +610,44 @@ lifetime. Nothing else in the workspace holds a `SessionStore`. Its production c
 `hooks/gate.rs`, which keys its screen state by `OwnerKey = "gate.screen"`. **Blocker:** the session
 store dies with the hooks engine, and the hooks engine has no home either until `busbar-core-hooks`
 exists. Both are behind the same design gate.
+
+## 9. Deletion slot D1 — the facades, measured and cut
+
+Measured on `468bad131` plus the round-two kind-isolation / landing batch, T0-A, and the diagnostics and trust cuts. The
+survey ledger (`busbar-landq-state/gate/legacy-deletion-ledger.md`) put ~925 lines in a DELETABLE
+NOW bucket — `diagnostics`, `handlers`, `ir`, `trust`, `egress_auth`, `audit/mod.rs`,
+`egress/mod.rs`, the reader lines of `ingress` and `proxy`. This slot took every item in that
+bucket the earlier two cuts had not, except `audit/mod.rs` (live chain machinery; not a facade).
+Four commits, every one net-negative in production lines over the whole tree:
+
+| module | prod lines deleted | prod delta (whole tree) | readers re-pointed | proof kept |
+|---|---|---|---|---|
+| `handlers/mod.rs` | 194 | −180 | `ingress/dispatch.rs` (1) | 4 test files → `src/tests/handlers_*.rs`; `chat_tests.rs` (147 test lines) was never mounted — born orphaned in `ee4486486` — and is deleted, losing nothing |
+| `ir/` (7 files) | 197 | −192 | `hooks/gate.rs`, `plane_host/{dispatch,mod}.rs` (4) + 3 doc links | `subscribe_tests.rs` → `src/tests/ir_subscribe_tests.rs` |
+| `egress_auth/{mod,gate}.rs` | 55 | −43 | `engine_facade.rs`, `config_validate/mod.rs` (3) | 3 test files → `src/tests/`; the `egress-auth-gate` feature (only ever the shim's unused-import allowance) deleted with it |
+| `egress/mod.rs` glob | 13 of 25 | −6 | `plane_host/egress.rs` (1), 11 `super::` spellings in `seam.rs` | — |
+| `ingress::PathIngress` re-export | 3 | −2 | `main.rs` (annotation dropped); `proto/registry.rs` deferred to [M1c] on `wip/d1-registry-repoint` | — |
+
+**What the ledger got wrong.** Its "outside readers" column for these modules — `handlers` 3,
+`ir` 7, `egress` 3, `ingress` 4, `proxy` 3 — was a bare-word grep. Measured with the full path
+(`busbar_core::<module>`), the production readers outside core are: `handlers` **0**, `ir` **0**
+(the seven were `busbar-llm-codec`'s OWN `crate::ir` and substrate spellings), `egress_auth` **0**,
+`egress` **1** (`seam::CoreHostlessEgress`, which is not a facade and stays), `ingress` **1**,
+`proxy` **1**. The bucket's line figure was right; the reader counts were not, and a reader count
+that cannot tell `busbar_substrate::handlers` from `busbar_core::handlers` will mis-order every
+module that has a substrate twin — which is every module in this bucket.
+
+**`egress/mod.rs` is not wholly deletable** as the ledger says: it is the parent of `seam.rs`, the
+only `HostlessEgress` impl in the workspace. The facade line and its header went; the module stays
+as a one-declaration parent until the seam has a home below core.
+
+**The proxy reader is held by the gate, not by code** — see the §2.1 row. Taking it would have been
+the first landing to re-pin `legacy-reach:busbar_substrate` upward, which this slot was not allowed
+to do; the `PathIngress` row shows the alternative when one exists (stop naming the type at all).
+
+**Gate figures moved, all downward** (round-two scanner readings). kind-isolation `busbar-core ×
+control` 5521 → 5511, `× plane` 3067 → 2949, `× transport` 2145 → 2143, `× dialect` 1196 → 1158,
+`× api` 610 → 608 (the diagnostics/trust prefixes carry their own re-pins), `busbar × legacy`
+98 → 97; legacy-reach total 91 → 90, `busbar_core` 27 → 26. The batch's twelve declared raises
+are keyed by cell identity (T0-A's rule) and each `to` follows its cell down; the `busbar-core ×
+plane` raise fell below its base and was struck at the trust cut.
