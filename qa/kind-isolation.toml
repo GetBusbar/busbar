@@ -1374,7 +1374,7 @@ count = "6"
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "8"
 
 [[cell]]
 crate = "busbar"

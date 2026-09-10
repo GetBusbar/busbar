@@ -219,7 +219,6 @@ land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
-hold-escapes
 kernel-seal-impls
 one-pick-site
 one-pricing-site:fee-fields

@@ -34,12 +34,14 @@ pub mod detached;
 // directly. A `pub use` at this crate's root makes each resolve unchanged from BOTH sides: an
 // outside caller still writes `busbar_substrate::diagnostics::…`, and this crate's own source still
 // writes `crate::diagnostics::…`. Nothing about the items changed; only the crate they compile in.
-pub use busbar_substrate_values::diagnostics;
+//
 // The three cross-crate emit macros are `#[macro_export]`ed, so they sit at the VALUES crate's root;
 // re-export them at this root too, and `busbar_substrate::diag_warn!` (and `crate::diag_warn!`
 // in-crate) keeps resolving. Deliberately re-exported at the ROOT only, never under `diagnostics` —
 // core glob-imports that module and a macro there would collide with core's own `pub(crate)` twins.
-pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
+// They ride the SAME re-export line as the module, because naming the crate they come from twice on
+// two adjacent lines is two reaches where the tree has one.
+pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn, diagnostics};
 pub mod net_guard;
 // A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
 // relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of

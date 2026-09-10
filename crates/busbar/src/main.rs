@@ -1724,15 +1724,13 @@ async fn run(data_workers: usize) {
     )
     .unwrap_or_else(|e| die(format!("the node's book did not open: {e}")));
 
-    // THE VOICE NODE'S GOVERNED-CALL TABLE, composed HERE and not at the seal: this is the first
-    // slot where the deployment's own journal shipper exists, and it is still several hundred lines
-    // before any listener binds. A deployment that configured no store gets no node at all rather
-    // than a node journalling into a shipper that writes nowhere — see `compose_voice_governed_calls`.
+    // THE GOVERNED-CALL TABLE, composed HERE and not at the seal: this is the first slot where the
+    // deployment's own journal shipper exists, and it is still several hundred lines before any
+    // listener binds. A deployment that configured no store gets no node at all, rather than a node
+    // journalling into a shipper that writes nowhere.
     #[cfg(feature = "root-voice")]
     if let Some(adapter) = store_adapter.as_ref() {
-        compose_voice_governed_calls(busbar_plugin_loader::store_adapter::StoreAdapter::shipper(
-            adapter,
-        ));
+        compose_voice_governed_calls(adapter.shipper());
     }
 
     // THE OPENING BALANCES, sealed in the one slot the migration step's own preamble names: after
