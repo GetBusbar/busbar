@@ -313,3 +313,68 @@ the first thing that can.
   where the third carve-out is harder than the second rather than identical to it.
 - **Golden cells in both directions with almost every other dialect**, which makes it the widest
   parity surface of the six; budget the carve-out commit accordingly.
+
+## 10. The checklist, ticked for `anthropic` and `gemini` — the third and fourth
+
+Two crates on one line, in the order section 7 wrote down, and the pattern held for both with the
+exceptions this section is for. Surface as `scripts/loc-surface.py` counts it (code lines under
+`src/`, comments and tests excluded): `busbar-plane-llm-openai` 143 · `busbar-plane-llm-responses`
+133 · `busbar-plane-llm-anthropic` 147 · `busbar-plane-llm-gemini` 156 — the dialect kind's LOC
+rows, beside the plane's 1,214. A dialect crate is a hundred and fifty lines of declaration and
+delegation, and the four of them together are smaller than the plane they register into.
+
+1. **The skeleton.** ✅ Both, five files plus the battery, two dependencies, no
+   `[dev-dependencies]`, no features.
+2. **Rungs at the numbers they already occupy.** ✅ `anthropic` at 2 (two header claims), 4 and 11;
+   `gemini` at 3, 5 (five substring claims) and 6 (two path patterns). The plane's own constant now
+   gaps at 2, 3, 4, 5, 6, 7, 10, 11 and 14 — nine of fourteen rungs registered — and its own rungs
+   are 1, 8, 9, 12 and 13.
+3. **The battery of section 6, all fifteen.** ✅ Fifteen of fifteen, each. ONE CASE IS WRITTEN
+   DIFFERENTLY and the file says why: `every_claimed_surface_has_a_verb` counts DISTINCT PATH RUNGS
+   rather than distinct rungs. Section 9 anticipated "three rungs want at least three verbs" for
+   anthropic, and that would have been three names for one surface: a header rung is evidence about
+   the client and claims every path a request could arrive on, so the surface it routes to is one the
+   path rungs already name. `anthropic` claims one path surface and names one verb; `gemini` claims
+   two path rungs and names six verbs. Both batteries also assert that their ladder HAS a header
+   rung, so the path-counting form cannot be copied into a path-only dialect by accident. The other
+   first-times: case 12 asked of a non-`bearer` alternative (`api-key`, both); case 13 asserting a
+   `PathSegment(0)` model location (gemini) and an EMPTY fourth locator (gemini, "not reported");
+   case 15 asserting the ceiling is REQUIRED (anthropic).
+4. **Carve-out + seam as two commits, `golden_parity` byte-identical.** ✅ Twice. `anthropic`: 62
+   frozen cells with it on either side, 21 plane cases red with the fixture withdrawn. `gemini`: 22
+   cells, 13 cases red. **The `requires_max_response` problem section 9 named was solved BEFORE the
+   carve-out, as its own seam:** the fact is a column of the dialect row (`requires_max_response:
+   bool`), read by the crossing off the egress row it already holds; the by-name walk of the codec's
+   `DECLS` is deleted. The plane names no vendor to ask a question only one vendor answers `true` to.
+5. **One line of `crates/busbar/Cargo.toml`; one row of `dialects.rs`.** ✅ Twice — and the second
+   thing only a later dialect could reveal. With `anthropic` sealed, five of the six boot pins
+   answered and the sixth did not: the sealed order came back with `x-goog-api-key` (the plane's
+   own rung 3) ahead of `anthropic-beta` (the dialect's rung 2). Declaration order breaks a
+   precedence tie, every header-present claim ties every other on specificity, and `plane_claims()`
+   unioned "the plane's own claims, then its dialects'" — harmless for two path-suffix dialects
+   (suffixes of different lengths never tie), wrong for the first header dialect. **The union is the
+   plane's merged ladder walk now** (`llm_plane().walk_ladder(..)`), the one order the plane itself
+   decides requests by; `dialect_claims_of::<P>` is deleted. The boot test's header arm is filled in
+   (present / prefix / exact), and the gemini seam filled in the pattern arm; every selector form a
+   registered dialect has declared is resolved through the merged walk, eighteen rungs where six
+   were.
+6. **Ledger.** ✅ Six `[[dep]]` rows at `count = "1"`. Two `[[announced]]` rows on their own commit
+   and two `[[minted]]` rows against them — the door used as designed — each at `cells = "0"`:
+   neither crate names a sibling, another plane or any kind but its own and its plane's, which is
+   section 2's sink set measured as vocabulary. The `[[minted_kind]]` row T0-F wrote the shape of is
+   a row now (`cells = "26"`, `edges = "15"`, measured), with the fifteen `[[edge]]` classes of the
+   dialect column written with cite and drain. Four cells re-pinned to measurement: the plane's
+   `× codec` DOWN by one (the `DECLS` walk), its `× dialect` up by eight (the gap comments naming
+   the two crates, section 2's allowance), the root's `× dialect` and `× plane` by the two crates'
+   names at the manifest line and the table row — the latter declared under the standing
+   `cell.busbar.plane.count` raise, amended rather than duplicated.
+7. **The gate and its ship twin.** ✅ See the landing's proof.
+
+**What the fifth crate — `bedrock` — needs, beyond a copy of these.** A `HeaderPrefix` rung
+(rung 1, the signature header) — the boot test's header arm already answers it. A scheme
+alternative that is `request-signature` on BOTH sides (`scheme_alt` and `egress_scheme`), the one
+dialect whose credential is not bearer-shaped. A `PathSegment(0)` model location under a pattern
+with a VARIABLE (`model/{id}/invoke`) rather than a tail — the second target-carried row, so
+`MODEL_IN_PATH` leaves the plane with it. After it, `cohere` is the last row, and the plane's own
+`DIALECTS` table is empty: that is the commit that deletes `dialect()`, `walk_dialects`'s first loop
+and the "both are searched because the split is staged" branch in `locations()`.
