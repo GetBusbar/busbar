@@ -60,20 +60,23 @@ WRAP
 }
 
 # ── The host allocator ──────────────────────────────────────────────────────────────────────────
-# ROUND-ROBIN, PERSISTED, so two agents proving in the same minute do not both land on box 1 and
-# fight over its cores while three boxes idle. The cursor is a FILE, not a shell variable, because
-# the callers are separate processes: prove-remote.sh invoked from four worktrees is four `bash`
-# invocations that share nothing but the filesystem.
-#
-# A named host always wins — an operator debugging box 3 says box 3 — and the allocator is only
-# consulted when nothing was named.
+# The cursor is a FILE, not a shell variable, because the callers are separate processes:
+# prove-remote.sh invoked from four worktrees is four `bash` invocations sharing only the filesystem.
 fleet_hosts() {
   [ -f "$FLEET_FILE" ] || rdie "no $FLEET_FILE — run ./scripts/ci-runners-ssh.sh first"
   awk 'NF && $1 !~ /^#/ {print $1}' "$FLEET_FILE"
 }
 
+# READY AND LEAST LOADED, NOT BLIND ROUND-ROBIN. Measured 20:2x: the cursor handed a landing to a
+# box that no longer answered (a reclaimed spot instance) and the whole queue HALTed on "push
+# failed"; every box also hosts four CI runner agents, so the 1-minute load differs threefold across
+# the fleet in any given minute. Each candidate, starting at the cursor, is asked with a short
+# timeout whether it is prepared and what its load is; the prepared box with the lowest load wins
+# and a box that does not answer is skipped, not chosen. The cursor still advances so equal loads
+# spread. A named host is never second-guessed — the allocator is only consulted when nothing was named.
+_fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift; "$@"; fi; }
 fleet_pick_host() {
-  local hosts n cur cursor
+  local hosts n cur cursor h probe best="" bestload=""
   hosts="$(fleet_hosts)"
   n="$(printf '%s\n' "$hosts" | grep -c .)"
   [ "$n" -gt 0 ] || rdie "$FLEET_FILE names no hosts"
@@ -81,7 +84,14 @@ fleet_pick_host() {
   cur="$(cat "$cursor" 2>/dev/null || echo 0)"
   case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
   echo $(( (cur + 1) % n )) > "$cursor" 2>/dev/null || true
-  printf '%s\n' "$hosts" | sed -n "$(( cur % n + 1 ))p"
+  for h in $(printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR>s'; printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR<=s'); do
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove && cut -d" " -f1 /proc/loadavg' </dev/null 2>/dev/null || true)"
+    case "$probe" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    if [ -z "$best" ] || awk -v a="$probe" -v b="$bestload" 'BEGIN { exit !(a + 0 < b + 0) }'; then best="$h"; bestload="$probe"; fi
+  done
+  [ -n "$best" ] || rdie "no prepared, reachable box among the $n in $FLEET_FILE"
+  rlog "fleet: $best chosen (1-min load $bestload)"
+  printf '%s\n' "$best"
 }
 
 # EVERY ARGUMENT IS QUOTED FOR THE REMOTE SHELL. ssh does not exec an argv; it concatenates what it
