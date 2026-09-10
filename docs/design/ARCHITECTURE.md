@@ -606,7 +606,7 @@ pub trait SessionPlane: Plane {
 ```
 The registry requires `SessionPlane` iff any claimed transport declares `SESSION = true`. If
 `encode_refusal` or `encode_end` fails, the kernel emits a kernel-owned minimal end. `Unit { key,
-origin, session, reply_to, byte_counts, frame_counts, leg_results, .. }` is kernel-built. `Ctx { clock,
+origin, session, stream, direction, leg_results, .. }` is kernel-built. `Ctx { clock,
 config, session, transport, labels, arena }`. Minted secrets: `SecretOnce` placeholder (128-bit nonce
 bound to the unit and a declared target location), exactly one occurrence at that location, else
 `Failed(Encode, SecretPlaceholder)` with the mint reversed; never in `ContentFacts`.
