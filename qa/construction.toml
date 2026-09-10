@@ -1211,3 +1211,44 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── DECLARED RAISES ─────────────────────────────────────────────────────────────────────────────
+#
+# `construction:ceiling-rose` refuses every number in `qa/construction.toml` and
+# `qa/kind-isolation.toml` that is higher than it was at the base. There is one landing shape that
+# legitimately raises one, and it is this one: the composition root — a WIRE-PERMITTED kind, the one
+# place in the tree that is allowed to name what it composes — gains vocabulary because it started
+# composing something. A declaration is not a waiver. It names the file, the exact dotted path and
+# BOTH numbers, so it describes one edit rather than a direction; it carries a reason; and it EXPIRES
+# BY ITSELF, because once the commit lands the base carries the new number, the rise disappears, and
+# an entry that describes no rise is refused as stale.
+#
+# The rows below are the composition root mounting the generic duplex acceptor
+# (`crates/busbar/src/root/plane_mount.rs`, `root-duplex-serve`). It is one acceptor for every plane
+# there will ever be, generic over `busbar_contract::transport::session::DuplexWire`, handed the wire
+# the boot seal REGISTERED rather than one it built — so the vocabulary it adds is the root naming
+# the seam it mounts through and the registry it takes the wire off, which is what a composition root
+# IS. Nothing outside `busbar` moved; a rise in a non-permitted crate is coupling and is drained
+# instead of declared.
+#
+# Each `because` names the cell's CRATE and KIND as well as its index, because the ledger is being
+# re-keyed from `cell.N` to `(crate, kind)` and an entry that only knew its ordinal would not survive
+# the re-key.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "cell (crate = \"busbar\", kind = \"contract-transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. `busbar_contract::transport::…` is the seam the acceptor is written against — DuplexWire, SessionBudgets, SessionDriver, SessionEnd — and it is spelled through the contract rather than through the wire's crate precisely so no second transport type is named at the root."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "cell (crate = \"busbar\", kind = \"kernel\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. The one hit is the acceptor's battery asking the registry, by the kernel's own vocabulary, whether the wire it mounts is the entry the boot seal registered — the cell that proves there is exactly one registration."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 31
+because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. The acceptor itself names no wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, and the manifest switch that says this build carries a duplex wire."
