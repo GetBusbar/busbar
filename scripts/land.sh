@@ -679,8 +679,13 @@ EOF
       # Raised for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row —
       # and the cost itself is ratcheted by the gate's own work-unit budget, which is the
       # instrument that notices it growing.
-      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=1800 cargo xtask gate kind-isolation --selftest >/dev/null) \
-        || { echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself)" >&2; return 1; }
+      # THE SELF-TEST'S OWN WORDS ARE THE DIAGNOSIS. Sent to /dev/null, a red here said only "the
+      # gate can no longer prove itself" and the operator re-ran fifteen minutes of proof to learn
+      # which case — on a fleet box, from a session that had already ended.
+      local kslog="$here/target/land-kselftest-$stamp.log"
+      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=1800 cargo xtask gate kind-isolation --selftest >"$kslog" 2>&1) \
+        || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
+             echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
       (cd "$here" && cargo xtask gate kind-isolation) \
         || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; return 1; }
       PROVEN="$PROVEN kind-isolation green;" ;;
