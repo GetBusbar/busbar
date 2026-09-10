@@ -89,7 +89,7 @@ use busbar_contract::{
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
-use busbar_plane_llm::registry::{DialectEntry, DialectRegistry};
+use busbar_plane_llm::registry::DialectRegistry;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
@@ -267,29 +267,38 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         })
     }
 
-    /// One plane's registered dialects' claims, under that plane's key.
+    /// The LLM plane's claims — its own and its registered dialects' — IN LADDER ORDER.
     ///
-    /// Generic over the plane and blind to the dialect: it reads `ladder`, which every entry has,
-    /// and the plane's `KEY`, which the plane has. Adding the next dialect adds a row to
-    /// [`dialects`] and changes nothing here.
-    fn dialect_claims_of<P: PlaneMeta>(
-        entries: &'static [DialectEntry],
-    ) -> impl Iterator<Item = PlaneClaim> {
-        entries
-            .iter()
-            .flat_map(|entry| entry.ladder.iter())
-            .map(|rung| PlaneClaim {
-                plane: P::KEY,
+    /// Blind to the dialect: it asks the sealed plane for its merged walk, which interleaves every
+    /// registered rung at the number it declared, and reads the plane's `KEY`. Adding the next
+    /// dialect adds a row to [`dialects`] and changes nothing here.
+    ///
+    /// WHY THE WALK AND NOT "THE PLANE'S CLAIMS, THEN THE DIALECTS'". Declaration order is what
+    /// breaks a precedence tie, and a plane's declaration order is its LADDER — the order its
+    /// constant read before any rung was carved out. The first two dialects declared path suffixes
+    /// of distinct lengths, so no tie could arise and appending them after the plane's own claims
+    /// sealed the same order the constant had. The third declares HEADER rungs, and a header-present
+    /// claim ties every other header-present claim on specificity: appended, a rung-2 header rung
+    /// sealed BEHIND the plane's own rung-3 header rung, and a request carrying both headers would
+    /// have gone to the wrong vendor. The merged walk is the one order the plane itself decides
+    /// requests by, so it is the one order the seal may carry.
+    fn llm_claims() -> Vec<PlaneClaim> {
+        let mut out = Vec::new();
+        llm_plane().walk_ladder(|rung| {
+            out.push(PlaneClaim {
+                plane: <LlmPlane as PlaneMeta>::KEY,
                 claim: rung.claim,
-            })
+            });
+        });
+        out
     }
 
     // Declaration order is what breaks precedence ties, so the planes are appended in the order the
     // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
     // crate edge is — a claim from a plane this build does not register would name a plane, and a
     // transport, that no request could ever reach.
-    let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()
-        .chain(dialect_claims_of::<LlmPlane>(dialects::LLM))
+    let mut claims: Vec<PlaneClaim> = llm_claims()
+        .into_iter()
         .chain(claims_of::<McpPlane>())
         .chain(claims_of::<A2aPlane>())
         .collect();

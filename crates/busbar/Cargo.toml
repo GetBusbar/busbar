@@ -100,6 +100,9 @@ busbar-plane-llm-openai = { path = "../busbar-plane-llm-openai" }
 # a sibling of the line above, not a feature of it — one vendor's two request surfaces are two
 # dialects, and the boot seals them the same way it would seal two vendors'.
 busbar-plane-llm-responses = { path = "../busbar-plane-llm-responses" }
+# The third dialect, and the first the boot seals whose rungs are HEADERS: the same one line, and
+# not one line of the boot's logic changed for a rung shape the first two dialects did not have.
+busbar-plane-llm-anthropic = { path = "../busbar-plane-llm-anthropic" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }

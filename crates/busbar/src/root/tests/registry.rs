@@ -746,15 +746,17 @@ fn the_boot_serves_the_registered_dialects_rungs() {
     // The rungs by number, so the test says WHICH contests are being answered rather than only that
     // the loop ran. Rung 7 is the tight chat surface; rung 10 is the second, newer request surface
     // of the same vendor, carved out separately because it is a different vocabulary; rung 14 is
-    // the loosest rung the plane has, and the one four separate non-chat paths sit on.
+    // the loosest rung the plane has, and the one four separate non-chat paths sit on. Rungs 2 and
+    // 4 are the first HEADER rungs a dialect crate has declared — above every path rung — and 11
+    // is that dialect's path, reached only when no header claimed the request first.
     let rungs: Vec<u16> = entries
         .iter()
         .flat_map(|e| e.ladder.iter())
         .map(|c| c.rung)
         .collect();
-    assert!(rungs.contains(&7), "rung 7 is not registered");
-    assert!(rungs.contains(&10), "rung 10 is not registered");
-    assert!(rungs.contains(&14), "rung 14 is not registered");
+    for rung in [2u16, 4, 7, 10, 11, 14] {
+        assert!(rungs.contains(&rung), "rung {rung} is not registered");
+    }
 }
 
 /// And the merged ladder resolves EVERY registered dialect's path rungs to the dialect that
@@ -775,7 +777,6 @@ fn the_merged_ladder_answers_for_every_registered_dialect() {
     use busbar_contract::grammar::Selector;
 
     let plane = llm_plane();
-    let no_headers = |_: &str| None;
     let entries = super::super::dialects::LLM;
     assert!(
         !entries.is_empty(),
@@ -786,21 +787,29 @@ fn the_merged_ladder_answers_for_every_registered_dialect() {
     for entry in entries {
         let declared = entry.locations.name;
         for rung in entry.ladder {
-            // The request target IS the selector's own literal: a suffix claim is satisfied by a
-            // path that ends in it, and a substring claim by a path that contains it, so the
-            // tightest honest request for a rung is the rung's own text. The header forms are not
-            // exercised here because no registered dialect declares one; the day one does, this
-            // arm is where it says so rather than being silently skipped.
-            let path = match rung.claim.selector {
-                Selector::PathSuffix(s) | Selector::PathContains(s) => s,
+            // The request IS the selector's own literal. For a path form, a suffix claim is
+            // satisfied by a path that ends in it and a substring claim by a path that contains
+            // it, so the tightest honest request target for a rung is the rung's own text and no
+            // header is sent. For a header form, the request target is one no path rung claims and
+            // the ONE header the rung names is sent with the value the rung asks for — present,
+            // prefixed, or exact — so the header is the only evidence the walk has. Every form a
+            // registered dialect has declared is answered here; a form none has declared yet is
+            // where the next dialect says so rather than being silently skipped.
+            let (path, header): (&str, Option<(&str, &str)>) = match rung.claim.selector {
+                Selector::PathSuffix(s) | Selector::PathContains(s) => (s, None),
+                Selector::HeaderPresent(name) => ("/unclaimed", Some((name, "present"))),
+                Selector::HeaderPrefix(name, prefix) => ("/unclaimed", Some((name, prefix))),
+                Selector::HeaderExact(name, value) => ("/unclaimed", Some((name, value))),
                 _ => continue,
             };
+            let header_fn =
+                |name: &str| -> Option<&str> { header.and_then(|(n, v)| (n == name).then_some(v)) };
             asked += 1;
             assert_eq!(
-                plane.dialect_for(path, &no_headers),
+                plane.dialect_for(path, &header_fn),
                 Some(declared),
-                "the request target {path} is a rung of the registered dialect `{declared}` and \
-                 the merged ladder resolved it elsewhere"
+                "the request target {path} with header {header:?} is a rung of the registered \
+                 dialect `{declared}` and the merged ladder resolved it elsewhere"
             );
             // And the row the plane will decode those bytes with is the registered one, not a
             // neighbour's: answering the claim and holding the vocabulary are two facts.
