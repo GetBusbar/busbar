@@ -1072,18 +1072,12 @@ fn cached_content_tokens_are_not_billed_twice() {
     assert_eq!(u.cached, 800);
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed
-            .usage_units
-            .get(busbar_contract::store::UNIT_INPUT)
-            .copied(),
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
         Some(200),
         "input bills the UNCACHED remainder of the prompt (1000 - 800)"
     );
     assert_eq!(
-        billed
-            .usage_units
-            .get(busbar_contract::store::UNIT_CACHE_READ)
-            .copied(),
+        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
         Some(800),
         "the cached subset bills once, on the cache-read lane"
     );

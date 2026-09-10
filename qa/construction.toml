@@ -249,6 +249,23 @@ file = "qa/kind-isolation.toml"
 by = 72
 because = "busbar-contract x plane. The store-kind face carries the FROZEN VirtualKey wire, which partitions a key's scopes by kind into `allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools` -- field names on a signed, persisted wire that this retirement may not change -- and the battery that pins that wire byte-for-byte spells them again. 72 hits, every one of them moved from busbar-api x plane (107 -> 36), none written; they fall when the store kind is re-implemented on busbar_contract::kinds::Store and the 1.5.5 record leaves."
 
+# THE ABI-2/4 <-> COMPLETE-FACE TRANSLATOR (crates/plugin-loader/src/store_face.rs). The loader is
+# the one crate whose job is to be on both sides of a plugin ABI, so the translator spells the
+# store kind's whole vocabulary at once. Two of its cells rise; both are measured, and both are the
+# translator's own file and nothing else.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.plane.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "busbar-plugin-loader x plane. The completed face's record half is PLANE-named vocabulary -- `PlaneRecord`, `PlaneSelector`, `PlaneDisposition`, `upsert_plane_record` / `get_plane_record` / `list_plane_records` / `delete_plane_record` / `purge_plane_records_before` / `redeem_plane_token` / `plane_token_live` -- and the translator is where the face's `record_put`/`record_get`/`record_scan`/`record_delete`/`record_live`/`purge_before`/`claim_key` are written in terms of them. 10 hits, every one in store_face.rs, and there is no spelling of the 1.5.5 record verbs that does not name them: 55 -> 65."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-plugin-loader x unit. The translator answers the face's `replay_put`/`replay_get` over the SAME sealed replay cache the verbs unit's seam already holds rather than a second copy, so it names `busbar_unit_verbs::store::Store` to reach it -- which is the whole point of not forking the cache. 2 hits, both in store_face.rs: 42 -> 44."
+
 [[gate.ceiling_raises]]
 key = "cell.busbar-contract.control.count"
 file = "qa/kind-isolation.toml"

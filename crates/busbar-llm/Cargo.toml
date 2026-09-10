@@ -75,9 +75,9 @@ webhook-receiver = ["dep:busbar-plugin"]
 # THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP, written dark. DEFAULT OFF,
 # and off is byte-identical to not having them: `src/unit/mod.rs` carries the inner
 # `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to nothing
-# and `busbar-caps` is not linked at all. (`busbar-contract` used to be in the same position and is
-# not any more: the store kind's records are named by the live engine — see the dependency's own
-# note.) The legacy `native_ingress` path is untouched either
+# and the capability crate is not linked at all. (`busbar-contract` used to be in the same position
+# and is not any more: the store kind's records are named by the live engine — see the dependency's
+# own note.) The legacy `native_ingress` path is untouched either
 # way; the two coexist until the composition root flips the matrix leg.
 #
 # It carries `busbar-caps` — the capability vocabulary the loop's step seam is written in
@@ -158,10 +158,10 @@ busbar-caps = { path = "../busbar-caps", optional = true }
 #
 # NOT OPTIONAL any more. It was, and it was enabled only by `teller-waist`, because the only thing
 # that named it was the dark step files. The store records are named by the LIVE engine: they were
-# spelled `busbar_api::<name>` while `busbar-api` re-exported them, and `busbar-api` is being
-# deleted. `busbar-caps` + `busbar-contract` is the PLUGIN-VISIBLE pair, so this is the plane ABI
-# arriving rather than a reach into the kernel — the direction the plane-extraction design already
-# names. `teller-waist` therefore lists `busbar-caps` alone; the feature's own behaviour is
+# spelled `busbar_api::<name>` while `busbar-api` re-exported them, and that re-export is draining.
+# This crate is written against the plugin-visible pair, so the edge is the plane ABI arriving
+# rather than a reach into the kernel — the direction the plane-extraction design already names.
+# `teller-waist` therefore names the capability crate alone; the feature's own behaviour is
 # unchanged and its dark files still compile to nothing with the flag down.
 busbar-contract = { path = "../busbar-contract" }
 

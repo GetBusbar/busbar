@@ -6079,25 +6079,25 @@ fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
     let tier = crate::wire_shim::tier_usage(&tu);
     let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
     assert_eq!(
-        u(busbar_contract::store::UNIT_INPUT),
+        u(busbar_api::UNIT_INPUT),
         10,
         "the INPUT tier must be Bedrock's raw uncached inputTokens (10), NOT input+cache — cache \
          folded into input would over-bill the input rate on cache tokens"
     );
     assert_eq!(
-        u(busbar_contract::store::UNIT_CACHE_READ),
+        u(busbar_api::UNIT_CACHE_READ),
         1000,
         "cache-read tokens must bill under the cache_read tier, not input"
     );
     assert_eq!(
-        u(busbar_contract::store::UNIT_CACHE_WRITE),
+        u(busbar_api::UNIT_CACHE_WRITE),
         200,
         "cache-write tokens must bill under the cache_write tier, not input"
     );
-    assert_eq!(u(busbar_contract::store::UNIT_OUTPUT), 5);
+    assert_eq!(u(busbar_api::UNIT_OUTPUT), 5);
     // The double-count the guard forbids: input must NOT equal input+cache_read+cache_write.
     assert_ne!(
-        u(busbar_contract::store::UNIT_INPUT),
+        u(busbar_api::UNIT_INPUT),
         10 + 1000 + 200,
         "inputTokens must never be treated as cache-INCLUSIVE for Bedrock (additive convention)"
     );

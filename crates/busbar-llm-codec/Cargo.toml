@@ -60,10 +60,6 @@ openapi-schema = []
 # `busbar-plane-llm`'s closure outright. Nothing here may take a `busbar-substrate` edge back.
 busbar-substrate-values = { path = "../busbar-substrate-values", default-features = false }
 busbar-api = { path = "../api" }
-# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
-# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
-# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
-busbar-contract = { path = "../busbar-contract" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost) on the heavy translate cells.
 busbar-timing = { path = "../busbar-timing" }
 # HTTP VOCABULARY ONLY — `StatusCode`, `HeaderMap`, `HeaderName`, `HeaderValue`. This is the crate

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MUTATION-HARDENING: `busbar_contract::store::Store` contract TOTALITY.
+//! MUTATION-HARDENING: `busbar_api::Store` contract TOTALITY.
 //!
 //! Every `Store` method's DEFAULT body carries real logic (an error, an empty list, a no-op, a
 //! sequential compose), and none of it was exercised anywhere in the crate before this file: a
@@ -15,13 +15,12 @@
 //! This is an INTEGRATION test (crates/api/tests/, auto-discovered by Cargo — the crate's existing
 //! convention of `#[cfg(test)] #[path = "tests/x.rs"] mod tests;` inline unit tests is left
 //! untouched; no `mod` line needs to be added anywhere for this file to run). It exercises only the
-//! kind face's public surface (`busbar_contract::store::*`), same as any out-of-tree Store-plugin
-//! author would.
+//! crate's public surface (`busbar_api::*`), same as any out-of-tree Store-plugin author would.
 //!
 //! `Bare` implements ONLY the eight REQUIRED `Store` methods — every other method here is exercised
 //! at its DEFAULT, unmodified body.
 
-use busbar_contract::store::{
+use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRequestCtx, PlaneSelector, SecretForm, Store, StoreError, StoreResult,
     UsageLedger, VirtualKey,

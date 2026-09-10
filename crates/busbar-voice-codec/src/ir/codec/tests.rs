@@ -946,18 +946,12 @@ fn cached_input_tokens_are_not_billed_twice() {
     // The BILLING fold is where the subset is netted out.
     let billed = u.to_billing_usage();
     assert_eq!(
-        billed
-            .usage_units
-            .get(busbar_contract::store::UNIT_INPUT)
-            .copied(),
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
         Some(200),
         "input bills the UNCACHED remainder (1000 - 800), not the full input figure"
     );
     assert_eq!(
-        billed
-            .usage_units
-            .get(busbar_contract::store::UNIT_CACHE_READ)
-            .copied(),
+        billed.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
         Some(800),
         "the cached subset bills once, on the cache-read lane"
     );
