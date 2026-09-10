@@ -34,45 +34,12 @@ use busbar_api::{
 
 use crate::config::groups::LimitMetric;
 
-/// The label DOMAIN prefix stamped on every OPEN-unit component so an open unit named like a reserved
-/// tier's label (`Prompt`/`Output`/`Cache read`/`Cache write`) or like the `service_tier` surcharge
-/// can NEVER collide with them inside [`crate::plane::cost::CostBreakdown::new`] (which rejects
-/// duplicate labels). Without this a request carrying an open unit literally named `Prompt` or
-/// `service_tier` would fail to price at all — a denial-of-service on the response (fix 2b).
-const OPEN_LABEL_PREFIX: &str = "unit:";
-
-/// The operator-facing component label for one reserved tier. The pricer is the ONE place these
-/// display names live; the ledger/map speaks only the canonical `input`/`output`/… keys.
-fn reserved_label(unit: &str) -> &'static str {
-    match unit {
-        UNIT_INPUT => "Prompt",
-        UNIT_OUTPUT => "Output",
-        UNIT_CACHE_READ => "Cache read",
-        UNIT_CACHE_WRITE => "Cache write",
-        _ => "",
-    }
-}
-
 /// Nano-units (1e-9 abstract cost unit) per cent (1e-2 unit): the divisor that lands a derived
 /// nano-unit total in whole cents.
 const NANOS_PER_CENT: u128 = 10_000_000;
 
 /// Nano-units per micro-unit, for the hook seam's `spend_micros` projection.
 const NANOS_PER_MICRO: u128 = 1_000;
-
-/// The service-tier multiplier basis points for the neutral `standard` tier: ×1.0000. A tier's
-/// config multiplier resolves to integer basis points (×10_000) at load; the one pricer applies it
-/// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified.md`).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const STANDARD_TIER_BP: u32 = 10_000;
-
-/// The OPEN-key nano-rate table for one model: `open key → nano-units per unit`. Rides a separate
-/// `Arc<BTreeMap>` on the rate card (never inside the `Copy` [`RateNanos`]), looked up ONLY when a
-/// `usage_units` map carries an open key — so `RateNanos` stays `Copy` and the no-extras request
-/// allocates nothing (`billing-unified.md` §9.1). In 1.6.0 M1 the pricer accepts this table; config population of the
-/// per-model open rates is a designed later-milestone residual (today callers pass an empty table).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) type ExtraRates = std::collections::BTreeMap<String, u64>;
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
@@ -184,113 +151,6 @@ impl RateNanos {
             acc + (n as u128) * (self.reserved_rate(u) as u128)
         })
     }
-}
-
-/// THE ONE ENFORCEMENT PRICER every plane's neutral [`busbar_substrate::billing::Usage`] reaches
-/// (§4.1 of `billing-unified.md`). Since M1b `Usage` is a SINGLE name-keyed map: the reserved four
-/// price via the [`RateNanos`] tiers (looked up by canonical key through [`RateNanos::reserved_rate`],
-/// the SAME arithmetic [`RateNanos::reserved_nanos`] gives the enforcement/derive summation), and
-/// every OPEN key prices via an OPAQUE `extras.get(k)` lookup. Each priced key becomes at most one
-/// DISJOINT top-level [`CostComponent`], so `Σ top_level == total` holds by [`CostBreakdown::new`]
-/// construction — no post-hoc scalar ever touches `total`.
-///
-/// `tier_bp` is the resolved service-tier multiplier in basis points ([`STANDARD_TIER_BP`] = ×1):
-/// a surcharge (`> 10_000`) adds one top-level `service_tier` line (`base × (mult − 1)`); a discount
-/// (`< 10_000`) is a SINGLE divide of the summed nanos distributed as per-component marginals
-/// (`Σ == floor(base × bp / 10_000)`, never the sum of per-component floors) — both keep exact-sum
-/// (`billing-unified.md` §7.1, fix 2a).
-///
-/// Present-but-unpriced open key ⇒ NEVER a silent $0 (`billing-unified.md` §9.2): a `BUSBAR-3021` WARN, and the key is
-/// omitted (fail-closed to VISIBLE, not to hidden free usage), never a zero component. Open-unit
-/// labels are namespaced ([`OPEN_LABEL_PREFIX`]) so an adversarial open name can never collide with a
-/// reserved/surcharge label and fail the whole breakdown (fix 2b).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn price(
-    rate: &RateNanos,
-    extras: &ExtraRates,
-    tier_bp: u32,
-    usage: &busbar_substrate::billing::Usage,
-) -> Result<crate::plane::cost::CostBreakdown, crate::plane::cost::CostError> {
-    use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
-
-    // Assemble the UNDISCOUNTED (label, nanos) components in deterministic order: the reserved four
-    // first (canonical order, priced via the `RateNanos` tiers), then the OPEN keys (BTreeMap sorted,
-    // priced by OPAQUE `extras.get(k)` lookup). Every open label is NAMESPACED under
-    // `OPEN_LABEL_PREFIX` so it can never collide with a reserved tier's label or the `service_tier`
-    // surcharge label — the duplicate-label DoS fix (2b). A present-but-unpriced open is OMITTED with
-    // a WARN, never a silent $0 (`billing-unified.md` §9.2). A zero-nanos component is dropped (no-zero-component
-    // invariant).
-    let mut raw: Vec<(String, u128)> = Vec::with_capacity(usage.usage_units.len() + 1);
-    for u in RESERVED_UNITS {
-        let n = usage.usage_units.get(u).copied().unwrap_or(0);
-        let amt = u128::from(n).saturating_mul(u128::from(rate.reserved_rate(u)));
-        if amt != 0 {
-            raw.push((reserved_label(u).to_string(), amt));
-        }
-    }
-    for (k, n) in &usage.usage_units {
-        if RESERVED_UNITS.contains(&k.as_str()) {
-            continue; // priced above via the tier rates, never as an open
-        }
-        match extras.get(k) {
-            Some(&r) => {
-                let amt = u128::from(*n).saturating_mul(u128::from(r));
-                if amt != 0 {
-                    raw.push((format!("{OPEN_LABEL_PREFIX}{k}"), amt));
-                }
-            }
-            None => {
-                tracing::warn!(
-                    code = "BUSBAR-3021",
-                    usage_key = %k,
-                    "present-but-unpriced usage key; omitted (never a silent $0)"
-                );
-            }
-        }
-    }
-
-    let base_total: u128 = raw.iter().fold(0u128, |a, (_, amt)| a.saturating_add(*amt));
-    let mut components: Vec<CostComponent> = Vec::with_capacity(raw.len() + 1);
-
-    let total: u128 = if tier_bp < STANDARD_TIER_BP {
-        // DISCOUNT — SINGLE-DIVIDE (fix 2a). The per-component discounted amounts are the MARGINAL
-        // deltas of the cumulative discounted running sum, so `Σ components == floor(base_total × bp
-        // / 10_000)` EXACTLY — byte-identical to discounting the summed nanos ONCE, never the sum of
-        // per-component integer floors (which under-charges a multi-component discount). The undiscounted
-        // running sum keeps advancing even when a marginal amount rounds to 0 (that component is just
-        // omitted), so the exact-sum invariant holds regardless.
-        let mut running: u128 = 0;
-        let mut prev_disc: u128 = 0;
-        for (label, amt) in raw {
-            running = running.saturating_add(amt);
-            let cum_disc =
-                running.saturating_mul(u128::from(tier_bp)) / u128::from(STANDARD_TIER_BP);
-            let marginal = cum_disc - prev_disc;
-            prev_disc = cum_disc;
-            if marginal != 0 {
-                components.push(CostComponent::top(label, CostAmount(marginal)));
-            }
-        }
-        prev_disc
-    } else {
-        // STANDARD (×1) or SURCHARGE (×>1): each component bills its undiscounted amount; a surcharge
-        // adds ONE top-level `service_tier` line so `Σ = base + surcharge = base × mult = total`.
-        for (label, amt) in raw {
-            components.push(CostComponent::top(label, CostAmount(amt)));
-        }
-        let mut t = base_total;
-        if tier_bp > STANDARD_TIER_BP {
-            let surcharge = base_total.saturating_mul(u128::from(tier_bp - STANDARD_TIER_BP))
-                / u128::from(STANDARD_TIER_BP);
-            if surcharge != 0 {
-                components.push(CostComponent::top("service_tier", CostAmount(surcharge)));
-                t = t.saturating_add(surcharge);
-            }
-        }
-        t
-    };
-
-    CostBreakdown::new(CostAmount(total), components)
 }
 
 /// One (group, window, pool?) ENFORCEMENT BUCKET, resolved from the group's windowed limits:
