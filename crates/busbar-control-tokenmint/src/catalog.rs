@@ -123,20 +123,5 @@ pub const ENTRIES: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_catalog_is_well_formed_and_every_code_is_namespaced() {
-        let c = catalog();
-        c.check().expect("well-formed");
-        assert_eq!(c.entries.as_slice().len(), ENTRIES.len());
-        for (code, _) in ENTRIES {
-            assert!(code.starts_with("tokenmint."), "{code}");
-            assert!(
-                c.template(code, "de").is_some(),
-                "{code} falls back to the default locale"
-            );
-        }
-    }
-}
+#[path = "tests/catalog_tests.rs"]
+mod catalog_tests;
