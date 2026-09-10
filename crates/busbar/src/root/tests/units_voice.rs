@@ -2695,8 +2695,8 @@ fn a_session_that_ends_closes_once_and_takes_its_open_calls_with_it() {
     // frame. The two after it find a session that has already ended. (The tool call above settles
     // nothing at all: the half that hands a call over is not the half that finishes it.)
     for n in 0..3 {
-        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
-            .charging_through(ungoverned());
+        let next =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &next) else {
             panic!("the exit settles it");
         };
