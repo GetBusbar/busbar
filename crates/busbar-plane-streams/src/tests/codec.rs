@@ -14,7 +14,7 @@ use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Sessio
 use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
-use crate::claims::Dialect;
+use crate::dialect;
 use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
 use crate::{Upstream, VoicePlane};
 
@@ -22,7 +22,7 @@ fn openai_plane() -> VoicePlane {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     }];
     VoicePlane::new(UPSTREAMS)
 }
@@ -536,7 +536,7 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -549,7 +549,7 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
     // more; the CODEC is what this cell is about and it is untouched. Binding the state here is
     // what an arrival on a registered telephony transport would do.
     let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
-        Dialect::TwilioMediaStreams,
+        &crate::twilio::TWILIO_MEDIA_STREAMS,
     ));
 
     let start = serde_json::to_vec(&json!({
@@ -580,6 +580,18 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
         .decode_ingress(&mut cursor2, Some(&mut state), &c)
         .expect("media decodes");
     assert!(matches!(ingress2, Ingress::Open(_)));
+
+    // AND BYTES THAT ARE NOT THIS ENVELOPE AT ALL are refused at the step that read them, with no
+    // unit to have been given a class. This assertion used to live in the composition root's own
+    // tests for this plane, where it named a vendor variant of a plane enum — a root cell spelling
+    // an INSTANCE. What it asserts is a property of the dialect's own reader, so it is asserted
+    // where that reader is.
+    let frames3 = [frame(b"not this envelope at all")];
+    let mut cursor3 = FrameCursor::new(&frames3);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor3, Some(&mut state), &c),
+        Err(busbar_contract::wire::Decode::Malformed)
+    );
 }
 
 #[test]
@@ -587,7 +599,7 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -600,7 +612,7 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     // more; the CODEC is what this cell is about and it is untouched. Binding the state here is
     // what an arrival on a registered telephony transport would do.
     let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
-        Dialect::TwilioMediaStreams,
+        &crate::twilio::TWILIO_MEDIA_STREAMS,
     ));
 
     let start = serde_json::to_vec(&json!({
@@ -642,7 +654,7 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -651,7 +663,7 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
     let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
-        Dialect::TwilioMediaStreams,
+        &crate::twilio::TWILIO_MEDIA_STREAMS,
     ));
 
     let dtmf = serde_json::to_vec(&json!({
@@ -686,7 +698,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -695,7 +707,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
     let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
-        Dialect::TwilioMediaStreams,
+        &crate::twilio::TWILIO_MEDIA_STREAMS,
     ));
 
     let unknown = serde_json::to_vec(&json!({

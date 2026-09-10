@@ -54,6 +54,7 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+pub mod dialect;
 pub mod governed;
 pub mod meta;
 pub mod oneshot;
@@ -69,7 +70,7 @@ mod tests;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-use claims::Dialect;
+use dialect::Dialect;
 
 /// One configured upstream this plane may dial or pair a claim against.
 ///
@@ -82,11 +83,10 @@ pub struct Upstream {
     pub lane: LaneId,
     /// The host to dial.
     pub host: &'static str,
-    /// Which dialect the upstream speaks. Always one of the two duplex dialects this plane can
-    /// DIAL — `openai-realtime` or `gemini-live`. Twilio and the one-shot dialects are ingress-only
-    /// claims; a unit that arrives on them is routed to one of these two upstreams, never dialed as
-    /// one itself.
-    pub dialect: Dialect,
+    /// Which dialect the upstream speaks — a row of [`dialect`]'s table, never a variant. Always
+    /// one whose [`Dialect::duplex_upstream`] is true: a carrier or one-shot claim is ingress only,
+    /// and a unit that arrives on one is routed to one of these upstreams, never dialed as one.
+    pub dialect: &'static Dialect,
 }
 
 /// The voice plane.
@@ -123,7 +123,7 @@ impl VoicePlane {
     /// First match wins, the declaration order the operator wrote. Choosing among several when more
     /// than one qualifies is the trust unit's and the ranking hooks' business, not this plane's.
     #[must_use]
-    pub fn upstream_for_dialect(&self, dialect: Dialect) -> Option<&'static Upstream> {
+    pub fn upstream_for_dialect(&self, dialect: &Dialect) -> Option<&'static Upstream> {
         self.upstreams.iter().find(|u| u.dialect == dialect)
     }
 }

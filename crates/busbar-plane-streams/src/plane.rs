@@ -79,16 +79,17 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 use busbar_voice_codec::ir::config;
 use busbar_voice_codec::ir::control::IrDuplexControl;
 use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use busbar_voice_codec::ir::media::AudioFormat;
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 
-use crate::claims::{self, Dialect};
+use crate::claims;
+use crate::dialect::{self, Dialect};
 use crate::meta;
 use crate::session::{Pending, VoiceSessionState};
-use crate::{twilio, ulaw, VoicePlane};
+use crate::VoicePlane;
 
 /// The transport fact key the request path is published under.
 ///
@@ -112,26 +113,28 @@ pub const TOOL_REPLY_DEADLINE_SECS: u32 = 30;
 
 /// Both duplex dialects' reader, boxed so the same call site works for either without a generic
 /// parameter leaking into every method signature. Cheap: both codecs are zero-sized.
-fn reader_for(dialect: Dialect) -> Box<dyn DuplexReader> {
-    match dialect {
-        Dialect::GeminiLive => Box::new(GeminiLiveCodec),
-        _ => Box::new(OpenAiRealtimeCodec),
+fn reader_for(dialect: &Dialect) -> Box<dyn DuplexReader> {
+    if dialect.name == dialect::NAME_GEMINI_LIVE {
+        Box::new(GeminiLiveCodec)
+    } else {
+        Box::new(OpenAiRealtimeCodec)
     }
 }
 
 /// See [`reader_for`].
-fn writer_for(dialect: Dialect) -> Box<dyn DuplexWriter> {
-    match dialect {
-        Dialect::GeminiLive => Box::new(GeminiLiveCodec),
-        _ => Box::new(OpenAiRealtimeCodec),
+fn writer_for(dialect: &Dialect) -> Box<dyn DuplexWriter> {
+    if dialect.name == dialect::NAME_GEMINI_LIVE {
+        Box::new(GeminiLiveCodec)
+    } else {
+        Box::new(OpenAiRealtimeCodec)
     }
 }
 
 impl VoicePlane {
     /// The upstream a fresh session's Unit 0 dials, given the dialect it arrived on. See the module
     /// doc comment's "verify's upstream pick" note.
-    fn default_upstream(&self, arriving: Dialect) -> Option<&'static crate::Upstream> {
-        if arriving.is_duplex_upstream() {
+    fn default_upstream(&self, arriving: &Dialect) -> Option<&'static crate::Upstream> {
+        if arriving.duplex_upstream {
             if let Some(u) = self.upstream_for_dialect(arriving) {
                 return Some(u);
             }
@@ -158,14 +161,13 @@ impl Plane for VoicePlane {
                     .get_mut::<VoiceSessionState>()
                     .ok_or(Decode::MissingDeclaredFact)?;
                 let dialect = state.dialect.ok_or(Decode::MissingDeclaredFact)?;
-                match dialect {
-                    Dialect::TwilioMediaStreams => decode_twilio_frame(frames, state, ctx),
-                    Dialect::OpenaiRealtime | Dialect::GeminiLive => {
-                        decode_ws_frame(frames, state, dialect, ctx)
-                    }
-                    Dialect::OneShotTranscribe | Dialect::OneShotTts => {
-                        Err(Decode::UnsupportedOperation)
-                    }
+                // ONE LOOKUP, NO BRANCH ON A NAME. A dialect that brings its own envelope reads its
+                // own frames; one that does not rides the shared duplex codec. A claim that is not
+                // a streaming dialect at all has no row and no envelope, and there is nothing here
+                // for it to be read as.
+                match dialect.envelope {
+                    Some(envelope) => (envelope.decode_ingress)(frames, state, ctx),
+                    None => decode_ws_frame(frames, state, dialect, ctx),
                 }
             }
         }
@@ -215,38 +217,14 @@ impl Plane for VoicePlane {
             .ok_or(Encode::Poisoned)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
 
-        let client_event = match client_dialect {
-            Dialect::TwilioMediaStreams => {
-                // The documented seam: the µ-law -> PCM16 transform happens HERE, never at decode.
-                let event = match twilio::decode(f.bytes.as_slice()) {
-                    Ok(event) => event,
-                    // The same forward-compatibility rule the decode step takes: an event this
-                    // reader does not model carries no audio to relay, and is not a reason to end
-                    // the call.
-                    Err(twilio::TwilioError::UnknownEvent(_)) => return Ok(None),
-                    Err(_) => return Err(Encode::Unrepresentable),
-                };
-                match event {
-                    twilio::TwilioEvent::Media { payload, .. } => {
-                        // Priced from the raw carrier payload, before the transform below widens
-                        // it: what the caller spoke is µ-law on this dialect's wire.
-                        let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
-                        state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
-                        let pcm = ulaw::decode_frame(&payload);
-                        IrClientEvent::AudioFrame(IrAudioFrame {
-                            dir: UpDown::Up,
-                            seq: state.codec.next_up_seq(),
-                            media: bytes::Bytes::from(pcm),
-                            // A carrier media frame names no conversation item.
-                            origin: IrAudioRef::default(),
-                        })
-                    }
-                    // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are
-                    // fully handled at decode; nothing is relayed onward for them.
-                    _ => return Ok(None),
-                }
-            }
-            _ => match state.pending.take() {
+        let client_event = match client_dialect.envelope {
+            // A dialect with its own envelope relays its own frame, and takes its own uplink meter
+            // while the payload is still in its own format.
+            Some(envelope) => match (envelope.relay_ingress)(f.bytes.as_slice(), state)? {
+                Some(event) => event,
+                None => return Ok(None),
+            },
+            None => match state.pending.take() {
                 Some(Pending::Ingress(ev)) => ev,
                 // Nothing stashed. Either decode answered the frame fully (a control event with
                 // nothing to relay) or the stash was left on another half of the session, which is
@@ -270,8 +248,9 @@ impl Plane for VoicePlane {
         // from a half it was never written to and every second the caller spoke metered at zero.
         // Counting where the audio actually leaves also means audio this node never relayed is
         // audio nobody is charged for.
-        // Twilio's own uplink was counted from its carrier payload above, before the transform.
-        if client_dialect != Dialect::TwilioMediaStreams {
+        // A dialect that declares `meters_own_uplink` counted its own carrier payload above,
+        // before the transform; counting again here would double every second it admitted.
+        if !client_dialect.meters_own_uplink {
             if let IrClientEvent::AudioFrame(f) = &client_event {
                 // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
                 let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
@@ -385,14 +364,14 @@ impl Plane for VoicePlane {
     }
 
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
-        // Twilio, OpenAI Realtime and Gemini Live all authenticate once at session open and cache
-        // the result for the session's life (`claims::Dialect::authenticates_from_session`); the two
+        // Every streaming dialect authenticates once at session open and caches the result for the
+        // session's life (`dialect::Dialect::authenticates_from_session`, a row field); the two
         // one-shot HTTP operations present a credential on the one request they are. The dialect is
         // the draft's own fact, sealed onto the unit by the kernel, so this step reads what decode
         // determined rather than a session fact that a one-shot unit does not have at all.
         CredentialLocator {
             narrowing: None,
-            from_session: draft_dialect(u).is_some_and(Dialect::authenticates_from_session),
+            from_session: draft_dialect(u).is_some_and(|d| d.authenticates_from_session),
         }
     }
 
@@ -424,7 +403,7 @@ impl Plane for VoicePlane {
             };
         }
         // The dialect the decode step named, off the unit's own sealed draft facts.
-        let arriving = draft_dialect(u).unwrap_or(Dialect::OpenaiRealtime);
+        let arriving = draft_dialect(u).unwrap_or(&dialect::OPENAI_REALTIME);
         match self.default_upstream(arriving) {
             Some(up) => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
@@ -544,7 +523,7 @@ impl Plane for VoicePlane {
         let mut facts = Facts::new();
         let count = ctx
             .arena()
-            .alloc_str(&claims::DIALECT_CLAIMS.len().to_string())
+            .alloc_str(&dialect::count().to_string())
             .map_err(|_| Decode::Oversize)?;
         facts
             .set("dialect_count", FactValue::Str(count))
@@ -574,7 +553,8 @@ impl SessionPlane for VoicePlane {
             .transport()
             .fact(FACT_PATH)
             .and_then(claims::dialect_for)
-            .unwrap_or(Dialect::OpenaiRealtime);
+            .and_then(dialect::dialect)
+            .unwrap_or(&dialect::OPENAI_REALTIME);
         PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
     }
 
@@ -601,9 +581,12 @@ impl SessionPlane for VoicePlane {
     ) -> Option<SessionParams<'p>> {
         let state = st.get_mut::<VoiceSessionState>()?;
         if state.params.is_empty() {
-            let locked = match state.dialect {
-                Some(Dialect::TwilioMediaStreams) => config::g711_config(),
-                _ => declared_defaults(ctx),
+            // The posture is the dialect's own declaration, read off its row: a dialect that locks
+            // one opens on it and nothing may resample it; every other dialect opens on the
+            // deployment's declared defaults.
+            let locked = match state.dialect.and_then(|d| d.locked_session_config) {
+                Some(locked) => locked(),
+                None => declared_defaults(ctx),
             };
             state.params = serde_json::to_vec(&locked).ok()?;
         }
@@ -696,19 +679,19 @@ fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str
 /// this plane's configured upstream list. Falls back to OpenAI Realtime (the more common of the two
 /// and this plane's documented default elsewhere) when the destination is a `SessionUpstream` this
 /// function cannot resolve a host for, or names no configured upstream at all.
-fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Dialect {
+fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> &'static Dialect {
     match dest.facts() {
         DestinationFacts::Upstream { address, .. } => plane
             .upstreams()
             .iter()
             .find(|u| Some(u.host) == address.authority())
             .map(|u| u.dialect)
-            .unwrap_or(Dialect::OpenaiRealtime),
+            .unwrap_or(&dialect::OPENAI_REALTIME),
         _ => plane
             .upstreams()
             .first()
             .map(|u| u.dialect)
-            .unwrap_or(Dialect::OpenaiRealtime),
+            .unwrap_or(&dialect::OPENAI_REALTIME),
     }
 }
 
@@ -717,30 +700,18 @@ fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> Diale
 /// The one place this plane's later steps ask what dialect a unit is: decode is the step that read
 /// the bytes and matched the claim, and what it determined travels on the unit. A one-shot unit has
 /// no session at all, so a session fact could not have answered for it.
-fn draft_dialect(u: &Unit<'_>) -> Option<Dialect> {
+fn draft_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
     match u.draft_facts().get(meta::FACT_DIALECT) {
-        Some(FactValue::Str(name)) => dialect_from_name(name),
+        Some(FactValue::Str(name)) => dialect::dialect(name),
         _ => None,
     }
 }
 
 /// The client's own dialect, read back off the session fact this plane declared (`SESSION_FACTS`).
-fn client_dialect_from_session<'u>(ctx: &Ctx<'u>) -> Option<Dialect> {
+fn client_dialect_from_session<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
     ctx.session()
         .and_then(|s| s.session_fact(meta::FACT_DIALECT))
-        .and_then(dialect_from_name)
-}
-
-/// The inverse of [`Dialect::name`].
-fn dialect_from_name(name: &str) -> Option<Dialect> {
-    match name {
-        "openai-realtime" => Some(Dialect::OpenaiRealtime),
-        "gemini-live" => Some(Dialect::GeminiLive),
-        "twilio-media-streams" => Some(Dialect::TwilioMediaStreams),
-        "transcribe" => Some(Dialect::OneShotTranscribe),
-        "tts" => Some(Dialect::OneShotTts),
-        _ => None,
-    }
+        .and_then(dialect::dialect)
 }
 
 /// Every body pointer this plane declares: none.
@@ -765,22 +736,24 @@ fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<In
         .fact(FACT_PATH)
         .ok_or(Decode::MissingDeclaredFact)?;
     let dialect = claims::dialect_for(path).ok_or(Decode::UnsupportedOperation)?;
+    // The two one-shot names are strings and have no dialect row: they are HTTP operations, not
+    // streaming dialects (see `claims`'s own header).
     let op = match dialect {
-        Dialect::OneShotTranscribe => OpClassId::new("transcribe"),
-        Dialect::OneShotTts => OpClassId::new("tts"),
+        claims::TRANSCRIBE => OpClassId::new(claims::TRANSCRIBE),
+        claims::TTS => OpClassId::new(claims::TTS),
         _ => return Err(Decode::UnsupportedOperation),
     };
     let frame = frames.next_frame();
     let body: &'u [u8] = frame.map(|f| f.bytes.as_slice()).unwrap_or(&[]);
     let mut facts = Facts::new();
     facts
-        .set(meta::FACT_DIALECT, FactValue::Str(dialect.name()))
+        .set(meta::FACT_DIALECT, FactValue::Str(dialect))
         .map_err(|_| Decode::Oversize)?;
     // What a text-to-speech request is priced on is the text it asks to be spoken, and that text is
     // in the request rather than in the answer. Decode is the step that reads the request's bytes,
     // so the figure is taken here and travels on the unit; the metering step reads it back off the
     // draft rather than opening the body a second time.
-    if dialect == Dialect::OneShotTts {
+    if dialect == claims::TTS {
         if let Some(text) = crate::oneshot::tts_input_text(body) {
             facts
                 .set(
@@ -817,13 +790,13 @@ fn decode_one_shot_response<'u>(
         .fact(FACT_PATH)
         .ok_or(Decode::MissingDeclaredFact)?;
     let dialect = claims::dialect_for(path).ok_or(Decode::UnsupportedOperation)?;
-    if !matches!(dialect, Dialect::OneShotTranscribe | Dialect::OneShotTts) {
+    if !matches!(dialect, claims::TRANSCRIBE | claims::TTS) {
         return Err(Decode::UnsupportedOperation);
     }
     let frame = frames.next_frame();
     let body: &'u [u8] = frame.map(|f| f.bytes.as_slice()).unwrap_or(&[]);
     let mut facts = Facts::new();
-    if dialect == Dialect::OneShotTranscribe {
+    if dialect == claims::TRANSCRIBE {
         if let Some(text) = transcript_text(body) {
             facts
                 .set(
@@ -861,7 +834,7 @@ fn transcript_text(body: &[u8]) -> Option<String> {
 fn decode_ws_frame<'u>(
     frames: &mut FrameCursor<'u>,
     state: &mut VoiceSessionState,
-    dialect: Dialect,
+    dialect: &'static Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
@@ -890,86 +863,6 @@ fn decode_ws_frame<'u>(
     ingress_from_client_event(event, state, dialect, ctx)
 }
 
-/// Decode one frame of a `twilio-media`-carried session.
-fn decode_twilio_frame<'u>(
-    frames: &mut FrameCursor<'u>,
-    state: &mut VoiceSessionState,
-    ctx: &Ctx<'u>,
-) -> Result<Ingress<'u>, Decode> {
-    let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-    let event = match twilio::decode(frame.bytes.as_slice()) {
-        Ok(event) => event,
-        // An event name this reader does not model is not a broken frame: this carrier adds events
-        // over time and tells its clients to ignore the ones they do not know, and the WS transport
-        // under this session already discards what it cannot place. Refusing the session over one
-        // would drop a live call the day the carrier ships a new lifecycle event. A frame that is
-        // not this carrier's JSON at all is still a refusal.
-        Err(twilio::TwilioError::UnknownEvent(_)) => {
-            return Ok(Ingress::Discard {
-                reason: DiscardCode::Unsupported,
-            })
-        }
-        Err(_) => return Err(Decode::Malformed),
-    };
-    match event {
-        // Lifecycle events with no audio and nothing left to bind: consumed, no unit, no state
-        // change beyond what `Start` below records.
-        twilio::TwilioEvent::Connected => Ok(Ingress::Discard {
-            reason: DiscardCode::Unsupported,
-        }),
-        twilio::TwilioEvent::Start { stream_sid, .. } => {
-            state.twilio_stream_sid = Some(stream_sid);
-            state.dialect = Some(Dialect::TwilioMediaStreams);
-            Ok(Ingress::Discard {
-                reason: DiscardCode::Unsupported,
-            })
-        }
-        twilio::TwilioEvent::Media {
-            stream_sid,
-            payload,
-        } => {
-            // The forgery/replay guard the architecture note for this dialect names: a `media`
-            // frame naming a `streamSid` other than the one `start` bound is discarded, not
-            // refused — it costs nothing and ends no unit, exactly what a discard is for.
-            if state.twilio_stream_sid.as_deref() != Some(stream_sid.as_str()) {
-                return Ok(Ingress::Discard {
-                    reason: DiscardCode::ForgedSource,
-                });
-            }
-            // Counted at the relay seam, not here: see `encode_ingress_frame`. A frame that OPENS
-            // the turn is the one exception — it becomes the unit's own egress body and never
-            // reaches that seam — so its milliseconds travel on the draft the unit is minted from.
-            let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
-            let arena_bytes = ctx
-                .arena()
-                .alloc_bytes(&payload)
-                .map_err(|_| Decode::Oversize)?;
-            open_or_relay(
-                state,
-                Dialect::TwilioMediaStreams,
-                arena_bytes,
-                None,
-                Some(ms),
-                ctx,
-            )
-        }
-        twilio::TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
-            reason: DiscardCode::Unsupported,
-        }),
-        twilio::TwilioEvent::Dtmf { .. } => Ok(Ingress::Discard {
-            reason: DiscardCode::Unsupported,
-        }),
-        twilio::TwilioEvent::Stop => {
-            let for_ = state.turn_correlation;
-            let _ = state.close_turn();
-            Ok(Ingress::Close {
-                for_,
-                facts: Box::new(Facts::new()),
-            })
-        }
-    }
-}
-
 /// Turn one decoded client→server IR event into an `Ingress` answer, for the two WS dialects.
 ///
 /// Any client event — audio, control or a tool result — opens the turn if none is open yet: a
@@ -979,7 +872,7 @@ fn decode_twilio_frame<'u>(
 fn ingress_from_client_event<'u>(
     event: IrClientEvent,
     state: &mut VoiceSessionState,
-    dialect: Dialect,
+    dialect: &'static Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     // A tool RESULT is not a frame of the conversation; it is the answer to a call the upstream
@@ -1035,9 +928,9 @@ fn ingress_from_client_event<'u>(
 /// flight — so a barge-in delivered as one more frame of the very turn it interrupts named the
 /// superseded unit to nobody: the interrupted turn kept the direction's slot and kept pricing while
 /// the caller was already talking over it, and the turn that took over could never open.
-fn open_or_relay<'u>(
+pub fn open_or_relay<'u>(
     state: &mut VoiceSessionState,
-    dialect: Dialect,
+    dialect: &Dialect,
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
     audio_ms: Option<u64>,
@@ -1064,7 +957,7 @@ fn open_or_relay<'u>(
             );
         }
         let correlation = state.open_turn();
-        let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
+        let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name));
         let ir = view(relay.as_slice(), ctx)?;
         Ok(Ingress::Open(Box::new(UnitDraft {
             op: OpClassId::new("duplex_turn"),
@@ -1087,7 +980,7 @@ fn open_or_relay<'u>(
 fn progress_from_server_event<'u>(
     event: IrServerEvent,
     state: &mut VoiceSessionState,
-    client_dialect: Dialect,
+    client_dialect: &Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Progress<'u>, Decode> {
     let for_ = state.turn_correlation;
@@ -1172,19 +1065,14 @@ fn progress_from_server_event<'u>(
             // per-frame owner put back exactly the allocation per frame the renderer exists to
             // remove — the renderer's committed zero was true of the renderer and false of its only
             // caller.
-            let bytes = match client_dialect {
-                Dialect::TwilioMediaStreams => {
-                    let mulaw = ulaw::encode_frame(&f.media);
-                    // Taken and handed straight back, because the identifier beside it is borrowed
-                    // from the same state.
-                    let mut out = core::mem::take(&mut state.render_buf);
-                    let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
-                    twilio::encode_media_into(&mut out, sid, &mulaw);
-                    let bytes = ctx.arena().alloc_bytes(&out).map_err(|_| Decode::Oversize);
-                    state.render_buf = out;
-                    bytes?
+            let bytes = match client_dialect.envelope {
+                Some(envelope) => {
+                    (envelope.render_downlink_audio)(state, &f.media);
+                    ctx.arena()
+                        .alloc_bytes(&state.render_buf)
+                        .map_err(|_| Decode::Oversize)?
                 }
-                _ => {
+                None => {
                     let rendered = writer
                         .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
                         .ok_or(Decode::Malformed)?

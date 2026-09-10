@@ -7,7 +7,7 @@
 use busbar_contract::ids::{CorrelationRef, CorrelationValue};
 use busbar_voice_codec::ir::{DecodeState, IrClientEvent};
 
-use crate::claims::Dialect;
+use crate::dialect::Dialect;
 
 /// One pending, already-decoded IR event, stashed across the two-call boundary a step pair leaves
 /// open.
@@ -54,7 +54,7 @@ pub struct VoiceSessionState {
     /// The dialect this half of the connection speaks. `None` only in the sliver of time before the
     /// first frame has named one; every method that needs it treats an absent dialect as a decode
     /// failure rather than guessing.
-    pub dialect: Option<Dialect>,
+    pub dialect: Option<&'static Dialect>,
     /// The shared duplex codec's per-session state (frame sequencing, the `CallRef` correlation
     /// table, the negotiated output format, and the barge-in playback-position bookkeeping). Reused
     /// for both codec-backed dialects (`OpenAI Realtime`, `Gemini Live`): the shared IR is what
@@ -70,10 +70,13 @@ pub struct VoiceSessionState {
     pub next_turn_id: u64,
     /// This turn's own derived counters (see [`TurnCounters`]).
     pub turn: TurnCounters,
-    /// Twilio's `streamSid` for this connection, bound at the `start` event and checked against
-    /// every later `media` frame — the forgery/replay guard the architecture note for this dialect
-    /// names.
-    pub twilio_stream_sid: Option<String>,
+    /// THE IDENTITY A DIALECT'S OWN ENVELOPE BOUND for this connection, if it binds one.
+    ///
+    /// Bound by the dialect at its start event and checked by the same dialect against every later
+    /// frame — the forgery/replay guard a carrier envelope needs. The plane holds the string and
+    /// never reads it: which value this is, and what it guards, is the dialect's own business, and
+    /// naming one carrier's word for it here was an instance in the neutral crate's session state.
+    pub envelope_id: Option<String>,
     /// The one already-decoded event a two-call step pair is carrying across (see [`Pending`]).
     pub pending: Option<Pending>,
     /// THE DECLARED SESSION PARAMETERS, serialized once and held for the life of the connection.
@@ -85,8 +88,8 @@ pub struct VoiceSessionState {
     pub params: Vec<u8>,
     /// The buffer one downlink audio frame is rendered into, held across frames.
     ///
-    /// The renderer this crate carries for the carrier dialect clears and refills a buffer the
-    /// caller owns, and its committed cost is stated for a buffer that has already carried a frame
+    /// A dialect renderer clears and refills a buffer the caller owns, and its committed cost is
+    /// stated for a buffer that has already carried a frame
     /// — which is the only shape that costs nothing. A call sends fifty downlink frames a second,
     /// so a fresh vector per frame is fifty allocations a second the renderer was written to
     /// remove. This is where the one buffer lives.
@@ -97,7 +100,7 @@ impl VoiceSessionState {
     /// A fresh state already bound to a known dialect — what a session's client half opens with,
     /// once the claim that matched the connection is known.
     #[must_use]
-    pub fn for_dialect(dialect: Dialect) -> Self {
+    pub fn for_dialect(dialect: &'static Dialect) -> Self {
         Self {
             dialect: Some(dialect),
             ..Self::default()

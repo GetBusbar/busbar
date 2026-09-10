@@ -20,15 +20,26 @@
 //!   and a claim on a transport nothing registers is a boot refusal, not a silent 404. Until that
 //!   transport crate lands (the same phase the `webrtc` leg and the real one-shot wire shape are
 //!   scheduled for) the claim is dropped rather than declared and refused: a node whose composition
-//!   root cannot seal is a node that does not boot, and the telephony *codec* below
-//!   ([`Dialect::TwilioMediaStreams`], [`crate::twilio`], [`crate::ulaw`]) is complete and untouched
-//!   — it is the arrival path, not the reader, that is missing. Restoring the claim is one entry in
-//!   [`DIALECT_CLAIMS`] on the day `busbar-transport-twilio-media` registers a key.
+//!   root cannot seal is a node that does not boot, and the carrier's own codec below
+//!   ([`crate::twilio`], [`crate::ulaw`]) is complete and untouched — it is the arrival path, not
+//!   the reader, that is missing. Restoring the claim is one entry in [`DIALECT_CLAIMS`].
 //!
 //! Leaving either unclaimed is an honest, documented gap, not a silent one: a future pass that gives
 //! this crate an RTP data-channel reader, or the tree a telephony transport, can add the claim
 //! without touching any other one, because claims are declared independently and the boot's own
 //! overlap check is what proves they stay disjoint.
+//!
+//! ## A DIALECT IS A NAME HERE, NEVER A VARIANT
+//!
+//! There used to be a `Dialect` enum in this file, with one variant per vendor and three `match`
+//! arms over it. That is instance dispatch in the crate the dialect kind's direction rule makes
+//! the NEUTRAL party, and it is deleted. A claim carries the dialect's NAME — the same
+//! `&'static str` the session fact carries and the same one a dialect crate is named for — and
+//! [`crate::dialect`] is the table it resolves in.
+//!
+//! The two one-shot names below are STRINGS AND NOTHING ELSE, and deliberately have no row in that
+//! table: `transcribe` and `tts` are HTTP operations, not streaming dialects, and they leave this
+//! plane in a later pass.
 
 use busbar_contract::grammar::{one_level_under, Claim, Selector};
 
@@ -59,66 +70,21 @@ const WS_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
 /// The alternatives a one-shot HTTP unit may narrow to — the same two an ordinary API caller uses.
 const HTTP_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
 
-/// The four dialects this plane's declared claims name.
+/// The names this plane's declared claims carry, in declaration order.
 ///
-/// This is the open-vocabulary dialect name, kept as a closed Rust enum inside this crate only
-/// because every method that switches on it is exhaustive and a fifth dialect is a code change
-/// here regardless; nothing about [`busbar_contract::grammar::Claim`] requires a closed set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Dialect {
-    /// OpenAI Realtime (GA) — WebSocket, PCM16, tool calls, full duplex.
-    OpenaiRealtime,
-    /// Google Gemini Live (`BidiGenerateContent`) — WebSocket, tool calls.
-    GeminiLive,
-    /// Twilio Media Streams — WebSocket, G.711 µ-law telephony audio.
-    TwilioMediaStreams,
-    /// A one-shot speech-to-text request.
-    OneShotTranscribe,
-    /// A one-shot text-to-speech request.
-    OneShotTts,
-}
+/// The three STREAMING dialects have rows in [`crate::dialect`]; the two one-shot operations do
+/// not, for the reason this module's header states.
+pub const TRANSCRIBE: &str = "transcribe";
 
-impl Dialect {
-    /// The dialect's own name, as recorded in facts and answered by the `dialects` admin verb.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Dialect::OpenaiRealtime => "openai-realtime",
-            Dialect::GeminiLive => "gemini-live",
-            Dialect::TwilioMediaStreams => "twilio-media-streams",
-            Dialect::OneShotTranscribe => "transcribe",
-            Dialect::OneShotTts => "tts",
-        }
-    }
-
-    /// Whether this dialect is one of the two JSON duplex wires this plane can also DIAL an
-    /// upstream as (the codec-backed dialects, as opposed to the ingress-only Twilio and one-shot
-    /// claims).
-    #[must_use]
-    pub const fn is_duplex_upstream(self) -> bool {
-        matches!(self, Dialect::OpenaiRealtime | Dialect::GeminiLive)
-    }
-
-    /// Whether a unit on this dialect authenticates once at session open and rides the session
-    /// (`CredentialLocator::from_session`), rather than presenting a credential on every unit.
-    ///
-    /// True for the three session-bound dialects; false for the two one-shot HTTP operations, which
-    /// present a credential on the one request they are.
-    #[must_use]
-    pub const fn authenticates_from_session(self) -> bool {
-        matches!(
-            self,
-            Dialect::OpenaiRealtime | Dialect::GeminiLive | Dialect::TwilioMediaStreams
-        )
-    }
-}
+/// See [`TRANSCRIBE`].
+pub const TTS: &str = "tts";
 
 /// One claim with the dialect it names recorded beside it, the same pairing
 /// `busbar_plane_llm::claims::LadderClaim` uses for its ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DialectClaim {
-    /// Which dialect this claim names.
-    pub dialect: Dialect,
+    /// Which dialect this claim names, by name — never by variant.
+    pub dialect: &'static str,
     /// The claim itself.
     pub claim: Claim,
 }
@@ -144,7 +110,7 @@ const fn claim(
 /// The declared claims, dialect-tagged, in the order the boot's overlap check sees them.
 pub const DIALECT_CLAIMS: &[DialectClaim] = &[
     DialectClaim {
-        dialect: Dialect::OpenaiRealtime,
+        dialect: crate::dialect::NAME_OPENAI_REALTIME,
         claim: claim(
             WS_TRANSPORT,
             Selector::PathSuffix("/v1/realtime"),
@@ -152,7 +118,7 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
         ),
     },
     DialectClaim {
-        dialect: Dialect::GeminiLive,
+        dialect: crate::dialect::NAME_GEMINI_LIVE,
         claim: claim(
             WS_TRANSPORT,
             Selector::PathContains("BidiGenerateContent"),
@@ -163,10 +129,10 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
     // under a `twilio-signature` alternative. It is dropped, not commented out for later: the
     // transport it named has no crate, and a claim whose transport nothing registers is a boot
     // refusal that stops the whole node rather than one plane. The header says what has to exist
-    // before it comes back, and `Dialect::TwilioMediaStreams` below is untouched so the codec that
-    // reads the wire is still here when it does.
+    // before it comes back, and the carrier's own codec is untouched so the reader that reads the
+    // wire is still here when it does.
     DialectClaim {
-        dialect: Dialect::OneShotTranscribe,
+        dialect: TRANSCRIBE,
         claim: claim(
             HTTP_TRANSPORT,
             Selector::PathSuffix("/v1/audio/transcriptions"),
@@ -174,7 +140,7 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
         ),
     },
     DialectClaim {
-        dialect: Dialect::OneShotTts,
+        dialect: TTS,
         claim: claim(
             HTTP_TRANSPORT,
             Selector::PathSuffix("/v1/audio/speech"),
@@ -204,7 +170,7 @@ const _: () = assert!(CLAIMS.len() == DIALECT_CLAIMS.len());
 /// can name the dialect it is about to read without a second, differently-ordered answer existing
 /// anywhere.
 #[must_use]
-pub fn dialect_for(path: &str) -> Option<Dialect> {
+pub fn dialect_for(path: &str) -> Option<&'static str> {
     DIALECT_CLAIMS
         .iter()
         .find(|c| matches_selector(&c.claim.selector, path))

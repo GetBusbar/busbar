@@ -1417,7 +1417,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1782"
+count = "1780"
 
 [[cell]]
 crate = "busbar"
@@ -2167,7 +2167,7 @@ count = "6"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "control"
-count = "13"
+count = "12"
 
 [[cell]]
 crate = "busbar-plane-streams"

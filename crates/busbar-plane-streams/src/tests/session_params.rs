@@ -18,7 +18,7 @@ use busbar_contract::plane::{PlaneSessionState, SessionPlane};
 use busbar_contract::unit::{Clock, ConfigView, Ctx};
 use busbar_voice_codec::ir::config::{self, SessionConfig};
 
-use crate::claims::Dialect;
+use crate::dialect;
 use crate::session::VoiceSessionState;
 use crate::tests::harness::{ctx, EmptyConfig, LeakArena, WsStack};
 use crate::VoicePlane;
@@ -47,7 +47,7 @@ fn plane() -> VoicePlane {
 }
 
 /// One half of a session's state, already bound to the dialect under test.
-fn opened(dialect: Dialect) -> PlaneSessionState {
+fn opened(dialect: &'static crate::dialect::Dialect) -> PlaneSessionState {
     PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
 }
 
@@ -64,7 +64,7 @@ fn a_carrier_session_projects_the_mu_law_lock_byte_for_byte() {
     let labels = Labels::default();
     let c = ctx(&arena, &cfg, &stack, &labels);
 
-    let mut st = opened(Dialect::TwilioMediaStreams);
+    let mut st = opened(&crate::twilio::TWILIO_MEDIA_STREAMS);
     let params =
         SessionPlane::session_params(&plane(), &mut st, &c).expect("a carrier leg projects");
 
@@ -92,7 +92,7 @@ fn a_declared_default_is_what_a_session_projects_and_the_section_default_when_no
     // ── THE CONTROL: nothing declared ⇒ the section default, byte for byte.
     let empty = EmptyConfig;
     let c = ctx(&arena, &empty, &stack, &labels);
-    let mut st = opened(Dialect::OpenaiRealtime);
+    let mut st = opened(&dialect::OPENAI_REALTIME);
     let params = SessionPlane::session_params(&plane(), &mut st, &c).expect("a session projects");
     assert_eq!(
         params.declared,
@@ -121,7 +121,7 @@ fn a_declared_default_is_what_a_session_projects_and_the_section_default_when_no
         &labels,
         &arena,
     );
-    let mut st = opened(Dialect::OpenaiRealtime);
+    let mut st = opened(&dialect::OPENAI_REALTIME);
     let params = SessionPlane::session_params(&plane(), &mut st, &c).expect("a session projects");
     assert_eq!(
         params.declared,
@@ -141,7 +141,7 @@ fn an_adopted_rewrite_replaces_the_projection_and_an_unreadable_one_does_not() {
     let c = ctx(&arena, &cfg, &stack, &labels);
     let p = plane();
 
-    let mut st = opened(Dialect::OpenaiRealtime);
+    let mut st = opened(&dialect::OPENAI_REALTIME);
     let locked = SessionPlane::session_params(&p, &mut st, &c)
         .expect("a session projects")
         .declared

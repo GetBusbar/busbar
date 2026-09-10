@@ -62,13 +62,11 @@ use busbar_contract::transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 
-use crate::claims::Dialect;
-
 /// The OpenAI Realtime binding's name — the dialect's own word for itself.
-pub const BINDING_OPENAI_REALTIME: &str = Dialect::OpenaiRealtime.name();
+pub const BINDING_OPENAI_REALTIME: &str = crate::dialect::NAME_OPENAI_REALTIME;
 
 /// The Gemini Live binding's name — the dialect's own word for itself.
-pub const BINDING_GEMINI_LIVE: &str = Dialect::GeminiLive.name();
+pub const BINDING_GEMINI_LIVE: &str = crate::dialect::NAME_GEMINI_LIVE;
 
 /// The media type every frame of both duplex dialects is in, in both directions.
 ///
@@ -115,7 +113,7 @@ const MOUNT_GEMINI_LIVE: &str =
 /// left a mount unable to tell this from an ordinary posted-envelope endpoint on the same wire.
 ///
 /// Both behind a credential. A session presents one ONCE, on the upgrade, and never again —
-/// [`Dialect::authenticates_from_session`] is the same fact stated on the plane's side — so a bar
+/// [`crate::dialect::Dialect::authenticates_from_session`] is the same fact, as data — so a bar
 /// declared open here would be a session that could never be resolved to a principal at any later
 /// frame either.
 const D_SESSION_OPEN: &[Dispatch] = &[

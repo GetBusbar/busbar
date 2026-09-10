@@ -14,9 +14,9 @@
 //! runtime-gated module; any structural resemblance is the two independently converging on the same
 //! public wire format, not a copy.
 //!
-//! The events this module models onto the shared [`busbar_voice_codec::ir`] vocabulary: a `media` event
-//! becomes an [`busbar_voice_codec::ir::media::IrAudioFrame`] (direction `Up`, format
-//! [`busbar_voice_codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
+//! The events this module models onto the shared [`busbar_voice_codec::ir`] vocabulary: a `media`
+//! event becomes an [`IrAudioFrame`] (direction `Up`, format [`AudioFormat::G711Ulaw`]) carrying
+//! the base64-decoded µ-law bytes
 //! verbatim — the µ-law↔PCM16 transform happens at the plane's `encode_ingress_frame` seam
 //! ([`crate::plane`]), never here. The lifecycle events carry no audio and are surfaced as their own
 //! variant so the plane can track (or ignore) them without guessing at a synthetic IR event for a
@@ -301,4 +301,169 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+// ------------------------------------------------------------------------------------------------
+// THE DIALECT ROW — this carrier's implementation of the plane's own dialect face.
+// ------------------------------------------------------------------------------------------------
+
+use busbar_contract::bounded::Facts;
+use busbar_contract::plane::Ingress;
+use busbar_contract::unit::Ctx;
+use busbar_contract::wire::{Decode, DiscardCode, Encode, FrameCursor};
+use busbar_voice_codec::ir::{
+    config::g711_config,
+    event::IrClientEvent,
+    media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown},
+};
+
+use crate::dialect::{Dialect, Envelope};
+use crate::session::VoiceSessionState;
+
+/// The carrier's own name for itself, which is also the name of the crate that will own this file.
+pub const NAME: &str = "twilio-media-streams";
+
+/// This carrier's envelope: its JSON reader, its relay seam, and its downlink renderer.
+pub static ENVELOPE: Envelope = Envelope {
+    decode_ingress,
+    relay_ingress,
+    render_downlink_audio,
+};
+
+/// THE ROW. Four facts and one envelope; nothing here is a branch in the plane.
+///
+/// It meters its own uplink because what the caller spoke is µ-law on this carrier's wire, and it
+/// locks a G.711 session posture because the leg is µ-law end to end and nothing may resample it.
+pub static TWILIO_MEDIA_STREAMS: Dialect = Dialect {
+    name: NAME,
+    // Ingress only: this plane serves callers arriving on this carrier and never dials one.
+    duplex_upstream: false,
+    authenticates_from_session: true,
+    meters_own_uplink: true,
+    envelope: Some(&ENVELOPE),
+    locked_session_config: Some(g711_config),
+};
+
+/// This dialect's own row, for the two places its reader has to name it.
+const SELF_ROW: &Dialect = &TWILIO_MEDIA_STREAMS;
+
+/// Read one frame of a session carried on this dialect.
+fn decode_ingress<'u>(
+    frames: &mut FrameCursor<'u>,
+    state: &mut VoiceSessionState,
+    ctx: &Ctx<'u>,
+) -> Result<Ingress<'u>, Decode> {
+    let frame = frames.next_frame().ok_or(Decode::Malformed)?;
+    let event = match decode(frame.bytes.as_slice()) {
+        Ok(event) => event,
+        // An event name this reader does not model is not a broken frame: this carrier adds events
+        // over time and tells its clients to ignore the ones they do not know, and the transport
+        // under this session already discards what it cannot place. Refusing the session over one
+        // would drop a live call the day the carrier ships a new lifecycle event. A frame that is
+        // not this carrier's JSON at all is still a refusal.
+        Err(TwilioError::UnknownEvent(_)) => {
+            return Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            })
+        }
+        Err(_) => return Err(Decode::Malformed),
+    };
+    match event {
+        // Lifecycle events with no audio and nothing left to bind: consumed, no unit, no state
+        // change beyond what `Start` below records.
+        TwilioEvent::Connected => Ok(Ingress::Discard {
+            reason: DiscardCode::Unsupported,
+        }),
+        TwilioEvent::Start { stream_sid, .. } => {
+            state.envelope_id = Some(stream_sid);
+            state.dialect = Some(SELF_ROW);
+            Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            })
+        }
+        TwilioEvent::Media {
+            stream_sid,
+            payload,
+        } => {
+            // The forgery/replay guard the architecture note for this dialect names: a `media`
+            // frame naming a `streamSid` other than the one `start` bound is discarded, not
+            // refused — it costs nothing and ends no unit, exactly what a discard is for.
+            if state.envelope_id.as_deref() != Some(stream_sid.as_str()) {
+                return Ok(Ingress::Discard {
+                    reason: DiscardCode::ForgedSource,
+                });
+            }
+            // Counted at the relay seam, not here: see `relay_ingress`. A frame that OPENS the turn
+            // is the one exception — it becomes the unit's own egress body and never reaches that
+            // seam — so its milliseconds travel on the draft the unit is minted from.
+            let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
+            let arena_bytes = ctx
+                .arena()
+                .alloc_bytes(&payload)
+                .map_err(|_| Decode::Oversize)?;
+            crate::plane::open_or_relay(state, SELF_ROW, arena_bytes, None, Some(ms), ctx)
+        }
+        TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
+            reason: DiscardCode::Unsupported,
+        }),
+        TwilioEvent::Dtmf { .. } => Ok(Ingress::Discard {
+            reason: DiscardCode::Unsupported,
+        }),
+        TwilioEvent::Stop => {
+            let for_ = state.turn_correlation;
+            let _ = state.close_turn();
+            Ok(Ingress::Close {
+                for_,
+                facts: Box::new(Facts::new()),
+            })
+        }
+    }
+}
+
+/// Relay one arriving frame onward, and take this dialect's own uplink meter while the payload is
+/// still the carrier's own µ-law.
+///
+/// The documented seam: the µ-law -> PCM16 transform happens HERE, never at decode.
+fn relay_ingress(
+    bytes: &[u8],
+    state: &mut VoiceSessionState,
+) -> Result<Option<IrClientEvent>, Encode> {
+    let event = match decode(bytes) {
+        Ok(event) => event,
+        // The same forward-compatibility rule the decode step takes: an event this reader does not
+        // model carries no audio to relay, and is not a reason to end the call.
+        Err(TwilioError::UnknownEvent(_)) => return Ok(None),
+        Err(_) => return Err(Encode::Unrepresentable),
+    };
+    match event {
+        TwilioEvent::Media { payload, .. } => {
+            // Priced from the raw carrier payload, before the transform below widens it: what the
+            // caller spoke is µ-law on this dialect's wire.
+            let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
+            state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+            let pcm = crate::ulaw::decode_frame(&payload);
+            Ok(Some(IrClientEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Up,
+                seq: state.codec.next_up_seq(),
+                media: Bytes::from(pcm),
+                // A carrier media frame names no conversation item.
+                origin: IrAudioRef::default(),
+            })))
+        }
+        // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are fully handled
+        // at decode; nothing is relayed onward for them.
+        _ => Ok(None),
+    }
+}
+
+/// Render one downlink audio frame into the session's held buffer, in this carrier's envelope.
+///
+/// Taken and handed straight back, because the identifier beside it is borrowed from the same
+/// state.
+fn render_downlink_audio(state: &mut VoiceSessionState, media: &[u8]) {
+    let mulaw = crate::ulaw::encode_frame(media);
+    let mut out = core::mem::take(&mut state.render_buf);
+    let sid = state.envelope_id.as_deref().unwrap_or_default();
+    encode_media_into(&mut out, sid, &mulaw);
+    state.render_buf = out;
 }

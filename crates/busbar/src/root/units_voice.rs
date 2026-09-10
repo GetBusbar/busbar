@@ -134,7 +134,7 @@ use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
-use busbar_plane_streams::claims::Dialect;
+use busbar_plane_streams::dialect::{self, Dialect};
 use busbar_plane_streams::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, BucketChain, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
@@ -204,12 +204,12 @@ impl ProviderEndpoints {
             realtime: Upstream {
                 lane: realtime_lane,
                 host: realtime_host,
-                dialect: Dialect::OpenaiRealtime,
+                dialect: &dialect::OPENAI_REALTIME,
             },
             live: Upstream {
                 lane: live_lane,
                 host: live_host,
-                dialect: Dialect::GeminiLive,
+                dialect: &dialect::GEMINI_LIVE,
             },
         }
     }
@@ -756,7 +756,7 @@ pub struct VoiceNode {
 #[derive(Debug, Clone)]
 pub struct SessionBinding {
     /// The dialect the upgrade named.
-    pub dialect: Dialect,
+    pub dialect: &'static Dialect,
     /// The buckets the caller's principal charges through, resolved once.
     pub chain: std::sync::Arc<BucketChain>,
     /// The upstream leg Verify sealed for the session, in the shape the PLANE reads: what the
@@ -1130,7 +1130,7 @@ pub struct VoiceUnit<'n> {
     /// Whether the credential rides the session rather than being presented per unit.
     pub from_session: bool,
     /// The dialect the decode step named.
-    pub dialect: Dialect,
+    pub dialect: &'static Dialect,
     /// The buckets this session's caller is judged and charged against: its own attribution bucket,
     /// then the group its key is bound to, then that group's parent, to the root.
     ///
@@ -1191,7 +1191,7 @@ impl std::fmt::Debug for VoiceUnit<'_> {
         f.debug_struct("VoiceUnit")
             .field("shape", &self.shape)
             .field("session", &self.session)
-            .field("dialect", &self.dialect.name())
+            .field("dialect", &self.dialect.name)
             .finish_non_exhaustive()
     }
 }
@@ -1222,7 +1222,7 @@ impl<'n> VoiceUnit<'n> {
             // refuse a caller nobody has authenticated rather than one who was found wanting.
             grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
-            dialect: Dialect::OpenaiRealtime,
+            dialect: &dialect::OPENAI_REALTIME,
             chain: None,
             usage: TurnUsage::default(),
             call_id: None,
@@ -1251,7 +1251,7 @@ impl<'n> VoiceUnit<'n> {
 
     /// The dialect the decode step named.
     #[must_use]
-    pub fn on_dialect(mut self, dialect: Dialect) -> Self {
+    pub fn on_dialect(mut self, dialect: &'static Dialect) -> Self {
         self.dialect = dialect;
         self
     }
@@ -1327,7 +1327,7 @@ impl<'n> VoiceUnit<'n> {
 
     /// The upstream this unit's session dials, given the dialect it arrived on.
     fn upstream(&self) -> Option<&'static Upstream> {
-        if self.dialect.is_duplex_upstream() {
+        if self.dialect.duplex_upstream {
             if let Some(found) = self.node.plane.upstream_for_dialect(self.dialect) {
                 return Some(found);
             }
@@ -1372,7 +1372,7 @@ impl<'n> VoiceUnit<'n> {
         let rate = self
             .node
             .pricer
-            .rate_for(self.dialect.name())
+            .rate_for(self.dialect.name)
             .unwrap_or_default();
         let dearest = rate
             .input
@@ -1427,7 +1427,7 @@ impl<'n> VoiceUnit<'n> {
         busbar_unit_admission::AdmissionUnit::new(
             &door,
             &self.node.pricer,
-            self.dialect.name(),
+            self.dialect.name,
             self.epoch,
         )
         .headroom_nanos(chain)
@@ -1446,7 +1446,7 @@ impl<'n> VoiceUnit<'n> {
         let rate = self
             .node
             .pricer
-            .rate_for(self.dialect.name())
+            .rate_for(self.dialect.name)
             .unwrap_or_default();
         let dearest = rate
             .input
@@ -1717,7 +1717,7 @@ impl Units for VoiceUnit<'_> {
         let mut unit = busbar_unit_admission::AdmissionUnit::new(
             &door,
             &self.node.pricer,
-            self.dialect.name(),
+            self.dialect.name,
             self.epoch,
         );
         let decision = unit.admit(&estimate, principal, chain, admit, token);
@@ -2183,7 +2183,8 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
             || {
                 read.path()
                     .and_then(busbar_plane_streams::claims::dialect_for)
-                    .unwrap_or(Dialect::OpenaiRealtime)
+                    .and_then(dialect::dialect)
+                    .unwrap_or(&dialect::OPENAI_REALTIME)
             },
             |binding| binding.dialect,
         );

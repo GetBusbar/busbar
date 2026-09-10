@@ -16,12 +16,12 @@ static UPSTREAMS: &[Upstream] = &[
     Upstream {
         lane: REALTIME,
         host: "api.openai.com",
-        dialect: Dialect::OpenaiRealtime,
+        dialect: &dialect::OPENAI_REALTIME,
     },
     Upstream {
         lane: LIVE,
         host: "generativelanguage.googleapis.com",
-        dialect: Dialect::GeminiLive,
+        dialect: &dialect::GEMINI_LIVE,
     },
 ];
 
@@ -527,7 +527,7 @@ fn a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction() {
     let node = node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
-        .on_dialect(Dialect::OpenaiRealtime)
+        .on_dialect(&dialect::OPENAI_REALTIME)
         .reporting(TurnUsage {
             audio_tokens_in: 10,
             audio_tokens_out: 20,
@@ -643,7 +643,8 @@ fn each_dialect_dials_its_own_composed_endpoint() {
         realtime.target().map(|t| t.url),
         Some("wss://api.openai.com".to_string())
     );
-    let live = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(Dialect::GeminiLive);
+    let live =
+        VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(&dialect::GEMINI_LIVE);
     assert_eq!(
         live.target().map(|t| t.url),
         Some("wss://generativelanguage.googleapis.com".to_string())
@@ -676,9 +677,9 @@ fn the_two_endpoints_compose_from_borrowed_names() {
         LIVE,
     );
     let pair = endpoints.as_slice();
-    assert_eq!(pair[0].dialect, Dialect::OpenaiRealtime);
-    assert_eq!(pair[1].dialect, Dialect::GeminiLive);
-    assert!(pair.iter().all(|u| u.dialect.is_duplex_upstream()));
+    assert_eq!(pair[0].dialect, &dialect::OPENAI_REALTIME);
+    assert_eq!(pair[1].dialect, &dialect::GEMINI_LIVE);
+    assert!(pair.iter().all(|u| u.dialect.duplex_upstream));
 }
 
 /// Every unit of a session leaves a record, including the one that opened it, and the operation
@@ -1250,7 +1251,7 @@ fn priced_node(io: VoiceIo) -> VoiceNode {
     let mut node = node(io);
     let mut rates = std::collections::BTreeMap::new();
     rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
+        dialect::OPENAI_REALTIME.name.to_string(),
         busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
     );
     node.pricer = Pricer::with_card(0, rates);
@@ -1536,7 +1537,7 @@ fn a_paid_turns_record_names_its_principal() {
     );
     let mut rates = std::collections::BTreeMap::new();
     rates.insert(
-        Dialect::OpenaiRealtime.name().to_string(),
+        dialect::OPENAI_REALTIME.name.to_string(),
         busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
     );
     node.pricer = Pricer::with_card(0, rates);
@@ -2080,7 +2081,8 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         monotonic_nanos: 0,
     };
     let plane = VoicePlane::new(UPSTREAMS);
-    let mut state = PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
+    let mut state =
+        PlaneSessionState::new(VoiceSessionState::for_dialect(&dialect::OPENAI_REALTIME));
 
     // The first client event of the session. `session.update` is what a real client sends
     // first, and it opens the turn.
@@ -2142,19 +2144,6 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         })
     );
     let _ = correlation;
-
-    // A session bound to the telephony carrier, handed bytes that are not that carrier's shape.
-    // The refusal is raised at the step that read them, and no unit exists to have been given a
-    // class.
-    let mut telephony =
-        PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::TwilioMediaStreams));
-    let frames = one_frame("not a carrier frame at all");
-    let mut cursor = FrameCursor::new(&frames);
-    let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
-    assert_eq!(
-        plane.decode_ingress(&mut cursor, Some(&mut telephony), &pctx),
-        Err(busbar_contract::wire::Decode::Malformed)
-    );
 }
 /// A credential is resolved through the node's own signed-key seam, and the audience is this
 /// plane's own name.
@@ -2515,7 +2504,7 @@ mod driven {
         let bound = node
             .bound(session.0)
             .expect("unit zero settled the session at Verify");
-        assert_eq!(bound.dialect, Dialect::OpenaiRealtime);
+        assert_eq!(bound.dialect, &dialect::OPENAI_REALTIME);
         assert!(
             bound.destination.is_some(),
             "the leg was sealed for the plane's upstream half"

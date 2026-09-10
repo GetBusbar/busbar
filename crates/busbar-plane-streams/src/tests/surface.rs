@@ -15,20 +15,24 @@
 
 use busbar_contract::transport::surface::{check_surface, Answering, Bar, Dispatch};
 
-use crate::claims::{self, Dialect};
+use crate::claims;
+use crate::dialect;
 use crate::surface::{BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, MEDIA_JSON, SURFACE};
 
 /// The dialect a binding name belongs to, by the dialect's own word for itself.
-fn dialect_of(binding: &str) -> Dialect {
+///
+/// A NAME, not a row: two of the five names this plane claims are one-shot operations with no
+/// dialect row at all, and a binding is matched against the claim table, which is keyed by name.
+fn dialect_of(binding: &str) -> &'static str {
     [
-        Dialect::OpenaiRealtime,
-        Dialect::GeminiLive,
-        Dialect::TwilioMediaStreams,
-        Dialect::OneShotTranscribe,
-        Dialect::OneShotTts,
+        dialect::NAME_OPENAI_REALTIME,
+        dialect::NAME_GEMINI_LIVE,
+        crate::twilio::NAME,
+        claims::TRANSCRIBE,
+        claims::TTS,
     ]
     .into_iter()
-    .find(|d| d.name() == binding)
+    .find(|name| *name == binding)
     .unwrap_or_else(|| panic!("the binding `{binding}` is not one of this plane's dialects"))
 }
 
@@ -99,7 +103,7 @@ fn each_mount_is_matched_by_exactly_its_own_dialect_claim() {
             binding.name
         );
         for mount in binding.mounts {
-            let matched: Vec<Dialect> = claims::DIALECT_CLAIMS
+            let matched: Vec<&'static str> = claims::DIALECT_CLAIMS
                 .iter()
                 .filter(|c| claims::matches_selector(&c.claim.selector, mount))
                 .map(|c| c.dialect)
@@ -150,7 +154,7 @@ fn exactly_the_two_duplex_dialects_are_bound() {
     assert_eq!(bound, vec![BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME]);
     for binding in SURFACE.bindings {
         assert!(
-            dialect_of(binding.name).is_duplex_upstream(),
+            dialect::dialect(dialect_of(binding.name)).is_some_and(|d| d.duplex_upstream),
             "only a duplex dialect has a session binding"
         );
     }
@@ -191,7 +195,8 @@ fn both_bindings_demand_a_credential_at_the_upgrade() {
             binding.name
         );
         assert!(
-            dialect_of(binding.name).authenticates_from_session(),
+            dialect::dialect(dialect_of(binding.name))
+                .is_some_and(|d| d.authenticates_from_session),
             "a bound session's dialect authenticates once at the open"
         );
     }

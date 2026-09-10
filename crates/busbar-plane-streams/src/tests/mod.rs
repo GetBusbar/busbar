@@ -45,32 +45,32 @@ mod purity {
     /// is a pure function of `self.upstreams()` and the argument.
     #[test]
     fn same_configuration_answers_the_same_way_every_time() {
-        use crate::claims::Dialect;
+        use crate::dialect;
         use crate::Upstream;
         use busbar_contract::ids::LaneId;
 
         static UPSTREAMS: &[Upstream] = &[Upstream {
             lane: LaneId::new("realtime"),
             host: "api.openai.example",
-            dialect: Dialect::OpenaiRealtime,
+            dialect: &dialect::OPENAI_REALTIME,
         }];
         let a = VoicePlane::new(UPSTREAMS);
         let b = VoicePlane::new(UPSTREAMS);
         assert_eq!(a, b);
         assert_eq!(
-            a.upstream_for_dialect(Dialect::OpenaiRealtime),
-            b.upstream_for_dialect(Dialect::OpenaiRealtime)
+            a.upstream_for_dialect(&dialect::OPENAI_REALTIME),
+            b.upstream_for_dialect(&dialect::OPENAI_REALTIME)
         );
-        assert_eq!(a.upstream_for_dialect(Dialect::GeminiLive), None);
+        assert_eq!(a.upstream_for_dialect(&dialect::GEMINI_LIVE), None);
     }
 
     /// A plane with nothing configured answers every dialect lookup with `None` rather than
     /// panicking or fabricating a host.
     #[test]
     fn empty_plane_names_no_upstream() {
-        use crate::claims::Dialect;
+        use crate::dialect;
         assert!(VoicePlane::EMPTY
-            .upstream_for_dialect(Dialect::OpenaiRealtime)
+            .upstream_for_dialect(&dialect::OPENAI_REALTIME)
             .is_none());
         assert_eq!(VoicePlane::EMPTY, VoicePlane::default());
     }

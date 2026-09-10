@@ -407,6 +407,14 @@ const PENDING_KINDS: &[(&str, &str)] = &[(
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
+    // THE GATE AND THE ARCHITECTURE DISAGREED, AND THE ARCHITECTURE WINS. `ARCHITECTURE.md`'s
+    // plugin-kind section says a dialect's dependencies are `busbar-contract` plus its own plane;
+    // this list carried the plane edge and four more, and did not carry the contract edge at all —
+    // so the first dialect crate ever written would have been refused for naming the one crate
+    // every kind in the tree is granted. The class is added rather than the crate bent around a
+    // gate that was short a line, and the disagreement is stated here rather than smuggled in as a
+    // per-instance allowance.
+    ("dialect", "contract"),
     ("dialect", "plane"),
     ("dialect", "grammar"),
     ("dialect", "substrate"),
