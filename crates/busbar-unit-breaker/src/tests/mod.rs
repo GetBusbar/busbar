@@ -1291,3 +1291,257 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
         "the computed cooldown at a saturating streak must be at the ceiling; got {computed}"
     );
 }
+
+// ── The active-probe schedule ───────────────────────────────────────────────────────────────────
+//
+// The cases below drive `set_probe_policy` / `probes_due` at chosen clock readings, because the
+// whole reason the schedule is here rather than in a background task is that "which destinations
+// are due" is a decision over values handed in and can therefore be asked directly. Nothing here
+// sleeps, and nothing here needs a runtime.
+
+use crate::probe::{ProbeMode, ProbePolicy};
+
+/// A policy that asks every destination, every thirty seconds, with the 1.5.5 default timeout.
+fn active_policy() -> ProbePolicy {
+    ProbePolicy {
+        mode: ProbeMode::Active,
+        interval_secs: 30,
+        timeout_secs: 5,
+    }
+}
+
+#[test]
+fn a_cold_destination_is_not_asked_until_one_interval_has_passed() {
+    // 1.5.5 discarded the interval's first tick so the gateway would not probe an upstream before
+    // traffic had a chance to establish its health. The deadline form says the same thing, and says
+    // it where it can be read: the first turn is one interval out, never now.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(d, active_policy(), 1_000);
+
+    assert!(
+        unit.probes_due(1_000).is_empty(),
+        "a destination declared at 1000 must not be asked at 1000"
+    );
+    assert!(
+        unit.probes_due(1_029).is_empty(),
+        "nor one second before its interval is up"
+    );
+    assert_eq!(
+        unit.probes_due(1_030)
+            .into_iter()
+            .map(|p| p.destination)
+            .collect::<Vec<_>>(),
+        vec![d],
+        "at exactly one interval out it is due"
+    );
+}
+
+#[test]
+fn taking_a_turn_measures_the_next_one_from_now_and_not_from_the_deadline() {
+    // A schedule that fell behind — a node paused, a Tick that could not run — must not fire a
+    // burst catching up on deadlines that are all in the past. Asking long after the deadline
+    // yields ONE turn, and the next one is a full interval after the asking.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(d, active_policy(), 0);
+
+    assert_eq!(
+        unit.probes_due(5_000).len(),
+        1,
+        "the missed turn is taken once"
+    );
+    assert!(
+        unit.probes_due(5_001).is_empty(),
+        "and not again a second later — the backlog is one turn, never a burst"
+    );
+    assert_eq!(
+        unit.probes_due(5_030).len(),
+        1,
+        "the next turn is one interval after the asking, not after the deadline that passed"
+    );
+}
+
+#[test]
+fn re_declaring_a_policy_keeps_the_deadline_it_already_had() {
+    // THE DARK-PROBING DEFECT, as a cell. Every config apply re-declares every destination. If a
+    // re-declaration pushed the deadline a fresh interval out, applies arriving faster than the
+    // interval would mean the deadline never arrives and probing is dark while the config says it
+    // is on. Fifteen applies at one-second spacing, and the destination is still asked on time.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(d, active_policy(), 1_000);
+    for apply_at in 1_001..=1_015 {
+        unit.set_probe_policy(d, active_policy(), apply_at);
+    }
+    assert_eq!(
+        unit.probes_due(1_030).len(),
+        1,
+        "probing must not go dark under applies arriving faster than the interval"
+    );
+}
+
+#[test]
+fn shortening_the_interval_takes_effect_within_one_new_interval() {
+    // The other half of monotone-earliest: a deadline is only ever pulled IN by a re-declaration,
+    // so an operator who shortens the cadence does not wait out the old one first.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(d, active_policy(), 1_000); // due at 1030
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            interval_secs: 5,
+            ..active_policy()
+        },
+        1_000,
+    );
+    assert_eq!(
+        unit.probes_due(1_005).len(),
+        1,
+        "the shortened cadence must take effect within one of the NEW intervals"
+    );
+}
+
+#[test]
+fn a_destination_the_config_dropped_loses_its_turn() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(d, active_policy(), 1_000);
+    unit.forget_probe_policy(d);
+    assert!(
+        unit.probes_due(9_999).is_empty(),
+        "a deadline must not outlive the declaration that made it"
+    );
+}
+
+#[test]
+fn probing_turned_off_asks_nothing_and_says_so_by_being_declared() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            mode: ProbeMode::None,
+            ..active_policy()
+        },
+        1_000,
+    );
+    assert!(
+        unit.probes_due(9_999).is_empty(),
+        "`none` is the default and asks nothing, however long the node runs"
+    );
+}
+
+#[test]
+fn dead_mode_asks_only_a_destination_the_breaker_is_suppressing() {
+    // `dead` exists to recover a tripped upstream early instead of waiting for organic traffic to
+    // drive the half-open probe. A healthy destination in `dead` mode is asked nothing at all.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    let dead = ProbePolicy {
+        mode: ProbeMode::Dead,
+        ..active_policy()
+    };
+    unit.set_probe_policy(d, dead, 1_000);
+
+    assert!(
+        unit.probes_due(1_030).is_empty(),
+        "a healthy destination in `dead` mode is asked nothing"
+    );
+
+    // Park it dead in every cell the way a bad credential does.
+    unit.hard_down_all(d, 1_030);
+    assert_eq!(
+        unit.probes_due(1_060)
+            .into_iter()
+            .map(|p| p.destination)
+            .collect::<Vec<_>>(),
+        vec![d],
+        "a suppressed destination in `dead` mode is asked at its next turn"
+    );
+}
+
+#[test]
+fn a_destination_whose_lifetime_budget_is_spent_is_never_asked_in_dead_mode() {
+    // An exhausted budget does not self-recover, so a probe against it can only produce failures
+    // about an upstream that was never the problem.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_budget(d, 0);
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            mode: ProbeMode::Dead,
+            ..active_policy()
+        },
+        1_000,
+    );
+    assert!(
+        unit.probes_due(1_030).is_empty(),
+        "a spent budget is not an upstream health question"
+    );
+}
+
+#[test]
+fn asking_which_destinations_are_due_creates_no_cell() {
+    // A Tick must not materialize state. Cells are created by the traffic that routes through
+    // them, which is what makes the cell map a record of what this node has actually reached.
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            mode: ProbeMode::Dead,
+            ..active_policy()
+        },
+        1_000,
+    );
+    let _ = unit.probes_due(9_999);
+    assert!(
+        !unit.has_cell("", d),
+        "the sweep must not create the cell it asked about"
+    );
+}
+
+#[test]
+fn the_operator_s_timeout_travels_with_the_turn() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            timeout_secs: 11,
+            ..active_policy()
+        },
+        1_000,
+    );
+    assert_eq!(
+        unit.probes_due(1_030).first().map(|p| p.timeout_secs),
+        Some(11),
+        "the caller must not have to go back and look the timeout up in another generation's config"
+    );
+}
+
+#[test]
+fn a_zero_interval_is_clamped_rather_than_becoming_a_busy_loop() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(1);
+    unit.set_probe_policy(
+        d,
+        ProbePolicy {
+            interval_secs: 0,
+            ..active_policy()
+        },
+        1_000,
+    );
+    assert!(
+        unit.probes_due(1_000).is_empty(),
+        "even at zero the first turn is one clamped interval out"
+    );
+    assert_eq!(
+        unit.probes_due(1_001).len(),
+        1,
+        "and the clamp is one second, not zero"
+    );
+}
