@@ -25,7 +25,7 @@
 //! decision. A crate that knew the shape of those rows would be a crate that has to change every
 //! time they do.
 
-use busbar_caps::{Hold, LedgerToken, Posted, Usage};
+use busbar_caps::{Hold, LedgerToken, Posted, PostingLent, Usage};
 
 use crate::legacy::{LegacyPosting, LegacyRows};
 use crate::totals::{Book, TotalsKey, WindowStart};
@@ -50,6 +50,20 @@ pub struct Overdraft {
     pub window: WindowStart,
     /// How much of the posting nothing reserved.
     pub amount: i128,
+}
+
+/// What one settlement moved and what it left behind, for a posting the ledger was LENT.
+///
+/// [`Settlement`] without the posting, and the absence is the whole of the difference: a settlement
+/// made from a borrow never owned the posting and cannot hand one back. Everything else a
+/// settlement leaves behind is here, because those two figures are the ledger's own and are not
+/// re-derivable from a posting anyway.
+#[derive(Debug)]
+pub struct Booked {
+    /// The residual: reserved, never used, and handed back to the slice it was drawn from.
+    pub released: i128,
+    /// The ledger's note, where the unit ran past everything that could be reserved for it.
+    pub overdraft: Option<Overdraft>,
 }
 
 /// What one settlement moved and what it left behind.
@@ -170,6 +184,49 @@ impl Ledger {
     /// doors move the same three figures through this one function, because a second copy of that
     /// arithmetic is a second answer to the identity.
     pub fn post(&mut self, key: &TotalsKey, window: WindowStart, posted: Posted) -> Settlement {
+        let booked = self.book_posting(key, window, &posted);
+        Settlement {
+            posted,
+            released: booked.released,
+            overdraft: booked.overdraft,
+        }
+    }
+
+    /// Move the books for a posting the ledger was LENT rather than handed.
+    ///
+    /// **THE THIRD DOOR, for the one caller that can neither hand over a hold nor give up the
+    /// posting.** A plane behind a mount owes its mount the kernel's own sealed end, and settling
+    /// through [`Ledger::post`] destroys it: the end's posting moves into the books and the end
+    /// stops being a complete account of the unit. So this door reads the same three figures off a
+    /// borrow and moves the same books, through the same arithmetic — literally the same function,
+    /// so a lent settlement and an owned one cannot post differently.
+    ///
+    /// **WHY THE ARGUMENT IS A WITNESS AND NOT A `&Posted`.** Taking a bare reference would make
+    /// this door drivable from any borrow anybody happened to be holding, including one taken off an
+    /// end that had already settled through it — and the exactly-once property, which the by-value
+    /// door carries in its signature, would have nothing left holding it up. A
+    /// [`busbar_caps::PostingLent`] can only come out of `UnitEnd::lend_posting`, which hands out
+    /// one per end and refuses the second. So a second settlement of one hold is not writable
+    /// without a second lend, and a second lend is refused.
+    ///
+    /// What comes back is [`Booked`] rather than a [`Settlement`], because a settlement carries the
+    /// posting and this one never owned it.
+    pub fn post_lent(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        lent: PostingLent<'_>,
+    ) -> Booked {
+        self.book_posting(key, window, lent.posted())
+    }
+
+    /// The arithmetic, once, for both doors.
+    ///
+    /// Private and taking a borrow, which is what lets the owned door keep its posting and the lent
+    /// door never have one. Neither door decides anything here: a second copy of these four lines is
+    /// a second answer to the identity, which is the reason the owned door already routed every
+    /// caller through one function.
+    fn book_posting(&mut self, key: &TotalsKey, window: WindowStart, posted: &Posted) -> Booked {
         let reserved = i128::from(posted.reserved());
         let settled = i128::from(posted.settled());
         let overdraft = i128::from(posted.overdraft());
@@ -199,7 +256,7 @@ impl Ledger {
                 overdraft: posted.overdraft(),
             });
         }
-        Settlement {
+        Booked {
             overdraft: (overdraft > 0).then(|| Overdraft {
                 principal: posted.principal().as_str().to_string(),
                 key: key.clone(),
@@ -207,7 +264,6 @@ impl Ledger {
                 amount: overdraft,
             }),
             released,
-            posted,
         }
     }
 
