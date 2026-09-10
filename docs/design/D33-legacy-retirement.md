@@ -50,7 +50,7 @@ Two escape hatches exist and are the spine of the plan:
 
 - **Planes and transports are not in the union.** `busbar-plane-*`, `busbar-transport-*` and the
   four `*-codec` crates carry no §1.1 ceiling. Dialect bodies belong there and the tree has already
-  started: `busbar-llm-codec` is 37 k raw and `busbar-voice-codec` 5 k, so the LLM and voice dialect
+  started: `busbar-llm-codec` is 37 k raw and `busbar-streams-codec` 5 k, so the LLM and voice dialect
   halves have *already* left `busbar-llm`/`busbar-voice`. What remains in those crates is engine.
 - **The composition root (`crates/busbar`) is not in the union either.** Boot-shaped code — CLI
   diagnostics banners, TLS listener config, restart/drain publication, protocol installation — is
@@ -144,7 +144,7 @@ root's:
 
 All 20 sites live in `crates/busbar/src/root/units_voice.rs` and the **voice default flip is
 queued**. Verdict for the whole set: `runtime::*`, `mount::*`, `topology::*`, `ir::codec::*` →
-**DELETE with the crate** once the flip lands and `busbar-plane-streams` + `busbar-voice-codec` are
+**DELETE with the crate** once the flip lands and `busbar-plane-streams` + `busbar-streams-codec` are
 sole; `config::configured_session_model` → **MOVE** into `busbar-plane-streams`'s claim config;
 `{PLANE_DECL, DIAGNOSTICS}` → DELETE with the crate. Ordering: **every row is blocked on the voice
 default flip.** Oracle: there is no voice family in `cells.json` — the flip's own duplex-session
@@ -209,7 +209,7 @@ whole wave). **Not in this session.**
 retired `busbar-core` and every plane crate's legacy caller is gone, each `*-codec` crate folds
 into the plane crate it was split out of for the strangler: `busbar-plane-llm` absorbs
 `busbar-llm-codec`, and likewise `busbar-plane-mcp`/`busbar-mcp-codec`,
-`busbar-plane-a2a`/`busbar-a2a-codec`, `busbar-plane-streams`/`busbar-voice-codec`. The separate
+`busbar-plane-a2a`/`busbar-a2a-codec`, `busbar-plane-streams`/`busbar-streams-codec`. The separate
 codec crates existed only so the legacy engine and the new plane could share one codec during the
 strangler; with the legacy caller deleted there is nothing left to share it with. Preconditions,
 all required before a fold cut lands:

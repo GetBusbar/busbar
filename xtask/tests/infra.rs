@@ -453,7 +453,7 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     let src = planes::plane_src_roots();
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
-    assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
+    assert!(src.contains(&"crates/busbar-streams-codec/src".to_string()));
     assert_eq!(
         planes::neutral_src_roots(),
         vec![

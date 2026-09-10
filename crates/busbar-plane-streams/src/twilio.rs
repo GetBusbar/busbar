@@ -6,7 +6,7 @@
 //!
 //! The codec crate has no dialect codec for this wire (it is not one of its two duplex dialects), and
 //! the one Twilio-shaped module that exists in that crate's source tree
-//! (`busbar_voice_codec::topology::twilio`) is gated behind that crate's `runtime` cargo feature, which
+//! (`busbar_streams_codec::topology::twilio`) is gated behind that crate's `runtime` cargo feature, which
 //! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
 //! and cannot be named from here. This module is therefore written from the wire shape alone
 //! (confirmed against `docs/design/plane4-voice-dialect-landscape.md` and the public Twilio Media
@@ -14,9 +14,9 @@
 //! runtime-gated module; any structural resemblance is the two independently converging on the same
 //! public wire format, not a copy.
 //!
-//! The events this module models onto the shared [`busbar_voice_codec::ir`] vocabulary: a `media` event
-//! becomes an [`busbar_voice_codec::ir::media::IrAudioFrame`] (direction `Up`, format
-//! [`busbar_voice_codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
+//! The events this module models onto the shared [`busbar_streams_codec::ir`] vocabulary: a `media` event
+//! becomes an [`busbar_streams_codec::ir::media::IrAudioFrame`] (direction `Up`, format
+//! [`busbar_streams_codec::ir::media::AudioFormat::G711Ulaw`]) carrying the base64-decoded µ-law bytes
 //! verbatim — the µ-law↔PCM16 transform happens at the plane's `encode_ingress_frame` seam
 //! ([`crate::plane`]), never here. The lifecycle events carry no audio and are surfaced as their own
 //! variant so the plane can track (or ignore) them without guessing at a synthetic IR event for a
@@ -227,7 +227,7 @@ pub fn encode_mark(stream_sid: &str, name: &str) -> Vec<u8> {
 
 // ── standard base64 (RFC 4648), self-contained so this module pulls no new dependency ──────────────
 //
-// Written independently for this crate; `busbar_voice_codec::topology::twilio` (runtime-gated, not in this
+// Written independently for this crate; `busbar_streams_codec::topology::twilio` (runtime-gated, not in this
 // crate's dependency closure) happens to carry the identical standard algorithm for the identical
 // reason it states for itself: pulling in a dependency for one well-known, easily-verified transform
 // is not worth the closure weight.

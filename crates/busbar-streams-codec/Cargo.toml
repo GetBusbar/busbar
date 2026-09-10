@@ -1,4 +1,4 @@
-# busbar-voice-codec — THE VOICE DUPLEX IR AND ITS DIALECT GRAMMARS, with nothing that opens
+# busbar-streams-codec — THE VOICE DUPLEX IR AND ITS DIALECT GRAMMARS, with nothing that opens
 # anything.
 #
 # WHY THIS CRATE EXISTS. The voice plugin was two things wearing one name: the realtime codecs — the
@@ -18,7 +18,7 @@
 # minter and the conformance binary. That half depends on this crate and re-exports every module
 # that moved, so a caller that named its `ir::…` or its `topology::twilio::…` still resolves it.
 [package]
-name = "busbar-voice-codec"
+name = "busbar-streams-codec"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
@@ -28,7 +28,7 @@ description = "The voice duplex codecs for busbar: the plane-4 session intermedi
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_voice_codec"
+name = "busbar_streams_codec"
 path = "src/lib.rs"
 
 [dependencies]

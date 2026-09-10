@@ -13,11 +13,11 @@
 //!
 //! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — the voice crate has no dialect
 //!   codec for Twilio's own wire, and the one Twilio-shaped module in that crate
-//!   (`busbar_voice_codec::topology::twilio`) is gated behind its `runtime` cargo feature, which this crate
+//!   (`busbar_streams_codec::topology::twilio`) is gated behind its `runtime` cargo feature, which this crate
 //!   never turns on (see the crate-root dependency note below). So this crate's Twilio reader/writer
 //!   is written from the wire shape alone, independently, and is NOT a copy of that module.
 //! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — the voice crate only carries the byte-rate
-//!   bookkeeping for the format (`busbar_voice_codec::ir::media::AudoFormat`), not an actual sample
+//!   bookkeeping for the format (`busbar_streams_codec::ir::media::AudoFormat`), not an actual sample
 //!   transcoder; its own doc comments call the transcode an unimplemented "seam...armed only when a
 //!   lane declares it." This crate is the lane that declares it.
 //!
@@ -37,7 +37,7 @@
 //! feature. This crate depends on the codec half with `default-features = false` and never turns
 //! `runtime` on, so none of that machinery, and none of the async runtime it would pull in
 //! (`tokio`, `async-trait`, `futures`), is ever part of this crate's build. What this crate DOES use
-//! is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate representation and both dialect
+//! is `busbar_streams_codec::ir` — the plane-4 duplex/session intermediate representation and both dialect
 //! codecs — which is unconditional in the codec crate's own manifest (no feature gate at all) and is
 //! pure, sync, and free of any async surface. `cargo tree -p busbar-plane-streams` is the proof.
 //!

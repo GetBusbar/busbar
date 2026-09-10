@@ -9,14 +9,14 @@
 //! projection that rendered different bytes would silently stop matching every gate a deployment
 //! already had, with no signal anywhere.
 //!
-//! The carrier cell is the sharp one. `busbar_voice_codec::ir::config::g711_config` is the µ-law
+//! The carrier cell is the sharp one. `busbar_streams_codec::ir::config::g711_config` is the µ-law
 //! lock the 1.5.x front door opens a carrier leg with, and the assertion is byte equality against
 //! it — not "a config with µ-law in it".
 
 use busbar_contract::bounded::Labels;
 use busbar_contract::plane::{PlaneSessionState, SessionPlane};
 use busbar_contract::unit::{Clock, ConfigView, Ctx};
-use busbar_voice_codec::ir::config::{self, SessionConfig};
+use busbar_streams_codec::ir::config::{self, SessionConfig};
 
 use crate::claims::Dialect;
 use crate::session::VoiceSessionState;

@@ -1496,6 +1496,24 @@
    ]
   },
   {
+   "id": "crates/busbar-streams-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-streams-codec/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-streams-codec/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-substrate/src",
    "kind": "production",
    "paths": [
@@ -3125,77 +3143,6 @@
    ]
   },
   {
-   "id": "crates/busbar-voice-codec/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-voice-codec/src"
-   ],
-   "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 2,
-    "LOW": 2
-   },
-   "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit",
-   "auditor": "opus-streams-auditor-a",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-voice-codec/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "babcacc4cdc0324943ff8814da8b78e4e23f4e81d38f2e4348252ad83fc45c22",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
-     "counts": {
-      "MEDIUM": 5,
-      "LOW": 4,
-      "NIT": 2
-     },
-     "report": "mulaw admitted as pcm (fixed), null tool result (fixed), totals without breakdown metered free (fixed), nested argument lost the call (fixed); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-streams-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
-     "counts": {
-      "MEDIUM": 2,
-      "LOW": 2
-     },
-     "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit"
-    }
-   ]
-  },
-  {
    "id": "crates/export-example-plugin/src",
    "kind": "production",
    "paths": [
@@ -4611,6 +4558,21 @@
    ]
   },
   {
+   "id": "crates/busbar-streams-codec/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-streams-codec/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-substrate/src/tests",
    "kind": "test",
    "paths": [
@@ -5517,22 +5479,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-voice/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "rounds": []
-  },
-  {
-   "id": "crates/busbar-voice-codec/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-voice-codec/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

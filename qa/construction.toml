@@ -98,7 +98,7 @@ abi = ["crates/busbar-contract"]
 busbar-llm = ["busbar-llm-codec"]
 busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
-busbar-voice = ["busbar-voice-codec"]
+busbar-voice = ["busbar-streams-codec"]
 
 # ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
 #
@@ -176,7 +176,7 @@ because = "FACE busbar_contract::plane::{SessionParams, SessionPlane::session_pa
 key = "cell.busbar-plane-streams.codec.count"
 file = "qa/kind-isolation.toml"
 by = 4
-because = "busbar-plane-streams \u00d7 codec (busbar-plane-streams, codec): the session-parameter projector renders the deployment's locked posture as the SAME session shape the dialect codecs already read and write, so the projector and its cells name `busbar_voice_codec::ir::config` \u2014 the type, the \u00b5-law lock and the section default \u2014 rather than inventing a second spelling of a posture an operator's configured gate is matched against. Use-lines and declarations of that shape, not a wire in a plane (24 -> 28)"
+because = "busbar-plane-streams \u00d7 codec (busbar-plane-streams, codec): the session-parameter projector renders the deployment's locked posture as the SAME session shape the dialect codecs already read and write, so the projector and its cells name `busbar_streams_codec::ir::config` \u2014 the type, the \u00b5-law lock and the section default \u2014 rather than inventing a second spelling of a posture an operator's configured gate is matched against. Use-lines and declarations of that shape, not a wire in a plane (24 -> 28)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-plane-streams.transport.count"
@@ -197,6 +197,18 @@ because = "The SAME projector-pair face again, counted in the union the caps/con
 # ── declared raise: THE CLOSE SLOT. The neutral duplex acceptor gains a third value out of its own
 # seam and the cells that prove it, both inside the crate that owns the acceptor. Expires when the
 # base carries the number.
+# ── declared raise: THE ONE CELL THE `busbar-voice-codec` RENAME UNMASKS AND DOES NOT DRAIN.
+# `matrix::vocabulary` strikes a needle that is a proper segment prefix of another crate's package
+# name, so `busbar-voice-codec` is what made the `legacy` needle `busbar-voice` invisible to every
+# crate in the tree. Renaming it to `busbar-streams-codec` lets that needle live. Six of the seven
+# cells it exposes were drained on the commit before the rename; this one is the composition root's
+# and cannot be. Expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 60
+because = "busbar \u00d7 legacy (busbar, legacy): NOT A COUPLING THIS LANDING GREW \u2014 not one line of crates/busbar is touched by the commit that raises it. The `busbar-voice-codec` rename drops the package name that was masking the `legacy` needle `busbar-voice`, and 63 spellings of it inside the composition root are counted for the first time (98 at the base, 95 after this branch's own drain of three, 158 measured). Of the 63, 34 are the assembly ITSELF and are what the `[[edge]] root -> legacy` row already describes at its own count: the optional path dependency and the two feature edges in Cargo.toml, the seven `busbar_voice::` calls main.rs makes to install the plane declaration, its diagnostics, its WS arrivals, its governed calls and its two provider compositions, the four `GovernedCalls`/`ReplyRefusal` items root/units_voice.rs implements the port with, and the fifteen `PLANE_DECL`/`mount`/`runtime` items the root's own boot and unit cells drive. The remaining 29 are the doc comments and test tables that NAME what those lines wire \u2014 the plane-host purity scan's source path, the billing-plane table, the four unit-claim headers. All 63 drain on the same commit the `root -> legacy` row's own `drain` sentence names: the day the composition root mounts a declared surface read off the registry instead of hand-wiring the retiring crate, which is the deletion line, not a rename's. Declaring it here is what keeps the ratchet a ratchet: the number is now the true one, and the next rise is a real one"
+
 [[gate.ceiling_raises]]
 key = "cell.busbar-substrate.transport.count"
 file = "qa/kind-isolation.toml"
@@ -618,7 +630,7 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-streams-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]

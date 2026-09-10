@@ -88,11 +88,12 @@
 //!
 //! Owner ruling, 2026-09-10: VOICE IS A MODALITY, NOT A KIND. The plane owns duplex SESSIONS of any
 //! media type, so `busbar-plane-voice` is `busbar-plane-streams`, named for what it does, and the
-//! plane's instance word is the one its config section already carried. `busbar-voice` KEEPS its
-//! name — it is the retiring 1.5.x crate, and a legacy name says what it retires from — and
-//! `busbar-voice-codec` still waits on its own rename, so [`PLANE_ALIASES`] holds the two spellings
-//! together for every rule here. The entry is on a ratchet: it is RED the day `busbar-voice` is
-//! deleted.
+//! plane's instance word is the one its config section already carried, and the plane's pure half
+//! `busbar-voice-codec` is `busbar-streams-codec` for the same reason: a frame in that IR carries a
+//! MEDIA TYPE, and G.711 is one codec of many. `busbar-voice` KEEPS its name — it is the retiring
+//! 1.5.x crate, and a legacy name says what it retires from — so [`PLANE_ALIASES`] holds the two
+//! spellings together for every rule here while that ONE crate still spells the plane `voice`. The
+//! entry is on a ratchet: it is RED the day `busbar-voice` is deleted.
 //!
 //! ## THE LEGACY CRATES ARE EXEMPT UNTIL THEY ARE DELETED, AND THE EXEMPTION RATCHETS
 //!

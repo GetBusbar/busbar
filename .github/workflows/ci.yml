@@ -768,13 +768,13 @@ jobs:
           fi
 
       # THE VOICE RUNTIME SUITE — the 4th plane's live duplex/session tests
-      # (crates/busbar-voice/src/runtime/tests.rs + crates/busbar-voice-codec/src/topology/tests/)
+      # (crates/busbar-voice/src/runtime/tests.rs + crates/busbar-streams-codec/src/topology/tests/)
       # live under `#[cfg(feature = "runtime")]`, which is OFF by default. The workspace `cargo test`
       # above runs with default features, so those tests NEVER execute there, and the
       # voice-conformance workflow only `cargo build`s the conform bin — nothing ran the tests until
       # this step. Voice is dev-only until DoD, so this is a plain `--features runtime` run: no
       # service containers, just the previously-dark plane suites made to actually run and go green.
-      # `busbar-voice-codec` is a SEPARATE crate from `busbar-voice` (the codec/topology split moved
+      # `busbar-streams-codec` is a SEPARATE crate from `busbar-voice` (the codec/topology split moved
       # the Twilio Media Streams grammar and its tests out from under `busbar-voice`'s own tree), so
       # it is named here too — a step that only ever named `busbar-voice` would go on passing green
       # while a whole suite sat uncollected behind a feature gate nothing runs. The floor below is
@@ -793,7 +793,7 @@ jobs:
         run: |
           set -uo pipefail
           cargo test -p busbar-voice --features runtime,test-support \
-                     -p busbar-voice-codec --features runtime \
+                     -p busbar-streams-codec --features runtime \
                      --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log"
           rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \

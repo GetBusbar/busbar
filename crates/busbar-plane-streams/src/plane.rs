@@ -1,6 +1,6 @@
 //! The `Plane`/`SessionPlane` implementation.
 //!
-//! Every method here is a thin adapter over `busbar_voice_codec::ir`'s shared duplex codec
+//! Every method here is a thin adapter over `busbar_streams_codec::ir`'s shared duplex codec
 //! ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]), this crate's own Twilio reader/writer
 //! ([`crate::twilio`]) and its own µ-law transform ([`crate::ulaw`]). None of the three inputs the
 //! design brief names is skipped: a turn is the unit (opened on the first audio frame of a session,
@@ -76,12 +76,12 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
-use busbar_voice_codec::ir::config;
-use busbar_voice_codec::ir::control::IrDuplexControl;
-use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
-use busbar_voice_codec::ir::tool::IrDuplexTool;
-use busbar_voice_codec::ir::{
+use busbar_streams_codec::ir::config;
+use busbar_streams_codec::ir::control::IrDuplexControl;
+use busbar_streams_codec::ir::event::{IrClientEvent, IrServerEvent};
+use busbar_streams_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use busbar_streams_codec::ir::tool::IrDuplexTool;
+use busbar_streams_codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 
@@ -586,7 +586,7 @@ impl SessionPlane for VoicePlane {
     /// THE PROJECTION: what an operator's gate or tap sees when this plane's session is opened.
     ///
     /// The posture is the same one the 1.5.x front door locks and for the same two reasons: a
-    /// carrier leg is µ-law end to end, so it opens on [`busbar_voice_codec::ir::config::g711_config`]
+    /// carrier leg is µ-law end to end, so it opens on [`busbar_streams_codec::ir::config::g711_config`]
     /// and nothing may resample it; every other dialect opens on the deployment's own declared
     /// defaults, read off this call's configuration view under [`SESSION_DEFAULTS_KEY`] and falling
     /// back to the section default when a deployment declares none.

@@ -118,7 +118,7 @@ MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
-VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
+VOICE_ROOT="crates/busbar-voice/src crates/busbar-streams-codec/src"
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.

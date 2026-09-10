@@ -52,7 +52,7 @@ pub fn plane_src_roots() -> Vec<String> {
     out.push("crates/busbar-llm-codec/src".to_string());
     out.push("crates/busbar-mcp-codec/src".to_string());
     out.push("crates/busbar-a2a-codec/src".to_string());
-    out.push("crates/busbar-voice-codec/src".to_string());
+    out.push("crates/busbar-streams-codec/src".to_string());
     out
 }
 

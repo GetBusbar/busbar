@@ -24,7 +24,7 @@ jobs:
         run: |
           echo "next up: cargo test --workspace --locked"
           cargo test -p busbar-voice --features runtime,test-support \
-                     -p busbar-voice-codec --features runtime \
+                     -p busbar-streams-codec --features runtime \
                      --locked --verbose | tee "$RUNNER_TEMP/voice-test.log"
           echo "the voice runtime suite ran"
 

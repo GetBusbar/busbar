@@ -5,7 +5,7 @@
 //!
 //! The whole reason a governed plane beats a dumb WS pipe: tool calls execute SERVER-SIDE, under
 //! governance, and the browser is never trusted to author them. The runtime correlates a call by its
-//! [`busbar_voice_codec::ir::tool::CallRef`], accumulates the streamed argument bytes, and on close hands the
+//! [`busbar_streams_codec::ir::tool::CallRef`], accumulates the streamed argument bytes, and on close hands the
 //! `(name, arguments)` to this port for execution — never to the client. The port is plane-local and
 //! dependency-inverted so the composition root binds the real tool registry while tests bind a fake.
 

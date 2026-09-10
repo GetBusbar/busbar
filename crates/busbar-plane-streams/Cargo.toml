@@ -35,12 +35,12 @@ path = "src/lib.rs"
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
 # THE CODECS. Read-only from here: this crate calls the dialect readers/writers and the IR types and
-# edits none of them. `busbar-voice-codec`, NOT the plane crate it split out of: the IR and the dialect grammars split
+# edits none of them. `busbar-streams-codec`, NOT the plane crate it split out of: the IR and the dialect grammars split
 # out of the plugin so a PURE kind can name them, and the session runtime, the axum mount, the
 # WebSocket accept, the telephony dial and the HTTPS minter stayed behind. The
 # `default-features = false` that used to fence off the runtime feature is gone with the reason for
 # it — the runtime is not in this crate's dependency at all now.
-busbar-voice-codec = { path = "../busbar-voice-codec" }
+busbar-streams-codec = { path = "../busbar-streams-codec" }
 # The object notation the dialect wire (OpenAI Realtime, Gemini Live) is written in. The adapter
 # hands values across the seam and never invents a second parser.
 serde_json = { workspace = true }

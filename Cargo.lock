@@ -783,7 +783,7 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "busbar-contract",
- "busbar-voice-codec",
+ "busbar-streams-codec",
  "bytes",
  "serde_json",
 ]
@@ -905,6 +905,17 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-plugin-testkit",
+]
+
+[[package]]
+name = "busbar-streams-codec"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-substrate-values",
+ "bytes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1241,8 +1252,8 @@ dependencies = [
  "busbar-api",
  "busbar-plane-streams",
  "busbar-plugin",
+ "busbar-streams-codec",
  "busbar-substrate",
- "busbar-voice-codec",
  "bytes",
  "futures",
  "http",
@@ -1256,17 +1267,6 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "busbar-voice-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-api",
- "busbar-substrate-values",
- "bytes",
- "serde",
- "serde_json",
 ]
 
 [[package]]
