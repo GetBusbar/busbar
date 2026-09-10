@@ -917,4 +917,49 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
         through_posting.ledger.book().get(&key, 86_400)
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
+
+    // AND THE THIRD DOOR, BYTE FOR BYTE. `settle_lent` exists so a plane behind a mount can settle
+    // and still hand its ending on; the whole point of it is that it must not be a second answer to
+    // what a unit is billed. Same hold, same price, same report, same window, same stamp — and the
+    // chain HEAD is what decides, because two chains with the same head hold the same bytes in the
+    // same order.
+    let mut through_lend = memory_node();
+    through_lend.ledger.record_hold_opened(&key, 86_400, 5_000);
+    let mut end = busbar_caps::UnitEnd::seal(
+        &busbar_caps::ExitToken::mint(&seal),
+        busbar_caps::Outcome::Completed,
+        Ok(Posted::settle(
+            Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+            4_200,
+            &usage(4_200),
+            &LedgerToken::mint(&seal),
+        )),
+    );
+    let c = through_lend
+        .settle_lent(&at, end.lend_posting().expect("the end carries a posting"))
+        .expect("settles");
+
+    assert_eq!(
+        b.posting, c.posting,
+        "the journal record is the same record"
+    );
+    assert_eq!(b.settlement.released, c.booked.released);
+    assert_eq!(b.settlement.overdraft, c.booked.overdraft);
+    assert_eq!(
+        through_posting.ledger.book().get(&key, 86_400),
+        through_lend.ledger.book().get(&key, 86_400),
+        "the four columns move identically"
+    );
+    assert_eq!(
+        through_posting.journal.head(),
+        through_lend.journal.head(),
+        "identical ledger bytes: two chains with one head"
+    );
+
+    // And the ending survived its own settlement, which is the only reason the door exists.
+    assert_eq!(end.posted().map(Posted::settled), Ok(4_200));
+    assert!(
+        end.lend_posting().is_none(),
+        "and a second settlement of the same hold is refused"
+    );
 }
