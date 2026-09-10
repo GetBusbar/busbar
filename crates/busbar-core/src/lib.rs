@@ -281,7 +281,7 @@ pub use router::build_router_with_limits;
 pub fn base_data_route_table_view(
     app: &state::App,
 ) -> Vec<(String, busbar_plugin_loader::RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+    router::base_data_router(&app.plugin_routes, &app.plane_slots)
         .1
         .routes()
         .iter()
@@ -297,7 +297,7 @@ pub fn base_data_route_table_view(
 pub fn base_data_route_method_view(
     app: &state::App,
 ) -> Vec<(String, String, busbar_plugin_loader::RouteAuth)> {
-    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+    router::base_data_router(&app.plugin_routes, &app.plane_slots)
         .1
         .routes()
         .iter()

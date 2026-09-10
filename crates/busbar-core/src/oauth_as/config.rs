@@ -126,28 +126,28 @@ impl std::fmt::Display for AsCfgError {
 /// runtime. The destructure is the enforcement; the visibility is what the destructure costs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AsIdentity {
-    pub(crate) issuer: String,
+    pub issuer: String,
     /// The path component of `issuer`, normalised, so a tenant-prefixed issuer
     /// (`https://host/tenant`) mounts its endpoints under that prefix rather than at the root.
-    pub(crate) issuer_path: String,
-    pub(crate) metadata_path: String,
-    pub(crate) authorize_path: String,
-    pub(crate) token_path: String,
+    pub issuer_path: String,
+    pub metadata_path: String,
+    pub authorize_path: String,
+    pub token_path: String,
     /// The RFC 7591 registration endpoint's path. Always derived, never optional: registration is
     /// one of the three always-on ways a client obtains a `client_id` on this plane.
-    pub(crate) register_path: String,
-    pub(crate) jwks_path: String,
-    pub(crate) consent_path: String,
-    pub(crate) default_grant: Vec<String>,
-    pub(crate) access_token_ttl: std::time::Duration,
-    pub(crate) key_id: String,
+    pub register_path: String,
+    pub jwks_path: String,
+    pub consent_path: String,
+    pub default_grant: Vec<String>,
+    pub access_token_ttl: std::time::Duration,
+    pub key_id: String,
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
     ///
     /// It lives on the validated identity rather than being consumed at `resolve` time because
     /// `config_validate::secret_refs` walks `RootCfg` and must be able to SEE it: a secret the
     /// walker cannot reach is a secret nothing checks, and that walker's whole design is that
     /// omission is a compile error rather than an oversight.
-    pub(crate) signing_key: Option<SecretRef>,
+    pub signing_key: Option<SecretRef>,
 }
 
 /// RFC 8414 §3.1: the well-known segment goes BEFORE the issuer's path, not after it. This is the
@@ -163,7 +163,7 @@ const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_
 impl AsIdentity {
     /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
     /// out from a process that will not start, not from an agent that cannot log in.
-    pub(crate) fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
+    pub fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
         let issuer = cfg.issuer.trim();
         if issuer.is_empty() {
             return Err(AsCfgError::MissingIssuer);
@@ -205,49 +205,49 @@ impl AsIdentity {
         })
     }
 
-    pub(crate) fn issuer(&self) -> &str {
+    pub fn issuer(&self) -> &str {
         &self.issuer
     }
-    pub(crate) fn metadata_path(&self) -> &str {
+    pub fn metadata_path(&self) -> &str {
         &self.metadata_path
     }
-    pub(crate) fn authorize_path(&self) -> &str {
+    pub fn authorize_path(&self) -> &str {
         &self.authorize_path
     }
-    pub(crate) fn token_path(&self) -> &str {
+    pub fn token_path(&self) -> &str {
         &self.token_path
     }
-    pub(crate) fn register_path(&self) -> &str {
+    pub fn register_path(&self) -> &str {
         &self.register_path
     }
-    pub(crate) fn jwks_path(&self) -> &str {
+    pub fn jwks_path(&self) -> &str {
         &self.jwks_path
     }
-    pub(crate) fn consent_path(&self) -> &str {
+    pub fn consent_path(&self) -> &str {
         &self.consent_path
     }
     /// The absolute URL of the consent screen, which is what the authorize endpoint redirects a
     /// browser to. Absolute because the user agent is following it from wherever it started.
-    pub(crate) fn consent_url(&self) -> String {
+    pub fn consent_url(&self) -> String {
         format!("{}{}", self.origin(), self.consent_path)
     }
-    pub(crate) fn jwks_uri(&self) -> String {
+    pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
     /// The issuer's `scheme://authority`, with its path removed.
     fn origin(&self) -> &str {
         &self.issuer[..self.issuer.len() - self.issuer_path.len()]
     }
-    pub(crate) fn default_grant(&self) -> &[String] {
+    pub fn default_grant(&self) -> &[String] {
         &self.default_grant
     }
-    pub(crate) fn access_token_ttl(&self) -> std::time::Duration {
+    pub fn access_token_ttl(&self) -> std::time::Duration {
         self.access_token_ttl
     }
-    pub(crate) fn key_id(&self) -> &str {
+    pub fn key_id(&self) -> &str {
         &self.key_id
     }
-    pub(crate) fn signing_key(&self) -> Option<&SecretRef> {
+    pub fn signing_key(&self) -> Option<&SecretRef> {
         self.signing_key.as_ref()
     }
 }

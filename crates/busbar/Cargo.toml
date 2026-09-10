@@ -45,6 +45,13 @@ busbar-mcp = { path = "../busbar-mcp", optional = true }
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
+# THE OAUTH ISSUER, a CONTROL-kind crate (`busbar-control-tokenmint`) — busbar as an OAuth 2.1
+# authorization server. NOT optional and NOT behind a feature: the surface costs nothing when
+# `oauth_as:` is absent (the row's `build` returns `None`, so no server, no store, no key, no
+# sweeper and no route), which is the same zero-cost-when-off property core's `oauth_as` module had
+# and is why it never needed a switch. The composition is the only crate that may name it: its own
+# manifest names `busbar-contract` and nothing else of busbar.
+busbar-control-tokenmint = { path = "../busbar-control-tokenmint" }
 # THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
 # `plane-voice`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
 # plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
@@ -126,6 +133,12 @@ axum = { workspace = true }
 # out wrapped so the spend its body reports on the way past has somewhere to land. A passthrough, and
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
+# The `http` 1.x request/response vocabulary the control row rebuilds the issuer's neutral request
+# in, the `Bytes` its buffered body is, and the frame reader the guarded CIMD fetch's capped read
+# walks. All three were already core's on this path; they cross with the code that used them.
+http = { workspace = true }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
