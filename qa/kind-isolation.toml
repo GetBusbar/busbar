@@ -2046,10 +2046,18 @@ crate = "busbar-plane-llm"
 kind = "plane"
 count = "5"
 
+# RAISED 35 -> 56 by the URL reading of the two dialects that keep their model in the request line
+# (src/url.rs, tests/url.rs). Every one of the twenty-one is the WIRE ITSELF: the query pair
+# `alt=sse` that one dialect's clients send to choose the event framing over the JSON-array framing,
+# and the identifier of the function that recognises it. It is a request byte this plane READS, not a
+# wire this plane names, opens or links -- the crate depends on no transport crate and gained no
+# dependency at all in this landing. The prose spellings were drained to zero in the same landing
+# (busbar-plane-llm x plane is back at its 5). What is left cannot be reworded without renaming a
+# query parameter a client sends. It falls when the dialect does.
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "transport"
-count = "35"
+count = "56"
 
 [[cell]]
 crate = "busbar-plane-mcp"

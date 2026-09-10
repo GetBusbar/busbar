@@ -417,6 +417,76 @@ async fn a_cut_body_still_reaches_the_book_through_the_mount() {
     rig.server.shutdown().await;
 }
 
+/// One request through the mounted router at an address the caller chose.
+///
+/// `through` names this plane's body-model address because every cell above it is about a body-model
+/// arrival. The two dialects that keep their model in the URL have no body to put a model in, so the
+/// address IS the input, and a cell about them has to be able to say so.
+async fn through_at(router: axum::Router, uri: &str, body: Vec<u8>) -> axum::response::Response {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::AUTHORIZATION, "Bearer sk-mounted")
+        .body(axum::body::Body::from(body))
+        .expect("the probe always builds");
+    router.oneshot(request).await.unwrap_or_else(|e| match e {})
+}
+
+/// **THE MODEL A URL NAMES REACHES THE UNIT THROUGH THE MOUNT** — for both dialects that keep it
+/// there, on the same lane and with the same posting the driven path makes.
+///
+/// Two of this plane's six dialects put the model in the request LINE and nowhere else: Gemini in
+/// `/v1beta/models/{model}:generateContent`, Bedrock in `/model/{model}/converse`. Their bodies
+/// carry no `model` key at all, because in those dialects there is no such key.
+///
+/// A leg that walked one of them as the body-model shape therefore hands the loop a request with no
+/// model, and the answer a client gets is `Missing required parameter: 'model'` for a parameter the
+/// dialect has no place to put — a 400 on a request the driven path answers 200, with nothing
+/// posted where the driven path posts one record. That is the whole assertion: the URL's model
+/// reaches the unit, the lane it names is the lane that is dialled, and the book gains the one
+/// record a served unit leaves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_model_a_url_names_reaches_the_unit_through_the_mount() {
+    // GEMINI. The pool this deployment configures, named in the path where this dialect names it.
+    let rig = mounted(false).await;
+    let response = through_at(
+        rig.router.clone(),
+        &format!("/v1beta/models/{POOL}:generateContent"),
+        serde_json::to_vec(&serde_json::json!({
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+        }))
+        .expect("the fixture body serializes"),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        200,
+        "the URL named a model this deployment has a lane for"
+    );
+    assert_eq!(journalled(&rig.book), 1, "one served unit, one record");
+    rig.server.shutdown().await;
+
+    // BEDROCK. The same model, in the place this dialect keeps it.
+    let rig = mounted(false).await;
+    let response = through_at(
+        rig.router.clone(),
+        &format!("/model/{POOL}/converse"),
+        serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": [{"text": "hi"}]}]
+        }))
+        .expect("the fixture body serializes"),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        200,
+        "the URL named a model this deployment has a lane for"
+    );
+    assert_eq!(journalled(&rig.book), 1, "one served unit, one record");
+    rig.server.shutdown().await;
+}
+
 /// **A ROUTE THIS PLANE DOES NOT CLAIM STILL REACHES THE SURFACE UNDERNEATH.**
 ///
 /// The mount's own rule, asserted on this plane because this plane's claim table is the one that is

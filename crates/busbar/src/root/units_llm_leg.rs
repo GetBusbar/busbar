@@ -50,6 +50,9 @@
 
 use std::sync::Arc;
 
+// The facts a URL-model arrival's walk carries, under ONE spelling for the reason the driven path's
+// own file gives beside its import: a reach into the retiring engine crate is counted per spelling.
+use busbar_llm::arrival::PathModelFacts;
 use busbar_llm::unit::walk::WalkArrival;
 
 use crate::root::mount_ingress::ArrivalSource;
@@ -186,6 +189,7 @@ impl LlmLeg {
                 plane_mount::http_response(crate::root::transports::unavailable_answer()),
             );
         };
+        let target = path_of(arrival);
         let sealed = self
             .ingress
             .arrival(arrival.fact(busbar_contract::transport::facts::CREDENTIAL));
@@ -213,14 +217,55 @@ impl LlmLeg {
             // would be a request the node made up.
             headers: plane_mount::headers_of(arrival),
             body: axum::body::Bytes::copy_from_slice(arrival.body),
-            // A BODY-MODEL ARRIVAL. The two dialects that keep their model in the URL parse their own
-            // URL space before the loop, in their own crate, and that parse is not reached from here
-            // — a mounted arrival of one of those two is walked as the body-model shape its own
-            // `BODY_INGRESS` entry already is. See this file's module note in the mount beside it.
-            path: None,
+            // WHAT THE REQUEST LINE SAID, where the dialect keeps its model there. The plane's own
+            // reading answers it — the same reading the driven path's arrival makes — so this leg
+            // holds no second statement about anybody's URL space, and `None` here means the one
+            // thing it says: this address named no model, so the model is in the body where the
+            // other four dialects keep it.
+            path: url_model(named.dialect, target, query_of(arrival), named.operation),
         };
         self.node.walk(walk_arrival, None).await
     }
+}
+
+/// **THE MODEL THE REQUEST LINE NAMED**, for the two dialects that keep it there.
+///
+/// Two of this plane's six dialects put the model in the request line and nowhere else — one in
+/// `/{version}/models/{model}:{action}`, the other in `/model/{model}/converse` — so their bodies
+/// carry no `model` key, because in those dialects there is no such key. A leg that walked one of
+/// them as the body-model shape hands the loop a request with no model, and the client is answered
+/// `Missing required parameter: 'model'` for a parameter it had nowhere to put.
+///
+/// The reading is the PLANE's, not this file's: [`busbar_plane_llm::url::path_model_facts`] is the
+/// same statement about the same URL space the driven path's arrival reads, and it is reached here
+/// without a host because it needs none. Which two dialects those are is not a list in this file
+/// either — the plane's dialect table declares each row's model location, and this leg asks.
+///
+/// The target is passed WITHOUT its query and the query separately, the way the ladder is asked:
+/// the model is in the path, and one dialect's stream framing is in the query.
+fn url_model(
+    dialect: &'static str,
+    target: &str,
+    query: Option<&str>,
+    operation: Operation,
+) -> Option<PathModelFacts> {
+    busbar_plane_llm::url::url_model(dialect, target, query).map(|url| PathModelFacts {
+        model: url.model,
+        operation,
+        stream: url.stream,
+        gemini_json_array: url.gemini_json_array,
+        model_not_found_message: url.model_not_found_message,
+    })
+}
+
+/// The query one arrival's request target carried, or `None` where it carried none.
+///
+/// The mount publishes the target WHOLE, so the split is made here rather than a second fact being
+/// published for the half — and both halves are read from the one string the request line held.
+fn query_of<'a>(arrival: &'a busbar_contract::transport::Arrival<'a>) -> Option<&'a str> {
+    arrival
+        .fact(busbar_contract::transport::facts::PATH)
+        .and_then(|target| target.split_once('?').map(|(_, query)| query))
 }
 
 /// The request target one arrival names, without its query.

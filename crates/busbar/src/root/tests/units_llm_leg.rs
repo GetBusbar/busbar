@@ -119,3 +119,50 @@ fn a_leg() -> LlmLeg {
         )),
     )
 }
+
+/// **THE MOUNTED AND THE DRIVEN READING OF A URL-NAMED MODEL ARE ONE READING.**
+///
+/// The driven path reads the model through the dialect's own `RequestHandler::path_model`, reached
+/// on the protocol registry the composition root installs; a mounted arrival reads it through the
+/// plane's own [`busbar_plane_llm::url`], because that is the reading a caller with no arrival host
+/// can make. Two spellings of one cut is exactly the drift a mounted request would show and a driven
+/// one would not — a model routed one way here and another way there, on the same address — so they
+/// are asserted equal over the shapes both dialects answer, in the one place that can see both.
+#[test]
+fn the_mounted_and_driven_readings_of_a_url_named_model_are_one_reading() {
+    busbar_llm::testkit::install_test_seams();
+    let driven = |dialect: &'static str, path: &str| {
+        busbar_substrate::handlers::request_handler(dialect)
+            .expect("the dialect is registered")
+            .path_model(path)
+    };
+    let mounted = |dialect: &'static str, path: &str| {
+        busbar_plane_llm::url::url_model(dialect, path, None).map(|u| u.model)
+    };
+    for (dialect, path) in [
+        ("gemini", "/v1beta/models/gemini-2.0-flash:generateContent"),
+        (
+            "gemini",
+            "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+        ),
+        ("gemini", "/v1/models/text-embedding-004:embedContent"),
+        ("bedrock", "/model/anthropic.claude-3-5-sonnet/converse"),
+        (
+            "bedrock",
+            "/model/anthropic.claude-3-5-sonnet/converse-stream",
+        ),
+    ] {
+        assert_eq!(
+            driven(dialect, path),
+            mounted(dialect, path),
+            "the two readings of `{path}` are one reading"
+        );
+    }
+
+    // And the addresses that name no model on the mounted side are the addresses the driven side
+    // has no model for either — including the one that names a model and leaves the OPERATION to the
+    // body, whose model is a routing hint rather than the arrival's own.
+    assert_eq!(mounted("gemini", "/v1/models/gemini-2.0-flash"), None);
+    assert_eq!(mounted("bedrock", "/model/amazon.titan-text/invoke"), None);
+    assert_eq!(mounted("openai", "/v1/chat/completions"), None);
+}
