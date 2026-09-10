@@ -1348,7 +1348,7 @@ impl busbar_api::SecretModule for DynSecret {
         {
             busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
             busbar_plugin::cold::SecretResponse::Error { kind, message } => {
-                Err(busbar_api::SecretError::new(kind, message))
+                Err(busbar_api::SecretError::new(kind.into(), message))
             }
         }
     }

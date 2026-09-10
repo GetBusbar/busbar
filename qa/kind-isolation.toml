@@ -2190,7 +2190,7 @@ count = "102"
 [[cell]]
 crate = "busbar-plugin"
 kind = "api"
-count = "58"
+count = "57"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2310,7 +2310,7 @@ count = "14"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "api"
-count = "61"
+count = "60"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
