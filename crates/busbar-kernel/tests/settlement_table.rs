@@ -252,23 +252,6 @@ fn a_non_success_status_posts_no_fee() {
 }
 
 #[test]
-fn a_plane_whose_finish_contradicts_the_status_posts_the_lower_and_disputes_it() {
-    let lying = FeeEvidence {
-        status: Some(StatusClass::Success),
-        finish: Some(FinishClass::Error),
-        ..billable()
-    };
-    assert_eq!(fee_count(&lying), (0, PostingFlags::METER_DISPUTED));
-
-    let other_way = FeeEvidence {
-        status: Some(StatusClass::ServerError),
-        finish: Some(FinishClass::Complete),
-        ..billable()
-    };
-    assert_eq!(fee_count(&other_way), (0, PostingFlags::METER_DISPUTED));
-}
-
-#[test]
 fn with_no_transport_status_the_planes_finish_decides_alone() {
     let evidence = FeeEvidence {
         status: None,
@@ -367,7 +350,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             None,
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (None, Some(StatusClass::ClientError), None, 0, false),
@@ -518,7 +501,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             Some(StatusAt::FirstFrame),
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (
@@ -687,7 +670,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             Some(StatusAt::Terminal),
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (

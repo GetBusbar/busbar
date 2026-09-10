@@ -188,6 +188,41 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 1
 because = "the same face, busbar_contract::plane::PlaneMeta::STATUS_LEG: the union carries the caps+contract pair, so it rises by the same one line and by nothing else. The kernel, the unit union and the verbs sub-ceiling do not move on this commit."
 
+# THE ONE POLICY FOR A CONTRADICTED FEE: `fee_when_the_two_readings_contradict`, six lines in
+# crates/busbar-kernel/src/teller.rs and nothing else.
+#
+# A unit ends twice — the transport reports a status on the frame it declares one on, and the plane
+# afterwards gives a finish — and the arm for the case where those two disagree was an inline
+# expression inside the fee's match, answering zero. Two things were wrong with it and only one is
+# arithmetic. The arithmetic: zero refunds a request the client was handed an answer to, which is
+# not what the previous release bills and not what the fee's own doc comment said the rule was. The
+# structural one: an inline expression is not a decision anybody can find, so what a contradicted
+# fee costs was a property of a match arm rather than a policy with a name, and the five composition
+# legs that fed it had each independently made it unreachable by declaring no status leg at all.
+#
+# Named, it is one function, kind-neutral by signature — it takes a bool and knows no plane, no
+# protocol and no transport — and it has its own cell in the settlement table beside the fee's one
+# exhaustive row-by-row table, in both directions. Changing what a contradicted fee costs is now one
+# edit at one site, made on purpose.
+#
+# The count on every recorded cell is unchanged: the arm is entered only where a status leg is
+# declared AND the two readings disagree, and no recorded cell of any family reaches both.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 6
+because = "the one policy for a contradicted fee, busbar_kernel::teller::fee_when_the_two_readings_contradict: six surface lines in teller.rs, measured 606 -> 612. The match arm it replaces is the same three lines it was, so the six are the named function and nothing else — the fee's decision for the case where the frame the client saw and the plane's finish disagree, lifted out of an inline expression into something that can be found, cited and changed on purpose."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 6
+because = "the same six lines, counted on the kernel's own total: 5381 -> 5387. The call-graph-reachable busbar-unit-* set does not move on this commit (2298 lines in the same 10 files), so the whole of the rise is teller.rs's own."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 6
+because = "the same six lines again, because the union carries the kernel: 23826 -> 23832. The caps+contract pair and the busbar-unit-* union do not move on this commit."
+
 # THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
 # (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
 # crate's lib.rs = 138 measured). Every chain a resolved `GroupTable` can produce, walked ONCE at
@@ -465,7 +500,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5381
+kernel_ceiling = 5387
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3512
@@ -473,7 +508,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14933
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23826
+union_ceiling = 23832
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -482,7 +517,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 612
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

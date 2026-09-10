@@ -400,13 +400,41 @@ pub struct FeeEvidence {
     pub finish: Option<FinishClass>,
 }
 
+/// **THE ONE POLICY FOR A FEE WHOSE TWO READINGS CONTRADICT EACH OTHER.**
+///
+/// A unit ends twice: the transport reports a status on the frame it says it reports one on, and
+/// the plane afterwards gives a finish. When those disagree, something has gone wrong that the fee
+/// cannot wait to have explained — an answer that started well and then died, or a plane that is
+/// not telling the truth about its own ending — and the money has to be decided anyway.
+///
+/// **THE FRAME THE CLIENT SAW DECIDES.** A request the client was handed an answer to was answered,
+/// and no later abort un-answers it; a request the client was handed a failure for was not, and no
+/// plane may bill over the top of that by claiming otherwise. So the status leg is what counts, and
+/// the plane's contradicting finish costs nothing and changes nothing.
+///
+/// What it DOES do is mark the posting. The count alone would say nothing was wrong; the mark is
+/// what puts the unit on the disputes report, so a plane whose finishes routinely disagree with its
+/// own wire becomes visible rather than merely profitable.
+///
+/// It is one function because it is one decision. It takes no plane, no kind and no protocol — the
+/// contradiction is the same contradiction whether a completion stream died, a tool call's events
+/// stopped, a task was lost or a session dropped after it opened — and changing what a contradicted
+/// fee costs is therefore one edit at one site, made on purpose, rather than a gap that has to be
+/// found in five composition legs first.
+fn fee_when_the_two_readings_contradict(status_says_answered: bool) -> (u32, PostingFlags) {
+    (
+        u32::from(status_says_answered),
+        PostingFlags::METER_DISPUTED,
+    )
+}
+
 /// Decide the flat fee, and say whether the two sources of truth disagreed.
 ///
 /// The fee is decided at the first frame the client actually saw, and it is never reversed by a
 /// later abort: a stream that dies halfway through a good response was still a good response at the
 /// moment it started. Where the transport reports a status AND the plane reports a finish, the two
-/// have to agree; where they do not, the LOWER count is posted and the posting is disputed, which
-/// is what makes a plane that lies about its finish visible rather than profitable.
+/// have to agree; where they do not, [`fee_when_the_two_readings_contradict`] decides, once, for
+/// every plane.
 ///
 /// A transport that says WHERE its status is reported and then reports none has lost the evidence:
 /// the stream ended before the frame carrying it. Nothing is billed, and a plane claiming a clean
@@ -434,7 +462,7 @@ pub fn fee_count(evidence: &FeeEvidence) -> (u32, PostingFlags) {
         (true, true, _, _) if claims_whole => (0, PostingFlags::METER_DISPUTED),
         (true, true, _, _) => (0, PostingFlags::NONE),
         (true, _, Some(status_ok), Some(finish_ok)) if status_ok != finish_ok => {
-            (0, PostingFlags::METER_DISPUTED)
+            fee_when_the_two_readings_contradict(status_ok)
         }
         (true, _, Some(true), _) => (1, PostingFlags::NONE),
         (true, _, Some(false), _) => (0, PostingFlags::NONE),
