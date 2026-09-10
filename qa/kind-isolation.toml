@@ -253,13 +253,6 @@ drain = "delete the secret name from the api crate: a api reaches secret through
 
 [[edge]]
 from = "api"
-to = "store"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the store name from the api crate: a api reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "api"
 to = "transport"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
 why = "crates of kind api naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1485,12 +1478,12 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "control"
-count = "23"
+count = "7"
 
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
-count = "107"
+count = "36"
 
 [[cell]]
 crate = "busbar-api"
@@ -1499,13 +1492,8 @@ count = "7"
 
 [[cell]]
 crate = "busbar-api"
-kind = "store"
-count = "1"
-
-[[cell]]
-crate = "busbar-api"
 kind = "transport"
-count = "11"
+count = "9"
 
 [[cell]]
 crate = "busbar-auth-admin-tokens"
@@ -1565,7 +1553,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "36"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1585,7 +1573,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "114"
 
 [[cell]]
 crate = "busbar-contract"

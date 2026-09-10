@@ -21,6 +21,7 @@ pub mod plane;
 pub mod plugin;
 pub mod signal;
 pub mod spans;
+pub mod store;
 pub mod surface;
 pub mod transport;
 pub mod unit;

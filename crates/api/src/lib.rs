@@ -26,7 +26,6 @@ pub mod durable;
 pub mod operation;
 mod redacted;
 mod secret;
-mod store;
 pub mod usage_migration;
 
 pub use auth::{
@@ -58,7 +57,11 @@ pub use busbar_secret_grammar::SecretRef;
 // The signal catalog is the CONTRACT's now (it moved with the hooks-kind face); re-exported here
 // while busbar-api drains, so every reader keeps its spelling and resolves to one definition.
 pub use busbar_contract::{Signal, SignalBag, SignalValue};
-pub use store::{
+// THE STORE-KIND FACE IS THE CONTRACT'S (`busbar_contract::store`): the records and the replay
+// face the store plugins and the loader are written against moved there verbatim. Re-exported
+// here while this crate drains; the drain line is the reader: every `busbar_api::<name>` below
+// becomes `busbar_contract::store::<name>`, and this block goes with the crate.
+pub use busbar_contract::store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,
     ScopeRef, SecretForm, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,

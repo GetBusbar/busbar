@@ -140,9 +140,10 @@ busbar-voice = ["busbar-voice-codec"]
 # the new number, the rise disappeared, and `ceiling-rose` refused the declaration as stale -- which
 # is the expiry working exactly as the paragraph above describes it.
 #
-# NINE ENTRIES STAND TODAY: three are ONE seam seen by three rules, three are the hooks-kind
-# face seen by the same three rules, and three are the virtual-key directory face seen by them
-# again.
+# FOURTEEN ENTRIES STAND TODAY: three are ONE seam seen by three rules, three are the hooks-kind
+# face seen by the same three rules, three are the virtual-key directory face seen by them again,
+# and five are the store-kind face: the same three rules plus the two cells its frozen wire and
+# its audit record carry with it.
 #
 # The seam. Every plugin kind's face used to fail with its own enum -- `StoreError` with five
 # variants, `SecretError` with five others -- and neither carried the plugin's own code, its
@@ -215,13 +216,51 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 19
 because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 19 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms"
 
+# THE STORE-KIND FACE MOVED INTO THE CONTRACT (busbar-api -> busbar-contract, Track 4's store
+# step). `store.rs` is the 1.5.5 durable-store contract the store plugins and the loader are
+# written against: the records (`VirtualKey`, its FROZEN wire shape, `CredentialMeta`/`Secret`,
+# `UsageLedger`, `MeteringDelta`/`Row`, `AuditRecord`, `PlaneRecord`) and the replay face
+# (`Store`). Moved verbatim plus the thirty-six one-line field docs the contract's
+# `deny(missing_docs)` demands and nothing else; busbar-api re-exports it while it drains. Three
+# deltas for the three ceilings that count the contract, and two for the two cells the moved text
+# carries with it: the frozen `VirtualKey` wire partitions scopes into `allowed_pools` /
+# `allowed_mcp_servers` / `allowed_mcp_tools` -- a plane's instance id, ON THE WIRE, which is the
+# one thing this retirement may not change (COLD WIRE BYTE-IDENTICAL) -- and the audit record is
+# the admin surface's audit record by definition. Every one of those hits moved; none was written.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 626
+because = "the store-kind face (busbar_contract::store: VirtualKey and its frozen wire, the credential/usage/metering/audit/plane records, the Store replay face) moved in from busbar-api verbatim: scripts/loc-surface.py measures the contract pair 3995 -> 4621, and every one of those lines was already plugin-visible surface one crate over"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 630
+because = "the same move under the loc-ceilings counting rule: busbar-contract 2847 -> 3477 for store.rs (the 1.5.5 store contract, verbatim, plus the field docs deny(missing_docs) demands) and the one `pub mod store;` line; busbar-caps 1153 unmoved"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 630
+because = "the union row sums caps/contract; it rises by the same 630 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the store-kind face move)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 72
+because = "busbar-contract x plane. The store-kind face carries the FROZEN VirtualKey wire, which partitions a key's scopes by kind into `allowed_pools` / `allowed_mcp_servers` / `allowed_mcp_tools` -- field names on a signed, persisted wire that this retirement may not change -- and the battery that pins that wire byte-for-byte spells them again. 72 hits, every one of them moved from busbar-api x plane (107 -> 36), none written; they fall when the store kind is re-implemented on busbar_contract::kinds::Store and the 1.5.5 record leaves."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.control.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = "busbar-contract x control. The store-kind face carries the admin AUDIT record (`AuditRecord`, `Store::append_audit` / `list_audit` / `list_audit_tail`) and the admin-listing doc that says which record never carries a secret; the word `admin` is what the record IS. 16 hits, every one of them moved from busbar-api x control (23 -> 7), none written; they fall with the 1.5.5 store contract."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3995
+contract_caps = 4621
 grammar = 388
 contract_transport = 845
 
@@ -442,12 +481,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4000
+caps_contract_ceiling = 4630
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23985
+union_ceiling = 24615
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

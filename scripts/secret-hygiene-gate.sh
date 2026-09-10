@@ -60,8 +60,8 @@ SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! 
 # doc's "*Token*-struct" rule catches by construction: `IrTokenLogprob.token` is a generated LLM
 # output token's logprob entry, NOT a credential. Per the doc, false positives are silenced by the
 # allowlist, never by weakening the rule.
-ALLOWLIST_C1="secret|crates/api/src/store.rs|secret
-credential_secret|crates/api/src/store.rs|
+ALLOWLIST_C1="secret|crates/busbar-contract/src/store.rs|secret
+credential_secret|crates/busbar-contract/src/store.rs|
 token|crates/busbar-core/src/admin/v1/contract/schema.rs|token
 secret_access_key|crates/busbar-core/src/admin/v1/contract/schema.rs|
 access_token|crates/busbar-core/src/admin/v1/contract/schema.rs|

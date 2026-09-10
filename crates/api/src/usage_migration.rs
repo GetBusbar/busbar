@@ -37,7 +37,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::store::{
+use busbar_contract::store::{
     ModelTokens, UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 

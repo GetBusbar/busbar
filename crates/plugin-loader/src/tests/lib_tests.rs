@@ -1895,7 +1895,10 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
         out
     }
 
-    let trait_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../api/src/store.rs"));
+    let trait_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../busbar-contract/src/store.rs"
+    ));
     let abi_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../busbar-plugin/src/cold/mod.rs"

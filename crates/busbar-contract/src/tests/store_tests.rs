@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/api/src/store.rs`.
+//! Tests for `crates/busbar-contract/src/store.rs` (the store-kind records and replay face, moved in from the retiring 1.5.5 contract crate).
 
 use super::*;
 
@@ -269,8 +269,8 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
 fn scope_kinds_survive_store_round_trip() {
     // The plane scope kinds are registered at boot from each `PlaneDecl.scope_kinds`; a unit test
     // registers them itself (idempotent) so the neutral crate's SOURCE names no plane kind.
-    crate::register_scope_kind("mcp_server");
-    crate::register_scope_kind("mcp_tool");
+    crate::store::register_scope_kind("mcp_server");
+    crate::store::register_scope_kind("mcp_tool");
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![
         ScopeRef::pool("fast"),
@@ -321,8 +321,8 @@ fn unknown_scope_kind_is_a_hard_serialize_error() {
 /// `allowed_pools: []` beside an MCP field stays the EMPTY pool set - never "all".
 #[test]
 fn mcp_scope_wire_fields_are_additive() {
-    crate::register_scope_kind("mcp_server");
-    crate::register_scope_kind("mcp_tool");
+    crate::store::register_scope_kind("mcp_server");
+    crate::store::register_scope_kind("mcp_tool");
     // Pool-only and None grants must not grow mcp fields on the wire.
     let pool_only = sample_key();
     let v = serde_json::to_value(&pool_only).unwrap();

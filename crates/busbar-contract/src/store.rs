@@ -19,7 +19,9 @@
 /// MCP tool, an MCP server, an A2A delegate-target agent, …).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScopeRef {
+    /// The kind of scope this names — `"pool"`, a plane's registered kind, never a closed enum.
     pub kind: String,
+    /// The scope's own id within its kind (a pool name, an MCP server name, …).
     pub value: String,
 }
 
@@ -290,6 +292,7 @@ mod virtual_key_wire {
 /// mint sets `id`/`generation_hash`/`enabled` explicitly.
 #[derive(Clone, PartialEq, Default)]
 pub struct VirtualKey {
+    /// The key's stable id — the principal's id, the ledger bucket, the audit attribution.
     pub id: String,
     /// A ROTATION FINGERPRINT, not a lookup credential. For a 1.5.0 signed-token key this is the
     /// non-authenticating `binding:<id>:<generation>` marker (the token itself is the credential);
@@ -299,6 +302,7 @@ pub struct VirtualKey {
     /// than `key_hash` for exactly this reason — the 1.4.x hashed-secret shape this field used to
     /// double as a lookup key for was retired in 1.5.0; see `docs/migration-1.5.md`.)
     pub generation_hash: String,
+    /// The key's operator-facing label.
     pub name: String,
     /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind
     /// (the grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO
@@ -307,7 +311,9 @@ pub struct VirtualKey {
     /// stays byte-identical to the pre-generalization `allowed_pools: Option<Vec<String>>`):
     /// see [`virtual_key_wire`].
     pub allowed_scopes: Option<Vec<ScopeRef>>,
+    /// Whether the key is switched on; `false` refuses every credential that names it.
     pub enabled: bool,
+    /// Unix seconds the key was minted.
     pub created_at: u64,
     /// The `groups:` bucket this key charges through (at most one; the chain walks `parent` up
     /// from here). `None` = no group: the key is authed + UNLIMITED (access only).
@@ -455,7 +461,7 @@ pub enum SecretForm {
 /// public identifier — bearer/signed-token auth is deliberately NEVER represented here:
 /// `GovState::verify_token` never looks up a row, it only compares [`VirtualKey::generation_hash`]
 /// (a post-resolution fingerprint) against the token's own `generation` claim. Today's only `kind`
-/// is `"sigv4"` (`public_id` = AccessKeyId); a future auth mechanism (mTLS, HTTP Basic, …) is a new
+/// is `"sigv4"` (`public_id` = AccessKeyId); a future auth mechanism (client certificates, basic credentials, …) is a new
 /// `kind` value on this SAME type, not a new type/table/trait-method set — that repeatable-accretion
 /// pattern is exactly what this generalization exists to close off.
 ///
@@ -464,6 +470,7 @@ pub enum SecretForm {
 /// type: there is no field to leak.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CredentialMeta {
+    /// The credential row's own id (distinct from the owning key's).
     pub id: String,
     /// The owning `VirtualKey.id`.
     pub key_id: String,
@@ -479,15 +486,20 @@ pub struct CredentialMeta {
     /// The non-secret, wire-supplied lookup handle (sigv4: the AccessKeyId carried in the
     /// `Authorization` header's `Credential=` field).
     pub public_id: String,
+    /// How the secret half is held — see [`SecretForm`].
     pub secret_form: SecretForm,
+    /// Unix seconds this credential was minted.
     pub created_at: u64,
+    /// Unix seconds this credential row was last changed.
     pub updated_at: u64,
+    /// Hard expiry of this credential, in Unix seconds; `None` is never.
     pub expires_at: Option<u64>,
     /// `Some(ts)` once this SPECIFIC credential has been revoked (independent of the owning key —
     /// this is what makes "rotate a leaked SigV4 secret without touching the key's bearer token or
     /// re-minting anything" possible). Distinct from the key-level revocation denylist, which blocks
     /// EVERY credential of a subject at once; this blocks only this one row.
     pub revoked_at: Option<u64>,
+    /// The operator-supplied reason recorded at revocation, if any.
     pub revoke_reason: Option<String>,
     /// Store-global monotonic revision — see [`VirtualKey::revision`].
     #[serde(default)]
@@ -521,6 +533,7 @@ impl CredentialMeta {
 /// `VirtualKey`'s own `generation_hash` — same pattern, same reasoning, applied consistently.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CredentialSecret {
+    /// The non-secret half: everything a listing may show.
     pub meta: CredentialMeta,
     /// SECRET-EQUIVALENT for a `Recoverable`-form credential — never log it. Format
     /// `"v1:<scheme>:<payload>"`.
@@ -561,10 +574,13 @@ impl std::fmt::Debug for CredentialSecret {
 /// the one map with every open (operator/plane) unit. These constants are the single source of truth
 /// for those four names, so the pricer, the ledger, the flush primitive, and the boot migration can
 /// never disagree on the spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older
-/// `cache_creation` name is folded onto it at migration (see [`usage_migration`]).
+/// `cache_creation` name is folded onto it at migration (see the engine's boot migration).
 pub const UNIT_INPUT: &str = "input";
+/// The reserved unit name for prompt tokens.
 pub const UNIT_OUTPUT: &str = "output";
+/// The reserved unit name for completion tokens.
 pub const UNIT_CACHE_READ: &str = "cache_read";
+/// The reserved unit name for tokens served from a prompt cache.
 pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
 /// The reserved four, in canonical order — the set the pricer prices via the `RateNanos` tiers and
@@ -580,11 +596,13 @@ pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ,
 /// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
 /// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a pre-M1b persisted
 /// row with the old scalar `tokens` field is folded into this map ONCE by the store-versioned boot
-/// migration (see [`usage_migration`]).
+/// migration (see the engine's boot migration).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
+    /// The model these counts are attributed to.
     pub model: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    /// Name-keyed unit counts: the reserved four beside every open unit.
     pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
@@ -626,6 +644,7 @@ pub struct UsageLedger {
     /// `hydrate_budgets` seeds it from `requests` for such a row.
     #[serde(default)]
     pub billable_requests: u64,
+    /// Per-model unit counts for this bucket's window.
     pub models: Vec<ModelTokens>,
 }
 
@@ -717,8 +736,10 @@ impl UsageLedger {
 /// an all-zero delta serializes to `{"model":…}`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokensDelta {
+    /// The model this delta is attributed to.
     pub model: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    /// Name-keyed signed unit deltas: the reserved four beside every open unit.
     pub usage_units: std::collections::BTreeMap<String, i64>,
 }
 
@@ -739,6 +760,7 @@ pub struct UsageDelta {
     /// Signed delta of the billable (fee-base, refundable) request count.
     #[serde(default)]
     pub billable_requests: i64,
+    /// Per-model signed unit deltas.
     pub models: Vec<ModelTokensDelta>,
 }
 
@@ -756,6 +778,7 @@ impl UsageDelta {
 /// separately (design: expose the inputs of the cost computation, not just busbar's own result).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringDelta {
+    /// The virtual key the response is attributed to.
     pub key_id: String,
     /// The UTC-day bucket this response is attributed to; derived from the request's pinned
     /// header-arrival epoch, same as the budget charges.
@@ -766,7 +789,9 @@ pub struct MeteringDelta {
     pub provider: String,
     /// Uncached input tokens (the normalized additive-cache convention, per `billing::TokenUsage`).
     pub tokens_input: u64,
+    /// Completion tokens.
     pub tokens_output: u64,
+    /// Tokens served from the prompt cache.
     pub tokens_cache_read: u64,
     /// Renamed from `tokens_cache_creation`: the identical concept as `TierTokens::cache_write`
     /// above, just named differently because this type was added later without matching its
@@ -800,20 +825,30 @@ pub struct MeteringDelta {
 /// by_key aggregations — the service aggregates in memory; buckets are bounded by (keys × models)).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MeteringRow {
+    /// The virtual key the row is attributed to.
     pub key_id: String,
+    /// The serving lane's configured model name.
     pub model: String,
+    /// The serving lane's provider name.
     pub provider: String,
+    /// Accumulated uncached input tokens.
     pub tokens_input: u64,
+    /// Accumulated completion tokens.
     pub tokens_output: u64,
+    /// Accumulated cache-read tokens.
     pub tokens_cache_read: u64,
     /// Renamed from `tokens_cache_creation` — see [`MeteringDelta::tokens_cache_write`].
     pub tokens_cache_write: u64,
+    /// Accumulated completed responses.
     pub requests: u64,
     #[serde(default)]
+    /// Accumulated billable responses — see [`MeteringDelta::billable_requests`].
     pub billable_requests: u64,
     #[serde(default)]
+    /// The key's group at the time of use — see [`MeteringDelta::key_group_at_use`].
     pub key_group_at_use: String,
     #[serde(default)]
+    /// The price table in force at the time of use — see [`MeteringDelta::pricing_version`].
     pub pricing_version: String,
 }
 
@@ -971,6 +1006,7 @@ pub trait Store: Send + Sync + 'static {
     /// trait change); it is recorded here so no caller mistakes the tombstone guard above for
     /// general optimistic concurrency, which it is not.
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()>;
+    /// Read one key by id; `Ok(None)` for an id the store has never held.
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>>;
     /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
     /// one method serves both the admin-listing caller (which filters `deleted_at.is_none()`
@@ -1193,7 +1229,7 @@ pub trait Store: Send + Sync + 'static {
     }
 
     /// Append one admin AUDIT record for DURABLE persistence (design: the audit log's durable home is
-    /// the configured store — memory = ephemeral, sqlite/postgres/valkey = durable). The engine keeps
+    /// the configured store: an in-process backend is ephemeral, a persistent one is durable). The engine keeps
     /// the hot in-memory hash-chained ring for reads and write-THROUGHs each appended entry here, so a
     /// hard crash loses ~0 entries and the ring's size bound stops pruning HISTORY (the store keeps it
     /// all). Append-only, ordered by `seq`; a store never rewrites or recomputes the digest.
