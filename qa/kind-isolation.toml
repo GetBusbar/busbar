@@ -244,19 +244,20 @@ reason = "the Google Gemini dialect of the LLM plane, extracted from busbar-plan
 # THE FIRST TWO ROWS ARE THE EXCEPTION THE DOOR WAS BUILT FOR: the two dialect crates landed before
 # the door existed, their cells were written by hand at measurement (commit cd7a4a0fb), and the
 # announcement that should have preceded them is the [[announced]] rows above, landed one commit
-# earlier. `cells` is the count of [[cell]] rows each crate carries in this file, exactly: openai
-# names its own kind once and the plane kind twice (2 rows); responses names its own kind once
-# (1 row). Neither is a carve-out, so neither has a `moved_from` ceiling.
+# earlier. `cells` is the count of [[cell]] rows each crate carries in this file, exactly. RE-KEYED (K7)
+# to this base: a plane or dialect crate is NOT scored against the dialect column, so both crates'
+# own `x dialect` rows measure zero here and were struck as dead allowances. openai keeps one row
+# (`x plane` = 2 hits); responses keeps none. Neither is a carve-out, so neither has a `moved_from` ceiling.
 
 [[minted]]
 crate = "busbar-plane-llm-openai"
-commit = "cd7a4a0fb"
-cells = "2"
+commit = "ce1c2d168"
+cells = "1"
 
 [[minted]]
 crate = "busbar-plane-llm-responses"
-commit = "cd7a4a0fb"
-cells = "1"
+commit = "b07f0a7cb"
+cells = "0"
 
 # ------------------------------------------------------------------------------------------------
 # [[minted_kind]] — THE COLUMN A KIND THAT DID NOT EXIST BRINGS WITH IT
@@ -3269,7 +3270,7 @@ count = "30"
 [[cell]]
 crate = "busbar-api"
 kind = "dialect"
-count = "20"
+count = "22"
 
 [[cell]]
 crate = "busbar-contract"
@@ -3284,12 +3285,12 @@ count = "1778"
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "3424"
+count = "3427"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11307"
+count = "11310"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -5876,7 +5877,7 @@ count = "30"
 [[cell]]
 crate = "busbar-api"
 kind = "dialect"
-count = "20"
+count = "22"
 
 [[cell]]
 crate = "busbar-caps"
@@ -5901,12 +5902,12 @@ count = "2"
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "3424"
+count = "3427"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11307"
+count = "11310"
 
 [[cell]]
 crate = "busbar-mcp"
