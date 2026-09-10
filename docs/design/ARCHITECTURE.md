@@ -73,8 +73,17 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  (`--ceiling busbar-contract,busbar-caps=3684`), which the construction gate runs as
+  `surface-ceiling:contract+caps`. **The plugin structured-error seam** (owner ruling, 2026-09-09;
+  `busbar_contract::error`) is inside that number: every plugin kind's face fails with ONE
+  `PluginError { class, code, params, developer_message, advisory }` — `class` the contract's
+  CLOSED ten-class taxonomy the kernel keys status, retry, audit severity and client visibility
+  off; `code` the plugin's own stable namespaced identifier; `params` structured values;
+  `developer_message` the plugin's rendered text for the log only; `advisory` hints — and each
+  plugin ships a CATALOG AS DATA (`Catalog`: code → template per locale, a default locale every
+  code is templated in, a missing locale falling back to the default and never to the developer
+  message) beside its claims, which the kernel reads and never calls into. The per-kind
+  `StoreError`/`SecretError` enums are gone; the surface measured 3479 → 3684 for it. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

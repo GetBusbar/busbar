@@ -1339,24 +1339,39 @@ fn load_and_exercise_secret_example_plugin() {
         .expect("known key resolves");
     assert_eq!(value.expose(), b"hunter2");
 
+    let miss = module
+        .resolve(&cold_reference(r#"{"key":"no-such-key"}"#))
+        .expect_err("an unknown key must fail closed");
     assert_eq!(
-        module.resolve(&cold_reference(r#"{"key":"no-such-key"}"#)),
-        Err(busbar_contract::kinds::SecretError::Unknown),
+        miss.class,
+        busbar_contract::ErrorClass::NotFound,
         "an unknown key must fail closed as a MISS, never resolve empty and never read as a \
          malformed reference"
     );
-
-    assert_eq!(
-        module.resolve(&cold_reference("{}")),
-        Err(busbar_contract::kinds::SecretError::Malformed),
-        "settings with no `key` field are a reference the module's grammar cannot use"
+    // The five fields cross the seam: the plugin's own words are the developer message, and the
+    // code the plugin chose arrives untouched.
+    assert!(
+        miss.developer_message.contains("no-such-key"),
+        "the plugin's own message rides the developer_message field: {miss:?}"
     );
+    assert!(
+        !miss.code.is_empty(),
+        "a failure always carries a code: {miss:?}"
+    );
+
+    let malformed = module
+        .resolve(&cold_reference("{}"))
+        .expect_err("settings with no `key` field are a reference the module's grammar cannot use");
+    assert_eq!(malformed.class, busbar_contract::ErrorClass::Malformed);
 
     // A reference that is not a JSON object at all never reaches the plugin: the grammar is the
     // loader's, and it refuses before the ABI is crossed.
     assert_eq!(
-        module.resolve(&cold_reference("not json")),
-        Err(busbar_contract::kinds::SecretError::Malformed)
+        module
+            .resolve(&cold_reference("not json"))
+            .expect_err("not a JSON object")
+            .class,
+        busbar_contract::ErrorClass::Malformed
     );
 
     // Under `SECRET_ABI_VERSION` 1 the wire declares only `Resolve`, so the key operations have no
@@ -1370,47 +1385,53 @@ fn load_and_exercise_secret_example_plugin() {
     assert!(module.unseal("k", b"ctx", b"m").is_err());
 }
 
-/// THE WIRE TOKEN → FACE ERROR MAP, EVERY TOKEN, IN THE ONE PLACE THE MAP LIVES.
+/// THE WIRE TOKEN → CLASS MAP, EVERY TOKEN, IN THE ONE PLACE THE MAP LIVES.
 ///
-/// The dlopen battery above measures two of the five over the real ABI; the plugin has no way to
-/// emit the other three, and a map with three unexercised arms is a map three edits away from being
-/// wrong. So this cell states all five, and it states the two that matter most as separate claims:
-/// `denied` must NOT arrive as `Unknown` (that is the distinction the face gained a variant for),
-/// and `unavailable` must NOT arrive as anything on the config side (an outage an operator waits
-/// out must never read as something they should go and fix).
+/// The dlopen battery above measures two of the five over the real ABI; a plugin built before the
+/// structured error has no way to emit the other three, and a map with three unexercised arms is
+/// a map three edits away from being wrong. So this cell states all five, and it states the two
+/// that matter most as separate claims: `denied` must NOT arrive as `NotFound` (that is the
+/// distinction the taxonomy keeps), and `unavailable` must NOT arrive as anything on the config
+/// side (an outage an operator waits out must never read as something they should go and fix).
+/// Every minted code is one the loader's own wire catalog declares.
 #[test]
-fn every_frozen_wire_token_maps_to_the_face_error_that_tells_the_operator_the_truth() {
-    use busbar_contract::kinds::SecretError as Face;
+fn every_frozen_wire_token_maps_to_the_class_that_tells_the_operator_the_truth() {
+    use busbar_contract::ErrorClass as Class;
     use busbar_plugin::cold::SecretErrorKind as Wire;
 
     let map = [
-        (Wire::NotFound, Face::Unknown),
-        (Wire::Unavailable, Face::Unavailable),
-        (Wire::Denied, Face::Denied),
-        (Wire::Invalid, Face::Malformed),
-        (Wire::Internal, Face::Unknown),
+        (Wire::NotFound, Class::NotFound),
+        (Wire::Unavailable, Class::Unavailable),
+        (Wire::Denied, Class::Denied),
+        (Wire::Invalid, Class::Malformed),
+        (Wire::Internal, Class::Internal),
     ];
-    for (wire, face) in map {
+    for (wire, class) in map {
         assert_eq!(
-            crate::secret_face_error(wire),
-            face,
-            "the frozen wire token {wire:?} maps to {face:?}"
+            crate::secret_wire_class(wire),
+            class,
+            "the frozen wire token {wire:?} maps to {class:?}"
+        );
+        let code = crate::secret_wire_code(wire);
+        assert!(
+            crate::wire_catalog().entry(code).is_some(),
+            "the minted code {code} is declared by the wire catalog"
         );
     }
 
     assert_ne!(
-        crate::secret_face_error(Wire::Denied),
-        Face::Unknown,
-        "a policy refusal folded onto Unknown sends an operator to edit a reference that is fine"
+        crate::secret_wire_class(Wire::Denied),
+        Class::NotFound,
+        "a policy refusal folded onto NotFound sends an operator to edit a reference that is fine"
     );
-    let outage = crate::secret_face_error(Wire::Unavailable);
+    let outage = crate::secret_wire_class(Wire::Unavailable);
     assert_ne!(
         outage,
-        Face::Unknown,
+        Class::NotFound,
         "an outage is not a missing reference"
     );
-    assert_ne!(outage, Face::Malformed, "an outage is not a bad reference");
-    assert_ne!(outage, Face::Denied, "an outage is not a policy refusal");
+    assert_ne!(outage, Class::Malformed, "an outage is not a bad reference");
+    assert_ne!(outage, Class::Denied, "an outage is not a policy refusal");
 }
 
 /// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring
