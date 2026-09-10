@@ -49,6 +49,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod cache;
 pub mod cells;
 pub mod chain;
 pub mod decide;
@@ -56,6 +57,7 @@ pub mod estimate;
 pub mod price;
 pub mod window;
 
+pub use cache::{BucketView, Chain, ChainCache};
 pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell, MAX_MODELS_PER_CELL};
 pub use chain::{
     BucketChain, ChainBucket, ChainError, ChainGroup, ChainWalk, GroupBucket, GroupRuntime,

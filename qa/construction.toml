@@ -154,6 +154,35 @@ key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
 because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
 
+# THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
+# (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
+# crate's lib.rs = 138 measured). Every chain a resolved `GroupTable` can produce, walked ONCE at
+# boot beside the `ChainWalk` that produces it, plus the index of the bucket ids that still carry a
+# cap; a request READS its chain by index-chase and the cursor `BucketView` borrows every field, so
+# the admission path allocates nothing. It is here rather than on `busbar_unit_cost::GroupTable`
+# because the cache is made of what the walk RETURNS (`BucketChain`, `ChainBucket`, `ChainGroup`),
+# and the cost unit naming the admission unit is a Cargo library cycle, refused by name. The
+# retiring engine's copy — `cost::BucketView`, `cost::Chain`, `CostModel::{group_chain,
+# capped_bucket_ids}` and the `chains`/`empty_chain`/`capped_bucket_ids` fields — is deleted in the
+# commit that follows this one: busbar-core/src/cost.rs 471 -> 292 lines, 105 of the 138 the same
+# lines by identity. `kernel_ceiling` rises by two because busbar-unit-admission/src/lib.rs is in
+# the kernel's call-graph name-match set, so DECLARING a module in that crate spends kernel budget:
+# `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};`, and nothing else.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 138
+because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView} (src/cache.rs, 136 surface lines + 2 module-wiring lines in lib.rs): every chain of a resolved GroupTable walked once at boot beside the ChainWalk that walks it, and the capped-bucket-id index. 105 of the 138 are busbar-core/src/cost.rs's own lines by identity; core falls 471 -> 292 in the deletion commit."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 140
+because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: the same 138 unit lines, plus the 2 lib.rs module-wiring lines counted a second time here because busbar-unit-admission/src/lib.rs is call-graph-reachable from the Teller loop and a reachable unit file spends kernel budget as well as its own crate's."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 2
+because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: two lines of MODULE WIRING, not two lines of kernel. busbar-unit-admission/src/lib.rs is in the kernel's call-graph name-match set, so `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};` spend kernel budget; cache.rs itself is not name-matched and none of its 136 lines are counted here."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -378,15 +407,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5381
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14795
+unit_total_ceiling = 14933
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23685
+union_ceiling = 23825
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

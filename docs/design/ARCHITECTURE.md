@@ -115,7 +115,19 @@ them). Each axis is blind to the other two; only the kernel composes them.
   fold, its own single divide, its own fee and its own floor beside these, which is two answers to
   what a request cost with the ledger unable to say which one it recorded. The face is ADDITIVE: no
   wire, no store ABI and no allocation changes, the accumulation and both projection tails are now
-  written once for both report shapes, and the engine's copy dies against it. 100 % (non-equivalent)
+  written once for both report shapes, and the engine's copy dies against it. The second is
+  **`busbar_unit_admission::{ChainCache, Chain, BucketView}`** (`src/cache.rs`; 136 measured lines,
+  declared at +138 with the two module-wiring lines its `lib.rs` needs, and `kernel_ceiling` +2
+  because that `lib.rs` is in the kernel's call-graph name-match set, so DECLARING a module in this
+  crate spends kernel budget — two lines of wiring, not two lines of kernel): every chain a resolved
+  `GroupTable` can produce, WALKED ONCE at boot, plus the index of the bucket ids that still carry a
+  cap. It sits beside the `ChainWalk` it memoises and not on `busbar_unit_cost::GroupTable`, where
+  the retirement ledger first put it, for a reason the compiler settles rather than a preference:
+  the cache is made of what the walk RETURNS — `BucketChain`, `ChainBucket`, `ChainGroup` — and the
+  cost unit naming the admission unit is a Cargo library cycle, refused by name. The topology is the
+  cost unit's, the walk is the door's, and a memo of the walk is the door's too. It is a MOVE: 105
+  of the 138 lines are the retiring engine's own by identity, and `busbar-core/src/cost.rs` falls
+  471 -> 292 in the same transaction. 100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
