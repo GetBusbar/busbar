@@ -3,7 +3,7 @@
 
 //! The `http` transport: request in, response frames out.
 //!
-//! `http` carries no session (`SESSION = false`) and its per-frame `StatusClass` rides the first
+//! `http` carries no session (`SESSION = false`) and its per-frame `WireStatusClass` rides the first
 //! response frame (`STATUS_CLASS = Some(FirstFrame)`) — the kernel-derived leg of the fee decision
 //! the design's settlement table reads. It composes over `tcp`/`tls` for its byte stream.
 //!
@@ -82,9 +82,9 @@ use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::Listener;
 use busbar_contract_transport::wire::ListenerHandle;
-use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
 use busbar_contract_transport::wire::WireStatus;
+use busbar_contract_transport::wire::WireStatusClass;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -371,12 +371,12 @@ fn webpki_roots_store() -> rustls::RootCertStore {
     roots
 }
 
-fn status_class(status: u16) -> StatusClass {
+fn status_class(status: u16) -> WireStatusClass {
     match status {
-        200..=299 => StatusClass::Success,
-        400..=499 => StatusClass::ClientError,
-        500..=599 => StatusClass::ServerError,
-        _ => StatusClass::Other,
+        200..=299 => WireStatusClass::Success,
+        400..=499 => WireStatusClass::ClientError,
+        500..=599 => WireStatusClass::ServerError,
+        _ => WireStatusClass::Other,
     }
 }
 

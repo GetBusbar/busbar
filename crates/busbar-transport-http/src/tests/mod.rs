@@ -1,5 +1,5 @@
 //! The transport battery, for `http`: request in as a HEAD-plus-body frame pair, a real egress
-//! round trip through the pinned client, per-frame `StatusClass` at the first response frame, and
+//! round trip through the pinned client, per-frame `WireStatusClass` at the first response frame, and
 //! the frame-meta honesty check.
 
 use super::*;
@@ -190,7 +190,7 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
 
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status, Some(StatusClass::Success));
+    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
     assert!(std::str::from_utf8(head.bytes.as_slice())
         .unwrap()
         .starts_with("HTTP/1.1 200"));
@@ -203,8 +203,8 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
 #[tokio::test]
 async fn egress_maps_4xx_and_5xx_status_classes() {
     for (status, class) in [
-        (404_u16, StatusClass::ClientError),
-        (500, StatusClass::ServerError),
+        (404_u16, WireStatusClass::ClientError),
+        (500, WireStatusClass::ServerError),
     ] {
         let resp: &'static [u8] = Box::leak(
             format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
@@ -975,7 +975,7 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
             .expect("the exchange ran once the message was whole")
             .unwrap()
             .unwrap();
-    assert_eq!(response_head.meta.status, Some(StatusClass::Success));
+    assert_eq!(response_head.meta.status, Some(WireStatusClass::Success));
 
     let bodies = seen.lock().unwrap().clone();
     assert_eq!(bodies.len(), 1, "one request, not one per write call");
@@ -1285,7 +1285,7 @@ async fn a_streamed_upstream_yields_frames_before_it_closes() {
         .expect("the HEAD frame is emitted as soon as the head arrives")
         .unwrap()
         .unwrap();
-    assert_eq!(head.meta.status, Some(StatusClass::Success));
+    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
 
     for _ in 0..2 {
         let (_s, body) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
@@ -1361,7 +1361,7 @@ async fn a_response_body_past_the_cap_ends_the_stream_rather_than_accumulating()
         .expect("the head arrives")
         .unwrap()
         .unwrap();
-    assert_eq!(head.meta.status, Some(StatusClass::Success));
+    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
 
     let mut body_bytes = 0_usize;
     let ended = loop {

@@ -11,7 +11,7 @@ use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
 use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::{StatusClass, TransportError, WireStatus};
+use busbar_contract_transport::wire::{TransportError, WireStatus, WireStatusClass};
 
 use crate::GrpcTransport;
 
@@ -192,7 +192,7 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     );
     assert_eq!(
         terminal.meta.status,
-        Some(StatusClass::ClientError),
+        Some(WireStatusClass::ClientError),
         "PERMISSION_DENIED is the upstream blaming the request"
     );
     assert_eq!(
@@ -248,7 +248,7 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     assert_eq!(terminal.bytes.len(), 0);
     assert_eq!(
         terminal.meta.status,
-        Some(StatusClass::Success),
+        Some(WireStatusClass::Success),
         "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
     );
     assert_eq!(
@@ -272,28 +272,31 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
 #[test]
 fn map_status_reads_the_grpc_status_trailer_honestly() {
     for (code, expected) in [
-        (tonic::Code::Ok, StatusClass::Success),
+        (tonic::Code::Ok, WireStatusClass::Success),
         // The upstream blamed the request.
-        (tonic::Code::InvalidArgument, StatusClass::ClientError),
-        (tonic::Code::NotFound, StatusClass::ClientError),
-        (tonic::Code::AlreadyExists, StatusClass::ClientError),
-        (tonic::Code::PermissionDenied, StatusClass::ClientError),
-        (tonic::Code::Unauthenticated, StatusClass::ClientError),
-        (tonic::Code::FailedPrecondition, StatusClass::ClientError),
-        (tonic::Code::OutOfRange, StatusClass::ClientError),
-        (tonic::Code::ResourceExhausted, StatusClass::ClientError),
+        (tonic::Code::InvalidArgument, WireStatusClass::ClientError),
+        (tonic::Code::NotFound, WireStatusClass::ClientError),
+        (tonic::Code::AlreadyExists, WireStatusClass::ClientError),
+        (tonic::Code::PermissionDenied, WireStatusClass::ClientError),
+        (tonic::Code::Unauthenticated, WireStatusClass::ClientError),
+        (
+            tonic::Code::FailedPrecondition,
+            WireStatusClass::ClientError,
+        ),
+        (tonic::Code::OutOfRange, WireStatusClass::ClientError),
+        (tonic::Code::ResourceExhausted, WireStatusClass::ClientError),
         // The upstream blamed itself.
-        (tonic::Code::Internal, StatusClass::ServerError),
-        (tonic::Code::Unavailable, StatusClass::ServerError),
-        (tonic::Code::DataLoss, StatusClass::ServerError),
-        (tonic::Code::Unimplemented, StatusClass::ServerError),
+        (tonic::Code::Internal, WireStatusClass::ServerError),
+        (tonic::Code::Unavailable, WireStatusClass::ServerError),
+        (tonic::Code::DataLoss, WireStatusClass::ServerError),
+        (tonic::Code::Unimplemented, WireStatusClass::ServerError),
         // gRPC's own word for a server-side failure it could not attribute — and what an HTTP 5xx
         // with no `grpc-status` at all arrives as.
-        (tonic::Code::Unknown, StatusClass::ServerError),
-        (tonic::Code::DeadlineExceeded, StatusClass::ServerError),
-        (tonic::Code::Aborted, StatusClass::ServerError),
+        (tonic::Code::Unknown, WireStatusClass::ServerError),
+        (tonic::Code::DeadlineExceeded, WireStatusClass::ServerError),
+        (tonic::Code::Aborted, WireStatusClass::ServerError),
         // The one code where neither side is blamed.
-        (tonic::Code::Cancelled, StatusClass::Other),
+        (tonic::Code::Cancelled, WireStatusClass::Other),
     ] {
         let status = tonic::Status::new(code, "fixture");
         assert_eq!(
@@ -343,7 +346,7 @@ fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
     }
     let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
     let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
-    assert_eq!(frame.meta.status, Some(StatusClass::ServerError));
+    assert_eq!(frame.meta.status, Some(WireStatusClass::ServerError));
     assert_eq!(
         frame.meta.status_code,
         Some(WireStatus::new(status_ns::GRPC, 14))

@@ -3,7 +3,7 @@
 
 //! The `sse` transport: one request, N response frames, composed over `http`.
 //!
-//! `sse` carries no session of its own; it inherits `http`'s per-frame `StatusClass` at the first
+//! `sse` carries no session of its own; it inherits `http`'s per-frame `WireStatusClass` at the first
 //! response frame, exactly as the design's composition rule states ("a composed transport
 //! inherits the lower layer's status leg"). This crate does not open a socket itself: `dial`
 //! delegates straight to an [`busbar_transport_http::HttpTransport`] it holds, and `frames`
@@ -171,7 +171,7 @@ impl Transport for SseTransport {
         /// without the others — they describe one answer, so they move as one.
         #[derive(Clone, Copy, Default)]
         struct StatusLeg {
-            class: Option<busbar_contract_transport::wire::StatusClass>,
+            class: Option<busbar_contract_transport::wire::WireStatusClass>,
             code: Option<busbar_contract_transport::wire::WireStatus>,
             retry_after_secs: Option<u64>,
         }
@@ -292,9 +292,11 @@ impl Transport for SseTransport {
                         // frame is defensible and the framing error is what is left.
                         let failing = matches!(
                             st.status.class,
-                            Some(busbar_contract_transport::wire::StatusClass::ClientError)
-                                | Some(busbar_contract_transport::wire::StatusClass::ServerError)
-                                | Some(busbar_contract_transport::wire::StatusClass::Other)
+                            Some(busbar_contract_transport::wire::WireStatusClass::ClientError)
+                                | Some(
+                                    busbar_contract_transport::wire::WireStatusClass::ServerError
+                                )
+                                | Some(busbar_contract_transport::wire::WireStatusClass::Other)
                         );
                         if failing && !st.status_attached {
                             if st.buf.is_empty() {

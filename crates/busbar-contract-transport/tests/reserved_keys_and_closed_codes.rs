@@ -19,7 +19,7 @@
 use busbar_contract_transport::registry::{facts, status_ns};
 use busbar_contract_transport::{
     CloseReason, CompositionError, Decode, Direction, DiscardCode, Encode, Framing, StatusAt,
-    StatusClass, TransportError, Unit0Trigger, WireStatus,
+    TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };
 
 // ── the reserved fact keys ───────────────────────────────────────────────────────────────────────
@@ -311,16 +311,16 @@ fn the_frame_axes_a_transport_declares_are_each_closed() {
         };
     }
     for s in [
-        StatusClass::Success,
-        StatusClass::ClientError,
-        StatusClass::ServerError,
-        StatusClass::Other,
+        WireStatusClass::Success,
+        WireStatusClass::ClientError,
+        WireStatusClass::ServerError,
+        WireStatusClass::Other,
     ] {
         let _: bool = match s {
-            StatusClass::Success
-            | StatusClass::ClientError
-            | StatusClass::ServerError
-            | StatusClass::Other => true,
+            WireStatusClass::Success
+            | WireStatusClass::ClientError
+            | WireStatusClass::ServerError
+            | WireStatusClass::Other => true,
         };
     }
     for a in [StatusAt::FirstFrame, StatusAt::Terminal] {

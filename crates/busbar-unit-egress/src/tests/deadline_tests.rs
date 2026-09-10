@@ -14,7 +14,7 @@ use super::harness::{frame, Script};
 use super::{member, Node};
 use crate::ports::{disposition, Clock};
 use busbar_contract::DestinationId;
-use busbar_contract_transport::wire::StatusClass;
+use busbar_contract_transport::wire::WireStatusClass;
 
 /// The client-level ceiling every walk in this module runs under, in milliseconds. The harness
 /// hands the unit `stream_ceiling_secs: 300`.
@@ -189,11 +189,11 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
 /// A drip-fed stream: `count` frames, one every `step_ms`, the last one terminal when asked.
 fn drip(node: &Node, count: usize, step_ms: u64, terminal: bool) -> Script {
     let mut frames: Vec<_> = (0..count)
-        .map(|_| frame(Some(StatusClass::Success), "head"))
+        .map(|_| frame(Some(WireStatusClass::Success), "head"))
         .collect();
     if terminal {
         frames.pop();
-        frames.push(frame(Some(StatusClass::Success), "end"));
+        frames.push(frame(Some(WireStatusClass::Success), "end"));
     }
     Script::Drip {
         frames,

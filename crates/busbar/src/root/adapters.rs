@@ -46,7 +46,7 @@
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
 use busbar_caps::{Route, UnitToken};
-use busbar_contract::StatusClass;
+use busbar_contract::WireStatusClass;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
@@ -193,11 +193,11 @@ impl BreakerAdapter {
     /// Success and the catch-all fold to nothing: there is no non-arbitrary number for either, and
     /// the breaker's own "no code" answer — record nothing, relay as-is — is exactly what the
     /// previous release did with an unexpected success reaching the error path.
-    fn fold_class(class: Option<StatusClass>) -> Option<u16> {
+    fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
         match class {
-            Some(StatusClass::ClientError) => Some(400),
-            Some(StatusClass::ServerError) => Some(500),
-            Some(StatusClass::Success | StatusClass::Other) | None => None,
+            Some(WireStatusClass::ClientError) => Some(400),
+            Some(WireStatusClass::ServerError) => Some(500),
+            Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
         }
     }
 

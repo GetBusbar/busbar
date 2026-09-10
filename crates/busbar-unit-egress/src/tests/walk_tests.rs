@@ -11,9 +11,9 @@
 //! when the answer does not arrive whole.
 
 use busbar_contract_transport::registry::status_ns;
-use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
 use busbar_contract_transport::wire::WireStatus;
+use busbar_contract_transport::wire::WireStatusClass;
 
 use super::harness::{frame, frame_with_upstream, ok_frames, Health, Script};
 use super::{member, Node};
@@ -108,7 +108,7 @@ fn there_is_no_failover_after_the_first_byte() {
     // already has part of the answer, so the walk must not try the sibling.
     node.transport.script(
         "a",
-        Script::Truncated(frame(Some(StatusClass::Success), "head")),
+        Script::Truncated(frame(Some(WireStatusClass::Success), "head")),
     );
     node.transport.script("b", Script::Frames(ok_frames()));
 
@@ -137,7 +137,7 @@ fn a_truncated_answer_gives_the_request_budget_unit_back() {
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script(
         "a",
-        Script::Truncated(frame(Some(StatusClass::Success), "head")),
+        Script::Truncated(frame(Some(WireStatusClass::Success), "head")),
     );
 
     assert!(node.route("primary").is_delivered());
@@ -177,14 +177,14 @@ fn the_callers_own_fault_is_relayed_and_the_member_is_not_penalised() {
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script(
         "a",
-        Script::Frames(vec![frame(Some(StatusClass::ClientError), "bad")]),
+        Script::Frames(vec![frame(Some(WireStatusClass::ClientError), "bad")]),
     );
 
     let outcome = node.route("primary");
     match outcome {
         RouteOutcome::Delivered(delivered) => {
             assert_eq!(delivered.destination, DestinationId::new(0));
-            assert_eq!(delivered.status, Some(StatusClass::ClientError));
+            assert_eq!(delivered.status, Some(WireStatusClass::ClientError));
         }
         other => panic!("expected the client fault to be relayed, got {other:?}"),
     }
@@ -206,7 +206,7 @@ fn a_member_that_answers_with_a_server_error_is_failed_over_from() {
     node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
     node.transport.script(
         "a",
-        Script::Frames(vec![frame(Some(StatusClass::ServerError), "boom")]),
+        Script::Frames(vec![frame(Some(WireStatusClass::ServerError), "boom")]),
     );
     node.transport.script("b", Script::Frames(ok_frames()));
 
@@ -240,7 +240,7 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(StatusClass::ClientError),
+            Some(WireStatusClass::ClientError),
             Some(WireStatus::new(status_ns::HTTP, 403)),
             None,
             "forbidden",
@@ -280,7 +280,7 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(StatusClass::ClientError),
+            Some(WireStatusClass::ClientError),
             Some(WireStatus::new(status_ns::HTTP, 429)),
             Some(7),
             "slow down",
@@ -317,7 +317,7 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(StatusClass::ServerError),
+            Some(WireStatusClass::ServerError),
             Some(WireStatus::new(status_ns::HTTP, 503)),
             None,
             "boom",
@@ -352,7 +352,7 @@ fn a_grpc_unavailable_records_a_failure_and_fails_over() {
     node.transport.script(
         "a",
         Script::Frames(vec![frame_with_upstream(
-            Some(StatusClass::ServerError),
+            Some(WireStatusClass::ServerError),
             Some(WireStatus::new(status_ns::GRPC, 14)),
             None,
             "",
@@ -403,7 +403,7 @@ fn a_request_too_large_excludes_every_member_with_the_same_or_a_smaller_window()
             label: disposition::CONTEXT_LENGTH,
         },
     );
-    let too_big = frame(Some(StatusClass::ClientError), "too big");
+    let too_big = frame(Some(WireStatusClass::ClientError), "too big");
     node.transport
         .script("a", Script::Frames(vec![too_big.clone()]));
     node.transport.script("b", Script::Frames(vec![too_big]));
