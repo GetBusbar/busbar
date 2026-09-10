@@ -1211,3 +1211,41 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ------------------------------------------------------------------------------------------------
+# [[gate.census_retired]] — THE ONLY THING THAT LOWERS A CENSUS FLOOR
+# ------------------------------------------------------------------------------------------------
+#
+# Every floor above goes DOWN exactly once legitimately: when the crate it counts is DELETED.
+# Retiring `busbar-voice` drops `plane_crates` from 4 to 3, strikes a `rules.legacy-reach.prefixes`
+# entry, and takes a `[gate.plugin_kinds] plane` match with it — and the base comparison refuses
+# every one of those, correctly, because by the numbers alone a retirement and "delete the rule
+# table and drop its census number in the same edit" are the same diff.
+#
+# A NAME CAN TELL THEM APART. A retirement row says which crate went, in which commit, which floor
+# moved, and from what to what — and it is checked four ways:
+#
+#   * the crate must be GONE. A row naming a crate still under `crates/` has retired nothing; it is
+#     a lowered floor bought in advance, which is the manoeuvre the floor exists to refuse, one row
+#     further back.
+#   * the FLOOR it names must be the floor that moved.
+#   * `from` must be the number the MERGE-BASE carried, and `to` the number this tree carries. A row
+#     that describes a different drop admits nothing.
+#   * `to = from - 1`, exactly. A retirement deletes ONE crate; a row that lowers a floor by two is
+#     two retirements under one sentence, and the second is the one nobody read.
+#
+# A lowered floor with NO row is refused exactly as it was before this table existed. The rows stay
+# after they have done their work: this is the record of what 1.6.0 deleted, and the "crate must be
+# gone" check is what keeps a row from being written ahead of the deletion it claims.
+#
+# The shape, for the first retirement that needs one:
+#
+#   [[gate.census_retired]]
+#   crate  = "busbar-voice"
+#   commit = "0000000"
+#   floor  = "plane_crates"
+#   from   = 4
+#   to     = 3
+#
+# `floor` is the dotted key under `[gate.census]` — `plane_crates`, `legacy_reach_prefixes`,
+# `loc_ceilings_kernel_files`, or `plugin_kinds.<kind>` for a glob count.
