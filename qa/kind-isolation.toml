@@ -1384,7 +1384,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+count = "1167"
 
 [[cell]]
 crate = "busbar-a2a"
