@@ -446,6 +446,14 @@ pub enum SecretError {
     Unknown,
     /// The backing store could not be reached.
     Unavailable,
+    /// The caller is not permitted to read this reference.
+    ///
+    /// A CONFIGURATION AND POLICY ERROR, and that is why it is not `Unknown`. The distinction the
+    /// three config-side variants draw against `Unavailable` is the one an operator acts on:
+    /// `Unknown`, `Malformed` and this one say "go and fix something", `Unavailable` says "wait".
+    /// Folding a denial onto `Unknown` tells an operator whose token lacks a policy binding that
+    /// their reference does not exist, and they go and edit the reference.
+    Denied,
     /// The sealed bytes did not authenticate.
     NotAuthentic,
     /// The reference is not in this plugin's grammar.
