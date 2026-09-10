@@ -705,14 +705,14 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
-    // THE OAUTH ISSUER, the CONTROL-kind `busbar-control-tokenmint` crate, joining by the SAME act
-    // the plane rows join by — one row, pushed here, and never a hard-wired mount line in core's
-    // router. Unconditional, because the surface costs nothing when `oauth_as:` is absent: the
-    // row's `build` returns `None`, so no server, no store, no signing key, no sweeper, and
-    // `routes` is never consulted, so not one `CoreRouteTable` entry appears. The row itself lives
-    // in `root::control_tokenmint` rather than in the crate, because a control crate's only busbar
-    // edge is `busbar-contract` and the row must name the substrate's registry.
-    installed.push(&root::control_tokenmint::PLANE_DECL);
+    // THE OAUTH ISSUER, joining by the SAME act the plane rows join by — one row, pushed here, and
+    // never a hard-wired mount line in core's router. Unconditional, because the surface costs
+    // nothing when `oauth_as:` is absent: the row's `build` returns `None`, so no server, no store,
+    // no signing key, no sweeper, and `routes` is never consulted, so not one `CoreRouteTable`
+    // entry appears. The row itself lives in `root::oauth_issuer` rather than in the crate, because
+    // that crate's only busbar edge is `busbar-contract` and the row must name the substrate's
+    // registry.
+    installed.push(&root::oauth_issuer::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings

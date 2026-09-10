@@ -56,17 +56,17 @@
 
 pub mod adapters;
 pub mod auth_bindings;
-/// THE OAUTH ISSUER'S REGISTRY ROW and the guarded CIMD fetch that fills its one seam — the
-/// composition's whole share of `busbar-control-tokenmint`. A CONTROL crate's only busbar edge is
-/// `busbar-contract`, so the part that names the substrate's registry and route seams lives here.
-pub mod control_tokenmint;
-pub mod control_tokenmint_fetch;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+/// THE OAUTH ISSUER'S REGISTRY ROW and the guarded CIMD fetch that fills its one seam — the
+/// composition's whole share of the issuer crate. That crate's only busbar edge is
+/// `busbar-contract`, so the part that names the substrate's registry and route seams lives here.
+pub mod oauth_issuer;
+pub mod oauth_issuer_fetch;
 pub mod policy;
 pub mod registry;
 pub mod transports;

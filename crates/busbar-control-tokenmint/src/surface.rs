@@ -3,8 +3,8 @@
 
 //! THE RUNNING AUTHORIZATION SERVER: what exists only when `oauth_as:` is configured.
 //!
-//! Everything expensive on this surface is reachable from [`TokenMint`], and [`TokenMint`]
-//! is built in exactly one place — [`TokenMint::build`], called once, from the composition's
+//! Everything expensive on this surface is reachable from [`TokenIssuer`], and [`TokenIssuer`]
+//! is built in exactly one place — [`TokenIssuer::build`], called once, from the composition's
 //! boot path, only when the operator wrote the config block. That is the whole of the
 //! zero-cost-when-off property: the composition holds an `Option`, and `None` allocates nothing,
 //! spawns nothing, and mounts nothing.
@@ -43,7 +43,7 @@ pub type AsServer = AuthorizationServer<AsStore, SystemClock>;
 pub type AsService = oauth_as::http::AuthorizationService<AsStore, SystemClock>;
 
 /// EVERYTHING THIS SURFACE ALLOCATES. Absent unless `oauth_as:` is configured.
-pub struct TokenMint {
+pub struct TokenIssuer {
     identity: Identity,
     service: AsService,
     server: Arc<AsServer>,
@@ -84,7 +84,7 @@ impl std::fmt::Display for AsBuildError {
     }
 }
 
-impl TokenMint {
+impl TokenIssuer {
     /// Build the plane. Called ONCE, from the boot path, only when `oauth_as:` is present.
     ///
     /// `key_material` is the resolved secret, already read from wherever the `SecretRef` pointed;

@@ -4,7 +4,7 @@
 //! THE `oauth_as:` BLOCK, and the boot-time refusals that make it either whole or absent.
 //!
 //! Every derivation happens here, once, so nothing downstream re-parses an issuer or re-decides a
-//! path. A config that cannot produce a [`crate::surface::TokenMint`] does not boot: an authorization server that is
+//! path. A config that cannot produce a [`crate::surface::TokenIssuer`] does not boot: an authorization server that is
 //! half-configured is worse than one that is absent, because it ANSWERS — and what it answers with
 //! is tokens.
 
@@ -106,11 +106,11 @@ impl std::fmt::Display for AsCfgError {
 /// The VALIDATED authorization server: every endpoint derived, every refusal already taken.
 ///
 /// Holds no key and no server object — those are runtime state and live on
-/// [`crate::surface::TokenMint`]. This is the config half, so it can be compared, logged and
+/// [`crate::surface::TokenIssuer`]. This is the config half, so it can be compared, logged and
 /// swapped without touching a secret.
 /// The fields are `pub` so the composition can read every derived value in one destructure;
 /// every value is still read through the accessors below. No secret lives here: the signing key
-/// material arrives at `TokenMint::build` already resolved, as `Option<&str>`.
+/// material arrives at `TokenIssuer::build` already resolved, as `Option<&str>`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Identity {
     pub issuer: String,
