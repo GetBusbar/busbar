@@ -530,17 +530,26 @@ run    = "scripts/plane-config-noun-gate.sh --selftest && GREP_GATE_REPORT_ONLY=
 
 [[segment]]
 id     = "inventory-coverage"
-status = "reserved"   # -> active when the three unnamed ids are covered or named (see below)
+status = "active"
 tier   = "fast"
-# THE INVENTORY COVERAGE SCOREBOARD (scripts/inventory-coverage.sh, a thin wrapper over
-# scripts/inventory-coverage.py — the wrapper is what is named here on purpose: a second row for the
-# .py would be a second copy of the same gate, the drift this manifest's template rule exists to make
-# unrepresentable). Every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or
-# is a NAMED gap in qa/inventory-gaps.json; an id with neither is red. Its `--selftest` is GREEN
-# (dropping a cell flips its id covered -> none; naming an id as a gap keeps it out of the failure
-# list), but `--check` is RED: one config-inventory row — the one naming the plugin that backs a
-# configured hook — is neither covered by a citing cell nor named in qa/inventory-gaps.json. That is
-# a real finding, not a broken gate — which is why this slot is reserved and NAMED in the umbrella's
-# scope line rather than armed into a standing red.
-# Arming: cover or name that row, confirm `--check` green, flip status to "active".
-run    = "scripts/inventory-coverage.sh --selftest && scripts/inventory-coverage.sh --check"
+# THE INVENTORY COVERAGE SCOREBOARD (cargo xtask gate inventory-coverage). Every
+# docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden
+# ledger, or is a NAMED gap in qa/inventory-gaps.json carrying a written reason; an id with neither
+# is RED, and so is a gap entry naming an id that no longer exists or has since been covered — the
+# gaps file is rederived on every run, so a stale name cannot survive one. The `--selftest` proves
+# twelve cases red-able, among them a duplicated id, a whole family vanishing, ONE row of a family
+# going missing, an id losing its last PASSing citer, each of the three artefacts going stale, and
+# an absent or unparseable cells.json being REFUSED rather than read as zero cells.
+#
+# THE ROW THIS SLOT WAS RESERVED FOR IS CONF-220, AND IT IS NOW COVERED. This row previously read
+# "--check is RED: one config-inventory row — the one naming the plugin that backs a configured hook
+# — is neither covered by a citing cell nor named in qa/inventory-gaps.json", and named
+# scripts/inventory-coverage.sh, a file deleted at c8272b166. Both halves are settled. CONF-220 is
+# `hooks.<h>.module` (docs/design/inventory/1.5.5-config.md:369) — the plugin backing a configured
+# hook, exactly the row described — and cells.json now carries three cells that cite it BY ID in
+# their own `inventory` field, all three PASS on the golden ledger:
+# admin.ops|PutHooksName|ok, admin.ops|PutHooksName|if-match-malformed and
+# admin.ops|PutHooksName|if-match-stale. It is covered by a real cell, not named as a gap and not
+# forgiven; qa/inventory-coverage.json records those citers and the matrix row C1 moved UNMAPPED ->
+# PARTIAL on the strength of it. Nothing here is waived, so the slot arms.
+run    = "cargo xtask gate inventory-coverage --selftest && cargo xtask gate inventory-coverage"
