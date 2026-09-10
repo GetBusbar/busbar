@@ -1479,6 +1479,39 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         ));
     }
 
+    // tariff: EVERY SCOPE MUST NAME SOMETHING THAT EXISTS. A `tariff.pool` keyed by a pool nobody
+    // defined, or a `tariff.tier` keyed by a group nobody defined, is a schedule an operator
+    // believes is in force and that nothing will ever select — the deployment charges the default
+    // and reads a configuration file that says otherwise. The plane scope is the same refusal
+    // against the planes this binary actually registers: a build with a plane's feature off has no
+    // units of that kind to charge, so a cell for it prices traffic that cannot arrive.
+    if let Some(tariff) = &cfg.tariff {
+        for (scope, name) in tariff.named_scopes() {
+            let (known, what, fix) = match scope {
+                "pool" => (
+                    cfg.pools.contains_key(name),
+                    "pool",
+                    "define it under pools:, or remove the tariff scope",
+                ),
+                "tier" => (
+                    cfg.groups.contains_key(name),
+                    "group",
+                    "define it under groups:, or remove the tariff scope",
+                ),
+                _ => (
+                    crate::plane::plane_keys().any(|k| k == name),
+                    "plane",
+                    "use one of the plane keys this build registers, or remove the tariff scope",
+                ),
+            };
+            if !known {
+                errors.push(format!(
+                    "tariff.{scope}.{name} names a {what} that is not defined: nothing would ever                      be charged under this schedule and the deployment would be billed the default                      without saying so; {fix}"
+                ));
+            }
+        }
+    }
+
     // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared
     // with the parse-time module), plus
     // value-level checks the tree walk does not cover.

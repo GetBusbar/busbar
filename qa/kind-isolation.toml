@@ -1329,7 +1329,7 @@ kind = "caps"
 # once more: the mark a contradicted posting carries is a caps type and always was, and a cell that
 # asserted the count without the mark would pass over the half of the answer that puts a
 # disagreement on the disputes report.
-count = "324"
+count = "327"
 
 [[cell]]
 crate = "busbar"
@@ -1363,7 +1363,7 @@ kind = "control"
 # 1076 -> 1078: the fee schedule's install and its holder in the composition root. Boot closes over
 # the deployment's `tariff:` section and hands the root a RESOLVER; the holder answers it. Control
 # vocabulary because the root is where a deployment's configuration becomes a running node.
-count = "1093"
+count = "1096"
 
 [[cell]]
 crate = "busbar"
@@ -1378,7 +1378,7 @@ kind = "kernel"
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
 # 173 -> 168: FIVE FEWER, as measured. The five hand-written fee-evidence assemblies are gone and
 # each leg relays two declarations instead, so the root names less kernel vocabulary than it did.
-count = "169"
+count = "172"
 
 [[cell]]
 crate = "busbar"
@@ -1400,7 +1400,7 @@ kind = "plane"
 # registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
 # asks the same question of all five in the same words, and a sixth answers it without this file
 # changing.
-count = "1878"
+count = "1898"
 
 [[cell]]
 crate = "busbar"
@@ -1429,7 +1429,7 @@ kind = "transport"
 # the kernel's own fee decision. It builds the head the served leg records from each cell's own
 # recorded status, and the head's first source is the TRANSPORT's reading of it — so the cell names
 # the transport's status class exactly where the leg it is proving does.
-count = "950"
+count = "954"
 
 [[cell]]
 crate = "busbar"
@@ -1684,7 +1684,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5522"
 
 [[cell]]
 crate = "busbar-core"
@@ -1694,7 +1694,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3065"
+count = "3069"
 
 [[cell]]
 crate = "busbar-core"
