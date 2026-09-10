@@ -113,12 +113,42 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
-# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
-# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
-# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# HISTORY. `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47
+# calibration while the commit that needed it was in flight. That commit LANDED: the base carried
+# 47, the rise the row was written to excuse no longer existed, and `ceiling-rose` refused the
+# declaration as stale -- which is the expiry working exactly as the paragraph above describes it.
+#
+# THE SECOND LEGITIMATE RAISE, ruled by the owner for 1.6.0: a NEW-ARCHITECTURE FACE. The contract
+# pair's surface is pinned at zero slack, and a face the architecture names cannot be paid for out
+# of a surface that has nothing deletable in it. So each such face lands with a declaration here
+# that names the FACE and its MEASURED lines, and ARCHITECTURE.md section 1.1 is amended in the
+# same commit to the new total. The ratchet stays: nothing else rises, and the entry expires the
+# way every entry does -- the moment a later commit re-pins the ceiling below the base, it is
+# struck.
+
+# The virtual-key directory face (`busbar_contract::kinds::{KeyScope, KeyFacts,
+# VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
+# posture, the revocation denylist and the operator credential digest, inside the loop. It
+# measures 19 surface lines (`scripts/loc-surface.py`: 3478 -> 3497), and the three ceilings
+# below are the SAME nineteen lines counted three times -- once
+# by the surface script, once by the loc-ceilings rule's own counter, and once more in the
+# kernel + contract + unit union that the loc-ceilings rule sums. The face moved home from the
+# composition root (`crates/busbar/src/root/auth_bindings.rs`), where it was a port declared in
+# the one place the design does not list as a home for one.
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3497
+because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: 19 surface lines measured by scripts/loc-surface.py, moved home from the composition root and widened to the key's posture"
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3499
+because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: the same 19 surface lines as the surface-ceiling raise, as the loc-ceilings rule counts them"
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23484
+because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 19 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -126,7 +156,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3497
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +377,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3499
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23484
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -521,7 +551,7 @@ plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport.rs"
 traits = [
   "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
-  "Plane", "SessionPlane", "Transport",
+  "Plane", "SessionPlane", "Transport", "VirtualKeyDirectory",
 ]
 max_defaulted = 0
 

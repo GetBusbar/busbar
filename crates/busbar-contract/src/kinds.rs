@@ -168,6 +168,87 @@ pub trait AuthScheme: Plugin + Send + Sync + 'static {
     fn refresh(&self, clock: Clock) -> KeyMaterial;
 }
 
+// ── virtual keys ─────────────────────────────────────────────────────────────────────────────
+
+/// One scope a virtual key may target: a kind word and a value under it.
+///
+/// Kind-agnostic on purpose — the list is exhaustive across every kind, and nothing here
+/// privileges one kind over a kind that does not exist yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyScope {
+    /// The kind of thing the value names.
+    pub kind: String,
+    /// The name under that kind.
+    pub value: String,
+}
+
+/// The facts the authenticate and eligibility steps read out of a verified virtual key.
+///
+/// The key's POSTURE — what it may target and whether it is live — and nothing that could be
+/// presented again. Its group, pools and labels are the directory's business: a value carried
+/// through here would be a value a step could act on, and each step decides one thing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyFacts {
+    /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
+    pub id: String,
+    /// The key's operator-facing label.
+    pub name: String,
+    /// The scopes the key may target. `None` is every scope of every kind (the grant was omitted
+    /// at mint); `Some(list)` is exactly those, across all kinds; `Some([])` is no scope at all —
+    /// an empty list is the empty set, never "all".
+    pub scopes: Option<Vec<KeyScope>>,
+    /// Whether the key is switched on.
+    pub enabled: bool,
+    /// The key's own hard expiry, in seconds; `None` is never. Distinct from a signed token's
+    /// `exp` claim, which the verifier has already enforced.
+    pub expires_at: Option<u64>,
+    /// The tombstone, in seconds: `Some` is a key that was hard-deleted and whose id will never be
+    /// reissued, kept so attribution by id keeps resolving. `None` is live.
+    pub deleted_at: Option<u64>,
+}
+
+/// The virtual-key directory the authenticate step reaches inside the loop.
+///
+/// Every method answers about a PRESENTED credential and none hands anything back that could be
+/// presented again, which is what makes the face safe to hold behind a shared handle: nothing on
+/// it leaks a secret and nothing on it mutates the directory. It is declared here, beside the
+/// other kind faces, because the unit that asks and the root that answers may not name each
+/// other: the unit names this trait, the root binds the node's own directory behind it, and a
+/// deployment whose keys come from somewhere else binds its own.
+///
+/// Every answer is read PER CALL and never captured: a key rotated, a subject revoked or an
+/// operator credential re-set is judged by the next request, not by the next process.
+pub trait VirtualKeyDirectory: Send + Sync {
+    /// Verify a signed virtual key and resolve the facts behind it. `None` for anything that is
+    /// not a currently-valid key: unknown, unsigned, expired, rotated, revoked or disabled.
+    ///
+    /// `expected_aud` is the plane boundary, threaded rather than checked by a caller so that a
+    /// route added to an audience-bound plane later cannot forget a check that happens inside the
+    /// verifier. `None` means the residual plane, where a token that CARRIES an audience is
+    /// inadmissible.
+    ///
+    /// The order an implementor must follow is the ladder the design pins — signature, then the
+    /// token's own expiry, then the denylist, then the rotation generation — each step
+    /// short-circuiting the ones after it, so the FIRST reason a token failed is the one reported
+    /// rather than a later one that happened to also be true.
+    fn verify(&self, credential: &str, now: u64, expected_aud: Option<&str>) -> Option<KeyFacts>;
+
+    /// Whether the subject a credential names is on the revocation denylist.
+    ///
+    /// The gate for a NEW unit and for nothing else — a unit already in flight is never asked,
+    /// because revoking mid-unit would tear down work already paid for and observed while the next
+    /// unit is refused a fraction of a second later anyway. It is not the place a signed token's
+    /// revocation is enforced: [`VirtualKeyDirectory::verify`] consults the same denylist as its
+    /// third step. What this covers is the credential shapes whose subject IS the credential's own
+    /// id, where there is no signature to read a subject out of; an implementor that cannot resolve
+    /// a credential to a subject answers `false` and loses nothing.
+    fn is_revoked(&self, credential: &str) -> bool;
+
+    /// The digest of the operator's own credential, when one is configured; `None` means the
+    /// operator door is shut. Read per call, so that a rotation is judged by the next request.
+    fn operator_token_hash(&self) -> Option<String>;
+}
+
 // ── egress auth ──────────────────────────────────────────────────────────────────────────────
 
 /// What signs on an egress-auth scheme's behalf.
