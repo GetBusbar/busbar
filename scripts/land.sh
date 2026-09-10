@@ -1113,17 +1113,175 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # BL_text/BL_tests/BL_fams/BL_gate/BL_hashes/BL_prove/BL_out, indexed by line number (0-based).
 
+# ── THE LEDGER IS A MEASUREMENT, AND MEASUREMENTS ARE NOT MERGED ──────────────────────────────────
+# qa/kind-isolation.toml and qa/construction.toml are EXACT ratchets: every pinned figure equals
+# what the tree measures, in both directions. So every drain, move and face edit re-pins cells in
+# those two files, and two hand-backs that drained different edges of the same cell carry the same
+# textual edit to the same line. Cherry-picked in sequence, that is one of two failures, measured
+# twice by two auditors on the live queue:
+#
+#   (a) the two pins DIFFER (98->97 and 98->96, say): a textual conflict on the ledger line, so the
+#       second line is RED-CONFLICT, the batch bisects around it, and a line whose code was fine is
+#       parked for a hand re-pick — of a NUMBER nobody should be typing by hand.
+#   (b) the two pins AGREE (both 98->97, for disjoint drains): the picks land clean, the tree then
+#       measures 96 against a pin of 97, and `ceiling-slack` reds the whole union.
+#
+# Both are the same mistake: treating the ledger as text to be merged, when it is a reading to be
+# taken. So a conflict whose ONLY unmerged paths are the two ledgers is not a conflict at all — the
+# tree's version is kept, the pick is completed, and the figures are RE-MEASURED before the proof
+# (land_repin_ledger). A conflict on ANY other path is a RED-CONFLICT exactly as before.
+land_ledger_paths() {
+  printf 'qa/kind-isolation.toml\nqa/construction.toml\n'
+}
+
+# land_resolve_ledger_conflict <hash> -> 0 when the failed pick of <hash> was a ledger-only conflict
+# and has been completed with the tree's ledgers; 1 otherwise (the sequencer state is left for the
+# caller to abort, exactly as a failed pick is today).
+land_resolve_ledger_conflict() {
+  local h="$1" p
+  local unmerged; unmerged="$(git -C "$here" diff --name-only --diff-filter=U 2>/dev/null || true)"
+  # No unmerged path means the pick failed for a reason that is not a content conflict (a bad
+  # hash, a pick that is already empty): that is today's path, untouched.
+  [ -n "$unmerged" ] || return 1
+  local other; other="$(printf '%s\n' "$unmerged" | grep -vxF -f <(land_ledger_paths) || true)"
+  [ -z "$other" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    # `--ours` inside a cherry-pick is HEAD: the tree's ledger, which is at (or about to be re-pinned
+    # to) the measurement. A path that cannot be resolved this way is a real conflict.
+    git -C "$here" checkout --ours -- "$p" >/dev/null 2>&1 || return 1
+    git -C "$here" add -- "$p" >/dev/null 2>&1 || return 1
+  done <<EOF
+$unmerged
+EOF
+  if git -C "$here" diff --cached --quiet; then
+    # The pick was NOTHING BUT ledger lines. `cherry-pick --continue` refuses an empty result; the
+    # commit is made anyway, with the source's message, author and the `-x` trailer, so the landed
+    # tip still CONTAINS the line's pick — the invariant every GREEN below is stated against.
+    git -C "$here" commit -q --allow-empty --no-verify \
+      --author="$(git -C "$here" log -1 --format='%an <%ae>' "$h")" \
+      -m "$(git -C "$here" log -1 --format=%B "$h")" \
+      -m "(cherry picked from commit $(git -C "$here" rev-parse "$h"))" >/dev/null 2>&1 || return 1
+  else
+    git -C "$here" -c core.editor=true cherry-pick --continue >/dev/null 2>&1 || return 1
+  fi
+  echo "land.sh: pick $(git -C "$here" rev-parse --short "$h"): ledger conflict resolved by measurement ($(echo $unmerged)) — the tree's figures are kept and re-measured before the proof"
+  LAND_LEDGER_RESOLVED="$LAND_LEDGER_RESOLVED $h"
+  return 0
+}
+
+# ── THE RE-PIN: the ledgers are re-measured at landing, never merged ─────────────────────────────
+# land_repin_available <gate> <tree> -> prints nothing when `cargo xtask gate <gate> --write` exists
+# on <tree>; otherwise prints the reason the step is skipped. Read from the tree's own source, not
+# from this script's knowledge: an older base has no `--write`, and on such a tree the behaviour is
+# byte-identical to before this step existed. Under the selftest the "tree" is a scratch repo and
+# the gate is scripted (LAND_SELFTEST_REPIN names the script); absent, the skip path is exercised.
+land_repin_available() {
+  local gate="$1" tree="$2"
+  if [ -n "${LAND_SELFTEST_ROOT:-}" ]; then
+    [ -n "${LAND_SELFTEST_REPIN:-}" ] || echo "selftest: no scripted --write (LAND_SELFTEST_REPIN unset)"
+    return 0
+  fi
+  case "$gate" in
+    kind-isolation)
+      grep -q 'KindIsolationGate::write()' "$tree/xtask/src/cli.rs" 2>/dev/null \
+        || echo "this tree's xtask has no \`gate kind-isolation --write\` (older base)" ;;
+    construction)
+      grep -q 'construction::ceilings::rewrite' "$tree/xtask/src/cli.rs" 2>/dev/null \
+        || echo "this tree's xtask has no \`gate construction --write\` (older base)" ;;
+    *) echo "no re-pin arm is known for gate '$gate'" ;;
+  esac
+}
+
+# land_repin_run <gate> -> runs the gate's --write arm on $here; its exit status and its words.
+land_repin_run() {
+  local gate="$1"
+  if [ -n "${LAND_SELFTEST_ROOT:-}" ]; then
+    bash "$LAND_SELFTEST_REPIN" "$gate" "$here"; return $?
+  fi
+  (cd "$here" && cargo xtask gate "$gate" --write)
+}
+
+# land_repin_ledger <label> -> 0 when both ledgers are at the measurement (committing the DOWNWARD
+# re-pins the picks earned, if any; LAND_REPIN_SHA names the commit or is empty), 1 when a --write
+# refused. The refusal is the batch's RED, with the gate's own words quoted: `--write` never writes
+# a RISE, and a landing whose picks grew a coupling is read by a person, never re-pinned by a tool.
+# Runs after the picks of a batch (and again for each bisected half), BEFORE the proof, so the
+# proof measures the tree the ledger now describes.
+land_repin_ledger() {
+  local label="$1" gate reason rlog
+  LAND_REPIN_SHA=""
+  local paths; paths="$(land_ledger_paths)"
+  # Which arms this TREE has. None: the skip is printed and nothing else happens — the older base
+  # lands byte-for-byte as it did before this step existed.
+  local avail="" skipped=""
+  for gate in kind-isolation construction; do
+    reason="$(land_repin_available "$gate" "$here")"
+    if [ -n "$reason" ]; then
+      echo "land.sh: [$label] re-pin ($gate): skipped — $reason"; skipped="$skipped $gate"
+    else avail="$avail $gate"; fi
+  done
+  [ -n "$avail" ] || { echo "land.sh: [$label] re-pin: no --write arm on this tree; the ledgers land as picked"; return 0; }
+  # A tree that is already dirty cannot have its re-pin attributed to the picks.
+  local dirty; dirty="$(git -C "$here" status --porcelain 2>/dev/null | grep -vE '^\?\?' || true)"
+  [ -z "$dirty" ] || {
+    printf '%s\n' "$dirty" | head -5 >&2
+    echo "land.sh: RED — [$label] the tree is dirty before the ledger re-pin; a re-pin over uncommitted edits is a number nobody measured" >&2
+    return 1; }
+  if [ -z "${LAND_SELFTEST_ROOT:-}" ]; then
+    (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+      || { echo "land.sh: RED — [$label] the gate runner will not build, so the ledger cannot be re-measured" >&2; return 1; }
+  fi
+  for gate in $avail; do
+    rlog="$here/target/land-repin-$gate-$stamp.log"
+    mkdir -p "$(dirname "$rlog")" 2>/dev/null || true
+    if ! land_repin_run "$gate" >"$rlog" 2>&1; then
+      # THE GATE'S OWN WORDS ARE THE DIAGNOSIS: which row would rise, or which rule is red.
+      sed 's/^/land.sh:   | /' "$rlog" | head -20 >&2
+      echo "land.sh: RED — [$label] \`gate $gate --write\` refused to re-pin the ledger (a RISE, or a red gate; quoted above). A ledger that does not measure cannot land (log: $rlog)" >&2
+      return 1
+    fi
+    # What moved, in the gate's words, in the landing log — not only in the commit body.
+    grep -vE '^\s*$' "$rlog" | head -20 | sed 's/^/land.sh:   | /'
+  done
+  # WHAT --write TOUCHED. Only the two ledgers may have moved; anything else is a gate writing where
+  # it has no business, and it is red rather than swept into a commit that says "ledger".
+  local moved; moved="$(git -C "$here" status --porcelain 2>/dev/null | grep -vE '^\?\?' | awk '{print $2}' || true)"
+  if [ -z "$moved" ]; then
+    echo "land.sh: [$label] re-pin: the ledgers already equal the measurement; nothing to commit"
+    return 0
+  fi
+  local stray; stray="$(printf '%s\n' "$moved" | grep -vxF -f <(printf '%s\n' "$paths") || true)"
+  [ -z "$stray" ] || {
+    echo "land.sh: RED — [$label] --write moved files outside the ledger: $(echo $stray)" >&2
+    git -C "$here" checkout -q -- . 2>/dev/null || true
+    return 1; }
+  local body; body="$(cat "$here"/target/land-repin-*-"$stamp".log 2>/dev/null | grep -vE '^\s*$' | head -40)"
+  # shellcheck disable=SC2086
+  git -C "$here" add -- $moved >/dev/null 2>&1 || return 1
+  git -C "$here" commit -q --no-verify -m "ledger: re-pinned by measurement at landing ($stamp)" -m "$body" >/dev/null 2>&1 \
+    || { echo "land.sh: RED — [$label] the re-pin commit could not be made (git identity on this runner?)" >&2; return 1; }
+  LAND_REPIN_SHA="$(git -C "$here" rev-parse --short HEAD)"
+  echo "land.sh: [$label] ledger re-pinned by measurement: $LAND_REPIN_SHA ($(echo $moved))"
+  return 0
+}
+
 land_pick_hashes() {  # $1 = space-separated hashes; 0 on success, 1 on conflict (tree restored)
   local base; base="$(git -C "$here" rev-parse HEAD)"
   local h
+  LAND_LEDGER_RESOLVED=""
   # The lock file drifts between worktrees; a pick must never fail on it.
   git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
   for h in $1; do
     if ! git -C "$here" cherry-pick -x "$h" >/dev/null 2>&1; then
-      git -C "$here" cherry-pick --abort >/dev/null 2>&1
-      git -C "$here" reset -q --hard "$base"
-      LAND_CONFLICT_AT="$h"
-      return 1
+      # A conflict confined to the two ledgers is resolved by measurement (above); anything else
+      # is the RED-CONFLICT it always was.
+      if ! land_resolve_ledger_conflict "$h"; then
+        git -C "$here" cherry-pick --abort >/dev/null 2>&1
+        git -C "$here" reset -q --hard "$base"
+        LAND_CONFLICT_AT="$h"
+        return 1
+      fi
     fi
   done
   return 0
@@ -1180,9 +1338,14 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
   u_feats="$(printf '%s\n' "$u_feats" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
   u_gate="${u_gate#|}"; u_fams="${u_fams#|}"; lbl="lines ${lbl#,}"
 
+  # THE LEDGERS ARE RE-MEASURED BEFORE THE PROOF, at this union, so the proof runs on the tree the
+  # ledger now describes. A refused write (a RISE) is a red for the union — and it bisects like any
+  # other red, so the line that grew the coupling ends up alone in a half that is red for that.
+  local repinned=1
+  land_repin_ledger "$lbl" || repinned=0
   echo "land.sh: === proving $lbl at $(git -C "$here" rev-parse --short HEAD)"
-  if prove_tree "$base" "$u_tests" "$u_gate" "$u_fams" "$lbl" "$u_feats"; then
-    i=0; while [ "$i" -lt "$na" ]; do BL_out[${applied[$i]}]=GREEN; i=$((i + 1)); done
+  if [ "$repinned" = 1 ] && prove_tree "$base" "$u_tests" "$u_gate" "$u_fams" "$lbl" "$u_feats"; then
+    i=0; while [ "$i" -lt "$na" ]; do BL_out[${applied[$i]}]=GREEN; BL_repin[${applied[$i]}]="${LAND_REPIN_SHA:-none}"; i=$((i + 1)); done
     echo "land.sh: === GREEN $lbl — proven by:$PROVEN"
     return 0
   fi
@@ -1220,7 +1383,7 @@ land_run_batch() {  # $1 = batch file
     BL_text[$n]="$line"
     eval "land_parse_args $line"
     BL_tests[$n]="$P_tests"; BL_feats[$n]="$P_features"; BL_fams[$n]="$P_families"; BL_gate[$n]="$P_gate"
-    BL_hashes[$n]="$P_hashes"; BL_prove[$n]="$P_prove"; BL_out[$n]=PENDING
+    BL_hashes[$n]="$P_hashes"; BL_prove[$n]="$P_prove"; BL_out[$n]=PENDING; BL_repin[$n]=none
     if [ -z "$P_hashes" ] && [ "$P_prove" != 1 ]; then
       echo "land.sh: --batch line $((n + 1)) has no hashes and no --prove: $line" >&2; exit 2
     fi
@@ -1262,7 +1425,8 @@ land_run_batch() {  # $1 = batch file
     local st="${BL_out[$i]}"
     [ "$st" = PENDING ] && st=RED   # never left unstated: an unproven line is red
     printf '%s\t%s\n' "$st" "${BL_text[$i]}" >>"$res"
-    printf '%s batch=%s log=%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_text[$i]}" >>"$done_file"
+    # `repin=` names the ledger re-pin commit that is part of this line's landed tip (or `none`).
+    printf '%s batch=%s log=%s repin=%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_repin[$i]:-none}" "${BL_text[$i]}" >>"$done_file"
     case "$st" in GREEN) green=$((green + 1)) ;; RED-CONFLICT) conflict=$((conflict + 1)) ;; *) red=$((red + 1)) ;; esac
     i=$((i + 1))
   done
@@ -1738,9 +1902,141 @@ EOF
   [ "$(git -C "$repo" rev-parse HEAD)" = "$integ" ] && printf '  ok   %-46s\n' "F: tree reset to the batch base" \
     || { printf '  FAIL %-46s\n' "F: tree reset to the batch base"; fails=$((fails + 1)); }
 
+  # ── THE LEDGER IS RE-PINNED BY MEASUREMENT, NEVER MERGED ───────────────────────────────────────
+  # A scratch model of the exact ratchet: `edges.txt` is the tree (one line per plane edge) and
+  # `qa/kind-isolation.toml` pins its line count. The scripted `--write` (repin.sh) lowers the pin
+  # to the count, refuses with the gate's own sentence when the count would RISE, and writes
+  # nothing when they agree — the three answers the real arm gives. Every pick below is real.
+  echo "land.sh selftest: the ledger by measurement (ledger conflicts resolve; re-pins are committed; a RISE is red)"
+  local repin="$root/repin.sh"
+  cat >"$repin" <<'EOF'
+#!/usr/bin/env bash
+# $1 = gate, $2 = tree. kind-isolation: re-pin `count` in qa/kind-isolation.toml DOWN to the line
+# count of edges.txt; refuse a rise. construction: nothing to write.
+gate="$1"; tree="$2"
+[ "$gate" = kind-isolation ] || { echo "$gate: every ratcheted ceiling already equals what it measures"; exit 0; }
+now="$(grep -c . "$tree/edges.txt")"; was="$(sed -n 's/^count = //p' "$tree/qa/kind-isolation.toml")"
+if [ "$now" -gt "$was" ]; then
+  echo "FAIL  kind-isolation:write  --write refuses: a count would RISE, and this flag only ever lowers one  (edges $was -> $now; NOTHING was written)"; exit 1
+elif [ "$now" -lt "$was" ]; then
+  printf 'count = %s\n' "$now" >"$tree/qa/kind-isolation.toml"; echo "PASS  kind-isolation:write  re-pinned edges $was -> $now"; exit 0
+fi
+echo "PASS  kind-isolation:write  every count already equals the measurement, so --write writes nothing"; exit 0
+EOF
+  # The ledger model goes onto the integration line's base, as a landing of its own.
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  mkdir -p "$repo/qa"; seq -f 'edge %g' 1 98 >"$repo/edges.txt"
+  printf 'count = 98\n' >"$repo/qa/kind-isolation.toml"; printf 'legacy-reach = 1\n' >"$repo/qa/construction.toml"
+  git -C "$repo" add -A; git -C "$repo" commit -qm ledger-base
+  local lbase; lbase="$(git -C "$repo" rev-parse HEAD)"
+  # M2': drains edge 1 and pins 98 -> 97.  M3: drains edge 50 and pins 98 -> 97 — the SAME textual
+  # edit to the ledger line for a DISJOINT drain. Both are honest hand-backs; together they are 96.
+  git -C "$repo" checkout -q -b m2 "$lbase"
+  sed -i.bak '/^edge 1$/d' "$repo/edges.txt"; rm -f "$repo/edges.txt.bak"; printf 'count = 97\n' >"$repo/qa/kind-isolation.toml"
+  git -C "$repo" commit -qam "m2: drain edge 1"; local cm2; cm2="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q -b m3 "$lbase"
+  sed -i.bak '/^edge 50$/d' "$repo/edges.txt"; rm -f "$repo/edges.txt.bak"; printf 'count = 97\n' >"$repo/qa/kind-isolation.toml"
+  git -C "$repo" commit -qam "m3: drain edge 50"; local cm3; cm3="$(git -C "$repo" rev-parse HEAD)"
+  # L1: drains edge 90 and pins to a DIFFERENT number (a hand-typed 50): after M2' the ledger line
+  # conflicts textually, and nothing else does.
+  git -C "$repo" checkout -q -b l1 "$lbase"
+  sed -i.bak '/^edge 90$/d' "$repo/edges.txt"; rm -f "$repo/edges.txt.bak"; printf 'count = 50\n' >"$repo/qa/kind-isolation.toml"
+  git -C "$repo" commit -qam "l1: drain edge 90, mistyped pin"; local cl1; cl1="$(git -C "$repo" rev-parse HEAD)"
+  # L0: NOTHING but a ledger edit (98 -> 60). Resolved by measurement it is an empty pick, and the
+  # tip must still contain it.
+  git -C "$repo" checkout -q -b l0 "$lbase"
+  printf 'count = 60\n' >"$repo/qa/kind-isolation.toml"; git -C "$repo" commit -qam "l0: ledger only"
+  local cl0; cl0="$(git -C "$repo" rev-parse HEAD)"
+  # X2: a ledger edit AND a code conflict (f.txt from the other base). Still a RED-CONFLICT.
+  git -C "$repo" checkout -q -b x2 "$base"
+  mkdir -p "$repo/qa"; printf 'count = 77\n' >"$repo/qa/kind-isolation.toml"; printf 'theirs2\n' >"$repo/f.txt"
+  git -C "$repo" add -A; git -C "$repo" commit -qm "x2: ledger + code conflict"; local cx2; cx2="$(git -C "$repo" rev-parse HEAD)"
+  # R1: ADDS an edge without touching the pin — the tree would measure 99 against 98.
+  git -C "$repo" checkout -q -b r1 "$lbase"
+  printf 'edge 99\n' >>"$repo/edges.txt"; git -C "$repo" commit -qam "r1: grow a coupling"; local cr1; cr1="$(git -C "$repo" rev-parse HEAD)"
+
+  # CASE G — two lines pinning one cell to the same number for disjoint drains: both GREEN, the tree
+  # measures 96, and the re-pin commit is on the tip and named in the land-done row.
+  local bg="$root/batchG.txt"
+  { echo "--prove $cm2"; echo "--prove $cm3"; } >"$bg"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  _st "G: disjoint drains, same pin -> batch exits 0" 0 env LAND_SELFTEST_ROOT="$repo" LAND_SELFTEST_REPIN="$repin" LAND_DONE="$root/done-ledger.txt" \
+      bash "$0" --batch "$bg"
+  _stgrep "G: M2' GREEN" "$bg.result" "^GREEN.*$cm2"
+  _stgrep "G: M3 GREEN"  "$bg.result" "^GREEN.*$cm3"
+  _stgrep "G: the ledger was re-pinned 97 -> 96" "$ST_OUT" 're-pinned edges 97 -> 96'
+  _stgrep "G: the pin equals the measurement"     "$repo/qa/kind-isolation.toml" '^count = 96$'
+  _stgrep "G: the re-pin commit is the tip"       <(git -C "$repo" log -1 --format=%s) '^ledger: re-pinned by measurement at landing \([0-9]{8}-[0-9]{6}-[0-9]+\)$'
+  _stgrep "G: the re-pin commit carries the gate's words" <(git -C "$repo" log -1 --format=%b) 're-pinned edges 97 -> 96'
+  _stgrep "G: both picks are under the re-pin"    <(git -C "$repo" log --format=%s -3) 'm3: drain edge 50'
+  _stgrep "G: land-done names the re-pin commit"  "$root/done-ledger.txt" "^GREEN batch=.* repin=$(git -C "$repo" rev-parse --short HEAD) .*$cm3"
+  _stno   "G: the tree is clean after the landing" <(git -C "$repo" status --porcelain | grep -v '^??') '[^[:space:]]'
+
+  # CASE H — a ledger-only conflict resolves and the line is GREEN. M2' pins 97; L1 pins 50 on the
+  # same line (conflict) and drains edge 90 (no conflict). The tree keeps 97, then measures 96.
+  local bh="$root/batchH.txt"
+  { echo "--prove $cm2"; echo "--prove $cl1"; echo "--prove $cl0"; } >"$bh"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  _st "H: ledger-only conflicts -> batch exits 0" 0 env LAND_SELFTEST_ROOT="$repo" LAND_SELFTEST_REPIN="$repin" LAND_DONE="$root/done-ledger.txt" \
+      bash "$0" --batch "$bh"
+  _stgrep "H: L1 (ledger conflict + code) GREEN"  "$bh.result" "^GREEN.*$cl1"
+  _stgrep "H: L0 (ledger-only pick) GREEN"        "$bh.result" "^GREEN.*$cl0"
+  _stno   "H: nothing was RED-CONFLICT"           "$bh.result" '^RED-CONFLICT'
+  _stgrep "H: the resolution is recorded"         "$ST_OUT" "pick $(git -C "$repo" rev-parse --short "$cl1"): ledger conflict resolved by measurement \(qa/kind-isolation.toml\)"
+  _stgrep "H: the tree measures 96 and is pinned 96" "$repo/qa/kind-isolation.toml" '^count = 96$'
+  _stgrep "H: L1's drain landed"                  <(grep -c '^edge 90$' "$repo/edges.txt") '^0$'
+  _stgrep "H: the empty pick is on the tip with its trailer" <(git -C "$repo" log --format=%B -4) "cherry picked from commit $cl0"
+  _stno   "H: no sequencer state left behind"     <(ls "$repo/.git") 'CHERRY_PICK_HEAD|sequencer'
+
+  # CASE I — a ledger + code conflict is RED-CONFLICT exactly as before; ours survives, nothing of
+  # the pick is left on the tree.
+  local bi="$root/batchI.txt"
+  { echo "--prove $cm2"; echo "--prove $cx2"; } >"$bi"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  _st "I: ledger + code conflict -> batch exits 1" 1 env LAND_SELFTEST_ROOT="$repo" LAND_SELFTEST_REPIN="$repin" LAND_DONE="$root/done-ledger.txt" \
+      bash "$0" --batch "$bi"
+  _stgrep "I: X2 is RED-CONFLICT"                 "$bi.result" "^RED-CONFLICT.*$cx2"
+  _stgrep "I: M2' still GREEN"                    "$bi.result" "^GREEN.*$cm2"
+  _stno   "I: a code conflict is never 'resolved by measurement'" "$ST_OUT" 'resolved by measurement'
+  _stgrep "I: ours survived"                      "$repo/f.txt" '^ours$'
+  _stno   "I: X2's pin is not on the tree"        "$repo/qa/kind-isolation.toml" '^count = 77$'
+
+  # CASE J — a pick that would need a RISE is RED, with the gate's message quoted; bisected off
+  # the line beside it, which lands.
+  local bj="$root/batchJ.txt"
+  { echo "--prove $cm2"; echo "--prove $cr1"; } >"$bj"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  _st "J: a RISE -> batch exits 1"                1 env LAND_SELFTEST_ROOT="$repo" LAND_SELFTEST_REPIN="$repin" LAND_DONE="$root/done-ledger.txt" \
+      bash "$0" --batch "$bj"
+  _stgrep "J: R1 is RED"                          "$bj.result" "^RED.*$cr1"
+  _stgrep "J: M2' is GREEN"                       "$bj.result" "^GREEN.*$cm2"
+  _stgrep "J: the gate's refusal is quoted"       "$ST_OUT" 'land.sh:   [|] .*--write refuses: a count would RISE'
+  _stgrep "J: the refusal is the RED's reason"    "$ST_OUT" 'RED — .*`gate kind-isolation --write` refused'
+  _stgrep "J: R1's edge is not on the tree"       <(grep -c '^edge 99$' "$repo/edges.txt") '^0$'
+  _stgrep "J: the pin is at the measurement (97)" "$repo/qa/kind-isolation.toml" '^count = 97$'
+  _stno   "J: a refused write commits nothing"    <(git -C "$repo" log --format=%s -3) '^ledger: re-pinned'
+
+  # CASE K — the skip path: a tree without `--write` (no scripted gate) lands exactly as before:
+  # the picks and nothing else, the reason printed, the pin left where the picks put it.
+  local bk="$root/batchK.txt"
+  { echo "--prove $cm2"; } >"$bk"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  _st "K: no --write on the tree -> batch exits 0" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-ledger.txt" \
+      bash "$0" --batch "$bk"
+  _stgrep "K: the skip names its reason"          "$ST_OUT" 're-pin \(kind-isolation\): skipped — '
+  _stgrep "K: …for both gates"                    "$ST_OUT" 're-pin \(construction\): skipped — '
+  _stgrep "K: the tip is the pick itself"         <(git -C "$repo" log -1 --format=%s) '^m2: drain edge 1$'
+  _stgrep "K: land-done says repin=none"          "$root/done-ledger.txt" "^GREEN batch=.* repin=none .*$cm2"
+  # …and the real detector reads the TREE, not this script: a cli.rs without the arms is skipped.
+  mkdir -p "$root/oldtree/xtask/src"; : >"$root/oldtree/xtask/src/cli.rs"
+  _stgrep "K: an older xtask has no kind-isolation --write" <(LAND_SELFTEST_ROOT='' land_repin_available kind-isolation "$root/oldtree") 'older base'
+  _stgrep "K: an older xtask has no construction --write"   <(LAND_SELFTEST_ROOT='' land_repin_available construction "$root/oldtree") 'older base'
+  printf 'KindIsolationGate::write()\nconstruction::ceilings::rewrite(&cx)\n' >"$root/oldtree/xtask/src/cli.rs"
+  _stno   "K: a tree with both arms is not skipped" <(LAND_SELFTEST_ROOT='' land_repin_available kind-isolation "$root/oldtree"; LAND_SELFTEST_ROOT='' land_repin_available construction "$root/oldtree") '[^[:space:]]'
+
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
-    printf '                  conflict isolation, empty-batch refusal — each proven RED before green)\n'
+    printf '                  conflict isolation, empty-batch refusal, ledger by measurement — each proven RED before green)\n'
     rm -rf "$root"
     return 0
   fi
@@ -1837,14 +2133,18 @@ set -- $P_hashes
 [ $# -gt 0 ] || [ "$P_prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 base="$(git -C "$here" rev-parse HEAD)"
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
+LAND_LEDGER_RESOLVED=""
 for h in "$@"; do
-  git -C "$here" cherry-pick -x "$h" >/dev/null || {
+  git -C "$here" cherry-pick -x "$h" >/dev/null || land_resolve_ledger_conflict "$h" || {
     echo "land.sh: RED — cherry-pick $h conflicted; resolve, then re-run with the remaining hashes" >&2
     git -C "$here" status --short | head -20 >&2
     exit 1
   }
 done
 echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)"
+# The same re-measurement a batch gets, before the proof; a refused write leaves the picks in place
+# for the integrator, like any other red on a single landing.
+land_repin_ledger landing || exit 1
 if [ -z "$P_tests" ] && [ $# -gt 0 ]; then
   P_tests="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null | grep -o '^crates/[^/]*' | sort -u \
     | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
