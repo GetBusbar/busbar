@@ -120,6 +120,11 @@ pub mod units_mcp_mount;
 // a function that runs before the first connection.
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp_seal;
+// The RECORD half of the MCP plane's request path — the Route step's record legs — split from
+// the decode/judge/encode half by the same structural cap, and kept split because one closed record
+// vocabulary is a thing a reader looks up on its own.
+#[cfg(feature = "root-mcp")]
+pub mod units_mcp_records;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
