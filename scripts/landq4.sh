@@ -1863,8 +1863,15 @@ lq_selftest() {
   printf 'on: push\njobs: {}\n' >"$wfroot/.github/workflows/ci.yml"
   _t "no concurrency block at all waits"         1 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
   _t "no workflow file at all waits"             1 "$(lq_ci_cancels_in_progress "$root/nosuchtree"; echo $?)"
-  # THIS TREE'S OWN CI, read as it stands: the measurement the rule rests on.
-  _t "this repository's CI does cancel in progress" 0 "$(lq_ci_cancels_in_progress "$(cd "$(dirname "$0")/.." && pwd)"; echo $?)"
+  # THIS TREE'S OWN CI, read as it stands: the measurement the rule rests on. THE TREE IS THE ONE
+  # THE QUEUE LANDS INTO, not the one beside this file: the engine is STAGED — copied to
+  # /tmp/land-fanout-<tip>/scripts and run from there — and `dirname $0/..` is then a scratch
+  # directory with no .github at all, which made this case red in the very place the integrator
+  # runs `bash <script> --selftest` before a restart. LANDQ_ROOT is where the landings happen.
+  local ownrepo; ownrepo="$(cd "$(dirname "$0")/.." && pwd)"
+  [ -d "$ownrepo/.github/workflows" ] || ownrepo="${LANDQ_ROOT:-$ownrepo}"
+  _t "this repository's CI does cancel in progress" 0 "$(lq_ci_cancels_in_progress "$ownrepo"; echo $?)"
+  _t "  ...and the staged engine reads the landing tree, not its scratch dir" 1 "$(grep -c 'ownrepo="\${LANDQ_ROOT:-\$ownrepo}"' "$0")"
   # THE VERDICT.
   _t "in_progress under a cancelling workflow is no wait" cancelled-in-progress \
      "$(lq_ci_verdict "in_progress null 2026-09-10T22:00:00Z" "$now0" 1)"
