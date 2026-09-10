@@ -213,6 +213,42 @@ key = "cell.busbar.transport.count"
 by = 11
 because = "FACE: the per-unit plane-call context — the driver's read/write legs over the transport in root/transports.rs; 11 more namings of transport vocabulary"
 file = "qa/kind-isolation.toml"
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 6
+because = "FACE: the Teller loop's ending carries the frame its own encode step wrote (ARCHITECTURE.md, the nine Teller steps; encode-from-facts is the plane's, the loop only carries it) — 6 lines measured in busbar-kernel/src/teller.rs"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 6
+because = "FACE: the Teller ending's encoded frame — the same 6 teller.rs lines, counted once more by the kernel's own-files row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 6
+because = "FACE: the Teller ending's encoded frame — the same 6 kernel lines, counted once more by the union row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+by = 5
+because = "FACE: the Teller ending's encoded frame — the root's driver answers a completed unit with the bytes its own plane wrote (root/transports.rs); 5 more namings of caps vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+by = 1
+because = "FACE: the Teller ending's encoded frame — one more naming of control vocabulary in root/transports.rs where the completed unit's answer is written"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+by = 2
+because = "FACE: the Teller ending's encoded frame — the root reads the kernel Ending's frame in root/transports.rs; 2 more namings of kernel vocabulary"
+file = "qa/kind-isolation.toml"
+
 
 
 
@@ -431,7 +467,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5481
+kernel_ceiling = 5487
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -439,7 +475,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23567
+union_ceiling = 23573
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -448,7 +484,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 612
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
