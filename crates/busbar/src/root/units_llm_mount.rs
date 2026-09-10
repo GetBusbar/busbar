@@ -17,9 +17,11 @@
 //! executes nothing. None of that is about this plane, and the two mounts beside this one prove it
 //! by being three lines each.
 //!
-//! Two of the three answers are here and are complete: the claim table this plane declares, and the
-//! media type its document answers carry. The third — the leg — is stated below rather than
-//! written, because writing it today would mean writing something untrue. See [`WHY_NO_LEG_YET`].
+//! All three are here. The claim table this plane declares, the media type its document answers
+//! carry, and — as of the leg beside this file — the walk itself. The third one used to be STATED
+//! rather than written, because writing it then would have meant writing something untrue: the
+//! plane's exit arm consumed the ending a mount is owed. [`WHAT_UNBLOCKED_THE_LEG`] is that account,
+//! kept because the answer to "why is this shaped like this" is in it.
 //!
 //! ## What the claim walk had to be fixed to see
 //!
@@ -101,8 +103,8 @@ pub fn media_type() -> &'static str {
 /// The byte-identity cell is `a_posting_the_exit_path_built_settles_exactly_as_a_hold_does` in
 /// `root/tests/durability.rs`: three doors — a hold, an owned posting, a lend — one balance, one
 /// set of four columns, and one chain head, which is what "identical ledger bytes" means.
-pub const WHY_NO_LEG_YET: &str =
-    "the blocker is lifted: the plane's exit arm settles from a lend and the Ended survives it";
+pub const WHAT_UNBLOCKED_THE_LEG: &str =
+    "the plane's exit arm settles from a lend, so the Ended survives it and a leg can hand it on";
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE LEG, ON THE MOUNT
