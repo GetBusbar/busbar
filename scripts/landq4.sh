@@ -352,8 +352,11 @@ lq_preprove_sweep() {
       # THE STAGED ENGINE, whose `here` is this tree (see lq_stage_engine), and WITHOUT the shard
       # fan-out: the sweep's parallelism is across lines, and a fan-out inside each of six pre-proofs
       # would ask the fleet for four boxes apiece.
+      # </dev/null: this child is backgrounded while the loop is still READING the list of lines
+      # from its heredoc, and a child that inherits that stdin eats the next line — measured: three
+      # disjoint lines, two boxes chosen, no "out of free boxes", the third line simply never read.
       env -u LAND_SELFTEST_SHARDS bash "$W/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf" \
-        >"$dir/line-$i.log" 2>&1
+        >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
   done <<EOF
@@ -639,6 +642,24 @@ lq_selftest() {
   _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
   _t "the sweep launches the staged engine"                     1 "$(grep -c 'bash "\$W/target/gate/land.run.sh" --preprove' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
+  # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
+  # the loop is still reading its list: a child that inherited that stdin ate the next line (three
+  # disjoint lines, two boxes chosen, no "out of free boxes"). The stub engine swallows its stdin
+  # on purpose; the stub library hands out a fresh box per ask.
+  echo "landq4 selftest: the sweep hands out EVERY disjoint line (a child does not eat the next one)"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n' >"$SCRIPTS/land.sh"
+  # The stub allocator takes a second per ask, as the real one takes several: without that the
+  # parent reads all three lines before any child has had the chance to eat one, and the case
+  # cannot go red.
+  printf 'rlog() { :; }\nremote_wrapper() { :; }\nfleet_pick_host() { sleep 1; echo "box-$RANDOM$RANDOM"; }\n' >"$SCRIPTS/ci-remote-lib.sh"
+  local savedQ0="$Q" savedPP1="$PP" savedL1="$L" savedP="$PREPROVE_LINES"
+  Q="$root/sweepq.txt"; PP="$root/sweep-pp.txt"; : >"$PP"; L="$root/sweep-log.txt"; : >"$L"; PREPROVE_LINES=6
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
+  ( cd "$repo" && W="$repo" SCRIPTS="$SCRIPTS" lq_preprove_sweep ) >/dev/null 2>&1
+  _t "three lines out, three recorded" 3 "$(grep -c . "$PP")"
+  _t "the sweep says three went out"   1 "$(grep -c 'pre-prove: 3 line(s) out' "$L")"
+  rm -rf "$repo/target/gate/preprove-"*
+  Q="$savedQ0"; PP="$savedPP1"; L="$savedL1"; PREPROVE_LINES="$savedP"
   W="$savedW2"; SCRIPTS="$savedS"
 
   echo "landq4 selftest: the popper"
