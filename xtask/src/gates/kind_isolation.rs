@@ -528,6 +528,15 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("codec", "grammar"),
     ("contract", "contract-transport"),
     ("contract", "grammar"),
+    // EVERY PLUGIN KIND IS GRANTED `busbar-contract` — the one face all halves may name, on the
+    // same terms as every other plugin kind (`ARCHITECTURE.md`'s core-vs-plugin section already
+    // says so in its own words). `dialect` is the kind this row was missing for: VT5 specifies
+    // `busbar-plane-streams-openai -> busbar-contract`, and without the row that crate's dependency
+    // on the contract reads as a NEW forbidden edge — a table hole, not a naming defect in the
+    // crate. The kind being PENDING is not a reason to withhold it: `PENDING_EDGES` already grants
+    // dialect the plane, the grammar, the substrate, the api and the timing ahead of the tree, and
+    // the contract is the one sink that is granted by the KIND rule rather than by the rename.
+    ("dialect", "contract"),
     ("kernel", "caps"),
     ("kernel", "contract"),
     ("kernel", "grammar"),
