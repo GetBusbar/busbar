@@ -621,30 +621,84 @@ pub fn mount(
     ))
 }
 
-/// The facts this mount publishes for one arrival, reserved keys first.
+/// The prefix every header this transport publishes as a fact is written under.
+///
+/// **RESERVED KEYS ARE THE KERNEL'S VOCABULARY AND HEADERS ARE THIS TRANSPORT'S**, and the prefix is
+/// what keeps the two from ever being the same string. A header published under its bare name would
+/// put `accept` next to `accepts` and `host` next to `authority` — two spellings of one thing, with
+/// nothing saying which a plane should read — and a wire that invented a header called `path` would
+/// silently overwrite the request target.
+///
+/// Named `http.` because it is the DOCUMENT TRANSPORT's, not the mount's and not any plane's: a
+/// second transport that carried headers would publish its own under its own prefix, and a plane
+/// that reads one is reading a fact of the wire it arrived on.
+pub const HEADER_FACT_PREFIX: &str = "http.header.";
+
+/// The fact key one header name is published under.
+///
+/// Lowercased, because `HeaderMap` already normalises on the way in and a fact key that differed by
+/// case between two arrivals of the same header would be two facts.
+#[must_use]
+pub fn header_fact(name: &str) -> String {
+    format!("{HEADER_FACT_PREFIX}{}", name.to_ascii_lowercase())
+}
+
+/// One header of an arrival, read back off the facts this mount published.
+///
+/// The read half of [`header_fact`], so the spelling is decided in one place. A leg that wrote the
+/// prefix itself would be a second declaration of this transport's vocabulary.
+#[must_use]
+pub fn header_of<'a>(
+    arrival: &'a busbar_contract::transport::Arrival<'a>,
+    name: &str,
+) -> Option<&'a str> {
+    arrival.fact(&header_fact(name))
+}
+
+/// The facts this mount publishes for one arrival: the kernel's reserved keys, then this
+/// transport's own headers.
+///
+/// ## The reserved keys
 ///
 /// The four a request carries about WHERE it was sent and the one it carries about what it
 /// PRESENTED. They are the kernel's reserved keys and never a header name, because a plane reads the
 /// fact and never the header — and the credential is published WHOLE, scheme word included, because
 /// deciding what a scheme means is the authentication chain's.
-fn mount_facts(parts: &axum::http::request::Parts) -> Vec<(&'static str, String)> {
+///
+/// ## And then EVERY header, under this transport's own prefix
+///
+/// Transport facts are open vocabulary — the contract says so where it names the nine reserved keys,
+/// and the reason is exactly this case: a transport's own facts are the transport's. Six reserved
+/// readings are the whole of what a request MEANS structurally, and they are not the whole of what
+/// arrived. A plane whose surface is identified by a vendor header — and one mounted here declares
+/// four of its fourteen rungs that way — could be mounted, could be claimed, and could not tell one
+/// dialect from another, because the header it identifies by never crossed the seam.
+///
+/// So the whole map crosses, under [`HEADER_FACT_PREFIX`], and nothing here decides which headers
+/// matter. A mount that published a curated subset would be the transport axis deciding what a plane
+/// is allowed to read, which is the one thing an open vocabulary exists to avoid — and the curation
+/// would be a list that goes stale the first time a protocol adds a header.
+///
+/// A header whose bytes are not text is left off rather than lossily rendered: a fact is a string,
+/// and a plane matching on a mangled one would be matching on something no caller sent.
+fn mount_facts(parts: &axum::http::request::Parts) -> Vec<(String, String)> {
     use busbar_contract::transport::facts;
-    let mut out: Vec<(&'static str, String)> = vec![
+    let mut out: Vec<(String, String)> = vec![
         (
-            facts::PATH,
+            facts::PATH.to_string(),
             parts
                 .uri
                 .path_and_query()
                 .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
         ),
-        (facts::METHOD, parts.method.as_str().to_string()),
+        (facts::METHOD.to_string(), parts.method.as_str().to_string()),
     ];
     if let Some(authority) = parts
         .headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
     {
-        out.push((facts::AUTHORITY, authority.to_string()));
+        out.push((facts::AUTHORITY.to_string(), authority.to_string()));
     }
     // ABSENT IS ABSENT, NOT EMPTY. A plane handed an empty credential is being told one was
     // presented and is blank, which is a different — and worse — statement than "none arrived".
@@ -654,21 +708,31 @@ fn mount_facts(parts: &axum::http::request::Parts) -> Vec<(&'static str, String)
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.trim().is_empty())
     {
-        out.push((facts::CREDENTIAL, credential.to_string()));
+        out.push((facts::CREDENTIAL.to_string(), credential.to_string()));
     }
     if let Some(accepts) = parts
         .headers
         .get(axum::http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
     {
-        out.push((facts::ACCEPTS, accepts.to_string()));
+        out.push((facts::ACCEPTS.to_string(), accepts.to_string()));
     }
     if let Some(media) = parts
         .headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
     {
-        out.push((facts::MEDIA, media.to_string()));
+        out.push((facts::MEDIA.to_string(), media.to_string()));
+    }
+    // AND THE WHOLE MAP, in the order it arrived. `HeaderMap::iter` repeats the name for a header
+    // sent more than once, and the repeats are published as they came rather than joined: a fact is
+    // one value, and folding two into one comma-separated string would be this file inventing a
+    // spelling no caller sent. A plane reading the fact gets the first, which is what a plane
+    // reading the header map would have got.
+    for (name, value) in &parts.headers {
+        if let Ok(text) = value.to_str() {
+            out.push((header_fact(name.as_str()), text.to_string()));
+        }
     }
     out
 }
@@ -684,8 +748,11 @@ const CHAIN: [&str; 2] = ["tcp", "http"];
 /// [`busbar_contract::transport::Arrival`] holds a slice of borrowed pairs and the mount holds owned
 /// ones, so somebody has to materialise the borrow and somebody has to own the vector it borrows
 /// from. This is the first half; the caller keeps the vector alive for as long as the arrival.
-fn fact_pairs<'a>(facts: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
-    facts.iter().map(|(k, v)| (*k, v.as_str())).collect()
+fn fact_pairs(facts: &[(String, String)]) -> Vec<(&str, &str)> {
+    facts
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect()
 }
 
 /// COMPOSE ONE ARRIVAL OVER these pairs and these bytes.
@@ -728,7 +795,7 @@ fn arrival_over<'a>(
 /// future and cannot use it. Both compose through [`arrival_over`], so there is still one arrival
 /// shape and not two.
 fn with_arrival<T>(
-    facts: &[(&'static str, String)],
+    facts: &[(String, String)],
     body: &[u8],
     f: impl FnOnce(&busbar_contract::transport::Arrival<'_>) -> T,
 ) -> T {

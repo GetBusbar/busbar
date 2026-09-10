@@ -315,3 +315,72 @@ fn a_header_selector_is_not_an_address() {
     assert!(!claims_a_path(HEADER, "/anthropic-version"));
     assert!(!claims_a_path(HEADER, "/v1/messages"));
 }
+
+/// **EVERY HEADER CROSSES THE SEAM, and the reserved keys keep their own vocabulary.**
+///
+/// RED FIRST: `mount_facts` published six readings and no header, so a plane whose surface is
+/// identified by a vendor header — `anthropic-version`, `x-goog-api-key`, `x-api-key` — could be
+/// mounted, could be claimed, and could not tell one dialect from another. The four rungs that name
+/// a header had nothing to read.
+///
+/// The assertion is about the transport axis and names no plane: a header the mount was never told
+/// about reaches the arrival, under this transport's own prefix, and the reserved readings are
+/// unchanged beside it.
+#[test]
+fn every_header_crosses_as_a_fact_of_this_transport_and_never_as_a_reserved_key() {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/messages?beta=true")
+        .header("host", "node.example")
+        .header("accept", "text/event-stream")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer sk-live")
+        .header("anthropic-version", "2023-06-01")
+        .header("X-Goog-Api-Key", "goog-secret")
+        .header("x-vendor-nobody-declared", "and it still arrives")
+        .body(axum::body::Body::empty())
+        .expect("a request builds");
+    let (parts, _) = request.into_parts();
+    let facts = mount_facts(&parts);
+    let pairs = fact_pairs(&facts);
+    let arrival = arrival_over(&pairs, b"{}");
+
+    use busbar_contract::transport::facts;
+    // The six reserved readings, exactly as before: the seam widened beside them, not over them.
+    assert_eq!(arrival.fact(facts::PATH), Some("/v1/messages?beta=true"));
+    assert_eq!(arrival.fact(facts::METHOD), Some("POST"));
+    assert_eq!(arrival.fact(facts::AUTHORITY), Some("node.example"));
+    assert_eq!(arrival.fact(facts::CREDENTIAL), Some("Bearer sk-live"));
+    assert_eq!(arrival.fact(facts::ACCEPTS), Some("text/event-stream"));
+    assert_eq!(arrival.fact(facts::MEDIA), Some("application/json"));
+
+    // And every header, including the two nothing in this tree declares and the one no protocol
+    // here has ever named. Read through `header_of`, because the prefix is spelled in one place.
+    assert_eq!(header_of(&arrival, "anthropic-version"), Some("2023-06-01"));
+    assert_eq!(
+        header_of(&arrival, "X-Goog-Api-Key"),
+        Some("goog-secret"),
+        "the read normalises case exactly as the map did on the way in"
+    );
+    assert_eq!(
+        header_of(&arrival, "x-vendor-nobody-declared"),
+        Some("and it still arrives")
+    );
+    assert_eq!(header_of(&arrival, "authorization"), Some("Bearer sk-live"));
+
+    // THE TWO VOCABULARIES DO NOT MEET. No header is published under a bare name, so nothing a
+    // caller can send can shadow a reserved key — `accept` next to `accepts`, `host` next to
+    // `authority`, and a wire that invented a header called `path` over the request target.
+    for (key, _) in &facts {
+        assert!(
+            !facts::is_reserved(key) || !key.starts_with(HEADER_FACT_PREFIX),
+            "a fact is one vocabulary or the other, never both: {key}"
+        );
+    }
+    assert_eq!(
+        arrival.fact("accept"),
+        None,
+        "a header is not published under its bare name"
+    );
+    assert_eq!(arrival.fact("host"), None);
+}
