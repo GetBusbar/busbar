@@ -2755,6 +2755,54 @@ lq_selftest() {
   _t "  ...a ceiling of 3 takes the whole unit" 3 "$cn"
   _t "  ...which is ONE unit of three lines, not three batches" 2 "$(grep -cx '#UNIT 1' "$cb" || true)"
 
+  # ── AND THE CEILING REACHES EIGHT: A CHAINED UNIT OF EIGHT, POPPED WHOLE ───────────────────────
+  # LANDQ_PREPROVE_LINES is 12 on the live queue now, so eight distinct greens at one tip is a shape
+  # that HAPPENS rather than a shape that is argued about — lq_batch_size returns 8 for it (the
+  # "eight chained greens are eight" case above). What that ceiling is worth depends on the POPPER
+  # honouring it, and on LAND_CHAIN_DEPTH, which is a SECOND ceiling and is 4: a chain of eight at
+  # depth 4 is four lines, whatever LAND_BATCH says. Both are asked here, because an operator who
+  # raises LAND_BATCH to 8 and gets 4 has no way to tell which ceiling took it.
+  local h8 i prev key
+  h8=""
+  for i in 1 2 3 4 5 6 7 8; do
+    printf 'e%s\n' "$i" >"$repo/e$i.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm "e$i"
+    h8="$h8 $(git -C "$repo" rev-parse HEAD)"
+  done
+  h8="${h8# }"
+  # The queue: a live root and seven holds, each naming the one before it.
+  : >"$Q"; prev=""
+  for i in $h8; do
+    if [ -z "$prev" ]; then printf -- '--prove %s\n' "$i" >>"$Q"
+    else printf -- '#HOLD-after-%s --prove %s\n' "$prev" "$i" >>"$Q"; fi
+    prev="$i"
+  done
+  # …and a chained green for every one of them, keyed exactly as lq_chain_key writes it.
+  : >"$PP"; key=""
+  for i in $h8; do
+    if [ -z "$key" ]; then printf 'GREEN%stip1%s/l/e%s--prove %s\n' "$TAB" "$TAB" "$TAB" "$i" >>"$PP"
+    else printf 'GREEN%stip1@%s%s/l/e%s--prove %s\n' "$TAB" "$key" "$TAB" "$TAB" "$i" >>"$PP"; fi
+    if [ -z "$key" ]; then key="$i"; else key="$key+$i"; fi
+  done
+  _t "eight chained greens at this tip make the ceiling 8" 8 "$(LAND_BATCH=8 lq_batch_size tip1 "$PP")"
+  # THE DEPTH IS THE OTHER CEILING, and at its default it is the binding one.
+  LAND_CHAIN_DEPTH=4
+  cn="$(lq_pop tip1 8 "$cb" "$ckp")"
+  _t "depth 4 caps an eight-line chain at four"  4 "$cn"
+  _t "  ...and the other four keep their holds"  4      "$(grep -c '^#HOLD-after-' "$ckp" || true)"
+  # RAISE THE DEPTH AND THE WHOLE UNIT RIDES ONE BATCH — eight lines, one union, one bisect ladder.
+  LAND_CHAIN_DEPTH=8
+  cn="$(lq_pop tip1 8 "$cb" "$ckp")"
+  _t "depth 8 and LAND_BATCH 8 pop all eight"    8 "$cn"
+  _t "  ...as ONE unit, not eight batches"       7 "$(grep -cx '#UNIT 1' "$cb" || true)"
+  _t "  ...in chain order, root first"           "--prove $(printf '%s' "$h8" | cut -d' ' -f1)" "$(lq_batch_lines "$cb" | sed -n 1p)"
+  _t "  ...and last is last"                     "--prove $(printf '%s' "$h8" | cut -d' ' -f8)" "$(lq_batch_lines "$cb" | sed -n 8p)"
+  _t "  ...and nothing is left holding"          0 "$(grep -c '^#HOLD-after-' "$ckp" || true)"
+  # AND THE LINE CEILING STILL BINDS ABOVE THE DEPTH: LAND_BATCH is what is PROVEN in one union.
+  cn="$(lq_pop tip1 6 "$cb" "$ckp")"
+  _t "a ceiling of 6 takes six of the eight"     6 "$cn"
+  _t "  ...and the last two keep their holds"    2 "$(grep -c '^#HOLD-after-' "$ckp" || true)"
+  LAND_CHAIN_DEPTH=4
+
   # ── THE SWEEP PREFERS CHAINS OVER SINGLES ─────────────────────────────────────────────────────
   # A box on a single buys one line in the next batch; a box on a chain root makes its whole chain
   # provable, and those land together as one unit. So the roots take their boxes first.
