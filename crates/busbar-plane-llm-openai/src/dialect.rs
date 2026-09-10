@@ -54,6 +54,8 @@ pub const LOCATIONS: Locations = Locations {
     cache_write_pointer: None,
     scheme_alt: "bearer",
     egress_scheme: "bearer",
+    // This vendor's upstreams accept a request with no ceiling, so the crossing adds none.
+    requires_max_response: false,
 };
 
 /// This dialect's whole contribution to its plane, as one `const` a composition root seals.

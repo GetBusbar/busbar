@@ -22,7 +22,7 @@ use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, T
 use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
 use busbar_llm_codec::proto_codec::{with_reader, with_writer};
 
-use crate::dialect::{self, Dialect};
+use crate::dialect::Dialect;
 use crate::meta;
 use crate::{LlmPlane, Upstream};
 
@@ -573,7 +573,7 @@ impl LlmPlane {
             //
             // A dialect that refuses a request with no response ceiling gets one — only when the
             // request carries none. A value the client sent is never rewritten and never clamped.
-            if request.max_tokens.is_none() && dialect::requires_max_response(egress.name) {
+            if request.max_tokens.is_none() && egress.requires_max_response {
                 request.max_tokens = Some(configured_max_response(ctx));
             }
             // Everything the source dialect modelled and the intermediate representation does not
