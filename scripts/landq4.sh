@@ -304,6 +304,29 @@ lq_stage_engine() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE LOCK: ONLY THE RUNNER LANDS. A host-wide file naming this process; land.sh refuses a
+# `--remote` landing that is not a pre-proof while a live pid is in it (a slot proves its own branch
+# with --preprove). A second runner refuses to start over a live holder; a dead pid is stale and is
+# taken over. Everything this runner launches inherits LANDQ_RUNNER_PID and is exempt.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+LOCK="${LANDQ_LOCK:-$HOME/.busbar-landq4.lock}"
+lq_lock_acquire() { # $1 = my pid; 0 = held by me now, 1 = a live runner holds it (its pid on stdout)
+  local me="$1" pid
+  if [ -f "$LOCK" ]; then
+    pid="$(head -n1 "$LOCK" 2>/dev/null | tr -d '[:space:]')"
+    case "$pid" in ''|*[!0-9]*) pid="" ;; esac
+    if [ -n "$pid" ] && [ "$pid" != "$me" ] && kill -0 "$pid" 2>/dev/null; then printf '%s\n' "$pid"; return 1; fi
+  fi
+  printf '%s\n%s\n' "$me" "$W" >"$LOCK"
+  export LANDQ_RUNNER_PID="$me"
+  return 0
+}
+lq_lock_release() { # $1 = my pid
+  [ -f "$LOCK" ] && [ "$(head -n1 "$LOCK" 2>/dev/null | tr -d '[:space:]')" = "$1" ] && rm -f "$LOCK"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE PRE-PROVE SWEEP
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # One box per line, in parallel, each against the CURRENT tip and each publishing nothing. The
@@ -662,6 +685,18 @@ lq_selftest() {
   Q="$savedQ0"; PP="$savedPP1"; L="$savedL1"; PREPROVE_LINES="$savedP"
   W="$savedW2"; SCRIPTS="$savedS"
 
+  echo "landq4 selftest: the lock (one runner per host; a dead holder is stale)"
+  local savedLock="$LOCK"; LOCK="$root/lock"
+  _t "an absent lock is taken"              0 "$(lq_lock_acquire $$ >/dev/null; echo $?)"
+  _t "  ...and names this pid"              "$$" "$(head -n1 "$LOCK")"
+  _t "  ...and the runner pid is exported"  "$$" "$(lq_lock_acquire $$ >/dev/null; echo "$LANDQ_RUNNER_PID")"
+  _t "a live holder refuses a second runner" "$$" "$(lq_lock_acquire 1 2>/dev/null; true)"
+  printf '999999999\n' >"$LOCK"
+  _t "a dead holder is taken over"          0 "$(lq_lock_acquire $$ >/dev/null; echo $?)"
+  lq_lock_release $$
+  _t "release removes the lock"             1 "$( [ -f "$LOCK" ]; echo $?)"
+  LOCK="$savedLock"
+
   echo "landq4 selftest: the popper"
   Q="$root/popq.txt"; PP="$pp"; L="$root/log.txt"; : >"$L"; W="$repo"
   printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
@@ -695,6 +730,10 @@ esac
 
 mkdir -p "$W/target/gate"
 touch "$Q" "$D" "$PP"
+if ! holder="$(lq_lock_acquire $$)"; then
+  echo "landq4.sh: another runner (pid $holder) holds $LOCK — only one runner lands on this host" >&2; exit 2
+fi
+trap 'lq_lock_release $$' EXIT
 
 if [ "${1:-}" = "--preprove-once" ]; then
   lq_preprove_sweep
