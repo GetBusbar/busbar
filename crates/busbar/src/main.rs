@@ -610,7 +610,10 @@ fn register_protocols() {
     // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
     // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
     #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
+    let mut path_ingress: Vec<(
+        &'static str,
+        busbar_substrate::ingress::arrival::PathIngress,
+    )> = Vec::new();
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
@@ -625,7 +628,7 @@ fn register_protocols() {
     }
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
-    busbar_core::proto::registry::install_protocols_with_path_ingress(installed, path_ingress);
+    root::proto_install::install_protocols_with_path_ingress(installed, path_ingress);
 
     // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
     // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's
