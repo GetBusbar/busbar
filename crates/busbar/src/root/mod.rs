@@ -57,6 +57,7 @@
 pub mod adapters;
 pub mod auth_bindings;
 pub mod durability;
+pub mod egress_bindings;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod kernel;

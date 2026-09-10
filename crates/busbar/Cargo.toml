@@ -137,6 +137,13 @@ serde_yaml = { workspace = true }
 core_affinity = { workspace = true }
 socket2 = { workspace = true }
 
+# THE ONE RACE THE EGRESS UNIT'S PERMIT SEAM IS DECLARED AGAINST. The unit's `Capacity::acquire_any`
+# waits for a slot to free on any of a set of members, in arrival order; the store hands one freed
+# slot to one waiter, and what races the N waits is `select_all`. Named because the root binds that
+# seam and the combinator is the seam's own shape -- writing a poll loop here instead would be this
+# root re-deriving a standard combinator on the one path where a lost wakeup is a wedged lane.
+futures = { workspace = true }
+
 # Global allocator: jemalloc on EVERY target EXCEPT windows-msvc — a property of the BINARY (only
 # one crate in a link may declare a global allocator), which is why these stay here when everything
 # else moved to busbar-core. Full rationale in main.rs at the `#[global_allocator]` site.
