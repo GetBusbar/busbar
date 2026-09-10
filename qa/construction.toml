@@ -402,6 +402,38 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "LLM LEG identity, root x transport: the llm leg's wire lines - the binding the plane declared is resolved against the instance the root composed, in the same two-line shape the a2a leg carries; measured over the non-prose half of units_llm_leg.rs only (0 -> 2); 1095 -> 1097"
 
+# THE PLANE-HOST COMPOSITION FILES, declared as the root composing what it mounts. data_plane.rs,
+# plane_ctx.rs, units_a2a_boot.rs, units_mcp_seal.rs, units_mcp_records.rs, registrations.rs,
+# kernel.rs and policy.rs are the place a mounted plane is given the host it runs against: the data
+# plane it is handed, the context it is booted with, the seal and the record sink its operations
+# write through, and the registration that joins the composed instance to the kernel's registry.
+# A host that composed a plane without naming it would not be hosting anything, which is the same
+# reason the mount files above are declared. Only the NON-PROSE halves are declared; comments and
+# doc comments in these files are prose and stay measured.
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "PLANE-HOST COMPOSITION identity, root x contract-transport: the host files' arrival lines - the data plane and the plane context are handed the arrival the driver seam carries, because the host is what holds it between the seam and the leg; measured over the non-prose halves of data_plane.rs (0 -> 2) and plane_ctx.rs (0 -> 1); 97 -> 100"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "PLANE-HOST COMPOSITION identity, root x kernel: the host files' kernel lines - the data plane and the a2a boot reach the kernel's own registry because a composed plane is joined to the loop from above it and nowhere else; measured over the non-prose halves of data_plane.rs (0 -> 1) and units_a2a_boot.rs (0 -> 1); 246 -> 248"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 47
+because = "PLANE-HOST COMPOSITION identity, root x plane: the host files' plane lines - the boot that composes a plane's units, the seal its operations write through, the record sink they write to and the registration that joins them are each the root naming the plane it hosts; measured over the non-prose halves of units_a2a_boot.rs (0 -> 37), units_mcp_seal.rs (0 -> 17), units_mcp_records.rs (0 -> 8) and registrations.rs (0 -> 6), which is 68 gross, plus 30 gross in their test siblings; the same cell drained 51 lines elsewhere on this branch, so the NET rise the ceiling owes for the host files and their siblings together is 47; 2551 -> 2598"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "PLANE-HOST COMPOSITION identity, root x transport: the host files' wire lines - the a2a boot resolves the binding the plane declared against the wire instance the root composed, which is the one place a composed transport and a booted plane are both visible; measured over the non-prose half of units_a2a_boot.rs only (0 -> 2); 1097 -> 1099"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
