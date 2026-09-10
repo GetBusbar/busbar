@@ -778,6 +778,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-llm-responses"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-llm",
+]
+
+[[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [

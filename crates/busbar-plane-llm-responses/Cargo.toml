@@ -1,0 +1,61 @@
+# busbar-plane-llm-responses — THE `responses` DIALECT OF THE `llm` PLANE, AND THE SECOND CRATE OF
+# ITS KIND.
+#
+# WHAT A DIALECT IS. One wire vocabulary through one plane. The plane owns what a request MEANS —
+# the IR, the step list, the operation classes, the meter CLASSES — and a dialect owns how one
+# vendor spells it: which paths and headers name it, where the model is, where the four metered
+# quantities are, which credential its clients present. The kind exists because those two things
+# change on different clocks: a vendor ships a seventh spelling and a plane that carried a branch
+# per vendor would be edited for it.
+#
+# WHY THIS IS A SECOND CRATE AND NOT A BRANCH IN THE FIRST. This vendor ships TWO request surfaces,
+# and they are two dialects in every place the tree can tell them apart: different rungs (7 and 14
+# there, 10 here) on different paths, a conversation at `/input` rather than `/messages`, a response
+# ceiling at `/max_output_tokens` rather than `/max_tokens`, and four metered quantities at four
+# different pointers — including a written-to-cache quantity the older surface does not report at
+# all. One crate spanning both would be a crate with a vendor-shaped branch in it, which is the
+# shape the kind exists to remove.
+#
+# THE ONE EDGE. A dialect names its plane and the contract, and NOTHING ELSE — no transport, no
+# unit, no sibling dialect, not even another plane, and not a dev-dependency either. That is the
+# narrowest edge set in the plugin tree, and it is what makes `busbar-plane-llm` dialect-neutral
+# while its wire surface stays open: the dialect names the plane, the plane never names the dialect.
+# `kind-isolation:deps` refuses the reverse.
+#
+# HOW IT REGISTERS: BY CLAIM, NOT BY A MATCH ARM. This crate declares its ladder rung and its
+# location row as constants, and a composition root seals them into the plane's registry at boot.
+# Nothing in `busbar-plane-llm` spells `responses` for this to work. Adding the next dialect is
+# adding a crate and a registry row; it is not a patch to the plane.
+[package]
+name = "busbar-plane-llm-responses"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The responses dialect of the busbar LLM plane: the claim rung, the locations and the meter locators for the OpenAI Responses API, registering into busbar-plane-llm by claim."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_llm_responses"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE, and for the reason the plane states: a dialect compiled two ways is two
+# dialects, and the registry that sealed one of them could not say which.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# ITS PLANE, AND THE ONLY OTHER CRATE THIS ONE MAY NAME. The claim builder, the location row shape,
+# the registry entry and the four dialect-parameterised codec bodies all come from here.
+busbar-plane-llm = { path = "../busbar-plane-llm" }
+
+# NO `[dev-dependencies]`, AND THAT IS THE KIND'S RULE HOLDING UNDER ITS OWN TESTS.
+#
+# The first crate of this kind carried one — the LLM codec, with `test-support`, copied from the
+# plane's own test binary, which needs the codec's self-registering seam because a test process runs
+# no composition root — and `kind-isolation:test-deps` refused it as an edge that branch would have
+# INTRODUCED. It was right to: a dev edge is still a manifest edge, and `dialect -> codec` is an edge
+# no clause grants. This crate's battery asserts what it DECLARES — the ladder ascends, the rung
+# names this dialect, the locators and the row point at the same places, the entry is a constant —
+# and a declaration needs nothing registered to be read. Two dependencies, no dev-dependencies.
