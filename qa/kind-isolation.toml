@@ -1676,7 +1676,7 @@ count = "266"
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "337"
+count = "14"
 
 [[cell]]
 crate = "busbar-core"
@@ -5548,7 +5548,7 @@ kind = "dialect"
 count = "9"
 
 [[cell]]
-crate = "busbar-secret-ref"
+crate = "busbar-secret-grammar"
 kind = "dialect"
 count = "2"
 
