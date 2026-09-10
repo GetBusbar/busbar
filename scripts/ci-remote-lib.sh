@@ -107,8 +107,15 @@ fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
   hosts="$(fleet_hosts)"
   for h in $hosts; do
     skip=0; for ex in "$@"; do [ "$h" = "$ex" ] && skip=1; done; [ "$skip" = 1 ] && continue
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove && cut -d" " -f1 /proc/loadavg' </dev/null 2>/dev/null || true)"
-    case "$probe" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    # A BOX ALREADY RUNNING A LANDING IS NOT A SIBLING. The live runner's box carries its landing and
+    # four CI agents; a shard on top of that slows the landing everybody is waiting on and the shard
+    # alike. The probe answers BUSY when the runner's engine is in the box's process list (measured:
+    # the first allocation without this handed shard 2 to the box the queue runner was landing on).
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f "land.run.local.sh" >/dev/null 2>&1; then echo BUSY; else cut -d" " -f1 /proc/loadavg; fi' </dev/null 2>/dev/null || true)"
+    case "$probe" in
+      BUSY) rlog "fleet: $h skipped (a landing is running there)"; continue ;;
+      ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;;
+    esac
     rows="$rows$probe $h
 "
   done
@@ -247,8 +254,9 @@ _lib_selftest() {
   local root fails=0
   root="$(mktemp -d "${TMPDIR:-/tmp}/ci-remote-lib-selftest.XXXXXX")"
   _t() { if [ "$2" = "$3" ]; then printf '  ok   %-52s\n' "$1"; else printf '  FAIL %-52s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
-  printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\n# a comment\n' >"$root/fleet"
-  # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0.
+  printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\nbox-f\n# a comment\n' >"$root/fleet"
+  # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0,
+  # box-f is running a landing (BUSY) at load 0.5 — the lowest load on the list, and never chosen.
   cat >"$root/ssh" <<'STUB'
 #!/bin/sh
 for a in "$@"; do case "$a" in ubuntu@*) h="${a#ubuntu@}" ;; esac; done
@@ -258,6 +266,7 @@ case "$h" in
   box-c) echo 1.00 ;;
   box-d) sleep 60 ;;
   box-e) echo 2.00 ;;
+  box-f) echo BUSY ;;
 esac
 STUB
   chmod +x "$root/ssh"
@@ -270,6 +279,8 @@ STUB
   _t "the primary is never chosen"      "$(printf 'box-c\nbox-a')"        "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 2 box-e 2>/dev/null)"
   _t "a short fleet returns FEWER, not a repeat" "$(printf 'box-c')"      "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 3 box-a box-e 2>/dev/null)"
   _t "the silent box is skipped, and named" 1 "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 4 2>&1 >/dev/null | grep -c 'box-d skipped')"
+  _t "a box running a landing is never chosen, and named" 1 "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 6 2>&1 >/dev/null | grep -c 'box-f skipped (a landing is running there)')"
+  _t "  ...even at the lowest load" "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 6 2>/dev/null)"
   echo "ci-remote-lib selftest: the request parser (a request half-understood is refused)"
   local sha; sha="$(printf '%040d' 7)"
   _t "a well-formed request parses"     0 "$(fanout_parse_request "gate=kind-isolation n=4 sha=$sha ref=shardreq-1 ceil=X=3600"; echo $?)"
