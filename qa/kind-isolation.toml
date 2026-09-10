@@ -1354,7 +1354,7 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1769"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1379,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+count = "938"
 
 [[cell]]
 crate = "busbar"
@@ -2959,12 +2959,12 @@ count = "19"
 [[disagreement]]
 crate = "busbar"
 kind = "plane"
-note = "segment scanner 1798, window scanner 1797. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+note = "segment scanner 1769, window scanner 1768. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar"
 kind = "transport"
-note = "segment scanner 930, window scanner 939. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+note = "segment scanner 929, window scanner 938. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar-a2a"
