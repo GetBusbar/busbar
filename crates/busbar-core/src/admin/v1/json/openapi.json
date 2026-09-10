@@ -647,6 +647,14 @@
               "string",
               "null"
             ]
+          },
+          "resource": {
+            "default": null,
+            "description": "RFC 8707 RESOURCE INDICATOR: the plane door this key's token is minted FOR. OPTIONAL and\nOMITTED BY DEFAULT, so a mint body written before this existed is byte-identical in and out.\n\nA plane that guards its mount behind an audience admits only a token carrying exactly that\n`aud`, and until this field existed nothing in a shipped busbar could issue one: the door was\nshipped without its key. Named `resource` because that is the parameter's name in RFC 8707 —\nthe same word the refusal challenge already tells a client to send — and NOT after any plane,\nbecause there is one mint and every plane's door is reached through it identically.\n\nThe value must be an audience a MOUNTED plane declares (read off the plane decls at mint\ntime, never a list written down here); anything else is refused rather than issued, because a\ntoken bound to a resource this deployment does not serve is a credential no door will open.\nA bound token is spendable ONLY on that plane: the plain data-plane verify rejects it, which\nis the confused-deputy defence working in both directions.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

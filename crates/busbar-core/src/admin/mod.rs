@@ -113,6 +113,22 @@ pub(crate) struct CreateKeyReq {
     /// Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.
     #[serde(default)]
     expires_at: Option<u64>,
+    /// RFC 8707 RESOURCE INDICATOR: the plane door this key's token is minted FOR. OPTIONAL and
+    /// OMITTED BY DEFAULT, so a mint body written before this existed is byte-identical in and out.
+    ///
+    /// A plane that guards its mount behind an audience admits only a token carrying exactly that
+    /// `aud`, and until this field existed nothing in a shipped busbar could issue one: the door was
+    /// shipped without its key. Named `resource` because that is the parameter's name in RFC 8707 —
+    /// the same word the refusal challenge already tells a client to send — and NOT after any plane,
+    /// because there is one mint and every plane's door is reached through it identically.
+    ///
+    /// The value must be an audience a MOUNTED plane declares (read off the plane decls at mint
+    /// time, never a list written down here); anything else is refused rather than issued, because a
+    /// token bound to a resource this deployment does not serve is a credential no door will open.
+    /// A bound token is spendable ONLY on that plane: the plain data-plane verify rejects it, which
+    /// is the confused-deputy defence working in both directions.
+    #[serde(default)]
+    resource: Option<String>,
     /// When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible
     /// model) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.
     #[serde(default)]
@@ -976,6 +992,35 @@ pub(crate) async fn create_key(
             Cond::NoSigningKey,
         );
     }
+    // THE RFC 8707 RESOURCE (optional): the plane door this token is being minted for. Checked
+    // against what the MOUNTED planes DECLARE — `PlaneDispatch::mintable_audiences`, folded in from
+    // each plane's own decl at build — so the set of mintable resources is exactly the set of doors
+    // this deployment serves and there is no literal here for either to drift from. A resource no
+    // plane declares is REFUSED: issuing it would hand back a credential whose only property is that
+    // nothing accepts it, and an operator who mistyped their own canonical URI would learn it from a
+    // 401 on the plane hours later instead of from the mint that could have said so.
+    //
+    // `Cond` reuses this endpoint's declared `MalformedBody` family rather than adding a variant:
+    // a new condition would rewrite the 400 description of a path the 1.5.5 document already
+    // names, and the openapi register accepts additions BESIDE a 1.5.5 path, never a change to one.
+    let audience = match req.resource.as_deref() {
+        None => None,
+        Some(resource) => {
+            if !app.planes.mintable_audiences().any(|a| a == resource) {
+                return key_err(
+                    who,
+                    &AdminError::Validation(
+                        "`resource` is not an audience this deployment serves; a key may only be \
+                         bound to a resource a mounted plane declares"
+                            .into(),
+                    ),
+                    Cond::MalformedBody,
+                );
+            }
+            Some(resource.to_string())
+        }
+    };
+
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
     // `explicit` records whether the operator NAMED a lifetime (so the policy ceiling refuses an
     // over-ask but only clamps the default — see `apply_mint_ttl_ceiling`).
@@ -1190,10 +1235,10 @@ pub(crate) async fn create_key(
                 }
                 if issue_aws {
                     // Issues the AccessKeyId + secret access key alongside the bearer secret.
-                    gov.mint_signed_with_aws(spec, exp, now, None)
+                    gov.mint_signed_with_aws(spec, exp, now, audience.as_deref())
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
-                    gov.mint_signed(spec, exp, now, None)
+                    gov.mint_signed(spec, exp, now, audience.as_deref())
                         .map(|m| MintOutcome::Bearer(Box::new(m)))
                 }
             })()

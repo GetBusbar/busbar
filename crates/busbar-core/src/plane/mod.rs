@@ -379,6 +379,21 @@ impl PlaneDispatch {
     /// `/mcpx` is NOT under a `/mcp` mount and therefore is not audience-checked. That is
     /// deliberate in both directions — a sibling path must neither inherit the plane's grants nor
     /// its refusals.
+    /// EVERY RESOURCE THIS DEPLOYMENT ACTUALLY GUARDS — the RFC 8707 audiences a token may be
+    /// minted for here, read off the mounted planes' own declarations and never off a literal.
+    ///
+    /// A mint that took the audience from the caller's word alone would issue a credential for a
+    /// door that does not exist, which is the confused-deputy hole in reverse: a token nobody can
+    /// spend, indistinguishable from one the operator mistyped. Resolved MOUNT-FIRST, exactly as
+    /// [`Self::admission_for`] resolves a path — a plane that declared an admission and claims no
+    /// path is inert here too, so this can never name a resource no request could be presented on.
+    pub fn mintable_audiences(&self) -> impl Iterator<Item = &str> {
+        self.admissions
+            .iter()
+            .filter(|(key, _)| self.claims.contains_key(*key))
+            .map(|(_, adm)| adm.audience.as_str())
+    }
+
     pub fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
         // Resolve the plane by MOUNT first — the fallback is never mounted, so it never claims a
         // path and never reaches the admission map — then read that plane's bound audience by key.

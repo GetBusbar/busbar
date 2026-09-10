@@ -145,6 +145,18 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   carry `fires_at` (the resolved stage set), `groups` and `phase`; the overlay-section 404 lists
   the sections that now exist (`identity-providers`, `export`, `tools`, `agents`); `openapi.json`
   describes the MCP and A2A endpoints.
+- **The admin key mint can bind a token to a plane's door.** `POST /api/v1/admin/keys` takes an
+  optional `resource` — the RFC 8707 resource indicator, the same word the plane's own `401`
+  challenge already tells a client to send. A plane that guards its mount behind an audience admits
+  only a token carrying exactly that `aud`, and until now nothing in a shipped Busbar could issue
+  one: the door shipped without its key, and a deployment on the `keys` chain could not reach its
+  own plane by any config it could be given. The value must be an audience a mounted plane
+  declares — read off the plane declarations at mint time, so the mintable set is exactly the set
+  of doors this deployment serves — and anything else is refused at the mint rather than issued as
+  a credential nothing accepts. A bound token is spendable only on that plane; the plain data-plane
+  verify rejects it, which is the confused-deputy defence working in both directions. Additive: a
+  mint body that names no `resource` is the 1.5.5 mint, request and response bytes unchanged, and
+  the key it produces reads back identically through every admin view.
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
   (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
   (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
