@@ -849,6 +849,42 @@ fn declared_raise_cases(
         plant(carried.clone(), carried.clone()),
         &["1 declared raise(s) already carried by the base", "--write"],
     ));
+    // THE SPENT ENTRY IS NOT A SECOND ALLOWANCE — the fixture for the claim that it is.
+    //
+    // The claim under audit: when the base has ALREADY REALISED a delta entry's rise and the branch
+    // still carries the entry, the branch may spend the same `+by` a second time. It is the one
+    // shape that would make the self-expiry warning above into a hole: the entry is a warning
+    // rather than a red, so if it ALSO stayed in the live set it would fund a rise the face it was
+    // written for already paid for.
+    //
+    // The base here holds the FIGURE (`now`) and the entry; the tree carries the same entry and a
+    // second rise of the same size. The entry is CARRIED — its rise is history — so it funds
+    // nothing, the rise on this branch has no live declaration at all, and the row is red for the
+    // whole of it. `partition` keys an entry by (key, by, because), which is what makes "the base
+    // carries this entry" a fact about the base's file rather than about how much the ceiling
+    // happens to have moved.
+    let spent = format!("{text}{}", entry(&dotted, RISE, "virtual-key"));
+    let Some(raised_again) = ceilings::set_int(text, table, key, now + RISE) else {
+        r.note_infra_failure(format!(
+            "[{table}] `{key}` could not be raised on the tree, so the already-spent entry is \
+             unproven rather than passing"
+        ));
+        return r;
+    };
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared raise the base already spent funds no second rise of the same size",
+        &[ceilings::ROW_ROSE],
+        plant(
+            spent,
+            format!("{raised_again}{}", entry(&dotted, RISE, "virtual-key")),
+        ),
+        &[
+            &format!("{CEILINGS} {dotted}: {now} -> {}", now + RISE),
+            "already carried by the base",
+        ],
+    ));
     r.push(prove_rows_red(
         cx,
         gate,
