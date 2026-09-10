@@ -1682,7 +1682,7 @@ impl GovState {
             out.push(busbar_api::BudgetBucketState {
                 bucket_id: bucket.bucket_id.to_string(),
                 budget_group: bucket.group_name.map(String::from),
-                pool: bucket.scope.map(|s| s.value.clone()),
+                pool: bucket.scope.map(String::from),
                 spend_micros_at_current_rate: spend_micros,
                 remaining_micros,
                 window_start: window,
@@ -1775,15 +1775,14 @@ impl GovState {
         };
         // Pool-scoped buckets participate only when THIS request's pool matches; filtered ONCE
         // here so the check pass, the charge pass, and the shard-lock set can never disagree.
-        let buckets: Vec<&crate::cost::ChainBucket<'_>> =
+        let buckets: Vec<crate::cost::BucketView<'_>> =
             chain.iter().filter(|b| b.applies_to_pool(pool)).collect();
-        let groups = cost.groups();
 
         // 1. FREEZE check: any `enabled: false` group in the chain rejects - checked before
         // any gauge or charge so a frozen chain mutates nothing.
-        for &gi in chain.group_indices() {
-            if !groups[gi].enabled {
-                return Err(LimitBlocked::Disabled(groups[gi].name.clone()));
+        for g in chain.groups() {
+            if !g.enabled {
+                return Err(LimitBlocked::Disabled(g.name.clone()));
             }
         }
 
@@ -1791,11 +1790,11 @@ impl GovState {
         // only while strictly under the cap, so N racing admissions can never jointly overshoot.
         // On a full gauge, roll back the holds already taken (the grant drop) and name the group.
         let mut grant = AdmitGrant::default();
-        for &gi in chain.group_indices() {
-            let Some(cap) = groups[gi].concurrent_cap else {
+        for g in chain.groups() {
+            let Some(cap) = g.concurrent_cap else {
                 continue;
             };
-            let gauge = self.concurrent_gauge(&groups[gi].name);
+            let gauge = self.concurrent_gauge(&g.name);
             let cap = i64::try_from(cap).unwrap_or(i64::MAX);
             let admitted = gauge
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
@@ -1805,7 +1804,7 @@ impl GovState {
             if !admitted {
                 drop(grant); // release the holds taken so far
                 return Err(LimitBlocked::Limit {
-                    group: groups[gi].name.clone(),
+                    group: g.name.clone(),
                     metric: "concurrent",
                     window: None,
                     pool: None,
@@ -1999,11 +1998,11 @@ impl GovState {
                         .to_string(),
                     metric,
                     window: Some(bucket.window),
-                    pool: bucket.scope.map(|s| s.value.clone()),
+                    pool: bucket.scope.map(String::from),
                     // `on_exhaust` is declared on (and validated against) the BUDGET metric
                     // only; a requests/tokens block on the same bucket still blocks.
                     downgrade_to: (metric == "budget")
-                        .then(|| bucket.downgrade_to.map(|s| s.value.clone()))
+                        .then(|| bucket.downgrade_to.map(String::from))
                         .flatten(),
                     retry_after: super::window_end(bucket.window, now)
                         .map(|end| end.saturating_sub(now).max(1)),

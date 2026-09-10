@@ -1218,7 +1218,7 @@ impl AdminService {
             };
             buckets.push(GroupBucketUsageView {
                 window: b.window,
-                pool: b.scope.as_ref().map(|s| s.value.clone()),
+                pool: b.scope.clone(),
                 requests: usage.requests,
                 tokens: usage.tokens,
                 spend_cents: usage.spend_cents,

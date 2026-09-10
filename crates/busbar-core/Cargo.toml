@@ -32,6 +32,14 @@ busbar-api = { path = "../api" }
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
+# THE CHAIN WALK, read rather than restated. The retiring engine's cost model carried its own copy of
+# the resolved group topology AND its own walk over it; the topology is the cost unit's (`GroupTable`)
+# and the walk is this one's (`ChainWalk` -> `BucketChain`). Two walks over one money topology that
+# must agree exactly is how a deployment comes to be admitted against one set of ledger cells and
+# billed against another. The engine now walks each group's chain ONCE, at boot, through this crate,
+# and a request READS the result — so the edge costs the admission path no allocation at all. It is
+# the drain named by `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
+busbar-unit-admission = { path = "../busbar-unit-admission" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

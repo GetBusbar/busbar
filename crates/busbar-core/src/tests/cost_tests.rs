@@ -327,12 +327,8 @@ fn chain_resolves_key_then_group_window_buckets() {
             ("group:acme@month".to_string(), "month", None, Some(10_000)),
         ]
     );
-    // The walked group indices resolve to growth (innermost) then acme.
-    let names: Vec<&str> = chain
-        .group_indices()
-        .iter()
-        .map(|&i| cm.groups()[i].name.as_str())
-        .collect();
+    // The walked groups are growth (innermost) then acme.
+    let names: Vec<&str> = chain.groups().iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["growth", "acme"]);
 
     // No group: exactly the key's uncapped attribution bucket.
@@ -346,7 +342,7 @@ fn chain_resolves_key_then_group_window_buckets() {
         (b.requests_cap, b.tokens_cap, b.budget_cap),
         (None, None, None)
     );
-    assert!(chain.group_indices().is_empty());
+    assert!(chain.groups().is_empty());
 }
 
 /// A key naming a MISSING group fails closed: chain resolution surfaces the offender.
@@ -573,4 +569,66 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
         101,
         "one full cent more of tokens derives strictly above the cap"
     );
+}
+
+/// **THE ADMISSION PATH ALLOCATES NOTHING TO RESOLVE A CHAIN.**
+///
+/// The group half of an enforcement chain is decided by the group a key names and by nothing else,
+/// and the model is immutable once resolved — so the admission unit's walk runs ONCE PER GROUP when
+/// the model is built, and a request reads the result. That claim is the whole reason the retiring
+/// engine could take the unit's OWNED `BucketChain` (`String` ids, `String` group names, `String`
+/// scopes) without paying a heap allocation per bucket per request, so it is pinned here rather
+/// than asserted in a comment.
+///
+/// The proof is IDENTITY, not equality: two different keys bound to the same group must read chains
+/// at the SAME ADDRESS. A walk that rebuilt per request would return equal values at different
+/// addresses and pass an `assert_eq!`; only the pointer comparison can tell the two apart. The
+/// attribution bucket is the one per-request part and it is the key's own id, borrowed — asserted
+/// here by reading it back off each chain.
+#[test]
+fn chain_read_is_a_borrow_not_a_build() {
+    let groups = BTreeMap::from([(
+        "growth".to_string(),
+        group(
+            None,
+            vec![limit(LimitMetric::Requests, 50, Some(LimitWindow::Minute))],
+        ),
+    )]);
+    let cm = CostModel::resolve_parts(None, 0, &groups);
+    let mut a = key(Some("growth"));
+    a.id = "vk_a".into();
+    let mut b = key(Some("growth"));
+    b.id = "vk_b".into();
+
+    let ca = cm.chain_for(&a).expect("resolves");
+    let cb = cm.chain_for(&b).expect("resolves");
+
+    let ptr_a = ca
+        .iter()
+        .nth(1)
+        .expect("growth carries window buckets")
+        .bucket_id
+        .as_ptr();
+    let ptr_b = cb
+        .iter()
+        .nth(1)
+        .expect("growth carries window buckets")
+        .bucket_id
+        .as_ptr();
+    assert_eq!(
+        ptr_a, ptr_b,
+        "two keys of one group read two DIFFERENT chains — the walk is running per request, and \
+         every bucket of it is a fresh heap allocation on the admission path"
+    );
+
+    // The one per-request part is the key's own id, and it is borrowed from the key rather than
+    // copied into a bucket the read had to build.
+    let attribution_a = ca.iter().next().expect("always present");
+    let attribution_b = cb.iter().next().expect("always present");
+    assert_eq!(attribution_a.bucket_id, "vk_a");
+    assert_eq!(attribution_b.bucket_id, "vk_b");
+    assert!(std::ptr::eq(
+        attribution_a.bucket_id.as_ptr(),
+        a.id.as_ptr()
+    ));
 }

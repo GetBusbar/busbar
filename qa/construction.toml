@@ -1246,6 +1246,22 @@ key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
 because = "FACE busbar_contract::limits: the composition root names busbar_substrate::config::groups::group_specs, the ONE relay, where it used to carry its own 39-line copy of it. One symbol in the root's mouth in place of a duplicate projection of the money topology — the root's policy.rs falls by 39 lines in the same commit, and the copy that could disagree with the engine's is gone rather than moved."
 
+# SEAM busbar_unit_admission::ChainWalk read from busbar-core (keep-core-delete-5). The retiring
+# engine's cost model carried a SECOND resolved group topology (its own GroupBucket, GroupRuntime and
+# project_groups) and a SECOND walk over it (its own Chain/ChainBucket) beside the cost unit's table
+# and the admission unit's ChainWalk. Two projections and two walks of the money topology that must
+# agree exactly is how a deployment comes to be admitted against one set of ledger cells and billed
+# against another, silently, because both are internally consistent and neither knows the other
+# exists. Both copies are struck: cost.rs falls 756 -> 566 lines and the engine resolves and walks
+# through the units. The cell rises because the engine now NAMES the units where it used to restate
+# them, which is the drain measured rather than asserted, and it falls to zero with busbar-core.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 24
+because = "SEAM busbar_unit_admission::ChainWalk / busbar_unit_cost::GroupTable read from the retiring engine: cost.rs deletes its own GroupBucket, GroupRuntime, project_groups, Chain and ChainBucket (-190 lines) and names the units that own them instead — the topology types re-exported through the one seam, GroupTable::resolve driven over the one GroupCfg -> GroupSpec relay, and ChainWalk walked ONCE PER GROUP AT BOOT so a request READS its chain rather than rebuilding it (cost::BucketView is a cursor that borrows; cost_tests::chain_read_is_a_borrow_not_a_build pins the no-allocation claim by ADDRESS, not by equality, because a per-request rebuild returns equal values and would pass an assert_eq). 22 of the 24 are in cost.rs and the Cargo.toml row that declares the edge; the drain is that these names go with busbar-core."
+
 # ------------------------------------------------------------------------------------------------
 # [gate.census] — THE RATCHET ON THE RATCHETS
 # ------------------------------------------------------------------------------------------------
