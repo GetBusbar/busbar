@@ -1483,11 +1483,11 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
 }
 
 /// Every RED case this row owes, and the GREEN one it is measured against.
-pub fn selftest(
+pub fn selftest<'a>(
     cx: &Ctx,
-    gate: &dyn crate::gates::Gate,
+    gate: &'a dyn crate::gates::Gate,
     ship: bool,
-    report: &mut crate::gates::Report,
+    report: &mut crate::gates::Report<'a>,
 ) {
     use crate::gates::{prove_rows_green, prove_rows_red};
 

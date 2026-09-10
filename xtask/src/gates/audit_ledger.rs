@@ -169,7 +169,7 @@ impl Gate for AuditLedgerGate {
         }
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -428,10 +428,10 @@ impl Gate for AuditLedgerGate {
 }
 
 /// Overlay a planted register and require THE COVERED ROW to go red naming every string given.
-fn plant_rows(
+fn plant_rows<'a>(
     cx: &Ctx,
-    gate: &dyn Gate,
-    report: &mut Report,
+    gate: &'a dyn Gate,
+    report: &mut Report<'a>,
     doc: &Json,
     label: &str,
     covers: &str,

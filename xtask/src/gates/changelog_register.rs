@@ -199,9 +199,13 @@ impl Gate for ChangelogRegisterGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
-        let mut report = Report::new();
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // BOTH ARMS' GATES ARE BUILT ABOVE THE REPORT. A case is taken on whichever thread reaches
+        // it, so a gate this function builds has to outlive the report that holds the case naming
+        // it, and declaration order is what says so.
         let gate = ChangelogRegisterGate::new();
+        let release = ChangelogRegisterGate::new().require_version("1.7.0");
+        let mut report = Report::new();
         let owed = gate.owed();
         let owed_refs: Vec<&str> = owed.iter().map(String::as_str).collect();
 
@@ -373,7 +377,6 @@ impl Gate for ChangelogRegisterGate {
         ));
 
         // -- THE RELEASE ARM, red and green ------------------------------------------------------
-        let release = ChangelogRegisterGate::new().require_version("1.7.0");
         report.push(prove_red(
             cx,
             &release,
@@ -399,7 +402,7 @@ impl Gate for ChangelogRegisterGate {
             &[ROW_VERSION],
         ));
 
-        report
+        report.sealed()
     }
 
     /// THE PARITY PROBES, and one thing about them has to be said plainly rather than smoothed
@@ -869,7 +872,9 @@ mod tests {
     #[test]
     fn the_selftest_report_is_accepted_by_the_framework() {
         let gate = ChangelogRegisterGate::new();
-        if let Err(errs) = verify_report(&gate, &gate.selftest(&cx())) {
+        let cx = cx();
+        let report = gate.selftest(&cx);
+        if let Err(errs) = verify_report(&gate, &report) {
             panic!("selftest report refused: {errs:#?}");
         }
     }
@@ -878,7 +883,9 @@ mod tests {
     fn the_release_arm_carries_its_own_owed_row_and_proves_itself() {
         let gate = ChangelogRegisterGate::new().require_version("1.6.0");
         assert!(gate.owed().iter().any(|o| o == ROW_VERSION));
-        if let Err(errs) = verify_report(&gate, &gate.selftest(&cx())) {
+        let cx = cx();
+        let report = gate.selftest(&cx);
+        if let Err(errs) = verify_report(&gate, &report) {
             panic!("selftest report refused: {errs:#?}");
         }
     }
