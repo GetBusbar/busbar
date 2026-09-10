@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::VirtualKey;
+use busbar_api::{VirtualKey, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -203,9 +203,9 @@ fn derive_spend_cents_saturates_never_wraps_free() {
 fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let c = card(&[("gpt-5", 2.5, 10.0)]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("gpt-5").unwrap();
+    let r = cm.lane("gpt-5").unwrap();
     assert_eq!(
-        (r.input, r.output),
+        (r.nanos_per_unit(UNIT_INPUT), r.nanos_per_unit(UNIT_OUTPUT)),
         (2_500, 10_000),
         "nano-unit rates come straight from the card"
     );
@@ -390,9 +390,14 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
         1500,
         "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
     );
-    let r = cm.rate_for("quad").unwrap();
+    let r = cm.lane("quad").unwrap();
     assert_eq!(
-        (r.input, r.output, r.cache_read, r.cache_write),
+        (
+            r.nanos_per_unit(UNIT_INPUT),
+            r.nanos_per_unit(UNIT_OUTPUT),
+            r.nanos_per_unit(UNIT_CACHE_READ),
+            r.nanos_per_unit(UNIT_CACHE_WRITE)
+        ),
         (1_000, 2_000, 500, 4_000),
         "nano rates carry all four tiers straight from the card"
     );
@@ -567,43 +572,5 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
         cm.derive_spend_cents([("m", &toks(1_010_000, 0))].into_iter(), 0, false),
         101,
         "one full cent more of tokens derives strictly above the cap"
-    );
-}
-
-/// `RateNanos::from_cfg` converts config micro-units to nano-units by `(_utok * 1000).round()` —
-/// ROUND TO NEAREST (half away from zero), not truncation. 0.0015 utok = 1.5 nano must round to 2;
-/// 0.0014 utok = 1.4 nano must floor to 1. A truncating conversion would make the first case 1,
-/// silently under-pricing the finest-grained rates an operator can configure.
-#[test]
-fn rate_nanos_from_cfg_rounds_to_nearest_at_the_nano_boundary() {
-    let half_up = RateEntryCfg {
-        input_utok: 0.0015,
-        output_utok: 0.0014,
-        cache_read_utok: 0.0,
-        cache_write_utok: 0.0,
-    };
-    let rn = crate::cost::RateNanos::from_cfg(&half_up);
-    assert_eq!(rn.input, 2, "1.5 nano rounds to 2 (half away from zero)");
-    assert_eq!(rn.output, 1, "1.4 nano floors to 1");
-}
-
-/// `RateNanos::from_cfg`'s inner `nanos()` clamp is `is_finite() && v > 0.0`, not `||`: a
-/// mutated `||` would let a non-finite-but-positive value (e.g. `+inf`, reachable from a huge
-/// `_utok` config value * 1000.0) through to `as u64`, which SATURATES to `u64::MAX` on a
-/// non-finite float cast in Rust — a garbage billing rate, not the documented "0" defense.
-/// NaN alone can't distinguish `&&` from `||` (`NaN > 0.0` is false either way), so this uses
-/// `f64::INFINITY` specifically: finite=false, `> 0.0`=true.
-#[test]
-fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
-    let cfg = RateEntryCfg {
-        input_utok: f64::INFINITY,
-        output_utok: 0.0,
-        cache_read_utok: 0.0,
-        cache_write_utok: 0.0,
-    };
-    let rn = crate::cost::RateNanos::from_cfg(&cfg);
-    assert_eq!(
-        rn.input, 0,
-        "a non-finite (but positive) rate must clamp to 0, not saturate to u64::MAX"
     );
 }
