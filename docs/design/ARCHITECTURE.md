@@ -79,7 +79,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
   and its measured lines, this figure amended in the same commit — the virtual-key directory
   face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 19 lines) was the first, and the deletion
-  that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back. Two crates carry their own surface ceilings beside it, because
+  that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back; the
+  per-unit arena face (`bounded::Arena: Send`, the unsatisfiable `Sync` clause struck so a shipping
+  implementor can exist; `docs/design/1.6.0-per-unit-arena.md`) measured 0 lines and declared nothing. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

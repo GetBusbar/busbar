@@ -94,6 +94,59 @@ impl Arena for NoArena {
     }
 }
 
+/// A bump cursor is the shape the trait describes, and a bump cursor is not `Sync`.
+///
+/// This exists so the bound cannot come back by accident. The trait's allocators take `&self` and
+/// answer with slices borrowed from `self`, so any real implementation carves a cursor under
+/// interior mutability — and a `Sync` clause on top of that says two threads may carve the same
+/// cursor at once, which no lock can rescue because a borrow cannot escape its guard. While the
+/// clause stood, every implementor in the tree was a double that leaked to fake a lifetime it could
+/// not produce. A cursor-shaped implementor is what a shipping arena looks like, so if this stops
+/// compiling the bound is back and nothing can be served again.
+struct CursorArena {
+    used: std::cell::Cell<usize>,
+}
+
+impl Arena for CursorArena {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+        self.used.set(self.used.get() + src.len());
+        Err(ArenaBudget {
+            wanted: src.len(),
+            remaining: 0,
+        })
+    }
+
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+        self.alloc_bytes(src.as_bytes()).map(|_| "")
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        self.used.set(self.used.get() + src.len());
+        Err(ArenaBudget {
+            wanted: src.len(),
+            remaining: 0,
+        })
+    }
+
+    fn remaining(&self) -> usize {
+        self.used.get()
+    }
+}
+
+/// The trait takes a cursor-shaped arena, as a value and through the context's own handle.
+#[test]
+fn a_cursor_shaped_arena_is_what_the_trait_takes() {
+    let arena = CursorArena {
+        used: std::cell::Cell::new(0),
+    };
+    let handle: &dyn Arena = &arena;
+    assert!(handle.alloc_bytes(b"four").is_err());
+    assert_eq!(handle.remaining(), 4);
+}
+
 /// A configuration block with nothing in it.
 struct EmptyConfig;
 
