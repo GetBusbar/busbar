@@ -157,6 +157,25 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
         .spawn()
         .expect("spawn busbar");
 
+    // BOTH listen addresses, not whichever one speaks first.
+    //
+    // `busbar listening` is logged once per LISTENER, and which of the two lines lands first is a
+    // thread race: `run()` spawns the per-core data workers and only THEN binds the second
+    // listener, so on a fast boot a worker's line is already in the log while the other socket
+    // does not exist yet. Gating on the bare message therefore gates on whichever plane won the
+    // race, and the very next request below then connects to a port nothing is bound to — the
+    // harness dies with `ConnectionRefused` inside its request helper instead of reporting on what
+    // it is here to report on. Gating on both addresses is the readiness fact this harness
+    // actually depends on, and it is a real one: `serve_listener` is handed an already-bound
+    // listener, so a line naming an address is a promise that that address accepts.
+    //
+    // Matched by address rather than by the `listen=` field text because the child writes its log
+    // with ANSI field styling, which puts escape sequences between the field name and its value.
+    let listening = |log: &str, port: u16| {
+        let addr = format!("127.0.0.1:{port}");
+        log.lines()
+            .any(|l| l.contains("busbar listening") && l.contains(&addr))
+    };
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -164,11 +183,13 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
                 read_to_string(&log_path)
             );
         }
-        read_to_string(&log_path).contains("busbar listening")
+        let log = read_to_string(&log_path);
+        listening(&log, data_port) && listening(&log, admin_port)
     });
     assert!(
         booted,
-        "busbar did not reach 'listening' within 30s; log:\n{}",
+        "busbar did not reach 'listening' on BOTH 127.0.0.1:{data_port} and \
+         127.0.0.1:{admin_port} within 30s; log:\n{}",
         read_to_string(&log_path)
     );
     // The boot log line lands the instant ANY of the per-core SO_REUSEPORT workers starts listening,

@@ -1207,3 +1207,20 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── the declared raise this landing carries ──────────────────────────────────────────────────────
+#
+# `busbar × control` in `qa/kind-isolation.toml`. The two 1.5.5-neutrality harnesses gated boot
+# readiness on the bare `busbar listening` message, which is logged once per LISTENER: on a fast
+# boot a data worker's line lands while the second socket does not exist yet, and the very next
+# request in each harness — an admin one — died with `ConnectionRefused` inside its request helper.
+# Waiting for a line naming EACH address is the readiness fact the harnesses depend on, and saying
+# so costs each of them two mentions of `admin_port` it did not have before: four hits, and there
+# is no way to wait for that listener without naming it. The prose of the fix was written to add
+# none, so this is the code and only the code. It struck the `busbar × transport` rise it also
+# started with, and it expires with the commit that needed it.
+[gate.ceiling_raises."cell.5.count"]
+file = "qa/kind-isolation.toml"
+from = 1063
+to = 1066
+because = "the neutrality harnesses must name the admin listener's own address to wait for it before minting a virtual key through it; two `admin_port` mentions each, and a boot gate that cannot name the listener it needs is the ConnectionRefused this fix removes"
