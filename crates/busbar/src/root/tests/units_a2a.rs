@@ -705,25 +705,23 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
     );
 }
 
-/// The four endings map one for one onto the audit unit's own four.
+/// The four endings ARE the audit unit's own four: one type, two names, no conversion between them.
+///
+/// This used to assert that a converter mapped each ending onto its counterpart. There is no
+/// counterpart and no converter: the audit crate names the contract's `FinishClass` rather than
+/// declaring a second one, so the binding below compiles only while that stays true, and a fifth
+/// ending is added in exactly one place.
 #[test]
 fn every_ending_has_an_audited_spelling() {
-    assert_eq!(
-        audit_finish(FinishClass::Complete),
-        busbar_unit_audit::FinishClass::Complete
-    );
-    assert_eq!(
-        audit_finish(FinishClass::TurnComplete),
-        busbar_unit_audit::FinishClass::TurnComplete
-    );
-    assert_eq!(
-        audit_finish(FinishClass::Partial),
-        busbar_unit_audit::FinishClass::Partial
-    );
-    assert_eq!(
-        audit_finish(FinishClass::Error),
-        busbar_unit_audit::FinishClass::Error
-    );
+    for finish in [
+        FinishClass::Complete,
+        FinishClass::TurnComplete,
+        FinishClass::Partial,
+        FinishClass::Error,
+    ] {
+        let audited: busbar_unit_audit::FinishClass = finish;
+        assert_eq!(audited, finish);
+    }
 }
 
 /// A record leg has no address, so the guard has nothing to have judged and says so.

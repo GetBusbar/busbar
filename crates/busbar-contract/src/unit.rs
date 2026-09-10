@@ -300,12 +300,53 @@ pub enum FinishClass {
 ///   did it -- the audit row carries the `UnitEnd` itself and its step -- so classing it as an error
 ///   would only put a second, disagreeing answer beside the true one.
 pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
-    match end {
-        UnitEnd::Completed => completed,
-        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-        UnitEnd::Aborted(AbortBy::Client)
-        | UnitEnd::Aborted(AbortBy::Kernel { .. })
-        | UnitEnd::Stalled => FinishClass::Partial,
+    finish_class_of_shape(end.shape(), completed)
+}
+
+/// The only distinction the finish class turns on, named so that more than one ending vocabulary
+/// can be read by THE ONE MAPPING rather than by a second copy of it.
+///
+/// [`UnitEnd`] is the ending a PLANE is handed. The loop records the same event in its own
+/// vocabulary, which is not this one and cannot be: a plane is never told which unit superseded
+/// this one, and the loop is never handed a plane's [`Refusal`], so a converter between the two
+/// would be a lie in one direction or the other. What they genuinely share is this — did the unit
+/// run to the end, did something report an error, or was it cut short. Each vocabulary answers
+/// that about itself, and the class is decided once, below, for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum EndShape {
+    /// It ran the whole loop.
+    RanToEnd,
+    /// Something said no, and the answer is not coming.
+    ErrorReported,
+    /// It stopped before the end. What arrived, arrived.
+    CutShort,
+}
+
+impl UnitEnd<'_> {
+    /// Which of the three shapes this ending is.
+    #[must_use]
+    pub const fn shape(&self) -> EndShape {
+        match self {
+            Self::Completed => EndShape::RanToEnd,
+            Self::Refused(_) | Self::Failed { .. } => EndShape::ErrorReported,
+            Self::Aborted(AbortBy::Client)
+            | Self::Aborted(AbortBy::Kernel { .. })
+            | Self::Stalled => EndShape::CutShort,
+        }
+    }
+}
+
+/// THE ONE MAPPING itself: the shape of an ending, and the class a plane's completion carries.
+///
+/// See [`finish_class_of`] for why each shape answers as it does. This is that function with the
+/// ending vocabulary lifted out, so an ending spelled in a different vocabulary reads the same
+/// class rather than getting a second, disagreeing table of its own.
+#[must_use]
+pub const fn finish_class_of_shape(shape: EndShape, completed: FinishClass) -> FinishClass {
+    match shape {
+        EndShape::RanToEnd => completed,
+        EndShape::ErrorReported => FinishClass::Error,
+        EndShape::CutShort => FinishClass::Partial,
     }
 }
 

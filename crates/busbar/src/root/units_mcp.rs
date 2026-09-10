@@ -1493,7 +1493,7 @@ pub fn audit_inputs(
         outcome: busbar_unit_audit::OutcomeFacts {
             unit_end: outcome,
             step: outcome.step(),
-            finish: record_finish(ended.finish),
+            finish: ended.finish,
             hook_failed: false,
             emission_delta: 0,
             stale_policy: false,
@@ -1552,25 +1552,6 @@ pub fn legacy_entry(
 #[must_use]
 pub fn record_op_class(op: OpClassId) -> busbar_unit_audit::record::OpClassId {
     busbar_unit_audit::record::OpClassId::new(op.as_str())
-}
-
-/// How the plane's finish class reads on the record.
-#[must_use]
-pub fn record_finish(
-    finish: busbar_contract::unit::FinishClass,
-) -> busbar_unit_audit::record::FinishClass {
-    match finish {
-        busbar_contract::unit::FinishClass::Complete => {
-            busbar_unit_audit::record::FinishClass::Complete
-        }
-        busbar_contract::unit::FinishClass::TurnComplete => {
-            busbar_unit_audit::record::FinishClass::TurnComplete
-        }
-        busbar_contract::unit::FinishClass::Partial => {
-            busbar_unit_audit::record::FinishClass::Partial
-        }
-        busbar_contract::unit::FinishClass::Error => busbar_unit_audit::record::FinishClass::Error,
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

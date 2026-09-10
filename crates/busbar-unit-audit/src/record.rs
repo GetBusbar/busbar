@@ -62,17 +62,18 @@ impl OpClassId {
 }
 
 /// How a unit finished, as the plane sees it. The second and last thing a plane contributes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FinishClass {
-    /// Everything asked for was delivered.
-    Complete,
-    /// One turn of a longer exchange finished.
-    TurnComplete,
-    /// Some of it was delivered.
-    Partial,
-    /// It failed.
-    Error,
-}
+///
+/// The contract's own, named rather than declared a second time. It was declared here — the same
+/// four endings, the same order, different prose — and the two declarations meant the composition
+/// root had to carry a converter from one to the other for every plane that seals a record. Three
+/// of those converters existed, byte for byte identical, under three different names. A conversion
+/// that is the identity function is not a conversion; it is two names for one type, and the cost
+/// of the second name is paid every time somebody has to check that the arms still line up.
+///
+/// The chain-frozen digest spelling is [`finish_tag`]'s and stays here, where the rest of the
+/// frozen record text lives: what a record's bytes say is this crate's, and what a finish class IS
+/// is the contract's.
+pub use busbar_contract::FinishClass;
 
 /// WHAT was done.
 #[derive(Debug, Clone, PartialEq, Eq)]

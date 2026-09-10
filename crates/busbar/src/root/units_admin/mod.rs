@@ -1944,11 +1944,15 @@ fn outcome_word(outcome: &Outcome) -> &'static str {
     }
 }
 
+/// The finish class an ending seals under, read from THE ONE MAPPING rather than decided here.
+///
+/// This surface is a request/response one, so a completed unit is `Complete`; every other ending
+/// is the contract's answer. It used to be decided here, in two arms — completed, or `Error` — and
+/// that made an abort and a deadline read as an upstream error on the admin door alone while every
+/// other plane recorded them as `Partial`. The finish class is documented as the second source for
+/// the fee decision; a composition root is not a place to hold a second opinion about one.
 fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
-    match outcome {
-        Outcome::Completed => busbar_contract::FinishClass::Complete,
-        _ => busbar_contract::FinishClass::Error,
-    }
+    outcome.finish_class(busbar_contract::FinishClass::Complete)
 }
 
 /// Step 8. The bytes that leave.

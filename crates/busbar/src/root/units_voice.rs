@@ -1930,7 +1930,7 @@ impl VoiceUnit<'_> {
                 // that cannot tell a turn from the refusal that replaced it.
                 unit_end: outcome,
                 step: outcome.step(),
-                finish: audit_finish(finish),
+                finish,
                 hook_failed: false,
                 emission_delta: 0,
                 stale_policy: false,
@@ -2000,18 +2000,6 @@ fn outcome_finish(outcome: &Outcome) -> busbar_contract::FinishClass {
         busbar_contract::FinishClass::TurnComplete
     } else {
         busbar_contract::FinishClass::Error
-    }
-}
-
-/// The audit crate's own spelling of a finish class.
-fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::record::FinishClass {
-    match finish {
-        busbar_contract::FinishClass::Complete => busbar_unit_audit::record::FinishClass::Complete,
-        busbar_contract::FinishClass::TurnComplete => {
-            busbar_unit_audit::record::FinishClass::TurnComplete
-        }
-        busbar_contract::FinishClass::Partial => busbar_unit_audit::record::FinishClass::Partial,
-        busbar_contract::FinishClass::Error => busbar_unit_audit::record::FinishClass::Error,
     }
 }
 

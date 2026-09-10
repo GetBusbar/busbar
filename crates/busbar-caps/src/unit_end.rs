@@ -203,6 +203,36 @@ impl Outcome {
     pub fn is_completed(self) -> bool {
         matches!(self, Outcome::Completed)
     }
+
+    /// Which of the contract's three ending shapes this outcome is.
+    ///
+    /// A refusal and a failure are an error reported: something said no and the answer is not
+    /// coming. An abort and a deadline are a unit CUT SHORT — this node ending a unit it was
+    /// serving, for a reason of its own, over an upstream that had said nothing wrong. That is not
+    /// an upstream error and the record does not lose who did it, because the row carries the
+    /// outcome itself and its step beside the class.
+    pub fn shape(self) -> busbar_contract::EndShape {
+        match self {
+            Outcome::Completed => busbar_contract::EndShape::RanToEnd,
+            Outcome::Refused(..) | Outcome::Failed(..) => busbar_contract::EndShape::ErrorReported,
+            Outcome::Aborted(_) | Outcome::TimedOut(_) => busbar_contract::EndShape::CutShort,
+        }
+    }
+
+    /// The finish class this outcome's audit record carries, decided by THE ONE MAPPING.
+    ///
+    /// `completed` is the only per-plane choice, and it is a question about the SHAPE of the
+    /// exchange rather than about the ending: a request/response plane answers `Complete`, a duplex
+    /// turn answers `TurnComplete`. Everything else is
+    /// [`busbar_contract::finish_class_of_shape`]'s answer, which is the same answer every plane
+    /// that hands the contract a `UnitEnd` already gets. A composition root that classed an
+    /// outcome itself was a second reading of a fee-decision input.
+    pub fn finish_class(
+        self,
+        completed: busbar_contract::FinishClass,
+    ) -> busbar_contract::FinishClass {
+        busbar_contract::finish_class_of_shape(self.shape(), completed)
+    }
 }
 
 /// The end of a unit: how it finished, and the posting that finished it.

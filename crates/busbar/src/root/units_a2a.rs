@@ -1005,7 +1005,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             outcome: busbar_unit_audit::OutcomeFacts {
                 unit_end: outcome,
                 step: outcome.step(),
-                finish: audit_finish(self.draft.finish),
+                finish: self.draft.finish,
                 hook_failed: false,
                 emission_delta: 0,
                 stale_policy: false,
@@ -1043,20 +1043,6 @@ const UNPRICED_MESSAGE: &str = "no agent is configured under that name";
 
 /// How many nano-units one cent is.
 const NANOS_PER_CENT: u64 = 10_000_000;
-
-/// The audit unit's spelling of a finish class.
-///
-/// Two crates name the same four endings and neither depends on the other, so the mapping is
-/// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
-/// would not compile.
-fn audit_finish(finish: FinishClass) -> busbar_unit_audit::FinishClass {
-    match finish {
-        FinishClass::Complete => busbar_unit_audit::FinishClass::Complete,
-        FinishClass::TurnComplete => busbar_unit_audit::FinishClass::TurnComplete,
-        FinishClass::Partial => busbar_unit_audit::FinishClass::Partial,
-        FinishClass::Error => busbar_unit_audit::FinishClass::Error,
-    }
-}
 
 /// What this plane asks the authentication chain, for one draft.
 ///

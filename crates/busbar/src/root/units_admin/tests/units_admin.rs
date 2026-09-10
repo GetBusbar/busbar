@@ -1703,6 +1703,38 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
     );
 }
 
+/// An admin unit that was cut short records the class the ONE MAPPING records for being cut short.
+///
+/// `busbar_contract::unit::finish_class_of` is documented as THE ONE MAPPING from how a unit ended
+/// to the finish class its audit record carries, and it argues the abort case explicitly: `Error`
+/// is the class for an UPSTREAM that reported an error, and a kernel abort or a deadline is not
+/// that — it is this node ending a unit it was serving, over an upstream that said nothing wrong.
+/// Both are `Partial`: what arrived, arrived. Every other plane calls that function. This door had
+/// its own two-arm reading — completed, or `Error` — so the same ending read one way through the
+/// admin surface and another way through every other one, on a field the finish class's own
+/// documentation calls "the second source for the fee decision".
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_admin_unit_cut_short_is_not_an_upstream_error() {
+    use busbar_caps::{Abort, StepName};
+
+    let cut_short = [
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        }),
+        Outcome::TimedOut(StepName::Route),
+    ];
+
+    // Both audit doors read the ending through `finish_of`, so this is the mapping itself.
+    for outcome in cut_short {
+        assert_eq!(
+            unresolved_facts(Some("GET"), &outcome).finish,
+            busbar_contract::FinishClass::Partial,
+            "{outcome:?} is a unit cut short, not an upstream error"
+        );
+    }
+}
+
 /// The refused-audit door seals the refusal that HAPPENED, not one it composed.
 ///
 /// The door used to answer with a decode failure raised at Decode for every unresolved unit,
