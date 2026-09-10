@@ -316,6 +316,18 @@ file = "qa/kind-isolation.toml"
 by = 11
 because = "COMPOSITION MANIFEST identity, root × plane: the five `busbar-plane-* = { path = ... }` dependency lines and the `root-*` / `plane-*` feature-table lines that select them, in crates/busbar/Cargo.toml — the one place the binary states which planes it composes; measured over the manifest's declaration lines only, comments excluded (Cargo.toml 78 -> 89); 2116 -> 2127"
 
+# THE COMPOSITION MODULE LIST. `crates/busbar/src/root/mod.rs` is the root's own list of what it
+# composes — `pub mod units_mcp;`, `pub mod units_a2a_leg;`, `pub mod plane_mount;` — each behind the
+# `#[cfg(feature = "root-mcp")]` that decides whether this build has that mount at all; `main.rs`
+# carries the same feature gates at the call sites that reach them. A `mod` line and its `cfg` are
+# the root composing what it mounts, in the same sense the manifest's dependency line is. Only those
+# two line shapes are declared here; the module documentation above them is prose and stays measured.
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 25
+because = "COMPOSITION MODULE LIST identity, root × plane: the `pub mod units_{mcp,a2a,llm}*` / `pub mod plane_mount` declarations in crates/busbar/src/root/mod.rs and the `#[cfg(feature = \"root-*\")]` gates that select them, plus the same feature gates at main.rs's call sites; measured over the `mod` and `cfg` lines only, doc comments and comments excluded (mod.rs 8 -> 26, main.rs 51 -> 58); 2127 -> 2152"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
