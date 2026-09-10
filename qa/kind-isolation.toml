@@ -2434,7 +2434,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1140"
+count = "1149"
 
 [[cell]]
 crate = "busbar-substrate-values"

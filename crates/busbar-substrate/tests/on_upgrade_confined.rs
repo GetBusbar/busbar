@@ -141,8 +141,13 @@ fn has_ungated_ws_wrapper_call(line: &str) -> bool {
     for pat in [
         "duplex_ws::serve(",
         "duplex_ws::accept(",
+        // `accept_coded` is `accept`'s sibling — the same ungated bind, handing the ending's close
+        // slot back beside the frame pair — so it belongs on this list for exactly the reason
+        // `accept` does, and both spellings are listed for the reason the others are.
+        "duplex_ws::accept_coded(",
         "ws_ingress::serve(",
         "ws_ingress::accept(",
+        "ws_ingress::accept_coded(",
     ] {
         if code.contains(pat) {
             return true;

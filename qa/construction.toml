@@ -194,6 +194,15 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 12
 because = "The SAME projector-pair face again, counted in the union the caps/contract pair belongs to (23,478 -> 23,490). Twelve rather than eleven because the union's own base is 23,465 and the unit-view raise above already declares the 13 this branch rose it by; this entry is the pair's 12 on top of that, which is the whole of what this landing added. The kernel did not move and no reachable busbar-unit-* file moved: the projector is spelled in the contract's own vocabulary and names nothing behind a unit's trait"
 
+# ── declared raise: THE CLOSE SLOT. The neutral duplex acceptor gains a third value out of its own
+# seam and the cells that prove it, both inside the crate that owns the acceptor. Expires when the
+# base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.transport.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "busbar-substrate \u00d7 transport (busbar-substrate, transport): the neutral full-duplex acceptor hands out a CloseSlot beside the frame pair (`channel_coded`/`accept_coded`, with `channel`/`accept` two lines and one line of them), so a session's ending can be spelled in the number a client reads instead of the one silence a bare close gave a money refusal, a policy refusal and this node's own fault alike; and three cells drive that ending through a real upgrade, because a close frame is a control frame the acceptor's own neutral stream deliberately drops. The acceptor's own seam and its cells, in the crate that owns both \u2014 no second wire and no plane (1,140 -> 1,149)"
+
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_transport"
 by = 182

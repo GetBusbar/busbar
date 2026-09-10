@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedSender};
 use futures::{SinkExt, StreamExt};
@@ -57,6 +57,39 @@ fn max_inbound_message_bytes() -> usize {
         .unwrap_or(crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES)
 }
 
+/// THE CLOSE CODE ONE ENDING IS SPELLED WITH, on its way from whoever ended the session to the task
+/// that owns the socket.
+///
+/// A session ends for a reason, and a client is entitled to the number for it: a money refusal, a
+/// policy refusal and this node's own fault are three different endings and were, until this type,
+/// one silence. The frame channel below hands out a stream and a sink and nothing else, so a caller
+/// adapting a sink over it had nowhere to put the code and every ending arrived bare.
+///
+/// It is a SLOT rather than a second channel because the ordering has to be exact: the code is read
+/// only after the outbound queue has drained, so a code stored while frames are still queued does
+/// not preempt them. Dropping the sender is what ends that queue, and the store happens-before the
+/// load on the one task that does both.
+///
+/// Zero is "no code": the ending is then the bare close this acceptor has always sent, byte for
+/// byte, which is what keeps every existing caller unchanged.
+#[derive(Clone, Debug, Default)]
+pub struct CloseSlot(std::sync::Arc<std::sync::atomic::AtomicU16>);
+
+impl CloseSlot {
+    /// SPELL this session's ending. Last writer wins; a code stored after the queue has drained is
+    /// a code that arrived too late and is not sent, which is the same race a second channel would
+    /// have had and could not have resolved without holding the socket open for it.
+    pub fn set(&self, code: u16) {
+        self.0.store(code, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The code this ending carries, or zero for the bare close.
+    #[must_use]
+    pub fn code(&self) -> u16 {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// Bridge an already-upgraded [`WebSocket`] into the neutral `(frame-stream, frame-sink)` the pump
 /// speaks, over two mpsc channels (both `Unpin + Send`, the shape `serve_messages` requires): inbound
 /// text/binary → one `Vec<u8>` frame; an outbound frame → one binary WS message. Control frames and
@@ -69,6 +102,20 @@ fn max_inbound_message_bytes() -> usize {
 /// answers this side has already committed to, and blocking a handler on the socket's write rate would
 /// stall the very session it is answering.
 pub fn channel(socket: WebSocket) -> (Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) {
+    let (stream, sink, _uncoded) = channel_coded(socket);
+    (stream, sink)
+}
+
+/// The same bridge, with the ending's own [`CloseSlot`] handed back beside the pair — the sibling
+/// [`channel`] is now two lines of.
+///
+/// Everything about the socket is identical; the only difference is that the writer reads the slot
+/// AFTER the outbound queue has drained and, for a non-zero code, sends the close carrying it
+/// instead of the bare one. A caller that never sets a code gets the bare close it always got.
+pub fn channel_coded(
+    socket: WebSocket,
+) -> (Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>, CloseSlot) {
+    let closing = CloseSlot::default();
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (mut in_tx, in_rx) = bounded::<Vec<u8>>(MAX_QUEUED_INBOUND_FRAMES);
     let (out_tx, mut out_rx) = unbounded::<Vec<u8>>();
@@ -97,16 +144,34 @@ pub fn channel(socket: WebSocket) -> (Receiver<Vec<u8>>, UnboundedSender<Vec<u8>
 
     // Writer: `Vec<u8>` frames from the pump → one binary WS message each. Ends when the pump drops the
     // sink; a close is sent best-effort so the peer sees a clean shutdown.
+    let ending = closing.clone();
     tokio::spawn(async move {
         while let Some(frame) = out_rx.next().await {
             if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
                 break;
             }
         }
-        let _ = ws_tx.close().await;
+        // READ AFTER THE DRAIN, and that ordering is the whole design: the loop above ends when the
+        // sender is dropped, so every frame the session committed to has already been written when
+        // the code is read. A code stored mid-drain is therefore sent behind the frames, never in
+        // front of them.
+        match ending.code() {
+            0 => {
+                let _ = ws_tx.close().await;
+            }
+            code => {
+                let _ = ws_tx
+                    .send(Message::Close(Some(CloseFrame {
+                        code,
+                        reason: axum::extract::ws::Utf8Bytes::from_static(""),
+                    })))
+                    .await;
+                let _ = ws_tx.close().await;
+            }
+        }
     });
 
-    (in_rx, out_tx)
+    (in_rx, out_tx, closing)
 }
 
 /// ACCEPT an HTTP→WS upgrade and hand the plane the split socket as the frame channel. The router that
@@ -124,13 +189,30 @@ where
     F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    accept_coded(upgrade, move |stream, sink, _uncoded| {
+        on_socket(stream, sink)
+    })
+}
+
+/// The same accept, handing the session's [`CloseSlot`] to `on_socket` beside the pair — the sibling
+/// [`accept`] is one line of.
+///
+/// The one thing a caller gains is the ability to SPELL the ending: a session that ends for a money
+/// reason, a policy reason or this node's own fault can say so in the number the client reads,
+/// rather than answering all three with the same silence. Everything else — the size ceiling on the
+/// upgrade, where the socket binds, what the frames are — is identical.
+pub fn accept_coded<F, Fut>(upgrade: WebSocketUpgrade, on_socket: F) -> Response
+where
+    F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>, CloseSlot) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     let cap = max_inbound_message_bytes();
     upgrade
         .max_message_size(cap)
         .max_frame_size(cap)
         .on_upgrade(move |socket| async move {
-            let (stream, sink) = channel(socket);
-            on_socket(stream, sink).await;
+            let (stream, sink, closing) = channel_coded(socket);
+            on_socket(stream, sink, closing).await;
         })
 }
 
