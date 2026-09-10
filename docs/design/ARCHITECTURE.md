@@ -1666,7 +1666,11 @@ about a kind boundary, this register and that spec win.)*
   twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
   how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
   included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
-  ratchet down only.
+  ratchet down only. **The ledger has one door, with two leaves, and both are data checked against
+  the merge-base:** a `[[minted]]` row admits ONE announced crate's own rows once, and a
+  `[[minted_kind]]` row admits ONE announced kind's whole COLUMN once — every other crate's
+  `<crate> × <kind>` cell at its measured count and every `[[edge]]` class naming the kind — on the
+  branch that lands the kind's first crate. Nothing else opens a row the base did not carry.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"

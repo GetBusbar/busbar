@@ -218,6 +218,49 @@ commit = "cd7a4a0fb"
 cells = "1"
 
 # ------------------------------------------------------------------------------------------------
+# [[minted_kind]] — THE COLUMN A KIND THAT DID NOT EXIST BRINGS WITH IT
+# ------------------------------------------------------------------------------------------------
+#
+# A [[minted]] row admits ONE crate's rows, by name, and that is the right size for every crate but
+# the first of its kind. The first crate of a kind does something no later crate does: it makes the
+# kind's vocabulary COUNTABLE. The day busbar-plane-llm-openai landed, `llm` became a dialect word,
+# and every crate that already said `llm` — twenty-six of them — grew a `<crate> × dialect` cell it
+# had never had, and every kind those crates belong to grew a `<kind> -> dialect` class. Not one of
+# those rows is about the new crate by name, so its [[minted]] row admits none of them. Measured on
+# the branch that landed the two dialect crates: twenty-six `minted-row`s and thirty
+# `unlisted-edge`s, with no honest way in.
+#
+# So the COLUMN is its own admission, keyed by the KIND, and checked against the same history:
+#
+#   kind   — must be a kind the MERGE-BASE'S [[announced]] table names, through the crates it
+#            announced as that kind. Announcing a kind's first crate and opening its column in one
+#            commit is the same signature twice.
+#   commit — the commit the column is recorded at, so the row says when it was priced.
+#   cells  — EXACTLY how many `<crate> × <kind>` [[cell]] rows this row admits: every OTHER crate's
+#            cell in the column. The first crate's OWN cells stay with its [[minted]] row.
+#   edges  — EXACTLY how many `<from> -> <kind>` and `<kind> -> <to>` [[edge]] classes this row
+#            admits. An [[edge]] is named by kinds and belongs to the column: a [[minted]] row
+#            admits a crate's cells and disagreements and NO class.
+#
+# EVERY MINTED CELL IS A FIRST MEASUREMENT AND NOTHING ELSE. A column cell may not exceed what the
+# tree measures (`mint-over-measure`): above the measurement is slack minted with the row, and slack
+# is how drift hides. The kind's crates must be ON DISK (`unlanded-kind-mint`): a column for a kind
+# with no crate measures nothing, so its cells would be ceilings answering to no measurement.
+#
+# ONCE MEANS ONCE. A [[minted_kind]] row the merge-base already carries admits nothing more
+# (`second-mint`): the column is history, and every later cell in it is a 0 -> N raise like any
+# other. A later crate of the same kind mints its own [[minted]] row and nothing more. Two rows for
+# one kind are two admissions and are refused.
+#
+# The shape, for the column the two dialect crates opened:
+#
+#   [[minted_kind]]
+#   kind   = "dialect"
+#   commit = "cd7a4a0fb"
+#   cells  = "26"
+#   edges  = "15"
+
+# ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
 # ------------------------------------------------------------------------------------------------
 #

@@ -83,18 +83,34 @@ fn cache() -> &'static Cache {
 /// different question than the one the case asked.
 pub fn read(cx: &Ctx) -> Result<std::sync::Arc<Base>, String> {
     let commit = base_ref(cx)?;
-    let key = format!("{}\u{0}{commit}", cx.root().display());
+    // THE BASE'S LEDGER IS PART OF THE KEY, because a self-test may PLANT it: an overlay can answer
+    // `git show <base>:qa/kind-isolation.toml` with a ledger that announces a crate history never
+    // announced, which is how the door's cases drive an admission against a base the developer's
+    // tree does not have. Keyed by root and commit alone, the first reading in the process would
+    // answer every later case, planted or not — a fixture answered out of another fixture's cache.
+    // The text is hashed rather than stored; an unplanted run reads the same bytes every time.
+    let registry = cx.git_show(&commit, REGISTRY_FILE).ok();
+    let fingerprint = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        registry.hash(&mut h);
+        h.finish()
+    };
+    let key = format!(
+        "{}\u{0}{commit}\u{0}{fingerprint:016x}",
+        cx.root().display()
+    );
     if let Some(hit) = cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
         return hit;
     }
-    let built = build(cx, &commit).map(std::sync::Arc::new);
+    let built = build(cx, &commit, registry).map(std::sync::Arc::new);
     if let Ok(mut m) = cache().lock() {
         m.insert(key, built.clone());
     }
     built
 }
 
-fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
+fn build(cx: &Ctx, commit: &str, registry: Option<String>) -> Result<Base, String> {
     let listing = cx.git_lines(&["ls-tree", "-r", "--name-only", commit])?;
     // THE WORKSPACE'S OWN RENAMES AS THE BASE STATED THEM. A member that inherits reaches the
     // package the workspace named; reading the base's edges through THIS tree's rename table would
@@ -134,12 +150,12 @@ fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
              read is a base no edge can be shown to pre-date, and reporting nothing is not passing"
         ));
     }
-    match cx.git_show(commit, REGISTRY_FILE) {
-        Ok(t) => {
+    match registry {
+        Some(t) => {
             base.registry = t;
             base.registry_present = true;
         }
-        Err(_) => base.registry_present = false,
+        None => base.registry_present = false,
     }
     Ok(base)
 }

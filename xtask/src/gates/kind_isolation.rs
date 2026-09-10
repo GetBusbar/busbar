@@ -857,6 +857,44 @@ struct Minted {
     moved_from: Option<String>,
 }
 
+/// One `[[minted_kind]]` row: THE ONE THING THAT LETS A NEW KIND'S COLUMN EXIST.
+///
+/// A `[[minted]]` row admits ONE crate's rows, by name, and that is the right size for every crate
+/// but the first of its kind. The first crate of a kind does something no later crate does: it
+/// makes the kind's vocabulary COUNTABLE. The day `busbar-plane-llm-openai` landed, `llm` became a
+/// dialect word, and every crate that already said `llm` — twenty-six of them — grew a
+/// `<crate> × dialect` cell it had never had, and every kind those crates belong to grew a
+/// `<kind> -> dialect` class. Not one of those rows is about the new crate by name, so a
+/// `[[minted]]` row admits none of them, and measured on the branch that landed the two dialect
+/// crates they were twenty-six `minted-row`s and thirty `unlisted-edge`s with no honest way in.
+///
+/// So the COLUMN is its own admission, keyed by the KIND and checked against the same history the
+/// crate admission is:
+///
+/// * `kind` must be a kind the BASE's `[[announced]]` table names — through the crates it announced
+///   as that kind. A branch cannot announce a kind and open its column in one commit.
+/// * ONCE. A `[[minted_kind]]` row the base already carries admits nothing more: the column is
+///   history, and every later cell in it is a `0 -> N` raise like any other.
+/// * THE KIND'S CRATES MUST BE ON DISK. A column for a kind with no crate measures nothing, so a
+///   row for one is a set of ceilings answering to no measurement.
+/// * `cells` and `edges` are EXACT: how many `<crate> × <kind>` cells and how many
+///   `<from> -> <kind>` / `<kind> -> <to>` classes the branch mints under this row. A different
+///   number is an admission nobody priced.
+/// * NO MINTED CELL MAY EXCEED WHAT THE TREE MEASURES. A column's cells are first measurements and
+///   nothing else: a count above the measurement is slack minted with the row, and slack is how
+///   drift hides.
+///
+/// A crate's OWN cells stay with its `[[minted]]` row even when they sit in the new column; the
+/// column admits the cells of every OTHER crate. A later crate of the same kind mints its own
+/// `[[minted]]` row and nothing more — the column was minted once.
+#[derive(Debug, Clone)]
+struct MintedKind {
+    kind: String,
+    commit: String,
+    cells: i64,
+    edges: i64,
+}
+
 /// One `[[renamed]]` row: A CRATE THAT IS THE SAME CRATE UNDER A NEW NAME.
 ///
 /// Every rule in this gate that reads history keys a crate BY NAME against the merge-base, and none
@@ -999,6 +1037,8 @@ struct KindRegistry {
     announced: Vec<Announced>,
     /// The `:matrix` row's admission table — see [`Minted`].
     minted: Vec<Minted>,
+    /// The `:matrix` row's COLUMN admission table — see [`MintedKind`].
+    minted_kinds: Vec<MintedKind>,
     /// The base-name translation table — see [`Renamed`].
     renamed: Vec<Renamed>,
     registered: Vec<Registered>,
@@ -1269,6 +1309,58 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 moved_from,
             });
         }
+        // THE COLUMN ADMISSION — the row a NEW KIND's column arrives under. As with `[[minted]]`,
+        // every field is checked against history over in `matrix`; what is checked here is that
+        // the row reads, that its two numbers are numbers, and that its kind is one of the table's.
+        "minted_kind" => {
+            let Some(v) = take_row(
+                fields,
+                &["kind", "commit", "cells", "edges"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let mut counts = [0i64; 2];
+            for (slot, (field, raw)) in [("cells", &v[2]), ("edges", &v[3])]
+                .into_iter()
+                .enumerate()
+            {
+                let Ok(n) = raw.parse::<i64>() else {
+                    reg.errors.push(format!(
+                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted_kind]] {field} = \"{raw}\"` is \
+                         not a number. An admission that cannot be counted admits any number of rows"
+                    ));
+                    return;
+                };
+                if n < 0 {
+                    reg.errors.push(format!(
+                        "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted_kind]] {field} = \"{raw}\"` is \
+                         negative. No row set has a negative size, so a negative admission is not \
+                         an admission — it is this kind's column ratchet switched off in a value \
+                         that reads like a reviewed figure"
+                    ));
+                    return;
+                }
+                counts[slot] = n;
+            }
+            if !KINDS.iter().any(|d| d.kind == v[0]) {
+                reg.errors.push(format!(
+                    "unknown-kind\t{REGISTRY_FILE}:{at}\t`[[minted_kind]] kind = \"{}\"` is in no \
+                     kind table row. A column admission opens one of the table's kinds; it cannot \
+                     invent a kind — {MAKE_A_NEW_KIND}",
+                    v[0]
+                ));
+                return;
+            }
+            reg.minted_kinds.push(MintedKind {
+                kind: v[0].clone(),
+                commit: v[1].clone(),
+                cells: counts[0],
+                edges: counts[1],
+            });
+        }
         // THE BASE-NAME TRANSLATION TABLE. What it buys is that every rule asking history about
         // `to` asks about `from` instead; what it is REFUSED for is being anything more than that.
         // The kind check is here rather than downstream because it is a property of the two NAMES
@@ -1502,7 +1594,7 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
              `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]`, \
-             `[[minted]]` and `[[renamed]]` rows and nothing else"
+             `[[minted]]`, `[[minted_kind]]` and `[[renamed]]` rows and nothing else"
         )),
     }
 }
@@ -1537,8 +1629,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[minted]]` and `[[renamed]]` rows and nothing \
-                 else",
+                 `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[minted]]`, `[[minted_kind]]` and \
+                 `[[renamed]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -1580,6 +1672,8 @@ pub(super) struct BaseLedger {
     pub cells: BTreeMap<(String, String), i64>,
     /// The crates the BASE already minted. Once means once.
     pub minted: BTreeSet<String>,
+    /// The kinds whose COLUMN the BASE already minted. Once means once here too.
+    pub minted_kinds: BTreeSet<String>,
 }
 
 pub(super) fn ledger_at(text: &str) -> BaseLedger {
@@ -1596,6 +1690,7 @@ pub(super) fn ledger_at(text: &str) -> BaseLedger {
             .map(|c| ((c.krate.clone(), c.kind.clone()), c.count))
             .collect(),
         minted: reg.minted.iter().map(|m| m.krate.clone()).collect(),
+        minted_kinds: reg.minted_kinds.iter().map(|m| m.kind.clone()).collect(),
     }
 }
 
