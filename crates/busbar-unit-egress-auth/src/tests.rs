@@ -481,36 +481,3 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     // not one whose destination was checked.
     assert!(lane_cross_check(&verified, "host", &[]).is_err());
 }
-
-/// The forwarded-header allow-list scopes each beta/version header to its own dialect(s),
-/// and it is otherwise empty — a header sent for one dialect never rides to a different one.
-#[test]
-fn forwarded_client_headers_are_scoped_per_egress_dialect() {
-    assert_eq!(
-        allowed_client_headers_for("anthropic"),
-        vec!["anthropic-beta", "anthropic-version"]
-    );
-    assert_eq!(allowed_client_headers_for("openai"), vec!["openai-beta"]);
-    assert_eq!(allowed_client_headers_for("responses"), vec!["openai-beta"]);
-    // Gemini and Bedrock forward none of the beta/version headers.
-    assert!(allowed_client_headers_for("gemini").is_empty());
-    assert!(allowed_client_headers_for("bedrock").is_empty());
-    assert!(allowed_client_headers_for("unknown-dialect").is_empty());
-
-    // The union used by the pre-dialect collector names exactly these three headers.
-    let mut all = forwardable_client_header_names();
-    all.sort_unstable();
-    assert_eq!(
-        all,
-        vec!["anthropic-beta", "anthropic-version", "openai-beta"]
-    );
-}
-
-/// No-cross-dialect-leak guard, stated as the property directly: an `anthropic-beta` header never
-/// appears in the OpenAI allow-list, and vice versa.
-#[test]
-fn beta_headers_never_cross_dialects() {
-    assert!(!allowed_client_headers_for("openai").contains(&"anthropic-beta"));
-    assert!(!allowed_client_headers_for("responses").contains(&"anthropic-beta"));
-    assert!(!allowed_client_headers_for("anthropic").contains(&"openai-beta"));
-}

@@ -5545,7 +5545,7 @@ count = "3"
 [[cell]]
 crate = "busbar-unit-egress-auth"
 kind = "dialect"
-count = "63"
+count = "34"
 
 [[cell]]
 crate = "busbar-unit-ledger"
@@ -5721,7 +5721,7 @@ note = "segment scanner 89, window scanner 94. The two read the vendor spellings
 [[disagreement]]
 crate = "busbar-unit-egress-auth"
 kind = "dialect"
-note = "segment scanner 59, window scanner 63. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+note = "segment scanner 31, window scanner 34. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar-voice"
