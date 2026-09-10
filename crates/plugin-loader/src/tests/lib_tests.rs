@@ -1291,9 +1291,22 @@ fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
     candidate
 }
 
+/// One reference in the cold lane's grammar: the settings JSON, verbatim. Named once rather than
+/// spelled at each of the six call sites below, because the face type's own name is a name the kind
+/// ledger scores and repeating it would spend the crate's budget on punctuation.
+fn cold_reference(settings_json: &str) -> busbar_contract::kinds::SecretRef {
+    busbar_contract::kinds::SecretRef(settings_json.to_string())
+}
+
 /// End-to-end: load the REAL secret-example-plugin cdylib over the C ABI and exercise
-/// `SecretModule::resolve` through the `DynSecret` wrapper — a hit, a miss (fail-closed, never an
-/// empty `Ok`), and a reference whose `settings` carries no `key` at all.
+/// `busbar_contract::kinds::Secret::resolve` through the `DynSecret` wrapper — a hit, a miss
+/// (fail-closed, never an empty `Ok`), and a reference whose `settings` carries no `key` at all.
+///
+/// THE TWO FAILURES ARE THE MAP MEASURED OVER THE REAL ABI, not just a match arm read back to
+/// itself: the plugin emits the frozen `not_found` token for a miss and `invalid` for a settings
+/// shape it cannot use, and what arrives on this side must be `Unknown` and `Malformed`
+/// respectively. A miss that arrived as `Malformed` would send an operator to fix the reference's
+/// SHAPE when the shape is fine.
 #[test]
 fn load_and_exercise_secret_example_plugin() {
     let Some(path) = secret_example_plugin_path() else {
@@ -1309,28 +1322,95 @@ fn load_and_exercise_secret_example_plugin() {
     )
     .expect("load secret example plugin over the ABI");
 
-    let mut settings = serde_json::Map::new();
-    settings.insert(
-        "key".to_string(),
-        serde_json::Value::String("db-password".into()),
-    );
-    let bytes = module.resolve(&settings).expect("known key resolves");
-    assert_eq!(bytes, b"hunter2");
-
-    let mut miss = serde_json::Map::new();
-    miss.insert(
-        "key".to_string(),
-        serde_json::Value::String("no-such-key".into()),
+    // The lane answers for itself, over the real dlopen seam.
+    assert_eq!(module.kind(), busbar_contract::plugin::Kind::Secret);
+    assert_eq!(
+        module.abi(),
+        busbar_contract::plugin::AbiVersion(busbar_plugin::cold::SECRET_ABI_VERSION as u16)
     );
     assert!(
-        module.resolve(&miss).is_err(),
-        "an unknown key must fail closed, never resolve empty"
+        module.ref_grammar().contains("JSON object"),
+        "the cold lane's grammar names what a reference must be: {}",
+        module.ref_grammar()
     );
 
-    assert!(
-        module.resolve(&serde_json::Map::new()).is_err(),
-        "settings with no `key` field must fail closed"
+    let value = module
+        .resolve(&cold_reference(r#"{"key":"db-password"}"#))
+        .expect("known key resolves");
+    assert_eq!(value.expose(), b"hunter2");
+
+    assert_eq!(
+        module.resolve(&cold_reference(r#"{"key":"no-such-key"}"#)),
+        Err(busbar_contract::kinds::SecretError::Unknown),
+        "an unknown key must fail closed as a MISS, never resolve empty and never read as a \
+         malformed reference"
     );
+
+    assert_eq!(
+        module.resolve(&cold_reference("{}")),
+        Err(busbar_contract::kinds::SecretError::Malformed),
+        "settings with no `key` field are a reference the module's grammar cannot use"
+    );
+
+    // A reference that is not a JSON object at all never reaches the plugin: the grammar is the
+    // loader's, and it refuses before the ABI is crossed.
+    assert_eq!(
+        module.resolve(&cold_reference("not json")),
+        Err(busbar_contract::kinds::SecretError::Malformed)
+    );
+
+    // Under `SECRET_ABI_VERSION` 1 the wire declares only `Resolve`, so the key operations have no
+    // key to find and the watch is inert. Fail-closed, not silently successful.
+    assert_eq!(
+        module.watch(&cold_reference(r#"{"key":"db-password"}"#)),
+        Ok(None)
+    );
+    assert!(module.sign("k", b"m").is_err());
+    assert!(module.seal("k", b"ctx", b"m").is_err());
+    assert!(module.unseal("k", b"ctx", b"m").is_err());
+}
+
+/// THE WIRE TOKEN → FACE ERROR MAP, EVERY TOKEN, IN THE ONE PLACE THE MAP LIVES.
+///
+/// The dlopen battery above measures two of the five over the real ABI; the plugin has no way to
+/// emit the other three, and a map with three unexercised arms is a map three edits away from being
+/// wrong. So this cell states all five, and it states the two that matter most as separate claims:
+/// `denied` must NOT arrive as `Unknown` (that is the distinction the face gained a variant for),
+/// and `unavailable` must NOT arrive as anything on the config side (an outage an operator waits
+/// out must never read as something they should go and fix).
+#[test]
+fn every_frozen_wire_token_maps_to_the_face_error_that_tells_the_operator_the_truth() {
+    use busbar_contract::kinds::SecretError as Face;
+    use busbar_plugin::cold::SecretErrorKind as Wire;
+
+    let map = [
+        (Wire::NotFound, Face::Unknown),
+        (Wire::Unavailable, Face::Unavailable),
+        (Wire::Denied, Face::Denied),
+        (Wire::Invalid, Face::Malformed),
+        (Wire::Internal, Face::Unknown),
+    ];
+    for (wire, face) in map {
+        assert_eq!(
+            crate::secret_face_error(wire),
+            face,
+            "the frozen wire token {wire:?} maps to {face:?}"
+        );
+    }
+
+    assert_ne!(
+        crate::secret_face_error(Wire::Denied),
+        Face::Unknown,
+        "a policy refusal folded onto Unknown sends an operator to edit a reference that is fine"
+    );
+    let outage = crate::secret_face_error(Wire::Unavailable);
+    assert_ne!(
+        outage,
+        Face::Unknown,
+        "an outage is not a missing reference"
+    );
+    assert_ne!(outage, Face::Malformed, "an outage is not a bad reference");
+    assert_ne!(outage, Face::Denied, "an outage is not a policy refusal");
 }
 
 /// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring

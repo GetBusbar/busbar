@@ -22,6 +22,11 @@ use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
     PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
+// The SECRET kind's face. `Kind` is aliased because this crate already spells the ABI's own
+// kind-tag module `abi_kind`, and two things called "kind" one screen apart is how a reader stops
+// reading.
+use busbar_contract::kinds::{Secret, SecretError, SecretRef, SecretValue};
+use busbar_contract::plugin::{AbiVersion, Kind as ContractKind, Plugin};
 use busbar_plugin::cold::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
     MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
@@ -1326,32 +1331,187 @@ impl std::fmt::Debug for DynStore {
 
 // ── SECRET plugins (`kind: secret`) ─────────────────────────────────────────────────────────────
 
-/// A [`busbar_api::SecretModule`] loaded from a dynamic library over the kind-neutral ABI. Wraps a
-/// [`RawPlugin`] whose kind was bound to `secret` at load.
+/// THE REGISTRY KEY OF EVERY COLD-LANE SECRET PLUGIN, and it is the LANE rather than the library.
+///
+/// `busbar_contract::Plugin::key` returns a `&'static str`, which reads at first like a face that
+/// cannot describe a plugin loaded at runtime — a manifest name is a `String` and interning one per
+/// load is a leak per load. It is not a problem, because the key is not the manifest name here:
+/// WHICH library serves a reference is resolved by THIS crate's own name/alias registry, before
+/// [`PluginRegistry::open_secret`] is ever called, and what comes back is one module already chosen.
+/// The lane is the entry; the registry is the chooser. That is why the secret kind needed exactly
+/// one line of the contract face (`SecretError::Denied`) and not two.
+const SECRET_LANE_KEY: &str = "cold";
+
+/// The reference grammar a cold-lane secret plugin accepts: a JSON OBJECT, which is the reference's
+/// own `settings` map — `{"key":"db-password"}` for the example plugin, `{"path":"kv/x"}` for a
+/// vault-shaped one. It is the settings map because that is what the frozen wire's `Resolve`
+/// request has always carried, verbatim, and re-spelling it would be a wire change wearing a
+/// grammar's clothes. Anything that is not a JSON object is outside the grammar and is
+/// [`SecretError::Malformed`].
+const SECRET_REF_GRAMMAR: &str = "a JSON object: the secret reference's own settings map";
+
+/// THE WIRE TOKEN → FACE ERROR MAP, AND THE ONLY COPY OF IT IN THE WORKSPACE.
+///
+/// A `kind: secret` plugin reports a typed module-level failure as one of five frozen snake_case
+/// tokens (see `busbar_plugin::cold::SecretErrorKind`); the face a host sees is
+/// [`SecretError`]. Exactly one place may hold the correspondence, and this is it — the loader is
+/// the one crate whose job is to be on both sides of the ABI, so a second copy anywhere else would
+/// be a second answer to the same question.
+///
+/// The two collapses are deliberate and each is the honest one:
+///
+/// * `not_found` and `internal` both become `Unknown`. The face's `Unknown` is "the reference does
+///   not resolve", which is exactly what a miss is; and `internal` has always been the catch-all
+///   that every untyped string failure became, so it has no more specific home. Nothing is lost
+///   that the face can express.
+/// * `invalid` becomes `Malformed`, not `Unknown`: a bad settings shape is a reference outside the
+///   plugin's grammar, which is what `Malformed` names.
+///
+/// And the one that is NOT a collapse: `denied` becomes `Denied`. Folding it onto `Unknown` would
+/// tell an operator whose caller lacks permission that their reference does not exist, and they
+/// would go and edit the reference. That is the whole reason the face gained the variant.
+fn secret_face_error(kind: busbar_plugin::cold::SecretErrorKind) -> SecretError {
+    use busbar_plugin::cold::SecretErrorKind as Wire;
+    match kind {
+        Wire::NotFound => SecretError::Unknown,
+        Wire::Unavailable => SecretError::Unavailable,
+        Wire::Denied => SecretError::Denied,
+        Wire::Invalid => SecretError::Malformed,
+        Wire::Internal => SecretError::Unknown,
+    }
+}
+
+/// A [`busbar_contract::kinds::Secret`] loaded from a dynamic library over the kind-neutral ABI.
+/// Wraps a [`RawPlugin`] whose kind was bound to `secret` at load.
 pub struct DynSecret {
     raw: RawPlugin,
 }
 
-impl busbar_api::SecretModule for DynSecret {
-    fn resolve(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> busbar_api::SecretResult<Vec<u8>> {
+impl Plugin for DynSecret {
+    fn key(&self) -> &'static str {
+        SECRET_LANE_KEY
+    }
+
+    fn kind(&self) -> ContractKind {
+        ContractKind::Secret
+    }
+
+    fn abi(&self) -> AbiVersion {
+        // The per-kind PAYLOAD schema version of the lane this module speaks, which is the number
+        // the signed manifest declares and the loader negotiates. Read off the shared const rather
+        // than written as a literal, so the two halves of the handshake cannot drift.
+        AbiVersion(busbar_plugin::cold::SECRET_ABI_VERSION as u16)
+    }
+}
+
+impl Secret for DynSecret {
+    fn ref_grammar(&self) -> &'static str {
+        SECRET_REF_GRAMMAR
+    }
+
+    fn resolve(&self, r: &SecretRef) -> Result<SecretValue, SecretError> {
+        let Ok(settings) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&r.0)
+        else {
+            return Err(SecretError::Malformed);
+        };
         let req = busbar_plugin::cold::SecretRequest::Resolve {
-            settings: settings.clone(),
+            settings,
             deadline_ms: None,
         };
         match self
             .raw
             .transport_call::<_, busbar_plugin::cold::SecretResponse>(&req)
-            .map_err(busbar_api::SecretError::internal)?
         {
-            busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
-                Err(busbar_api::SecretError::new(kind.into(), message))
+            // A TRANSPORT failure — the plugin panicked, or signalled a status the loader treats as
+            // an error. It carries an untyped string and no taxonomy, which is precisely what the
+            // wire's `internal` token means, so it lands where `internal` lands. The string itself
+            // cannot ride the face (the face's error IS the taxonomy, by design), so it goes to the
+            // log, which is where this crate already puts a misbehaving plugin's own words.
+            Err(message) => {
+                tracing::warn!(
+                    plugin = %self.raw.path,
+                    %message,
+                    "secret plugin call failed at the transport level; resolving as Unknown"
+                );
+                Err(SecretError::Unknown)
+            }
+            Ok(busbar_plugin::cold::SecretResponse::Bytes(b)) => Ok(SecretValue::new(b)),
+            Ok(busbar_plugin::cold::SecretResponse::Error { kind, message }) => {
+                // Same division: the TAXONOMY is the face's answer, the plugin's own message is
+                // operator-facing detail that the face has no field for. Logging it keeps the
+                // "name the source, not the value" discipline the wire already requires of it.
+                tracing::warn!(
+                    plugin = %self.raw.path,
+                    ?kind,
+                    %message,
+                    "secret plugin reported a typed module-level failure"
+                );
+                Err(secret_face_error(kind))
             }
         }
     }
+
+    fn watch(&self, _r: &SecretRef) -> Result<Option<u64>, SecretError> {
+        // NOTHING TO WATCH, and that is a statement about the wire rather than about the plugin.
+        // `SECRET_ABI_VERSION` 1 declares exactly one operation, `Resolve`; there is no version
+        // token on the wire for a host to compare, so a cold-lane reference is inert here — it is
+        // resolved once at the site the previous release resolved it, and re-resolving would be a
+        // behaviour change. The face documents `None` as meaning exactly this.
+        Ok(None)
+    }
+
+    fn sign(&self, _key: &str, _bytes: &[u8]) -> Result<Vec<u8>, SecretError> {
+        Err(SecretError::Unknown)
+    }
+
+    fn seal(&self, _key: &str, _context: &[u8], _plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
+        Err(SecretError::Unknown)
+    }
+
+    fn unseal(&self, _key: &str, _context: &[u8], _sealed: &[u8]) -> Result<Vec<u8>, SecretError> {
+        Err(SecretError::Unknown)
+    }
+}
+
+/// Resolve one reference's `settings` JSON through a loaded secret module, rendering the outcome as
+/// bytes or a neutral message — the HOST-facing half of the seam.
+///
+/// It exists so the engine's secret resolver never has to name a contract type to use a loaded
+/// secret plugin. That is not tidiness: the face is the PLUGIN's vocabulary, and the resolver on
+/// the other side of this call is a host concern that resolves a reference to bytes and reports
+/// fail-closed. Everything between the two — the reference grammar, the wire, the token map — is
+/// this crate's, which is the one crate that is on both sides.
+///
+/// # Errors
+/// The module's taxonomy, rendered. The plugin's own message is not here (the face has no field for
+/// it) and is in the log instead; see [`DynSecret::resolve`].
+pub fn resolve_secret_settings(
+    module: &dyn Secret,
+    settings_json: &str,
+) -> Result<Vec<u8>, String> {
+    module
+        .resolve(&SecretRef(settings_json.to_string()))
+        .map(|v| v.expose().to_vec())
+        .map_err(|e| match e {
+            SecretError::Unknown => "the secret module has no such reference, or failed with an \
+                                     untyped error (see the log for the module's own message)"
+                .to_string(),
+            SecretError::Unavailable => {
+                "the secret module's backing source could not be reached — an OUTAGE, not a \
+                 configuration error"
+                    .to_string()
+            }
+            SecretError::Denied => "the secret module REFUSED the caller permission to read this \
+                                    reference — a configuration/policy error, not an outage"
+                .to_string(),
+            SecretError::Malformed => format!(
+                "the secret reference is outside the module's grammar ({}): {settings_json}",
+                module.ref_grammar()
+            ),
+            SecretError::NotAuthentic => {
+                "the secret module returned bytes that did not authenticate".to_string()
+            }
+        })
 }
 
 impl std::fmt::Debug for DynSecret {
@@ -1370,7 +1530,7 @@ pub fn load_secret_from_bytes(
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
-) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+) -> Result<Box<dyn Secret>, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     let raw = wire_up_raw(
         lib,
