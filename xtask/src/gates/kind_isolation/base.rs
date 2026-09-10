@@ -144,6 +144,34 @@ fn build(cx: &Ctx, commit: &str) -> Result<Base, String> {
     Ok(base)
 }
 
+/// THE BASE'S KEY SET, READ IN TODAY'S NAMES — [`row_keys`] with the `[[renamed]]` table applied.
+///
+/// Every key in the base's ledger is spelled in the name the BASE carried, so a crate renamed on
+/// this branch has its rows looked up under a name history never had and every one of them comes
+/// back MINTED. Four letters of an owner-ruled rename read as five ceilings invented from nothing.
+///
+/// The translation is the row's whole effect and its whole limit: `[[cell]]` and `[[disagreement]]`
+/// are keyed by CRATE, so those keys move; `[[edge]]` is keyed by KIND, and a rename may not change
+/// a kind, so those do not. Nothing is added to the set — a key the base did not carry under the
+/// old name is still absent under the new one, and is still minted.
+pub fn row_keys_as_now(
+    text: &str,
+    table: &str,
+    id_fields: &[&str],
+    renamed_to: &BTreeMap<&str, &str>,
+) -> BTreeSet<String> {
+    row_keys(text, table, id_fields)
+        .into_iter()
+        .map(|k| match k.split_once(" \u{d7} ") {
+            Some((krate, rest)) if table != "edge" => match renamed_to.get(krate) {
+                Some(now) => format!("{now} \u{d7} {rest}"),
+                None => k,
+            },
+            _ => k,
+        })
+        .collect()
+}
+
 /// The KEY SET of one `[[table]]` in a ledger text: the identifying fields of every row of that
 /// table, in the order the table declares them.
 ///
@@ -182,4 +210,59 @@ pub fn row_keys(text: &str, table: &str, id_fields: &[&str]) -> BTreeSet<String>
     }
     flush(&mut cur, &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    const LEDGER: &str = concat!(
+        "[[cell]]\ncrate = \"busbar-secret-ref\"\nkind = \"api\"\ncount = \"3\"\n\n",
+        "[[cell]]\ncrate = \"busbar-store-memory\"\nkind = \"api\"\ncount = \"1\"\n\n",
+        "[[edge]]\nfrom = \"secret\"\nto = \"api\"\ncite = \"x\"\nwhy = \"x\"\ndrain = \"x\"\n",
+    );
+
+    fn renames() -> BTreeMap<&'static str, &'static str> {
+        [("busbar-secret-ref", "busbar-secret-grammar")]
+            .into_iter()
+            .collect()
+    }
+
+    /// THE RENAME, READ FORWARD. The base's `[[cell]]` key is spelled in the OLD name; a branch
+    /// that renamed the crate writes the new one, and without this translation those are two
+    /// different keys and the second is MINTED — five ceilings invented by four letters.
+    #[test]
+    fn a_renamed_crates_base_rows_are_read_under_its_new_name() {
+        let keys = super::row_keys_as_now(LEDGER, "cell", &["crate", "kind"], &renames());
+        assert!(
+            keys.contains("busbar-secret-grammar \u{d7} api"),
+            "{keys:?}"
+        );
+        assert!(!keys.contains("busbar-secret-ref \u{d7} api"), "{keys:?}");
+        // …AND NOTHING ELSE MOVES. A crate no row renames keeps the key it had.
+        assert!(keys.contains("busbar-store-memory \u{d7} api"), "{keys:?}");
+        assert_eq!(keys.len(), 2, "{keys:?}");
+    }
+
+    /// AN `[[edge]]` IS KEYED BY KIND, NOT BY CRATE, and a rename may not change a kind — so the
+    /// class keys are left exactly alone. Translating them would be the table reaching past the
+    /// thing it is about.
+    #[test]
+    fn an_edge_class_key_is_never_translated() {
+        let keys = super::row_keys_as_now(LEDGER, "edge", &["from", "to"], &renames());
+        assert!(keys.contains("secret \u{d7} api"), "{keys:?}");
+        assert_eq!(keys.len(), 1, "{keys:?}");
+    }
+
+    /// WITH NO `[[renamed]]` ROW THE ANSWER IS THE UNTRANSLATED ONE, which is what every rule read
+    /// before this table existed: the translation is opt-in, per row, by name.
+    #[test]
+    fn with_no_rename_row_the_key_set_is_the_bases_own() {
+        let keys = super::row_keys_as_now(LEDGER, "cell", &["crate", "kind"], &BTreeMap::new());
+        assert_eq!(
+            keys,
+            super::row_keys(LEDGER, "cell", &["crate", "kind"]),
+            "{keys:?}"
+        );
+    }
 }
