@@ -526,6 +526,47 @@ fn a_unit_end_carries_its_posting_or_the_loss_that_replaced_it() {
 }
 
 #[test]
+fn a_posting_is_lent_for_one_settlement_and_the_second_lend_is_refused() {
+    // THE PROPERTY THE BORROW HAD TO KEEP. Settling by value carried exactly-once in the move; a
+    // settlement that takes a borrow cannot, so the end that owns the posting refuses the second
+    // lend. This is that refusal, asserted rather than described.
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let exit = k.exit_token();
+
+    let hold = Hold::open(&admit, who("acct-1"), 10);
+    let posted = Posted::settle(hold, 7, &usage_of(&k, 7), &k.ledger_token());
+    let mut end = UnitEnd::seal(&exit, Outcome::Completed, Ok(posted));
+
+    {
+        let lent = end
+            .lend_posting()
+            .expect("the first lend is the settlement's");
+        assert_eq!(lent.posted().settled(), 7);
+    }
+    assert!(
+        end.lend_posting().is_none(),
+        "a second settlement of one hold is refused at the lend"
+    );
+
+    // AND THE END SURVIVES ITS OWN SETTLEMENT, which is the whole reason the door exists: the
+    // outcome and the posting are still readable, so a driver that settled can still hand the end
+    // on to whatever it owes one to.
+    assert!(end.outcome().is_completed());
+    assert_eq!(end.posted().map(Posted::settled), Ok(7));
+
+    // AN END WITH NO POSTING LENDS NOTHING, and does not consume a lend it never made.
+    let lost = DurabilityLost::observed(&DurabilityToken::mint(&k.seal), StepName::Meter);
+    let mut lossy = UnitEnd::seal(
+        &exit,
+        Outcome::Failed(StepName::Meter, ReasonCode::DurabilityUnavailable),
+        Err(lost),
+    );
+    assert!(lossy.lend_posting().is_none());
+    assert!(lossy.lend_posting().is_none());
+}
+
+#[test]
 fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
     // The three that stop AT a step say which; the two that cut a unit short do not, because being
     // aborted or completing is a fact about the unit, not about a step.
