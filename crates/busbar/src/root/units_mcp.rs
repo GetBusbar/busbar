@@ -1285,8 +1285,12 @@ impl Shape {
 /// its price: with no rate card the fee still posts, which is why a listing answered entirely from
 /// this node's own records draws none. The relayed frame is the metering step's own locator, which is
 /// set when the plane read an answer to hand back; a unit that never got that far relayed nothing.
-/// This protocol carries no status leg of its own — the answer document IS the response — so the
-/// plane's finish is the single source, and an error ending posts nothing.
+///
+/// WHERE THE STATUS IS comes off the plane's own declaration, sealed at registration. The class at
+/// that frame is what the client was handed: a unit that got far enough to relay an answer was
+/// answered at the frame it was relayed on, and one that did not relayed no status either. Those
+/// are the fee's first reading; the plane's finish is its second, and where a tool call's stream
+/// dies after its reply the two contradict and the kernel's one policy decides.
 #[must_use]
 pub fn fee_evidence(
     shape: Shape,
@@ -1298,8 +1302,8 @@ pub fn fee_evidence(
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: shape.hops_upstream,
         relayed_first_response_frame,
-        status_at: None,
-        status: None,
+        status_at: <McpPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        status: relayed_first_response_frame.then_some(busbar_contract::StatusClass::Success),
         finish: Some(finish),
     }
 }

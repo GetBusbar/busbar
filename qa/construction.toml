@@ -188,40 +188,92 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 1
 because = "the same face, busbar_contract::plane::PlaneMeta::STATUS_LEG: the union carries the caps+contract pair, so it rises by the same one line and by nothing else. The kernel, the unit union and the verbs sub-ceiling do not move on this commit."
 
-# THE ONE POLICY FOR A CONTRADICTED FEE: `fee_when_the_two_readings_contradict`, six lines in
+# THE DISPUTE POLICY BECOMES A VALUE: `busbar_kernel::teller::DisputePolicy`, three variants with
+# the shipped behaviour as the DEFAULT, plus the `decide` that applies it — 22 surface lines in
 # crates/busbar-kernel/src/teller.rs and nothing else.
 #
 # A unit ends twice — the transport reports a status on the frame it declares one on, and the plane
 # afterwards gives a finish — and the arm for the case where those two disagree was an inline
 # expression inside the fee's match, answering zero. Two things were wrong with it and only one is
 # arithmetic. The arithmetic: zero refunds a request the client was handed an answer to, which is
-# not what the previous release bills and not what the fee's own doc comment said the rule was. The
-# structural one: an inline expression is not a decision anybody can find, so what a contradicted
-# fee costs was a property of a match arm rather than a policy with a name, and the five composition
-# legs that fed it had each independently made it unreachable by declaring no status leg at all.
+# not what the published release bills and not what the fee's own doc comment said the rule was. The
+# structural one: what a contradicted fee costs is a PRICING decision, and a pricing decision buried
+# in control flow cannot be named in a document, cited in a dispute, chosen per deployment or
+# changed on purpose — which is also why all five composition legs had independently made it
+# unreachable and nobody had noticed.
 #
-# Named, it is one function, kind-neutral by signature — it takes a bool and knows no plane, no
-# protocol and no transport — and it has its own cell in the settlement table beside the fee's one
-# exhaustive row-by-row table, in both directions. Changing what a contradicted fee costs is now one
-# edit at one site, made on purpose.
+# So it is a value. `DisputePolicy::TheFrameTheClientSaw` is the default and is the rule the whole
+# recorded corpus was billed under; the other two variants are the answers a deployment could
+# instead agree to, and every variant marks the posting, because the mark says the two readings
+# disagreed and that is true under all three. The enum takes no plane, no protocol and no transport.
+# It is read at ONE site inside `fee_count`, which is where a configured tariff arrives when one
+# exists, and there is nowhere else it could go.
 #
-# The count on every recorded cell is unchanged: the arm is entered only where a status leg is
-# declared AND the two readings disagree, and no recorded cell of any family reaches both.
+# It has its own cells in the settlement table: the default pinned as a value, all three variants in
+# both directions, and the fee checked against the policy's own answer rather than against a number
+# written twice. The count on every recorded cell is unchanged, proven over the 66 recorded llm
+# cells and the 12 recorded mid-stream cells in crates/busbar/tests/fee_one_decision.rs.
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
-by = 6
-because = "the one policy for a contradicted fee, busbar_kernel::teller::fee_when_the_two_readings_contradict: six surface lines in teller.rs, measured 606 -> 612. The match arm it replaces is the same three lines it was, so the six are the named function and nothing else — the fee's decision for the case where the frame the client saw and the plane's finish disagree, lifted out of an inline expression into something that can be found, cited and changed on purpose."
+by = 22
+because = "the dispute policy as a value, busbar_kernel::teller::DisputePolicy: three variants, a Default derive and the decide that applies both readings, 22 surface lines in teller.rs measured 606 -> 628. The match arm it replaces is the same three lines it was, so the 22 are the policy and nothing else — what a contradicted fee costs, lifted out of control flow into a value that can be named, cited, chosen per deployment and changed on purpose."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_ceiling"
-by = 6
-because = "the same six lines, counted on the kernel's own total: 5381 -> 5387. The call-graph-reachable busbar-unit-* set does not move on this commit (2298 lines in the same 10 files), so the whole of the rise is teller.rs's own."
+by = 22
+because = "the same 22 lines, counted on the kernel's own total: 5381 -> 5403. The call-graph-reachable busbar-unit-* set does not move on this landing (2298 lines in the same 10 files), so the whole of the rise is teller.rs's own."
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
+by = 22
+because = "the same 22 lines again, because the union carries the kernel: with the transport-status leg face's one line already declared above, 23825 + 1 + 22 = 23848. The busbar-unit-* union and the verbs sub-ceiling do not move on this landing."
+
+# THE FIVE LEGS READ THE PLANE'S DECLARATION, and the composition root's five cells move because
+# the root is where a plane and the kernel are named in one breath — which is what the root is FOR.
+#
+# The shape of the landing, stated once for all five rows below. Each leg's `fee_evidence` stops
+# filling the kernel's `status_at` in with `None` on its plane's behalf and reads
+# `<ThatPlane as PlaneMeta>::STATUS_LEG` instead; the llm leg's `status_at: None` is DELETED rather
+# than defaulted, and the admin leg's whole `FeeEvidence` stops coming off a `Default`. Beside each
+# leg, in that leg's own test file, one cell for the arm the plane's declaration now reaches and one
+# for the wiring itself — the leg CARRIES what the plane declares, read off the plane rather than
+# spelled a second time, so a leg that went back to remembering its own answer is a red line rather
+# than a silent regression.
+#
+# The plugin side does not move at all. `busbar-llm`'s own kind cells are unchanged: the plane gave
+# a contract-vocabulary field UP (`LateReport::finish`, how the tap says the answer ended) and
+# gained nothing, and no other plugin crate is touched.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 37
+because = "the five legs read the plane's declared status leg: each leg now names its own plane type to reach `PlaneMeta::STATUS_LEG` (busbar_plane_llm::LlmPlane, McpPlane, A2aPlane, VoicePlane, AdminPlane), and each leg's test file carries the two cells that prove the declaration reaches the kernel's contradiction arm and that the leg reads it off the plane rather than spelling it again. The heaviest single file is units_voice.rs's cells, which name the plane type twice and its shapes by name, because a cell that could not name the plane could not check that the leg read the plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "the same landing on the other side of the same breath: the five legs and their cells name busbar_kernel::teller::{FeeEvidence, fee_count, DisputePolicy} at the sites where the plane's declaration is turned into the kernel's evidence, and the admin leg names FeeEvidence explicitly where it used to take the whole struct off a Default. The composition root is the one crate entitled to name a plane and the kernel together, and this is that naming."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = "measured against the base, which the previous landing had already taken one below this tree's own starting point, so this face measures 14 and not 15. The ten per-plane cells assert the MARK as well as the count: busbar_caps::PostingFlags::METER_DISPUTED, at every site where a contradiction is proven to be visible rather than absorbed. A cell that checked only the number would pass on a node that had stopped recording that its two readings disagreed, which is the half of this landing that is not arithmetic."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = "measured against the base, which the previous landing had already taken one below this tree's own starting point, so this face measures 13 and not 14. The admin leg answers the face too, and its cells are in the admin leg's own test file: busbar_plane_admin::AdminPlane named where the leg reads the declaration, and again in the two cells beside it. A control surface posts no fee because it selects no upstream — that is a fact about the surface, and the cells assert it — but a surface that had DECLINED to say where its status is would post the same zero for a different reason, and only one of those two zeros survives an upstream leg being wired onto this plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
 by = 6
-because = "the same six lines again, because the union carries the kernel: 23826 -> 23832. The caps+contract pair and the busbar-unit-* union do not move on this commit."
+because = "the llm leg reads the CLASS at the frame the plane named, through busbar_transport_http::status_class — the wire's own bands, made public on the transport that owns them, rather than a second copy of 200..=299 in the composition root. The alternative was for the root to hold its own opinion of what an HTTP status means, which is how two parts of a node come to disagree about whether a request succeeded. Six hits: the leg's use of it, and the money cell that drives the leg's evidence shape."
 
 # THE CHAIN CACHE FACE: `busbar_unit_admission::{ChainCache, Chain, BucketView}`
 # (crates/busbar-unit-admission/src/cache.rs, 136 surface lines, + 2 module-wiring lines in that
@@ -500,7 +552,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5387
+kernel_ceiling = 5403
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3512
@@ -508,7 +560,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14933
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23832
+union_ceiling = 23848
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -517,7 +569,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 612
+ceiling = 628
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

@@ -1971,9 +1971,13 @@ impl VoiceUnit<'_> {
 /// request and pays nothing; a turn is a frame of a conversation already paid for.
 ///
 /// The leg is the session's upstream: unit zero's dial is what SELECTS it and what OPENS it, so for
-/// the unit that pays, those two questions are that dial's two answers. This dialect writes no
-/// status frame of its own — the answer's first token is the first thing the caller sees — so the
-/// plane's sealed ending is the single source, and an ending it called an error posts nothing.
+/// the unit that pays, those two questions are that dial's two answers.
+///
+/// WHERE THE STATUS IS comes off the plane's own declaration, sealed at registration: the frame
+/// that opens the conversation is the frame the caller sees the session succeed on. A unit that got
+/// that far was answered there; one that did not was answered nowhere. That is the fee's first
+/// reading, and the plane's sealed ending is its second — a session that dies after it opened is
+/// the two contradicting, which the kernel decides once for every plane and marks.
 fn fee_evidence(
     shape: UnitShape,
     origin: busbar_caps::OriginKind,
@@ -1985,8 +1989,8 @@ fn fee_evidence(
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
         selected_upstream,
         relayed_first_response_frame,
-        status_at: None,
-        status: None,
+        status_at: <VoicePlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        status: relayed_first_response_frame.then_some(busbar_contract::StatusClass::Success),
         finish,
     }
 }

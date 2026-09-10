@@ -78,7 +78,7 @@ use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
-use busbar_plane_a2a::{ops, records};
+use busbar_plane_a2a::{ops, records, A2aPlane};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
 use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest};
@@ -1500,8 +1500,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 /// caller's request and pays nothing. The upstream is the KIND of leg the plane verified, not its
 /// price: with no rate card the fee still posts. The relayed frame is the metering step's own
 /// locator, which is set when the plane read an answer to hand back; a unit that never got that far
-/// relayed nothing. This transport carries no status leg of its own — the answer document IS the
-/// response — so the plane's finish is the single source, and an error ending posts nothing.
+/// relayed nothing.
+///
+/// WHERE THE STATUS IS comes off the plane's own declaration, sealed at registration. The class at
+/// that frame is what the client was handed: a unit that relayed an answer was accepted at the
+/// frame it relayed, and one that did not relayed no status either. That is the fee's first
+/// reading; the draft's finish is its second, and a task lost mid-stream is the two contradicting.
 fn fee_evidence(
     draft: &A2aDraft,
     origin: busbar_caps::OriginKind,
@@ -1511,8 +1515,8 @@ fn fee_evidence(
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: draft.has_upstream(),
         relayed_first_response_frame,
-        status_at: None,
-        status: None,
+        status_at: <A2aPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+        status: relayed_first_response_frame.then_some(busbar_contract::StatusClass::Success),
         finish: Some(draft.finish),
     }
 }

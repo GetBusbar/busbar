@@ -728,6 +728,7 @@ fn report_of(output: u64) -> LateReport {
         },
         lane: "lane".to_string(),
         provider: "provider".to_string(),
+        finish: busbar_contract::FinishClass::Complete,
     }
 }
 

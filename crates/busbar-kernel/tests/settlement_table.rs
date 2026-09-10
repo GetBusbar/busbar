@@ -10,8 +10,8 @@ use busbar_caps::OriginKind;
 use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, StatusClass,
+    fee_count, requests_drawn, requests_settled, settle_amount, DisputePolicy, Evidence,
+    FeeEvidence, FinishClass, StatusAt, StatusClass,
 };
 
 fn live_end() -> Outcome {
@@ -979,5 +979,81 @@ fn a_plane_that_declares_no_status_leg_is_decided_by_its_finish_alone() {
             (expected, PostingFlags::NONE),
             "no second reading exists, so there is nothing to contradict and nothing to dispute"
         );
+    }
+}
+
+/// **THE DISPUTE POLICY IS A VALUE, AND ITS DEFAULT IS WHAT THE NODE HAS ALWAYS BILLED.**
+///
+/// Three variants, each the answer some deployment would want, all of them marking the posting so
+/// that the disagreement is on the disputes report whichever one is in force. The DEFAULT is the
+/// one this release ships and the one the recorded corpus was billed under: the frame the client
+/// saw decides.
+///
+/// Pinned as a value rather than checked through `fee_count` alone, because what a contradicted
+/// fee costs is a pricing decision and a pricing decision that can only be observed by running the
+/// thing that uses it is a pricing decision nobody can quote.
+#[test]
+fn the_dispute_policy_is_a_value_whose_default_is_the_frame_the_client_saw() {
+    assert_eq!(
+        DisputePolicy::default(),
+        DisputePolicy::TheFrameTheClientSaw,
+        "the shipped default is the rule the recorded corpus was billed under; changing it is a \
+         pricing decision somebody makes on purpose, and this line is where they see it"
+    );
+
+    // The two readings, both ways round, under all three variants.
+    for (status_says_answered, finish_says_answered) in [(true, false), (false, true)] {
+        assert_eq!(
+            DisputePolicy::TheFrameTheClientSaw.decide(status_says_answered, finish_says_answered),
+            (
+                u32::from(status_says_answered),
+                PostingFlags::METER_DISPUTED
+            ),
+        );
+        assert_eq!(
+            DisputePolicy::ThePlanesFinish.decide(status_says_answered, finish_says_answered),
+            (
+                u32::from(finish_says_answered),
+                PostingFlags::METER_DISPUTED
+            ),
+        );
+        assert_eq!(
+            DisputePolicy::NeitherReading.decide(status_says_answered, finish_says_answered),
+            (0, PostingFlags::METER_DISPUTED),
+        );
+    }
+}
+
+/// **THE FEE APPLIES THE DEFAULT POLICY AND NOTHING ELSE.**
+///
+/// The one site the policy is read at is inside `fee_count`, so this drives the fee and checks the
+/// answer against the policy VALUE rather than against a number written twice. If the site ever
+/// stops applying the policy — or starts applying a different one for one kind of plane — the two
+/// sides of this assertion part.
+#[test]
+fn the_fee_applies_the_dispute_policy_and_the_policy_alone() {
+    for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
+        for (status, status_says_answered) in [
+            (StatusClass::Success, true),
+            (StatusClass::ServerError, false),
+        ] {
+            for (finish, finish_says_answered) in
+                [(FinishClass::Complete, true), (FinishClass::Error, false)]
+            {
+                if status_says_answered == finish_says_answered {
+                    continue;
+                }
+                let contradicted = FeeEvidence {
+                    status_at: Some(at),
+                    status: Some(status),
+                    finish: Some(finish),
+                    ..billable()
+                };
+                assert_eq!(
+                    fee_count(&contradicted),
+                    DisputePolicy::default().decide(status_says_answered, finish_says_answered),
+                );
+            }
+        }
     }
 }

@@ -400,32 +400,66 @@ pub struct FeeEvidence {
     pub finish: Option<FinishClass>,
 }
 
-/// **THE ONE POLICY FOR A FEE WHOSE TWO READINGS CONTRADICT EACH OTHER.**
+/// **THE POLICY FOR A FEE WHOSE TWO READINGS CONTRADICT EACH OTHER.**
 ///
-/// A unit ends twice: the transport reports a status on the frame it says it reports one on, and
-/// the plane afterwards gives a finish. When those disagree, something has gone wrong that the fee
-/// cannot wait to have explained — an answer that started well and then died, or a plane that is
-/// not telling the truth about its own ending — and the money has to be decided anyway.
+/// A unit ends twice: the transport reports a status on the frame it declares one on, and the plane
+/// afterwards gives a finish. When those disagree, something has gone wrong that the fee cannot
+/// wait to have explained — an answer that started well and then died, or a plane that is not
+/// telling the truth about its own ending — and the money has to be decided anyway.
 ///
-/// **THE FRAME THE CLIENT SAW DECIDES.** A request the client was handed an answer to was answered,
-/// and no later abort un-answers it; a request the client was handed a failure for was not, and no
-/// plane may bill over the top of that by claiming otherwise. So the status leg is what counts, and
-/// the plane's contradicting finish costs nothing and changes nothing.
+/// It is a VALUE rather than an expression buried in the fee's match, and that is the whole point.
+/// What a contradicted fee costs is a PRICING decision: it belongs beside the entry fee and the
+/// transaction fee, in whatever the deployment agreed to, not in the control flow of the function
+/// that happens to notice the contradiction. Written as a value it can be named in a document,
+/// cited in a dispute, chosen per deployment and changed on purpose. Written as an `if` it is a
+/// property of the code that nobody outside the code can see.
 ///
-/// What it DOES do is mark the posting. The count alone would say nothing was wrong; the mark is
-/// what puts the unit on the disputes report, so a plane whose finishes routinely disagree with its
-/// own wire becomes visible rather than merely profitable.
+/// Every variant marks the posting disputed. That is not the policy's to decide: the mark says the
+/// two readings disagreed, which is true under all three, and it is what puts the unit on the
+/// disputes report instead of letting it settle as though nothing had happened.
 ///
-/// It is one function because it is one decision. It takes no plane, no kind and no protocol — the
-/// contradiction is the same contradiction whether a completion stream died, a tool call's events
-/// stopped, a task was lost or a session dropped after it opened — and changing what a contradicted
-/// fee costs is therefore one edit at one site, made on purpose, rather than a gap that has to be
-/// found in five composition legs first.
-fn fee_when_the_two_readings_contradict(status_says_answered: bool) -> (u32, PostingFlags) {
-    (
-        u32::from(status_says_answered),
-        PostingFlags::METER_DISPUTED,
-    )
+/// The policy takes no plane, no protocol and no transport, because the contradiction is the same
+/// contradiction whether a completion stream died, a tool call's events stopped, a task was lost or
+/// a session dropped after it opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DisputePolicy {
+    /// **THE FRAME THE CLIENT SAW DECIDES**, and this is the default because it is what the node
+    /// has always billed.
+    ///
+    /// A request the client was handed an answer to was answered, and no later abort un-answers it;
+    /// a request the client was handed a failure for was not, and no plane may bill over the top of
+    /// that by claiming otherwise. A stream that dies halfway through a good response was still a
+    /// good response at the moment it started, and the previous release keeps it in the billable
+    /// count and refunds nothing.
+    #[default]
+    TheFrameTheClientSaw,
+    /// **THE PLANE'S FINISH DECIDES.** The later reading wins: a deployment that would rather bill
+    /// what its planes say happened than what its wires say the client saw.
+    ThePlanesFinish,
+    /// **NEITHER READING DECIDES** and a contradicted fee posts nothing. The most generous of the
+    /// three, and the only one under which a plane can make a request free by disagreeing with its
+    /// own wire.
+    NeitherReading,
+}
+
+impl DisputePolicy {
+    /// What this policy charges when the two readings disagree, and the mark that says they did.
+    ///
+    /// Both readings are handed over rather than one, so that a policy which reads the other side
+    /// is a variant here and not a second call site somewhere else.
+    #[must_use]
+    pub fn decide(
+        self,
+        status_says_answered: bool,
+        finish_says_answered: bool,
+    ) -> (u32, PostingFlags) {
+        let count = match self {
+            DisputePolicy::TheFrameTheClientSaw => u32::from(status_says_answered),
+            DisputePolicy::ThePlanesFinish => u32::from(finish_says_answered),
+            DisputePolicy::NeitherReading => 0,
+        };
+        (count, PostingFlags::METER_DISPUTED)
+    }
 }
 
 /// Decide the flat fee, and say whether the two sources of truth disagreed.
@@ -433,8 +467,7 @@ fn fee_when_the_two_readings_contradict(status_says_answered: bool) -> (u32, Pos
 /// The fee is decided at the first frame the client actually saw, and it is never reversed by a
 /// later abort: a stream that dies halfway through a good response was still a good response at the
 /// moment it started. Where the transport reports a status AND the plane reports a finish, the two
-/// have to agree; where they do not, [`fee_when_the_two_readings_contradict`] decides, once, for
-/// every plane.
+/// have to agree; where they do not, the [`DisputePolicy`] decides, once, for every plane.
 ///
 /// A transport that says WHERE its status is reported and then reports none has lost the evidence:
 /// the stream ended before the frame carrying it. Nothing is billed, and a plane claiming a clean
@@ -462,7 +495,10 @@ pub fn fee_count(evidence: &FeeEvidence) -> (u32, PostingFlags) {
         (true, true, _, _) if claims_whole => (0, PostingFlags::METER_DISPUTED),
         (true, true, _, _) => (0, PostingFlags::NONE),
         (true, _, Some(status_ok), Some(finish_ok)) if status_ok != finish_ok => {
-            fee_when_the_two_readings_contradict(status_ok)
+            // THE ONE SITE THE DISPUTE POLICY IS APPLIED AT, for every plane and every transport.
+            // The value is the default until a deployment's agreed tariff supplies one; when it
+            // does, it arrives here and nowhere else, because there is nowhere else it could go.
+            DisputePolicy::default().decide(status_ok, finish_ok)
         }
         (true, _, Some(true), _) => (1, PostingFlags::NONE),
         (true, _, Some(false), _) => (0, PostingFlags::NONE),

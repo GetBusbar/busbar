@@ -697,12 +697,18 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
         0
     );
 
+    // A RELAYED ANSWER THE PLANE THEN CALLS AN ERROR IS THE CONTRADICTION, not a free request.
+    // The client was handed a frame that said the task was accepted; the plane says the unit
+    // failed. Those are the fee's two readings disagreeing, and the kernel decides it the way it
+    // decides it for every plane — the frame the client saw counts, and the posting is marked so
+    // the disagreement is visible rather than absorbed. This assertion used to read 0, which was
+    // the plane's finish deciding alone because this leg told the kernel there was no status leg
+    // to reconcile it against.
     let mut failed = served.clone();
     failed.finish = FinishClass::Error;
-    assert_eq!(
-        fee_count(&fee_evidence(&failed, OriginKind::Client, true)).0,
-        0
-    );
+    let (fee, flags) = fee_count(&fee_evidence(&failed, OriginKind::Client, true));
+    assert_eq!(fee, 1);
+    assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
 
     let mut records_only = served.clone();
     records_only.destination = DestinationFacts::PlaneRecord {

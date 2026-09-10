@@ -85,11 +85,13 @@ use busbar_caps::{
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
+use busbar_contract::plane::PlaneMeta;
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
+use busbar_plane_llm::LlmPlane;
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
@@ -803,11 +805,16 @@ fn fee_facts(
         client_open_or_one_shot: origin == OriginKind::Client,
         selected_upstream: upstream_candidate,
         relayed_first_response_frame: status.is_some(),
-        // This transport reports no status leg of its own: the response IS the status, and the
-        // plane's finish is decided from the frame the client saw. Both `None` is also what makes
-        // the dispute arm unreachable here — see the cell's `dispute_arm_is_unreachable` test.
-        status_at: None,
-        status: None,
+        // WHERE THE STATUS IS, READ OFF THE PLANE. Not decided here, and not `None` because this
+        // leg found it convenient: the plane declares which frame its dialect reports a status on,
+        // the declaration is sealed at registration, and this is the leg reading it. A leg that
+        // answered on the plane's behalf is how the kernel's contradiction arm came to be
+        // unreachable on every plane at once.
+        status_at: <LlmPlane as PlaneMeta>::STATUS_LEG,
+        // WHAT THE STATUS SAID, at the frame the plane just named. The class the transport reads
+        // off an answer's head, over the number the carry holds — the client's own reading, and the
+        // first of the fee's two.
+        status: status.map(busbar_transport_http::status_class),
         finish,
     }
 }
@@ -970,7 +977,18 @@ impl LateAccrual {
         // THE FEE, decided by the kernel over the same evidence the exit path settled from. This is
         // the line the MOVE exists for: the number that BILLS is now the kernel's, and the plane no
         // longer carries an answer of its own for it to disagree with.
-        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_evidence(&walk, origin));
+        // THE LATE ARM HAS THE PLANE'S OWN VERDICT, and the exit arm did not. The tap has drained
+        // by now and the report says how the answer really ended, so the fee is decided here from
+        // the two readings a unit actually has: the status the client saw at the head, and the
+        // finish the plane gives after the body. Where they contradict — a stream that died after a
+        // good head — the kernel's one policy answers and marks the posting; the count is the count
+        // the previous release billed either way.
+        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_facts(
+            walk.served_status(),
+            walk.upstream_candidate(),
+            Some(report.finish),
+            origin,
+        ));
         let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
             return;

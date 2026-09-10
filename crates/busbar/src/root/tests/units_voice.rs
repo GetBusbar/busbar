@@ -1331,7 +1331,15 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
         )
     };
     assert_eq!(fee_count(&open(FinishClass::Complete)).0, 1);
-    assert_eq!(fee_count(&open(FinishClass::Error)).0, 0);
+    // AN OPEN THE CALLER SAW SUCCEED, THAT THE PLANE THEN CALLS AN ERROR, IS THE CONTRADICTION.
+    // The caller connected, the leg was dialled and the frame that opens the conversation went
+    // back; the session then died. The connection was really made, so the frame the caller saw
+    // counts and the posting is marked — the same policy, the same function, as every other plane.
+    // This assertion used to read 0, which was the plane's ending deciding alone because this leg
+    // told the kernel there was no status leg to reconcile it against.
+    let (fee, flags) = fee_count(&open(FinishClass::Error));
+    assert_eq!(fee, 1);
+    assert!(flags.contains(busbar_caps::PostingFlags::METER_DISPUTED));
     // A session that named no upstream, and one whose dial never opened: neither reached a leg,
     // and a fee is for a connection that was actually made.
     assert_eq!(

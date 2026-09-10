@@ -48,6 +48,7 @@ use busbar_caps::{
 use busbar_contract::UnitKey;
 use busbar_kernel::teller::UnitCtx;
 use busbar_plane_admin::verbs::ResolvedVerb;
+use busbar_plane_admin::AdminPlane;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
 
@@ -1993,6 +1994,20 @@ pub(crate) fn encode(
 pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
         upstream_candidate: false,
+        fee: busbar_kernel::teller::FeeEvidence {
+            // WHERE THE STATUS IS, READ OFF THE PLANE. This surface posts no fee — it selects no
+            // upstream, and the fee's eligibility gate answers zero before either reading of the
+            // ending is consulted — but that is a fact about what a control surface DOES, not a
+            // reason to leave the plane unasked. A zero that comes out of "nobody read the
+            // declaration" and a zero that comes out of "this surface dials nothing" look identical
+            // in the ledger and are not the same statement, and only the second one survives an
+            // upstream leg being wired onto this plane by somebody who did not read this comment.
+            status_at: <AdminPlane as busbar_contract::plane::PlaneMeta>::STATUS_LEG,
+            // The CLASS at that frame is a reading this leg does not take, and it does not invent
+            // one. Nothing downstream asks for it: the fee is already zero at the gate above, and a
+            // status manufactured here would be a figure with no reader and no source.
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
