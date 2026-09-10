@@ -3646,6 +3646,16 @@ why     = "busbar names busbar-plane-llm-openai: declared normal in the shipped 
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm-responses"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: it publishes one const and a composition root seals it into the plane it declares. The root is the only place this edge may exist; the reverse, a plane naming a dialect, is what the kind refuses."
+why     = "busbar names busbar-plane-llm-responses: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the SECOND dialect the root seals, and the row is here to record what the second one cost: one line of crates/busbar/Cargo.toml and one row of crates/busbar/src/root/dialects.rs, with not one line of the boot's logic changed. A root that had to grow a branch per dialect would show it as a rising count on this row rather than as a second row of the same shape. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-a2a-codec"
 half    = "shipped"
@@ -4223,6 +4233,26 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
 why     = "busbar-plane-llm-openai names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the whole sink set of the dialect kind's first crate — two dependencies and no dev-dependencies — so the pair of rows is not a budget it is spending down but the shape every later dialect crate is copied from. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-responses"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm-responses names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-responses"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
+why     = "busbar-plane-llm-responses names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. Together with the row above this is the whole sink set of the dialect kind's SECOND crate — two dependencies and no dev-dependencies, identical to the first — and that identity is the point of the pair: the sink set is the kind's rule rather than the first crate's habit, and a third dialect that needed a third dependency would have to add a row here and say why. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
