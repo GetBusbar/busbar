@@ -221,6 +221,8 @@ const EVT_CONTENT_BLOCK_DELTA: &str = "content_block_delta";
 const EVT_CONTENT_BLOCK_STOP: &str = "content_block_stop";
 const EVT_MESSAGE_DELTA: &str = "message_delta";
 const EVT_MESSAGE_STOP: &str = "message_stop";
+/// The terminal error event this dialect frames a failed stream as.
+const EVT_ERROR: &str = "error";
 
 /// `content_block_delta` sub-type values (`delta.type` field).
 const DELTA_TYPE_TEXT: &str = "text_delta";

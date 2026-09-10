@@ -576,7 +576,7 @@ impl ProtocolReader for AnthropicReader {
                 })
             }
             EVT_MESSAGE_STOP => Some(IrStreamEvent::MessageStop),
-            "error" => {
+            EVT_ERROR => {
                 let err_val = data.get("error")?;
                 // Carry the upstream error `type` through as-is: `Some("rate_limit_error")` when
                 // present, `None` when the event omits it. Do NOT `unwrap_or_default()` into
@@ -601,6 +601,18 @@ impl ProtocolReader for AnthropicReader {
             }
             _ => None,
         }
+    }
+
+    /// The three event types of this wire that can produce an A-tap event, stated by the dialect
+    /// that owns the wire. Both preconditions the seam demands hold here and are checkable in this
+    /// file: `read_response_events` below takes `_state` — this reader is STATELESS, so skipping a
+    /// frame cannot mis-parse the next one — and the singular reader's only `MessageStart`,
+    /// `MessageDelta` and `Error` arms are the three named. Every other arm
+    /// (`content_block_start/delta/stop`, `message_stop`) yields a block or stop event, which the
+    /// same-protocol side-channel does not read: those frames reach the client through the verbatim
+    /// bulk copy without ever being parsed.
+    fn same_proto_decoded_events(&self) -> Option<&'static [&'static str]> {
+        Some(&[EVT_MESSAGE_START, EVT_MESSAGE_DELTA, EVT_ERROR])
     }
 
     fn read_response_events(

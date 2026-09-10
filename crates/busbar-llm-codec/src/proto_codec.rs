@@ -142,6 +142,30 @@ pub trait ProtocolReader: Send + Sync {
     /// Read a whole (non-streaming) response from wire JSON.
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError>;
 
+    /// SAME-PROTOCOL DECODE-SET seam (the verbatim re-emit path). The wire event types whose
+    /// decoded `data` the same-protocol usage side-channel can actually consume — `None` (default)
+    /// meaning "unknown, decode every frame".
+    ///
+    /// On the same-protocol path the translator re-emits the upstream bytes VERBATIM and the only
+    /// thing it needs a decoded frame for is the A-tap (`MessageStart{usage}` /
+    /// `MessageDelta{usage}` / `Error`). A reader that KNOWS no other event type of its own wire
+    /// can produce one of those three says so here, and the feed loop then skips the frame parse
+    /// (event-type String, data-line Vec, joined-payload String), the DOM parse and the IR event
+    /// Vec for the ~99% of frames that are pure content — decided on the borrowing
+    /// `sse_event_type` probe, before any of that runs.
+    ///
+    /// Two preconditions, and BOTH are the reader's to assert, which is exactly why this answer is
+    /// the reader's rather than the translator's: the listed set must be closed over the three
+    /// consumed IR events, and the reader's decode must be STATELESS over the skipped frames (a
+    /// reader that threads `StreamDecodeState` would mis-parse the frames that follow a skip).
+    /// A reader that cannot promise both leaves the default and pays the parse.
+    ///
+    /// Default: `None`. A protocol that adds a usage-bearing event type and forgets this list gets
+    /// a slower stream, never a wrong bill — the failure direction a fast path must have.
+    fn same_proto_decoded_events(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
     /// Clone this reader as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolReader>;
 }
