@@ -407,10 +407,15 @@ fn neutral_reframe(scope: &str, body: &[u8]) -> StoreResult<NeutralRec> {
     })
 }
 
+/// The retention stamp this rig writes with: a fixed, plainly non-zero reading, so a test that
+/// asserts on the envelope names the value it handed in rather than a clock it raced.
+const RIG_TS: u64 = 1_700_000_000;
+
 fn write_neutral(j: &Journal<NeutralRec>, tenant: &str, content: &[u8]) -> NeutralRec {
     j.append_scoped(
         KIND_NEUTRAL,
         tenant,
+        RIG_TS,
         NeutralInput {
             content: content.to_vec(),
         },
@@ -614,6 +619,7 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
     let err = j.append_scoped(
         KIND_NEUTRAL,
         "acme",
+        RIG_TS,
         NeutralInput {
             content: b"|two".to_vec(),
         },

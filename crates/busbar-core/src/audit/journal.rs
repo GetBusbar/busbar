@@ -466,10 +466,21 @@ impl<R: NeutralRecord> Journal<R> {
     /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
     /// the position only once the durable write succeeded — the SAME write-ordering the typed
     /// [`Journal::record`] holds, so a failed write does not burn a sequence.
+    ///
+    /// `ts` is THE RETENTION AXIS, and it is a parameter for the reason every other reading on this
+    /// path is: reading a clock is the composition root's job, so the seam that opens the append
+    /// reads the node's wall clock ONCE and hands the reading down. The typed twin
+    /// [`Journal::record`] gets the same value out of the record's own `to_plane_record`, which is
+    /// where a typed row already carries its stamp. The neutral body cannot: its `content` is opaque
+    /// to core, so a timestamp inside it is a timestamp the store cannot sweep on, and an envelope
+    /// stamped with anything other than a real reading is a row that reads as infinitely old —
+    /// which `purge_plane_records_before` drops on the first sweep at ANY cutoff for every kind but
+    /// `task`. The stamp has to be the clock or the evidence does not survive retention.
     pub(crate) fn append_scoped(
         &self,
         kind: &str,
         scope: &str,
+        ts: u64,
         input: R::Input,
         reframe: &Reframe<'_, R>,
     ) -> Result<R, JournalError> {
@@ -491,7 +502,7 @@ impl<R: NeutralRecord> Journal<R> {
                 id: scope.to_string(),
                 parent: Some(scope.to_string()),
                 seq: record.seq(),
-                ts: 0,
+                ts,
                 disposition: PlaneDisposition::Active,
                 body: encode(&body).map_err(JournalError::Store)?,
             };
