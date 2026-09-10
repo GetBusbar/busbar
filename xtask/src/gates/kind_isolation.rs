@@ -413,6 +413,15 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     ("core", "kernel"),
     ("core", "substrate"),
     ("core", "timing"),
+    // THE COMPOSITION ROOT NAMES EVERY AXIS — that is what a root IS, and the list above already
+    // says so eleven times over in `ARCHITECTURE_ALLOWED`. `core` is missing from it for one
+    // reason: the kind has no crates yet. So the class is stated HERE, with the rest of the carve-
+    // out, rather than in the measured table: `busbar-core-config` is cut out of `busbar-core`,
+    // which the root already names as `legacy`, and the day the carve-out lands the root's
+    // dependency simply moves from the old crate to the new one. Without this line the root cannot
+    // name the crate at all and the carve-out has nowhere to land; with it, the class is granted
+    // and nothing else about `core` moves — its own sinks are the six above and no more.
+    ("root", "core"),
     // The one sink `CONTROL_SINKS` grants beside the contract. No control crate has taken it yet —
     // and a control crate that does must not read as a kind learning about another kind, because
     // the design granted it before the tree grew it.
@@ -747,6 +756,41 @@ struct Announced {
     reason: String,
 }
 
+/// One `[[minted]]` row: THE ONE THING THAT LETS A NEW CRATE'S LEDGER ROWS EXIST.
+///
+/// `minted-row` refuses any `[[cell]]`, `[[edge]]` or `[[disagreement]]` key the merge-base's copy
+/// of the ledger does not carry, because a new row is a `0 -> N` raise wearing the clothes of a
+/// first measurement. That refusal is right about every row EXCEPT the ones a crate that does not
+/// exist yet must bring with it: the first crate of a kind — `busbar-core-config`, the dialect
+/// crates, a secret plugin — has no rows at any base, so under that rule it could never land at
+/// all, and the only way through was to weaken the ratchet.
+///
+/// So the admission is DATA, and its subject is the ANNOUNCEMENT rather than the row: a crate the
+/// base's own `[[announced]]` table already names may mint its row set ONCE, in a row that says
+/// which crate, at which commit, and HOW MANY cells. Everything about that is checkable against
+/// history and nothing about it is checkable against the branch's own good intentions:
+///
+/// * `crate` must be in the BASE's `[[announced]]` table. A crate this branch announced in the same
+///   commit as the rows it wanted admitted announces nothing — that is the forgery the whole
+///   provenance module exists to refuse.
+/// * ONCE. A `[[minted]]` row the base already carries admits nothing more: the crate's rows are
+///   history now, and a second mint under the same row is how a landed crate would grow new
+///   ceilings for free.
+/// * `cells` is EXACT. The row records the size of the set it minted; a branch that mints one more
+///   cell than the number it wrote down has to write the number down again.
+/// * `moved_from` is the ceiling for a CARVE-OUT. `busbar-core-config` is cut out of `busbar-core`,
+///   so its cells are the old crate's cells under a new name — and a minted cell may not exceed the
+///   same-kind count the base pinned for the crate it was moved from. A move cannot raise the union
+///   of the two rows; if it does, it is not a move.
+#[derive(Debug, Clone)]
+struct Minted {
+    krate: String,
+    commit: String,
+    cells: i64,
+    /// The crate this one was carved out of, when it was carved out of one.
+    moved_from: Option<String>,
+}
+
 /// One `[[registered]]` row: a crate whose KIND its name does not yet say.
 ///
 /// The one exception to "a crate reaches its kind through its name", and it exists for one
@@ -856,6 +900,8 @@ struct FaceDebt {
 struct KindRegistry {
     transitional: Vec<Transitional>,
     announced: Vec<Announced>,
+    /// The `:matrix` row's admission table — see [`Minted`].
+    minted: Vec<Minted>,
     registered: Vec<Registered>,
     /// The `:deps` and `:test-deps` rows' two tables — one row per edge instance, one question per
     /// unruled one.
@@ -1061,6 +1107,59 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             }
             reg.announced.push(Announced { name, kind, reason });
         }
+        // THE ADMISSION TABLE — the one row a NEW crate's ledger rows arrive under. Every field is
+        // checked against something OUTSIDE this branch (the base's `[[announced]]` table, the
+        // base's own `[[cell]]` counts) over in `matrix`; what is checked HERE is only that the row
+        // is readable, because a row nobody can read is not an admission.
+        "minted" => {
+            // `moved_from` is the one OPTIONAL field in this file, so it is lifted out before
+            // `take_row` — which refuses a field it was not asked for, correctly, for every other
+            // table. A row without it is a crate that was written rather than carved.
+            let moved_from = fields
+                .iter()
+                .find(|(k, _)| k == "moved_from")
+                .map(|(_, v)| v.clone());
+            if moved_from.as_deref() == Some("") {
+                reg.errors.push(format!(
+                    "empty-field\t{REGISTRY_FILE}:{at}\t`[[minted]]` declares `moved_from` with an \
+                     empty value; a carve-out that names no source crate has no ceiling over it"
+                ));
+                return;
+            }
+            let rest: Vec<(String, String)> = fields
+                .iter()
+                .filter(|(k, _)| k != "moved_from")
+                .cloned()
+                .collect();
+            let Some(v) = take_row(&rest, &["crate", "commit", "cells"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            let Ok(cells) = v[2].parse::<i64>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted]] cells = \"{}\"` is not a number. \
+                     An admission that cannot be counted admits any number of rows",
+                    v[2]
+                ));
+                return;
+            };
+            if cells < 0 {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[minted]] cells = \"{}\"` is negative. No \
+                     row set has a negative size, so a negative admission is not an admission — it \
+                     is this crate's mint ratchet switched off in a value that reads like a \
+                     reviewed figure",
+                    v[2]
+                ));
+                return;
+            }
+            reg.minted.push(Minted {
+                krate: v[0].clone(),
+                commit: v[1].clone(),
+                cells,
+                moved_from,
+            });
+        }
         "registered" => {
             let Some(v) = take_row(
                 fields,
@@ -1258,8 +1357,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and \
-             nothing else"
+             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]` and \
+             `[[minted]]` rows and nothing else"
         )),
     }
 }
@@ -1294,7 +1393,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
+                 `[[edge]]`, `[[cell]]`, `[[disagreement]]` and `[[minted]]` rows and nothing \
+                 else",
                 i + 1
             ));
             continue;
@@ -1320,6 +1420,34 @@ fn parse_registry(text: &str) -> KindRegistry {
         push_row(&mut reg, &open, &fields, at);
     }
     reg
+}
+
+/// THE BASE'S OWN COPY OF THE LEDGER, in the two shapes the mint admission needs: which crate the
+/// BASE announced as which kind, and which `[[cell]]` count the BASE pinned for each crate × kind.
+///
+/// Both are read out of git by the caller and parsed here, and that is the whole point of them: a
+/// `[[minted]]` row is checked against numbers and names this branch cannot edit. Load errors in
+/// the base's copy are dropped rather than reported — the base's file is history, this branch is
+/// not being asked to fix it, and a row that did not parse simply is not there to admit anything.
+pub(super) fn ledger_at(
+    text: &str,
+) -> (
+    BTreeMap<String, String>,
+    BTreeMap<(String, String), i64>,
+    BTreeSet<String>,
+) {
+    let reg = parse_registry(text);
+    (
+        reg.announced
+            .iter()
+            .map(|a| (a.name.clone(), a.kind.clone()))
+            .collect(),
+        reg.matrix_cells
+            .iter()
+            .map(|c| ((c.krate.clone(), c.kind.clone()), c.count))
+            .collect(),
+        reg.minted.iter().map(|m| m.krate.clone()).collect(),
+    )
 }
 
 // ------------------------------------------------------------------------------------------------
