@@ -266,7 +266,7 @@ fn redeclaring_a_pair_replaces_it() {
 // The group table
 // ─────────────────────────────────────────────────────────────────────
 
-use busbar_substrate::config::groups::{LimitCfg, LimitWindow};
+use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {
