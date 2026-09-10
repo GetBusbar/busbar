@@ -349,10 +349,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14588
+unit_total_ceiling = 14476
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23447
+union_ceiling = 23335
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -504,11 +504,15 @@ words = [
   "audio", "image", "embedding", "model", "tool call", "sampling", "mail", "message queue",
   "tunnel",
 ]
-# Ratchet, not zero: busbar-unit-auth's carrier-detection ladder and busbar-unit-egress-auth's
-# per-scheme header decoration both name vendor headers/paths literally today (a real section 1.3 gap
-# this rule's first run found, not something this gate may edit — the fix is a registry lookup in
-# the unit crate, tracked as debt). Tightens to 0 once that lands.
-max_hits = 21
+# ZERO, and it got here the way the ratchet said it would. The 21 were busbar-unit-auth's
+# fourteen-rung dialect ladder and busbar-unit-egress-auth's forwarded-client-header table, both of
+# which named vendors literally inside a kind-neutral unit. Neither needed the "registry lookup in
+# the unit crate" this comment used to promise: both tables already existed, contributed, on the
+# plugin side of a face — the ladder as busbar-plane-llm's `claims.rs` declaration through the
+# contract's own `claims_from_ladder!`, the header table as busbar-llm's `engine/egress.rs` — so the
+# neutral copies were deleted rather than re-homed. This is a floor now, not a ceiling: a unit crate
+# that names an open-vocabulary word again is RED with no slack to hide in.
+max_hits = 0
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
 [rules.no-default-bodies]
