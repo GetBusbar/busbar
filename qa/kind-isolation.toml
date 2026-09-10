@@ -2399,7 +2399,7 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "293"
+count = "291"
 
 [[cell]]
 crate = "busbar-substrate"

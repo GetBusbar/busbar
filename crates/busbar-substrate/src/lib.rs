@@ -51,9 +51,9 @@ pub mod net_guard;
 pub mod profile;
 // A′ (ABI-purity P4): the neutral hot-path OBSERVABILITY floor a plane names via the ABI. Only the
 // pure `HOTPATH_LEVEL` compile-time const lives here (the OTLP/stderr two-filter split's DEBUG
-// floor); the App/webhook/net_guard-facing remainder of observability stays in busbar-core. Core
-// re-exports this const from `busbar_core::observability::HOTPATH_LEVEL` so its call sites are
-// unchanged.
+// floor). The re-export that used to carry it back to the retiring engine is GONE with the module
+// that held it: every reader now names this const directly, and the App/webhook/URL-guard
+// remainder it once sat beside has been split to the composition root and the egress unit.
 pub mod observability {
     /// The tracing level at/above which the per-request hot-path spans (`forward`, lane-pick, egress)
     /// are emitted; the OTLP export floors here. A `const`, so both dual-compiled core instances in a
