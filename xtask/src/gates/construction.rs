@@ -83,14 +83,14 @@ const SURFACE: [(&str, &str, &str, &str, i64); 4] = [
         "the transport-facing contract's surface",
         1000,
     ),
-    // The config layer's own crate: a BUDGET rather than a ratchet (the grammar is allowed to grow),
-    // whose job is to refuse the layer quietly becoming the engine's second home.
+    // The config layer's own crate, pinned to its measurement like the three above it: the grammar
+    // is allowed to grow, but a release that grows it says so and by how much.
     (
         "core-config",
         "core_config",
         "busbar-core-config",
         "the config layer's surface",
-        11000,
+        6571,
     ),
 ];
 

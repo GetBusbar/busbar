@@ -1866,7 +1866,7 @@ count = "7"
 [[cell]]
 crate = "busbar-core-config"
 kind = "plane"
-count = "263"
+count = "261"
 
 [[cell]]
 crate = "busbar-core-config"

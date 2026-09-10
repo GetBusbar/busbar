@@ -233,7 +233,7 @@ key = "gate.surface_ceilings.contract_caps"
 by = 21
 because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, fallback_key, is_fallback}: the fallback plane is a fact of the plane LIST, answered beside it; MEASURED 21 plugin-visible surface lines by scripts/loc-surface.py; names no plane."
 
-# THE SIXTEEN KIND-ISOLATION CELLS THE CONFIG-LAYER CARVE-OUT RAISES, by identity. Not one of them is
+# THE FIFTEEN KIND-ISOLATION CELLS THE CONFIG-LAYER CARVE-OUT RAISES, by identity. Not one of them is
 # the new crate's own row — those are minted with the crate (`[[minted]] busbar-core-config`), because
 # a crate that does not exist has nothing at any base to be higher than. These sixteen are cells in
 # crates that DO exist, and every one of them is the same phenomenon: a shape that lived in
@@ -244,12 +244,6 @@ because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, f
 # growth. These entries EXPIRE when this commit lands on the integration line.
 
 [[gate.ceiling_raises]]
-key = "cell.busbar.legacy.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "the root's `plugins:` RESOLUTION rewiring (crates/busbar/src/main.rs, 867785e76): the composition root is the one crate that may name both the grammar's home and the plugin tooling, and building the loader's fetch list from the operator's block puts one more `busbar_core::` spelling in the root's mouth. The root's own busbar_core:: reach falls elsewhere in the same commit; this is the net."
-
-[[gate.ceiling_raises]]
 key = "cell.busbar-api.secret.count"
 file = "qa/kind-isolation.toml"
 by = 3
@@ -258,8 +252,8 @@ because = "busbar-api names the `SecretRef` grammar three more times (crates/api
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.api.count"
 file = "qa/kind-isolation.toml"
-by = 8
-because = "busbar-core's own callers repointed onto the substrate and api spellings when the `ir/` and `trust/` re-export shims were retired (563585a66, bab9fbf67, 5bf20c2b7): a shim that resolved a name for free is now the name, written out, at each call site. Eight sites, no new coupling — the same reads under their own address."
+by = 6
+because = "busbar-core's own callers repointed onto the substrate and api spellings when the `ir/` and `trust/` re-export shims were retired (563585a66, bab9fbf67, 5bf20c2b7): a shim that resolved a name for free is now the name, written out, at each call site. Six sites, no new coupling — the same reads under their own address."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.substrate.count"
@@ -288,8 +282,8 @@ because = "the `oauth_as:` block is a value grammar and now lives at busbar-subs
 [[gate.ceiling_raises]]
 key = "cell.busbar-substrate.legacy.count"
 file = "qa/kind-isolation.toml"
-by = 15
-because = "fifteen doc lines in busbar-substrate now say which module of `busbar_core` a relocated shape came out of and which historical spelling core still re-exports it at — the retirement being described where it happened, by the three value-grammar moves and the D33 R5 shim retirements. Prose only; the substrate depends on nothing new."
+by = 11
+because = "eleven doc lines in busbar-substrate now say which module of `busbar_core` a relocated shape came out of and which historical spelling core still re-exports it at — the retirement being described where it happened, by the three value-grammar moves and the D33 R5 shim retirements. Prose only; the substrate depends on nothing new."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-substrate.plane.count"
@@ -350,12 +344,13 @@ grammar = 388
 contract_transport = 845
 # THE CONFIG LAYER'S OWN CRATE (`busbar-core-config`): the 1.5.5 document grammar, the loader, the
 # migrator and its corpus, the overlay, the named-definition map, the prepass, the SecretResolver and
-# the validator, moved out of busbar-core whole so the engine can retire out from under it. A budget
-# rather than a ratchet, like every figure in this table: the config grammar is allowed to GROW (a
-# release adds keys), and what the ceiling refuses is the layer quietly becoming the engine's second
-# home. Measured 6,397 the day the crate landed; the ceiling is the integrator's figure for the whole
-# layer including the room the 1.4.x->1.5.0 migrator's corpus and the 1.6.0 additions need.
-core_config = 11000
+# the validator, moved out of busbar-core whole so the engine can retire out from under it. PINNED TO
+# THE MEASUREMENT, like the three rows above it: 6,571 plugin-visible surface lines by
+# scripts/loc-surface.py the day the crate landed. Not a budget with room in it -- `ceiling-slack`
+# refuses slack in this table too, and a figure with room in it is room nobody voted for. A release
+# that adds config keys raises this line and says by how much, in the same commit, which is what a
+# ceiling on the config layer is for: the layer is allowed to grow, quietly is what it may not do.
+core_config = 6571
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]

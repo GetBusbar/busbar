@@ -1281,7 +1281,7 @@ pub struct DeployCfg {
     /// deployment), NOT a named-definition map, so it carries no reserved section words and no
     /// registrations.
     // Type-erased through the neutral `StreamsSection` seam: `streams:` deserializes into the voice
-    // plane's own `StreamsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `busbar_voice` type. The
+    // plane's own `StreamsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no plane type at all. The
     // plane compiled out (voice off-default) captures it RAW and refuses a present section at
     // `resolve`, exactly as `tools:`/`agents:` do — so no `#[cfg]` guards the field itself.
     ///
