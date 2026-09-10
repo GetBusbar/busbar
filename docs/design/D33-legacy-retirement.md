@@ -136,7 +136,7 @@ root's:
 | `proto_codec::PROTO_{OPENAI,ANTHROPIC,GEMINI,BEDROCK,COHERE,RESPONSES}` (22 sites) | **MOVE** into `busbar-llm-codec` (already 37 k of dialect body) and name them from `busbar-plane-llm` | `llm\|`, `http\|` | after the llm default flip |
 | `native_ingress::{operation_ingress, ingress_path_model, synthesize_completion}`, `arrival::{PathArrivalFacts, PathModelFacts, gemini_rest, gemini_path_parse, bedrock_path_parse}`, `unit::walk`, `PATH_INGRESS`, `BODY_INGRESS` | **DELETE with the engine twins** — this is `pipeline.rs`/`walk.rs`/`native_ingress.rs`/`arrival.rs`, the two dispatch twins. Explicitly **out of scope for this session.** | `llm\|`, `billing\|`, `teller-route-failover\|` | after the llm leg's late accrual and the default flip |
 | `proto_stream::new_stream_translator` | DELETE with the twins | `llm\|` | last |
-| `{PLANE_DECL, DECLS}` | DELETE when `busbar-plane-llm` is sole | `llm\|` | after flip |
+| `{PLANE_DECL, DECLS}` | DELETE when `busbar-plane-llm` is sole. **One reader gone already (S3, keep-dialect-pair-2):** `busbar_plane_llm::dialect::requires_max_response` walked `DECLS` by name; the fact is a column of the dialect row now and the walk is deleted, so the plane reads `DECLS` nowhere. The codec's `requires_max_tokens` is the legacy engine's copy and goes with it. | `llm\|` | after flip |
 | `spawn_probers` | MOVE to the root (a boot-time task spawn) | `boot\|` | after flip |
 | `testkit::install_test_seams` | KEEP (test surface) | — | — |
 
