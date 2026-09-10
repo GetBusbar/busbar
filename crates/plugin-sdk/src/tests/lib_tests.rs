@@ -261,7 +261,7 @@ fn secret_ffi_roundtrip_open_call_close() {
         free_impl(out, out_len);
         match resp {
             busbar_plugin::cold::SecretResponse::Error { kind, message } => {
-                assert_eq!(kind, busbar_api::SecretErrorKind::Invalid);
+                assert_eq!(kind, busbar_plugin::cold::SecretErrorKind::Invalid);
                 assert!(message.contains("settings.name required"), "got {message}");
             }
             other => panic!("expected Error, got {other:?}"),
