@@ -70,6 +70,7 @@ use crate::root::kernel::auth_bindings::AuthBindings;
 use crate::root::policy::{MeterPolicyHandle, ScopePolicy};
 use crate::root::registrations::{KindRules, Kinds, NetSeam, Pools};
 use crate::root::units_a2a::{A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES};
+use busbar_api::Store as AbiStore;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE FIELD → SOURCE TABLE
@@ -405,7 +406,7 @@ pub struct A2aLegSources<'k> {
     /// the last rates this node genuinely resolved and never a figure nobody wrote.
     pub rates: Option<Arc<crate::root::kernel::RootRates>>,
     /// The node's one store, for this plane's durable records.
-    pub store: Option<Arc<dyn busbar_api::Store>>,
+    pub store: Option<Arc<dyn AbiStore>>,
     /// What the usage unit folds against.
     pub meter_policy: Option<MeterPolicyHandle>,
     /// What the scope unit reads at approve.

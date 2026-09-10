@@ -68,6 +68,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore, StoreError};
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
@@ -217,7 +218,7 @@ pub struct LegKey<'a> {
 /// one. There is no second path: a plane holds no store, and a unit knows no schema, so the mapping
 /// belongs exactly here and nowhere else.
 pub struct RecordLegs {
-    store: Arc<dyn busbar_api::Store>,
+    store: Arc<dyn AbiStore>,
 }
 
 impl std::fmt::Debug for RecordLegs {
@@ -233,7 +234,7 @@ impl RecordLegs {
     /// floor admits. A deployment that named none gets the in-tree memory store, which is the
     /// shipped default and the reason a zero-configuration boot has somewhere to put a task.
     #[must_use]
-    pub fn new(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn new(store: Arc<dyn AbiStore>) -> Self {
         RecordLegs { store }
     }
 
@@ -275,7 +276,7 @@ impl RecordLegs {
         body: &[u8],
     ) -> Result<LegResult, LegError> {
         let kind = schema.as_str();
-        let fail = |e: busbar_api::StoreError| LegError::Store(e.0);
+        let fail = |e: StoreError| LegError::Store(e.0);
         match op {
             records::OP_GET => Ok(LegResult {
                 body: self.store.get_plane_record(kind, key.id).map_err(fail)?,
@@ -298,8 +299,8 @@ impl RecordLegs {
                 // a scan of a top-level kind is the whole kind. Which of the two a schema wants is
                 // carried by the leg's key, not guessed from the schema.
                 let selector = match key.parent {
-                    Some(parent) => busbar_api::PlaneSelector::Parent(parent.to_string()),
-                    None => busbar_api::PlaneSelector::All,
+                    Some(parent) => PlaneSelector::Parent(parent.to_string()),
+                    None => PlaneSelector::All,
                 };
                 Ok(LegResult {
                     bodies: self
@@ -352,17 +353,17 @@ impl RecordLegs {
     }
 
     /// The neutral envelope one write goes into.
-    fn record(&self, kind: &str, key: &LegKey<'_>, body: &[u8]) -> busbar_api::PlaneRecord {
-        busbar_api::PlaneRecord {
+    fn record(&self, kind: &str, key: &LegKey<'_>, body: &[u8]) -> PlaneRecord {
+        PlaneRecord {
             kind: kind.to_string(),
             id: key.id.to_string(),
             parent: key.parent.map(str::to_string),
             seq: key.seq,
             ts: key.ts,
             disposition: if key.terminal {
-                busbar_api::PlaneDisposition::Terminal
+                PlaneDisposition::Terminal
             } else {
-                busbar_api::PlaneDisposition::Active
+                PlaneDisposition::Active
             },
             body: body.to_vec(),
         }
@@ -393,7 +394,7 @@ impl RecordLegs {
 
 /// The same legs, over a store that publishes the CONTRACT's three record verbs.
 ///
-/// [`RecordLegs`] above binds to `busbar_api::Store` and is the 1.5.5 path: eight kind-tagged
+/// [`RecordLegs`] above binds to `AbiStore` and is the 1.5.5 path: eight kind-tagged
 /// operations, byte for byte what the previous release's callers drive. This one binds to
 /// `busbar_contract::kinds::RecordSink` — `record_put`, `record_get`, `record_scan` — which is what
 /// a store-kind plugin actually implements, and it is the binding a deployment that named a

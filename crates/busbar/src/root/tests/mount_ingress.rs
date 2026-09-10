@@ -6,6 +6,7 @@
 //! answer about one caller, and it is per-arrival rather than per-process.
 
 use super::*;
+use busbar_api::{PlaneRequestCtx, VirtualKey};
 
 /// THE DEPLOYMENT's own engine host, minted over a bare test app exactly as the composition root
 /// mints one. Not a stub: what these cells assert about the host is that ONE of them reaches every
@@ -19,7 +20,7 @@ fn a_host() -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
 /// `BootIngress`, so the shape of what the boot hands the seam is written once.
 pub(crate) fn minted(
     host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-) -> impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static {
+) -> impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static {
     move |gov, caller_token| {
         ArrivalCtx::new(busbar_substrate::ingress::arrival::ArrivalPayload {
             host: Arc::clone(&host),
@@ -37,10 +38,10 @@ fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayl
 
 /// A governance context naming one key by its identifier, for a cell that only has to tell two
 /// callers apart. Built from the public type's own shape and nothing else.
-fn ctx_for(credential: Option<&str>) -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx {
+fn ctx_for(credential: Option<&str>) -> PlaneRequestCtx {
+    PlaneRequestCtx {
         key: credential.map(|c| {
-            Arc::new(busbar_api::VirtualKey {
+            Arc::new(VirtualKey {
                 id: c.to_string(),
                 ..Default::default()
             })
@@ -110,9 +111,7 @@ fn every_arrival_on_one_mount_reaches_the_one_host_the_boot_sealed() {
 /// attribute to this line.
 #[test]
 fn the_caller_token_is_the_secret_the_driven_path_carries() {
-    let source = BootIngress::new(minted(a_host()), |_| busbar_api::PlaneRequestCtx {
-        key: None,
-    });
+    let source = BootIngress::new(minted(a_host()), |_| PlaneRequestCtx { key: None });
     let token =
         |credential: Option<&str>| payload(&source.arrival(credential)).caller_token.clone();
 

@@ -72,6 +72,7 @@ use tower::ServiceExt as _;
 use crate::root::durability::Durability;
 use crate::root::mount_ingress::BootIngress;
 use crate::root::units_llm::LlmNode;
+use busbar_api::{operation::Operation, PlaneRequestCtx, VirtualKey};
 
 /// The one dialect these cells speak, and the address its ladder rung names.
 const PROTO: &str = busbar_llm::proto_codec::PROTO_OPENAI;
@@ -179,7 +180,7 @@ fn a_surface_underneath() -> axum::Router {
 /// posting is keyed by principal, and two legs compared under two principals are two rows.
 struct Deployment {
     app: Arc<busbar_core::state::App>,
-    key: Arc<busbar_api::VirtualKey>,
+    key: Arc<VirtualKey>,
     book: Arc<Mutex<Durability>>,
     node: LlmNode,
     server: MockServer,
@@ -193,7 +194,7 @@ async fn mounted(streamed: bool) -> Mounted {
         d.node,
         Arc::new(BootIngress::new(
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
-            move |_| busbar_api::PlaneRequestCtx {
+            move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
         )),
@@ -212,7 +213,7 @@ async fn mounted(streamed: bool) -> Mounted {
 }
 
 /// Compose one deployment, resolving every caller to `caller` where one is handed in.
-async fn deployment(streamed: bool, caller: Option<Arc<busbar_api::VirtualKey>>) -> Deployment {
+async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployment {
     busbar_llm::testkit::install_test_seams();
     busbar_core::metrics::init();
     priced();
@@ -454,7 +455,7 @@ fn head(book: &Arc<Mutex<Durability>>) -> String {
 }
 
 /// The link one unit left on the principal's chain, as the four fields an operator reads.
-fn links(key: &busbar_api::VirtualKey) -> Vec<(String, String, String, u16)> {
+fn links(key: &VirtualKey) -> Vec<(String, String, String, u16)> {
     busbar_core::proxy::reqlog::REQUESTS
         .records_for(&key.id)
         .into_iter()
@@ -542,7 +543,7 @@ async fn one_request_through_either_door_leaves_one_chain_head_and_one_link() {
 async fn one_request_each_way() -> Option<(
     Arc<Mutex<Durability>>,
     Arc<Mutex<Durability>>,
-    Arc<busbar_api::VirtualKey>,
+    Arc<VirtualKey>,
 )> {
     // LEG 1 — THE DRIVEN DOOR. The arrival this plane's own body-model ingress composes, walked
     // through `LlmNode::answer`, which is the entry point the switched-over ingress table installs.
@@ -553,11 +554,11 @@ async fn one_request_each_way() -> Option<(
         .answer(
             busbar_llm::unit::walk::WalkArrival {
                 host: busbar_core::plane_host::engine_host(&driven.app),
-                gov: busbar_api::PlaneRequestCtx {
+                gov: PlaneRequestCtx {
                     key: Some(Arc::clone(&key)),
                 },
                 proto: PROTO,
-                operation: busbar_api::operation::Operation::CHAT,
+                operation: Operation::CHAT,
                 caller_token: Some("sk-mounted".to_string()),
                 headers: caller_headers(),
                 body: axum::body::Bytes::from(chat_body(false)),
@@ -584,7 +585,7 @@ async fn one_request_each_way() -> Option<(
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(
                 &second.app,
             )),
-            move |_| busbar_api::PlaneRequestCtx {
+            move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
         )),
@@ -620,7 +621,7 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
         d.node,
         Arc::new(BootIngress::new(
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
-            move |_| busbar_api::PlaneRequestCtx {
+            move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
         )),
@@ -687,7 +688,7 @@ async fn the_boots_own_composition_answers_this_planes_address_from_the_mounted_
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
-            move |_| busbar_api::PlaneRequestCtx {
+            move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
         )),
@@ -740,7 +741,7 @@ async fn a_plane_whose_row_refuses_leaves_its_addresses_on_the_surface_underneat
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
-            move |_| busbar_api::PlaneRequestCtx {
+            move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
         )),

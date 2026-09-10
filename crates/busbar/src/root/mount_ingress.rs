@@ -47,6 +47,7 @@
 
 use std::sync::Arc;
 
+use busbar_api::PlaneRequestCtx;
 use busbar_substrate::ingress::arrival::ArrivalCtx;
 
 /// THE ONE QUESTION A MOUNTED LEG ASKS ITS BOOT, per arrival.
@@ -74,7 +75,7 @@ pub trait ArrivalSource: Send + Sync + 'static {
 ///
 /// A name rather than the type spelled inline, because spelled inline it is unreadable and what it
 /// says is simple: given what this caller presented — or nothing — who is it.
-type Resolve = dyn Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync;
+type Resolve = dyn Fn(Option<&str>) -> PlaneRequestCtx + Send + Sync;
 
 /// How the boot boxes the deployment's own arrival around one caller's resolved half.
 ///
@@ -82,7 +83,7 @@ type Resolve = dyn Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync
 /// context — the engine host — is the DEPLOYMENT's and was minted by the boot. The boot writes this
 /// closure at the one site it holds that host, so the host's type is spelled where the host is
 /// made and nowhere else.
-type Mint = dyn Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync;
+type Mint = dyn Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync;
 
 /// THE COMPOSITION ROOT'S ANSWER, sealed once and shared by every arrival on one mount.
 ///
@@ -102,8 +103,8 @@ pub struct BootIngress {
 impl BootIngress {
     /// Seal one deployment's ingress source.
     pub fn new(
-        mint: impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
-        resolve: impl Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync + 'static,
+        mint: impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
+        resolve: impl Fn(Option<&str>) -> PlaneRequestCtx + Send + Sync + 'static,
     ) -> Self {
         BootIngress {
             mint: Box::new(mint),
@@ -183,10 +184,10 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
 /// boxes the deployment's arrival around the caller's resolved half. See [`Mint`].
 #[must_use]
 pub fn boot_ingress(
-    mint: impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
+    mint: impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
     governance: Option<Arc<busbar_core::governance::GovState>>,
 ) -> BootIngress {
-    BootIngress::new(mint, move |credential| busbar_api::PlaneRequestCtx {
+    BootIngress::new(mint, move |credential| PlaneRequestCtx {
         key: credential
             .and_then(presented_secret)
             .zip(governance.clone())

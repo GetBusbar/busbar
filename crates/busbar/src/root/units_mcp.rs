@@ -47,7 +47,9 @@
 
 use std::sync::Arc;
 
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
+use busbar_api::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore, StoreError, VirtualKey,
+};
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
     Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
@@ -1020,7 +1022,7 @@ impl Records {
             });
         }
         let kind = leg.schema.as_str();
-        let map = |e: busbar_api::StoreError| RecordRefusal::Store(e.0);
+        let map = |e: StoreError| RecordRefusal::Store(e.0);
         // THE CATALOGUE IS THE SNAPSHOT'S — see the type's own header. Answered before the store is
         // asked so a store that happens to hold rows under this kind is never a second catalogue.
         if leg.schema == records::SCHEMA_CATALOGUE {
@@ -1053,7 +1055,7 @@ impl Records {
         &self,
         leg: &RecordLeg<'_>,
         kind: &str,
-        map: impl Fn(busbar_api::StoreError) -> RecordRefusal,
+        map: impl Fn(StoreError) -> RecordRefusal,
     ) -> Result<RecordAnswer, RecordRefusal> {
         match leg.op {
             records::OP_GET => self
@@ -1842,7 +1844,7 @@ pub struct McpBindings<'r> {
     /// gate, for the whole tree: with no principal there is no grant to narrow. It is not a way past
     /// the gate, and it is not this file's to reinterpret — [`visible_rows`] hands it to the same
     /// function the existing server's listing asks, with the same two grants in the same order.
-    pub caller_key: Option<&'r busbar_api::VirtualKey>,
+    pub caller_key: Option<&'r VirtualKey>,
 }
 
 /// THE ENTITLEMENT WALK OVER THE ROWS, for one caller.
@@ -1865,7 +1867,7 @@ pub struct McpBindings<'r> {
 #[must_use]
 pub fn visible_rows(
     rows: Vec<busbar_plane_mcp::catalogue::Row>,
-    key: Option<&busbar_api::VirtualKey>,
+    key: Option<&VirtualKey>,
     now: u64,
 ) -> Vec<busbar_plane_mcp::catalogue::Row> {
     use busbar_substrate::trust::validate::{validate_visibility, Grant};

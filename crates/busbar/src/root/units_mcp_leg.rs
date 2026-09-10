@@ -77,6 +77,7 @@ use crate::root::units_mcp::{
     claim_key, pool_key, required_scopes, Arrived, Catalogue, ClassPrices, Clocks, McpBindings,
     McpDraft, McpUnits, Pools, Records,
 };
+use busbar_api::Store as AbiStore;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE FIELD → SOURCE TABLE
@@ -337,7 +338,7 @@ pub struct McpLegSources<'k> {
     /// flat fee lives behind the cost unit's field and only two crates may read it.
     pub pricer: Option<Pricer>,
     /// The node's one store, for this plane's durable records.
-    pub store: Option<Arc<dyn busbar_api::Store>>,
+    pub store: Option<Arc<dyn AbiStore>>,
     /// What the usage unit folds against.
     pub meter_policy: Option<MeterPolicyHandle>,
     /// What the scope unit reads at approve.

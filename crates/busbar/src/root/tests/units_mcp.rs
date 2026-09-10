@@ -10,6 +10,7 @@ use busbar_unit_trust::lane::BreakerQuery;
 use busbar_unit_trust::net::{Denylist, GuardPolicy};
 // The implementation file stopped naming it when the boot seal moved out; the group-table fixture
 // below still builds one, so the import belongs where the construction is.
+use busbar_api::{MeteringDelta, MeteringRow, ScopeRef, StoreResult, UsageLedger, VirtualKey};
 use std::collections::BTreeMap;
 
 /// A resolver that answers every name with one public address.
@@ -48,44 +49,40 @@ fn seam() -> NetSeam<'static> {
 struct SilentStore;
 
 impl AbiStore for SilentStore {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(&self, _key: &VirtualKey) -> StoreResult<()> {
         Ok(())
     }
 
-    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, _id: &str) -> StoreResult<Option<VirtualKey>> {
         Ok(None)
     }
 
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         Ok(Vec::new())
     }
 
-    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> StoreResult<()> {
         Ok(())
     }
 
-    fn get_usage(
-        &self,
-        _bucket_id: &str,
-        _window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> StoreResult<UsageLedger> {
+        Ok(UsageLedger::default())
     }
 
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        _ledger: &UsageLedger,
+    ) -> StoreResult<()> {
         Ok(())
     }
 
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
         Ok(())
     }
 
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         Ok(Vec::new())
     }
 }
@@ -1872,7 +1869,7 @@ impl Node {
         pools: &'r Pools,
         chain: Option<&'r BucketChain>,
         dispatch: Option<&'r dyn MountDispatch>,
-        caller_key: Option<&'r busbar_api::VirtualKey>,
+        caller_key: Option<&'r VirtualKey>,
     ) -> McpUnits<'r> {
         McpUnits::new(
             McpBindings {
@@ -2417,8 +2414,8 @@ fn three_rows() -> Vec<busbar_plane_mcp::catalogue::Row> {
 }
 
 /// A governance key scoped to exactly these pairs.
-fn key_scoped_to(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key_scoped_to(pairs: &[(&str, &str)]) -> VirtualKey {
+    VirtualKey {
         id: "k1".to_string(),
         name: "k1".to_string(),
         generation_hash: String::new(),
@@ -2426,7 +2423,7 @@ fn key_scoped_to(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
         allowed_scopes: Some(
             pairs
                 .iter()
-                .map(|(k, v)| busbar_api::ScopeRef {
+                .map(|(k, v)| ScopeRef {
                     kind: (*k).to_string(),
                     value: (*v).to_string(),
                 })

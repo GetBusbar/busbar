@@ -58,6 +58,7 @@ use crate::root::mount_ingress::ArrivalSource;
 use crate::root::plane_mount;
 use crate::root::units_llm::ArrivalPayload;
 use crate::root::units_llm::LlmNode;
+use busbar_api::{operation::Operation, PlaneRequestCtx};
 
 /// THE LLM PLANE'S LEG, assembled once.
 ///
@@ -90,7 +91,7 @@ struct Named {
     /// Which dialect sent these bytes, by the plane's own ladder.
     dialect: &'static str,
     /// Which operation they name, by that dialect's own endpoint resolution.
-    operation: busbar_api::operation::Operation,
+    operation: Operation,
 }
 
 impl LlmLeg {
@@ -203,7 +204,7 @@ impl LlmLeg {
         };
         let walk_arrival = WalkArrival {
             host: Arc::clone(&payload.host),
-            gov: busbar_api::PlaneRequestCtx {
+            gov: PlaneRequestCtx {
                 key: payload.gov.key.clone(),
             },
             proto: named.dialect,

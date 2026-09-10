@@ -7,6 +7,7 @@
 //! through the mount, where a client can see it.
 
 use super::*;
+use busbar_api::PlaneRequestCtx;
 
 /// One arrival over these facts and these bytes, composed the way the mount composes one.
 fn probe<T>(
@@ -116,7 +117,7 @@ fn a_leg() -> LlmLeg {
             crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(
                 &busbar_core::test_support::TestApp::new().build(),
             )),
-            |_| busbar_api::PlaneRequestCtx { key: None },
+            |_| PlaneRequestCtx { key: None },
         )),
     )
 }
