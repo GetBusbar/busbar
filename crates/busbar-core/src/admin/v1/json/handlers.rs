@@ -4696,9 +4696,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     }
 
     use crate::admin::v1::contract::{
-        AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        AdminAuthView, AgentDefView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
+        HookHealthView, HookView, InfoView, ModelView, NamedDefShape, NamedDefView, Page,
+        PluginInstallView, PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView,
+        UsageView,
     };
 
     // Info & topology.
@@ -4997,10 +4998,24 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
-        typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
-        typed!(&item, "get", "200", NamedDefView);
-        typed!(&item, "put", "200", NamedDefView);
-        typed!(&settings, "patch", "200", NamedDefView);
+        // The section says which VIEW its live entries carry, and the document names that concrete
+        // type — never a union of every view that exists, which would move the published
+        // `Page_NamedDefView` `$ref` on `/identity-providers` and `/export` to describe a section a
+        // 1.5.5 client cannot reach.
+        match section.named_def_shape() {
+            NamedDefShape::Def => {
+                typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
+                typed!(&item, "get", "200", NamedDefView);
+                typed!(&item, "put", "200", NamedDefView);
+                typed!(&settings, "patch", "200", NamedDefView);
+            }
+            NamedDefShape::Agent => {
+                typed!(root.as_ref(), "get", "200", Page<AgentDefView>);
+                typed!(&item, "get", "200", AgentDefView);
+                typed!(&item, "put", "200", AgentDefView);
+                typed!(&settings, "patch", "200", AgentDefView);
+            }
+        }
         body_raw!(
             &item,
             "put",

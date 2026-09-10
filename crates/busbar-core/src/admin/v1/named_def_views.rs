@@ -9,7 +9,7 @@
 //! by construction rather than by each projection remembering. Keeping them together is what makes
 //! that rule checkable by reading one file; a new section's projection lands here beside the others.
 
-use super::contract::NamedDefView;
+use super::contract::{NamedDefEntry, NamedDefView};
 use super::service::settings_keys;
 
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
@@ -26,9 +26,6 @@ pub(super) fn identity_provider_view(
         max_admin_scope: cfg.max_admin_scope.clone(),
         token_configured: Some(cfg.token.is_some()),
         browser_login_configured: Some(cfg.browser_login.is_some()),
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
         unparseable: None,
     }
 }
@@ -45,9 +42,6 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
         unparseable: None,
     }
 }
@@ -63,11 +57,16 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
 /// by a boot log line, which an operator who does not tail logs can never discover. `module` and
 /// `settings_keys` are a best-effort projection of the RAW stored document (still key names only, so
 /// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
+///
+/// It is the SHARED view on EVERY section, including one whose live entries carry their own
+/// ([`super::contract::AgentDefView`]): this projects the raw stored `{module, settings}` document,
+/// which is the only shape an entry that failed to parse still has. A section's own view describes
+/// its TYPED config, and there is none here — that is what `unparseable` says.
 pub(super) fn unparseable_def_view(
     name: &str,
     entry: &crate::config::overlay::UnparseableNamedDef,
-) -> NamedDefView {
-    NamedDefView {
+) -> NamedDefEntry {
+    NamedDefEntry::Def(NamedDefView {
         name: name.to_string(),
         module: entry
             .raw
@@ -84,9 +83,6 @@ pub(super) fn unparseable_def_view(
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
         unparseable: Some(entry.error.clone()),
-    }
+    })
 }

@@ -159,6 +159,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         card_kid_prefix: Some(crate::a2a::sign::CARD_KID_PREFIX),
         named_def_list: Some(crate::a2a::admin_view::list),
         named_def_get: Some(crate::a2a::admin_view::get),
+        named_def_shape: Some(busbar_substrate::api::NamedDefShape::Agent),
         registry_contains: Some(crate::a2a::admin_view::contains),
         reresolve_gates: Some(crate::a2a::admin_view::reresolve_gates),
         #[cfg(feature = "openapi-schema")]

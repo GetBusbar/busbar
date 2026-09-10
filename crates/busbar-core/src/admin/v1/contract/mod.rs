@@ -610,7 +610,7 @@ pub(crate) struct HookView {
 /// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
 /// (`busbar_substrate::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
 /// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
-pub use busbar_substrate::api::NamedDefView;
+pub use busbar_substrate::api::{AgentDefView, NamedDefEntry, NamedDefShape, NamedDefView};
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
 /// `GET /api/v1/admin/groups/{name}`): the limit-tree read surface. Projects the `groups:` config

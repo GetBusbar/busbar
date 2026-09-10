@@ -167,6 +167,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         card_kid_prefix: None,
         named_def_list: Some(admin_view::list),
         named_def_get: Some(admin_view::get),
+        named_def_shape: Some(busbar_substrate::api::NamedDefShape::Def),
         registry_contains: Some(admin_view::contains),
         reresolve_gates: Some(admin_view::reresolve_gates),
         #[cfg(feature = "openapi-schema")]

@@ -133,6 +133,29 @@ impl NamedMapSection {
         !matches!(self, NamedMapSection::Plane(_))
     }
 
+    /// WHICH READ VIEW this section's live entries are projected onto — the data the OpenAPI
+    /// generator emits the section's response schema from.
+    ///
+    /// The two in-core sections are plugin-instance maps and serve the shared view. A PLANE section
+    /// answers from its own [`PlaneDecl::named_def_shape`](crate::plane::registry::PlaneDecl::named_def_shape),
+    /// so the generator asks the SECTION which shape it serves and core names view shapes rather
+    /// than planes — the same discipline [`NamedMapSection::singular`] and
+    /// [`NamedMapSection::requires_module`] already keep. A plane compiled out has no decl and is
+    /// never reached (its section is not in [`NamedMapSection::sections`] at all); it answers the
+    /// shared shape rather than panicking.
+    pub fn named_def_shape(self) -> busbar_substrate::api::NamedDefShape {
+        match self {
+            NamedMapSection::IdentityProviders | NamedMapSection::Export => {
+                busbar_substrate::api::NamedDefShape::Def
+            }
+            NamedMapSection::Plane(_) => {
+                crate::plane::registry::plane_decl_for_config_section(self.key())
+                    .and_then(|d| d.named_def_shape)
+                    .unwrap_or(busbar_substrate::api::NamedDefShape::Def)
+            }
+        }
+    }
+
     /// Whether this section's definitions carry a `max_admin_scope` TRUST CEILING — the one
     /// security-relevant asymmetry between the sections, kept as a predicate so the generic handler
     /// stays generic (see `admin::v1::json::named_map`'s ceiling guard).

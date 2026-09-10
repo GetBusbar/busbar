@@ -129,6 +129,48 @@
         ],
         "type": "object"
       },
+      "AgentDefView": {
+        "description": "ONE `agents:` REGISTRATION, as the admin read surface projects it — the `agents:` section's OWN\nview, not a widening of [`NamedDefView`].\n\nWHY A SECOND TYPE AND NOT THREE MORE OPTIONAL FIELDS. `agents:` first landed as three\n`skip_serializing_if` fields on [`NamedDefView`] plus a fourth on `module`, because an agent\nregistration has no backing plugin to name. The fourth is the one that cost: making `module`\nskippable took it out of the shared schema's `required` array, and that array is a 1.5.5\nPUBLISHED wire fact. A section that does not fit the shared spine needs its own view, exactly as\na section that does keeps the shared one unchanged; the alternative narrows what every already\nshipped client was told about `/identity-providers` and `/export` in order to describe a section\nthose clients cannot reach.\n\nThe rule the shared view states holds here word for word: SECRETS ARE NEVER PROJECTED. The\nbackend `url:` is not projected either — it is the real remote endpoint, this surface is\nreachable at READ-ONLY admin scope, and \"which third party is behind this name\" is the fact the\nrewrite-through-busbar posture keeps on the server side.",
+        "properties": {
+          "fingerprint_pinned": {
+            "description": "Whether an approved card FINGERPRINT is pinned yet. A registration with a root but no\nfingerprint is the normal state of a fresh entry awaiting approval, and it is the state an\noperator most needs to be able to see.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The registration NAME: the map key, and the token every reference site uses.",
+            "type": "string"
+          },
+          "pin_mechanism": {
+            "description": "Which authenticity root this registration is pinned to (`jws_issuer_key` | `cert_spki` |\n`mtls` | `unpinned`). Projected because an operator scanning a registration list needs to SEE\nwhich entries have no root; a mechanism that could only be discovered by reading the config\nfile is a mechanism nobody audits.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reverify_ttl": {
+            "description": "The re-verification cadence this registration carries, as written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings_keys": {
+            "description": "The KEY NAMES of the registration's opaque settings bag, sorted, WITHOUT their values — the\nsame redacted projection [`NamedDefView::settings_keys`] carries, under the same rule and for\nthe same reason. An empty bag ⇒ an empty list.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "settings_keys"
+        ],
+        "type": "object"
+      },
       "ApproveReq": {
         "additionalProperties": false,
         "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
@@ -1852,13 +1894,6 @@
               "null"
             ]
           },
-          "fingerprint_pinned": {
-            "description": "`agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a\nroot but no fingerprint is the normal state of a fresh entry awaiting approval, and it is\nthe state an operator most needs to be able to see.",
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
           "max_admin_scope": {
             "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no\n`none` token: `Scope::parse_ceiling` rejects it, because a ceiling\ncaps what a grant can reach and cannot express the absence of one.\n`None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted\nentirely for a section that carries no ceiling.",
             "type": [
@@ -1873,20 +1908,6 @@
           "name": {
             "description": "The instance NAME: the map key, and the token every reference site uses.",
             "type": "string"
-          },
-          "pin_mechanism": {
-            "description": "`agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |\n`cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration\nlist needs to SEE which entries have no root; a mechanism that could only be discovered by\nreading the config file is a mechanism nobody audits.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reverify_ttl": {
-            "description": "`agents` ONLY: the re-verification cadence this registration carries, as written. The\nbackend `url:` is deliberately NOT projected here: it is the real remote endpoint and is\nnever client-visible.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "settings_keys": {
             "description": "The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the\nredacted projection of `settings:`. Operator/API-owned and never interpreted here, but also\nnever a place a VALUE can leak from: a settings value may be a credential (see the type doc),\nand this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The\nvalues are readable only where they are writable: the config file and the config overlay.",
@@ -1912,6 +1933,7 @@
         },
         "required": [
           "name",
+          "module",
           "settings_keys"
         ],
         "type": "object"
@@ -1950,6 +1972,28 @@
           "reset",
           "config_version",
           "changed"
+        ],
+        "type": "object"
+      },
+      "Page_AgentDefView": {
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentDefView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -3111,7 +3155,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_NamedDefView"
+                  "$ref": "#/components/schemas/Page_AgentDefView"
                 }
               }
             },
@@ -3285,7 +3329,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/AgentDefView"
                 }
               }
             },
@@ -3381,7 +3425,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/AgentDefView"
                 }
               }
             },
@@ -3691,7 +3735,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/AgentDefView"
                 }
               }
             },

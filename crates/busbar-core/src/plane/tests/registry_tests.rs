@@ -61,6 +61,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     card_kid_prefix: None,
     named_def_list: None,
     named_def_get: None,
+    named_def_shape: None,
     registry_contains: None,
     reresolve_gates: None,
     #[cfg(feature = "openapi-schema")]
@@ -188,6 +189,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]
@@ -529,6 +531,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]
@@ -581,6 +584,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]
@@ -636,6 +640,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]
@@ -683,6 +688,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]
@@ -728,6 +734,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]

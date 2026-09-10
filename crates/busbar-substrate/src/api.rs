@@ -61,12 +61,13 @@ pub struct NamedDefView {
     // FROZEN PUBLISHED PROSE: this doc comment is the field's `description` in the served
     // `openapi.json`, a wire document judged as a JSON superset of the published one, so a
     // description that GROWS is an existing string leaf whose value changed rather than a new path
-    // beside the old. The 1.6.0 note therefore lives here, not above:
-    //   OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
-    //   `agents:`, whose entries describe endpoints somebody else runs
-    //   (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be
-    //   non-empty, so this can never be omitted for one that does.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    // beside the old.
+    //
+    // AND FROZEN PUBLISHED SHAPE: `module` is REQUIRED, exactly as 1.5.5 published it. It briefly
+    // carried `skip_serializing_if = "String::is_empty"`, so that the new `agents:` section could
+    // reuse this view for entries that have no module -- which took `module` out of the schema's
+    // `required` array and NARROWED a published 1.5.5 schema to buy a convenience. A section whose
+    // entries are not plugin instances gets its own view instead: see [`AgentDefView`].
     pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
@@ -89,22 +90,6 @@ pub struct NamedDefView {
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_login_configured: Option<bool>,
-    /// `agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |
-    /// `cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration
-    /// list needs to SEE which entries have no root; a mechanism that could only be discovered by
-    /// reading the config file is a mechanism nobody audits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pin_mechanism: Option<String>,
-    /// `agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a
-    /// root but no fingerprint is the normal state of a fresh entry awaiting approval, and it is
-    /// the state an operator most needs to be able to see.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fingerprint_pinned: Option<bool>,
-    /// `agents` ONLY: the re-verification cadence this registration carries, as written. The
-    /// backend `url:` is deliberately NOT projected here: it is the real remote endpoint and is
-    /// never client-visible.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reverify_ttl: Option<String>,
     /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
     /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
     /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
@@ -113,6 +98,94 @@ pub struct NamedDefView {
     /// log line. Absent (and omitted from the body) for every live definition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparseable: Option<String>,
+}
+
+/// ONE `agents:` REGISTRATION, as the admin read surface projects it — the `agents:` section's OWN
+/// view, not a widening of [`NamedDefView`].
+///
+/// WHY A SECOND TYPE AND NOT THREE MORE OPTIONAL FIELDS. `agents:` first landed as three
+/// `skip_serializing_if` fields on [`NamedDefView`] plus a fourth on `module`, because an agent
+/// registration has no backing plugin to name. The fourth is the one that cost: making `module`
+/// skippable took it out of the shared schema's `required` array, and that array is a 1.5.5
+/// PUBLISHED wire fact. A section that does not fit the shared spine needs its own view, exactly as
+/// a section that does keeps the shared one unchanged; the alternative narrows what every already
+/// shipped client was told about `/identity-providers` and `/export` in order to describe a section
+/// those clients cannot reach.
+///
+/// The rule the shared view states holds here word for word: SECRETS ARE NEVER PROJECTED. The
+/// backend `url:` is not projected either — it is the real remote endpoint, this surface is
+/// reachable at READ-ONLY admin scope, and "which third party is behind this name" is the fact the
+/// rewrite-through-busbar posture keeps on the server side.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct AgentDefView {
+    /// The registration NAME: the map key, and the token every reference site uses.
+    pub name: String,
+    /// The KEY NAMES of the registration's opaque settings bag, sorted, WITHOUT their values — the
+    /// same redacted projection [`NamedDefView::settings_keys`] carries, under the same rule and for
+    /// the same reason. An empty bag ⇒ an empty list.
+    pub settings_keys: Vec<String>,
+    /// Which authenticity root this registration is pinned to (`jws_issuer_key` | `cert_spki` |
+    /// `mtls` | `unpinned`). Projected because an operator scanning a registration list needs to SEE
+    /// which entries have no root; a mechanism that could only be discovered by reading the config
+    /// file is a mechanism nobody audits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_mechanism: Option<String>,
+    /// Whether an approved card FINGERPRINT is pinned yet. A registration with a root but no
+    /// fingerprint is the normal state of a fresh entry awaiting approval, and it is the state an
+    /// operator most needs to be able to see.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint_pinned: Option<bool>,
+    /// The re-verification cadence this registration carries, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverify_ttl: Option<String>,
+}
+
+/// ONE ENTRY of ONE named-definition section, whichever view that section serves.
+///
+/// `#[serde(untagged)]`, so the wire bytes are the variant's own bytes and nothing else: the generic
+/// named-map read path can carry either view without a single already-shipped section's body moving
+/// by a byte. Which variant a section produces is the SECTION'S choice, declared once
+/// ([`NamedDefShape`]) and never re-decided per call site.
+///
+/// A stored-but-UNPARSEABLE overlay entry is always [`NamedDefEntry::Def`], on every section: it is
+/// a best-effort projection of the RAW STORED DOCUMENT (`{module, settings}`, the shape the overlay
+/// persists), not of the section's typed config — which by definition did not parse.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum NamedDefEntry {
+    /// The shared plugin-instance view — `identity-providers:`, `export:`, `tools:`, and every
+    /// section's unparseable-overlay projection.
+    Def(NamedDefView),
+    /// The `agents:` registration view.
+    Agent(AgentDefView),
+}
+
+impl NamedDefEntry {
+    /// The entry's NAME — the map key, whichever view carries it. The generic read path sorts and
+    /// de-duplicates on this without knowing which section it is serving.
+    pub fn name(&self) -> &str {
+        match self {
+            NamedDefEntry::Def(v) => &v.name,
+            NamedDefEntry::Agent(v) => &v.name,
+        }
+    }
+}
+
+/// WHICH view a named-definition section's LIVE entries are projected onto — the section's own
+/// declaration, read by the OpenAPI generator so the document names the concrete view rather than a
+/// union of every view that exists.
+///
+/// It is data on the section, not a branch in the generator: the generator asks the section which
+/// shape it serves, the way the router asks it for its path and the write path asks it whether it
+/// requires a `module:`. Core therefore names view SHAPES, never a plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedDefShape {
+    /// Entries are PLUGIN INSTANCES: [`NamedDefView`], `module:` and all.
+    Def,
+    /// Entries are REMOTE REGISTRATIONS pinned to an authenticity root: [`AgentDefView`].
+    Agent,
 }
 
 /// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level

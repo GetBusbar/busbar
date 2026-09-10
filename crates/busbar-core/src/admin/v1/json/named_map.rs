@@ -624,7 +624,7 @@ async fn apply(
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct MutatedDefView {
     #[serde(flatten)]
-    def: crate::admin::v1::contract::NamedDefView,
+    def: crate::admin::v1::contract::NamedDefEntry,
     /// The plugin-route PATHS this mutation declared that the process cannot serve until it restarts,
     /// because the axum router registers each path once, at boot, and a config apply swaps only
     /// `Arc<App>`. Empty (and omitted) for every mutation that adds no such path — including every
@@ -638,7 +638,7 @@ pub(crate) struct MutatedDefView {
 
 impl MutatedDefView {
     /// Wrap one stored definition with the restart signal, if any.
-    fn new(def: crate::admin::v1::contract::NamedDefView, awaiting_restart: Vec<String>) -> Self {
+    fn new(def: crate::admin::v1::contract::NamedDefEntry, awaiting_restart: Vec<String>) -> Self {
         let note = (!awaiting_restart.is_empty()).then(|| {
             format!(
                 "stored and applied, EXCEPT the newly declared route(s) {} — each plugin route path \

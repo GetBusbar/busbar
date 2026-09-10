@@ -6,24 +6,30 @@
 //! registered agent through the plane's view seam and names no `crate::a2a` config type. The MCP-plane
 //! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
 //! [`busbar_substrate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
+//!
+//! The view is this section's OWN ([`busbar_substrate::api::AgentDefView`]), not the shared
+//! [`busbar_substrate::api::NamedDefView`]. An agent registration has no backing plugin to name, and
+//! borrowing the shared view for it meant making that view's `module` skippable — which took
+//! `module` out of a PUBLISHED 1.5.5 schema's `required` array to describe a section no 1.5.5 client
+//! can reach. A section that does not fit the shared spine brings its own view instead.
 
-use busbar_substrate::api::NamedDefView;
+use busbar_substrate::api::{AgentDefView, NamedDefEntry};
 
-/// Project one `agents:` DEFINITION onto the shared named-map view.
+/// Project one `agents:` DEFINITION onto this section's own named-map view.
 ///
 /// The backend `url:` is NOT projected. It is the real remote endpoint, this surface is reachable
 /// at read-only admin scope, and "which third party is behind this name" is exactly the fact the
 /// rewrite-through-busbar posture exists to keep on the server side. What IS projected is what an
 /// operator auditing trust needs and cannot get anywhere else: which root the entry is pinned to,
 /// whether a fingerprint has been approved yet, and how often it is re-checked.
-fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDefView {
-    NamedDefView {
+///
+/// The field SET and their order are the wire bytes this section already served — `name`,
+/// `settings_keys`, then the three trust columns — so moving off the shared view changes the served
+/// body by nothing at all. What it changes is the SHARED view, which gets its `module` back.
+fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> AgentDefView {
+    AgentDefView {
         name: name.to_string(),
-        module: String::new(),
         settings_keys: Vec::new(),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
         pin_mechanism: Some(
             serde_json::to_value(cfg.pin.mechanism)
                 .ok()
@@ -36,13 +42,12 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
                 .clone()
                 .unwrap_or_else(|| crate::a2a::config::DEFAULT_REVERIFY_TTL.to_string()),
         ),
-        unparseable: None,
     }
 }
 
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefEntry> {
     // Read the operator's `agents:` definitions off the plane's OWN runtime object through the
     // neutral `plane_slots` seam (`runtime_off_slots` → `agent_defs()`), the byte-analog of MCP's
     // `runtime_slots(slots).servers.servers` — no `slots.as_any().downcast::<App>()`. The a2a slot
@@ -54,7 +59,7 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
                 .agent_defs()
                 .agents
                 .iter()
-                .map(|(name, cfg)| agent_def_view(name, cfg))
+                .map(|(name, cfg)| NamedDefEntry::Agent(agent_def_view(name, cfg)))
                 .collect()
         })
         .unwrap_or_default()
@@ -64,12 +69,12 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 pub(crate) fn get(
     slots: &dyn busbar_substrate::plane_host::PlaneSlots,
     name: &str,
-) -> Option<NamedDefView> {
+) -> Option<NamedDefEntry> {
     // Off the plane's own slot through the neutral seam — `None` (plane absent) and a missing name
     // both answer `None`, byte-identical to the old empty-map lookup.
     crate::a2a::runtime_off_slots(slots)
         .and_then(|plane| plane.agent_defs().agents.get(name))
-        .map(|cfg| agent_def_view(name, cfg))
+        .map(|cfg| NamedDefEntry::Agent(agent_def_view(name, cfg)))
 }
 
 /// Attach the A2A trust verbs' typed schemas — the A2A half of

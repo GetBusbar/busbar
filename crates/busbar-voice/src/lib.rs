@@ -253,6 +253,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
+        named_def_shape: None,
         registry_contains: None,
         reresolve_gates: None,
         #[cfg(feature = "openapi-schema")]

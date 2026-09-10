@@ -30,7 +30,7 @@ use std::sync::Arc;
 use busbar_substrate::admin_verbs::{
     registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError,
 };
-use busbar_substrate::api::NamedDefView;
+use busbar_substrate::api::{NamedDefEntry, NamedDefView};
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
 ///
@@ -64,28 +64,25 @@ pub(crate) fn mcp_server_view(
         max_admin_scope: None,
         token_configured: None,
         browser_login_configured: None,
-        // THE A2A PLANE'S TRUST COLUMNS, absent here rather than filled in, and that is a merge
-        // decision rather than an omission. `agents:` added `pin_mechanism`/`fingerprint_pinned`/
-        // `reverify_ttl` to this shared view; this projection predates them and already answers the
-        // mechanism question through `module` above. Populating them here as well would put one
-        // fact in two fields of one response, and which one a reader trusts would be undefined.
-        // Converging the two projections on the typed columns is a change to THIS plane's wire
-        // shape and belongs to that plane's owner, not to the merge that made it possible.
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
+        // THE A2A PLANE'S TRUST COLUMNS ARE NOT ON THIS VIEW AT ALL any more, and that is the same
+        // merge decision stated more plainly than three `None`s could. `agents:` briefly added
+        // `pin_mechanism`/`fingerprint_pinned`/`reverify_ttl` to this SHARED view; this projection
+        // predates them and already answers the mechanism question through `module` above, so it
+        // never filled them in. They now live on that section's own `AgentDefView`, which is where a
+        // column only one section populates belongs. Converging the two projections on typed columns
+        // is still a change to THIS plane's wire shape and still belongs to this plane's owner.
         unparseable: None,
     }
 }
 
 /// Every registered MCP server, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/tools`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefEntry> {
     super::runtime_slots(slots)
         .servers
         .servers
         .iter()
-        .map(|(name, cfg)| mcp_server_view(name, cfg))
+        .map(|(name, cfg)| NamedDefEntry::Def(mcp_server_view(name, cfg)))
         .collect()
 }
 
@@ -93,12 +90,12 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 pub(crate) fn get(
     slots: &dyn busbar_substrate::plane_host::PlaneSlots,
     name: &str,
-) -> Option<NamedDefView> {
+) -> Option<NamedDefEntry> {
     super::runtime_slots(slots)
         .servers
         .servers
         .get(name)
-        .map(|cfg| mcp_server_view(name, cfg))
+        .map(|cfg| NamedDefEntry::Def(mcp_server_view(name, cfg)))
 }
 
 /// Attach the MCP trust verbs' typed success-body schemas — the MCP half of

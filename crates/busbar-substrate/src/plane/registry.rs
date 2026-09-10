@@ -380,7 +380,7 @@ pub struct PlaneDecl {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     pub named_def_list:
-        Option<fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>>,
+        Option<fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefEntry>>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
     /// twin of [`Self::named_def_list`], the plane half of `GET /api/v1/admin/<section>/{name}`.
@@ -390,7 +390,14 @@ pub struct PlaneDecl {
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     pub named_def_get:
-        Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefView>>,
+        Option<fn(&dyn crate::plane_host::PlaneSlots, &str) -> Option<crate::api::NamedDefEntry>>,
+
+    /// WHICH READ VIEW this plane's named-definition entries are projected onto — the data the
+    /// OpenAPI generator reads so the document names the concrete view type for this plane's
+    /// section instead of a union of every view that exists. `None` for a plane with no
+    /// named-definition map; a plane that declares [`Self::named_def_list`] declares this too.
+    #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+    pub named_def_shape: Option<crate::api::NamedDefShape>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
     /// check the admin write path consults so it names no plane registry type. `None` for a plane with
