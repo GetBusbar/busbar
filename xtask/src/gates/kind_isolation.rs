@@ -4681,6 +4681,378 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 }
 
 // ------------------------------------------------------------------------------------------------
+// rule 10 — STEP OWNERSHIP: one implementation per step, composed by every plane; no instance
+// dispatch on the kind-neutral side
+// ------------------------------------------------------------------------------------------------
+
+/// THE STEP'S OWNER, and every plane composes it.
+///
+/// `:plane-steps` asks whether a plane DECLARES the step. That question is satisfied by a face,
+/// which is exactly right — a face is what a plane owes. It is not the whole contract. The step's
+/// WORK — the state, the schedule, the classification, the book — belongs to one kind-neutral crate
+/// that answers the same question for every plane through that face, and the tree does not meet
+/// that today: the active health prober that keeps a lane's breaker state honest lives in
+/// `busbar-llm`, on a `tokio` timer of its own, and llm is the only plane that has one. Every other
+/// plane's breaker learns a destination is down by sending a request into it.
+///
+/// So this row measures the OTHER half: for every step of the strict list, is the step served ONCE,
+/// by a kind-neutral crate, for EVERY plane — or does one plane get a capability the others do not?
+///
+/// Three findings, one row, because they are three spellings of one rule:
+///
+/// * `unserved` — a plane's leg does not compose the step's owning unit at all. The plane runs the
+///   step's face and nothing behind it.
+/// * `plane-local-driver` — the loop, task or timer that DRIVES a step's state lives in a plane or
+///   in a legacy body rather than in the unit that owns the step. One plane has a capability the
+///   kind cannot lend to the others.
+/// * `instance-dispatch` — a kind-neutral (or still-serving legacy) crate branches on WHICH
+///   instance of a kind it is holding. `if scheme == "token_auth" else if scheme == "oidc"` is the
+///   shape: a face that is answered by a table in the caller is not a face.
+///
+/// NOT a restatement of `:vocab`. That row counts MENTIONS of another kind's vocabulary in a crate
+/// and scores them against a per-cell ledger that only goes down. This row names IMPLEMENTATIONS
+/// and DISPATCH SITES: a line is reported here only if it composes a step, drives one, or decides
+/// between instances — a doc line, a re-export or a type name is invisible to it. The two rows can
+/// both fire on one file; they are not measuring the same thing about it, and neither one's count
+/// is derived from the other's.
+pub const ROW_OWNERSHIP: &str = "kind-isolation:step-ownership";
+
+/// EVERY STEP'S OWNING UNIT — `ARCHITECTURE.md` §2.2's own assignment, restated as a predicate.
+///
+/// Read §2.2: "AUTHENTICATE auth unit ← …", "VERIFY trust unit ← plane.verify()", "APPROVE scope
+/// unit", "the door" (admission), "the egress unit dials and relays", "the usage unit reads what
+/// the unit actually cost", "the audit unit seals how the unit ended". Seven steps, seven units,
+/// one sentence each. The table is here rather than derived because the ASSIGNMENT is a design
+/// decision and the design document is where it is made; what is derived is the step LIST itself,
+/// which `plane_owned_steps` reads off the kernel's table so a new step cannot be forgotten.
+const STEP_OWNERS: &[(&str, &str)] = &[
+    ("authenticate", "busbar-unit-auth"),
+    ("verify", "busbar-unit-trust"),
+    ("approve", "busbar-unit-scope"),
+    ("admit", "busbar-unit-admission"),
+    ("route", "busbar-unit-egress"),
+    ("meter", "busbar-unit-usage"),
+    ("audit", "busbar-unit-audit"),
+];
+
+/// THE BODIES THAT STILL SERVE TRAFFIC AND HAVE NO KIND. They are not neutral — each one was grown
+/// around one plane — and they are not plugins either, so no other row's kind rules reach inside
+/// them. Every one of them is retiring (`D33`); until it has, a step it drives is a step the tree
+/// serves from a place that cannot serve it for everyone.
+const LEGACY_BODIES: &[&str] = &["busbar-core", "busbar-llm", "busbar-voice", "api"];
+
+/// The constructs that DRIVE something: a task, a thread, a timer. A step's state that is advanced
+/// by one of these is a step with a scheduler, and a scheduler is the thing that cannot be lent
+/// across a face by declaring a trait method.
+const DRIVER_CONSTRUCTS: &[&str] = &[
+    "tokio::spawn",
+    "spawn_blocking",
+    "thread::spawn",
+    "interval_at",
+    // `interval(` alone matched `fn rate_sweep_interval()` — a getter, not a ticker. The timer is
+    // always reached through the time module, and the qualified spelling is the one that says so.
+    "time::interval",
+    ".tick().await",
+];
+
+/// The words that say a driver is driving A STEP rather than doing housekeeping. A log flusher on a
+/// timer is not this row's business; a prober, a breaker sweep, a failover walk, a retry ladder or
+/// an accrual tick is.
+const STEP_MACHINERY: &[&str] = &[
+    "probe", "probers", "health", "breaker", "failover", "backoff", "accrual",
+];
+
+/// The tokens that make a line a DECISION rather than a mention. A line that names an instance and
+/// contains none of these is naming it — which is `:vocab`'s question, not this row's.
+const DECISION_TOKENS: &[&str] = &[
+    "if ",
+    "match ",
+    "==",
+    "!=",
+    "starts_with",
+    "ends_with",
+    "=> ",
+];
+
+/// Whether a crate is on the KIND-NEUTRAL side: the kernel, the capability and contract crates, the
+/// substrate, and every unit. These are the crates that must serve every instance of every kind
+/// through the kind's face, because serving one instance specially is the whole defect.
+fn is_kind_neutral(c: &CrateInfo) -> bool {
+    matches!(
+        c.kind,
+        Some("kernel") | Some("unit") | Some("contract") | Some("substrate") | Some("caps")
+    ) || matches!(
+        c.name.as_str(),
+        "busbar-kernel"
+            | "busbar-caps"
+            | "busbar-contract"
+            | "busbar-contract-transport"
+            | "busbar-substrate"
+            | "busbar-substrate-values"
+            | "busbar-grammar"
+            | "busbar-timing"
+            | "busbar-plugin"
+    ) || c.name.starts_with("busbar-unit-")
+}
+
+/// THE KNOWN INSTANCE VOCABULARY, DERIVED FROM THE TREE rather than listed beside it — the same
+/// discipline `vocabularies` already applies to planes and transports, widened to every kind that
+/// has instances. `busbar-plane-llm` proves `llm` is a plane instance; `busbar-transport-grpc`
+/// proves `grpc` is a transport instance; `store-memory` proves `memory` is a store instance. A
+/// kind that grows an instance grows this vocabulary on the same commit, and a hand list would not.
+fn instance_vocabulary(crates: &[CrateInfo]) -> BTreeMap<String, &'static str> {
+    let mut out: BTreeMap<String, &'static str> = BTreeMap::new();
+    for c in crates {
+        let Some(kind) = c.kind else { continue };
+        // A unit is neutral by construction: its remainder says what it DOES, never what it is an
+        // instance of, and `:name` already refuses a unit named after another kind's instance.
+        if kind == "unit" || kind == "root" {
+            continue;
+        }
+        for part in [c.remainder.join("-"), c.remainder.join("_")] {
+            if part.len() >= 3 {
+                out.entry(part).or_insert(kind);
+            }
+        }
+        if let Some(first) = c.remainder.first() {
+            if first.len() >= 3 {
+                out.entry(first.clone()).or_insert(kind);
+            }
+        }
+    }
+    out
+}
+
+/// The composition root's leg for one plane, if the root has one: `root/units_<key>.rs` or
+/// `root/units_<key>/mod.rs`. A plane with no leg is itself the finding — the root composes nothing
+/// for it, so it composes no unit for any step.
+fn plane_leg_files(cx: &Ctx, key: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for rel in [
+        format!("crates/busbar/src/root/units_{key}.rs"),
+        format!("crates/busbar/src/root/units_{key}/mod.rs"),
+    ] {
+        if let Ok(text) = cx.read(&rel) {
+            out.push((rel, text));
+        }
+    }
+    out
+}
+
+fn rule_step_ownership(cx: &Ctx, crates: &[CrateInfo]) -> Row {
+    let steps = match plane_owned_steps(cx) {
+        Ok(s) => s,
+        Err(e) => {
+            return Row::fail(
+                ROW_OWNERSHIP,
+                "the strict step list could not be read",
+                format!(
+                    "{e} — the step list is this row's own input, and a step nobody owns reads \
+                     exactly like a step every plane is served for."
+                ),
+            )
+        }
+    };
+    let planes: Vec<&CrateInfo> = crates.iter().filter(|c| c.kind == Some("plane")).collect();
+    if planes.is_empty() {
+        return Row::fail(
+            ROW_OWNERSHIP,
+            "no data plane reached the step-ownership rule",
+            "0 plane crate(s); zero planes are served by zero units, which reads exactly like \
+             every plane being served by the same one."
+                .to_string(),
+        );
+    }
+    let owners: BTreeMap<&str, &str> = STEP_OWNERS.iter().copied().collect();
+    let mut offenders: Vec<String> = Vec::new();
+
+    // (1) UNSERVED — the root's leg for this plane never names the unit that owns the step.
+    for p in &planes {
+        let key = p.remainder.first().cloned().unwrap_or_default();
+        let legs = plane_leg_files(cx, &key);
+        if legs.is_empty() {
+            offenders.push(format!(
+                "unserved\tcrates/busbar/src/root/units_{key}.rs\t{} has no composition leg in the \
+                 root at all, so it composes no unit for any of the {} step(s) of the strict list",
+                p.name,
+                steps.len()
+            ));
+            continue;
+        }
+        for step in &steps {
+            let Some(owner) = owners.get(step.as_str()) else {
+                offenders.push(format!(
+                    "unowned-step\t{STEP_TABLE_FILE}\t`{step}` is on the strict step list and \
+                     STEP_OWNERS names no kind-neutral crate that owns it — a step with no owner is \
+                     a step every plane implements privately"
+                ));
+                continue;
+            };
+            let symbol = owner.replace('-', "_");
+            let served = legs.iter().any(|(_, text)| {
+                scan::production_lines(text)
+                    .iter()
+                    .any(|(_, code)| code.contains(&symbol))
+            });
+            if !served {
+                offenders.push(format!(
+                    "unserved\t{}\t{}'s `{step}` step is not served by `{owner}`: the root's leg \
+                     for this plane never names it, so whatever answers `{step}` for {} is not the \
+                     crate that answers it for the other planes",
+                    legs[0].0, p.name, p.name
+                ));
+            }
+        }
+    }
+
+    // (2) PLANE-LOCAL DRIVER — a task, thread or timer advancing a step's state inside a plane or a
+    // legacy body. This is the health prober, by name.
+    let mut driven: Vec<&CrateInfo> = planes.clone();
+    driven.extend(
+        crates
+            .iter()
+            .filter(|c| LEGACY_BODIES.contains(&c.name.as_str())),
+    );
+    for c in &driven {
+        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
+            continue;
+        };
+        for f in &files {
+            let rel = f.rel_str();
+            // NARROWED HERE, NEVER IN `is_shipped_source`. Widening the shared predicate would
+            // have taken `src/bin/` and `test_support/` away from `:control`, `:vocab` and
+            // `:plane-steps` too — a new row is not entitled to make an old one see less. A
+            // developer binary and a test-support module ship in the repository but they serve no
+            // request, so THIS rule skips them and every other rule still reads them.
+            if !is_shipped_source(&rel)
+                || rel.contains("/src/bin/")
+                || rel.contains("/test_support/")
+            {
+                continue;
+            }
+            // THE CONSTRUCT IS THE LINE'S, THE SUBJECT IS ITS NEIGHBOURHOOD'S.
+            // `health.rs:197` is `tokio::spawn(async move {` and nothing else — the word that says
+            // what is being spawned is on the function this task is the body of, a dozen lines up.
+            // A rule demanding both on ONE line reported zero findings over the file whose whole
+            // purpose is the schedule. A rule reading the subject off the WHOLE FILE went the other
+            // way and reported a TLS certificate reloader, because a 900-line file contains every
+            // word. The neighbourhood is the honest reading: the machinery word is the one the
+            // reader of the spawn site can see without scrolling.
+            const NEIGHBOURHOOD: usize = 12;
+            let lines: Vec<String> = f.text.lines().map(str::to_lowercase).collect();
+            for (lineno, code) in scan::production_lines(&f.text) {
+                if !DRIVER_CONSTRUCTS.iter().any(|d| code.contains(d)) {
+                    continue;
+                }
+                let lo = lineno.saturating_sub(NEIGHBOURHOOD + 1);
+                let hi = usize::min(lineno + NEIGHBOURHOOD, lines.len());
+                let near = lines[lo..hi].join(" ");
+                let Some(word) = STEP_MACHINERY.iter().find(|w| near.contains(**w)) else {
+                    continue;
+                };
+                offenders.push(format!(
+                    "plane-local-driver\t{rel}:{lineno}\t{} runs a schedule of its own beside \
+                     `{word}`. A step's schedule is the step's: a timer here advances the state for \
+                     this one crate, and every other plane gets the step without it",
+                    c.name
+                ));
+            }
+        }
+    }
+
+    // (3) INSTANCE DISPATCH — the kind-neutral side, and the legacy bodies that still serve
+    // traffic, deciding WHICH instance they are holding.
+    // THE NEEDLES ARE BUILT ONCE. They were built per LINE per WORD — one `format!` allocation for
+    // every instance in the tree, for every production line of every neutral and legacy crate, on
+    // every one of the self-test's planted re-runs. The gate hit its 300 s ceiling and reported
+    // itself hung, which is a rule that measured nothing at all.
+    let vocab = instance_vocabulary(crates);
+    let needles: Vec<(String, String, &'static str)> = vocab
+        .iter()
+        .map(|(w, k)| (w.clone(), format!("\"{w}\""), *k))
+        .collect();
+    for c in crates {
+        let neutral = is_kind_neutral(c);
+        let legacy = LEGACY_BODIES.contains(&c.name.as_str());
+        if !neutral && !legacy {
+            continue;
+        }
+        let side = if neutral { "kind-neutral" } else { "legacy" };
+        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
+            continue;
+        };
+        for f in &files {
+            let rel = f.rel_str();
+            if !is_shipped_source(&rel) {
+                continue;
+            }
+            for (lineno, code) in scan::production_lines(&f.text) {
+                // The operand must be a LITERAL: `x == "oidc"` is dispatch, `x == other.scheme` is
+                // a comparison of two values the caller was handed and is nobody's business here.
+                // So a line with no quote in it cannot be a dispatch site, and that one check
+                // retires the overwhelming majority of lines before any word is looked for.
+                if !code.contains('"') {
+                    continue;
+                }
+                if !DECISION_TOKENS.iter().any(|t| code.contains(t)) {
+                    continue;
+                }
+                for (word, quoted, kind) in &needles {
+                    // A crate's own instance is not dispatch. `busbar-plane-llm` naming `llm` is
+                    // the crate saying what it is, which `:name` and `:vocab` already govern.
+                    if c.instance.as_deref() == Some(word.as_str()) {
+                        continue;
+                    }
+                    if !code.contains(quoted.as_str()) {
+                        continue;
+                    }
+                    offenders.push(format!(
+                        "instance-dispatch\t{rel}:{lineno}\t{} is {side} and decides on the literal \
+                         `{quoted}` — one instance of the `{kind}` kind. A kind is served through \
+                         its face; a crate that branches on which instance it is holding has \
+                         written the instance's behaviour into the neutral side, where the next \
+                         instance cannot reach it",
+                        c.name
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    offenders.sort();
+    offenders.dedup();
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_OWNERSHIP,
+            "every step is served once, for every plane, and nothing branches on an instance",
+            format!(
+                "{} plane(s) × {} step(s), 0 finding(s); owners: {}",
+                planes.len(),
+                steps.len(),
+                STEP_OWNERS
+                    .iter()
+                    .map(|(s, o)| format!("{s}={o}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        );
+    }
+    Row::fail(
+        ROW_OWNERSHIP,
+        "a step is served for one plane and not the others, or the neutral side branches on an \
+         instance",
+        format!(
+            "{} finding(s) over {} plane(s) × {} step(s): {}",
+            offenders.len(),
+            planes.len(),
+            steps.len(),
+            offenders.join(" | ")
+        ),
+    )
+}
+
+// ------------------------------------------------------------------------------------------------
 // rule 9 — one wire, one registration
 // ------------------------------------------------------------------------------------------------
 
@@ -5309,6 +5681,7 @@ impl Gate for KindIsolationGate {
             owed.push(ROW_SHAPE.to_string());
             owed.push(ROW_TESTKIT.to_string());
             owed.push(ROW_CONTROL.to_string());
+            owed.push(ROW_OWNERSHIP.to_string());
         }
         owed
     }
@@ -5353,6 +5726,7 @@ impl Gate for KindIsolationGate {
                 rows.push(rule_wires(cx, &crates));
                 if self.ship {
                     rows.push(rule_control(cx, &crates));
+                    rows.push(rule_step_ownership(cx, &crates));
                     rows.push(Row::fail(
                         ROW_SHAPE,
                         "the kind registry file did not read",
@@ -5419,6 +5793,7 @@ impl Gate for KindIsolationGate {
         if self.ship {
             rows.push(rule_drain(&crates, &reg));
             rows.push(rule_control(cx, &crates));
+            rows.push(rule_step_ownership(cx, &crates));
         }
         Verdict::of(rows)
     }
@@ -5675,6 +6050,73 @@ impl Gate for KindIsolationGate {
             ),
             &["busbar-plane-transport", "transport"],
         ));
+
+        // ------------------------------------------------------------------------------------
+        // `:step-ownership` — the row the owner's ruling asked for, in its three shapes.
+        // ------------------------------------------------------------------------------------
+        if self.ship {
+            // (a) THE STEP THAT ONE PLANE IS SERVED FOR AND ANOTHER IS NOT. `busbar-plane-admin`
+            // is the only plane whose leg names `busbar_unit_scope` for `approve` today, so
+            // taking that one name out of its leg is the exact defect this row exists to see —
+            // and it is planted by a REPLACE of the real file, not by inventing a tree.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a plane's leg stops naming the unit that owns one of its steps",
+                &[ROW_OWNERSHIP],
+                leg_without(cx, "admin", "busbar_unit_scope"),
+                &[
+                    "unserved",
+                    "busbar-plane-admin",
+                    "`approve`",
+                    "busbar-unit-scope",
+                ],
+            ));
+
+            // (b) THE SCHEDULE IN THE PLUGIN. A `tokio::spawn` beside the word `probe`, planted
+            // into a plane crate, is `spawn_probers` in miniature: the plane that has it is
+            // resilient and the four that do not are not, and no face can lend it to them.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a plane crate spawns a task beside the machinery of a step",
+                &[ROW_OWNERSHIP],
+                probe_task_in("crates/busbar-plane-mcp/src/lib.rs"),
+                &["plane-local-driver", "busbar-plane-mcp", "probe"],
+            ));
+
+            // (c) THE RULING, SPELLED. `if scheme == "openai"` inside a kind-neutral UNIT is the
+            // shape the owner named — `if x == token_auth else if x == OIDC` — and the row must
+            // say which kind was dispatched on, not merely that a word appeared.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a kind-neutral unit branches on which instance of a kind it is holding",
+                &[ROW_OWNERSHIP],
+                dispatch_line_in(
+                    cx,
+                    "crates/busbar-unit-scope/src/lib.rs",
+                    "pub fn planted_dispatch(scheme: &str) -> bool { scheme == \"openai\" }",
+                ),
+                &["instance-dispatch", "busbar-unit-scope", "kind-neutral"],
+            ));
+
+            // (d) THE OTHER ARM OF (c), AND THE REASON THE RULE READS A LITERAL. The same
+            // comparison against a VALUE the caller handed in is not dispatch — it is two
+            // instances being compared to each other, which is what a neutral crate is for. A
+            // rule that reddened this one would forbid the face rather than the branch.
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "comparing two instance values, with no literal, is not dispatch",
+                &[ROW_OWNERSHIP],
+                dispatch_line_in(
+                    cx,
+                    "crates/busbar-unit-scope/src/lib.rs",
+                    "pub fn planted_compare(a: &str, b: &str) -> bool { a == b }",
+                ),
+            ));
+        }
 
         // THE SCHEME'S OWN WIDTH. Five segments is a name describing the crate instead of naming
         // its kind, and a dialect is the ONLY four-segment form.
@@ -8227,6 +8669,42 @@ fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
 /// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
+/// The composition root's leg for one plane, with every mention of one unit crate struck out.
+///
+/// A REPLACE of the real file, never a synthetic one: the case is about a leg that stopped naming
+/// its unit, and a hand-written leg would prove the rule against a tree nobody ships.
+fn leg_without(cx: &Ctx, key: &str, symbol: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    for rel in [
+        format!("crates/busbar/src/root/units_{key}.rs"),
+        format!("crates/busbar/src/root/units_{key}/mod.rs"),
+    ] {
+        if let Ok(text) = cx.read(&rel) {
+            ov.set(&rel, text.replace(symbol, "planted_removed_unit"));
+        }
+    }
+    ov
+}
+
+/// A file that spawns a task beside the word `probe` — the prober's shape, at one line.
+fn probe_task_in(rel: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        rel,
+        "pub fn planted_probe_loop() {\n    // probe\n    tokio::spawn(async move {});\n}\n",
+    );
+    ov
+}
+
+/// One line appended to a crate's shipped source, so the case's subject is the LINE and the rest of
+/// the crate is whatever the tree really holds.
+fn dispatch_line_in(cx: &Ctx, rel: &str, line: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    let base = cx.read(rel).unwrap_or_default();
+    ov.set(rel, format!("{base}\n{line}\n"));
+    ov
+}
+
 fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut body = format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n[dependencies]\n");
     for d in deps {
