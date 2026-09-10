@@ -2664,7 +2664,7 @@ count = "2"
 [[cell]]
 crate = "busbar-unit-admission"
 kind = "unit"
-count = "17"
+count = "21"
 
 [[cell]]
 crate = "busbar-unit-audit"
@@ -2744,7 +2744,7 @@ count = "12"
 [[cell]]
 crate = "busbar-unit-cost"
 kind = "unit"
-count = "6"
+count = "12"
 
 [[cell]]
 crate = "busbar-unit-egress"
@@ -2799,7 +2799,7 @@ count = "17"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "unit"
-count = "20"
+count = "22"
 
 [[cell]]
 crate = "busbar-unit-scope"

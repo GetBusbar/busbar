@@ -148,6 +148,38 @@ contract_caps = 3478
 grammar = 388
 contract_transport = 845
 
+# ── declared raises (one delta per face; see the prose above) ──────────────────────────────────────
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "FACE: the one pricing law (qa/construction.toml one-pricing-site; ARCHITECTURE.md, a plane names quantities and only the cost unit prices them) — the admission door's cent projection is the pricing law's, not a second copy, and the ledger's balance key interns its three names; 1 net line across busbar-unit-admission/src/price.rs and busbar-unit-ledger/src/totals.rs"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "FACE: the one pricing law — the same 1 unit line, counted once more by the union row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-admission.unit.count"
+by = 4
+because = "FACE: the one pricing law — the admission door names the cost unit's projection instead of carrying a copy (busbar-unit-admission/src/price.rs, Cargo.toml); 4 more namings of unit vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-cost.unit.count"
+by = 6
+because = "FACE: the one pricing law — busbar-unit-cost/tests/rate_conversion_agreement.rs proves the door's projection agrees with the law it now names (dev edge in Cargo.toml); 6 more namings, all in the proof and the manifest"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-ledger.unit.count"
+by = 2
+because = "FACE: the ledger's balance key interns its three names (busbar-unit-ledger/src/totals.rs, migration.rs); 2 more namings of unit vocabulary"
+file = "qa/kind-isolation.toml"
+
+
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -368,10 +400,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 14607
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23466
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
