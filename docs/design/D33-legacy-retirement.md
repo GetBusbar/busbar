@@ -401,6 +401,27 @@ legacy chain, so **`audit/mod.rs` is deletable in one commit** with its boot-ver
 its gate. `journal.rs` — the scoped chained-record journal — had no home: `busbar-unit-wal` is a byte
 WAL with a journal record type but no generic scoped journal.
 
+**Wave A, executed (`keep-core-delete-6`).** `audit/mod.rs` is DELETED as a mechanism: 536 lines to
+71, −465 production, and the seven in-core streams and their tests read
+`busbar_unit_audit::legacy::{Framing, Digest, ChainLabels, ChainedRecord, digest, seal, Chain,
+ChainBreak, ChainBreakKind, verify_chain, verify_window}` DIRECTLY — no re-export in core, because a
+spelling in core is how a second mechanism grows back. The two authorised primitives landed in the
+unit's legacy chain and nowhere else (`Digest::raw`, the join primitive for the host-side journal
+cleave, and `frame_prelude`, the prelude framer that preserves the pipe-separated genesis landmine by
+construction — 31 lines, verbatim from the module they were deleted from). The face was already
+byte-identical: the unit's `push`/`text`/`num`/`walk` are the same bodies, and its `sha256_hex`
+(`sha2` + `{b:02x}`) is `busbar_api::sha256_hex` (`hex::encode`) — the same lowercase hex of the same
+bytes. Both proofs stayed in core rather than moving with the mechanism, because they are proofs
+about THIS crate's three streams: `tests/chain_tests.rs` (the four tampers, the throwaway fourth
+record type against the unit's trait, the three golden recomputes) and `tests/boot_verify_golden.rs`
+(the frozen persisted bytes of the MCP per-call, A2A provenance and admin audit chains, verified
+through the real boot-verify runtime path). Both are green against the unit's mechanism, which is the
+byte-identity proof that the digests did not move. What is left under `audit/` is `journal.rs` alone,
+still homeless per the ruling below; the mechanism it is generic over is now the unit's, so the
+journal's own relocation no longer has to carry a chain with it. The gate cost is one
+`busbar-core -> busbar-unit-audit` edge, the drain named by the `[[transitional]]` row, at the
+measured `[[dep]]` count.
+
 **Owner ruling, 2026-09-08: `busbar-unit-audit::journal`.** The same gate covers the plane-host
 journal (851) and the per-tool-call chained log (483) — 1,686 lines behind one decision.
 
