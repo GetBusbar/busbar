@@ -149,6 +149,24 @@ crate = "busbar-core-hooks"
 kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
+# THE TWO DIALECT CRATES, ANNOUNCED AFTER THEY LANDED. `busbar-plane-llm-openai` and
+# `busbar-plane-llm-responses` are the first crates of the `dialect` kind and were in the tree
+# before the vault door ([[minted]]) existed, so their ledger rows were written by hand at
+# measurement and no announcement preceded them. The door admits a crate's rows only against an
+# announcement the MERGE-BASE carries, and it reads announcement and mint as two signatures on two
+# commits. These rows are the first signature; the [[minted]] rows below are the second. The ship
+# twin reds an announced row whose crate has landed, which is the ratchet that strikes these two
+# once the mint is history.
+[[announced]]
+crate = "busbar-plane-llm-openai"
+kind = "dialect"
+reason = "the OpenAI chat-completions dialect of the LLM plane, extracted from busbar-plane-llm (R6); the first crate of the dialect kind, announced so the vault door can mint its rows"
+
+[[announced]]
+crate = "busbar-plane-llm-responses"
+kind = "dialect"
+reason = "the OpenAI Responses dialect of the LLM plane, extracted from busbar-plane-llm (R6); the second crate of the dialect kind, announced so the vault door can mint its rows"
+
 # ------------------------------------------------------------------------------------------------
 # [[minted]] — THE ROWS A CRATE THAT DID NOT EXIST BRINGS WITH IT
 # ------------------------------------------------------------------------------------------------
