@@ -23,6 +23,25 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
 . "$HERE/ci-remote-lib.sh"
 
+# ── --selftest: what this file can prove of itself without a fleet ──────────────────────────────
+# land.sh runs a touched script's --selftest ON THE BOX (its gate-scripts leg), so a landing that
+# edits this file proves on Linux: that it parses; that the integration base still travels as a
+# refspec on the checkout's fetch; that the positionals the box unpacks are the ones this side
+# sends, in order; and — through ci-remote-lib.sh's own cases — the allocator the fan-out relies on.
+if [ "${1:-}" = "--selftest" ]; then
+  fails=0
+  _ok() { printf '  ok   %s\n' "$1"; }; _fail() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
+  echo "land-remote selftest: this file"
+  bash -n "${BASH_SOURCE[0]}" && _ok "parses (bash -n)" || _fail "parses (bash -n)"
+  grep -qF -- '"+refs/heads/$REF:$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the integration base is a refspec on the checkout's fetch" || _fail "the integration base is a refspec on the checkout's fetch"
+  grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; shift 4' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS, in that order" || _fail "the box unpacks REF CEIL BASEREF SHARDS"
+  grep -qF -- 'rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends REF CEIL BASEREF SHARDS"
+  grep -qF -- 'git rev-parse --verify --quiet "$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the base is verified on the box before land.sh runs" || _fail "the base is verified on the box"
+  bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
+  if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
+  echo "land-remote selftest: RED ($fails failure(s))" >&2; exit 1
+fi
+
 HOST=""
 ARGS=()
 while [ $# -gt 0 ]; do
@@ -158,8 +177,9 @@ RRC="busbar-prove/target/land-remote-$REF.rc"
 # second pick, every earlier pick's rise was invisible to `ceiling-rose`, and a raise declared by the
 # first pick and measured by the third read as stale. The runner's tip — the base the picks go onto,
 # which is exactly what the laptop's own ref points at when the queue is caught up — is pinned under
-# that name in the box's checkout before land.sh runs, verified with `rev-parse --verify`, and printed
-# into the landing log so a reader of the log can see what the ceilings were judged against.
+# that name in the box's checkout by the same fetch that brings the tree (a second refspec on the
+# `git fetch prove` line below), verified with `rev-parse --verify`, and printed into the landing log
+# so a reader of the log can see what the ceilings were judged against.
 LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
 rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
@@ -183,14 +203,16 @@ export LAND_REMOTE_INNER=1
 # The box may be running four proofs at once; the recorder's fixed port block would collide.
 export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
 cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
-git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
+# The runner's tip is fetched under the INTEGRATION BASE's name as well (see LAND_BASE_REF above):
+# `ceilings::base_ref` takes the merge-base of HEAD with it, so the whole batch is judged against
+# the tip the picks went onto rather than HEAD~1 or a stale seed.
+git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/heads/$REF:$BASEREF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
 git checkout -q -f "$REF" || exit 2
 git clean -qffdx -e target -e .cargo -e node_modules
 mkdir -p target
 LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
 rm -f "$RC"
 echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
-git update-ref "$BASEREF" "$(git rev-parse "refs/heads/$REF")" || exit 2
 BASE_SHA="$(git rev-parse --verify --quiet "$BASEREF")" || { echo "integration base $BASEREF does not resolve on $(hostname) — the ceiling rows would judge against HEAD~1" | tee -a "$LOG"; exit 2; }
 echo "integration base: $BASEREF = $BASE_SHA (the runner's tip; ceilings are diffed against it)" >>"$LOG"
 # The landed tip is published to the bare repo under refs/heads/<ref>-landed the moment land.sh
@@ -352,6 +374,7 @@ END=$(date +%s)
 # — a shard that finishes late finishes into a directory nobody reads.
 if [ "$SHARDS" -gt 0 ]; then
   set +e
+  # shellcheck source=scripts/land.sh
   LAND_LIB_ONLY=1 . "$ENGINE"
   nreq=0; joined=0
   for d in "$FANDIR"/*/; do
