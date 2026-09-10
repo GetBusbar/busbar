@@ -30,7 +30,9 @@
 //!
 //! ## No plane is named here
 //!
-//! Asserted, not asked for: `tests/no_plane_names.rs` scans this crate's source and its manifest.
+//! Asserted, not asked for: the kind-isolation gate's vocabulary matrix (`cargo xtask gate
+//! kind-isolation`) scans every transport crate's source and manifest for a plane instance's name
+//! and ratchets the count; this crate carries no per-crate copy of that scan.
 
 use busbar_contract_transport::driver::Outcome;
 use busbar_contract_transport::surface::{resolve_service, Bar, Dispatch, Operation, WireSurface};

@@ -401,9 +401,9 @@ fn retry_after_secs(headers: &http::HeaderMap, now_secs: u64) -> Option<u64> {
 /// Neither can reach the other, so there is no shared home for four lines of date parsing. The forms
 /// accepted and the flooring rule are pinned by the tests below against the same values.
 ///
-/// (The capability crate is deliberately not spelled here. `tests/no_plane_names.rs` refuses that
-/// name anywhere in this crate's source, and a rule with an exception for prose is a rule with an
-/// exception — the sentence says the same thing without one.)
+/// (The capability crate is deliberately not spelled here. The kind-isolation gate's vocabulary
+/// matrix refuses that name anywhere in this crate's source, and a rule with an exception for prose
+/// is a rule with an exception — the sentence says the same thing without one.)
 fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
     let s = value.trim();
     if let Ok(n) = s.parse::<u64>() {
