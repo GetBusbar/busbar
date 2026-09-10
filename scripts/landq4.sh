@@ -1783,7 +1783,16 @@ lq_selftest() {
   _t "  ...and waited for, so rc is still the batch's" 1 "$(grep -c '^  wait "\$bpid"$' "$0")"
   _t "the prediction is taken BEFORE the batch is launched" 1 \
      "$( [ "$(grep -n 'read -r predicted predtree' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  bash "\$W/target/gate/land.run.sh" --batch' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
-  _t "the overlapped sweep proves from the prediction" 1 "$(grep -c '^    lq_preprove_sweep "\$LQ_PREDICT" "\$predicted" "\$batch"$' "$0")"
+  _t "the overlapped sweep proves from the prediction" 1 "$(grep -c 'lq_preprove_sweep "\$LQ_PREDICT" "\$predicted" "\$batch"' "$0")"
+  # THE OVERLAPPED SWEEP MUST NOT REAP THE BATCH. lq_preprove_sweep ends with a bare `wait`; run in
+  # the runner's own shell it would wait for the backgrounded batch as well, and `wait "$bpid"` on an
+  # already-reaped job is rc 127 — the batch's verdict, thrown away, every batch read as red.
+  _t "a bare wait in a subshell leaves the batch to its own wait" 0 \
+     "$(bash -c 'sleep 1 & bp=$!; ( sleep 0.2 & wait ); wait $bp; echo $?' 2>/dev/null)"
+  _t "  ...and in the same shell the verdict is LOST"           127 \
+     "$(bash -c 'sleep 1 & bp=$!; sleep 0.2 & wait; wait $bp; echo $?' 2>/dev/null)"
+  _t "the main flow runs the overlapped sweep in a subshell"      1 \
+     "$(grep -c '^    ( lq_preprove_sweep "\$LQ_PREDICT" "\$predicted" "\$batch" )$' "$0")"
   _t "  ...and is skipped when there is no prediction" 1 "$(grep -c '^    lq_log "overlap: no prediction' "$0")"
   _t "the landed tree is checked against the predicted one" 1 "$(grep -c 'if lq_preproof_rekey "\$predicted" "\$predtree" "\$newtip" "\$W"; then' "$0")"
 
@@ -1989,7 +1998,12 @@ while true; do
   bpid=$!
   if [ -n "$predicted" ]; then
     lq_log "overlap: pre-proving the next disjoint lines against the PREDICTED tip $(printf '%.9s' "$predicted") (tree $(printf '%.9s' "$predtree")) while the batch proves"
-    lq_preprove_sweep "$LQ_PREDICT" "$predicted" "$batch"
+    # IN A SUBSHELL, AND THAT IS THE WHOLE OF WHY. lq_preprove_sweep ends with a bare `wait`, which
+    # in THIS shell would also reap the backgrounded batch — and `wait "$bpid"` on an already-reaped
+    # job is "pid N is not a child of this shell", rc 127. The batch's own verdict would have been
+    # thrown away and every batch read as red. A subshell's bare `wait` waits for its own children
+    # only; everything the sweep produces is files, so it loses nothing by running in one.
+    ( lq_preprove_sweep "$LQ_PREDICT" "$predicted" "$batch" )
   else
     lq_log "overlap: no prediction for this batch (a pick does not apply cleanly onto this tip); no overlapped sweep"
   fi
