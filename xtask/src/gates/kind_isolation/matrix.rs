@@ -90,7 +90,7 @@
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
 //! allowed to keep.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, WalkSpec};
 use crate::ledger::Row;
@@ -993,6 +993,12 @@ fn duplicates(reg: &super::KindRegistry) -> Vec<String> {
             .entry(format!("disagreement\t{} × {}", d.krate, d.kind))
             .or_default() += 1;
     }
+    // TWO ADMISSIONS FOR ONE CRATE IS TWO MINTS. The admission map below keys by crate name and
+    // would keep one of them, so the second row would be a mint nothing counted — which is the
+    // exact manoeuvre `cells` is a number for.
+    for m in &reg.minted {
+        *seen.entry(format!("minted\t{}", m.krate)).or_default() += 1;
+    }
     seen.into_iter()
         .filter(|(_, n)| *n > 1)
         .map(|(k, n)| {
@@ -1100,7 +1106,17 @@ pub fn measured_cells(
 /// and the refusal is the transaction the ceiling machinery is built on everywhere else: the number
 /// moves in a commit that says so, and a reviewer reads the sentence rather than the diff's
 /// arithmetic.
-fn minted_rows(cx: &Ctx) -> Vec<String> {
+///
+/// AND THE DOOR HAS ONE HINGE, because a door that never opens is a wall. The refusal above is
+/// right about every row except the ones a crate that does not exist yet must arrive with: the
+/// FIRST crate of any kind — `busbar-core-config`, the dialect crates, a new secret plugin — has no
+/// rows at any base, so under the rule as written it could never land, and the only way past it was
+/// to weaken the rule. The hinge is data and it is [`super::Minted`]: a crate the BASE's own
+/// `[[announced]]` table names may mint its row set ONCE, in a `[[minted]]` row that says which
+/// crate, at which commit, how many cells, and — for a carve-out — which crate the vocabulary was
+/// moved from. Every one of those is checked against history rather than against the branch, which
+/// is the same reading the rest of this module gives every other row.
+fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let base = match super::base::read(cx) {
         Ok(b) => b,
         Err(why) => {
@@ -1117,7 +1133,54 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
         return Vec::new();
     }
     let now = cx.read(LEDGER).unwrap_or_default();
+    let short = &base.commit[..8.min(base.commit.len())];
+    let (announced_at_base, cells_at_base, minted_at_base) = super::ledger_at(&base.registry);
+
     let mut out = Vec::new();
+
+    // ── WHICH `[[minted]]` ROWS ADMIT ANYTHING ──────────────────────────────────────────────────
+    //
+    // Read FIRST, and refused here rather than downstream, because an admission that is itself
+    // unadmitted must not quietly widen anything: a row that fails one of these three tests admits
+    // nothing at all, so every row it was written for stays `minted-row`.
+    let mut admits: BTreeMap<&str, &super::Minted> = BTreeMap::new();
+    for m in &reg.minted {
+        if !announced_at_base.contains_key(&m.krate) {
+            out.push(format!(
+                "unannounced-mint\t[[minted]] {}\t`{}` is in no `[[announced]]` row of {LEDGER} at \
+                 the merge-base {short}, so this branch is minting rows for a crate whose landing \
+                 nobody announced. Announcing a crate and admitting its ledger rows in one commit \
+                 is the same signature twice: land the `[[announced]]` row first, on the \
+                 integration line, and mint against it afterwards.",
+                m.krate, m.krate
+            ));
+            continue;
+        }
+        if minted_at_base.contains(&m.krate) {
+            out.push(format!(
+                "second-mint\t[[minted]] {}\tthe merge-base {short} already carries a `[[minted]]` \
+                 row for `{}`: its row set was minted once, at {}, and is HISTORY now, so this row \
+                 admits nothing. A crate mints its rows on the branch that creates it; every \
+                 ceiling after that moves through `ceiling-rose`, in a commit that says which \
+                 number went up.",
+                m.krate, m.krate, m.commit
+            ));
+            continue;
+        }
+        admits.insert(m.krate.as_str(), m);
+    }
+    // kind -> the crate whose announcement mints it, for the `[[edge]]` half. An edge class is
+    // named by KINDS, not crates, so the row a first-of-its-kind crate needs is admitted through
+    // the kind the BASE announced it as — never through a kind this branch assigned it.
+    let mut minting_kind: BTreeMap<&str, &str> = BTreeMap::new();
+    for name in admits.keys() {
+        if let Some(kind) = announced_at_base.get(*name) {
+            minting_kind.insert(kind.as_str(), name);
+        }
+    }
+
+    // ── THE MINTED ROWS THEMSELVES ──────────────────────────────────────────────────────────────
+    let mut minted_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (table, ids, what) in [
         (
             "cell",
@@ -1163,17 +1226,93 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
             {
                 continue;
             }
+            let (left, right) = key.split_once(" \u{d7} ").unwrap_or((key.as_str(), ""));
+            let admitted = match table {
+                // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name.
+                "cell" | "disagreement" => admits.contains_key(left),
+                // An `[[edge]]` row is about a CLASS, so either end may be the kind being minted.
+                _ => minting_kind.contains_key(left) || minting_kind.contains_key(right),
+            };
+            if admitted {
+                if table == "cell" {
+                    minted_cells
+                        .entry(left.to_string())
+                        .or_default()
+                        .push((left.to_string(), right.to_string()));
+                }
+                continue;
+            }
             out.push(format!(
                 "minted-row\t[[{table}]] {key}\tthis row is in no copy of {LEDGER} at the \
-                 merge-base {}: this branch MINTED it. It is {what}, and a row that did not exist \
-                 is a 0 -> N raise wearing the clothes of a first measurement — the one raise \
+                 merge-base {short}: this branch MINTED it. It is {what}, and a row that did not \
+                 exist is a 0 -> N raise wearing the clothes of a first measurement — the one raise \
                  `ceiling-rose` cannot see, because a key with no `before` has nothing to be higher \
-                 than. Delete the coupling instead, or land the row in a commit whose message says \
-                 why the tree now needs it.",
-                &base.commit[..8.min(base.commit.len())]
+                 than. Delete the coupling instead, land the row in a commit whose message says why \
+                 the tree now needs it, or — if this is the FIRST crate of its kind landing — add \
+                 the `[[minted]]` row that admits it, against an `[[announced]]` row the base \
+                 already carries."
             ));
         }
     }
+
+    // ── WHAT EACH ADMISSION ACTUALLY MINTED, AGAINST WHAT ITS ROW SAYS ──────────────────────────
+    let listed: BTreeMap<(&str, &str), i64> = reg
+        .matrix_cells
+        .iter()
+        .map(|c| ((c.krate.as_str(), c.kind.as_str()), c.count))
+        .collect();
+    for (name, m) in &admits {
+        let minted = minted_cells.get(*name).map(Vec::as_slice).unwrap_or(&[]);
+        if minted.len() as i64 != m.cells {
+            out.push(format!(
+                "mint-count\t[[minted]] {name}\tthe row is recorded at {} and says `cells = {}`, \
+                 and this branch minted {} `[[cell]]` row(s) for `{name}` ({}). The number is the \
+                 size of the set the admission covers, so a branch that minted a different number \
+                 of cells than it wrote down has an admission nobody priced: write the number the \
+                 branch actually mints.",
+                m.commit,
+                m.cells,
+                minted.len(),
+                if minted.is_empty() {
+                    "none".to_string()
+                } else {
+                    minted
+                        .iter()
+                        .map(|(k, kind)| format!("{k} × {kind}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ));
+        }
+        // A MOVE CANNOT RAISE THE UNION OF THE TWO ROWS. `busbar-core-config` is cut out of
+        // `busbar-core`; the vocabulary it carries is the old crate's vocabulary under a new name,
+        // and the base's own pinned count for the source crate is the ceiling over it. Without
+        // this, a carve-out is a laundry: move one hit, mint a row for fifty, and `ceiling-rose`
+        // sees only a number going DOWN in the crate that was drained.
+        let Some(from) = m.moved_from.as_deref() else {
+            continue;
+        };
+        for (krate, kind) in minted {
+            let n = listed.get(&(krate.as_str(), kind.as_str())).copied();
+            let ceiling = cells_at_base
+                .get(&(from.to_string(), kind.clone()))
+                .copied()
+                .unwrap_or(0);
+            if n.unwrap_or(0) > ceiling {
+                out.push(format!(
+                    "mint-over-source\t[[cell]] {krate} × {kind} = {}\tthe `[[minted]]` row says \
+                     `moved_from = \"{from}\"`, and the merge-base {short} pins `{from}` × {kind} \
+                     at {ceiling}. A move carries vocabulary across, it does not create it: a \
+                     minted cell above the count its source crate was pinned at is a raise wearing \
+                     a move's clothes, and the only thing `ceiling-rose` would see is `{from}` \
+                     going DOWN. Move the hits, or raise `{from}`'s ceiling on the integration line \
+                     first and say why.",
+                    n.unwrap_or(0)
+                ));
+            }
+        }
+    }
+
     out
 }
 
@@ -1221,7 +1360,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let listed = read_ledger(reg);
 
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx));
+    offenders.extend(minted_rows(cx, reg));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -1327,7 +1466,25 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             ));
         }
     }
+    // A KIND WHOSE FIRST CRATE HAS NOT LANDED MEASURES NOTHING, so every class naming it would be
+    // scored dead the moment it was written — and the class has to be written FIRST, because the
+    // branch that lands the crate is the branch that would otherwise have to mint the row and open
+    // the class in one edit. This is the same window `[[announced]]` already opens for the
+    // dead-kind and dead-waiver ratchets, on the same terms and with the same expiry: the ship twin
+    // refuses an announcement that has outlived its landing, so the day a `core` crate exists the
+    // announcement is struck and `dead-edge` reads this class like every other.
+    //
+    // NARROW ON PURPOSE: an announced kind that ALREADY has a crate in the tree is not in this set,
+    // so `control` — announced, and live since before the announcement — keeps its classes scored.
+    let unlanded: BTreeSet<&str> = reg
+        .announced_kinds()
+        .into_iter()
+        .filter(|k| !crates.iter().any(|c| c.kind == Some(*k)))
+        .collect();
     for (src, dst) in listed.edges.keys() {
+        if unlanded.contains(src.as_str()) || unlanded.contains(dst.as_str()) {
+            continue;
+        }
         let live = matrix.iter().any(|((k, kd), c)| {
             kd == dst && c.count > 0 && kind_of.get(k.as_str()).copied() == Some(src.as_str())
         });
@@ -1482,6 +1639,34 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
 }
 
+/// The ledger with rows APPENDED, for the cases whose subject is a row that does not exist yet.
+fn ledger_plus(cx: &Ctx, rows: &str) -> crate::ctx::Overlay {
+    let text = cx.read(LEDGER).unwrap_or_default();
+    plant(LEDGER, &format!("{}\n\n{}\n", text.trim_end(), rows.trim()))
+}
+
+/// One `[[minted]]` row, with or without its carve-out ceiling.
+fn minted_row(krate: &str, cells: usize, moved_from: Option<&str>) -> String {
+    let mut out =
+        format!("[[minted]]\ncrate = \"{krate}\"\ncommit = \"468bad131\"\ncells = \"{cells}\"\n");
+    if let Some(from) = moved_from {
+        out.push_str(&format!("moved_from = \"{from}\"\n"));
+    }
+    out
+}
+
+/// A crate on disk that names one other kind's vocabulary once — the shape a FIRST-OF-ITS-KIND
+/// crate arrives in, which is the only tree a `[[minted]]` row is honest over.
+fn landed_crate(name: &str, body: &str) -> crate::ctx::Overlay {
+    let mut ov = crate::ctx::Overlay::new();
+    ov.set(
+        format!("crates/{name}/Cargo.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n"),
+    );
+    ov.set(format!("crates/{name}/src/lib.rs"), body.to_string());
+    ov
+}
+
 /// Every RED case this row owes, and the GREEN one it is measured against.
 pub fn selftest(
     cx: &Ctx,
@@ -1553,6 +1738,112 @@ pub fn selftest(
             "minted-row",
             "busbar-store-memory \u{d7} transport",
             "this branch MINTED it",
+        ],
+    ));
+
+    // ── THE DOOR'S ONE HINGE: `[[minted]]` ──────────────────────────────────────────────────────
+    //
+    // The refusal above is right about every row except the ones a crate that does not exist yet
+    // must arrive with. The FIRST crate of any kind has no rows at any base, so under `minted-row`
+    // alone `busbar-core-config`, the dialect crates and every future secret plugin could never
+    // land — and the only way past a rule like that is to weaken it. So the hinge is data, and the
+    // four cases below are the four things the data has to be checked against.
+
+    // THE GREEN ARM. A crate the BASE announced, LANDED on this branch and really naming one other
+    // kind's vocabulary — with the `[[cell]]` that prices the hit and the `[[minted]]` row that
+    // admits the cell. This is the landing the gate has to permit, and it is the ONLY shape it does:
+    // the crate is on disk, the count is a measurement, and the admission answers to an
+    // announcement the branch cannot have written.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an [[announced]] crate mints its row set once, and the [[minted]] row is what admits it",
+        &[ROW_MATRIX],
+        {
+            let mut ov = landed_crate(
+                "busbar-control-oauth2",
+                "//! The tcp transport is named once here, so this crate has a cell to mint.\n",
+            );
+            let text = cx.read(LEDGER).unwrap_or_default();
+            ov.set(
+                LEDGER,
+                format!(
+                    "{}\n\n[[cell]]\n{}\n\n{}",
+                    text.trim_end(),
+                    cell_row("busbar-control-oauth2", "transport", "1"),
+                    minted_row("busbar-control-oauth2", 1, None),
+                ),
+            );
+            ov
+        },
+    ));
+
+    // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger
+    // rows in the same commit is the same signature twice — the forgery the whole provenance module
+    // exists to refuse — so the announcement is read out of the BASE's copy of the file and a
+    // `[[minted]]` row that answers to no announcement admits nothing at all.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[minted]] row for a crate the merge-base never announced admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(
+            cx,
+            &format!(
+                "[[cell]]\n{}\n\n{}",
+                cell_row("busbar-store-memory", "transport", "1"),
+                minted_row("busbar-store-memory", 1, None),
+            ),
+        ),
+        &[
+            "unannounced-mint",
+            "busbar-store-memory",
+            "minted-row",
+            "busbar-store-memory \u{d7} transport",
+        ],
+    ));
+
+    // ONCE MEANS ONCE. Two `[[minted]]` rows for one crate are two admissions, and the map that
+    // reads them keys by crate name — so the second would be a mint nothing counted, which is the
+    // exact manoeuvre `cells` is a number for.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a second [[minted]] row for the same crate is two admissions, not one",
+        &[ROW_MATRIX],
+        ledger_plus(
+            cx,
+            &format!(
+                "{}\n{}",
+                minted_row("busbar-control-oauth2", 0, None),
+                minted_row("busbar-control-oauth2", 1, None),
+            ),
+        ),
+        &["duplicate-row", "busbar-control-oauth2", "two answers"],
+    ));
+
+    // A MOVE CANNOT RAISE THE UNION OF THE TWO ROWS. A carve-out's cells are the old crate's cells
+    // under a new name; a minted cell above the count the BASE pinned for the source crate is a
+    // raise wearing a move's clothes, and the only thing `ceiling-rose` would see is the SOURCE
+    // crate going down. `busbar-core` is pinned at 24 transport hits at the base; the plant asks
+    // for 999999 under a row that says the vocabulary was moved out of it.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a minted cell above the count its `moved_from` crate was pinned at is a raise, not a move",
+        &[ROW_MATRIX],
+        ledger_plus(
+            cx,
+            &format!(
+                "[[cell]]\n{}\n\n{}",
+                cell_row("busbar-control-oauth2", "transport", "999999"),
+                minted_row("busbar-control-oauth2", 1, Some("busbar-core")),
+            ),
+        ),
+        &[
+            "mint-over-source",
+            "busbar-control-oauth2 \u{d7} transport",
+            "moved_from",
         ],
     ));
 
