@@ -6,9 +6,10 @@
 use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
 
 use crate::cache::CredentialCache;
-use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
+use crate::chain::{AuthChain, ChainVerdict};
 use crate::challenge::Challenge;
 use crate::principal::Principal;
+use busbar_contract::VirtualKeyDirectory;
 
 /// Everything the unit is given about one authentication.
 pub struct AuthRequest<'a> {
@@ -68,8 +69,7 @@ impl Auth {
         &self,
         req: &AuthRequest<'_>,
         cache: Option<&CredentialCache>,
-        keys: Option<&dyn KeyVerifier>,
-        revocations: Option<&dyn RevocationView>,
+        directory: Option<&dyn VirtualKeyDirectory>,
         pending: Option<Challenge>,
         token: &UnitToken<Authenticate>,
     ) -> Decision<Authenticate> {
@@ -94,7 +94,7 @@ impl Auth {
         // 3. The chain.
         let verdict =
             self.chain
-                .run_chain_cached(req.candidate, cache, keys, req.now, req.expected_aud);
+                .run_chain_cached(req.candidate, cache, directory, req.now, req.expected_aud);
 
         // 4. Revocation gates NEW units only, and only an identification. A revocation is a
         //    statement about a credential the chain resolved to somebody; applied to whatever
@@ -107,8 +107,8 @@ impl Auth {
         //    run_chain_for_new_unit` has always collapsed both to its one `Denied`; this is the
         //    same rule spelled where the reason code exists to be told apart.
         if req.new_unit && matches!(verdict, ChainVerdict::Identified { .. }) {
-            if let (Some(r), Some(cred)) = (revocations, req.candidate) {
-                if r.is_revoked(cred) {
+            if let (Some(d), Some(cred)) = (directory, req.candidate) {
+                if d.is_revoked(cred) {
                     return Decision::refuse(token, Refusal::new(ReasonCode::Revoked));
                 }
             }
