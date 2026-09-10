@@ -155,16 +155,15 @@ busbar_contract::claims_from_ladder! {
     // audio surface among them.
     //
     // THE AUDIO SURFACE IS WHOLE AGAIN, AND IT IS THIS PLANE'S. Two of its three paths —
-    // `speech` and `transcriptions` — used to be missing from this rung, because the streams
-    // plane claimed them by name and a claim here would have overlapped rather than divided.
-    // That was never a statement about the wire: all three are one vendor's HTTP
-    // request-and-answer routes, in this dialect, priced by this plane's own op classes
-    // (`op_class_for` has resolved `speech` and `transcription` for them the whole time, and
-    // `meta`'s `OP_CLASSES` has declared both). What owned them was a plane whose subject is the
-    // duplex SESSION, and a request that opens no session is not that plane's business. The
-    // owner's 09:0x ruling says so — one-shot TTS and transcribe are REQUEST/RESPONSE, not
-    // streaming dialects — so the two routes are here, beside the third they were always
-    // siblings of.
+    // `speech` and `transcriptions` — used to be missing from this rung, because another plane
+    // claimed them by name and a claim here would have overlapped rather than divided. That was
+    // never a statement about the wire: all three are one vendor's request-and-answer routes, in
+    // this dialect, priced by this plane's own op classes (`op_class_for` has resolved `speech`
+    // and `transcription` for them the whole time, and `meta`'s `OP_CLASSES` has declared both).
+    // What owned them was a plane whose subject is the duplex SESSION, and a request that opens
+    // no session is not that plane's business. The owner's 09:0x ruling says so — one-shot TTS
+    // and transcribe are REQUEST/RESPONSE, not streaming dialects — so the two routes are here,
+    // beside the third they were always siblings of.
     //
     // Still one path at a time and not the `/v1/audio/` prefix: naming a prefix would claim
     // paths under it this plane cannot read, and a plane may only claim what it can decode.

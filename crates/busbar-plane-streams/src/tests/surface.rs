@@ -49,8 +49,8 @@ fn the_declared_surface_passes_the_boot_check() {
 /// Two halves, and the second is the one that keeps the declaration from quietly growing a wire
 /// shape nobody chose. Every row here opens a SESSION, because a session is the only thing this
 /// plane serves: a [`Dispatch::Target`] row would be a request-and-answer route with a request and
-/// a response media type, and this plane claims no such route — the two it used to claim are
-/// `busbar-plane-llm`'s speech routes now.
+/// a response media type, and this plane claims no such route — the two it used to claim have
+/// gone to the plane that owns them.
 ///
 /// The first half is that the generic walk a duplex wire addresses with — the same
 /// `duplex_binding_at` the mount calls, given this plane's own registry key — reaches every mount

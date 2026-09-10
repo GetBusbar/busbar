@@ -754,15 +754,14 @@ fn admitted_milliseconds_meter_as_seconds() {
 ///
 /// Two tests used to live here: a one-shot text-to-speech unit metering the text it was asked to
 /// speak, and a one-shot transcription metering the text it returned. Both were about
-/// `/v1/audio/speech` and `/v1/audio/transcriptions`, and both are gone with the routes — those
-/// are `busbar-plane-llm`'s speech routes now, priced under its own `speech` and `transcription`
-/// op classes, beside `/v1/audio/translations`, which it had claimed all along.
+/// `/v1/audio/speech` and `/v1/audio/transcriptions`, and both are gone with the routes — which
+/// now belong to the plane that claims the rest of that vendor's `/v1/audio/` surface.
 ///
 /// What is left in their place is the invariant the move establishes, asserted rather than
 /// asserted-about: the two paths reach NO claim of this plane, and every claim this plane does
-/// declare is on the one transport a session is held open over. A route that came back would be
-/// this plane owning something that opens no session, which is the thing the owner's ruling
-/// separates the two planes on.
+/// declare is on the one wire a session is held open over. A route that came back would be this
+/// plane owning something that opens no session, which is the thing the owner's ruling separates
+/// this plane from its neighbours on.
 #[test]
 fn the_claim_table_names_no_route_that_opens_no_session() {
     for path in ["/v1/audio/speech", "/v1/audio/transcriptions"] {

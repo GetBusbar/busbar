@@ -18,10 +18,9 @@
 //! two WS dialects; and model-emitted text in a duplex turn prices under `text_tokens_out`, an
 //! output class, never the input one.
 //!
-//! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
-//!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
-//!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
-//!   the key they publish it under.
+//! - **The arrival path is a transport fact**, under the kernel's own reserved key
+//!   (`busbar_contract::transport::facts::PATH`), used to resolve which duplex dialect a session's
+//!   Unit 0 is. This used to be a guess, and the wire now declares the key it publishes it under.
 //! - **Only the first decoded IR event per wire frame is acted on.** Both `read_up`/`read_down`
 //!   return `Vec<..Event>` (one wire message can map to 0..n IR events); this plane surfaces the
 //!   first and drops the rest. A wire frame that genuinely carries more than one IR event (not
@@ -357,11 +356,11 @@ impl Plane for VoicePlane {
     }
 
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
-        // Every streaming dialect authenticates once at session open and caches the result for the
-        // session's life (`dialect::Dialect::authenticates_from_session`, a row field); the two
-        // one-shot HTTP operations present a credential on the one request they are. The dialect is
-        // the draft's own fact, sealed onto the unit by the kernel, so this step reads what decode
-        // determined rather than a session fact that a one-shot unit does not have at all.
+        // Every dialect this plane claims authenticates once at session open and caches the result
+        // for the session's life (`dialect::Dialect::authenticates_from_session`, a row field). The
+        // dialect is the draft's own fact, sealed onto the unit by the kernel, so this step reads
+        // what decode determined rather than asking the session a second time for something the
+        // unit already carries.
         CredentialLocator {
             narrowing: None,
             from_session: draft_dialect(u).is_some_and(|d| d.authenticates_from_session),
@@ -441,10 +440,9 @@ impl Plane for VoicePlane {
             (meta::FACT_TEXT_TOKENS_OUT, "text_tokens_out"),
             (meta::FACT_CACHED_TOKENS, "cached_tokens"),
         ];
-        // A duplex turn's figures all come off the upstream's usage report, which is the answer. A
-        // one-shot request's input figure comes off the request, which decode read and put on the
-        // unit. The answer is asked first either way: a figure the destination confirmed beats one
-        // this node estimated, and the unit's own is only reached where the answer reported none.
+        // A duplex turn's figures all come off the upstream's usage report, which is the answer,
+        // and the answer is asked first: a figure the destination confirmed beats one this node
+        // estimated, and the unit's own draft is only reached where the answer reported none.
         let reported = |key: &str| match r.facts.get(key) {
             Some(value) => Some(value),
             None => u.draft_facts().get(key),
@@ -691,8 +689,9 @@ fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> &'sta
 /// The dialect the decode step named, read back off the unit's sealed draft facts.
 ///
 /// The one place this plane's later steps ask what dialect a unit is: decode is the step that read
-/// the bytes and matched the claim, and what it determined travels on the unit. A one-shot unit has
-/// no session at all, so a session fact could not have answered for it.
+/// the bytes and matched the claim, and what it determined travels on the unit — so a step scoped
+/// to a DESTINATION, which is not guaranteed the session half the client's frames bound, still has
+/// the answer in its hand.
 fn draft_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
     match u.draft_facts().get(meta::FACT_DIALECT) {
         Some(FactValue::Str(name)) => dialect::dialect(name),

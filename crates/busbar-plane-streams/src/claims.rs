@@ -37,14 +37,15 @@
 //!
 //! ## EVERY CLAIM HERE OPENS A SESSION
 //!
-//! Two more claims used to sit at the bottom of this table, on `http`: `transcribe` on
-//! `/v1/audio/transcriptions` and `tts` on `/v1/audio/speech`. They were STRINGS with no row in
-//! the dialect table, because they were never dialects — they are one vendor's HTTP
-//! request-and-answer operations, and this plane's subject is the duplex SESSION. They are gone,
-//! to `busbar-plane-llm`'s rung 14, beside `/v1/audio/translations`, which that plane had claimed
-//! all along. What is left is the invariant: EVERY row below names a dialect that has a row in
-//! [`crate::dialect`], on a transport that holds a connection open. A claim in this table that
-//! did not would be this plane owning something that is not a session again.
+//! Two more claims used to sit at the bottom of this table, on a request-and-answer wire:
+//! `transcribe` on `/v1/audio/transcriptions` and `tts` on `/v1/audio/speech`. They were STRINGS
+//! with no row in the dialect table, because they were never dialects — they are one vendor's
+//! ordinary API operations, and this plane's subject is the duplex SESSION. They are gone, to the
+//! plane that claims the rest of that vendor's `/v1/audio/` surface and always did.
+//!
+//! What is left is the invariant: EVERY row below names a dialect that has a row in
+//! [`crate::dialect`], on a wire that holds a connection open. A claim in this table that did not
+//! would be this plane owning something that is not a session again.
 
 use busbar_contract::grammar::{one_level_under, Claim, Selector};
 

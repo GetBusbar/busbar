@@ -122,8 +122,9 @@ fn the_planes_declare_forty_nine_claims() {
     assert_eq!(count("a2a"), 14);
     // Three: the three duplex-session dialects, and nothing else. The carrier claim is one of
     // them — it was dropped when it named a wire no crate provided, and the one it was waiting for
-    // was already registered. The two one-shot HTTP routes that used to sit beside them are in
-    // llm's twenty-seven now: a request that opens no session was never this plane's.
+    // was already registered. The two request-and-answer audio routes that used to sit beside them
+    // are counted on the row above now; a request that opens no session was never this plane's,
+    // and the total is unchanged because the claims moved rather than went.
     assert_eq!(count("voice"), 3);
     assert_eq!(count("admin"), 1);
     assert_eq!(claims.len(), 49);
@@ -140,10 +141,10 @@ fn the_planes_declare_forty_nine_claims() {
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
 /// surface one path at a time rather than as a prefix took it from 65 to 63.
 ///
-/// 63 to 43 is not a grammar change at all: it is the two one-shot audio routes leaving the
-/// streams plane for llm, which owns them on the wire. Two claims that were CROSS-plane became
-/// two claims of one plane, and a pair inside one plane is not an overlap this count is about —
-/// precedence settles it, which is what the ordered-set rule has always said.
+/// 63 to 43 is not a grammar change at all: it is the two request-and-answer audio routes moving
+/// to the plane that owns the rest of that vendor's audio surface. Two claims that were CROSS-plane
+/// became two claims of ONE plane, and a pair inside one plane is not an overlap this count is
+/// about — precedence settles it, which is what the ordered-set rule has always said.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(feature = "plane-voice")]
@@ -183,13 +184,13 @@ fn one_hundred_and_twenty_three_cross_plane_pairs_overlap() {
 /// * two FRAGMENT forms — a suffix and a substring — which are satisfied together by writing a
 ///   path that ends the one way and contains the other.
 ///
-/// The third class is EMPTY as of the speech-route move, and the count is pinned at zero rather
+/// The third class is EMPTY as of the audio-route move, and the count is pinned at zero rather
 /// than the arm being deleted. Sixteen fragment-against-fragment pairs used to sit in it, and
-/// every one of them was an audio path claimed by the streams plane against a path claimed by
-/// llm; with all three audio routes on llm they are pairs inside one plane, which precedence
-/// settles and this count does not see. The arm stays because it is the classifier's third
-/// exhaustive case: a fragment pair that appears later must land somewhere named, not in the
-/// panic below.
+/// every one of them was an audio path claimed by one plane against an audio path claimed by
+/// another; with the whole surface on one of them they are pairs inside a single plane, which
+/// precedence settles and this count does not see. The arm stays because it is the classifier's
+/// third exhaustive case: a fragment pair that appears later must land somewhere named, not in
+/// the panic below.
 ///
 /// A pair that fits none of these would be the interesting one: a conservative answer with no
 /// account of itself. There is none, and the assertion is that there is none.

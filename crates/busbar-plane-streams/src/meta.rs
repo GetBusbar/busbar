@@ -184,16 +184,15 @@ pub const OP_SESSION_OPEN: OpClassId = OpClassId::new("voice.session.open");
 /// this plane makes from `IrDuplexTool::CallOpen` onto it).
 ///
 /// `transcribe` and `tts` used to sit between the second and the third. They were the two one-shot
-/// HTTP operations, and a request that opens no session is not this plane's; they price as
-/// `speech` and `transcription` on `busbar-plane-llm`, which claims their routes and has declared
-/// both classes all along.
+/// operations, and a request that opens no session is not this plane's: they are priced by
+/// whichever plane claims their routes, under op classes that plane has declared all along.
 const OP_CLASSES: &[OpClassId] = &[
     OP_SESSION_OPEN,
     OpClassId::new("duplex_turn"),
     OpClassId::new("tool_call"),
 ];
 
-/// The fact key under which the decode step reports which dialect a session or one-shot unit is.
+/// The fact key under which the decode step reports which dialect a session is.
 pub const FACT_DIALECT: &str = "dialect";
 /// The fact key under which a tool-call unit reports the tool name.
 pub const FACT_TOOL_NAME: &str = "tool_name";

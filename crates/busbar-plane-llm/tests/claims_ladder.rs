@@ -104,9 +104,9 @@ fn each_rung_routes_its_own_dialect() {
         ("/v1/embeddings", &[], "openai"),
         ("/v1/moderations", &[], "openai"),
         ("/v1/images/generations", &[], "openai"),
-        // The whole audio surface, all three paths: they are one vendor's HTTP request-and-answer
-        // routes and they are this plane's. Two of them used to be the streams plane's, back when
-        // that plane's claim table still held operations that open no session.
+        // The whole audio surface, all three paths: they are one vendor's request-and-answer
+        // routes and they are this plane's. Two of them used to belong to a neighbour, back when
+        // its claim table still held operations that open no session.
         ("/v1/audio/speech", &[], "openai"),
         ("/v1/audio/transcriptions", &[], "openai"),
         ("/v1/audio/translations", &[], "openai"),
