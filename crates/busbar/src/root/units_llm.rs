@@ -769,6 +769,20 @@ fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
     fee_facts(walk.upstream_candidate(), origin)
 }
 
+/// THE FINISH A STATUS ALONE CAN SUPPORT. A frame that came back 2xx is a request that was
+/// answered; anything else is not. It is the honest verdict at the exit, where the frame the client
+/// saw is the only reading that exists yet — and it is NOT the plane's own verdict, which for a
+/// streamed answer is not a fact until the body has drained.
+fn finish_of_status(status: Option<u16>) -> Option<busbar_contract::FinishClass> {
+    status.map(|s| {
+        if (200..300).contains(&s) {
+            busbar_contract::FinishClass::Complete
+        } else {
+            busbar_contract::FinishClass::Error
+        }
+    })
+}
+
 /// The same evidence, over the facts the carry supplies rather than over the carry.
 ///
 /// Split out for one reason: a cell that wants to check what this leg decides has to be able to
@@ -801,12 +815,18 @@ fn fee_facts(upstream_candidate: bool, origin: OriginKind) -> FeeEvidence {
 /// late-pricing arm) and only one of those two has a `&self` to ask. Two derivations of one head is
 /// how a unit ends up with two heads and the fee reads whichever ran last.
 fn served_head_of(walk: &Walk) -> Option<StatusLeg> {
-    head_facts(walk.served_status())
+    let status = walk.served_status();
+    head_facts(status, finish_of_status(status))
 }
 
 /// The head, over the one fact the carry supplies rather than over the carry — the same reason
 /// [`fee_facts`] exists, and the same thing a cell drives.
-fn head_facts(served_status: Option<u16>) -> Option<StatusLeg> {
+///
+/// The FINISH is an argument rather than a re-reading of the status, because this plane has two
+/// moments and they do not have the same answer: at the exit the frame the client saw is all there
+/// is, and after the body has drained the tap knows how the stream really ended. The head is
+/// recorded once, by whichever step actually saw the answer.
+fn head_facts(served_status: Option<u16>, finish: Option<FinishClass>) -> Option<StatusLeg> {
     served_status.map(|status| {
         let ok = (200..300).contains(&status);
         StatusLeg {
@@ -820,11 +840,7 @@ fn head_facts(served_status: Option<u16>) -> Option<StatusLeg> {
             } else {
                 StatusClass::Other
             }),
-            finish: Some(if ok {
-                FinishClass::Complete
-            } else {
-                FinishClass::Error
-            }),
+            finish,
             delivered: true,
             degraded: false,
             relayed_error: None,
