@@ -5,8 +5,10 @@
 //!
 //! Audit is the last of the unit's seven steps, and it is the only one that returns a finished
 //! response. Everything else in the unit answers with a decision and hands the response along; this
-//! file turns the last of those into a posted record, a metric, a request-log link and a refund
-//! where one is owed, and gives the bytes back to the loop.
+//! file turns the last of those into a posted metric and a refund where one is owed, and gives the
+//! bytes back to the loop. The RECORD is not written here: it is the audit unit's, sealed onto the
+//! node's own chain by the unit the composition root drives, over the one record shape every plane
+//! of that node seals.
 //!
 //! ## Two doors, one terminal
 //!
@@ -26,9 +28,9 @@
 //! whatever destination it had got as far as reading — a CONFIGURED pool it was not permitted to
 //! reach is recorded under that pool's name, exactly as the live pre-admission guard records it —
 //! and a unit refused before any destination was read names the reserved unresolved label, which
-//! the same bound maps to itself. Both are still counted and still fire the request-log webhook: a
-//! pre-routing turn-away that is invisible to the operator is the failure mode this rule exists to
-//! prevent, and a raw early return is exactly that failure.
+//! the same bound maps to itself. Both are still counted: a pre-routing turn-away that is invisible
+//! to the operator is the failure mode this rule exists to prevent, and a raw early return is
+//! exactly that failure.
 //!
 //! ## Why the doors live here and nowhere else
 //!
@@ -353,10 +355,11 @@ pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Se
 
 /// THE AUDIT-STEP IDENTITY HARNESS: this step against the live terminal it was lifted from.
 ///
-/// Each case drives two governed callers — so each has a request chain of its own and the two can be
-/// told apart in a process-wide log — through the live door and through the step, and compares the
-/// response the client is given and the record the operator can read back: same protocol, same pool
-/// label, same outcome, same status, and EXACTLY ONE link per unit on each chain.
+/// Each case drives two governed callers through the live door and through the step, and compares
+/// what a CLIENT can observe — the status, the headers and the body, byte for byte — plus the bound
+/// both doors apply to the destination they name. The record half of the identity is asserted where
+/// the record is written, over the uniform record the unit seals; see the test module's header for
+/// which claims moved and why a plane crate cannot hold them.
 #[cfg(test)]
 #[path = "tests/audit.rs"]
 mod tests;

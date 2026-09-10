@@ -269,6 +269,14 @@ impl Rig {
     fn host(&self) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
         busbar_core::plane_host::engine_host(&self.app)
     }
+
+    /// THE INSTANT A DRIVE ON THIS RIG ARRIVES AT, as the pair the node reads: the rig's own charge
+    /// window, spelled in milliseconds, and a monotonic reading of zero because each drive here is
+    /// the first unit of a node of its own. Handed in rather than taken, so a record this rig's
+    /// drives seal is a record a comparison can name.
+    fn arrived(&self) -> Arrived {
+        Arrived::at(self.charged_at * 1_000, 0)
+    }
 }
 
 /// Header values a response mints fresh per run. The NAME stays in the comparison and only the
@@ -1201,66 +1209,37 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
-/// EXACTLY ONE LINK PER UNIT on the principal's chain, whichever door the unit left through.
+/// EXACTLY ONE RECORD PER UNIT, whichever door the unit left through.
 ///
 /// The rule the switch could most easily break: the shipped door POSTS its own refusal, and the
 /// step files' door does not — it renders, and the terminal posts. A unit that left through both
-/// would carry two links and the chain would still verify, which is why the COUNT is asserted
+/// would carry two records and the chain would still verify, which is why the COUNT is asserted
 /// rather than the verification alone.
+///
+/// Every end this plane reaches, on a node and a book of its own so the count is this unit's: a
+/// delivered answer, a door refusal, a pre-admission refusal, and a refusal taken AFTER the door
+/// on a destination that resolved to nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_unit_leaves_exactly_one_link_on_the_chain() {
-    use busbar_core::proxy::reqlog::REQUESTS;
-
+async fn one_unit_leaves_exactly_one_record_whichever_door_it_left_through() {
     for fixture in [
         Fixture::BufferedOk,
         Fixture::OverBudget,
         Fixture::PoolAcl,
         Fixture::UnknownModel,
     ] {
-        // LEG 1 — the shipped entry point names a destination on its link; whatever it names is
-        // what the loop's link has to name too, so the expectation is READ rather than spelled.
-        let shipped_rig = rig(fixture).await;
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
-            host: shipped_rig.host(),
-            gov: shipped_rig.gov(),
-            caller_token: None,
-        });
-        let resp = busbar_llm::native_ingress::operation_ingress(
-            &ctx,
-            json_headers(),
-            fixture.body(),
-            PROTO,
-            busbar_api::operation::Operation::CHAT,
-            None,
-        )
-        .await;
-        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
-        let shipped = REQUESTS.records_for(&shipped_rig.key.id);
-        assert_eq!(shipped.len(), 1, "{fixture:?}: the shipped path posts once");
-        shipped_rig.server.shutdown().await;
-
-        // LEG 2 — the loop, on its own deployment.
         let rig = rig(fixture).await;
-        let resp = drive(&rig, fixture).await;
+        let (node, book) = booked();
+        let resp = drive_recording(&node, &rig, fixture, rig.arrived()).await;
         let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
-        let records = REQUESTS.records_for(&rig.key.id);
-        assert_eq!(records.len(), 1, "{fixture:?}: one unit, one link");
+        let sealed = sealed_by(&book);
         assert_eq!(
-            (
-                records[0].pool.clone(),
-                records[0].outcome.clone(),
-                records[0].reason.clone(),
-                records[0].status
-            ),
-            (
-                shipped[0].pool.clone(),
-                shipped[0].outcome.clone(),
-                shipped[0].reason.clone(),
-                shipped[0].status
-            ),
-            "{fixture:?}: the loop's link is the shipped path's link"
+            sealed.count, 1,
+            "{fixture:?}: one unit, one record — never none, and never two"
         );
-        assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
+        assert!(
+            !sealed.head.is_empty(),
+            "{fixture:?}: a chain whose head never moved recorded the unit nowhere"
+        );
         rig.server.shutdown().await;
     }
 }
@@ -1947,9 +1926,13 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
     observe(rig, resp).await
 }
 
-/// LEG 2 — the loop, driven with the same context the door produced.
-async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
-    let node = LlmNode::new();
+/// LEG 2 — the loop, driven with the same context the door produced, on a node with a book.
+///
+/// The arrival reading is the RIG'S OWN charge window, spelled as the pair the node reads: a drive
+/// at some other instant would settle into a different window from the one [`observe`] reads the
+/// money back out of, and the two legs would be compared across a boundary rather than at one.
+async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> (Observed, Sealed) {
+    let (node, book) = booked();
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
@@ -1960,8 +1943,20 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
         body: Fixture::BufferedOk.body(),
         path: None,
     };
-    let resp = node.answer(arrival, None).await;
-    observe(rig, resp).await
+    let resp = node
+        .answer_arriving_at(arrival, None, NATIVE_SEATS, rig.arrived())
+        .await;
+    let observed = observe(rig, resp).await;
+    (observed, sealed_by(&book))
+}
+
+/// The chain's two readings, taken after a drive.
+fn sealed_by(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Sealed {
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    Sealed {
+        count: durability.record.sealed(),
+        head: durability.record.head().to_string(),
+    }
 }
 
 /// **STEP 2 OVER THE LOOP: THE UNIT IS ATTRIBUTED TO WHAT THE DOOR RESOLVED, AND TO NOTHING
@@ -1987,8 +1982,6 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
 ///   anonymous actor — never the refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
-    use busbar_core::proxy::reqlog::REQUESTS;
-
     let mut failures: Vec<String> = Vec::new();
     for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
         // LEG 1, on its own deployment: its own door, its own key, its own counters.
@@ -2045,21 +2038,26 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 settle_rig.server.shutdown().await;
 
                 let legacy = leg_legacy_as(&legacy_rig, legacy_gov).await;
-                let looped = leg_loop_as(&loop_rig, loop_gov).await;
+                let (looped, sealed) = leg_loop_as(&loop_rig, loop_gov).await;
                 compare(&format!("{cred:?}"), &legacy, &looped, &mut failures);
                 if field(&looped, "ledger_requests") != "1" {
                     failures.push(format!(
                         "{cred:?}: the admitted unit was not charged to the key"
                     ));
                 }
-                // THE ATTRIBUTION, as an operator reads it: one link, on the resolved key's own
-                // chain. A step that answered with any other principal would leave it elsewhere.
-                let links = REQUESTS.records_for(&loop_rig.key.id);
-                if links.len() != 1 {
-                    failures.push(format!(
-                        "{cred:?}: the loop left {} link(s) on the resolved key's chain",
-                        links.len()
-                    ));
+                // THE ATTRIBUTION, as an operator reads it: one record, and its SUBJECT is the
+                // key the door resolved. A step that answered with any other principal seals a
+                // record with a different subject on it, and the digest says so.
+                if let Err(why) = sealed.is(expected_inputs(
+                    busbar_unit_audit::Subject::PrincipalId(loop_rig.key.id.clone()),
+                    1,
+                    POOL,
+                    loop_rig.arrived(),
+                    busbar_caps::Outcome::Completed,
+                    busbar_unit_audit::FinishClass::Complete,
+                    1,
+                )) {
+                    failures.push(format!("{cred:?}: {why}"));
                 }
             }
             (Err(_), Err(_)) => {
@@ -2092,17 +2090,28 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 settle_rig.server.shutdown().await;
 
                 let legacy = leg_legacy_as(&legacy_rig, open.clone()).await;
-                let looped = leg_loop_as(&loop_rig, open).await;
+                let (looped, sealed) = leg_loop_as(&loop_rig, open).await;
                 compare(
                     &format!("{cred:?}/unbound"),
                     &legacy,
                     &looped,
                     &mut failures,
                 );
-                if !REQUESTS.records_for(&loop_rig.key.id).is_empty() {
-                    failures.push(format!(
-                        "{cred:?}: a refused credential's key carries a link it never earned"
-                    ));
+                // AND THE RECORD SAYS SO TOO. A request the door bound no key to is recorded
+                // under `Arrival` — written, never dropped, because a chain that silently omits
+                // every anonymous request has a hole a caller can choose — and NOT under the key
+                // whose bearer was just turned away, which is the record a refused credential
+                // must not be able to earn.
+                if let Err(why) = sealed.is(expected_inputs(
+                    busbar_unit_audit::Subject::Arrival,
+                    1,
+                    POOL,
+                    loop_rig.arrived(),
+                    busbar_caps::Outcome::Completed,
+                    busbar_unit_audit::FinishClass::Complete,
+                    1,
+                )) {
+                    failures.push(format!("{cred:?}/unbound: {why}"));
                 }
             }
             (legacy_admit, loop_admit) => failures.push(format!(
@@ -2144,8 +2153,11 @@ impl approve::VetoSeat for StopsNothing {
 
 /// One request through the real loop with a named seat list, exactly as the mount drives it with
 /// its own.
-async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -> Observed {
-    let node = LlmNode::new();
+async fn leg_loop_seated(
+    rig: &Rig,
+    seats: &[&(dyn approve::VetoSeat + Sync)],
+) -> (Observed, Sealed) {
+    let (node, book) = booked();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -2156,8 +2168,11 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
         body: Fixture::BufferedOk.body(),
         path: None,
     };
-    let resp = node.answer_with(arrival, None, seats).await;
-    observe(rig, resp).await
+    let resp = node
+        .answer_arriving_at(arrival, None, seats, rig.arrived())
+        .await;
+    let observed = observe(rig, resp).await;
+    (observed, sealed_by(&book))
 }
 
 /// **STEP 4 OVER THE LOOP: THE NATIVE SEAT, BOTH WAYS.**
@@ -2183,7 +2198,6 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
 ///   plane's own permission answer in the caller's dialect rather than the node's overload one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
-    use busbar_core::proxy::reqlog::REQUESTS;
     use std::sync::atomic::AtomicBool;
 
     assert!(
@@ -2202,14 +2216,14 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
 
     // NOTHING SEATED: the mount's own list, which is the whole of today's behaviour.
     let bare_rig = rig(Fixture::BufferedOk).await;
-    let bare = leg_loop_seated(&bare_rig, NATIVE_SEATS).await;
+    let (bare, _) = leg_loop_seated(&bare_rig, NATIVE_SEATS).await;
     compare("no seat", &shipped, &bare, &mut failures);
     bare_rig.server.shutdown().await;
 
     // A SEAT THAT DOES NOT VETO: consulted, and the unit goes on to the same end.
     let passing = StopsNothing(AtomicBool::new(false));
     let passing_rig = rig(Fixture::BufferedOk).await;
-    let passed = leg_loop_seated(&passing_rig, &[&passing]).await;
+    let (passed, _) = leg_loop_seated(&passing_rig, &[&passing]).await;
     compare(
         "a seat that does not veto",
         &shipped,
@@ -2228,7 +2242,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     // A SEAT THAT VETOES: the unit stops at Approve.
     let stopping = StopsEverything(AtomicBool::new(false));
     let veto_rig = rig(Fixture::BufferedOk).await;
-    let stopped = leg_loop_seated(&veto_rig, &[&stopping]).await;
+    let (stopped, sealed) = leg_loop_seated(&veto_rig, &[&stopping]).await;
     assert!(
         stopping.0.load(Ordering::SeqCst),
         "the vetoing gate was never asked"
@@ -2253,18 +2267,23 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     if veto_rig.upstream.get_last_request_path().is_some() {
         failures.push("a vetoed unit reached the upstream".to_string());
     }
-    // AND IT STILL ENDS AT A TERMINAL: one link, never none and never two.
-    let links = REQUESTS.records_for(&veto_rig.key.id);
-    if links.len() != 1 {
-        failures.push(format!(
-            "a vetoed unit left {} link(s) on the chain",
-            links.len()
-        ));
+    // AND IT STILL ENDS AT A TERMINAL: one record, never none and never two — and the record
+    // names the step the veto stopped it at and the reason the seat gave, which is the half of an
+    // audit a status line cannot supply. Nothing was charged, so no fee is on it.
+    if let Err(why) = sealed.is(expected_inputs(
+        busbar_unit_audit::Subject::PrincipalId(veto_rig.key.id.clone()),
+        1,
+        POOL,
+        veto_rig.arrived(),
+        busbar_caps::Outcome::Refused(
+            busbar_caps::StepName::Approve,
+            busbar_caps::ReasonCode::HookVeto,
+        ),
+        busbar_unit_audit::FinishClass::Error,
+        0,
+    )) {
+        failures.push(format!("a vetoed unit: {why}"));
     }
-    assert!(
-        REQUESTS.verify_principal_chain(&veto_rig.key.id).is_ok(),
-        "the chain a vetoed unit left does not verify"
-    );
     veto_rig.server.shutdown().await;
 
     assert!(
@@ -2476,12 +2495,51 @@ fn chain_of(book: &Arc<Mutex<crate::root::durability::Durability>>) -> (u64, u64
     )
 }
 
+/// WHAT ONE UNIT SEALED, read the only way the uniform instrument can be read.
+///
+/// The audit unit's record chain retains no records — it keeps a position, a head and a count, and
+/// hands each sealed record to whoever sealed it. That is a property of the instrument every plane
+/// of this node shares, not a gap in this plane: a reader wanting a record's FIELDS has to be able
+/// to say which record it expects. So this pair is what a cell can observe — how many records one
+/// unit left, and the digest of the last one — and [`Sealed::is`] turns "which record" into an
+/// answer by sealing the expectation onto a mirror chain that starts where the node's chain starts.
+/// The digest hashes every field of a record, so the comparison skips none of them.
+#[derive(Debug)]
+struct Sealed {
+    count: u64,
+    head: String,
+}
+
+impl Sealed {
+    /// One unit, one record, and the record is the one `expected` describes.
+    fn is(&self, expected: busbar_unit_audit::AuditInputs) -> Result<(), String> {
+        if self.count != 1 {
+            return Err(format!(
+                "one unit sealed {} record(s) — never none, and never two",
+                self.count
+            ));
+        }
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let mut mirror = busbar_unit_audit::AuditChain::new();
+        busbar_unit_audit::Audit::seal(&mut mirror, expected, &token);
+        if self.head != mirror.head() {
+            return Err(format!(
+                "the record the unit sealed is not the record expected\n  sealed:   {}\n                   expected: {}",
+                self.head,
+                mirror.head()
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The record this file EXPECTS one unit of this plane to have written, as the audit unit's own
 /// inputs — spelled here, in the vocabulary every other plane spells, so that "uniform" is a claim
 /// about values and not about a shape that happens to compile.
 #[allow(clippy::too_many_arguments)]
 fn expected_inputs(
-    principal: &str,
+    subject: busbar_unit_audit::Subject,
     unit_key: u64,
     destination: &str,
     at: Arrived,
@@ -2490,7 +2548,7 @@ fn expected_inputs(
     fee_count: u32,
 ) -> busbar_unit_audit::AuditInputs {
     busbar_unit_audit::AuditInputs {
-        subject: busbar_unit_audit::Subject::PrincipalId(principal.to_string()),
+        subject,
         what: busbar_unit_audit::What {
             unit_key: UnitKey::new(unit_key),
             op_class: busbar_unit_audit::OpClassId::new(
@@ -2583,7 +2641,7 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
     busbar_unit_audit::Audit::seal(
         &mut mirror,
         expected_inputs(
-            &served_principal,
+            busbar_unit_audit::Subject::PrincipalId(served_principal),
             // THE FIRST UNIT this node took, by the node's own counter: a record that named every
             // unit the same could not tell two units of one node apart.
             1,
@@ -2628,7 +2686,7 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
     busbar_unit_audit::Audit::seal(
         &mut mirror,
         expected_inputs(
-            &refused_principal,
+            busbar_unit_audit::Subject::PrincipalId(refused_principal.clone()),
             // The SECOND.
             2,
             POOL,
@@ -2651,5 +2709,32 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
         "the refusal's record carries the step it was raised at and the reason — the half of an \
          audit a success-only record cannot supply — and it is LINKED to the dispatch before it, \
          because the mirror's second record hashes the first one's digest as its previous"
+    );
+
+    // ── AND THE DOOR IS ON THE RECORD, not inferred from it ────────────────────────────────
+    // The instrument this replaced could only tell the two doors apart by a pool label, which is
+    // why the harness that guarded it had to drive the SAME bytes through both: a step that picked
+    // the wrong door would still return the right bytes, so the bytes were not the proof. On the
+    // uniform record the door is a FIELD — `Completed` against `Refused(step, reason)` — and the
+    // fee that did or did not land beside it. Sealing the served ending at the refusal's position
+    // must not reproduce the refusal's digest, or the record cannot tell the doors apart at all.
+    let mut wrong_door = busbar_unit_audit::AuditChain::resume(served_head.clone(), 2);
+    busbar_unit_audit::Audit::seal(
+        &mut wrong_door,
+        expected_inputs(
+            busbar_unit_audit::Subject::PrincipalId(refused_principal),
+            2,
+            POOL,
+            refused_at,
+            busbar_caps::Outcome::Completed,
+            busbar_unit_audit::FinishClass::Complete,
+            1,
+        ),
+        &audit_token,
+    );
+    assert_ne!(
+        refused_head,
+        wrong_door.head(),
+        "the door a unit left through must be visible in the record it left behind"
     );
 }

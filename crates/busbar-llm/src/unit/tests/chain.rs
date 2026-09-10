@@ -13,7 +13,6 @@ use busbar_caps::{
     Admission, AdmitToken, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
     PrincipalId, Route, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_core::proxy::reqlog::REQUESTS;
 use busbar_substrate::plane_host::EngineTablesView;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
@@ -1703,9 +1702,12 @@ async fn a_configured_lanes_runtime_name_can_be_sealed() {
 ///
 /// `admit::admit` reaches the door through `EngineHost::admission_check`, which is the door's own
 /// check-and-charge WITHOUT the `finish_rejected` `admission_door` wraps its refusing arm in. So
-/// `Admitted::refusal` is bytes rather than an already-posted record, the chain hands it to
-/// `audit::audit_refused`, and the over-budget path ends where every other path ends — with exactly
-/// one link on the unit's chain.
+/// `Admitted::refusal` is bytes rather than an already-posted response, the chain hands it to
+/// `audit::audit_refused`, and the over-budget path ends where every other path ends — at the one
+/// terminal, with the door's own status and without ever reaching the Meter step.
+///
+/// "One record per unit" is asserted where the record is written, over the uniform record the unit
+/// seals; a plane crate cannot name the node's chain.
 #[tokio::test]
 async fn the_admit_doors_refusal_is_posted_once_by_the_audit_step() {
     let rig = rig(Fixture::OverBudget).await;
@@ -1730,31 +1732,20 @@ async fn the_admit_doors_refusal_is_posted_once_by_the_audit_step() {
     assert_eq!(resp.status().as_u16(), 429, "the door's own refusal");
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
 
-    let records = REQUESTS.records_for(&rig.key.id);
-    assert_eq!(
-        records.len(),
-        1,
-        "one unit, one link — the door posted none of its own"
-    );
-    assert_eq!(
-        records[0].pool, POOL,
-        "and the one link names the pool the caller asked for"
-    );
     assert!(
         !metering.reached,
         "a unit refused at the door never reaches the Meter step"
     );
-    assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
     rig.server.shutdown().await;
 }
 
 /// GAP 7, CLOSED — `audit_refused` labels a pre-door refusal with the pool it was raised against.
 ///
 /// The live pre-admission guard finishes through `finish_rejected` with `pool_label(app, pool)`, so
-/// a 403 against a CONFIGURED pool is recorded against that pool's name. `audit::audit_refused` now
-/// takes the destination and applies the SAME bound, so the two agree on the record as well as on
-/// the bytes — and a name no deployment configured still reads back as the reserved unresolved
-/// label, so nothing was widened to close this.
+/// a 403 against a CONFIGURED pool names that pool. `audit::audit_refused` takes the destination and
+/// applies the SAME bound, so the two agree on the label as well as on the bytes — and a name no
+/// deployment configured still reads back as the reserved unresolved label, so nothing was widened
+/// to close this.
 #[tokio::test]
 async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
     // LEG 1 — the live pre-admission guard, on its own deployment.
@@ -1775,12 +1766,6 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
         )
         .expect_err("the key may not reach the pool it named");
     assert_eq!(live.status().as_u16(), 403);
-    let live_records = REQUESTS.records_for(&live_rig.key.id);
-    assert_eq!(live_records.len(), 1, "the live guard posts one link");
-    assert_eq!(
-        live_records[0].pool, POOL,
-        "and names the pool it turned the caller away from"
-    );
     live_rig.server.shutdown().await;
 
     // LEG 2 — the chain, through the step files, on its own deployment.
@@ -1803,26 +1788,17 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
         &mut metering,
     )
     .await;
-    assert_eq!(resp.status().as_u16(), 403);
+    assert_eq!(
+        resp.status().as_u16(),
+        403,
+        "the step's terminal answers the live guard's status"
+    );
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
 
-    let unit_records = REQUESTS.records_for(&unit_rig.key.id);
-    assert_eq!(unit_records.len(), 1, "one unit, one link");
     assert_eq!(
-        unit_records[0].pool, live_records[0].pool,
-        "the step's record names the pool the live guard's record names"
-    );
-    assert_eq!(
-        (
-            unit_records[0].outcome.clone(),
-            unit_records[0].reason.clone(),
-            unit_records[0].status
-        ),
-        (
-            live_records[0].outcome.clone(),
-            live_records[0].reason.clone(),
-            live_records[0].status
-        )
+        host.pool_label(POOL),
+        POOL,
+        "the step hands the terminal the pool the live guard named, through the same bound"
     );
     // The bound is unchanged for a name nothing configured, which is the half a fix could have
     // broken without any of the above noticing.

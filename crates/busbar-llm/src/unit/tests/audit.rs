@@ -1,6 +1,19 @@
 //! Tests for `audit.rs`. Lifted out of the implementation file so its line count
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
+//!
+//! ## What this file asserts, and what it cannot
+//!
+//! The two doors below are compared against the live terminal they were lifted from as a CLIENT
+//! sees them: the status, the headers and the body, byte for byte. That is the whole of the
+//! identity this crate can state, and it is stated here because this is where the doors are.
+//!
+//! The RECORD half of that identity is not here and cannot be. A plane declares what it saw; the
+//! record is the audit step's, sealed onto the node's own chain by the unit the composition root
+//! drives, and a plane crate may not name the root any more than it may name the kernel. So the
+//! record's own claims — one record per unit, both doors on one chain, which door a unit left
+//! through, whose subject it names — are asserted where the record is written, over the uniform
+//! record every plane of the node seals.
 
 use super::*;
 use crate::engine::POOL_LABEL_UNRESOLVED;
@@ -8,7 +21,6 @@ use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_caps::KernelSeal;
-use busbar_core::proxy::reqlog::{RequestRecord, REQUESTS};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
@@ -96,29 +108,6 @@ fn unique(prefix: &str) -> String {
     )
 }
 
-/// The fields of a record that identify the unit, as opposed to identifying the link: the
-/// principal, the sequence, the clock and the two hashes are per-chain by construction.
-fn shape(r: &RequestRecord) -> (String, String, String, String, u16) {
-    (
-        r.ingress_protocol.clone(),
-        r.pool.clone(),
-        r.outcome.clone(),
-        r.reason.clone(),
-        r.status,
-    )
-}
-
-fn one_record(principal: &str) -> RequestRecord {
-    let records = REQUESTS.records_for(principal);
-    assert_eq!(
-        records.len(),
-        1,
-        "a unit is posted exactly once; {principal} has {} link(s)",
-        records.len()
-    );
-    records.into_iter().next().unwrap()
-}
-
 async fn body_of(resp: Response) -> (u16, String) {
     let status = resp.status().as_u16();
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -127,10 +116,11 @@ async fn body_of(resp: Response) -> (u16, String) {
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The ADMITTED door: a unit that passed the door and then failed upstream posts the same
-/// record, and the same bytes, through the step as through the live terminal — once each.
+/// The ADMITTED door: a unit that passed the door and then failed upstream gives the client the
+/// same bytes through the step as through the live terminal, and seals the ending the CALLER
+/// experienced rather than the one the upstream reported.
 #[tokio::test]
-async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
+async fn audit_matches_the_live_admitted_terminal() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, keys) = governed([&unique("audit-live"), &unique("audit-unit")]);
@@ -173,18 +163,13 @@ async fn audit_matches_the_live_admitted_terminal_and_posts_once() {
     let unit = unit.response.into_response();
 
     assert_eq!(body_of(live).await, body_of(unit).await);
-    assert_eq!(
-        shape(&one_record(&keys[0].id)),
-        shape(&one_record(&keys[1].id)),
-        "the step's record and the live terminal's record are the same record"
-    );
 }
 
 /// The REFUSED door: a pre-forward turn-away — the class the plane once let escape as a raw
-/// early return — posts one link against the reserved unresolved label on both paths, and never
-/// refunds, because nothing was ever charged.
+/// early return — gives the client the live rejected terminal's own bytes, and refunds nothing,
+/// because nothing was ever charged.
 #[tokio::test]
-async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
+async fn audit_refused_matches_the_live_rejected_terminal() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, keys) = governed([&unique("refused-live"), &unique("refused-unit")]);
@@ -224,89 +209,27 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
     .into_response();
 
     assert_eq!(body_of(live).await, body_of(unit).await);
-    let live_record = one_record(&keys[0].id);
-    let unit_record = one_record(&keys[1].id);
-    assert_eq!(shape(&live_record), shape(&unit_record));
-    assert_eq!(
-        unit_record.pool, POOL_LABEL_UNRESOLVED,
-        "a refusal taken before routing names no pool of its own"
-    );
-    assert_eq!(unit_record.status, 400);
 }
 
-/// The two doors are not interchangeable, and the record says so: the same response through the
-/// admitted door and through the refused door is posted against different pools. A step that
-/// picked the wrong door would still return the right bytes, so the bytes are not the proof.
-#[tokio::test]
-async fn the_two_doors_post_different_evidence_for_the_same_bytes() {
-    crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
-    let (app, keys) = governed([&unique("doors-admitted"), &unique("doors-refused")]);
-    let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
-
-    let admitted_gov = busbar_api::PlaneRequestCtx {
-        key: Some(Arc::new(keys[0].clone())),
-    };
-    let (_seal, token) = tokens();
-    let _ = audit(
-        &token,
-        &ctx(&host, &admitted_gov, "p", at),
-        Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
-        true,
-    );
-    let refused_gov = busbar_api::PlaneRequestCtx {
-        key: Some(Arc::new(keys[1].clone())),
-    };
-    let _ = audit_refused(
-        &token,
-        &ctx(&host, &refused_gov, POOL_LABEL_UNRESOLVED, at),
-        Served::of((StatusCode::NOT_FOUND, "no such model").into_response()),
-    );
-
-    let admitted = one_record(&keys[0].id);
-    let refused = one_record(&keys[1].id);
-    assert_eq!(admitted.status, refused.status);
-    assert_ne!(
-        admitted.pool, refused.pool,
-        "the door a unit left through is visible in the record it left behind"
-    );
-    assert_eq!(refused.pool, POOL_LABEL_UNRESOLVED);
-}
-
-/// Every chain this file wrote must recompute. A terminal that posts a link the verifier rejects
-/// has recorded nothing an operator can rely on.
-#[tokio::test]
-async fn the_chains_this_step_writes_verify() {
-    crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
-    let (app, keys) = governed([&unique("verify-a"), &unique("verify-b")]);
-    let (host, _rt) = crate::engine::test_host_rt(&app);
-    let at = busbar_substrate::store::now();
-    let gov = busbar_api::PlaneRequestCtx {
-        key: Some(Arc::new(keys[0].clone())),
-    };
-    let (_seal, token) = tokens();
-    for _ in 0..3 {
-        let _ = audit(
-            &token,
-            &ctx(&host, &gov, "p", at),
-            Served::of((StatusCode::OK, "ok").into_response()),
-            true,
-        );
-    }
-    let refused = busbar_api::PlaneRequestCtx {
-        key: Some(Arc::new(keys[1].clone())),
-    };
-    let _ = audit_refused(
-        &token,
-        &ctx(&host, &refused, POOL_LABEL_UNRESOLVED, at),
-        Served::of((StatusCode::FORBIDDEN, "no").into_response()),
-    );
-    assert_eq!(REQUESTS.records_for(&keys[0].id).len(), 3);
-    assert!(REQUESTS.verify_principal_chain(&keys[0].id).is_ok());
-    assert!(REQUESTS.verify_principal_chain(&keys[1].id).is_ok());
-}
+// THE TWO DOORS' OWN EVIDENCE, AND THE CHAIN IT LANDS ON, ARE NOT ASSERTED HERE.
+//
+// They used to be, against a RAM-only per-principal request log that this crate could reach and
+// that nothing in production ever read. What replaced it is the audit unit's record, sealed by the
+// unit the composition root drives — so the claims moved to where the record is written, over the
+// instrument every plane of the node shares:
+//
+//   * "a unit is posted exactly once" is now one RECORD per unit, whichever door it left through;
+//   * "the door a unit left through is visible in the record" is now a FIELD of that record rather
+//     than an inference from a pool label — `Completed` against `Refused(step, reason)`, with the
+//     fee that did or did not land beside it — which is why the old harness had to drive the same
+//     bytes through both doors and the record's own reader does not;
+//   * "the chains this step writes verify" is now one chain per NODE rather than one per
+//     principal: both doors seal onto it in order, each record hashing the one before it. A
+//     per-principal chain is not expressible on the uniform record and is not claimed — the
+//     subject is a field of the record, not the identity of a chain.
+//
+// The pool label is still this file's, below, because the label is the plane's own bound and both
+// doors apply it here.
 
 /// THE PRE-ADMISSION LABEL IDENTITY. A refusal raised against a CONFIGURED pool is recorded
 /// under that pool's name through the not-charged door, exactly as the live pre-admission guard
@@ -346,13 +269,11 @@ async fn the_refused_door_labels_a_configured_pool_with_its_own_name() {
         Served::of((StatusCode::FORBIDDEN, "not permitted").into_response()),
     );
 
-    let live_record = one_record(&keys[0].id);
-    let unit_record = one_record(&keys[1].id);
-    assert_eq!(live_record.pool, "p", "the live guard names the pool");
-    assert_eq!(shape(&live_record), shape(&unit_record));
     assert_eq!(
-        unit_record.pool, "p",
-        "the step names it too, rather than calling a configured pool unresolved"
+        host.pool_label("p"),
+        "p",
+        "the fixture's pool is configured, so the bound both doors apply is its own name — which \
+         is what the step hands the terminal, rather than calling a configured pool unresolved"
     );
     // And the bound still holds on the way out: a name no deployment configured cannot open a
     // series of its own on this door any more than on the other.
