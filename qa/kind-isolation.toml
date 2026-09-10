@@ -2674,7 +2674,7 @@ count = "23"
 [[cell]]
 crate = "busbar-unit-audit"
 kind = "control"
-count = "87"
+count = "98"
 
 [[cell]]
 crate = "busbar-unit-audit"
