@@ -28,10 +28,16 @@ name: gate-mutants
 
 on:
   push:
-    # Same branch set as ci.yml, plus the `keep-*` hand-back branches: an agent's branch is exactly
-    # where a new gate rule first appears, so it is exactly where the hole is cheapest to find.
+    # Same branch set as ci.yml. `keep-*` WAS here and is not any more, and it is not an ungating:
+    # with ~15 live hand-back branches each fanning 24 shards onto the 32-slot busbar-xl fleet, the
+    # per-branch `concurrency:` below cannot help (it cancels a branch's OWN superseded run, not its
+    # neighbours'), and the integration tip's proof sat starved behind slot work — exactly the
+    # arithmetic docs/ci/self-hosted-runners.md §1-2 predicts. A slot that touches the mutation
+    # scope (`xtask/src/gates/**` et al., scripts/gate-mutants.sh) runs the same proof by hand —
+    # `scripts/gate-mutants.sh --shard 1/1` — and says so in its hand-back; the 24-shard run then
+    # happens at landing, on the integration branch, where the required check is read from.
     # `!wip/**` for the same reason ci.yml carries it — checkpoint pushes arrive by the dozen.
-    branches: ['integration/**', 'dev', 'qa', 'main', 'keep-*', '!wip/**']
+    branches: ['integration/**', 'dev', 'qa', 'main', '!wip/**']
   pull_request:
   workflow_dispatch:
     inputs:

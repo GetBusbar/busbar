@@ -21,7 +21,11 @@ Two halves, and they are enforced by two different mechanisms.
 *Nothing new arrives unheld* is [`gate-mutants`](../../.github/workflows/gate-mutants.yml). Every
 push that changes gate code is mutated, and a stub that survives the gates' own self-proof is a
 line of new gate code that nothing holds down. It is scoped to the diff, so its cost is proportional
-to the change and it can therefore run on every push rather than once a quarter.
+to the change and it can therefore run on every push to `integration/**`, `dev`, `qa` and `main`
+(and every pull request) rather than once a quarter. It does **not** run on `keep-*` slot branches:
+a slot that touches the mutation scope runs `scripts/gate-mutants.sh --shard 1/1` locally and says so
+in its hand-back, and the 24-shard run happens at landing on the integration branch. See *Sharding*
+below for why.
 
 *Nothing already held stops being held* is the ratchets that were already here: the ceilings in
 `qa/construction.toml` and `qa/kind-isolation.toml`, held exactly (not approximately) by
@@ -87,6 +91,17 @@ exactly how a rule stops biting.
 **Sharding.** One full four-gate self-proof is roughly half an hour, so the mutants are fanned across
 24 shards of the `busbar-xl` fleet (`--shard k/n`, round-robin). Wall clock is one baseline plus
 however many mutants land on the busiest shard; a landing-sized diff puts about one on each.
+
+That fan-out is why the trigger stops at `integration/**`, `dev`, `qa`, `main` and pull requests, and
+no longer includes `keep-*`. The workflow's `concurrency:` cancels a branch's *own* superseded run,
+which is no help when the load is ~15 distinct hand-back branches each claiming 24 of the fleet's 32
+spot slots at once: the integration tip's proof queued behind slot work it had nothing to do with
+([self-hosted-runners.md §1-2](self-hosted-runners.md#1-why-a-fleet-at-all) predicts exactly this).
+So for a slot branch the 24-shard proof runs in two places instead: **locally**, as
+`scripts/gate-mutants.sh --shard 1/1` (one shard, every mutant, same script and same test command),
+by any slot whose diff enters the mutation scope, stated in the hand-back; and **at landing**, on
+the integration branch, where the required check is actually read from. `ship-ready:gate-mutants`
+already falls back to the merge-base's verdict when a commit carries no run of its own.
 
 **Two things the job refuses to treat as green.**
 
