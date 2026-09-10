@@ -183,6 +183,30 @@ key = "rules.loc-ceilings.kernel_ceiling"
 by = 2
 because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: two lines of MODULE WIRING, not two lines of kernel. busbar-unit-admission/src/lib.rs is in the kernel's call-graph name-match set, so `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};` spend kernel budget; cache.rs itself is not name-matched and none of its 136 lines are counted here."
 
+# THE EXPORT PROJECTION GRAMMAR FACE: `busbar_plugin::cold::export::projection::{Projection,
+# ProjectionUnion, ProjectedRecord, resolve_projection, produced_fields, stream_produced,
+# PRODUCED_STREAMS, RequestLogFacts, build_request_log}`. The grammar moved OUT of the retiring
+# engine and landed beside `ExportStream`/`ExportField`, the two enums it is written entirely over:
+# a `Projection` is two dense bitmasks whose bit positions ARE those enums' positions in their own
+# frozen vocabularies, so the grammar and the vocabulary are one thing. It spends NO §1.1 ceiling —
+# busbar-plugin carries neither a `loc-ceilings` row nor a `surface_ceilings` row — and the two
+# raises below are both VOCABULARY-MATRIX raises, not surface.
+#
+# The counts busbar-core gives up in the same commit are declared as FALLS, which need no entry:
+# `busbar-core x api` 602 -> 600, `x control` 5200 -> 5195, `x plane` 3031 -> 2996.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin.plane.count"
+file = "qa/kind-isolation.toml"
+by = 53
+because = "the export projection grammar face busbar_plugin::cold::export::projection, moved beside the ExportStream/ExportField vocabulary it is written over. EVERY ONE OF THE 53 IS THE WORD `streams`. A plane member of this tree carries the bare instance id `streams`, and matrix scores whole text, so the noun the export grammar cannot avoid using — its config key is literally `streams:`, its frozen enum is `ExportStream`, and its central question is which streams a sink carries — reads as this crate naming a plane. There is no coupling here to drain: busbar-plugin gained no dependency, no type and no call against any plane, and the same word already scored 18 in cold/export.rs beside the enum before this landing. It is a homonym, and the honest place to fix it is the plane's id, not the grammar's vocabulary. Flagged for the owner rather than worked around."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the same export projection grammar face: busbar-core stops declaring the grammar and starts naming it, so two config-layer sites spell `busbar_plugin::cold::export::projection` where they used to spell `crate::export::projection`. Two lines of SPELLING against a Cargo edge busbar-core already carried (crates/busbar-core/Cargo.toml:55), not a new reach — and it is transitional: both sites travel to busbar-core-config, and the export half of them dies when the four busbar-export-* crates land and core stops naming export at all."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

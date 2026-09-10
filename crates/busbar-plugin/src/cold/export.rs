@@ -35,6 +35,12 @@ use serde::{Deserialize, Serialize};
 /// const and cannot silently drift apart.
 pub const EXPORT_ABI_VERSION: u32 = 2;
 
+/// The EXPORT PROJECTION GRAMMAR — `streams:` / `fields:`, its validation, and the record writer
+/// that makes an ungranted field impossible to serialize. It is written entirely over
+/// [`ExportStream`] and [`ExportField`] declared below, so it lives beside them rather than in the
+/// producer that happened to be its first caller.
+pub mod projection;
+
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.
 ///

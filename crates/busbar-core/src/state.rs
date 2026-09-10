@@ -291,7 +291,7 @@ pub struct App {
     /// core never assembles that stream's records at all. It supersedes the one-off
     /// `export::request_log_configured()` boolean this replaced — one mechanism for "did anybody ask
     /// for this", not two.
-    pub(crate) export_projections: crate::export::projection::ProjectionUnion,
+    pub(crate) export_projections: busbar_plugin::cold::export::projection::ProjectionUnion,
     /// The `global_hooks:` list — names fired on every request (plus any hook with inline `global:
     /// true`). Carried for the hooks read surface so a definition can report whether it is globally
     /// wired. Read-only after construction.

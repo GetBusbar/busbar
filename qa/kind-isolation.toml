@@ -1639,7 +1639,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "602"
+count = "600"
 
 [[cell]]
 crate = "busbar-core"
@@ -1654,7 +1654,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5200"
+count = "5195"
 
 [[cell]]
 crate = "busbar-core"
@@ -1664,12 +1664,12 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3031"
+count = "2996"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "265"
+count = "267"
 
 [[cell]]
 crate = "busbar-core"
@@ -2154,7 +2154,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plugin"
 kind = "plane"
-count = "81"
+count = "134"
 
 [[cell]]
 crate = "busbar-plugin"

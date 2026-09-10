@@ -20,17 +20,22 @@
 //! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
 
 pub(crate) mod file;
-pub(crate) mod projection;
 pub mod prometheus;
 pub(crate) mod webhook;
 
 use crate::config::ExportCfg;
-use crate::export::projection::ProjectedRecord;
 use crate::plugin_routes::{RouteDecl, RouteKind};
+pub(crate) use busbar_plugin::cold::export::projection::RequestLogFacts;
+use busbar_plugin::cold::export::projection::{self, Projection};
+use busbar_plugin_loader::ExportStream;
 use busbar_plugin_loader::Route;
-use busbar_plugin_loader::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
+
+/// The streams the `otlp` sink carries. It has no module of its own in this crate — its config
+/// surface is `ExportCfg::otlp` and its span pipeline is the tracing subscriber — so its
+/// declaration sits here beside its siblings'. It moves to `busbar-export-otlp` with the pipeline.
+pub(crate) const OTLP_STREAMS: &[ExportStream] = &[ExportStream::Traces];
 
 /// The live plugin-route declarations the built-in exporters contribute — today just the
 /// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
@@ -76,48 +81,13 @@ pub fn configure(cfg: &ExportCfg) {
     file::configure(cfg);
 }
 
-/// The raw per-request facts the `logs` stream is built FROM — everything core knows at
-/// request-finish, before any projection is applied. Deliberately NOT a payload: it is the producer's
-/// output, and [`build_request_log`] is the only thing that turns it into one, per sink, bounded by
-/// that sink's projection.
-pub(crate) struct RequestLogFacts<'a> {
-    pub(crate) ts: u64,
-    pub(crate) ingress_protocol: &'a str,
-    pub(crate) pool: &'a str,
-    pub(crate) outcome: &'a str,
-    pub(crate) latency_ms: u64,
-}
-
-/// Build ONE sink's request-log payload, TO ITS PROJECTION. Pure (no I/O) so it is unit-testable.
-///
-/// Every field goes through [`ProjectedRecord::set`], which writes it only if the projection grants
-/// it — so an ungranted field is never serialized and never crosses the ABI. There is no
-/// `json!` literal here on purpose: a literal plus a filter is a step someone can forget, and its
-/// failure mode is silent over-disclosure.
-pub(crate) fn build_request_log(
-    projection: projection::Projection,
-    ts: u64,
-    ingress_protocol: &str,
-    pool: &str,
-    outcome: &str,
-    latency_ms: u64,
-) -> Value {
-    let mut rec = ProjectedRecord::new(projection, ExportStream::Logs);
-    rec.set(ExportField::Ts, ts)
-        .set(ExportField::IngressProtocol, ingress_protocol)
-        .set(ExportField::Pool, pool)
-        .set(ExportField::Outcome, outcome)
-        .set(ExportField::LatencyMs, latency_ms);
-    rec.finish()
-}
-
 /// A per-delivery cache of already-built payloads, keyed by PROJECTION. Instances with IDENTICAL
 /// projections share one payload, so the build cost is per DISTINCT PROJECTION, not per sink (design
 /// `export-projection-grammar.md`, "Implementation note"). A `Vec` because the number of distinct
 /// projections in a deployment is tiny and a linear scan beats hashing at that size.
 pub(crate) struct PayloadCache<'a> {
     facts: &'a RequestLogFacts<'a>,
-    built: Vec<(projection::Projection, Arc<Value>)>,
+    built: Vec<(Projection, Arc<Value>)>,
 }
 
 impl<'a> PayloadCache<'a> {
@@ -129,29 +99,39 @@ impl<'a> PayloadCache<'a> {
     }
 
     /// This sink's payload, built to `projection` (and reused for any sibling with the same one).
-    pub(crate) fn get(&mut self, projection: projection::Projection) -> Arc<Value> {
+    pub(crate) fn get(&mut self, projection: Projection) -> Arc<Value> {
         if let Some((_, v)) = self.built.iter().find(|(p, _)| *p == projection) {
             return v.clone();
         }
-        let f = self.facts;
-        let v = Arc::new(build_request_log(
-            projection,
-            f.ts,
-            f.ingress_protocol,
-            f.pool,
-            f.outcome,
-            f.latency_ms,
-        ));
+        let v = Arc::new(projection::build_request_log(projection, self.facts));
         self.built.push((projection, v.clone()));
         v
     }
 }
 
-/// The projection a test sink is given: the whole `logs` stream, so a test that is not ABOUT the
-/// projection sees the same payload the pre-projection code produced.
+/// The projection a test sink is given, minted THROUGH the real path: an instance that subscribes
+/// to `logs` and overrides nothing, which resolves to the produced default set — exactly what
+/// `build_request_log` fills in, so a test that is not ABOUT the projection sees the same payload
+/// the pre-projection code produced.
+///
+/// It goes through [`projection::resolve_projection`] rather than a mint-from-parts hatch because
+/// resolution is now the only public way to obtain a `Projection` at all: the parts constructor is
+/// private to the grammar and its test-only door does not leave that crate. A test helper that
+/// could widen a projection would be the one hole in "the operator grants, nothing else does".
 #[cfg(test)]
-pub(crate) fn test_logs_projection() -> projection::Projection {
-    projection::Projection::for_test(&[ExportStream::Logs], ExportStream::Logs.default_fields())
+pub(crate) fn test_logs_projection() -> Projection {
+    let mut errors = Vec::new();
+    let p = projection::resolve_projection(
+        "test",
+        "request-log-file",
+        Some(file::STREAMS),
+        Some(&["logs".to_string()]),
+        None,
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:#?}");
+    p
 }
 
 /// Fan the request-log facts out to every configured PUSH sink, each receiving a payload built TO

@@ -158,17 +158,21 @@ async fn delivery_failure_masks_userinfo() {
     );
 }
 
-/// The built request-log payload is the byte-identical 5-field shape (relocated to `crate::export`),
-/// for a sink whose projection grants the whole `logs` stream.
+/// The built request-log payload is the byte-identical 5-field shape (the builder now lives beside
+/// the `produced_fields` table that claims to describe it), for a sink whose projection grants the
+/// whole `logs` stream. Kept HERE as well as in the grammar's own anti-drift test because this one
+/// asserts the VALUES a delivering sink is handed, not just the key set.
 #[test]
 fn build_request_log_shape() {
-    let p = crate::export::build_request_log(
+    let p = busbar_plugin::cold::export::projection::build_request_log(
         test_logs_projection(),
-        1_700_000_000,
-        "anthropic",
-        "prod",
-        "ok",
-        42,
+        &busbar_plugin::cold::export::projection::RequestLogFacts {
+            ts: 1_700_000_000,
+            ingress_protocol: "anthropic",
+            pool: "prod",
+            outcome: "ok",
+            latency_ms: 42,
+        },
     );
     assert_eq!(p["ts"], 1_700_000_000_u64);
     assert_eq!(p["ingress_protocol"], "anthropic");

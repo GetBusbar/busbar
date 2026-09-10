@@ -8,8 +8,14 @@
 //! `export.request-log-file`; absent ⇒ no file sink.
 
 use crate::config::ExportCfg;
-use crate::export::projection::Projection;
 use crate::export::PayloadCache;
+use busbar_plugin::cold::export::projection::Projection;
+use busbar_plugin_loader::ExportStream;
+
+/// The streams THIS SINK carries. Its own declaration, in its own file — not an entry in a table
+/// somewhere else keyed on the name an operator happened to write in `module:`. This is the const
+/// that becomes `ExportHandler::streams()` when the sink becomes `busbar-export-file`.
+pub(crate) const STREAMS: &[ExportStream] = &[ExportStream::Logs];
 use crate::limits::admission::AdmissionGate;
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};

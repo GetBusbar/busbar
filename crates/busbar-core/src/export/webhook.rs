@@ -15,8 +15,13 @@
 //! configured.
 
 use crate::config::ExportCfg;
-use crate::export::projection::Projection;
 use crate::export::PayloadCache;
+use busbar_plugin::cold::export::projection::Projection;
+use busbar_plugin_loader::ExportStream;
+
+/// The streams THIS SINK carries — its own declaration; see the sibling file sink's for why it is
+/// here and not in a table keyed on the operator's `module:` token.
+pub(crate) const STREAMS: &[ExportStream] = &[ExportStream::Logs];
 use crate::limits::admission::AdmissionGate;
 use crate::observability::{mask_userinfo, validate_webhook_url};
 use http::header::{HeaderName, HeaderValue};

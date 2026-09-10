@@ -1706,7 +1706,7 @@ fn default_per_request_fee() -> i64 {
 /// process-global tracer subscriber, so a second instance could not do anything except silently lose.
 /// A second instance of either is therefore a loud boot error, never a silent no-op.
 ///
-/// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
+/// Each sink's settings carry that instance's resolved [`busbar_plugin::cold::export::projection::Projection`] —
 /// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
 /// ungranted field is never serialized and never crosses the ABI.
 #[derive(Debug, Clone, Default)]
@@ -1728,8 +1728,10 @@ impl ExportCfg {
     /// same mechanism for hook signals), then read per request as the COMPUTE GATE: core generates a
     /// stream's records ONLY when some sink declared it. Supersedes the one-off
     /// `export::request_log_configured()` boolean — one mechanism, not two.
-    pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
-        crate::export::projection::ProjectionUnion::of(
+    pub(crate) fn projection_union(
+        &self,
+    ) -> busbar_plugin::cold::export::projection::ProjectionUnion {
+        busbar_plugin::cold::export::projection::ProjectionUnion::of(
             self.prometheus
                 .iter()
                 .map(|s| &s.projection)
@@ -1784,12 +1786,12 @@ pub struct PrometheusSettings {
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_plugin::cold::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_plugin::cold::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
@@ -1816,12 +1818,12 @@ pub(crate) struct WebhookSettings {
     #[serde(default = "default_webhook_delivery_timeout_secs")]
     pub(crate) delivery_timeout_secs: u64,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_plugin::cold::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_plugin::cold::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-file` instance.
@@ -1834,12 +1836,12 @@ pub(crate) struct FileSettings {
     #[serde(default)]
     pub(crate) rotate_mb: Option<u64>,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_plugin::cold::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_plugin::cold::export::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -1852,12 +1854,12 @@ pub struct OtlpSettings {
     /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
     pub url: String,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_plugin::cold::export::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_plugin::cold::export::projection::Projection,
 }
 
 /// One `{ name, value }` auth header for a webhook export instance.
@@ -1866,6 +1868,36 @@ pub struct OtlpSettings {
 pub(crate) struct ExportAuthHeader {
     pub(crate) name: String,
     pub(crate) value: String,
+}
+
+/// What the sink an operator's `module:` token names DECLARES it carries.
+///
+/// THE FOUR-ARM MATCH THIS REPLACES WAS THE DEFECT, and it is worth being exact about what changed,
+/// because a name match is still visible below. What used to exist was a table INSIDE THE
+/// KIND-NEUTRAL PROJECTION GRAMMAR — `export::projection::module_streams` — that matched
+/// `prometheus | request-log-webhook | request-log-file | otlp` and answered for each. A grammar
+/// that has to know its instances by name to work at all is a grammar that grows an arm every time
+/// somebody writes a sink, and a third-party sink could never have had one. It is deleted.
+///
+/// What is here instead is RESOLUTION, which is the config layer's actual job: an operator wrote a
+/// token, and this maps that token to the sink it names. The ANSWER comes from the sink — each of
+/// the built-ins declares its own `STREAMS` const in its own file, which is literally the value its
+/// `ExportHandler::streams()` will return once it is a crate. Nothing here decides what a sink
+/// carries; it only decides which sink was named. That is the same question `--validate`'s
+/// unknown-module diagnostic already has to answer, and this function is where it now lives once.
+///
+/// `None` for a token this build does not know: the unknown-module diagnostic owns that case, and a
+/// projection is never inferred for a sink that is not there.
+pub(crate) fn builtin_export_streams(
+    module: &str,
+) -> Option<&'static [busbar_plugin_loader::ExportStream]> {
+    match module {
+        EXPORT_MODULE_PROMETHEUS => Some(crate::export::prometheus::STREAMS),
+        EXPORT_MODULE_REQUEST_LOG_WEBHOOK => Some(crate::export::webhook::STREAMS),
+        EXPORT_MODULE_REQUEST_LOG_FILE => Some(crate::export::file::STREAMS),
+        EXPORT_MODULE_OTLP => Some(crate::export::OTLP_STREAMS),
+        _ => None,
+    }
 }
 
 /// Lower the `export:` NAMED-DEFINITION map into the typed [`ExportCfg`] every runtime consumer reads.
@@ -1879,7 +1911,7 @@ pub(crate) struct ExportAuthHeader {
 /// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
 ///   process-singleton by construction and a second one could only lose silently);
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
-///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
+///   [`busbar_plugin::cold::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
 ///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
 ///   and delivers nothing.
@@ -1890,9 +1922,11 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
-        let projection = crate::export::projection::resolve_projection(
+        let module = def.module.trim();
+        let projection = busbar_plugin::cold::export::projection::resolve_projection(
             name,
-            def.module.trim(),
+            module,
+            builtin_export_streams(module),
             def.streams.as_deref(),
             def.fields.as_deref(),
             def.durable,
@@ -1918,7 +1952,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 }
             };
         }
-        match def.module.trim() {
+        match module {
             EXPORT_MODULE_PROMETHEUS => {
                 if let Some(owner) = prometheus_owner {
                     errors.push(format!(
@@ -2701,6 +2735,14 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]
 mod named_map_merge_tests;
+
+// The `export:` DOCUMENT half of the projection grammar. It moved here from beside the grammar
+// itself, which is now `busbar_plugin::cold::export::projection` and carries its own half: these
+// tests are about what an operator's YAML resolves to, which is this layer's question, and they
+// travel with `resolve_export` when the config surface becomes its own crate.
+#[cfg(test)]
+#[path = "tests/export_projection_tests.rs"]
+mod export_projection_tests;
 
 // The CONFIG BACK-COMPAT CORPUS GATE: the resolved billing/limits surface is byte-stable across
 // 1.6.0 changes (the baseline M3's config-noun eviction must preserve). Lives here because it reads

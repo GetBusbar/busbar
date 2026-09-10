@@ -14,9 +14,13 @@
 
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    ExportStream, HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 use std::sync::Arc;
+
+/// The streams THIS SINK carries — its own declaration; see the sibling file sink's for why it is
+/// here and not in a table keyed on the operator's `module:` token.
+pub(crate) const STREAMS: &[ExportStream] = &[ExportStream::Metrics];
 
 /// The well-known Prometheus/OpenMetrics scrape path — the one exception to "an export sink lives
 /// under `/exports/<name>/*`" ([`crate::plugin_routes::confine`]), because external tooling expects
