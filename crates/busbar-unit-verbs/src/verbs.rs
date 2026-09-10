@@ -396,17 +396,18 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             },
         };
         match self.governance.rotate_key(admin, id) {
-            Ok(RotateOutcome::NotFound) => {
+            // NO SUCH KEY and ALREADY TOMBSTONED are one arm: both refuse at the verify step and
+            // both release the reservation, so the only thing that differs is which reason the
+            // caller is told, and that is a value rather than a branch.
+            Ok(outcome @ (RotateOutcome::NotFound | RotateOutcome::Tombstoned)) => {
                 if let Some(r) = reservation {
                     r.clear();
                 }
-                Err(Refusal::new(RefusalStep::Verify, ReasonCode::NotFound))
-            }
-            Ok(RotateOutcome::Tombstoned) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                Err(Refusal::new(RefusalStep::Verify, ReasonCode::Conflict))
+                let reason = match outcome {
+                    RotateOutcome::NotFound => ReasonCode::NotFound,
+                    _ => ReasonCode::Conflict,
+                };
+                Err(Refusal::new(RefusalStep::Verify, reason))
             }
             Ok(RotateOutcome::Rotated(minted)) => {
                 let outcome = self.to_secret_once(admin, unit, minted, "response.token");
