@@ -106,7 +106,7 @@ pub trait Diagnostics {
 
     /// Called when a destination is hard-downed, with what the upstream said — 1.5.5's
     /// `diag_warn!(LANE_HARD_DOWN_ALL_CELLS, ...)`
-    /// (`busbar-core/src/store/in_memory/availability.rs:545-551`).
+    /// (`1.5.5's store, availability.rs:545-551`).
     ///
     /// Defaulted to nothing, because a sink wired for the `error_map` diagnostic alone is still a
     /// valid sink and this must not break it. A hard-down is recoverable — a sticky cooldown, not a
@@ -321,7 +321,7 @@ pub fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
     // the recommended one silently discards the cooldown floor an upstream actually stated, and the
     // breaker then guesses a backoff against a destination that had already told it the answer —
     // which is exactly what a `Retry-After` is for. 1.5.5 got all three from `httpdate`
-    // (`busbar-substrate-values/src/breaker.rs:148`); this crate takes no such dependency, so the
+    // (`1.5.5's store vocabulary, breaker.rs:148`); this crate takes no such dependency, so the
     // two obsolete forms are read here, off the same civil-date arithmetic as the first.
     parse_imf_fixdate_retry_after(s, now)
         .or_else(|| parse_rfc850_retry_after(s, now))

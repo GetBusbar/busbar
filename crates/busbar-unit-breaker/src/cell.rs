@@ -287,7 +287,7 @@ impl BreakerCell {
     /// Whether this cell is SUPPRESSED right now: not Closed, or Closed inside a pending cooldown.
     ///
     /// The out-of-band prober's filter — 1.5.5's `lane_needs_probe` closure
-    /// (`busbar-core/src/store/in_memory/availability.rs:684-691`) — and deliberately WIDER than
+    /// (`1.5.5's store, availability.rs:684-691`) — and deliberately WIDER than
     /// [`Self::ready`]. An expired-Open cell would admit, because it is probe-winnable; it is also
     /// exactly the cell a scheduled probe exists to resolve, so that the resolving is not paid for
     /// by whichever caller happens to arrive next.
@@ -350,7 +350,7 @@ impl BreakerCell {
     ///
     /// `now_nanos` is the SAME instant as the caller's `now`, read in NANOSECONDS. 1.5.5 seeded this
     /// mix from `SystemTime::now().as_nanos()` at exactly this point
-    /// (`busbar-core/src/store/in_memory/breaker.rs:518-524`), and the seed is what every cooldown
+    /// (`1.5.5's store, breaker.rs:518-524`), and the seed is what every cooldown
     /// value on the wire is derived from: seeding from whole seconds instead leaves every cell that
     /// trips inside one second with the identical draw, so cooldowns decorrelate on the cell address
     /// alone and every `Retry-After` and every `/stats` `until` moves. The reading is a PARAMETER
@@ -693,7 +693,7 @@ impl BreakerCell {
     }
 
     /// Park this cell Open with an EXPLICIT deadline, releasing any in-flight probe — 1.5.5's
-    /// `force_open_in` (`busbar-substrate/src/store.rs:620`), and the primitive
+    /// `force_open_in` (`1.5.5's store vocabulary, store.rs:620`), and the primitive
     /// [`Self::hard_down`] is the sticky-cooldown spelling of.
     ///
     /// Returns `true` IFF the cell was Closed beforehand, i.e. this was a genuine fresh trip: a

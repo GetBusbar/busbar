@@ -87,7 +87,7 @@ pub const SHED_RETRY_FLOOR_MS: u64 = 1_000;
 
 /// Why a `(pool, destination)` cannot admit right now — THE one taxonomy every consumer speaks:
 /// selection (exclude), least-bad (rank), `Retry-After` (hint), `/stats` and `/metrics` (render),
-/// the queue (budget). Moved from 1.5.5's `Unavailable` (`busbar-substrate/src/store.rs:47-88`)
+/// the queue (budget). Moved from 1.5.5's `Unavailable` (`1.5.5's store vocabulary, store.rs:47-88`)
 /// whole, because a narrower one is those five consumers quietly disagreeing: a reason a caller
 /// cannot name is a reason it cannot rank, budget or render, and it renders SOMETHING regardless.
 ///
@@ -123,7 +123,7 @@ pub enum LaneState {
 
 impl LaneState {
     /// THE single definition of "when could this plausibly serve again", in ms from `now` —
-    /// 1.5.5's `Unavailable::recovery_hint_ms` (`busbar-substrate/src/store.rs:74-88`). `None` means
+    /// 1.5.5's `Unavailable::recovery_hint_ms` (`1.5.5's store vocabulary, store.rs:74-88`). `None` means
     /// no self-recovery: nothing this unit will do brings it back.
     ///
     /// One function, because `Retry-After`, least-bad ranking, queue budgeting and the `/stats`
@@ -667,7 +667,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     }
 
     /// [`Self::hard_down_all`], recording WHY — 1.5.5's `record_hard_down_all_cells(lane, reason)`
-    /// (`busbar-core/src/store/in_memory/availability.rs:535-593`), which records the reason
+    /// (`1.5.5's store, availability.rs:535-593`), which records the reason
     /// lane-wide and emits an operator diagnostic before it trips anything.
     ///
     /// The reason is the whole value of the event to whoever has to explain it. "This destination
@@ -843,7 +843,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
 
     /// Is this destination due for an out-of-band health probe? True when ANY cell naming it is
     /// suppressed — 1.5.5's `lane_needs_probe`
-    /// (`busbar-core/src/store/in_memory/availability.rs:684-691`).
+    /// (`1.5.5's store, availability.rs:684-691`).
     ///
     /// This is the filter `ProbeMode::Dead` reads, and the one PROBE-1's `probes_due(now)`
     /// composes on: the schedule says WHEN, this says WHETHER.
@@ -951,7 +951,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     /// destination is saturated.
     ///
     /// The ORDER is the whole point, and it is 1.5.5's
-    /// (`busbar-core/src/store/in_memory/availability.rs:277-287`, whose comment names the
+    /// (`1.5.5's store, availability.rs:277-287`, whose comment names the
     /// regression it fixed). A cell whose Open cooldown has expired is probe-winnable; if it is also
     /// at capacity, taking the probe first wins the single-flight recovery and then immediately
     /// reverts it when no permit can be had — every attempt, forever — so a tripped-and-saturated
@@ -1038,7 +1038,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     }
 
     /// Park ONE `(pool, destination)` cell Open until `cooldown_until` — 1.5.5's `force_open_in`
-    /// (`busbar-substrate/src/store.rs:620`), the admin/deadline verb that benches a member without
+    /// (`1.5.5's store vocabulary, store.rs:620`), the operator-or-deadline verb that benches a member without
     /// walking the state machine to the bench.
     ///
     /// Per cell, and deliberately not the destination-wide fan-out: `force_open_in` is an operator

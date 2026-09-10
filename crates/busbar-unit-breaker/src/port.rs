@@ -54,7 +54,7 @@ pub enum UpstreamCode {
 ///
 /// 1.5.5 asks this question on the response path and it changes the answer: a 401/403 against a
 /// key the CALLER supplied is that caller's own credential failing, not this destination's, and it
-/// is relayed with no breaker penalty at all (`busbar-llm/src/engine/attempt/classify.rs:203-210`).
+/// is relayed with no breaker penalty at all (`1.5.5's forward path, attempt/classify.rs:203-210`).
 /// Without the distinction the same response hard-downs the destination in every pool, so one
 /// caller's stale key benches a healthy upstream for everybody else.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub enum CredentialOrigin {
 ///
 /// `provider_code` and `structured_type` are the two slots an `error_map` entry is keyed on. They
 /// are the dialect's reading of the body — 1.5.5's `extract_error(status, body)`, folded in at
-/// `busbar-llm/src/engine/attempt/classify.rs:214-220` — and they are what makes an operator's rule
+/// `1.5.5's forward path, attempt/classify.rs:214-220` — and they are what makes an operator's rule
 /// for `insufficient_quota` a rule about a provider's own vocabulary rather than about an HTTP
 /// number. When no code was read, the HTTP status string stands in, because the config grammar
 /// accepts a plain status as a key too (`error_map: { "400": client_error }`); that fallback is a
