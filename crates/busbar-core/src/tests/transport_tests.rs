@@ -7,9 +7,9 @@
 //! and that framing a codec is genuinely inert, because the whole claim of this step is that the
 //! seam costs nothing before anything depends on it.
 
-use crate::handlers::request_handler;
 use crate::operation::Operation;
 use crate::transport::*;
+use busbar_substrate::handlers::request_handler;
 
 #[test]
 fn names_are_stable_and_distinct() {
@@ -54,7 +54,7 @@ fn framing_carries_the_codec_through_unchanged() {
     let codec = rh
         .operation_handler(Operation::CHAT)
         .expect("openai serves chat");
-    let framed = crate::handlers::frame(Transport::Http, Operation::CHAT, codec);
+    let framed = busbar_substrate::handlers::frame(Transport::Http, Operation::CHAT, codec);
 
     assert_eq!(framed.operation, Operation::CHAT);
     assert_eq!(framed.transport(), Transport::Http);
@@ -62,8 +62,9 @@ fn framing_carries_the_codec_through_unchanged() {
     assert_eq!(framed.transport().name(), "http");
     // The codec is the SAME object, not a wrapper around it.
     assert!(std::ptr::eq(
-        std::ptr::from_ref::<dyn crate::handlers::OperationHandler>(framed.op_handler).cast::<u8>(),
-        std::ptr::from_ref::<dyn crate::handlers::OperationHandler>(codec).cast::<u8>(),
+        std::ptr::from_ref::<dyn busbar_substrate::handlers::OperationHandler>(framed.op_handler)
+            .cast::<u8>(),
+        std::ptr::from_ref::<dyn busbar_substrate::handlers::OperationHandler>(codec).cast::<u8>(),
     ));
     // And every capability the engine reads off the cell still answers exactly as the bare codec
     // does: framing added no behaviour.
@@ -91,7 +92,7 @@ fn all_seven_protocols_frame_over_http() {
         let codec = rh
             .operation_handler(operation)
             .unwrap_or_else(|| panic!("{protocol} serves {}", operation.name()));
-        let framed = crate::handlers::frame(Transport::Http, operation, codec);
+        let framed = busbar_substrate::handlers::frame(Transport::Http, operation, codec);
         assert_eq!(framed.transport(), Transport::Http, "{protocol}");
         assert_eq!(framed.operation, operation, "{protocol}");
     }

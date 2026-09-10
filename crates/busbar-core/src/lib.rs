@@ -166,7 +166,21 @@ pub use busbar_substrate::eventstream;
 pub mod export;
 pub mod failover;
 pub mod governance;
-pub mod handlers;
+// `handlers` DELETED (1.6.0 deletion wave): it was a pure `pub use busbar_substrate::handlers::…`
+// facade with zero own code. Every production reader names `busbar_substrate::handlers` directly.
+// Its test battery survives here, mounted at the crate root.
+#[cfg(test)]
+#[path = "tests/handlers_chat_fixture.rs"]
+mod handlers_chat_fixture;
+#[cfg(test)]
+#[path = "tests/handlers_contract_tests.rs"]
+mod handlers_contract_tests;
+#[cfg(test)]
+#[path = "tests/handlers_dispatch_tests.rs"]
+mod handlers_dispatch_tests;
+#[cfg(test)]
+#[path = "tests/handlers_registry_tests.rs"]
+mod handlers_registry_tests;
 // `health` (the active-probe schedule + prober loop) RELOCATED into `busbar-llm/src/engine/health.rs`
 // with the money-path engine (1.6.0 money-path Phase 3-4 C): the probers read the plane's own
 // `Lane`/`NativeRuntime` tables, so they moved in-plane. Core no longer names a `ProbeSchedule`; the
