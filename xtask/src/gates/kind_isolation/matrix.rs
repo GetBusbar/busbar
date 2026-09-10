@@ -2048,6 +2048,27 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
 }
 
+/// The `[[cell]]` row for `<crate> × <kind>` AS THE LEDGER CARRIES IT TODAY, for a case that has to
+/// REPLACE that row rather than write one.
+///
+/// A CASE THAT SPELLS THE NUMBER ITSELF GOES SILENTLY GREEN THE DAY THE CEILING RATCHETS. The plant
+/// is a `replacen` of the row's exact text; once the ceiling moves, the text is not there, nothing
+/// is replaced, the plant becomes the tree unchanged — and a RED case then reports the gate's
+/// ordinary green as a pass. Two cases did exactly that when the root's prose stopped counting
+/// (`busbar × plane 1798` and `busbar × api 122`), and both had been passing for the wrong reason
+/// from the moment they were written. So the row is READ, never restated.
+pub(super) fn cell_row_today(cx: &Ctx, krate: &str, kind: &str) -> String {
+    let text = cx.read(LEDGER).unwrap_or_default();
+    let head = format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
+    let Some((_, rest)) = text.split_once(head.as_str()) else {
+        // No such row: return the head alone, which matches nothing — the case then fails LOUDLY
+        // as "expected red, got green" rather than passing on a plant that did nothing.
+        return head;
+    };
+    let count = rest.split('"').next().unwrap_or_default();
+    format!("{head}{count}\"")
+}
+
 /// The ledger with rows APPENDED, for the cases whose subject is a row that does not exist yet.
 fn ledger_plus(cx: &Ctx, rows: &str) -> crate::ctx::Overlay {
     let text = cx.read(LEDGER).unwrap_or_default();
@@ -2667,7 +2688,7 @@ pub fn selftest(
         &[ROW_MATRIX],
         ledger_with(
             cx,
-            &cell_row("busbar", "plane", "1798"),
+            &cell_row_today(cx, "busbar", "plane"),
             &cell_row("busbar", "plane", "0"),
         ),
         &["ratchet", "busbar × plane", "RAISED", "units_voice.rs"],

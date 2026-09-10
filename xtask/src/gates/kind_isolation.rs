@@ -6128,7 +6128,9 @@ impl Gate for KindIsolationGate {
                 &[ROW_DEPS],
                 registry_with(
                     cx,
-                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                    // READ, never restated: a spelled-out ceiling makes this case pass on a plant
+                    // that changed nothing the day the ratchet moves. See `matrix::cell_row_today`.
+                    &matrix::cell_row_today(cx, "busbar", "api"),
                     "crate = \"busbar\"\nkind = \"api\"\ncount = \"-1\"",
                 ),
                 &[
