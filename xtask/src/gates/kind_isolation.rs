@@ -8140,3 +8140,53 @@ fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     ov.set(format!("{dir}/Cargo.toml"), body);
     ov
 }
+
+#[cfg(test)]
+mod verdict_tests {
+    use super::verdict_for;
+
+    fn class(from: &str, to: &str) -> (String, String) {
+        (from.to_string(), to.to_string())
+    }
+
+    /// THE COMPOSITION ROOT NAMES EVERY AXIS — that is what a root IS, and the granted table says
+    /// so a dozen times over. `core` was the one axis missing from it, for one reason: the kind has
+    /// no crates yet. Without the class, `busbar` cannot depend on `busbar-core-config` at all and
+    /// the carve-out has nowhere to land; the dependency reads as `not-allowed` and the branch that
+    /// lands the crate is refused for the crate existing.
+    #[test]
+    fn the_composition_root_may_name_the_core_kind() {
+        assert_eq!(verdict_for(&class("root", "core")), "allowed");
+    }
+
+    /// …AND NOTHING ELSE MOVED WITH IT. `core`'s own sinks are the neutral spine and no more, so a
+    /// core crate that reaches a plane, a transport or a unit is still a NEW edge class and is
+    /// still refused — which is the machine form of "a core crate names no plane, transport or
+    /// unit". The class was granted in ONE direction.
+    #[test]
+    fn granting_root_to_core_opens_nothing_out_of_core() {
+        for sink in ["plane", "dialect", "transport", "unit", "store", "control"] {
+            assert_eq!(
+                verdict_for(&class("core", sink)),
+                "not-allowed",
+                "core -> {sink}"
+            );
+        }
+    }
+
+    /// AND CONTROL'S SINKS ARE UNTOUCHED. `CONTROL_SINKS` is the owner's closed set — the contract
+    /// and, by design ahead of the tree, caps — and this landing must not have widened it by a
+    /// letter.
+    #[test]
+    fn controls_sinks_are_still_the_contract_and_caps_alone() {
+        assert_eq!(verdict_for(&class("control", "contract")), "allowed");
+        assert_eq!(verdict_for(&class("control", "caps")), "allowed");
+        for sink in ["core", "transport", "plane", "unit", "control", "store"] {
+            assert_eq!(
+                verdict_for(&class("control", sink)),
+                "not-allowed",
+                "control -> {sink}"
+            );
+        }
+    }
+}
