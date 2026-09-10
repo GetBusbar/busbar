@@ -113,6 +113,30 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
+[gate.ceiling_raises."cell.338.count"]
+file = "qa/kind-isolation.toml"
+from = 11200
+to = 11204
+because = """busbar-llm-codec x dialect. The six golden parity cells this commit adds call the very \
+renderers they pin, and four of those calls spell a pre-split dialect's own function name — \
+`bedrock_stream_exception_for`, `gemini_stream_error_code_status`, `openai_writer`, \
+`responses_error_code`. A cell that pins a renderer's bytes has to call the renderer, so these four \
+hits are the cell existing at all and not new coupling: no production line changes here and the crate \
+gains no dependency. The cells' own names carry no vendor word — each already sits in its dialect's \
+own module — which is why the rise is four and not nine. Pinned at the measurement, exactly."""
+
+[gate.ceiling_raises."cell.105.count"]
+file = "qa/kind-isolation.toml"
+from = 904
+to = 909
+because = """busbar-llm-codec x substrate. TRANSIENT, AND STRUCK TWO COMMITS LATER BY MEASUREMENT. \
+Five of the golden cells name `busbar_substrate_values::breaker::StatusClass` in a `use` line \
+because, at THIS commit, that is where the nine-way class is declared — pinning the bytes before the \
+move is the whole point of the cell, and a cell written against the table the move creates would be \
+re-pointed by the same commit it is supposed to judge. The commit that gives the class one owner \
+re-points these five imports at `busbar_contract::upstream` and `--write` puts this row back to 904, \
+at which point this entry describes no rise and is deleted. Pinned at the measurement, exactly."""
+
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
