@@ -139,9 +139,6 @@ pub struct MeterPolicy {
     /// Which lanes each locatable name expands to. A pool name expands to its member lanes; a lane
     /// name expands to itself.
     pub lane_expansions: BTreeMap<String, BTreeSet<String>>,
-    /// A comparable price per lane, used only to pick the cheaper entry when the three legs
-    /// disagree. A lane with no entry sorts as the cheapest, which is the conservative reading.
-    pub lane_prices: BTreeMap<String, u128>,
 }
 
 impl Default for MeterPolicy {
@@ -151,7 +148,6 @@ impl Default for MeterPolicy {
             class_tolerance_bp: BTreeMap::new(),
             locator_floor_ratio: DEFAULT_LOCATOR_FLOOR_RATIO,
             lane_expansions: BTreeMap::new(),
-            lane_prices: BTreeMap::new(),
         }
     }
 }
@@ -174,11 +170,5 @@ impl MeterPolicy {
             Some(set) => set.iter().map(String::as_str).collect(),
             None => BTreeSet::from([name]),
         }
-    }
-
-    /// The comparable price of a lane, for picking the cheaper entry. An unpriced lane is the
-    /// cheapest thing there is.
-    pub fn price_of(&self, lane: &str) -> u128 {
-        self.lane_prices.get(lane).copied().unwrap_or(0)
     }
 }

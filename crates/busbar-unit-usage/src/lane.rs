@@ -117,15 +117,14 @@ pub fn cross_check_lane(
     }
 
     let lane = if disputed {
-        // The cheaper entry, with the lane name itself as the tie-break so the answer is stable.
+        // THE FIRST BY NAME, which is the whole of the tie-break. It used to sort on a comparable
+        // price held in a SECOND price table inside this unit — a table the composition root only
+        // ever built empty, so every lane compared equal and the name decided anyway. What a lane
+        // costs belongs to the dated card and to nothing else; a unit that kept its own copy of it
+        // was a second answer to a question it is not asked, and the answer it gave was this one.
         candidates
             .into_iter()
-            .min_by(|a, b| {
-                policy
-                    .price_of(a)
-                    .cmp(&policy.price_of(b))
-                    .then_with(|| a.cmp(b))
-            })
+            .min()
             .or_else(|| legs.verified.clone())
     } else {
         legs.verified.clone().or_else(|| legs.response.clone())

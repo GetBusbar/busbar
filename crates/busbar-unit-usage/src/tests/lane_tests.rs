@@ -3,7 +3,7 @@
 
 //! The three-way lane cross-check.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::{cross_check_lane, LaneLegs, LegDeclaration, MeterPolicy};
 
@@ -21,11 +21,6 @@ fn policy_with_pool() -> MeterPolicy {
         "frontier".to_string(),
         BTreeSet::from(["fast".to_string(), "slow".to_string()]),
     );
-    policy.lane_prices = BTreeMap::from([
-        ("fast".to_string(), 900u128),
-        ("slow".to_string(), 100u128),
-        ("other".to_string(), 50u128),
-    ]);
     policy
 }
 
@@ -61,7 +56,7 @@ fn a_pool_name_agrees_with_any_of_its_member_lanes() {
 /// candidate lanes. Posting the lower is the same rule the rest of the settlement follows: a plane
 /// cannot profit from a mismatch it caused.
 #[test]
-fn a_lane_outside_the_named_pool_is_a_mismatch_and_prices_at_the_cheaper_entry() {
+fn a_lane_outside_the_named_pool_is_a_mismatch_and_prices_at_the_first_candidate_by_name() {
     let check = cross_check_lane(
         &legs(Some("frontier"), Some("other"), Some("other")),
         &LegDeclaration::default(),
@@ -70,13 +65,14 @@ fn a_lane_outside_the_named_pool_is_a_mismatch_and_prices_at_the_cheaper_entry()
     assert!(check.disputed);
     assert_eq!(
         check.lane.as_deref(),
-        Some("other"),
-        "the cheapest of the candidates, which here is the served lane itself"
+        Some("fast"),
+        "the first candidate by name; the expansion's members join the served lane as candidates"
     );
 }
 
 /// The response-side leg is an EQUALITY: a response naming a different lane from the one that was
-/// reached is a mismatch, and the cheaper of the two prices.
+/// reached is a mismatch, and the first of the two candidates by name is what the posting prices
+/// against.
 #[test]
 fn a_response_naming_a_different_lane_is_a_mismatch() {
     let check = cross_check_lane(
@@ -87,8 +83,8 @@ fn a_response_naming_a_different_lane_is_a_mismatch() {
     assert!(check.disputed);
     assert_eq!(
         check.lane.as_deref(),
-        Some("slow"),
-        "one hundred is cheaper than nine hundred"
+        Some("fast"),
+        "the first candidate by name, stable for a given pair of candidates"
     );
 }
 
@@ -136,17 +132,34 @@ fn an_unexpanded_name_stands_for_itself() {
     assert_eq!(policy.expansion_of("plain").len(), 1);
 }
 
-/// An unpriced lane sorts as the cheapest thing there is, which is the conservative reading when
-/// the legs disagree about a lane nobody has a price for.
+/// **THE DISPUTED PICK IS THE FIRST CANDIDATE BY NAME, AND IT ALWAYS WAS.**
+///
+/// This unit used to hold a comparable price per lane and sort the candidates on it. The
+/// composition root only ever built that table EMPTY — the one type that could fill it is
+/// constructed by `::default()` at every site in the shipped binary — so every candidate compared
+/// equal and the name decided the answer on every unit the node has ever run. What a lane costs
+/// belongs to the dated card; a second copy of it inside the unit that meters was an answer to a
+/// question this unit is not asked, and the answer it would have given was never the one it gave.
+///
+/// Driven both ways round, so the pick is a property of the names and not of the order the legs
+/// happen to arrive in.
 #[test]
-fn an_unpriced_lane_is_the_cheapest_candidate() {
+fn a_disputed_lane_is_decided_by_name_and_is_stable_either_way_round() {
     let policy = policy_with_pool();
-    assert_eq!(policy.price_of("nobody-prices-this"), 0);
-    let check = cross_check_lane(
-        &legs(Some("fast"), Some("fast"), Some("nobody-prices-this")),
-        &LegDeclaration::default(),
-        &policy,
-    );
-    assert!(check.disputed);
-    assert_eq!(check.lane.as_deref(), Some("nobody-prices-this"));
+    for (verified, response) in [
+        ("fast", "nobody-prices-this"),
+        ("nobody-prices-this", "fast"),
+    ] {
+        let check = cross_check_lane(
+            &legs(Some(verified), Some(verified), Some(response)),
+            &LegDeclaration::default(),
+            &policy,
+        );
+        assert!(check.disputed);
+        assert_eq!(
+            check.lane.as_deref(),
+            Some("fast"),
+            "the same two candidates must pick the same lane whichever leg carried which"
+        );
+    }
 }

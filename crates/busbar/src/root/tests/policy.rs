@@ -19,16 +19,6 @@ fn a_configured_card() -> MeterPolicyConfig {
             pool: POOL.into(),
             lanes: vec![LANE_A.into(), LANE_B.into()],
         }],
-        prices: vec![
-            LanePrice {
-                lane: LANE_A.into(),
-                price: 900,
-            },
-            LanePrice {
-                lane: LANE_B.into(),
-                price: 100,
-            },
-        ],
         ..MeterPolicyConfig::default()
     }
 }
@@ -60,19 +50,6 @@ fn a_lane_name_stands_for_itself_without_being_declared() {
     assert_eq!(
         configured.policy().expansion_of("some-undeclared-lane"),
         BTreeSet::from(["some-undeclared-lane"])
-    );
-}
-
-/// The prices come off the card. They decide only which reading wins when the legs disagree, so
-/// the value that matters is the ordering, not the magnitude.
-#[test]
-fn lane_prices_come_from_the_card() {
-    let policy = build(&a_configured_card());
-    assert_eq!(policy.policy().lane_prices.get(LANE_A), Some(&900));
-    assert_eq!(policy.policy().lane_prices.get(LANE_B), Some(&100));
-    assert!(
-        !policy.policy().lane_prices.contains_key("unpriced-lane"),
-        "an unpriced lane has no entry and sorts as cheapest, which is the conservative way"
     );
 }
 
