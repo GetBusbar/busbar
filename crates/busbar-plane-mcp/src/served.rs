@@ -426,14 +426,25 @@ pub fn task_ack_result() -> serde_json::Value {
 /// mount wrapped is never asked about it and its arm there is unreachable.
 ///
 /// A class is added here only when every input its answer is composed from is already in this
-/// plane's hands. The listings and the named reads are not, and their absence is a fact about where
-/// the entitlement walk, the trust filter and the render live rather than about this table: those
-/// three read the catalogue and none of them has moved, so composing a listing here would be
-/// composing it out of records this crate cannot reach.
+/// plane's hands — on [`Composing`], and nowhere else. Three of the four listings are: the rows the
+/// catalogue leg hands back, already narrowed to the caller by the scope walk, are the whole of what
+/// `prompts/list`, `resources/list` and `resources/templates/list` are composed from, and the render
+/// travels ON the row. **`tools/list` is not**, and the reason is the one input the other three do
+/// not read: the quarantine filter is asked of the LIVE SIGHTINGS — what the last refresh observed
+/// each server serving, held in the protocol crate's memory — and not of a record. The demotion
+/// records this plane's `Reads::CatalogueSnapshot` scans are a strict subset of the states that
+/// filter hides (a tool missing from the last observed list, a failed observation), so a tools
+/// listing composed from rows and demotion records would advertise, for some servers, what the
+/// legacy hides. It joins when the sightings are a kernel-held record, which is the next cut.
 ///
 /// It is a list rather than a predicate because the root's fall-through gate is derived from it, and
 /// a set two readers derive separately is a set they can derive differently.
-pub const COMPOSED: &[OpClassId] = &[ops::OP_COMPLETION];
+pub const COMPOSED: &[OpClassId] = &[
+    ops::OP_COMPLETION,
+    ops::OP_PROMPTS_LIST,
+    ops::OP_RESOURCES_LIST,
+    ops::OP_RESOURCE_TEMPLATES_LIST,
+];
 
 /// EVERYTHING A COMPOSED ANSWER IS COMPOSED FROM, handed in by the root as data.
 ///
@@ -482,10 +493,20 @@ pub fn composed(
     op: OpClassId,
     from: &Composing<'_>,
 ) -> Option<Result<Vec<u8>, busbar_contract::wire::Encode>> {
+    use crate::catalogue::{wire_of, RowKind};
     let result = match op {
         // The empty candidate set, stated in full. Composed from no record and no caller, which is
         // why it is the first class whose bytes this plane can own: there is nothing to reach for.
         ops::OP_COMPLETION => completion_result(),
+        // THE THREE LISTINGS COMPOSED FROM ROWS ALONE. Each is the rows of its own kind, in the
+        // order the catalogue leg handed them, under its own member, with the cacheable pair — the
+        // shape the result functions above already own. Nothing is filtered here: the rows arrived
+        // narrowed, and a listing that narrowed again would be a second reading of the grant.
+        ops::OP_PROMPTS_LIST => prompts_list_result(wire_of(from.rows, RowKind::Prompt)),
+        ops::OP_RESOURCES_LIST => resources_list_result(wire_of(from.rows, RowKind::Resource)),
+        ops::OP_RESOURCE_TEMPLATES_LIST => {
+            resource_templates_list_result(wire_of(from.rows, RowKind::ResourceTemplate))
+        }
         _ => return None,
     };
     Some(envelope(&result, from.rpc_id))

@@ -619,3 +619,98 @@ fn composed_is_a_subset_of_answered() {
         );
     }
 }
+
+/// Two rows of every kind, on two servers, in catalogue order — what a listing is composed from.
+fn eight_rows() -> Vec<crate::catalogue::Row> {
+    use crate::catalogue::{Row, RowKind};
+    let mut rows = Vec::new();
+    for kind in RowKind::ALL {
+        for server in ["db", "fs"] {
+            let name = format!("{server}_{}", kind.as_str());
+            rows.push(Row {
+                kind: *kind,
+                server: server.to_string(),
+                name: name.clone(),
+                wire: serde_json::json!({ "name": name, "description": format!("{server} d") }),
+            });
+        }
+    }
+    rows
+}
+
+/// **THE THREE LISTINGS' BYTES ARE THIS PLANE'S, written out in full.**
+///
+/// One cell per class would be three copies of one statement; one loop is the statement once. Each
+/// document below is the legacy arm's shape for the same rows — `cache_hints` over the member, the
+/// discriminator stamped, the identifier echoed, members sorted by the serializer — spelled out
+/// rather than rebuilt from the same helpers, so this asserts a document and not a function's
+/// equality with itself. Only the rows of the listing's own kind appear, in the order handed in.
+#[test]
+fn the_three_listings_bytes_are_composed_by_this_plane() {
+    let rows = eight_rows();
+    let from = Composing {
+        rpc_id: Some(b"9"),
+        rows: &rows,
+    };
+    for (op, expected) in [
+        (
+            ops::OP_PROMPTS_LIST,
+            r#"{"id":9,"jsonrpc":"2.0","result":{"cacheScope":"private","prompts":[{"description":"db d","name":"db_prompt"},{"description":"fs d","name":"fs_prompt"}],"resultType":"complete","ttlMs":0}}"#,
+        ),
+        (
+            ops::OP_RESOURCES_LIST,
+            r#"{"id":9,"jsonrpc":"2.0","result":{"cacheScope":"private","resources":[{"description":"db d","name":"db_resource"},{"description":"fs d","name":"fs_resource"}],"resultType":"complete","ttlMs":0}}"#,
+        ),
+        (
+            ops::OP_RESOURCE_TEMPLATES_LIST,
+            r#"{"id":9,"jsonrpc":"2.0","result":{"cacheScope":"private","resourceTemplates":[{"description":"db d","name":"db_resource_template"},{"description":"fs d","name":"fs_resource_template"}],"resultType":"complete","ttlMs":0}}"#,
+        ),
+    ] {
+        let bytes = composed(op, &from)
+            .unwrap_or_else(|| panic!("{op} is a composed class"))
+            .expect("a numeric identifier writes");
+        assert_eq!(
+            core::str::from_utf8(&bytes).expect("the answer is text"),
+            expected,
+            "{op}"
+        );
+    }
+}
+
+/// A listing over NO rows is the empty listing, stated in full, and not a refusal.
+///
+/// The rows arrive narrowed, so "no rows" is both "no `tools:` block" and "a caller whose grant
+/// reaches nothing", and the legacy answers the same empty document for both. Pinned as bytes.
+#[test]
+fn a_listing_over_no_rows_is_the_empty_listing() {
+    let bytes = composed(ops::OP_PROMPTS_LIST, &Composing::default())
+        .expect("a composed class")
+        .expect("no identifier writes");
+    assert_eq!(
+        core::str::from_utf8(&bytes).expect("the answer is text"),
+        r#"{"jsonrpc":"2.0","result":{"cacheScope":"private","prompts":[],"resultType":"complete","ttlMs":0}}"#
+    );
+}
+
+/// `tools/list` is NOT composed, and this cell is what makes taking it by accident red.
+///
+/// The reason is on [`COMPOSED`]'s own documentation: the quarantine filter reads the live
+/// sightings, which are not a record this plane can be handed, so a tools listing composed from rows
+/// would advertise what the legacy hides. The tool rows are still rows — they are on the same scan —
+/// and this asserts that holding them is not the same as composing over them.
+#[test]
+fn the_tools_listing_is_not_composed_while_quarantine_is_a_sighting() {
+    assert!(!COMPOSED.contains(&ops::OP_TOOLS_LIST));
+    let rows = eight_rows();
+    assert!(rows
+        .iter()
+        .any(|r| r.kind == crate::catalogue::RowKind::Tool));
+    assert!(composed(
+        ops::OP_TOOLS_LIST,
+        &Composing {
+            rpc_id: Some(b"1"),
+            rows: &rows
+        }
+    )
+    .is_none());
+}

@@ -1869,6 +1869,18 @@ impl Node {
         chain: Option<&'r BucketChain>,
         dispatch: Option<&'r dyn MountDispatch>,
     ) -> McpUnits<'r> {
+        self.calling_as(draft, pools, chain, dispatch, None)
+    }
+
+    /// The same unit, for a caller whose governance key the catalogue walk narrows by.
+    fn calling_as<'r>(
+        &'r self,
+        draft: McpDraft,
+        pools: &'r Pools,
+        chain: Option<&'r BucketChain>,
+        dispatch: Option<&'r dyn MountDispatch>,
+        caller_key: Option<&'r busbar_api::VirtualKey>,
+    ) -> McpUnits<'r> {
         McpUnits::new(
             McpBindings {
                 plane: &self.plane,
@@ -1894,7 +1906,7 @@ impl Node {
                 },
                 dispatch,
                 origin: self.origin,
-                caller_key: None,
+                caller_key,
             },
             draft,
             Grants::of(Scope::Full),
@@ -2584,4 +2596,63 @@ fn the_grant_and_kind_vocabularies_are_the_legacy_catalogues_own() {
             "{word} is not a kind the plane knows"
         );
     }
+}
+
+/// **A LISTING COMPOSED BY THE PLANE, from rows the plane's own leg read, and the surface never asked.**
+///
+/// The same twelve steps as the tools listing above, with a snapshot behind the records binding and
+/// a scoped caller: the catalogue scan hands back three rows, the Route step narrows them to the two
+/// the key reaches, the plane composes `prompts/list` from the ONE prompt among those, and the
+/// counting double is reached zero times. The bytes are asserted in full — they are the legacy arm's
+/// document for the same rows, which the value-equality cell in `busbar-mcp` holds from its side.
+#[test]
+fn a_listing_is_composed_from_the_rows_the_leg_read_and_never_reaches_the_surface() {
+    let store = StoreAdapter::native(Arc::new(SilentStore));
+    let mut node = Node::new();
+    node.records = Records::new(&store).with_catalogue(&three_rows());
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":"p-1","method":"prompts/list"}"#,
+    );
+    assert_eq!(draft.op, Some(ops::OP_PROMPTS_LIST));
+
+    let key = key_scoped_to(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_brief"),
+        ("mcp_tool", "fs_grep"),
+    ]);
+    let units = node.calling_as(draft, &pools, Some(&node.chain), Some(&surface), Some(&key));
+    let ended = node.walk(&units);
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("the unit settled here: {ended:?}");
+    };
+    assert_eq!(end.outcome(), busbar_caps::Outcome::Completed);
+    assert_eq!(
+        surface.asked(),
+        0,
+        "the legacy arm is unreachable for a composed listing"
+    );
+
+    let answer = units.answer().expect("a unit that reached Route has one");
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        core::str::from_utf8(&answer.body).expect("the answer is text"),
+        r#"{"id":"p-1","jsonrpc":"2.0","result":{"cacheScope":"private","prompts":[{"description":"d","name":"fs_brief"}],"resultType":"complete","ttlMs":0}}"#,
+        "the fs prompt and not db's, and no tool row on a prompts listing"
+    );
+
+    // And the open caller — no key — sees both prompts, in snapshot order.
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#,
+    );
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let _ = node.walk(&units);
+    assert_eq!(surface.asked(), 0);
+    assert_eq!(
+        core::str::from_utf8(&units.answer().expect("answered").body).expect("text"),
+        r#"{"id":2,"jsonrpc":"2.0","result":{"cacheScope":"private","prompts":[{"name":"db_brief"},{"description":"d","name":"fs_brief"}],"resultType":"complete","ttlMs":0}}"#
+    );
 }
