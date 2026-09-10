@@ -26,7 +26,8 @@ use busbar_contract::Transport;
 use busbar_contract_transport::driver::Outcome;
 use busbar_contract_transport::registry::facts as tfacts;
 use busbar_contract_transport::session::{
-    Cut, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
+    Cut, DuplexWire, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
+    SessionReply,
 };
 use busbar_contract_transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
@@ -700,5 +701,81 @@ async fn a_stop_mid_session_still_finishes_the_open_session() {
         driver.closed.lock().expect("the log").len(),
         1,
         "one ending, one close, drain or no drain"
+    );
+}
+
+// ── the face, over a real socket ────────────────────────────────────────────────────────────────
+
+/// An acceptor written against the SEAM and against no wire, in the shape a composition root's is.
+///
+/// It is generic over the wire and holds none of its vocabulary: not its key, not its type, not what
+/// a frame of it is. Everything the cells above proved about this transport's two halves, they prove
+/// about a value reached through here — which is the whole content of the claim that the wire
+/// implements the face rather than merely resembling it.
+async fn accept_one<W: busbar_contract_transport::session::DuplexWire>(
+    wire: &W,
+    l: &busbar_contract_transport::wire::Listener,
+    driver: &dyn SessionDriver,
+    surface: &WireSurface,
+) -> Result<SessionEnd, busbar_contract_transport::wire::TransportError> {
+    let open = wire.serve_upgrade(l, driver, surface).await?;
+    Ok(wire
+        .pump_session(open, driver, SessionBudgets::default())
+        .await)
+}
+
+/// THIS WIRE IS A `DuplexWire`, PROVED WHERE IT COSTS: on a real upgrade, over a real socket.
+///
+/// The generic acceptor above takes this transport, waits for one upgrade off the node's own bound
+/// listener, and finishes the session it opens — and never names a WebSocket, a message, a close
+/// code or this crate's own types. A composition root written the same way therefore serves this
+/// wire without holding it by its concrete type, which is what keeps the wire registered in exactly
+/// one place.
+///
+/// The cell is here rather than at the seam because this is where the socket is. The seam's own
+/// battery drives a wire that does not exist, so it can prove what the FACE decides and nothing
+/// about what a real upgrade does; this one is the other half, and neither stands alone.
+#[tokio::test]
+async fn the_generic_acceptor_serves_this_wire_over_a_real_socket() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::new(vec![reply(
+        &[r#"{"kind":"turn"}"#],
+        "application/json",
+    )]));
+
+    let client = tokio::spawn(async move {
+        let mut client = dial(&addr, "/session", Some("Bearer sk-44401"))
+            .await
+            .expect("the upgrade is accepted");
+        client
+            .send(Message::Text(r#"{"kind":"start"}"#.into()))
+            .await
+            .expect("the client speaks");
+        let answered = client.next().await.expect("an answer").expect("no failure");
+        client.close(None).await.expect("the client closes");
+        answered
+    });
+
+    let end = accept_one(ws.as_ref(), &listener, driver.as_ref(), &SURFACE)
+        .await
+        .expect("the declared mount opens a session on the face");
+
+    assert_eq!(
+        client.await.expect("the client task finished"),
+        Message::Text(r#"{"kind":"turn"}"#.into()),
+        "the plane's own bytes went back over the real wire"
+    );
+    assert_eq!(end.cut, Cut::Client);
+    assert_eq!(end.reason, CloseReason::PeerClosed);
+    assert_eq!(
+        driver.seen.lock().expect("the log").as_slice(),
+        [br#"{"kind":"start"}"#.to_vec()],
+        "one frame in, driven through the seam"
+    );
+    assert_eq!(
+        driver.closed.lock().expect("the log").len(),
+        1,
+        "one ending, one close"
     );
 }

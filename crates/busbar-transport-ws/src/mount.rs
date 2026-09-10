@@ -301,30 +301,14 @@ pub fn reason_for(error: TransportError) -> CloseReason {
     }
 }
 
-/// The bounds one mounted session runs under, as the transport that composed the mount states them.
+/// The bounds one mounted session runs under, spelled ONCE and not here.
 ///
-/// One field, and this module's own header says why the other two bounds a duplex session has are
-/// not here. `Default` is the unbounded session, which is what an embedder driving the pump over a
-/// pair it already owns wants: the deadline exists to bound a session opened by a stranger.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SessionBudgets {
-    /// How long the whole session may run, measured from the pump's first read.
-    ///
-    /// `None` is unbounded, and it is a real choice rather than a missing value: a session between
-    /// two things this deployment composed itself has no stranger on either end, and a deadline on
-    /// one would cut a healthy long-lived exchange for no reason anybody could act on.
-    pub deadline: Option<std::time::Duration>,
-}
-
-impl SessionBudgets {
-    /// A session bounded to run no longer than `deadline`.
-    #[must_use]
-    pub fn within(deadline: std::time::Duration) -> Self {
-        Self {
-            deadline: Some(deadline),
-        }
-    }
-}
+/// It used to be declared in this module, and that was a wire owning a number that is not a wire's:
+/// how long a session may run is the COMPOSITION's answer, the same for every wire a node serves,
+/// and a copy per wire is a set of ceilings that drift apart with nothing to notice. It lives beside
+/// the face this transport implements now, and is re-exported here because this module's header is
+/// where what it does and does not bound is written down.
+pub use busbar_contract_transport::session::SessionBudgets;
 
 /// RUN ONE OPEN SESSION to its end, and report which end cut it.
 ///
