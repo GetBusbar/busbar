@@ -383,7 +383,12 @@ impl<'n> LoopDriver<'n> {
 /// detail of it: a caller refused at Authenticate is told its credential was not accepted, and one
 /// refused at Approve or Verify is told the credential was accepted and does not cover this.
 /// Collapsing them sends a caller with a bad token away to fix its permissions.
-#[cfg(feature = "root-admin")]
+// THE GATE IS THE UNION OF ITS READERS, and a union rather than a second copy for exactly the reason
+// this function's own header gives: it is THE ONE MAPPING. The duplex session driver narrows the
+// same ending into the same eight words, and a build that carried the acceptor without the admin
+// surface would otherwise need a second one — at which point the two credential doors would be kept
+// apart in one file and, one day, collapsed in the other.
+#[cfg(any(feature = "root-admin", feature = "root-duplex-serve"))]
 #[must_use]
 pub fn outcome_of(ended: &busbar_kernel::teller::Ended) -> busbar_contract::transport::Outcome {
     use busbar_caps::{Outcome as Ends, ReasonCode as R, StepName as S};
