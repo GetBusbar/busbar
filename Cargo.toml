@@ -30,7 +30,7 @@ members = [
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
     "crates/busbar-plane-voice",
-    "crates/busbar-control-oauth2",
+    "crates/busbar-control-tokenmint",
     "crates/busbar-unit-admission",
     "crates/busbar-unit-cost",
     "crates/busbar-unit-usage",

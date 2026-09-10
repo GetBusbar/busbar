@@ -135,7 +135,7 @@ reason = "the admin CONTROL surface — an unmetered served surface on the contr
 #   commit = "0000000"
 
 [[announced]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "control"
 reason = "the OAuth issuer being extracted from busbar-core/src/oauth_as; a control surface, not an auth VERIFIER (the verifier plugins stay the auth kind)"
 
@@ -555,9 +555,9 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 [[edge]]
 from = "control"
 to = "caps"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind may be written against. busbar-control-oauth2 does not depend on it; the one hit is the manifest saying so, and the row exists so a NEW control -> caps coupling is visible on the landing that adds it."
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind may be written against. busbar-control-tokenmint does not depend on it; the one hit is the manifest saying so, and the row exists so a NEW control -> caps coupling is visible on the landing that adds it."
 why = "crates of kind control naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the sentence in crates/busbar-control-oauth2/Cargo.toml that names busbar-caps to say it is NOT a dependency; the row then reads zero and is struck."
+drain = "delete the sentence in crates/busbar-control-tokenmint/Cargo.toml that names busbar-caps to say it is NOT a dependency; the row then reads zero and is struck."
 
 [[edge]]
 from = "control"
@@ -569,9 +569,9 @@ drain = "R7. When the admin surface becomes busbar-control-admin the bare id `ad
 [[edge]]
 from = "control"
 to = "store"
-cite = "none. ARCHITECTURE.md 1.1 — a control crate reaches durable state through the contract's Store face, never by naming a store instance. Every hit here is the word `store`/`MemoryStorage` in the crate's own prose about the in-process store it still runs on, which is the seam docs/design/control-oauth2-rebuild.md records as owed."
+cite = "none. ARCHITECTURE.md 1.1 — a control crate reaches durable state through the contract's Store face, never by naming a store instance. Every hit here is the word `store`/`MemoryStorage` in the crate's own prose about the in-process store it still runs on, which is the seam docs/design/control-tokenmint-rebuild.md records as owed."
 why = "crates of kind control naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "implement oauth_as::store::Storage over busbar_contract::kinds::Store (replay_put/replay_get/claim_key) in busbar-control-oauth2 and delete MemoryStorage from it; the prose that names the in-process store goes with it."
+drain = "implement oauth_as::store::Storage over busbar_contract::kinds::Store (replay_put/replay_get/claim_key) in busbar-control-tokenmint and delete MemoryStorage from it; the prose that names the in-process store goes with it."
 
 [[edge]]
 from = "control"
@@ -2215,37 +2215,37 @@ kind = "transport"
 count = "82"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "caps"
 count = "1"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "control"
 count = "15"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "legacy"
 count = "2"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "plane"
 count = "27"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "secret"
 count = "1"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "store"
 count = "6"
 
 [[cell]]
-crate = "busbar-control-oauth2"
+crate = "busbar-control-tokenmint"
 kind = "transport"
 count = "44"
 

@@ -56,7 +56,7 @@ called by one (no plane→control edge and no control→plane edge); depend on a
 dialect, unit or another control crate; own key material or process-global state; or serve a route
 absent from its claim table. `busbar-control-admin` is the first member — `busbar-plane-admin` until
 R7 renames it, registered as `control` by an explicit row in `qa/kind-isolation.toml` meanwhile — and
-`busbar-control-oauth2` is the second. The AUTH kind is unchanged: the verifier plugins
+`busbar-control-tokenmint` is the second. The AUTH kind is unchanged: the verifier plugins
 (`busbar-auth-static`, `busbar-auth-admin-tokens`) stay auth, because a verifier answers a question
 about a credential and a control surface serves a route.
 

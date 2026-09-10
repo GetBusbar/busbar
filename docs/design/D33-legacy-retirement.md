@@ -519,7 +519,7 @@ book, so deleting the legacy accrual without moving the views first turns thirte
 
 - **The OAuth authorization server** (1,341 lines: the metadata document, the routes, the consent UI,
   the signer, the policy) had no crate and no kind. Owner ruling, 2026-09-08: it is a **CONTROL**
-  surface — `busbar-control-oauth2` — not a plane, not an auth plugin and not a core module. A
+  surface — `busbar-control-tokenmint` — not a plane, not an auth plugin and not a core module. A
   verifier answers a question about a credential and stays the `auth` kind; an authorization server
   serves routes, and the request ends there.
 - **Admin is the same kind.** `busbar-plane-admin` becomes `busbar-control-admin` at the rename. The

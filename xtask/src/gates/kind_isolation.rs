@@ -244,7 +244,7 @@ static KINDS: &[KindDef] = &[
     // A CONTROL SURFACE — a full plugin kind, and a new branch of the tree.
     //
     // > "CONTROL is a full plugin KIND … busbar-control-admin (today busbar-plane-admin) and
-    // > busbar-control-oauth2. The verifier plugins stay the AUTH kind." — owner, 2026-09-08
+    // > busbar-control-tokenmint. The verifier plugins stay the AUTH kind." — owner, 2026-09-08
     //
     // A control crate is an UNMETERED served surface: it declares its routes as data the way a plane
     // does, owns its own bodies, and runs the control path (verified by the auth kind, admitted,
