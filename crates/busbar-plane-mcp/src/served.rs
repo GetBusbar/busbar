@@ -435,6 +435,27 @@ pub fn task_ack_result() -> serde_json::Value {
 /// a set two readers derive separately is a set they can derive differently.
 pub const COMPOSED: &[OpClassId] = &[ops::OP_COMPLETION];
 
+/// EVERYTHING A COMPOSED ANSWER IS COMPOSED FROM, handed in by the root as data.
+///
+/// Two halves, and the split between them is the whole of the catalogue-as-data face. `rpc_id` is
+/// the arrival's — the identifier's raw bytes as the plane read them. `rows` are the KERNEL'S: the
+/// catalogue records the route plan's read legs handed back, decoded in this plane's own grammar
+/// ([`crate::catalogue::Row`]), and already narrowed to what THIS caller may see. The narrowing is
+/// the scope walk's decision and is made before this value exists; a plane that filtered rows here
+/// would be a plane interpreting a grant, which is the one thing the contract says it may not do.
+///
+/// A class composed from nothing reads neither half, and a class composed from rows reads the rows
+/// and never the store. There is no third source: a composed answer that reached for anything not
+/// on this value would be an answer composed from state the unit never read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Composing<'a> {
+    /// The identifier's RAW bytes exactly as they arrived, quotes and all — see
+    /// [`crate::jsonrpc::Envelope::id_bytes`]. `None` is an arrival that carried no identifier.
+    pub rpc_id: Option<&'a [u8]>,
+    /// The catalogue rows this caller may see, in the order the catalogue lists them.
+    pub rows: &'a [crate::catalogue::Row],
+}
+
 /// The whole answer document for one composed class, as the bytes that go on the wire.
 ///
 /// `None` is a class this plane does not compose the bytes of — the root hands it to the surface the
@@ -447,10 +468,9 @@ pub const COMPOSED: &[OpClassId] = &[ops::OP_COMPLETION];
 /// writer the plane's own `encode_response` uses for an answer this node composed itself, so a
 /// change to how this protocol frames a result moves both paths at once or neither.
 ///
-/// `rpc_id` is the identifier's RAW bytes exactly as they arrived, quotes and all, because those are
-/// the bytes an answer must echo — see [`crate::jsonrpc::Envelope::id_bytes`]. `None` is an arrival
-/// that carried no identifier, and the member is then omitted, which is the success path's own
-/// asymmetry rather than a choice made here.
+/// `rpc_id` on [`Composing`] is echoed as the bytes it arrived as, and an arrival that carried no
+/// identifier gets no member, which is the success path's own asymmetry rather than a choice made
+/// here.
 ///
 /// # Errors
 /// Returns an encode error when the identifier's bytes cannot be read back as a value. The reader
@@ -460,7 +480,7 @@ pub const COMPOSED: &[OpClassId] = &[ops::OP_COMPLETION];
 #[must_use]
 pub fn composed(
     op: OpClassId,
-    rpc_id: Option<&[u8]>,
+    from: &Composing<'_>,
 ) -> Option<Result<Vec<u8>, busbar_contract::wire::Encode>> {
     let result = match op {
         // The empty candidate set, stated in full. Composed from no record and no caller, which is
@@ -468,7 +488,7 @@ pub fn composed(
         ops::OP_COMPLETION => completion_result(),
         _ => return None,
     };
-    Some(envelope(&result, rpc_id))
+    Some(envelope(&result, from.rpc_id))
 }
 
 /// One composed result, wrapped in this protocol's successful envelope.

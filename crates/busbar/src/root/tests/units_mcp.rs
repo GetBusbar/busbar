@@ -1894,6 +1894,7 @@ impl Node {
                 },
                 dispatch,
                 origin: self.origin,
+                caller_key: None,
             },
             draft,
             Grants::of(Scope::Full),
@@ -2380,4 +2381,207 @@ fn a_unit_with_no_surface_behind_it_still_walks_and_answers_nothing() {
     };
     assert_eq!(end.outcome(), busbar_caps::Outcome::Completed);
     assert!(units.answer().is_none(), "no surface, no answer");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE CATALOGUE AS DATA: rows reach the plane through its own read leg, narrowed by the one gate
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Three rows on two servers, in the order the legacy catalogue lists them.
+fn three_rows() -> Vec<busbar_plane_mcp::catalogue::Row> {
+    use busbar_plane_mcp::catalogue::{Row, RowKind};
+    vec![
+        Row {
+            kind: RowKind::Prompt,
+            server: "db".to_string(),
+            name: "db_brief".to_string(),
+            wire: serde_json::json!({ "name": "db_brief" }),
+        },
+        Row {
+            kind: RowKind::Prompt,
+            server: "fs".to_string(),
+            name: "fs_brief".to_string(),
+            wire: serde_json::json!({ "name": "fs_brief", "description": "d" }),
+        },
+        Row {
+            kind: RowKind::Tool,
+            server: "fs".to_string(),
+            name: "fs_grep".to_string(),
+            wire: serde_json::json!({ "name": "fs_grep", "inputSchema": { "type": "object" } }),
+        },
+    ]
+}
+
+/// A governance key scoped to exactly these pairs.
+fn key_scoped_to(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
+    busbar_api::VirtualKey {
+        id: "k1".to_string(),
+        name: "k1".to_string(),
+        generation_hash: String::new(),
+        enabled: true,
+        allowed_scopes: Some(
+            pairs
+                .iter()
+                .map(|(k, v)| busbar_api::ScopeRef {
+                    kind: (*k).to_string(),
+                    value: (*v).to_string(),
+                })
+                .collect(),
+        ),
+        group: None,
+        labels: BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        created_at: 0,
+        revision: 0,
+        ..Default::default()
+    }
+}
+
+/// **The catalogue schema is answered from the snapshot, through the plane's own record leg.**
+///
+/// A scan hands back every row's body in snapshot order and a get hands back one row by its
+/// published name; both decode in the plane's grammar to the rows that were handed in. The store
+/// behind the binding is the silent one, which is the proof that no store was asked: the legacy
+/// catalogue was never store-held, and the leg says so by construction rather than by fallback.
+#[test]
+fn the_catalogue_leg_answers_from_the_snapshot_and_not_from_the_store() {
+    let store = StoreAdapter::native(Arc::new(SilentStore));
+    let rows = three_rows();
+    let binding = Records::new(&store).with_catalogue(&rows);
+    assert_eq!(binding.catalogue_len(), 3);
+    let leg = |op, key| RecordLeg {
+        schema: records::SCHEMA_CATALOGUE,
+        op,
+        key,
+        parent: None,
+        seq: 0,
+        body: &[],
+        terminal: false,
+        now: 1,
+        expires_at: 1,
+    };
+    let RecordAnswer::Many(bodies) = binding
+        .run(&leg(records::OP_SCAN, ""))
+        .expect("the scan is declared")
+    else {
+        panic!("a scan answers many");
+    };
+    assert_eq!(
+        busbar_plane_mcp::catalogue::Row::decode_all(&bodies),
+        rows,
+        "every row, in the order handed in"
+    );
+    let RecordAnswer::One(Some(body)) = binding
+        .run(&leg(records::OP_GET, "fs_grep"))
+        .expect("the get is declared")
+    else {
+        panic!("a get by a published name answers one");
+    };
+    assert_eq!(
+        busbar_plane_mcp::catalogue::Row::decode(&body),
+        Some(rows[2].clone())
+    );
+    assert_eq!(
+        binding
+            .run(&leg(records::OP_GET, "nobody"))
+            .expect("the get is declared"),
+        RecordAnswer::One(None),
+        "a name the snapshot does not hold is no row, not an error"
+    );
+    // The empty catalogue is a real one: a deployment with no `tools:` block.
+    let empty = Records::new(&store);
+    assert_eq!(empty.catalogue_len(), 0);
+    assert_eq!(
+        empty.run(&leg(records::OP_SCAN, "")).expect("declared"),
+        RecordAnswer::Many(Vec::new())
+    );
+}
+
+/// **The narrowing is the substrate's gate with the plane's two grants, and nothing else.**
+///
+/// Four callers, four answers: no principal sees every row (the gate's own ungoverned posture); a
+/// key holding both grants for one server sees that server's rows and nobody else's; a key holding
+/// the server grant alone sees nothing, because the capability grant is required too; and a key
+/// whose principal is not live sees nothing whatever its scopes say. Order is the snapshot's.
+#[test]
+fn the_rows_are_narrowed_by_the_same_gate_the_legacy_listing_asks() {
+    let rows = three_rows();
+    let names = |rows: &[busbar_plane_mcp::catalogue::Row]| {
+        rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        names(&visible_rows(rows.clone(), None, 1)),
+        vec!["db_brief", "fs_brief", "fs_grep"],
+        "no principal, no grant to narrow"
+    );
+
+    let fs = key_scoped_to(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_brief"),
+        ("mcp_tool", "fs_grep"),
+    ]);
+    assert_eq!(
+        names(&visible_rows(rows.clone(), Some(&fs), 1)),
+        vec!["fs_brief", "fs_grep"],
+        "the fs server's rows, in snapshot order, and not db's"
+    );
+
+    let server_only = key_scoped_to(&[("mcp_server", "fs")]);
+    assert!(
+        visible_rows(rows.clone(), Some(&server_only), 1).is_empty(),
+        "reaching the server is not reaching its capabilities"
+    );
+
+    let one_tool = key_scoped_to(&[("mcp_server", "fs"), ("mcp_tool", "fs_grep")]);
+    assert_eq!(
+        names(&visible_rows(rows.clone(), Some(&one_tool), 1)),
+        vec!["fs_grep"]
+    );
+
+    let mut gone = fs.clone();
+    gone.deleted_at = Some(1);
+    assert!(
+        visible_rows(rows, Some(&gone), 1).is_empty(),
+        "a tombstoned principal sees nothing, whatever its scopes say"
+    );
+}
+
+/// The plane's two grant-kind spellings and four kind words are the legacy catalogue's own.
+///
+/// Two vocabularies that must agree and cannot name each other's crate: the plane may not name the
+/// protocol crate, and the protocol crate may not name the plane. So the root, which names both,
+/// pins them here — the day either side is respelled, the narrowing would silently stop matching
+/// the listing's and this cell is what says so.
+#[cfg(feature = "plane-mcp")]
+#[test]
+fn the_grant_and_kind_vocabularies_are_the_legacy_catalogues_own() {
+    use busbar_plane_mcp::catalogue::RowKind;
+    assert_eq!(
+        busbar_plane_mcp::catalogue::SCOPE_KIND_SERVER,
+        busbar_mcp::mcp::catalogue::SCOPE_KIND_SERVER
+    );
+    assert_eq!(
+        busbar_plane_mcp::catalogue::SCOPE_KIND_TOOL,
+        busbar_mcp::mcp::catalogue::SCOPE_KIND_TOOL
+    );
+    for (word, kind) in [
+        (busbar_mcp::mcp::catalogue::ROW_KIND_TOOL, RowKind::Tool),
+        (busbar_mcp::mcp::catalogue::ROW_KIND_PROMPT, RowKind::Prompt),
+        (
+            busbar_mcp::mcp::catalogue::ROW_KIND_RESOURCE,
+            RowKind::Resource,
+        ),
+        (
+            busbar_mcp::mcp::catalogue::ROW_KIND_RESOURCE_TEMPLATE,
+            RowKind::ResourceTemplate,
+        ),
+    ] {
+        assert_eq!(
+            RowKind::parse(word),
+            Some(kind),
+            "{word} is not a kind the plane knows"
+        );
+    }
 }

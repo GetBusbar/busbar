@@ -644,3 +644,86 @@ fn a_key_that_is_no_longer_live_sees_nothing_on_any_surface() {
         );
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE CATALOGUE AS DATA: the rows are the listings' own entries, rendered, in the listings' order
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **A row's wire form IS the listing's render of the same entry, kind by kind, in the same order.**
+///
+/// This is the half of the byte-ownership claim that only this crate can see: the four listing arms
+/// compose `rendered(entries, caller)` and the composition root composes from `rows_of(cfg)` narrowed
+/// by the same gate. If the two walks ever produced different documents for one entry, a listing
+/// served by the mounted leg would differ from one served by `method.rs`, and the rig would be the
+/// first to notice. So it is pinned here, on the resolved VALUES and their order, for every kind and
+/// for a caller whose grant reaches one server of two.
+#[test]
+fn the_rows_are_the_listings_entries_rendered_in_the_listings_order() {
+    use super::{ROW_KIND_PROMPT, ROW_KIND_RESOURCE, ROW_KIND_RESOURCE_TEMPLATE, ROW_KIND_TOOL};
+    let cfg = cfg(vec![full_server("fs"), full_server("db")]);
+    let cat = Catalogue::build(&cfg);
+    let rows = super::rows_of(&cfg);
+    let key = grant_of(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_read"),
+        ("mcp_tool", "fs_brief"),
+        ("mcp_tool", "fs_fs://doc"),
+        ("mcp_tool", "fs_fs://logs/{day}"),
+    ]);
+    let caller = seeing(&key);
+
+    // The narrowing the root performs: the same gate, the same two grants, the same order.
+    let narrowed = |kind: &str| -> Vec<serde_json::Value> {
+        rows.iter()
+            .filter(|r| r.kind == kind)
+            .filter(|r| {
+                busbar_substrate::trust::validate::validate_visibility(
+                    Some(&key),
+                    0,
+                    &[
+                        busbar_substrate::trust::validate::Grant::Scope {
+                            kind: super::SCOPE_KIND_SERVER,
+                            name: &r.server,
+                        },
+                        busbar_substrate::trust::validate::Grant::Scope {
+                            kind: super::SCOPE_KIND_TOOL,
+                            name: &r.name,
+                        },
+                    ],
+                )
+                .is_ok()
+            })
+            .map(|r| r.wire.clone())
+            .collect()
+    };
+
+    let tools: Vec<serde_json::Value> = cat
+        .tools_for(&caller)
+        .into_iter()
+        .map(busbar_substrate::catalogue::CatalogueItem::render)
+        .collect();
+    assert_eq!(narrowed(ROW_KIND_TOOL), tools);
+    assert_eq!(tools.len(), 1, "one server of two, one tool each");
+    assert_eq!(narrowed(ROW_KIND_PROMPT), cat.prompts_rendered(&caller));
+    assert_eq!(narrowed(ROW_KIND_RESOURCE), cat.resources_rendered(&caller));
+    assert_eq!(
+        narrowed(ROW_KIND_RESOURCE_TEMPLATE),
+        cat.resource_templates_rendered(&caller)
+    );
+    assert_eq!(cat.prompts_rendered(&caller).len(), 1);
+
+    // And with no principal — the ungoverned posture — every row of every kind, in map order.
+    let open = busbar_substrate::catalogue::Caller {
+        key: None,
+        now: 0,
+        generation: busbar_substrate::trust::validate::Generations::at_admission(1),
+    };
+    let all_prompts: Vec<serde_json::Value> = rows
+        .iter()
+        .filter(|r| r.kind == ROW_KIND_PROMPT)
+        .map(|r| r.wire.clone())
+        .collect();
+    assert_eq!(all_prompts, cat.prompts_rendered(&open));
+    assert_eq!(all_prompts.len(), 2, "db then fs, the map's order");
+    assert_eq!(rows.len(), 8, "four kinds on two servers");
+}

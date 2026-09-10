@@ -93,8 +93,93 @@ use busbar_substrate::trust::Approval;
 /// about the same two kinds: a caller that could see a tool it would then be refused for, or be
 /// refused for one it can see, is a catalogue and a gate that disagree. `mcp/client/egress.rs` names
 /// the same two on the outbound leg and is that unification's business, not this one's.
-pub(crate) const SCOPE_KIND_SERVER: &str = "mcp_server";
-pub(crate) const SCOPE_KIND_TOOL: &str = "mcp_tool";
+pub const SCOPE_KIND_SERVER: &str = "mcp_server";
+pub const SCOPE_KIND_TOOL: &str = "mcp_tool";
+
+/// ONE CATALOGUE ROW AS DATA — what the composition root hands the MCP plane's leg.
+///
+/// The catalogue's four entry types are this crate's own and stay `pub(crate)`: their fields feed
+/// decisions (the dispatch gate, the caller-ask rounds, the task declaration) that are this crate's
+/// to make. What crosses out is the part that is NOT a decision — which catalogue the entry is on,
+/// the two coordinates a grant names it by, and the entry exactly as [`CatalogueItem::render`]
+/// writes it onto a listing. A row carries no entitlement and no trust state: the first is decided
+/// per caller by whoever holds the row, and the second is a fact about a live sighting rather than
+/// about an approval.
+///
+/// `wire` is the render this crate's own listing arms call, so a listing composed from rows and a
+/// listing composed by `method.rs` are composed from the same document per entry by construction —
+/// which is what [`rows_of`]'s cell beside `catalogue_tests` pins, kind by kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogueRow {
+    /// Which catalogue: one of [`ROW_KIND_TOOL`], [`ROW_KIND_PROMPT`], [`ROW_KIND_RESOURCE`],
+    /// [`ROW_KIND_RESOURCE_TEMPLATE`].
+    pub kind: &'static str,
+    /// The registered server — what an `mcp_server` grant names.
+    pub server: String,
+    /// The published, namespaced name — what an `mcp_tool` grant names, for every kind alike.
+    pub name: String,
+    /// The entry as the listing writes it.
+    pub wire: serde_json::Value,
+}
+
+/// The kind word for a tool row.
+pub const ROW_KIND_TOOL: &str = "tool";
+/// The kind word for a prompt row.
+pub const ROW_KIND_PROMPT: &str = "prompt";
+/// The kind word for a concrete-resource row.
+pub const ROW_KIND_RESOURCE: &str = "resource";
+/// The kind word for a resource-template row.
+pub const ROW_KIND_RESOURCE_TEMPLATE: &str = "resource_template";
+
+/// Every catalogue row of a deployment's `tools:` intent, in the order the listings write them.
+///
+/// Built through [`Catalogue::build`] — the same constructor every apply uses — and walked in the
+/// same `BTreeMap` order the listing arms walk, so the rows are the listing's entries in the
+/// listing's order with the listing's render. Nothing here is a second reading of the config.
+#[must_use]
+pub fn rows_of(cfg: &ToolsCfg) -> Vec<CatalogueRow> {
+    Catalogue::build(cfg).rows()
+}
+
+impl Catalogue {
+    /// This snapshot's entries as rows. See [`rows_of`].
+    pub(crate) fn rows(&self) -> Vec<CatalogueRow> {
+        let mut out = Vec::new();
+        for t in self.tools.values() {
+            out.push(CatalogueRow {
+                kind: ROW_KIND_TOOL,
+                server: t.server.clone(),
+                name: t.namespaced.clone(),
+                wire: t.render(),
+            });
+        }
+        for p in self.prompts.values() {
+            out.push(CatalogueRow {
+                kind: ROW_KIND_PROMPT,
+                server: p.server.clone(),
+                name: p.namespaced.clone(),
+                wire: p.render(),
+            });
+        }
+        for r in self.resources.values() {
+            out.push(CatalogueRow {
+                kind: ROW_KIND_RESOURCE,
+                server: r.server.clone(),
+                name: r.namespaced.clone(),
+                wire: r.render(),
+            });
+        }
+        for t in self.resource_templates.values() {
+            out.push(CatalogueRow {
+                kind: ROW_KIND_RESOURCE_TEMPLATE,
+                server: t.server.clone(),
+                name: t.namespaced.clone(),
+                wire: t.render(),
+            });
+        }
+        out
+    }
+}
 
 /// ONE approved capability — the bound identity in full, plus the inert display fields.
 #[derive(Clone, Debug, PartialEq, Eq)]

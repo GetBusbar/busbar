@@ -46,8 +46,8 @@ fn every_binding_of_the_unit_has_a_row_in_the_source_table() {
     let fields = bindings_fields();
     assert_eq!(
         fields.len(),
-        18,
-        "the bindings carry eighteen halves; the table is written per field, so a change in the \
+        19,
+        "the bindings carry nineteen halves; the table is written per field, so a change in the \
          count is a change this test has to see"
     );
     for field in &fields {
@@ -143,6 +143,7 @@ fn all_sources(kernel: &Kernel) -> McpLegSources<'_> {
         key_scopes: None,
         priced: true,
         has_key: true,
+        catalogue: Vec::new(),
     }
 }
 
@@ -590,4 +591,28 @@ fn the_leg_declares_a_scope_for_every_class_the_plane_has() {
             "{op} is a class this plane says it ANSWERS, and the policy is silent about it"
         );
     }
+}
+
+/// **The catalogue is a source the assembly takes whole**, and the leg reports how many rows it
+/// composes from — which is the figure the boot line prints, so a rig reading that line is reading
+/// the mounted leg's own count and not the legacy router's.
+#[test]
+fn the_leg_holds_the_catalogue_rows_it_was_assembled_with() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.catalogue = vec![busbar_plane_mcp::catalogue::Row {
+        kind: busbar_plane_mcp::catalogue::RowKind::Tool,
+        server: "fs".to_string(),
+        name: "fs_grep".to_string(),
+        wire: serde_json::json!({ "name": "fs_grep" }),
+    }];
+    let leg = McpLeg::assemble(sources).expect("every source is present");
+    assert_eq!(leg.catalogue_len(), 1);
+    assert_eq!(
+        McpLeg::assemble(all_sources(&kernel))
+            .expect("every source is present")
+            .catalogue_len(),
+        0,
+        "an empty catalogue is a deployment with no `tools:` block, not a missing source"
+    );
 }

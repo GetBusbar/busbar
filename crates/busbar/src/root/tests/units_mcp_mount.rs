@@ -225,6 +225,7 @@ fn sources_with_chain(
         key_scopes: None,
         priced: true,
         has_key: true,
+        catalogue: Vec::new(),
     }
 }
 

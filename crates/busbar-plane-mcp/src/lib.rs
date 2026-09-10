@@ -41,6 +41,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod catalogue;
 pub mod claims;
 pub mod facts;
 pub mod jsonrpc;
