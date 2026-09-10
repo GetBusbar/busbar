@@ -39,7 +39,7 @@ pub mod seat;
 pub use seat::HookEnv;
 
 #[cfg(test)]
-#[path = "engine_tests.rs"]
+#[path = "tests/engine_tests.rs"]
 mod engine_tests;
 
 /// The hook-metrics scrape. The engine owns the cache, the stale-while-revalidate refresh and the
