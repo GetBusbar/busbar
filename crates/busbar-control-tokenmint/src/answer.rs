@@ -16,7 +16,7 @@
 //!
 //! `Bar::Open` is authentication that belongs to a different protocol and is performed by the
 //! library that implements it — so [`forward`] never reads busbar's governance state. `Bar::Operator`
-//! means the operator has ALREADY been identified by the node's admin chain before the consent
+//! means the operator has ALREADY been identified by the node's operator chain before the consent
 //! bodies run, so there is no credential check in them and there must not be.
 //!
 //! ## Refusals
@@ -91,7 +91,7 @@ pub fn consent_screen(surface: &TokenIssuer, request: &Request) -> Response {
         ));
     };
     // The session is opened HERE, not at the POST: the operator has already been authenticated by
-    // the admin chain to get this far, so this is the moment the fact is true.
+    // the operator chain to get this far, so this is the moment the fact is true.
     //
     // NO SESSION WITHOUT ENTROPY. `new_session_id` answers `None` when the platform RNG failed, and
     // the refusal is the point: an EMPTY id is one every caller already knows.
@@ -102,7 +102,7 @@ pub fn consent_screen(surface: &TokenIssuer, request: &Request) -> Response {
             "the platform RNG failed; no session was opened",
         ));
     };
-    surface.sessions().open(ADMIN_SUBJECT, id.clone());
+    surface.sessions().open(OPERATOR_SUBJECT, id.clone());
     let mut response = html(StatusCode::OK, consent_page(target));
     for cookie in session_cookies(surface.identity(), &id) {
         // `HeaderValue::from_str` rather than an unwrap: the `Path` is derived from the operator's
@@ -231,7 +231,7 @@ pub fn render(refusal: &PluginError) -> Response {
 
 /// The subject an approval on this plane is granted BY. One value, because there is one party this
 /// deployment can authenticate without an identity provider; see [`crate::consent`].
-const ADMIN_SUBJECT: &str = "busbar-operator";
+const OPERATOR_SUBJECT: &str = "busbar-operator";
 
 /// `?return=` on the consent screen.
 #[derive(serde::Deserialize)]

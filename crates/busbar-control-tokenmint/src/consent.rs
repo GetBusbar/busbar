@@ -6,7 +6,7 @@
 //! This plane exists for the deployment that has no IdP. That is also the question it has to answer
 //! before it can issue anything: OAuth's authorization-code grant is a delegation, and a delegation
 //! needs somebody to be delegating. With no IdP there is exactly one party this deployment can
-//! authenticate — **the operator**, with the admin credential they already hold — so the operator is
+//! authenticate — **the operator**, with the operator credential they already hold — so the operator is
 //! the resource owner, and the consent screen is where they say so.
 //!
 //! That is a deliberate limit and it is worth stating in full: on this plane an approved client acts
@@ -14,10 +14,10 @@
 //! to know. A deployment that wants per-user delegation configures an IdP and uses busbar as a
 //! resource server, which is the mode that already shipped.
 //!
-//! ## Why the operator is authenticated by the EXISTING admin chain and not by anything here
+//! ## Why the operator is authenticated by the node's EXISTING chain and not by anything here
 //!
-//! The consent route is an ordinary busbar core route mounted `RouteAuth::Admin`, so the credential
-//! is checked by `auth::run_admin_chain` — the same code, the same providers, the same
+//! The consent route was an ordinary core route behind the operator bar, so the credential
+//! is checked by core's own operator chain — the same code, the same providers, the same
 //! constant-time compare, the same scope ceiling — before the handler runs. Nothing in this file
 //! verifies a credential, and that is the point: an authorization server that grew its own idea of
 //! who an operator is would be a second opinion about the most privileged identity in the process.

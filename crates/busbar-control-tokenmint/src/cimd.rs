@@ -51,13 +51,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
+use backing::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::consent::ConsentRecord;
 use oauth_as::device::{DeviceGrant, DeviceGrantState};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
-use oauth_as::store::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
+use oauth_as::store as backing;
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
 /// THE BODY CEILING for one metadata document, DECLARED HERE and enforced by whoever implements

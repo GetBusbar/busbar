@@ -44,9 +44,9 @@
 //!
 //! ## What is deliberately NOT durable, said here rather than discovered
 //!
-//! The store is `oauth_as::store::MemoryStorage`, in-process. Authorization codes, tokens, refresh
-//! tokens and registered clients are lost on restart. Closing that means implementing
-//! `oauth_as::store::Storage` over the contract's `Store` face, whose `take_*` methods have to be
+//! The backing state is the protocol library's IN-PROCESS one. Authorization codes, tokens, refresh
+//! tokens and registered clients are lost on restart. Closing that means implementing the library's
+//! `Storage` trait over the contract's durable face, whose `take_*` methods have to be
 //! the face's atomic `claim_key` or refresh tokens double-spend across nodes — recorded in
 //! `docs/design/control-tokenmint-rebuild.md` as the seam still owed.
 

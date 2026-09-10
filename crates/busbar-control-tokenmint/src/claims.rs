@@ -6,7 +6,7 @@
 //!
 //! ## Why this is a table and not a `mount` function
 //!
-//! It used to be a function: `busbar_core::oauth_as::routes::mount` took a core router and wired
+//! It used to be a function: core's `oauth_as::routes::mount` took a core router and wired
 //! seven routes onto it, so the surface named a core router type, decided when it was mounted, and
 //! core carried a line naming this protocol. [`ROUTES`] is the declaration; the composition reads
 //! it and mounts it; the only thing that changes when a route is added is this table.
@@ -29,7 +29,7 @@
 //! | metadata, JWKS | [`Bar::Open`] | RFC 8414 §3 and RFC 7517: read by a client that has no credential yet. |
 //! | authorize | [`Bar::Open`] | A browser endpoint. The resource owner is authenticated by the consent screen. |
 //! | token, register | [`Bar::Open`] | These carry OAuth's OWN client authentication, which `oauth-as` performs. |
-//! | consent | [`Bar::Operator`] | The one route busbar authenticates itself, through the EXISTING admin chain. |
+//! | consent | [`Bar::Operator`] | The one route busbar authenticates itself, through its EXISTING operator chain. |
 //!
 //! [`Bar::Open`] is not an absence of authentication; it is authentication that belongs to a
 //! different protocol. Those bodies never read busbar's governance state, and the consent bodies
@@ -54,7 +54,7 @@ pub enum Method {
 pub enum Bar {
     /// The caller presents no busbar credential, by declaration.
     Open,
-    /// The caller is the OPERATOR, identified by the node's existing admin chain before the body
+    /// The caller is the OPERATOR, identified by the node's existing operator chain before the body
     /// runs. There is no credential check inside the body, and there must not be.
     Operator,
 }

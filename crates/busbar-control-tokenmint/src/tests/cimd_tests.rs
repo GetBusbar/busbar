@@ -11,9 +11,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use backing::{MemoryStorage, Storage as _};
 use oauth_as::client::{ClientAuth, ClientId};
 use oauth_as::scope::ScopeSet;
-use oauth_as::store::{MemoryStorage, Storage as _};
+use oauth_as::store as backing;
 
 use super::{materialize, CimdFetch, CimdStore};
 
@@ -80,7 +81,7 @@ fn a_document_claiming_a_different_client_id_is_refused() {
 #[test]
 fn a_document_asking_past_the_default_grant_is_refused() {
     let mut doc = document();
-    doc["scope"] = serde_json::json!("read write admin");
+    doc["scope"] = serde_json::json!("read write elevated");
     materialized(&doc).expect_err("a self-identified client cannot widen its own grant");
 }
 
