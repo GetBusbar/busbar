@@ -605,7 +605,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let Some(per_kind) = plan.get(dir.as_str()) else {
             continue;
         };
-        for h in scan_file(per_kind, &dir, &rel, text).iter() {
+        let root_prose = is_root_prose_file(c.kind, &dir, &rel);
+        for h in scan_file(per_kind, &dir, &rel, text, root_prose).iter() {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
@@ -715,6 +716,177 @@ struct Hit {
     confusable: bool,
 }
 
+// ------------------------------------------------------------------------------------------------
+// the line classifier: the root's prose
+// ------------------------------------------------------------------------------------------------
+
+/// A COMMENT IS NOT A COUPLING, AND THE ROOT'S PROSE DOES NOT SCORE.
+///
+/// Owner ruling: comments and docs in the COMPOSITION ROOT do not count toward `root × <kind>`.
+/// The root is the one crate whose job is to name every plane, every transport and every unit in
+/// one place; the sentences that tell a later reader WHY a plane is mounted there are the root
+/// doing that job out loud. Scoring them means the tree pays for its own explanation, and the way
+/// a team pays is by deleting the explanation — which is the opposite of what this row is for.
+///
+/// THE RULE IS NARROW ON PURPOSE, and every boundary below is a boundary a red team would probe:
+///
+///   * ONLY the root crate, and only under its `src/` — [`is_root_prose_file`]. Every other crate
+///     is unchanged: a plane named in a doc comment of the kernel is still the kernel's reader
+///     being taught a plane, and the case that proves it is still in the battery.
+///   * ONLY a line that is WHOLLY prose — `//`, `///`, `//!`, and lines inside `/* … */`. A
+///     trailing comment on a line of code still scores: the code is on that line, and half a line
+///     of exemption is a place to hide a `use busbar_plane_mcp::X; // note`.
+///   * The prose of a `#[doc = "…"]` ATTRIBUTE — the same sentence, written the other spelling.
+///     Only the string's CONTENTS, and only on a line that opens the attribute; a multi-line doc
+///     attribute keeps scoring, which errs toward measuring more, never less.
+///   * A STRING LITERAL STILL SCORES. `"busbar-plane-mcp"` in the root is a name the root ships,
+///     not a sentence about one, and a scanner that stopped reading string literals is a scanner
+///     a red team writes its coupling into.
+///
+/// The prose is BLANKED, not removed: the spans become spaces, so line numbers and column-shaped
+/// readings stay exactly what the author's file says. Returns one entry per line of `text` —
+/// `None` for a line no rule touched, `Some(blanked)` for one it did.
+fn root_prose_redaction(text: &str) -> Vec<Option<String>> {
+    let mut out: Vec<Option<String>> = Vec::new();
+    // `/* … */` NESTS IN RUST and it crosses lines, so the depth is carried between them. A STRING
+    // CROSSES LINES TOO — `r#"…"#` and an ordinary `"…"` with a newline in it — and a `//` inside
+    // one is a value the root ships, not a sentence about one. Carrying the state is the
+    // conservative reading in both directions: a state this misreads leaves a line SCORING.
+    let mut block: usize = 0;
+    let mut in_str = false;
+    for raw in text.lines() {
+        let ch: Vec<char> = raw.chars().collect();
+        // `true` at every char a reader reads and the compiler drops.
+        let mut prose = vec![false; ch.len()];
+        let mut line_comment = false;
+        let mut i = 0usize;
+        while i < ch.len() {
+            if line_comment {
+                prose[i] = true;
+                i += 1;
+            } else if block > 0 {
+                prose[i] = true;
+                if ch[i] == '*' && i + 1 < ch.len() && ch[i + 1] == '/' {
+                    prose[i + 1] = true;
+                    block -= 1;
+                    i += 2;
+                } else if ch[i] == '/' && i + 1 < ch.len() && ch[i + 1] == '*' {
+                    prose[i + 1] = true;
+                    block += 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            } else if in_str {
+                // An escape consumes its next char, so `"\\"` closes and `"\""` does not.
+                if ch[i] == '\\' {
+                    i += 2;
+                } else {
+                    in_str = ch[i] != '"';
+                    i += 1;
+                }
+            } else if ch[i] == '"' {
+                in_str = true;
+                i += 1;
+            } else if ch[i] == '\'' {
+                // A CHAR LITERAL IS NOT A STRING, AND A LIFETIME IS NEITHER. `'"'` opened a string
+                // that never closed, and everything after it on the line stopped being read.
+                i += char_literal_len(&ch, i);
+            } else if ch[i] == '/' && i + 1 < ch.len() && ch[i + 1] == '/' {
+                prose[i] = true;
+                prose[i + 1] = true;
+                line_comment = true;
+                i += 2;
+            } else if ch[i] == '/' && i + 1 < ch.len() && ch[i + 1] == '*' {
+                prose[i] = true;
+                prose[i + 1] = true;
+                block += 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+
+        // WHOLLY PROSE, or nothing. A line with any code char left standing is read as the author
+        // typed it — the trailing comment on it scores, and that is the point.
+        let touched = prose.iter().any(|p| *p);
+        let code_left = ch
+            .iter()
+            .zip(&prose)
+            .any(|(c, p)| !*p && !c.is_whitespace());
+        if touched && !code_left {
+            out.push(Some(ch.iter().map(|_| ' ').collect()));
+            continue;
+        }
+
+        // THE OTHER SPELLING OF THE SAME SENTENCE: `#[doc = "…"]`. The attribute's own tokens are
+        // code and keep scoring; the STRING's contents are the prose the ruling names.
+        if let Some(blanked) = doc_attr_blanked(&ch) {
+            out.push(Some(blanked));
+            continue;
+        }
+        out.push(None);
+    }
+    out
+}
+
+/// How many chars the `'` at `i` consumes: a char literal (`'x'`, `'\\n'`, `'\\u{7f}'`) whole, and a
+/// LIFETIME (`'a`, `'static`) just its tick — so `'"'` never opens a string and `&'a str` never
+/// swallows the rest of the line.
+fn char_literal_len(ch: &[char], i: usize) -> usize {
+    let close = (i + 1..ch.len().min(i + 12)).find(|&j| ch[j] == '\'');
+    match close {
+        // A tick, one or more chars, a tick, and no space in between: a char literal.
+        Some(j) if j > i + 1 && !ch[i + 1..j].iter().any(|c| c.is_whitespace()) => j + 1 - i,
+        _ => 1,
+    }
+}
+
+/// The line with the CONTENTS of every string literal blanked, when the line opens a `#[doc = …]`
+/// (or `#![doc = …]`) attribute — `None` when it does not, or when there was nothing to blank.
+fn doc_attr_blanked(ch: &[char]) -> Option<String> {
+    let line: String = ch.iter().collect();
+    let trimmed = line.trim_start();
+    if !(trimmed.starts_with("#[doc") || trimmed.starts_with("#![doc")) {
+        return None;
+    }
+    let mut out: Vec<char> = ch.to_vec();
+    let mut in_str = false;
+    let mut hit = false;
+    let mut i = 0usize;
+    while i < ch.len() {
+        if in_str {
+            if ch[i] == '\\' {
+                out[i] = ' ';
+                if i + 1 < ch.len() {
+                    out[i + 1] = ' ';
+                }
+                i += 2;
+                continue;
+            }
+            if ch[i] == '"' {
+                in_str = false;
+            } else {
+                out[i] = ' ';
+                hit = true;
+            }
+        } else if ch[i] == '"' {
+            in_str = true;
+        }
+        i += 1;
+    }
+    hit.then(|| out.into_iter().collect())
+}
+
+/// Whether a scanned path is one the root-prose ruling covers: the COMPOSITION ROOT's own `src/`.
+///
+/// Kind-driven, not name-driven — the root is whichever crate the kind table calls `root`, so a
+/// rename of the binary crate carries the exemption with it and a second crate never inherits it.
+/// `crates/busbar/tests/**`, `crates/busbar/Cargo.toml` and every other crate are NOT covered.
+fn is_root_prose_file(kind: Option<&str>, dir: &str, rel: &str) -> bool {
+    kind == Some(super::inputs::ROOT_KIND) && rel.starts_with(&format!("{dir}/src/"))
+}
+
 /// THE PER-FILE MEMO, and the reason it exists is the SELF-TEST.
 ///
 /// Every planted case re-runs the whole gate, and a plant changes ONE file. Re-measuring 1 558 of
@@ -727,12 +899,19 @@ struct Hit {
 static FILE_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<Hit>>>>> =
     std::sync::OnceLock::new();
 
-fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Vec<Hit>> {
+fn scan_file(
+    plan: &Plan,
+    dir: &str,
+    rel: &str,
+    text: &str,
+    root_prose: bool,
+) -> std::sync::Arc<Vec<Hit>> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     plan.fingerprint.hash(&mut h);
     rel.hash(&mut h);
     text.hash(&mut h);
+    root_prose.hash(&mut h);
     let key = h.finish();
     let memo = FILE_MEMO.get_or_init(Default::default);
     if let Some(found) = memo
@@ -752,8 +931,21 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
             .enumerate()
             .map(|(i, l): (usize, &str)| (i + 1, l)),
     );
+    // THE ROOT'S PROSE, BLANKED BEFORE ANY SCANNER READS IT. Empty for every other crate, and for
+    // every file of the root outside `src/` — see [`root_prose_redaction`].
+    let redacted: Vec<Option<String>> = if root_prose {
+        root_prose_redaction(text)
+    } else {
+        Vec::new()
+    };
     let mut out: Vec<Hit> = Vec::new();
     for (line, raw) in subject {
+        // Line 0 is the PATH, which is never prose; line N is text line N, and a redacted one is
+        // read in place of what the author typed.
+        let raw: &str = match line.checked_sub(1).and_then(|i| redacted.get(i)) {
+            Some(Some(r)) => r.as_str(),
+            _ => raw,
+        };
         let chars: Vec<char> = raw.chars().collect();
         // THE OTHER TWO READINGS OF THE SAME LINE, each computed only when the line carries the
         // thing it is about — a line with no backslash and no `concat!` has nothing to decode, and
@@ -2562,6 +2754,82 @@ pub fn selftest(
         &["ratchet", "busbar-kernel × plane", "RAISED"],
     ));
 
+    // THE ROOT'S PROSE DOES NOT SCORE — the same line, in the COMPOSITION ROOT, is 0.
+    //
+    // Owner ruling: a comment is not a coupling; the root's prose does not score. The case above
+    // is this one's twin and the pair is the whole rule: byte for byte the same sentence, red in
+    // the kernel and green in the root. See [`root_prose_redaction`]; the four cases after this
+    // one are the boundaries, because an exemption with no boundary proved is an exemption a red
+    // team writes its coupling into.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a plane named in nothing but a comment inside the ROOT scores 0",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar/src/leak.rs",
+            "// mcp, a2a and llm all come through here.\n",
+        ),
+    ));
+
+    // A ROOT CODE LINE BESIDE THE COMMENT STILL SCORES. The exemption is per LINE and only for a
+    // line that is wholly prose — a `use` under a sentence is a coupling with a sentence over it.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a root CODE line beside an exempt comment still scores",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar/src/leak.rs",
+            "// mcp, a2a and llm all come through here.\nuse busbar_plane_mcp::Frames;\n",
+        ),
+        &["ratchet", "busbar × plane", "RAISED"],
+    ));
+
+    // A STRING LITERAL IN THE ROOT STILL SCORES. `"busbar-plane-mcp"` is a name the root SHIPS —
+    // a wire value, a feature switch, a crate it names at runtime — not a sentence about one.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a string literal in the ROOT still scores: a shipped name is not prose",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar/src/leak.rs",
+            "pub const P: &str = \"busbar-plane-mcp\";\n",
+        ),
+        &["ratchet", "busbar × plane", "RAISED"],
+    ));
+
+    // THE OTHER SPELLING OF A DOC COMMENT. `#[doc = "…"]` is `///` with an attribute around it,
+    // and a rule that exempted one and scored the other would be a rule about syntax rather than
+    // about prose — and the spelling nobody exempted is the spelling the next author reaches for.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a `#[doc = \"…\"]` attribute in the ROOT scores 0, exactly as `///` does",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar/src/leak.rs",
+            "#[doc = \"mcp, a2a and llm all come through here.\"]\npub struct Where;\n",
+        ),
+    ));
+
+    // AND THE ROOT'S OWN TESTS AND MANIFEST ARE NOT COVERED. The ruling names `src/` — the
+    // composition root's code and the sentences beside it. `crates/busbar/tests/**` is an
+    // integration test like any other crate's, and a `#` comment in `Cargo.toml` is not Rust
+    // prose at all; both keep scoring, and this is the case that says where the edge is.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the root's prose exemption stops at `src/`: its integration tests still score",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar/tests/leak.rs",
+            "// mcp, a2a and llm all come through here.\n",
+        ),
+        &["ratchet", "busbar × plane", "RAISED"],
+    ));
+
     // THE TWO SCANNERS DISAGREEING. `gRPC` reads whole to the window scanner and splits at its own
     // camel joint for the segment scanner; the scored count is the higher, and the cell must say so.
     report.push(prove_rows_red(
@@ -3053,5 +3321,109 @@ mod tests {
     fn a_camel_spelling_is_seen_by_both() {
         let (a, b) = both("let VoiceServe = 1;", "voice");
         assert_eq!((a, b), (1, 1));
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // the line classifier: the root's prose
+    // ------------------------------------------------------------------------------------------
+
+    /// What the classifier does to one file, line by line: `"."` for a line it left alone and the
+    /// blanked text for one it did not, so a case reads as the shape of the answer.
+    fn classified(text: &str) -> Vec<String> {
+        root_prose_redaction(text)
+            .into_iter()
+            .map(|l| l.unwrap_or_else(|| ".".into()).trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_wholly_comment_line_is_blanked_and_a_line_of_code_is_not() {
+        assert_eq!(
+            classified("// mcp\n/// mcp\n//! mcp\nuse mcp;\n"),
+            vec!["", "", "", "."]
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_rides_on_a_line_of_code_and_the_line_still_scores() {
+        // HALF A LINE OF EXEMPTION IS A PLACE TO HIDE A COUPLING. The `use` is on this line.
+        assert_eq!(classified("use busbar_plane_mcp::X; // mcp\n"), vec!["."]);
+    }
+
+    #[test]
+    fn a_block_comment_carries_across_lines_and_nests() {
+        assert_eq!(
+            classified("/* mcp\n  /* a2a */\n   llm */\nuse mcp;\n"),
+            vec!["", "", "", "."]
+        );
+        // AND IT CLOSES ONTO CODE: the line still carries the `use`, so it is not prose.
+        assert_eq!(classified("/* mcp */ use mcp;\n"), vec!["."]);
+    }
+
+    #[test]
+    fn a_comment_marker_inside_a_string_is_not_a_comment() {
+        // `"//"` is a value, not a sentence — a classifier that missed this would blank the line
+        // that SHIPS the name and score nothing.
+        assert_eq!(classified(r#"let s = "// busbar-plane-mcp";"#), vec!["."]);
+        assert_eq!(classified(r#"let s = "\"// mcp";"#), vec!["."]);
+    }
+
+    #[test]
+    fn a_doc_attribute_loses_its_prose_and_keeps_its_tokens() {
+        assert_eq!(
+            classified("#[doc = \"mcp and a2a\"]\n"),
+            vec![format!("#[doc = \"{}\"]", " ".repeat("mcp and a2a".len()))]
+        );
+        // A PLAIN ATTRIBUTE IS NOT A DOC ATTRIBUTE: `#[cfg(feature = \"root-mcp\")]` still scores.
+        assert_eq!(classified("#[cfg(feature = \"root-mcp\")]\n"), vec!["."]);
+    }
+
+    #[test]
+    fn a_char_literal_never_opens_a_string_and_a_lifetime_never_closes_one() {
+        // `'"'` used to open a string that ran to the end of the line, so the `//` after it was
+        // never a comment — the classifier read a comment line as code and the root kept paying.
+        assert_eq!(
+            classified("let q = '\"'; // mcp\nlet r: &'a str = \"mcp\";\n"),
+            vec![".", "."]
+        );
+        assert_eq!(classified("let q = '\"';\n// mcp\n"), vec![".", ""]);
+    }
+
+    #[test]
+    fn a_string_that_crosses_lines_is_still_a_string() {
+        // THE NAME IS SHIPPED, not narrated: a `//` inside a multi-line literal is a value.
+        assert_eq!(
+            classified("let s = r#\"\n// busbar-plane-mcp\n\"#;\n// mcp\n"),
+            vec![".", ".", ".", ""]
+        );
+    }
+
+    #[test]
+    fn the_exemption_is_the_root_crate_and_only_under_its_src() {
+        assert!(is_root_prose_file(
+            Some("root"),
+            "crates/busbar",
+            "crates/busbar/src/root/units_mcp.rs"
+        ));
+        assert!(!is_root_prose_file(
+            Some("root"),
+            "crates/busbar",
+            "crates/busbar/tests/mcp_stdio_serve.rs"
+        ));
+        assert!(!is_root_prose_file(
+            Some("root"),
+            "crates/busbar",
+            "crates/busbar/Cargo.toml"
+        ));
+        assert!(!is_root_prose_file(
+            Some("plane"),
+            "crates/busbar-plane-mcp",
+            "crates/busbar-plane-mcp/src/lib.rs"
+        ));
+        assert!(!is_root_prose_file(
+            None,
+            "crates/busbar-kernel",
+            "crates/busbar-kernel/src/lib.rs"
+        ));
     }
 }
