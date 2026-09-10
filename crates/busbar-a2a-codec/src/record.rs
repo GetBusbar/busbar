@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
-//! extraction). The neutral `busbar_api::Store` contract speaks ONLY the opaque
-//! `busbar_api::PlaneRecord` envelope; a plane owns its concrete row schema and serializes it into
+//! extraction). The neutral `busbar_contract::store::Store` contract speaks ONLY the opaque
+//! `busbar_contract::store::PlaneRecord` envelope; a plane owns its concrete row schema and serializes it into
 //! (and back out of) that envelope's opaque `body` with `serde_json` — byte-for-byte the same the
 //! store plugins persist it with. The neutral crates name none of these types.
 
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult,
+};
 
 /// The `task` kind — the A2A task row's neutral `PlaneRecord.kind` tag.
 pub const KIND_TASK: &str = "task";

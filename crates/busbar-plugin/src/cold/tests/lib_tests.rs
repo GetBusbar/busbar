@@ -4,7 +4,8 @@
 //! Tests for `crates/plugin-abi/src/lib.rs`.
 
 use super::*;
-use busbar_api::{AuditRecord, ScopeRef, SecretErrorKind as LegacySecretErrorKind, VirtualKey};
+use busbar_api::SecretErrorKind as LegacySecretErrorKind;
+use busbar_contract::store::{AuditRecord, ScopeRef, VirtualKey};
 
 /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
 /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
@@ -110,7 +111,7 @@ fn sample_credential_secret() -> CredentialSecret {
             kind: "sigv4".into(),
             slot: 0,
             public_id: "AKIA_TEST".into(),
-            secret_form: busbar_api::SecretForm::Recoverable,
+            secret_form: busbar_contract::store::SecretForm::Recoverable,
             created_at: 42,
             updated_at: 42,
             expires_at: None,
@@ -138,15 +139,15 @@ fn request_response_json_roundtrip() {
         StoreRequest::PutUsage {
             bucket_id: "vk_1".into(),
             window_start: 100,
-            ledger: busbar_api::UsageLedger {
+            ledger: busbar_contract::store::UsageLedger {
                 requests: 1,
                 billable_requests: 1,
-                models: vec![busbar_api::ModelTokens {
+                models: vec![busbar_contract::store::ModelTokens {
                     model: "gpt-5".into(),
                     usage_units: std::collections::BTreeMap::from([
-                        (busbar_api::UNIT_INPUT.to_string(), 7u64),
-                        (busbar_api::UNIT_OUTPUT.to_string(), 3),
-                        (busbar_api::UNIT_CACHE_READ.to_string(), 1),
+                        (busbar_contract::store::UNIT_INPUT.to_string(), 7u64),
+                        (busbar_contract::store::UNIT_OUTPUT.to_string(), 3),
+                        (busbar_contract::store::UNIT_CACHE_READ.to_string(), 1),
                     ]),
                 }],
             },
@@ -154,14 +155,14 @@ fn request_response_json_roundtrip() {
         StoreRequest::AddUsage {
             bucket_id: "group:growth".into(),
             window_start: 100,
-            delta: busbar_api::UsageDelta {
+            delta: busbar_contract::store::UsageDelta {
                 requests: 1,
                 billable_requests: 1,
-                models: vec![busbar_api::ModelTokensDelta {
+                models: vec![busbar_contract::store::ModelTokensDelta {
                     model: "gpt-5".into(),
                     usage_units: std::collections::BTreeMap::from([
-                        (busbar_api::UNIT_INPUT.to_string(), 7i64),
-                        (busbar_api::UNIT_OUTPUT.to_string(), -3),
+                        (busbar_contract::store::UNIT_INPUT.to_string(), 7i64),
+                        (busbar_contract::store::UNIT_OUTPUT.to_string(), -3),
                     ]),
                 }],
             },

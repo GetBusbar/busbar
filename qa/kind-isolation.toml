@@ -1524,7 +1524,7 @@ count = "1270"
 [[cell]]
 crate = "busbar-a2a-codec"
 kind = "api"
-count = "7"
+count = "5"
 
 [[cell]]
 crate = "busbar-a2a-codec"
@@ -1889,7 +1889,7 @@ count = "14"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "api"
-count = "78"
+count = "69"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -1974,7 +1974,7 @@ count = "1111"
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "api"
-count = "12"
+count = "11"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2184,7 +2184,7 @@ count = "102"
 [[cell]]
 crate = "busbar-plugin"
 kind = "api"
-count = "57"
+count = "32"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2984,7 +2984,7 @@ count = "290"
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "api"
-count = "9"
+count = "2"
 
 [[cell]]
 crate = "busbar-voice-codec"
@@ -3612,13 +3612,13 @@ drain   = "delete the busbar-substrate dependency from busbar-a2a's Cargo.toml. 
 
 [[dep]]
 from    = "busbar-a2a-codec"
-to      = "busbar-api"
+to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-a2a-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-a2a-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, and the OWNER RULING of 2026-09-10 makes that same sentence about the two families that are not plugin kinds: `codec` (the pre-split dialects, which read their plane's durable record vocabulary) and `plugin-abi` (which serializes those same records across the C boundary). ARCHITECTURE_ALLOWED carries the class."
+why     = "busbar-a2a-codec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the busbar-api STORE drain moves onto, not a new coupling — the store kind's records (PlaneRecord, PlaneSelector, PlaneDisposition, the token-unit keys, VirtualKey and its frozen wire, the credential/usage/metering/audit rows) and the 1.5.5 replay face live in busbar_contract::store and busbar-api only re-exported them, so every `busbar_api::<store name>` spelling in this crate became `busbar_contract::store::<name>` and the crate names the face's own crate. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-api"
@@ -3962,6 +3962,16 @@ drain   = "delete the busbar-api dependency from busbar-llm-codec's Cargo.toml. 
 
 [[dep]]
 from    = "busbar-llm-codec"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, and the OWNER RULING of 2026-09-10 makes that same sentence about the two families that are not plugin kinds: `codec` (the pre-split dialects, which read their plane's durable record vocabulary) and `plugin-abi` (which serializes those same records across the C boundary). ARCHITECTURE_ALLOWED carries the class."
+why     = "busbar-llm-codec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the busbar-api STORE drain moves onto, not a new coupling — the store kind's records (PlaneRecord, PlaneSelector, PlaneDisposition, the token-unit keys, VirtualKey and its frozen wire, the credential/usage/metering/audit rows) and the 1.5.5 replay face live in busbar_contract::store and busbar-api only re-exported them, so every `busbar_api::<store name>` spelling in this crate became `busbar_contract::store::<name>` and the crate names the face's own crate. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-llm-codec"
 to      = "busbar-substrate-values"
 half    = "shipped"
 count   = "1"
@@ -4059,6 +4069,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
 why     = "busbar-mcp-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-api dependency from busbar-mcp-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp-codec"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, and the OWNER RULING of 2026-09-10 makes that same sentence about the two families that are not plugin kinds: `codec` (the pre-split dialects, which read their plane's durable record vocabulary) and `plugin-abi` (which serializes those same records across the C boundary). ARCHITECTURE_ALLOWED carries the class."
+why     = "busbar-mcp-codec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the busbar-api STORE drain moves onto, not a new coupling — the store kind's records (PlaneRecord, PlaneSelector, PlaneDisposition, the token-unit keys, VirtualKey and its frozen wire, the credential/usage/metering/audit rows) and the 1.5.5 replay face live in busbar_contract::store and busbar-api only re-exported them, so every `busbar_api::<store name>` spelling in this crate became `busbar_contract::store::<name>` and the crate names the face's own crate. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-mcp-codec"
@@ -4179,6 +4199,16 @@ verdict = "owner-ruling-pending"
 cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
 why     = "busbar-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-plugin."
+
+[[dep]]
+from    = "busbar-plugin"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, and the OWNER RULING of 2026-09-10 makes that same sentence about the two families that are not plugin kinds: `codec` (the pre-split dialects, which read their plane's durable record vocabulary) and `plugin-abi` (which serializes those same records across the C boundary). ARCHITECTURE_ALLOWED carries the class."
+why     = "busbar-plugin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the busbar-api STORE drain moves onto, not a new coupling — the store kind's records (PlaneRecord, PlaneSelector, PlaneDisposition, the token-unit keys, VirtualKey and its frozen wire, the credential/usage/metering/audit rows) and the 1.5.5 replay face live in busbar_contract::store and busbar-api only re-exported them, so every `busbar_api::<store name>` spelling in this crate became `busbar_contract::store::<name>` and the crate names the face's own crate. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-plugin-loader"
@@ -5002,13 +5032,13 @@ drain   = "delete the busbar-voice-codec dependency from busbar-voice's Cargo.to
 
 [[dep]]
 from    = "busbar-voice-codec"
-to      = "busbar-api"
+to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
-why     = "busbar-voice-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against, and the OWNER RULING of 2026-09-10 makes that same sentence about the two families that are not plugin kinds: `codec` (the pre-split dialects, which read their plane's durable record vocabulary) and `plugin-abi` (which serializes those same records across the C boundary). ARCHITECTURE_ALLOWED carries the class."
+why     = "busbar-voice-codec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the busbar-api STORE drain moves onto, not a new coupling — the store kind's records (PlaneRecord, PlaneSelector, PlaneDisposition, the token-unit keys, VirtualKey and its frozen wire, the credential/usage/metering/audit rows) and the 1.5.5 replay face live in busbar_contract::store and busbar-api only re-exported them, so every `busbar_api::<store name>` spelling in this crate became `busbar_contract::store::<name>` and the crate names the face's own crate. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-voice-codec"

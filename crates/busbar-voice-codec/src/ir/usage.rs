@@ -35,7 +35,7 @@ impl IrDuplexUsage {
     /// [`MeteringHost::price_usage`](busbar_substrate_values::plane_host::MeteringHost::price_usage). Audio and
     /// text collapse onto the SAME reserved lane by direction (a session prices audio vs text as separate
     /// rate-card MODEL lanes, never separate unit keys), so NO new unit/label/constant is introduced —
-    /// only the four EXISTING reserved keys ([`busbar_api::UNIT_INPUT`]/`UNIT_OUTPUT`/`UNIT_CACHE_READ`):
+    /// only the four EXISTING reserved keys ([`busbar_contract::store::UNIT_INPUT`]/`UNIT_OUTPUT`/`UNIT_CACHE_READ`):
     ///
     /// - `(audio_in + text_in) - cached` → `input`
     /// - `audio_out + text_out` → `output`
@@ -66,13 +66,16 @@ impl IrDuplexUsage {
             .saturating_sub(self.cached);
         let output = self.audio_out.saturating_add(self.text_out);
         if input != 0 {
-            usage_units.insert(busbar_api::UNIT_INPUT.to_string(), input);
+            usage_units.insert(busbar_contract::store::UNIT_INPUT.to_string(), input);
         }
         if output != 0 {
-            usage_units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
+            usage_units.insert(busbar_contract::store::UNIT_OUTPUT.to_string(), output);
         }
         if self.cached != 0 {
-            usage_units.insert(busbar_api::UNIT_CACHE_READ.to_string(), self.cached);
+            usage_units.insert(
+                busbar_contract::store::UNIT_CACHE_READ.to_string(),
+                self.cached,
+            );
         }
         busbar_substrate_values::billing::Usage { usage_units }
     }

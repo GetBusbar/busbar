@@ -98,10 +98,16 @@ pub fn tier_usage(
 ) -> busbar_substrate_values::billing::Usage {
     let mut usage_units = std::collections::BTreeMap::new();
     for (k, v) in [
-        (busbar_api::UNIT_INPUT, u.input),
-        (busbar_api::UNIT_OUTPUT, u.output),
-        (busbar_api::UNIT_CACHE_READ, u.cache_read.unwrap_or(0)),
-        (busbar_api::UNIT_CACHE_WRITE, u.cache_creation.unwrap_or(0)),
+        (busbar_contract::store::UNIT_INPUT, u.input),
+        (busbar_contract::store::UNIT_OUTPUT, u.output),
+        (
+            busbar_contract::store::UNIT_CACHE_READ,
+            u.cache_read.unwrap_or(0),
+        ),
+        (
+            busbar_contract::store::UNIT_CACHE_WRITE,
+            u.cache_creation.unwrap_or(0),
+        ),
     ] {
         if v != 0 {
             usage_units.insert(k.to_string(), v);

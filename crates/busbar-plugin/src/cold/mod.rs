@@ -42,9 +42,10 @@
 //! error), then dispatches to the TYPED seam (`Box<dyn Store>` / `Box<dyn SecretModule>` /
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
-use busbar_api::{
+use busbar_api::SecretErrorKind as LegacySecretErrorKind;
+use busbar_contract::store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneSelector, SecretErrorKind as LegacySecretErrorKind, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -85,7 +86,7 @@ pub const TRANSPORT_VERSION: u32 = 1;
 /// instead — same discipline the [`symbol`] constants have always used (`b"busbar_abi\0"`). Plugins
 /// built on `busbar-plugin-sdk` never touch either form: the SDK's export macro emits the safe one.
 pub mod kind {
-    /// A durable governance store (`Box<dyn busbar_api::Store>`).
+    /// A durable governance store (`Box<dyn busbar_contract::store::Store>`).
     pub const STORE: &str = "store";
     /// A secret-resolution module (`Box<dyn busbar_api::SecretModule>`).
     pub const SECRET: &str = "secret";
@@ -279,7 +280,7 @@ pub const MAX_PLUGIN_RESPONSE_LEN: usize = 256 * 1024 * 1024;
 /// `OK`: the out buffer holds the success payload.
 pub const STATUS_OK: i32 = 0;
 /// A DEFINED backend failure — the out buffer holds a UTF-8 error message. The op RAN and returned an
-/// error (a [`busbar_api::StoreError`]/`SecretError`/… rendered). Propagated by the loader.
+/// error (a [`busbar_contract::store::StoreError`]/`SecretError`/… rendered). Propagated by the loader.
 pub const STATUS_ERR: i32 = 1;
 /// A caller-PROTOCOL violation the plugin detected BEFORE running user code: a null handle, a null
 /// request buffer with `len > 0`, a garbled ABI frame. No user code ran, so the out buffer stays
@@ -305,7 +306,7 @@ pub const STATUS_PANIC: i32 = 3;
 
 /// A `Store` operation and its arguments, serialized as the `call` request payload. One
 /// self-describing enum keeps the C ABI to a single `call` symbol regardless of how many methods
-/// the `Store` trait grows — the variant IS the op-code. Mirrors [`busbar_api::Store`] one-to-one.
+/// the `Store` trait grows — the variant IS the op-code. Mirrors [`busbar_contract::store::Store`] one-to-one.
 ///
 /// `large_enum_variant`: the `PutKey`/`PutKeyWithCredential` variants carry a whole `VirtualKey`
 /// by value — inherent to a store-WRITE request payload — so the size spread is by design, not an
@@ -328,13 +329,13 @@ pub enum StoreRequest {
     PutKey(VirtualKey),
     GetKey(String),
     ListKeys,
-    /// TOMBSTONE `id` — see [`busbar_api::Store::delete_key`]'s doc. The row survives; the plugin
+    /// TOMBSTONE `id` — see [`busbar_contract::store::Store::delete_key`]'s doc. The row survives; the plugin
     /// implements the cascade (destroy credentials, `enabled=false`, `deleted_at=now()`).
     DeleteKey(String),
     /// PII-erasure-only on an already-tombstoned key. See
-    /// [`busbar_api::Store::scrub_key`].
+    /// [`busbar_contract::store::Store::scrub_key`].
     ScrubKey(String),
-    /// Incremental hydration delta for keys — see [`busbar_api::Store::list_keys_since`].
+    /// Incremental hydration delta for keys — see [`busbar_contract::store::Store::list_keys_since`].
     ListKeysSince(u64),
     /// `get_usage` - the (bucket, window) token ledger. `bucket_id` is a key id or a budget-group
     /// bucket id; no dollar field crosses this wire (spend derives from ledger x rate card).
@@ -358,12 +359,12 @@ pub enum StoreRequest {
     AddMetering(MeteringDelta),
     ListMetering(u64),
     /// Retention purge for the rate-limit window ledger. See
-    /// [`busbar_api::Store::purge_windows_before`].
+    /// [`busbar_contract::store::Store::purge_windows_before`].
     PurgeWindowsBefore(u64),
     /// Retention purge for the durable billing ledger. Admin-triggered only, never automatic — see
-    /// [`busbar_api::Store::purge_metering_before`].
+    /// [`busbar_contract::store::Store::purge_metering_before`].
     PurgeMeteringBefore(String),
-    /// `put_credential` — see [`busbar_api::Store::put_credential`]. Kind-polymorphic (today only
+    /// `put_credential` — see [`busbar_contract::store::Store::put_credential`]. Kind-polymorphic (today only
     /// `kind: "sigv4"`), the generalized replacement for the old AWS-specific
     /// `PutAwsCredential`/`AwsCredential` shape.
     PutCredential(CredentialSecret),
@@ -381,7 +382,7 @@ pub enum StoreRequest {
         reason: String,
     },
     /// Incremental hydration delta for credentials — see
-    /// [`busbar_api::Store::list_credentials_since`].
+    /// [`busbar_contract::store::Store::list_credentials_since`].
     ListCredentialsSince(u64),
     /// `append_audit` — persist one admin audit record durably. ADDITIVE (ABI stays v1): a plugin
     /// built against the older SDK never sees this variant; the engine's loader maps its
@@ -414,7 +415,7 @@ pub enum StoreRequest {
     // durable rows behaves exactly as the shipped RAM default does.
     //
     // THE FULL TYPED SIDECAR RIDES THE WRITE VERBS. A store behind this ABI reconstitutes its
-    // [`busbar_api::PlaneRecord`] from the request JSON and NOTHING else, so any envelope column the
+    // [`busbar_contract::store::PlaneRecord`] from the request JSON and NOTHING else, so any envelope column the
     // wire omits is gone by the time that backend runs a retention sweep — and the two columns a
     // sweep reads, `ts` and `disposition`, are exactly the ones it cannot recover from an opaque
     // body. Omitting them does not lose a field, it INVERTS retention: every row reconstitutes at
@@ -434,11 +435,11 @@ pub enum StoreRequest {
     UpsertPlaneRecord {
         kind: String,
         id: String,
-        /// The record's timestamp — see [`busbar_api::PlaneRecord::ts`]. Defaults to `0` for an
+        /// The record's timestamp — see [`busbar_contract::store::PlaneRecord::ts`]. Defaults to `0` for an
         /// older engine that predates the sidecar.
         #[serde(default)]
         ts: u64,
-        /// Whether retention may drop the row — see [`busbar_api::PlaneRecord::disposition`].
+        /// Whether retention may drop the row — see [`busbar_contract::store::PlaneRecord::disposition`].
         /// Defaults to `Active` (never-purgeable under a terminal-only contract) for an older engine.
         #[serde(default = "default_disposition")]
         disposition: PlaneDisposition,
@@ -453,7 +454,7 @@ pub enum StoreRequest {
     /// `AppendTaskEvent`/`AppendMcpCall`.
     AppendPlaneRecord {
         kind: String,
-        /// The CHILD's own identity within its kind — see [`busbar_api::PlaneRecord::id`]. Distinct
+        /// The CHILD's own identity within its kind — see [`busbar_contract::store::PlaneRecord::id`]. Distinct
         /// from `parent` on the envelope even though every in-tree append kind currently sets the two
         /// equal, and a backend is entitled to key on it (the in-tree fixture reads `parent` and
         /// falls back to `id`). Defaults to empty for an older engine that predates it.
@@ -461,11 +462,11 @@ pub enum StoreRequest {
         id: String,
         parent: String,
         seq: u64,
-        /// The record's timestamp — see [`busbar_api::PlaneRecord::ts`]. THE axis an age-based purge
+        /// The record's timestamp — see [`busbar_contract::store::PlaneRecord::ts`]. THE axis an age-based purge
         /// sweeps on; without it the whole append-only log reads as ts 0. Defaults to `0`.
         #[serde(default)]
         ts: u64,
-        /// Whether retention may drop the row — see [`busbar_api::PlaneRecord::disposition`].
+        /// Whether retention may drop the row — see [`busbar_contract::store::PlaneRecord::disposition`].
         /// Defaults to `Active`.
         #[serde(default = "default_disposition")]
         disposition: PlaneDisposition,
@@ -525,7 +526,7 @@ pub enum StoreResponse {
     /// `get_key` — the key, or `None` if absent.
     Key(Option<VirtualKey>),
     /// `list_keys` / `list_keys_since` — every key (unfiltered — see
-    /// [`busbar_api::Store::list_keys`]'s doc; tombstones included).
+    /// [`busbar_contract::store::Store::list_keys`]'s doc; tombstones included).
     Keys(Vec<VirtualKey>),
     /// `get_usage` - the (bucket, window) token ledger.
     Usage(UsageLedger),
