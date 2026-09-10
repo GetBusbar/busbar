@@ -779,6 +779,54 @@ forbidden = ["SystemTime::now", "Instant::now"]
 exempt_files = ["crates/busbar-unit-breaker/src/clock.rs"]
 max_hits = 0
 
+# ── 25b. ts-reads-the-clock ──────────────────────────────────────────────────────────────────────
+[rules.ts-reads-the-clock]
+why = """A timestamp field is a reading of the node's clock or it is nothing. Zero is not a time: it is the unix epoch, and on the durable side it is the RETENTION AXIS, where a row stamped zero reads as infinitely old and the sweep drops it at any cutoff for every kind whose contract is not terminal-only. That is data loss, and it is silent twice over — the sweep counts a purge as success, and a golden that normalises timestamps away cannot see the difference between a real reading and a placeholder. So the rule is structural rather than golden-visible, and it is one rule over every kind: no timestamp field is written as a literal zero, and no struct carrying one hands `Default` the job of inventing its value (a `Default::default()` mints a zero nobody spelled, and `..Default::default()` does it in the middle of a constructor that reads as complete). A site that genuinely has no clock to read passes the reading in from whoever does."""
+# Where production source lives. Test source is excluded by the scanner, not by a glob: a test may
+# name a fixed epoch, and often should.
+scope_globs = ["crates/*/src/*"]
+# The field names that carry a time. `now`/`at`/`epoch` are deliberately ABSENT: they name
+# parameters and counters far more often than they name a stored stamp, and a rule that cried wolf
+# on every one of those would be a rule nobody could hold at zero.
+timestamp_fields = [
+  "created_at",
+  "updated_at",
+  "ts",
+  "expires_at",
+  "expires_at_unix",
+  "issued_at",
+  "timestamp_epoch",
+  "charged_at",
+]
+# Each entry is one site, exempt with its own argument. Nothing may be added without one.
+#
+#  - the three `created_at: 0` sites are SYNTHETIC principals — a tenant id, an unauthenticated
+#    caller, a grant carrier the auth module already resolved. None is ever persisted (no `put_key`
+#    reaches them), so the field is inert rather than a stamp, and the honest zero says "this row
+#    was never minted" where a clock read would claim it was.
+#  - the `timestamp_epoch: 0` site builds a LANE-CONSTANT credential's frozen header set. A
+#    credential that reads the timestamp is by definition not lane-constant and never reaches this
+#    branch, so the field is unread. It lives in the frozen substrate.
+#  - `VirtualKey` carries `created_at`/`expires_at` under a `Default` derive. Every MINT site
+#    stamps `created_at` explicitly from the clock the root read, and the derive exists for the
+#    trailing fields a backward-compatible deserialize needs. It lives in the frozen `busbar-api`
+#    ABI, so the derive cannot be removed here; the ratchet holds the line on every other struct.
+exempt_sites = [
+  "crates/busbar-core/src/governance/mod.rs:788",
+  "crates/busbar-core/src/plane_host/govern.rs:188",
+  "crates/busbar-mcp/src/mcp/upstream.rs:349",
+  "crates/busbar-substrate/src/egress_auth/mod.rs:341",
+]
+max_zero_stamps = 0
+# Ratchet, not zero: the one hit is `busbar-api`'s `VirtualKey`, argued above. Tightens to 0 when
+# the ABI can drop the derive.
+max_default_derives = 1
+
+[gate.ceiling_raises."rules.ts-reads-the-clock.max_default_derives"]
+from = 0
+to = 1
+because = "ts-reads-the-clock is minted by this commit and is born gating with one hit already on the tree: VirtualKey's Default derive in the frozen busbar-api ABI, argued above as a ratchet rather than an exemption, so the ceiling opens at 1 rather than 0."
+
 # ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
 [rules.unit-no-finding-ids]
 why = """A comment that cites a finding identifier or a bare document section number tells a reader \
