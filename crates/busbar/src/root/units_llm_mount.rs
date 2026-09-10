@@ -61,42 +61,45 @@ pub fn media_type() -> &'static str {
     MEDIA_JSON
 }
 
-/// **WHY THERE IS NO `MountedLeg` IMPL IN THIS FILE YET, stated rather than worked around.**
+/// **THE MONEY SEAM THAT BLOCKED THIS PLANE'S LEG, AND HOW IT WAS OPENED.**
 ///
 /// A [`plane_mount::MountedLeg`] must hand back two things from one walk: the kernel's own
-/// [`busbar_kernel::teller::Ended`], and the plane's answer. This plane can produce the answer — it
-/// already walks `run_unit_async` and returns the terminal's response — and it cannot yet hand back
-/// the end, for a reason that is about money and not about wiring.
+/// [`busbar_kernel::teller::Ended`], and the plane's answer. This plane could always produce the
+/// answer. It could not hand back the end, for a reason that was about money and not about wiring.
 ///
-/// The exit arm of `units_llm::LlmNode` SETTLES: it takes the `Ended`, destructures
-/// `Ended::Settled { end, .. }`, and moves the `UnitEnd`'s `Posted` into the root's books through
-/// `durability.settle_posted`. Every one of those moves is by value ON PURPOSE — a `Posted` exists
-/// exactly once per hold, and the by-value move is what makes a second settlement of one hold
-/// unwritable. So the plane's settlement CONSUMES the end the mount is owed.
+/// The exit arm of `units_llm::LlmNode` SETTLES: it took the `Ended`, destructured
+/// `Ended::Settled { end, .. }`, and moved the `UnitEnd`'s `Posted` into the root's books. Every one
+/// of those moves was by value ON PURPOSE — a `Posted` exists exactly once per hold, and the
+/// by-value move is what made a second settlement of one hold unwritable. So the plane's settlement
+/// CONSUMED the end the mount is owed.
 ///
-/// The three ways out, and why none of them is taken here:
+/// Two of the three ways out were refused and stay refused:
 ///
-/// - Return [`busbar_kernel::teller::Ended::AlreadySettled`] instead. That is the free-standing
-///   variant and it would compile, and it would be a lie: it tells the mount the kernel settled this
-///   unit at its own exit, which is the one thing that did not happen. A mount that believed it
-///   would render a refusal for the wrong reason on the one path where the answer is absent.
-/// - Skip the settlement on the mounted path. That is worse than a lie: the unit runs, the loop
-///   posts, and the posting is dropped on the floor. The mounted path would serve traffic and bill
-///   none of it, and the paired money cell this slot owes would be comparing a settled leg against
-///   an unsettled one.
-/// - Let the plane settle from a BORROW. `UnitEnd::posted` already lends `&Posted`, so the read
-///   exists; what does not is a settlement that takes one. `Durability::settle_posted` hands the
-///   posting to `busbar_unit_ledger`'s own `post`, which takes it by value for the same
-///   exactly-once reason. Making that read by reference is a change to the money seam, and a money
-///   seam is not something to change in the last minutes of a slot with the paired byte-identity
-///   cell unwritten.
+/// - Return [`busbar_kernel::teller::Ended::AlreadySettled`] instead. It compiles, and it is a lie:
+///   it tells the mount the kernel settled this unit at its own exit, which is the one thing that
+///   did not happen. A mount that believed it would render a refusal for the wrong reason on the one
+///   path where the answer is absent.
+/// - Skip the settlement on the mounted path. Worse than a lie: the unit runs, the loop posts, and
+///   the posting is dropped on the floor. That path serves traffic and bills none of it.
 ///
-/// The third is the one that is right, and it is the next commit rather than this one. Until then
-/// this plane's mount answers the two questions it can answer truthfully and does not claim to be
-/// servable: `root-llm-serve` is default OFF, nothing boots it, and the surface is the one that
-/// shipped.
+/// **The third is the one taken: the plane settles from a BORROW.** `UnitEnd::lend_posting` hands
+/// the posting out once and refuses the second; `Durability::settle_lent` and
+/// `busbar_unit_ledger`'s `post_lent` move the same books through the same arithmetic and write the
+/// same two records through the same builder; and the ending walks out of the exit arm intact.
+///
+/// ## Where exactly-once lives now, said plainly
+///
+/// It used to live in the MOVE, with no flag and no check. A borrow cannot carry that, because a
+/// reference can be taken twice. So it is a REFUSAL: the end that owns the posting lends it once.
+/// What the type still carries is the other half — `busbar_caps::PostingLent` has a private field
+/// and comes out of exactly one place, so a settlement that takes a borrow cannot be reached from a
+/// `&Posted` anybody happened to be holding.
+///
+/// The byte-identity cell is `a_posting_the_exit_path_built_settles_exactly_as_a_hold_does` in
+/// `root/tests/durability.rs`: three doors — a hold, an owned posting, a lend — one balance, one
+/// set of four columns, and one chain head, which is what "identical ledger bytes" means.
 pub const WHY_NO_LEG_YET: &str =
-    "the plane's exit arm consumes the Posted the mount's Ended carries";
+    "the blocker is lifted: the plane's exit arm settles from a lend and the Ended survives it";
 
 #[cfg(test)]
 #[path = "tests/units_llm_mount.rs"]

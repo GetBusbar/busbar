@@ -1576,7 +1576,7 @@ fn settling<'a>(
     token: &'a busbar_caps::DurabilityToken,
 ) -> crate::root::durability::Settling<'a> {
     crate::root::durability::Settling {
-        key: &key,
+        key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
             arrived.secs(),
