@@ -72,6 +72,26 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$(_arm 1 "")"    = 2 ] && _ok "  ...pre-proof + no outcome at all + no ref = exit 2" || _fail "pre-proof + no outcome + no ref = exit 2"
   [ "$(_arm 0 "$_st")" = 2 ] && _ok "  ...LANDING + GREEN outcome + no ref = exit 2 (cannot fast-forward)" || _fail "landing + no ref = exit 2"
   rm -f "$_st"
+  # THE DONE LEDGER IS MERGED AFTER THE VERDICT, NOT BEFORE IT (audit 17).
+  grep -qF -- 'rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null || true' "${BASH_SOURCE[0]}" && _ok "the box's done rows are only FETCHED beside the outcome" || _fail "the box's done rows are only fetched early"
+  _vline="$(grep -n '^# THE LANDED TIP COMES BACK TOO' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
+  _mline="$(grep -nF 'grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>' "${BASH_SOURCE[0]}" | tail -1 | cut -d: -f1)"
+  [ -n "$_vline" ] && [ -n "$_mline" ] && [ "$_mline" -gt "$_vline" ] \
+    && _ok "  ...and MERGED after the landed-tip verdict, never before" || _fail "the merge happens after the landed-tip verdict (verdict line $_vline, merge line $_mline)"
+  grep -qF -- 'if [ "$REFUSED" = 1 ]; then' "${BASH_SOURCE[0]}" && _ok "a refused landing records no done rows at all" || _fail "a refused landing records no done rows"
+  grep -qF -- 'REFUSED=1; [ "$RC" = 0 ] && RC=2' "${BASH_SOURCE[0]}" && _ok "  ...and the no-landed-tip refusal sets that flag" || _fail "the no-landed-tip refusal sets REFUSED"
+  # Exercised: the guard is REFUSED, not RC, so a PARTIALLY green batch still records its greens.
+  _done() { # $1 = REFUSED  $2 = rc; prints the rows the ledger would gain
+    local led="$_dt/led.txt" rem="$_dt/rem.txt"
+    printf 'GREEN batch=old already\n' >"$led"; printf 'GREEN batch=old already\nGREEN batch=new landed-line\n' >"$rem"
+    if [ "$1" = 1 ]; then :; else grep -F -v -x -f "$led" "$rem" >>"$led" 2>/dev/null || true; fi
+    grep -c 'batch=new' "$led"
+  }
+  _dt="$(mktemp -d "${TMPDIR:-/tmp}/land-remote-done.XXXXXX")"
+  [ "$(_done 1 2)" = 0 ] && _ok "  ...a refused landing adds no row" || _fail "a refused landing adds no row"
+  [ "$(_done 0 1)" = 1 ] && _ok "  ...a partially green batch still adds its green row" || _fail "a partially green batch adds its green row"
+  [ "$(_done 0 0)" = 1 ] && _ok "  ...and a whole green landing does too" || _fail "a green landing adds its row"
+  rm -rf "$_dt"
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
   echo "land-remote selftest: RED ($fails failure(s))" >&2; exit 1
@@ -472,6 +492,7 @@ fi
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
 # reported, which is worse than a red.
 OUTCOME=""          # the per-line outcome file, once it is here
+REFUSED=0           # 1 when THIS side refused the landing (nothing of it may be recorded as done)
 if [ -n "$BATCH" ]; then
   if rcp_back "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"; then
     rlog "per-line outcomes: $REPO/$BATCH.result"
@@ -480,9 +501,12 @@ if [ -n "$BATCH" ]; then
   else
     rlog "WARNING: no $RBATCH.result on $HOST — the batch did not reach its reporting stage"
   fi
-  # land.sh on the box appended its rows to the box's land-done.txt; they belong in ours.
-  rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null \
-    && { grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true; rm -f "$REPO/$BATCH.remote-done"; }
+  # land.sh on the box appended its rows to the box's land-done.txt; they belong in ours — BUT NOT
+  # YET. This copy ran BEFORE the landed-ref check below, so a landing this side went on to REFUSE
+  # had already written the box's GREEN rows into our done ledger: the queue then read lines as
+  # landed on a tree that never moved to them, and would never pop them again (audit 17). The rows
+  # are fetched here and MERGED AFTER the verdict, and never at all when the landing was refused.
+  rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null || true
 fi
 
 # THE LANDED TIP COMES BACK TOO. What the box proved is what this tree must now be at: the local
@@ -506,13 +530,13 @@ if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST
     if [ "$landed" = "$(git -C "$REPO" rev-parse HEAD)" ]; then
       rlog "pre-proof: tree stays at $(git -C "$REPO" rev-parse --short HEAD); nothing was published and nothing is fast-forwarded"
     else
-      rlog "ERROR: the box published $(echo "$landed" | cut -c1-9) on a PRE-PROOF of $(git -C "$REPO" rev-parse --short HEAD) — an engine there took a landing it was told not to take; this tree is NOT moved"; RC=2
+      rlog "ERROR: the box published $(echo "$landed" | cut -c1-9) on a PRE-PROOF of $(git -C "$REPO" rev-parse --short HEAD) — an engine there took a landing it was told not to take; this tree is NOT moved"; RC=2; REFUSED=1
     fi
   elif [ "$landed" != "$(git -C "$REPO" rev-parse HEAD)" ]; then
     if git -C "$REPO" merge -q --ff-only "$landed" 2>/dev/null; then
       rlog "tree fast-forwarded to the landed tip $(git -C "$REPO" rev-parse --short HEAD)"
     else
-      rlog "ERROR: the landed tip $(echo "$landed" | cut -c1-9) is not a fast-forward of this tree — refusing"; RC=2
+      rlog "ERROR: the landed tip $(echo "$landed" | cut -c1-9) is not a fast-forward of this tree — refusing"; RC=2; REFUSED=1
     fi
   fi
   git -C "$REPO" update-ref -d "refs/remotes/landed/$REF" 2>/dev/null || true
@@ -529,9 +553,22 @@ else
     fi
   else
     rlog "ERROR: a landing with no landed tip cannot fast-forward this tree — refusing"
-    [ "$RC" = 0 ] && RC=2
+    REFUSED=1; [ "$RC" = 0 ] && RC=2
   fi
 fi
 rm -f "$FETCH_WHY"
+
+# THE DONE LEDGER, AFTER THE VERDICT AND ONLY IF THIS SIDE DID NOT REFUSE. A refused landing is a
+# landing that did not happen here: its rows would tell the queue that lines are done on a tree that
+# is still at the base, and the queue never pops a done line twice. A PARTIALLY green batch is not a
+# refusal — its green lines really did land — so the guard is REFUSED, not RC.
+if [ -n "$BATCH" ] && [ -f "$REPO/$BATCH.remote-done" ]; then
+  if [ "$REFUSED" = 1 ]; then
+    rlog "the landing was refused here: the box's $(grep -c . "$REPO/$BATCH.remote-done" 2>/dev/null || echo 0) done row(s) are NOT recorded (kept at $BATCH.remote-done)"
+  else
+    grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true
+    rm -f "$REPO/$BATCH.remote-done"
+  fi
+fi
 rlog "host $HOST   exit $RC   wall $(( END - START ))s"
 exit "$RC"

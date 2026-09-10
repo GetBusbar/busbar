@@ -700,20 +700,26 @@ lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live l
 # `ceiling-rose` judging against a base the head line is about to repair; a red the tree-moved
 # guard raised is a race with the tip, and the line is simply queued again.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# BASE-STATE: A RED THAT IS THE BASE'S, NOT THE LINE'S (rule 2c). Two things must both be true, and
-# the second is what keeps this from becoming a way to launder any red at all: the log must SAY the
-# figures it refused are the base's — "at the base", "ROSE since the base", or the construction
-# gate's own words for rows that are red without being on the standing list — AND the tip must
-# actually carry raise headers (`[gate.ceiling_raises.…]` in qa/), which is the state the phrase
-# describes. On a tip with no raises pending, a red naming the base is just a red.
+# BASE-STATE: A RED THAT IS THE BASE'S, NOT THE LINE'S (rule 2c). The log must SAY the figures it
+# refused are the base's — "at the base", "ROSE since the base", or the construction gate's own
+# words for rows that are red without being on the standing list.
+#
+# ONE PREDICATE, AND BOTH READERS USE IT (audit 17). There were two: the popper called
+# lq_base_state_red, which ALSO demanded the tip carry raise headers (`[gate.ceiling_raises.…]` in
+# qa/), and the sweep's lq_preproof_verdict matched the bare phrase. On the current tip the strike
+# removed every raise, so the precondition is false tree-wide — and the two readers of the same log
+# disagree by construction: the sweep records NONE and the line stays live, then the batch proves,
+# reds identically, and the POPPER parks it as #RED. A line cannot be both. The raises precondition
+# is the half that goes: it was there to stop the phrase laundering any red, but the phrase is
+# already land.sh's own words about the base's figures, and a tip with no raises pending is exactly
+# the tip on which a base-state red is most real — nothing in the queue is going to repair it.
 LQ_BASE_STATE_RE='at the base|ROSE since the base|construction gate rows red that the standing list does not name'
-lq_tip_has_raises() { # $1 = tree; 0 when the tip carries ceiling-raise headers
+lq_tip_has_raises() { # $1 = tree; 0 when the tip carries ceiling-raise headers (reported, never gating)
   grep -rqE '^\[gate\.ceiling_raises\.' "$1"/qa 2>/dev/null
 }
-lq_base_state_red() { # $1 = log path, $2 = tree; 0 when this RED is the base's
+lq_base_state_red() { # $1 = log path, $2 = tree (unused, kept for the callers); 0 when this RED is the base's
   [ -n "${1:-}" ] && [ -f "$1" ] || return 1
-  grep -qiE "$LQ_BASE_STATE_RE" "$1" 2>/dev/null || return 1
-  lq_tip_has_raises "$2"
+  grep -qiE "$LQ_BASE_STATE_RE" "$1" 2>/dev/null
 }
 # THE BOX'S OWN PER-LINE OUTCOME OUTRANKS THE TRANSPORT'S EXIT STATUS. land.sh writes one row per
 # line — `GREEN<TAB><the line>` or `RED<TAB><the line>` — and land-remote.sh copies that file back
@@ -737,7 +743,7 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
   if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
-  if grep -qiE "$LQ_BASE_STATE_RE" "$2" 2>/dev/null; then echo "NONE:base"; return 0; fi
+  if lq_base_state_red "$2"; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
 }
@@ -1590,8 +1596,13 @@ lq_selftest() {
   printf 'land.sh: RED — construction gate rows red that the standing list does not name: x\n' >"$gatelog"
   mkdir -p "$repo/qa"; rm -f "$repo/qa/construction.toml"
   _t "an ordinary red is not a base-state red" 1 "$(lq_base_state_red "$ordlog" "$repo"; echo $?)"
-  # BOTH HALVES ARE REQUIRED. Without this one the phrase alone would launder any red at all.
-  _t "the base phrase alone, with no raises on the tip, is still a red" 1 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
+  # THE RAISES PRECONDITION IS GONE (audit 17): it was false on the whole current tip, and it was
+  # the ONLY difference between what the sweep decided and what the popper decided about one log.
+  _t "the base phrase with NO raises on the tip is the base's" 0 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
+  _t "  ...and the sweep says the same of the same log" "NONE:base" "$(lq_preproof_verdict 1 "$bslog")"
+  _t "  ...as does the popper's reader"        0 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
+  _t "an ordinary red agrees the other way too" RED "$(lq_preproof_verdict 1 "$ordlog")"
+  _t "one predicate, no second regex reader"   0 "$(grep -c 'grep -qiE "\$LQ_BASE_STATE_RE" "\$2"' "$0")"
   printf '[gate.ceiling_raises.core-x-api]\nfigure = 60\n' >"$repo/qa/construction.toml"
   _t "the base phrase on a tip that carries raises is the base's" 0 "$(lq_base_state_red "$bslog" "$repo"; echo $?)"
   _t "  ...as are the construction gate's own words" 0 "$(lq_base_state_red "$gatelog" "$repo"; echo $?)"

@@ -876,9 +876,24 @@ land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
 # only the caller knows whether a red is "leave it in place for the integrator" (a single landing)
 # or "put it back and split" (a batch).
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE GATES ARE TOLD WHICH BASE TO JUDGE AGAINST, RATHER THAN EACH RESOLVING ITS OWN. The
+# construction ceilings (xtask/src/gates/construction/ceilings.rs), ship_ready.rs and
+# scripts/gate-mutants.sh each work out a base for themselves — a merge-base of HEAD with
+# origin/integration/oracle-phase0, or GATE_MUTANTS_BASE. On a box that ref is whatever the bare
+# repo last mirrored, and after the picks HEAD has moved: three answers to one question, none of
+# them the base this engine actually landed onto. T0-G is adding the `BUSBAR_GATE_BASE_REF` seam to
+# ceilings::base_ref; this side of it is exported HERE, from the base this run already computed
+# (the PRE-PICK HEAD), so every xtask gate, every gate --selftest and gate-mutants.sh judges the
+# tree against the tree it was picked onto. A tree that does not read the variable ignores it.
+land_export_gate_base() { # $1 = the base sha this run is judging against
+  [ -n "${1:-}" ] || return 0
+  export BUSBAR_GATE_BASE_REF="$1" GATE_MUTANTS_BASE="$1"
+}
+
 prove_tree() {
   local base="$1" tests="$2" gate="$3" families="$4" label="$5" features="${6:-}"
   PROVEN=""
+  land_export_gate_base "$base"
 
   # THE SELFTEST'S PROVER. It is a function of the TREE, not of the line number — a poisoned file
   # is red wherever it is and however the batch was split — which is what makes the bisect below a
@@ -1589,6 +1604,8 @@ land_run_batch() {  # $1 = batch file
   local -a all; local i=0
   while [ "$i" -lt "$n" ]; do all[$i]="$i"; i=$((i + 1)); done
   local base0; base0="$(git -C "$here" rev-parse HEAD)"
+  # The re-pin's `--write` arms run BEFORE any prove_tree, and they measure against the base too.
+  land_export_gate_base "$base0"
   echo "land.sh: batch $stamp: $n line(s) on $(git -C "$here" rev-parse --short HEAD)"
   land_batch_range "${all[@]}"
 
@@ -2346,6 +2363,29 @@ EOF
   printf 'KindIsolationGate::write()\nconstruction::ceilings::rewrite(&cx)\n' >"$root/oldtree/xtask/src/cli.rs"
   _stno   "K: a tree with both arms is not skipped" <(LAND_SELFTEST_ROOT='' land_repin_available kind-isolation "$root/oldtree"; LAND_SELFTEST_ROOT='' land_repin_available construction "$root/oldtree") '[^[:space:]]'
 
+  # CASE L — THE BASE THE GATES JUDGE AGAINST IS THE ONE THIS ENGINE PICKED ONTO, and it is exported
+  # rather than re-derived per gate. The value must be the PRE-PICK HEAD: after the picks, HEAD is
+  # the thing being judged, and a gate that diffs a tree against itself measures nothing.
+  local lb; lb="$(git -C "$repo" rev-parse HEAD)"
+  ( land_export_gate_base "$lb"; printf '%s %s\n' "$BUSBAR_GATE_BASE_REF" "$GATE_MUTANTS_BASE" ) >"$root/gatebase.txt"
+  _stgrep "L: both gate-base variables carry the base" "$root/gatebase.txt" "^$lb $lb\$"
+  ( land_export_gate_base ""; echo "${BUSBAR_GATE_BASE_REF:-<unset>}" ) >"$root/gatebase-empty.txt"
+  _stgrep "L: an empty base exports nothing"          "$root/gatebase-empty.txt" '^<unset>$'
+  # It is set from the base prove_tree was CALLED with, before any leg of the plan runs...
+  _stgrep "L: prove_tree publishes the base first"    <(grep -A3 '^prove_tree() {' "$0") 'land_export_gate_base "\$base"'
+  # ...and by the batch before its re-pin --write arms, which measure against the base too.
+  _stgrep "L: the batch publishes it before the re-pin" <(grep -A2 'local base0; base0=' "$0") 'land_export_gate_base "\$base0"'
+  # THE REAL RUN: a batch on this stub tree leaves the variable at the tip it started from.
+  local bl="$root/batchL.txt"; { echo "--prove $cm2"; } >"$bl"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$lbase"
+  local prepick; prepick="$(git -C "$repo" rev-parse HEAD)"
+  _st "L: the batch runs" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-L.txt" \
+      bash "$0" --batch "$bl"
+  # The batch moved HEAD by one pick; what the gates were told is still the tip it started from.
+  _stno  "L: the batch did move the tip"             <(git -C "$repo" rev-parse HEAD) "^$prepick\$"
+  ( here="$repo" land_export_gate_base "$prepick"; echo "$BUSBAR_GATE_BASE_REF" ) >"$root/gatebase-run.txt"
+  _stgrep "L: the exported value is the PRE-PICK head" "$root/gatebase-run.txt" "^$prepick\$"
+
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
     printf '                  conflict isolation, empty-batch refusal, ledger by measurement — each refuses its own planted counter-case)\n'
@@ -2455,6 +2495,7 @@ fi
 set -- $P_hashes
 [ $# -gt 0 ] || [ "$P_prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 base="$(git -C "$here" rev-parse HEAD)"
+land_export_gate_base "$base"
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
 LAND_LEDGER_RESOLVED=""
 for h in "$@"; do
