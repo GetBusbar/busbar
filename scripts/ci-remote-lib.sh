@@ -263,6 +263,8 @@ STUB
   chmod +x "$root/ssh"
   FLEET_FILE="$root/fleet"; SSH_WRAP="$root/ssh"
   _fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
+  echo "ci-remote-lib selftest: this file"
+  _t "parses (bash -n)" 0 "$(bash -n "${BASH_SOURCE[0]}"; echo $?)"
   echo "ci-remote-lib selftest: the allocator (distinct, least loaded, prepared, never the excluded)"
   _t "three boxes, least loaded first"  "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; [ "$1" = "$SSH_WRAP" ] && { case "$*" in *box-d*) return 1 ;; esac; }; "$@"; }; fleet_pick_hosts 3 2>/dev/null)"
   _t "the primary is never chosen"      "$(printf 'box-c\nbox-a')"        "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 2 box-e 2>/dev/null)"
