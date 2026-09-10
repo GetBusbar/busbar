@@ -147,6 +147,18 @@ crate = "busbar-plane-admin"
 kind = "control"
 reason = "the admin CONTROL surface — an unmetered served surface on the control path. R7 renames it to busbar-control-admin, at which point its name says `control` and this row must be struck"
 
+# THE FIRST CRATE OF THE `dialect` KIND. `dialect` is a PENDING kind (`PENDING_KINDS` in
+# `xtask/src/gates/kind_isolation.rs`) and this row is what opens the window for the crate that
+# makes it live: a crate under `crates/` that resolves to no live kind is RED, so the announcement
+# has to be in the MERGE-BASE before the mint commit lands, which is why it is a commit of its own
+# and lands ahead of the branch that writes the crate. The mint is the commit that strikes the
+# pending entry — a kind cannot be both pending and live — and drops this row, which expires the
+# moment the crate's own name resolves to `dialect`.
+[[announced]]
+crate = "busbar-plane-streams-twilio"
+kind = "dialect"
+reason = "the carrier's event vocabulary is an instance of the dialect kind on the streams plane. Twilio Media Streams is a JSON envelope, an event roster and a G.711 payload over a WebSocket the tree already carries (busbar-transport-ws): the wire is `ws` and the only new thing is vocabulary, which is what a dialect IS. It is named for the INSTANCE and not for a generic — `telephony` reads neutral while delivering one vendor's envelope, and that euphemism is what let the instance dispatch in this plane survive review. Four segments exactly: the wire name is three words (`twilio-media-streams`) and stays a `NAME` constant inside the crate, because a crate name that grew a fifth and sixth segment to spell a vendor's product would be the naming scheme bending around one vendor's marketing"
+
 [[announced]]
 crate = "busbar-control-oauth2"
 kind = "control"
