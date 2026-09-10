@@ -1319,7 +1319,7 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "300"
+count = "301"
 
 [[cell]]
 crate = "busbar"
@@ -1344,7 +1344,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+count = "163"
 
 [[cell]]
 crate = "busbar"
@@ -1354,7 +1354,7 @@ count = "94"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1800"
+count = "1815"
 
 [[cell]]
 crate = "busbar"

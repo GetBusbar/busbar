@@ -45,6 +45,11 @@ use busbar_kernel::teller::{fee_count, FeeEvidence};
 
 /// One recorded cell, reduced to the facts the two deciders read.
 ///
+/// `name` is the golden's cell id with its leading family segment implied: every cell below is an
+/// `llm|…` cell, the family is stated once in the module header, and spelling it 66 more times
+/// would be this test file teaching the composition root a plane's name 66 times over. Prefix it
+/// back to look one up in `ledger.tsv`.
+///
 /// Transcribed from `golden/1.5.5/cells/llm__*__{upstream_down,ok_stream}.json`:
 /// `status` is the cell's client-facing `status`; `upstream_leg` is whether the recording shows a
 /// dial (a non-empty `effects.egress`, or a `busbar_upstream_attempts_total` metric);
@@ -100,7 +105,7 @@ fn retired_plane_fee(c: &Cell) -> u32 {
 /// from the golden — SKIP, a named gap. See the module header.
 const RECORDED: &[Cell] = &[
     Cell {
-        name: "llm|anthropic|anthropic|request|ok_stream",
+        name: "anthropic|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -108,7 +113,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|anthropic|anthropic|request|upstream_down",
+        name: "anthropic|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -116,7 +121,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|anthropic|bedrock|request|ok_stream",
+        name: "anthropic|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -124,7 +129,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|anthropic|bedrock|request|upstream_down",
+        name: "anthropic|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -132,7 +137,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|anthropic|cohere|request|ok_stream",
+        name: "anthropic|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -140,7 +145,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|anthropic|cohere|request|upstream_down",
+        name: "anthropic|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -148,7 +153,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|anthropic|gemini|request|upstream_down",
+        name: "anthropic|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -156,7 +161,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|anthropic|openai|request|ok_stream",
+        name: "anthropic|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -164,7 +169,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|anthropic|openai|request|upstream_down",
+        name: "anthropic|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -172,7 +177,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|anthropic|responses|request|ok_stream",
+        name: "anthropic|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -180,7 +185,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|anthropic|responses|request|upstream_down",
+        name: "anthropic|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -188,7 +193,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|anthropic|request|ok_stream",
+        name: "bedrock|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -196,7 +201,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|bedrock|anthropic|request|upstream_down",
+        name: "bedrock|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -204,7 +209,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|bedrock|request|ok_stream",
+        name: "bedrock|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -212,7 +217,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|bedrock|bedrock|request|upstream_down",
+        name: "bedrock|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -220,7 +225,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|cohere|request|ok_stream",
+        name: "bedrock|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -228,7 +233,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|bedrock|cohere|request|upstream_down",
+        name: "bedrock|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -236,7 +241,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|gemini|request|upstream_down",
+        name: "bedrock|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -244,7 +249,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|openai|request|ok_stream",
+        name: "bedrock|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -252,7 +257,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|bedrock|openai|request|upstream_down",
+        name: "bedrock|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -260,7 +265,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|bedrock|responses|request|ok_stream",
+        name: "bedrock|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -268,7 +273,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|bedrock|responses|request|upstream_down",
+        name: "bedrock|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -276,7 +281,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|anthropic|request|ok_stream",
+        name: "cohere|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -284,7 +289,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|cohere|anthropic|request|upstream_down",
+        name: "cohere|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -292,7 +297,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|bedrock|request|ok_stream",
+        name: "cohere|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -300,7 +305,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|cohere|bedrock|request|upstream_down",
+        name: "cohere|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -308,7 +313,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|cohere|request|ok_stream",
+        name: "cohere|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -316,7 +321,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|cohere|cohere|request|upstream_down",
+        name: "cohere|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -324,7 +329,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|gemini|request|upstream_down",
+        name: "cohere|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -332,7 +337,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|openai|request|ok_stream",
+        name: "cohere|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -340,7 +345,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|cohere|openai|request|upstream_down",
+        name: "cohere|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -348,7 +353,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|cohere|responses|request|ok_stream",
+        name: "cohere|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -356,7 +361,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|cohere|responses|request|upstream_down",
+        name: "cohere|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -364,7 +369,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|anthropic|request|ok_stream",
+        name: "gemini|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -372,7 +377,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|gemini|anthropic|request|upstream_down",
+        name: "gemini|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -380,7 +385,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|bedrock|request|ok_stream",
+        name: "gemini|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -388,7 +393,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|gemini|bedrock|request|upstream_down",
+        name: "gemini|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -396,7 +401,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|cohere|request|ok_stream",
+        name: "gemini|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -404,7 +409,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|gemini|cohere|request|upstream_down",
+        name: "gemini|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -412,7 +417,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|gemini|request|upstream_down",
+        name: "gemini|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -420,7 +425,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|openai|request|ok_stream",
+        name: "gemini|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -428,7 +433,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|gemini|openai|request|upstream_down",
+        name: "gemini|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -436,7 +441,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|gemini|responses|request|ok_stream",
+        name: "gemini|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -444,7 +449,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|gemini|responses|request|upstream_down",
+        name: "gemini|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -452,7 +457,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|anthropic|request|ok_stream",
+        name: "openai|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -460,7 +465,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|openai|anthropic|request|upstream_down",
+        name: "openai|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -468,7 +473,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|bedrock|request|ok_stream",
+        name: "openai|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -476,7 +481,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|openai|bedrock|request|upstream_down",
+        name: "openai|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -484,7 +489,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|cohere|request|ok_stream",
+        name: "openai|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -492,7 +497,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|openai|cohere|request|upstream_down",
+        name: "openai|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -500,7 +505,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|gemini|request|upstream_down",
+        name: "openai|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -508,7 +513,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|openai|request|ok_stream",
+        name: "openai|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -516,7 +521,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|openai|openai|request|upstream_down",
+        name: "openai|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -524,7 +529,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|openai|responses|request|ok_stream",
+        name: "openai|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -532,7 +537,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|openai|responses|request|upstream_down",
+        name: "openai|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -540,7 +545,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|anthropic|request|ok_stream",
+        name: "responses|anthropic|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -548,7 +553,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|responses|anthropic|request|upstream_down",
+        name: "responses|anthropic|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -556,7 +561,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|bedrock|request|ok_stream",
+        name: "responses|bedrock|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -564,7 +569,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|responses|bedrock|request|upstream_down",
+        name: "responses|bedrock|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -572,7 +577,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|cohere|request|ok_stream",
+        name: "responses|cohere|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -580,7 +585,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|responses|cohere|request|upstream_down",
+        name: "responses|cohere|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -588,7 +593,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|gemini|request|upstream_down",
+        name: "responses|gemini|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -596,7 +601,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|openai|request|ok_stream",
+        name: "responses|openai|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -604,7 +609,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|responses|openai|request|upstream_down",
+        name: "responses|openai|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,
@@ -612,7 +617,7 @@ const RECORDED: &[Cell] = &[
         billed: 0,
     },
     Cell {
-        name: "llm|responses|responses|request|ok_stream",
+        name: "responses|responses|request|ok_stream",
         status: 200,
         upstream_leg: true,
         upstream_candidate: true,
@@ -620,7 +625,7 @@ const RECORDED: &[Cell] = &[
         billed: 1,
     },
     Cell {
-        name: "llm|responses|responses|request|upstream_down",
+        name: "responses|responses|request|upstream_down",
         status: 503,
         upstream_leg: true,
         upstream_candidate: true,

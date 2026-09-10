@@ -1317,7 +1317,7 @@ async fn the_meter_step_is_fed_from_the_route_steps_output() {
     // assumed: a delivered 2xx refunds nothing, and a charged non-2xx refunds the fee base whether
     // it failed upstream or never dialled at all.
     //
-    // The FEE is no longer among them. It is decided once, by `busbar_kernel::teller::fee_count`,
+    // The FEE is no longer among them. It is decided once, by the kernel's own decider,
     // in the composition root — this rehearsal drives the plane's steps and the plane no longer
     // holds an answer. `busbar/tests/fee_one_decision.rs` is where the fee is pinned.
     let (_, delivered) = leg_chain_metered(Fixture::BufferedOk).await;

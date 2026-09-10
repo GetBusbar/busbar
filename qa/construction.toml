@@ -183,6 +183,30 @@ key = "rules.loc-ceilings.kernel_ceiling"
 by = 2
 because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: two lines of MODULE WIRING, not two lines of kernel. busbar-unit-admission/src/lib.rs is in the kernel's call-graph name-match set, so `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};` spend kernel budget; cache.rs itself is not name-matched and none of its 136 lines are counted here."
 
+# THE FEE'S ONE DECISION: `busbar_kernel::teller::fee_count` becomes the decider that BILLS on the
+# llm plane, and the plane's second decider is deleted. The kernel already decided this fee on every
+# llm unit and the root threw the answer away with a `..`; what billed was `unit/meter.rs`'s
+# `delivered && ctx.upstream_leg` — two booleans, no origin, no dispute arm — carried out on the
+# late report into `Posting::from_usage`. `units_mcp`, `units_a2a` and `units_voice` already price
+# through the kernel's function; this is the fourth plane joining them, not a new face.
+#
+# The two raises are the composition root's, and the plugin's side of the ledger does not move at
+# all: `busbar-llm`'s cells for every kind are unchanged, because the plane gave money vocabulary UP
+# (`Metered::fee_count`, `LateReport::fee_count`, `Carry::fee_count`, `Walk::fee_count()`,
+# `MeterCtx::upstream_leg`, `MeterFacts::upstream_leg` all deleted) and gained none.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "the fee's one decision, moved onto busbar_kernel::teller::fee_count for the llm plane: the composition root's units_llm.rs now names the kernel's FeeEvidence and fee_count where the plane carried its own count, in the one fee_evidence builder the exit path and both pricing sites read, and the byte-identity cell in crates/busbar/tests/fee_one_decision.rs drives that decider directly. The plane's side falls: six money-carrying fields and accessors are deleted in the same commit and busbar-llm's own kind cells do not move."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = "the byte-identity cell for the fee's two deciders, crates/busbar/tests/fee_one_decision.rs: 66 recorded golden cells of the llm families upstream_down and ok_stream, carried as the facts both deciders read plus the fee the golden actually billed, so that retiring the plane's decider is proven against what the node has recorded rather than argued. The golden's cell ids are carried with their leading llm| family segment factored out to the module header precisely so this number is 17 and not 80; what remains is the per-cell dialect pair, which is the cell's provenance and cannot be dropped without making a diverging cell unnameable."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

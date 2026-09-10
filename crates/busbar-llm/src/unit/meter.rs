@@ -358,9 +358,9 @@ pub fn meter(
     // fields on the same request and had its answer discarded. One request, two deciders, and the
     // one that reached the money was the one that could not see the origin or the dispute.
     //
-    // The fee is `busbar_kernel::teller::fee_count` and nothing else. The composition root builds
+    // The fee is the kernel's one decision and nothing else. The composition root builds
     // its evidence once and prices both the settlement and the late report through it — see
-    // `busbar/src/root/units_llm.rs`'s `fee_evidence`. What this step still owns is what the unit
+    // the composition root's own `fee_evidence`. What this step still owns is what the unit
     // CONSUMED; what it is worth, and how many billable requests it is, are the kernel's and the
     // card holder's.
     // A stream whose end carried a terminal error, or whose translation aborted, bills ZERO: the
