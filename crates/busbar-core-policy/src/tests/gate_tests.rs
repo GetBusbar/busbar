@@ -88,7 +88,7 @@ impl RoutingPolicy for ReplyGate {
         _ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        // Byte-for-byte the `HookReply::Reply(v)` arm in `busbar_plugin_loader::hook`: hand the
+        // Byte-for-byte the `HookReply::Reply(v)` arm in the loader's hook seam: hand the
         // reply Value to the engine's shared projector and return its `PolicyResult` unchanged.
         (crate::plugin::projectors().normalize)(self.reply.clone(), candidates)
     }
@@ -283,20 +283,14 @@ fn tool_call() -> InvokeReq {
     }
 }
 
-fn key() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key() -> busbar_contract::KeyFacts {
+    busbar_contract::KeyFacts {
         id: "k-1".to_string(),
         name: "reporting".to_string(),
-        generation_hash: String::new(),
+        scopes: None,
         enabled: true,
-        allowed_scopes: None,
-        group: None,
-        labels: Default::default(),
         expires_at: None,
         deleted_at: None,
-        created_at: 0,
-        revision: 0,
-        ..Default::default()
     }
 }
 
@@ -502,8 +496,8 @@ async fn no_attached_gate_builds_no_projection() {
         walks: std::sync::atomic::AtomicUsize,
     }
     impl crate::ir::facts::IrFacts for Counting {
-        fn verb(&self) -> busbar_api::operation::Operation {
-            busbar_api::operation::Operation::INVOKE
+        fn verb(&self) -> busbar_contract::operation::Operation {
+            busbar_contract::operation::Operation::INVOKE
         }
         fn wants_stream(&self) -> bool {
             false

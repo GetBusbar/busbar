@@ -507,12 +507,15 @@ pub(crate) extern "C-unwind" fn gate_decide(
                     now_ms: busbar_substrate::store::now_ms(),
                 }
             });
+        // The gate reads the key's POSTURE (`KeyFacts`: id, name, scopes, liveness) — the contract's
+        // shape of a resolved key, never the directory record itself.
+        let key_facts = key.as_ref().map(key_facts);
         let subject = crate::hooks::gate::GateSubject {
             facts: &facts,
             container,
             ingress_protocol: ingress,
             request_id: s.request_id,
-            key: key.as_ref(),
+            key: key_facts.as_ref(),
             incremental,
         };
         // Drive the ASYNC gate on a fresh current-thread runtime (the `run_content_gate` precedent). A
@@ -582,3 +585,25 @@ unsafe fn borrow_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
 #[cfg(test)]
 #[path = "tests/dispatch_tests.rs"]
 mod tests;
+
+/// A resolved governance key as the contract's [`crate::hooks::KeyFacts`]: its posture and
+/// nothing that could be presented again (the same projection the composition root's directory
+/// makes for the authenticate step).
+fn key_facts(key: &busbar_api::VirtualKey) -> crate::hooks::KeyFacts {
+    crate::hooks::KeyFacts {
+        id: key.id.clone(),
+        name: key.name.clone(),
+        scopes: key.allowed_scopes.as_ref().map(|scopes| {
+            scopes
+                .iter()
+                .map(|s| crate::hooks::KeyScope {
+                    kind: s.kind.clone(),
+                    value: s.value.clone(),
+                })
+                .collect()
+        }),
+        enabled: key.enabled,
+        expires_at: key.expires_at,
+        deleted_at: key.deleted_at,
+    }
+}

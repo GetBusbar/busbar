@@ -127,7 +127,6 @@ pub enum OpShape {
 impl OpShape {
     /// Every shape, so a site that must cover all of them cannot silently cover some. The same role
     /// `Transport::ALL` and `Plane::ALL` play for their axes.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [OpShape] = &[
         OpShape::Invoke,
         OpShape::Catalogue,
@@ -226,18 +225,14 @@ impl Operation {
     //    SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in the core's.
     /// The bare `Invoke` shape under its own word.
     pub const INVOKE: Operation = Operation::of(OpShape::Invoke);
-    #[cfg_attr(not(test), allow(dead_code))]
     /// The bare `Catalogue` shape under its own word.
     pub const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
-    #[cfg_attr(not(test), allow(dead_code))]
     /// The bare `Fetch` shape under its own word.
     pub const FETCH: Operation = Operation::of(OpShape::Fetch);
-    #[cfg_attr(not(test), allow(dead_code))]
     /// The bare `Task` shape under its own word.
     pub const TASK: Operation = Operation::of(OpShape::Task);
     /// The bare `Subscribe` shape under its own word.
     pub const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
-    #[cfg_attr(not(test), allow(dead_code))]
     /// The bare `Control` shape under its own word.
     pub const CONTROL: Operation = Operation::of(OpShape::Control);
 
@@ -250,7 +245,6 @@ impl Operation {
     /// `ProtocolDecl::verbs`), so a protocol's verbs leave when the protocol does. The closed
     /// metric-label surface the header promises is `ALL ∪ declared_verbs()`: both halves are
     /// `&'static` consts fixed at load, and nothing constructs an `Operation` from the wire.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: &'static [Operation] = &[
         Operation::INVOKE,
         Operation::CATALOGUE,

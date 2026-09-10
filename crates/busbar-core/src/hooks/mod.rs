@@ -19,14 +19,28 @@
 //!
 //! # What stayed
 //!
-//! One thing: the axum HANDLER for `GET /metrics/hooks`, below. An axum route that extracts
-//! `CurrentApp` is the composition root's business, and `App` is precisely the name the engine may
-//! not have. It is four lines around the engine's renderer.
+//! Two things. The SEAT ADAPTER (`seat`): the engine reaches a `kind: hook` plugin only through its
+//! own port, and binding the hybrid-ABI registry, the manifest's declared needs and the built-in
+//! ranking plugin behind that port is the composition's job — so [`HookEnv`] here is the engine's
+//! environment bound over this crate's registry, and the dlopen battery that packages a REAL hook
+//! plugin and asserts on what it answered lives beside the adapter (`engine_tests`), because that
+//! claim is about adapter + loader + engine together. And the axum HANDLER for `GET /metrics/hooks`,
+//! below: an axum route that extracts `CurrentApp` is the composition root's business, and `App` is
+//! precisely the name the engine may not have. It is four lines around the engine's renderer.
 
 /// Everything the engine exposes, at the paths this crate's callers already write:
 /// `crate::hooks::{HookEnv, resolve_policy, resolve_pool_gates, push_configure, fetch_status, …}`
 /// and the `gate` / `wire` / `plugin` submodules.
 pub use busbar_core_policy::*;
+
+pub mod seat;
+/// The engine's environment bound over this crate's plugin registry — the one the thirty call
+/// sites construct with `HookEnv::new(registry, secret_resolver)`.
+pub use seat::HookEnv;
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod engine_tests;
 
 /// The hook-metrics scrape. The engine owns the cache, the stale-while-revalidate refresh and the
 /// Prometheus rendering; this shadows the engine's `scrape` with the same name plus the one thing

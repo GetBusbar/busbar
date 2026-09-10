@@ -107,7 +107,7 @@ pub struct HookMetric {
 }
 
 /// The hook's `status` reply body (liberal: every field optional, unknown fields ignored),
-/// deserialized into the shared `busbar_api::HookStatus` shape. `metrics` is the raw array of entry
+/// deserialized into the shared `busbar_contract::HookStatus` shape. `metrics` is the raw array of entry
 /// objects (validated downstream by [`parse_status_metrics`]).
 #[derive(Debug, Default, Deserialize)]
 pub struct StatusReply {
@@ -123,9 +123,9 @@ pub struct StatusReply {
     pub metrics: Option<Vec<serde_json::Value>>,
 }
 
-impl From<StatusReply> for busbar_api::HookStatus {
+impl From<StatusReply> for busbar_contract::HookStatus {
     fn from(r: StatusReply) -> Self {
-        busbar_api::HookStatus {
+        busbar_contract::HookStatus {
             settings_version: r.settings_version,
             settings: r.settings,
             metrics: r.metrics,
@@ -335,10 +335,10 @@ pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
     Some(RestrictReply { tags_any })
 }
 
-/// A parsed, validated `rewrite` reply — part of the hook contract (`busbar-api`); re-exported so
+/// A parsed, validated `rewrite` reply — part of the hook contract (`busbar-contract`); re-exported so
 /// engine-internal paths are unchanged. FAIL-CLOSED: `parse_rewrite` (below) returns `None` for a
 /// malformed rewrite so the caller proceeds with the ORIGINAL body, never a corrupted one.
-pub use busbar_api::RewriteReply;
+pub use busbar_contract::RewriteReply;
 
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
@@ -375,8 +375,8 @@ pub fn parse_reject_detail(reject: &serde_json::Value) -> (u16, String) {
 /// Normalize a parsed reply on the TRANSFORM path: reject > rewrite > abstain. `restrict`/`order`
 /// are decide-path verbs and are ignored here (documented in the contract). Shared by both
 /// transports so they can never diverge.
-pub fn transform_outcome(parsed: HookResponse) -> busbar_api::TransformOutcome {
-    use busbar_api::TransformOutcome;
+pub fn transform_outcome(parsed: HookResponse) -> busbar_contract::TransformOutcome {
+    use busbar_contract::TransformOutcome;
     if let Some(reject) = &parsed.reject {
         if *reject != serde_json::Value::Bool(false) {
             let (status, message) = parse_reject_detail(reject);

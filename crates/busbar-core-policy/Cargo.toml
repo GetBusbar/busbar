@@ -14,24 +14,25 @@
 # `/metrics/hooks` scrape. The kernel seats a hook plugin after Admit; deciding WHICH hook, with
 # WHICH grants, on WHICH terminal is policy, and policy is core's.
 #
-# WHAT IT MUST NEVER NAME. No plane, no dialect, no transport. Its whole vocabulary is the hook
-# CONTRACT (`busbar-api`'s `RoutingPolicy` and its projections, `busbar-substrate::hooks::wire`) plus
-# the config leaf structs the operator wrote. A request reaches the gate as an `IrFacts` projection
-# and nothing else — that is what "protocol-blind" means here, and it is checkable by reading this
-# manifest: there is no `busbar-llm`, no `busbar-mcp`, no `busbar-a2a`, no `busbar-transport-*` in it,
-# and there is no `busbar-core` either.
+# WHAT IT MUST NEVER NAME. No plane, no dialect, no transport — and no plugin TOOLING either. Its
+# whole vocabulary is the hook CONTRACT (`busbar-contract`'s `RoutingPolicy` and its projections,
+# `busbar-substrate::hooks::wire`) plus the config leaf structs the operator wrote. A request reaches
+# the gate as an `IrFacts` projection and nothing else — that is what "protocol-blind" means here,
+# and it is checkable by reading this manifest: no plane crate, no dialect crate, no transport
+# crate, no loader, no signer and no ranking plugin is in it, and neither is the legacy crate this
+# engine was carved out of. A plugin is reached through the engine's own port (`seat::HookSeat`),
+# which the composition binds a registry behind.
 #
 # DEPENDENCIES, each with its reason.
-#   busbar-api          the hook contract itself: `RoutingPolicy`, `RoutingRequest`, `Candidate`,
-#                       `RoutingDecision`, the prompt/identity projections, the signal catalog.
+#   busbar-contract     the hook contract itself: `RoutingPolicy`, `RoutingRequest`, `Candidate`,
+#                       `RoutingDecision`, the prompt/identity projections, the signal catalog, the
+#                       governance key's posture (`KeyFacts`) and the `Operation` axis the gate reads.
 #   busbar-substrate    the config leaf structs the engine reads (`HookCfg`/`PoolCfg`/the access and
 #                       terminal enums), the neutral hook wire projection, the `IrFacts` projection a
 #                       gate screens, the per-session substrate the incremental screen cache is a
 #                       tenant of, the secret resolver, and the installed-limits slot.
-#   busbar-plugin-loader the hybrid-ABI registry a `kind: hook` plugin is resolved out of, and the
-#                       shared hook projectors.
-#   tokio               the resolvers offload a `dlopen` onto the blocking pool with a deadline; the
-#                       scrape refreshes stale hooks off the request path.
+#   tokio               the resolvers offload a plugin open onto the blocking pool with a deadline;
+#                       the scrape refreshes stale hooks off the request path.
 #   axum                the one `IntoResponse` the hook-facing reply normalizer builds.
 [package]
 name = "busbar-core-policy"
@@ -47,20 +48,8 @@ name = "busbar_core_policy"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-api = { path = "../api" }
+busbar-contract = { path = "../busbar-contract" }
 busbar-substrate = { path = "../busbar-substrate" }
-busbar-substrate-values = { path = "../busbar-substrate-values" }
-busbar-plugin-loader = { path = "../plugin-loader" }
-# The MANIFEST's declared needs (`NeedLevel`) — what a hook's author said it needs to see. The engine
-# intersects that declaration with what the operator granted; both halves have to be nameable here or
-# the intersection would be computed somewhere that cannot see one of them.
-busbar-plugin-sign = { path = "../plugin-sign" }
-# THE BUILT-IN RANKING HOOKS, AND THEY STAY A PLUGIN. `native_policy` hands back a `RoutingPolicy`
-# — the same contract a dlopened hook is reached through — so the engine calls it the same way and
-# knows nothing else about it. Optional and feature-gated exactly as it was in busbar-core, so the
-# deletion test (`--no-default-features`) still compiles the ranking strategies out and a
-# `route: cheapest` is still a boot-time config error rather than a silent SWRR.
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
@@ -69,8 +58,7 @@ tracing = { workspace = true }
 axum = { workspace = true }
 
 [features]
-default = ["hooks-ranking"]
-hooks-ranking = ["dep:busbar-hooks-ranking"]
+default = []
 # The readiness signal a battery in ANOTHER crate waits on (`await_transport_published`, and the two
 # single-flight predicates under it). It is a real observable — "has the load actually published" —
 # rather than a wall clock bet on the dynamic linker, which is why it has to be reachable at all;
@@ -78,12 +66,10 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 test-support = []
 
 [dev-dependencies]
-# The engine's battery dlopens a REAL hook plugin rather than a mock, because "the plugin answered
-# this" is the only claim worth making about an ABI. `hook-test-plugin` is that plugin; the fixture
-# packages it exactly as the shipped packer does.
-busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
-busbar-plugin-sign = { path = "../plugin-sign" }
-busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
+# The dlopen battery — the one that packages a REAL hook plugin and asserts on what it answered —
+# lives in busbar-core beside the seat adapter, because "the plugin answered this" is a claim about
+# adapter + loader + engine together. What stays here is engine-only: the gate, the wire parsers,
+# the scrape and the limits assertion, none of which opens a plugin.
 # The relocated limits assertion takes `busbar_substrate::config::limits::LIMITS_TEST_LOCK`, which
 # the substrate gates behind `cfg(any(test, feature = "test-support"))`. Declared HERE rather than
 # leaned on: without this edge the crate's own `cargo test -p busbar-core-policy` does not compile,
