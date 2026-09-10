@@ -237,7 +237,13 @@ fn gate(args: &[String]) -> i32 {
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
         // reader can diff rather than as a message on stderr.
-        if reg.name == "kind-isolation" {
+        //
+        // `inventory-coverage --write` is the same shape and for the same reason: it regenerates
+        // qa/inventory-coverage.json, qa/inventory-gaps.json and the behaviour-doc coverage matrix,
+        // and REFUSES — as rows, not as stderr — when a family has dropped below its recorded floor
+        // or when the regeneration would ADD an id to the gaps file that is not accepted by name.
+        // A refusal a reader can diff is the whole point of routing it through the ledger.
+        if matches!(reg.name, "kind-isolation" | "inventory-coverage") {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);

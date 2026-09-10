@@ -149,6 +149,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate field-inventory",
     "cargo xtask gate inventory-ref --selftest",
     "cargo xtask gate inventory-ref",
+    "cargo xtask gate inventory-coverage --selftest",
+    "cargo xtask gate inventory-coverage",
     "cargo xtask gate no-deferral --selftest",
     "cargo xtask gate no-deferral",
     "cargo xtask gate plane-purity --selftest",
