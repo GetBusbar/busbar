@@ -329,13 +329,25 @@ cells = "0"
 # one kind are two admissions and are refused.
 #
 # THE COLUMN THE TWO DIALECT CRATES OPENED, MEASURED. T0-F landed the mechanism and wrote the shape;
-# this is the row. `cells = "26"` is every OTHER crate's `<crate> × dialect` cell — the 28 in the
-# column less the two crates' own (openai's and responses's, which stay with their [[minted]]
-# rows) — and `edges = "15"` is the fourteen `<kind> -> dialect` classes plus `dialect -> plane`,
-# every one of them written below with its cite and its drain. The third and fourth dialect crates
-# add NOTHING to either number: each mints zero cells, and no class they open is new (root ->
-# dialect and dialect -> plane were the first crate's). That is measured, not assumed — the
-# kind-mint-count check refuses a row that says a number the branch does not mint.
+# this is the row.
+#
+# THE NUMBERS ARE WHAT THIS BRANCH MINTS, NOT HOW WIDE THE COLUMN IS. The base already carries the
+# dialect column — it was derived from the VENDOR NAME list before any dialect crate existed — so
+# what the first dialect crates mint is only the rows the base has NO row for at all. Everything
+# else in the column is an ordinary cell that ROSE, and rises are `ceiling-rose`'s business and are
+# declared in qa/construction.toml, not this row's.
+#
+# `cells = "6"` is exactly that: busbar-plane-admin, busbar-plugin-testkit, busbar-timing,
+# busbar-transport-grpc, busbar-transport-http and busbar-unit-egress each grow a `<crate> ×
+# dialect` cell the base has none of. The dialect crates' OWN cells stay with their [[minted]] rows,
+# and the twenty crates whose dialect cell merely rose are declared raises.
+#
+# `edges = "3"` is `control -> dialect`, `timing -> dialect` and `dialect -> plane` — the three
+# classes the base's thirteen `<kind> -> dialect` rows do not already carry.
+#
+# The third and fourth dialect crates add NOTHING to either number: each mints zero cells, and no
+# class they open is new. That is measured, not assumed — the kind-mint-count check refuses a row
+# that says a number the branch does not mint.
 [[minted_kind]]
 kind = "dialect"
 commit = "ce1c2d168"
