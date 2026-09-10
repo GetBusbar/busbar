@@ -1175,7 +1175,7 @@ async fn admitted(
         // set by `(plane_key, container)` and runs the same decision. The presence check keeps the whole
         // block zero-cost when nothing is attached.
         //
-        // THE A2A SUBMISSION AS THE INVOKE IR: the target is the METHOD and the arguments are `params` —
+        // THE A2A SUBMISSION AS THE INVOKE IR: the subject is the METHOD and the arguments are `params` —
         // which is where a message's `parts` live, so the prose a screening gate reads is inside the
         // projection. Serialized ONCE for the seam; byte-safe because serde_json's `preserve_order` is
         // OFF (a `Value` object is a sorted-stable `BTreeMap`), so the round-trip preserves the gate's
@@ -1185,7 +1185,13 @@ async fn admitted(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let args_json = serde_json::to_vec(&params).unwrap_or_default();
-        let tool = super::local::method_of(&envelope).to_string();
+        // THIS PLANE'S SUBJECT: the METHOD — which skill of the agent is being asked for — which is
+        // what the agent plane's own face names (`Plane::hook_subject` points at `/method`). The
+        // VALUE is the same string this arm has always sent; what it is no longer is a task
+        // operation spelled into a neighbouring plane's word for a callable. This plane has no
+        // tools, and until the seam had a subject there was nowhere else to put the one fact a
+        // gate here decides on.
+        let method = super::local::method_of(&envelope).to_string();
         // The request id is minted AT THE SITE (not in the host fn), as before.
         let request_id = engine_host.next_request_id();
         let agent = admitted.dispatch.agent_id.clone();
@@ -1203,8 +1209,10 @@ async fn admitted(
                 crate::PLANE_DECL.key,
                 &agent,
                 request_id,
-                &tool,
-                &args_json,
+                busbar_substrate::plane_host::SubjectFacts {
+                    subject: Some(&method),
+                    arguments: Some(&args_json),
+                },
                 Some((key_pair.0.as_str(), key_pair.1.as_str())),
                 (!sid.is_empty()).then_some(sid.as_str()),
             )
@@ -1277,7 +1285,8 @@ async fn admitted(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let args_json = serde_json::to_vec(&params).unwrap_or_default();
-        let tool = super::local::method_of(&envelope).to_string();
+        // The gate's subject, unchanged: the same method, so both halves screen the same request.
+        let method = super::local::method_of(&envelope).to_string();
         let request_id = engine_host.next_request_id();
         let agent = admitted.dispatch.agent_id.clone();
         let key_pair = (key.id.clone(), key.name.clone());
@@ -1288,8 +1297,10 @@ async fn admitted(
                 crate::PLANE_DECL.key,
                 &agent,
                 request_id,
-                &tool,
-                &args_json,
+                busbar_substrate::plane_host::SubjectFacts {
+                    subject: Some(&method),
+                    arguments: Some(&args_json),
+                },
                 Some((key_pair.0.as_str(), key_pair.1.as_str())),
                 (!sid.is_empty()).then_some(sid.as_str()),
             )

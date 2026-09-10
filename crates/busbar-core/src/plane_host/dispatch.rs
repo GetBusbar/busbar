@@ -343,6 +343,9 @@ fn run_content_gate(
         container: "",
         ingress_protocol: "plane",
         request_id: 0,
+        // A stream chunk is not an operation and names nothing; `None` is the honest answer and the
+        // one the shipped EMPTY gate set never reads (see this fn's note).
+        subject: None,
         key: None,
         incremental: None,
     };
@@ -407,7 +410,7 @@ unsafe fn write_gate_verdict(
 /// WIRED `gate_decide` → fire the operator's REQUEST-ADMISSION hook gates over the REAL
 /// [`crate::hooks::gate::decide`]. The host re-selects the resolved gate set by `(plane_key, container)`
 /// — it owns the `ResolvedPolicy` set the plane never holds — reconstructs the SAME `InvokeReq`-shaped
-/// facts the in-process firing site builds (`tool` + the caller's `arguments` JSON), threads the caller
+/// facts the in-process firing site builds (the plane's subject + the caller's `arguments` JSON), threads the caller
 /// key identity and the incremental-scan session substrate (subsumed host-side: the host reads its own
 /// `session_store` + clock), and runs the async gate on a fresh current-thread runtime — the same
 /// async→sync bridge [`gate_scan`]'s `run_content_gate` uses.
@@ -445,7 +448,24 @@ pub(crate) extern "C-unwind" fn gate_decide(
         let app = state.app;
         // SAFETY: each borrowed `(ptr, len)` is a live range for the call (ABI discipline).
         let container = unsafe { borrow_str(s.container_ptr, s.container_len) }.unwrap_or("");
-        let tool = unsafe { borrow_str(s.method_ptr, s.method_len) }.unwrap_or("");
+        // THE SUBJECT: the firing plane's own answer to what this gate is judging. Read from the
+        // minor-22 tail when the caller's advertised `size` proves it wrote one, else from
+        // `method_ptr` — the pre-22 spelling of the same fact, which is what an unrebuilt peer
+        // still writes. A NULL pointer on either is "this operation names no target", which is a
+        // different answer from an empty name and is carried through as `None`.
+        //
+        // SAFETY (the macro's obligation): `subject` addresses at least `s.size` live bytes laid
+        // out as the leading prefix of `GateSubjectRef` (ABI discipline).
+        let subject_name = match (
+            busbar_plugin::read_sized_field!(subject, s.size, GateSubjectRef, subject_ptr),
+            busbar_plugin::read_sized_field!(subject, s.size, GateSubjectRef, subject_len),
+        ) {
+            // SAFETY: the borrowed `(ptr, len)` is a live range for the call (ABI discipline).
+            (Some(ptr), Some(len)) => unsafe { borrow_str(ptr, len) },
+            // SAFETY: as above, for the pre-22 spelling.
+            _ => unsafe { borrow_str(s.method_ptr, s.method_len) },
+        };
+        let tool = subject_name.unwrap_or("");
         // SAFETY: as above.
         let args = unsafe { borrow_bytes(s.args_ptr, s.args_len) };
         // Resolve the opaque ABI plane-key (a registration index) back to the plane's stable decl key
@@ -510,11 +530,12 @@ pub(crate) extern "C-unwind" fn gate_decide(
         // The gate reads the key's POSTURE (`KeyFacts`: id, name, scopes, liveness) — the contract's
         // shape of a resolved key, never the directory record itself.
         let key_facts = key.as_ref().map(key_facts);
-        let subject = crate::hooks::gate::GateSubject {
+        let gate_subject = crate::hooks::gate::GateSubject {
             facts: &facts,
             container,
             ingress_protocol: ingress,
             request_id: s.request_id,
+            subject: subject_name,
             key: key_facts.as_ref(),
             incremental,
         };
@@ -524,7 +545,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
             .enable_all()
             .build()
         {
-            Ok(rt) => rt.block_on(crate::hooks::gate::decide(gates, &subject)),
+            Ok(rt) => rt.block_on(crate::hooks::gate::decide(gates, &gate_subject)),
             Err(_) => return StatusClass::Fault,
         };
         match verdict {

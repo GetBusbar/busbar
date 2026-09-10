@@ -123,6 +123,7 @@ async fn a_valid_reject_with_a_wrong_typed_sibling_rejects_under_on_error_reject
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -141,6 +142,7 @@ async fn a_totally_malformed_reply_applies_on_error() {
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -181,6 +183,7 @@ async fn a_malformed_reply_honors_a_non_reject_on_error() {
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -201,6 +204,7 @@ async fn an_empty_reply_still_abstains_even_under_on_error_reject() {
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -245,6 +249,7 @@ async fn a_well_formed_reject_still_rejects() {
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -283,6 +288,101 @@ fn tool_call() -> InvokeReq {
     }
 }
 
+/// A gate that records the SUBJECT the projection named — the one member of `RoutingRequest` the
+/// firing plane, rather than this module, answers.
+struct SubjectSpy {
+    seen: Mutex<Option<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for SubjectSpy {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        _candidates: &[Candidate<'_>],
+        _ctx: &RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> PolicyResult {
+        *self.seen.lock().unwrap() = Some(req.requested_model.map(str::to_string));
+        Ok(RoutingDecision::Abstain)
+    }
+
+    fn name(&self) -> &'static str {
+        "subject-spy"
+    }
+}
+
+/// Fire one gate over `subject` and hand back the subject its projection named.
+async fn subject_seen(subject: Option<&str>) -> Option<String> {
+    let facts = tool_call();
+    let spy = Arc::new(SubjectSpy {
+        seen: Mutex::new(None),
+    });
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    let verdict = decide(
+        &gates,
+        &GateSubject {
+            facts: &facts,
+            container: "planner",
+            // EMPTY, deliberately: the dialect label is DATA no code in this module compares (see
+            // `GateSubject::ingress_protocol`), and spelling a plane's name here would be this
+            // crate learning one — the very coupling the subject face exists to end.
+            ingress_protocol: "",
+            request_id: 1,
+            subject,
+            key: None,
+            incremental: None,
+        },
+    )
+    .await;
+    assert!(matches!(verdict, GateVerdict::Proceed), "the spy abstains");
+    let seen = spy.seen.lock().unwrap().clone();
+    seen.expect("the gate ran")
+}
+
+/// THE SUBJECT IS THE PLANE'S, AND EVERY PLANE'S REACHES THE GATE.
+///
+/// This member was `None` for the whole life of this seam: the neutral gate had no vocabulary for
+/// *what is being asked for*, so the two planes that reach it here had to lend it one. The agent
+/// plane spelled its task operation into the tool-shaped argument the seam took, and the duplex
+/// plane spelled the literal `"session.open"` — a method name that protocol has never had — into the
+/// same slot, for a request whose real subject is which of five modes the session opens in.
+///
+/// So the two spellings this asserts are the two that were WRONG before the face existed, and the
+/// third arm is the one a plane must be able to give: `None`, which is a different answer from an
+/// empty name and must not become one on the way through.
+///
+/// It is a projection assertion and not a wire one BECAUSE the wire does not move: `requested_model`
+/// is not a `HookReqProjection` member, so `an_invocation_is_projected_whole` below — which
+/// compares the WHOLE document — is the byte-identity proof standing beside this one.
+#[tokio::test]
+async fn the_gate_is_told_the_subject_its_own_plane_named() {
+    assert_eq!(
+        subject_seen(Some("message/send")).await.as_deref(),
+        Some("message/send"),
+        "the agent plane's subject is its METHOD — which skill of the agent is being asked for — and \
+         it reaches the gate as itself, not as a tool name it borrowed to be governed at all"
+    );
+    assert_eq!(
+        subject_seen(Some("telephony")).await.as_deref(),
+        Some("telephony"),
+        "the duplex plane's subject is the session MODE, resolved from the operator's own routes \
+         before a frame is read. It used to be the literal `session.open`, which told a gate only \
+         what the container already told it"
+    );
+    assert_eq!(
+        subject_seen(None).await,
+        None,
+        "a plane that answers `None` names no target, and the seam must carry that through rather \
+         than flatten it to an empty name a gate would read as a subject it had been shown"
+    );
+}
+
 fn key() -> busbar_contract::KeyFacts {
     busbar_contract::KeyFacts {
         id: "k-1".to_string(),
@@ -319,6 +419,7 @@ async fn an_invocation_is_projected_whole() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 7,
+            subject: Some("read_file"),
             key: Some(&k),
             incremental: None,
         },
@@ -382,6 +483,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 1,
+            subject: Some("read_file"),
             key: Some(&key()),
             incremental: None,
         },
@@ -431,6 +533,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 container: "filesystem",
                 ingress_protocol: "mcp",
                 request_id: 1,
+                subject: Some("read_file"),
                 key: None,
                 incremental: None,
             },
@@ -474,6 +577,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
         container: "filesystem",
         ingress_protocol: "mcp",
         request_id: 1,
+        subject: Some("read_file"),
         key: None,
         incremental: None,
     };
@@ -525,6 +629,7 @@ async fn no_attached_gate_builds_no_projection() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 1,
+            subject: Some("read_file"),
             key: None,
             incremental: None,
         },
@@ -569,6 +674,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 1,
+            subject: Some("read_file"),
             key: None,
             incremental: Some(IncrementalScan {
                 store: &store,
@@ -602,6 +708,7 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 2,
+            subject: Some("read_file"),
             key: None,
             incremental: Some(IncrementalScan {
                 store: &store,
@@ -646,6 +753,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 1,
+            subject: Some("read_file"),
             key: None,
             incremental: Some(IncrementalScan {
                 store: &store,
@@ -675,6 +783,7 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             container: "filesystem",
             ingress_protocol: "mcp",
             request_id: 2,
+            subject: Some("read_file"),
             key: None,
             incremental: Some(IncrementalScan {
                 store: &store,
@@ -742,6 +851,7 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
                 container: "filesystem",
                 ingress_protocol: "mcp",
                 request_id: 1,
+                subject: Some("read_file"),
                 key: None,
                 incremental: Some(IncrementalScan {
                     store,

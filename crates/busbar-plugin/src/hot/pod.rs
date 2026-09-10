@@ -18,7 +18,11 @@ use std::os::raw::c_void;
 /// 1.6.0 M1: 2→3 for the append-only `Usage` keyed-unit tail (`units_ptr`/`units_len`), paired with
 /// `ABI_MINOR` 19→20. A pre-minor-20 sender advertises the shorter `size`; the sized-struct guard
 /// reads the tail only when `size` proves it was written, so back-compat holds.
-pub const POD_VERSION: u16 = 3;
+///
+/// 1.6.0 hook subject: 3→4 for the append-only [`GateSubjectRef`] subject tail
+/// (`subject_ptr`/`subject_len`), paired with `ABI_MINOR` 21→22. Same guard, same fallback: a
+/// pre-4 sender advertises the shorter `size` and the host reads `method_ptr` instead.
+pub const POD_VERSION: u16 = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Handle-id newtypes — opaque host-side references a plane holds. `#[repr(transparent)]` over u64
@@ -1933,8 +1937,9 @@ pub struct IdentityAdmitted {
 
 /// A REQUEST-ADMISSION gate subject — the input to the `gate_decide` slot, passed BY POINTER. It carries
 /// the neutral projection of ONE request the operator's hook gate ([`crate::hot::host::GateDecideFn`])
-/// screens: which plane it arrived on, which container it is addressed to, the invoked tool + its
-/// arguments (as the caller's JSON bytes), the caller's resolved key identity, and the session id — no
+/// screens: which plane it arrived on, which container it is addressed to, the SUBJECT that plane
+/// says the gate is deciding about + its argument payload (as the caller's JSON bytes), the
+/// caller's resolved key identity, and the session id — no
 /// busbar secret, no gate policy (the host owns the resolved gate set and re-selects it by
 /// `(plane_key, container)`). The host reconstructs the same `InvokeReq`-shaped facts the in-process
 /// firing site builds and runs the SAME gate decision, so a plane admits a request through its hook gates
@@ -1971,9 +1976,12 @@ pub struct GateSubjectRef {
     pub container_ptr: *const u8,
     /// Length of the borrowed container range.
     pub container_len: usize,
-    /// Borrowed pointer to the invoked METHOD name (the operation the caller named — an MCP
-    /// `InvokeReq::tool`, an A2A skill/method, etc.). Named for the neutral taxonomy (the invoked
-    /// method), never one protocol's word for it.
+    /// SUPERSEDED by the `subject_ptr` tail (minor-22), and frozen where it is because this ABI is
+    /// append-only: the pre-22 spelling of the same fact, carrying the invoked method name. The
+    /// host reads it ONLY when the tail is absent, and a caller that writes the tail writes the
+    /// identical bytes here, so an unrebuilt peer on either side of the seam gates unchanged. It
+    /// was a neutral WORD over a borrowed FACT — the plane never got to say what the gate was
+    /// deciding about, so a plane with no methods had to invent one; `subject_ptr` is the fact.
     pub method_ptr: *const u8,
     /// Length of the borrowed method range.
     pub method_len: usize,
@@ -1995,6 +2003,15 @@ pub struct GateSubjectRef {
     pub session_id_ptr: *const u8,
     /// Length of the borrowed session-id range.
     pub session_id_len: usize,
+    /// (minor-22) Borrowed pointer to the SUBJECT's own name — the plane's answer to what this gate
+    /// is being asked to judge, under whatever noun that plane's dialect gives it (a tool, a skill,
+    /// a model, a session mode), read from the bytes that plane decoded or from the operator
+    /// configuration that settled it. A NULL pointer means the operation names no subject, which is
+    /// a different answer from an empty one and is what the host writes it as.
+    pub subject_ptr: *const u8,
+    /// (minor-22) Length of the borrowed subject range (`0` with a non-null pointer is an empty
+    /// name, not an absent one).
+    pub subject_len: usize,
 }
 
 /// The out-param header the `gate_decide` slot writes: the request gate's verdict — PROCEED, or a

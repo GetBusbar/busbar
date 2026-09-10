@@ -1566,8 +1566,15 @@ async fn tools_call(
                 crate::PLANE_DECL.key,
                 &server,
                 request_id,
-                &tool,
-                &args_json,
+                // THIS PLANE'S SUBJECT: the tool the caller named, as this plane resolved it —
+                // the same string that used to ride the seam's `tool` argument, so the gate is
+                // told byte-for-byte what it is told today. What changed is that the seam no
+                // longer spells a callable in its own signature, and a plane without callables no
+                // longer has to pretend it has one to be governed.
+                busbar_substrate::plane_host::SubjectFacts {
+                    subject: Some(&tool),
+                    arguments: Some(&args_json),
+                },
                 key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
                 (!sid.is_empty()).then_some(sid.as_str()),
             )
@@ -1651,8 +1658,12 @@ async fn tools_call(
                 crate::PLANE_DECL.key,
                 &server,
                 request_id,
-                &tool,
-                &args_json,
+                // The gate's subject, unchanged — the transform half must be told the same thing
+                // about the same request the gate was told, or the two halves screen two payloads.
+                busbar_substrate::plane_host::SubjectFacts {
+                    subject: Some(&tool),
+                    arguments: Some(&args_json),
+                },
                 key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
                 (!sid.is_empty()).then_some(sid.as_str()),
             )

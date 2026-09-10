@@ -2201,10 +2201,15 @@ crate = "busbar-plugin"
 kind = "legacy"
 count = "2"
 
+# -2: the request-admission POD stopped naming two planes to describe ONE member. `method_ptr`'s
+# doc said "an MCP `InvokeReq::tool`, an A2A skill/method, etc." because the member WAS those
+# planes' word for a callable and the doc had to enumerate who was borrowing it; the minor-22
+# `subject_ptr` beside it is the plane's own answer, so the ABI names no plane to say what it
+# carries.
 [[cell]]
 crate = "busbar-plugin"
 kind = "plane"
-count = "81"
+count = "79"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2971,10 +2976,14 @@ crate = "busbar-voice"
 kind = "legacy"
 count = "11"
 
+# -1: the duplex plane stopped spelling a neighbouring plane's noun. `SESSION_OPEN_METHOD` — the
+# literal `"session.open"`, a method name this protocol has never had — existed only to fill the
+# tool-shaped argument the neutral admission seam took. The seam takes a subject now, and this plane
+# names the session MODE it actually opens in.
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+count = "810"
 
 [[cell]]
 crate = "busbar-voice"

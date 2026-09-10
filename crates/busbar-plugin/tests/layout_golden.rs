@@ -363,7 +363,11 @@ fn compute_layout() -> String {
             key_name_ptr,
             key_name_len,
             session_id_ptr,
-            session_id_len
+            session_id_len,
+            // (minor-22) The append-only subject tail. Recorded so the append stays an APPEND: it
+            // sits past every frozen offset above it, and the golden is what says so.
+            subject_ptr,
+            subject_len
         ]
     );
     record!(

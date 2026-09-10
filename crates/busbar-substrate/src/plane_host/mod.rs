@@ -1167,6 +1167,14 @@ pub trait IdentityHost: Send + Sync {
 /// The ADMISSION slice: the request-admission gauntlet seams — the gate decision + presence pre-filter,
 /// the governance admit-reason, the destination guard, the budget-admission door, the audience-bound
 /// mount read, and the post-admission/not-charged finishes. Split off `EngineHost` as a supertrait.
+///
+/// THE SUBJECT TYPE IS PART OF THIS FACE, so it is named from here: a seam whose parameter type a
+/// caller cannot spell is a seam a caller cannot call. It is the contract's
+/// ([`busbar_contract::SubjectFacts`]) because a plane's answer about its own request belongs beside
+/// the question the contract asks (`Plane::hook_subject`); this is the same type, re-exported at the
+/// seam that takes it, not a second one.
+pub use busbar_contract::SubjectFacts;
+
 pub trait AdmissionHost: Send + Sync {
     /// Fire the operator's REQUEST-ADMISSION hook gates over the host `gate_decide` seam and
     /// reconstruct the [`GateOutcome`]. Identical to `busbar_core::plane_host::gate_decide_over`:
@@ -1176,14 +1184,20 @@ pub trait AdmissionHost: Send + Sync {
     /// `plane_key` is the opaque registry key (the plane's stable decl key) the host resolves the
     /// gate set and the `ingress_protocol` label from. `key` is the caller's resolved `(id, name)`;
     /// `session_id` is the caller's session, `Some` only when non-empty.
+    ///
+    /// `subject` is THIS PLANE'S ANSWER to what the gate is judging — the name of the thing being
+    /// asked for and the argument payload under it, read from the bytes this plane decoded (see
+    /// [`busbar_contract::SubjectFacts`]). It used to be `tool: &str` + `args_json: &[u8]`: one
+    /// plane's word for a callable and one for its arguments, on a seam three other planes reach,
+    /// so an agent submission spelled a task operation into `tool` and a duplex open spelled a
+    /// literal method name into it, neither having callables at all. No plane noun rides here now.
     #[allow(clippy::too_many_arguments)]
     fn gate_decide(
         &self,
         plane_key: &str,
         container: &str,
         request_id: u64,
-        tool: &str,
-        args_json: &[u8],
+        subject: busbar_contract::SubjectFacts<'_>,
         key: Option<(&str, &str)>,
         session_id: Option<&str>,
     ) -> GateOutcome;
@@ -1207,12 +1221,12 @@ pub trait AdmissionHost: Send + Sync {
     /// host `transform_over` seam and reconstruct the [`TransformVerdict`] — the TAP/observe-transform
     /// twin of [`gate_decide`](Self::gate_decide). The host re-selects the rewrite chain by
     /// `(plane_key, container)` (the Seam-B inversion: the plane body names no core hook symbol), builds
-    /// the SAME `InvokeReq` projection the gate builds from `(tool, args_json)`, runs each hook's
+    /// the SAME projection the gate builds from the plane's `subject`, runs each hook's
     /// `transform` in priority order (each seeing the prior's output — a true transform chain), and
     /// returns the rewritten payload or a reject. Drives the ASYNC hooks on a fresh runtime, so it MUST
     /// be called from a BLOCKING thread (`spawn_blocking`), exactly like `gate_decide`.
     ///
-    /// `plane_key`/`container`/`request_id`/`tool`/`args_json`/`key`/`session_id` carry the identical
+    /// `plane_key`/`container`/`request_id`/`subject`/`key`/`session_id` carry the identical
     /// meaning they do on [`gate_decide`](Self::gate_decide).
     #[allow(clippy::too_many_arguments)]
     fn transform_over(
@@ -1220,8 +1234,7 @@ pub trait AdmissionHost: Send + Sync {
         plane_key: &str,
         container: &str,
         request_id: u64,
-        tool: &str,
-        args_json: &[u8],
+        subject: busbar_contract::SubjectFacts<'_>,
         key: Option<(&str, &str)>,
         session_id: Option<&str>,
     ) -> TransformVerdict;

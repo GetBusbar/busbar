@@ -176,6 +176,31 @@ pub struct HookSubject {
     pub argument_span: Option<crate::bounded::Span>,
 }
 
+/// [`HookSubject`] READ — the plane's two locators already resolved, which is the form the neutral
+/// firing seam carries.
+///
+/// A locator is the honest way for a plane to ANSWER, because a locator cannot disagree with the
+/// bytes it points into. It is not the way a seam can be CALLED: a firing site holds no unit to
+/// resolve one against, and on two of the four planes that fire this seam the subject is not in the
+/// arriving bytes at all — a tool call's name is resolved against the operator's server table
+/// before the gate sees it, and a duplex open's mode is operator configuration that was settled
+/// before a frame arrived. So the plane reads its own answer, in its own bytes, and hands the seam
+/// the two values, which is the same relationship [`crate::unit::AdmitFacts::lane_locator`] has to
+/// the lane name the door ends up charging.
+///
+/// Gathered into one type rather than passed as a pair, for the reason every other bundle on this
+/// path is gathered: two adjacent parameters of a request that a caller can silently transpose is
+/// a gate that screens the arguments and admits on the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SubjectFacts<'a> {
+    /// The subject's own NAME — [`HookSubject::subject_locator`] read. `None` says this operation
+    /// names no target, which is a fact a gate may act on; it is never a stand-in for one.
+    pub subject: Option<&'a str>,
+    /// The subject's ARGUMENT PAYLOAD — [`HookSubject::argument_span`] read. `None` says the
+    /// operation carries nothing to screen, which a gate must not read as screened-clean-empty.
+    pub arguments: Option<&'a [u8]>,
+}
+
 /// One routable member, with the metadata + live signals a policy ranks on. Projected from the
 /// engine's lane table + the pool member config + the store. `idx` is the stable handle the
 /// failover loop already speaks.

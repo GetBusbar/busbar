@@ -73,11 +73,6 @@ const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 /// cell) counts on its own `busbar_upstream_attempts_total` family in `topology::dial_provider`.
 const FRONT_DOOR_POOL: &str = "voice-server";
 
-/// The session-open method label the hook gate/tap projection carries — the single operation a voice
-/// front-door request performs. Bounded (one value), so it is safe as the hook `tool` slot the
-/// operator's gate reads.
-const SESSION_OPEN_METHOD: &str = "session.open";
-
 /// The coarse over-estimate (nanodollars) a session debits up front at reserve. It is an audit tap,
 /// not a ceiling — the ceiling is the presenting key's own remaining budget, read per session.
 const SESSION_ESTIMATE_NANOS: u64 = 1_000;
@@ -630,6 +625,28 @@ pub(crate) enum Ingress {
     Gemini,
 }
 
+impl Ingress {
+    /// THE SESSION MODE — this plane's answer to what a hook gate is deciding about.
+    ///
+    /// A duplex open has no callable and no target in the arriving bytes: which mode a session opens
+    /// in is settled by which route the operator mounted, before a frame is read. That is why the
+    /// plane's `Plane::hook_subject` answers that it HAS a subject and that no locator into the
+    /// request reaches it, and it is why the value is supplied HERE, at the firing site that
+    /// resolved it — the same relationship, and the same reason, the `container` argument beside it
+    /// has already had.
+    ///
+    /// Bounded (five values, one per mounted route), so it is safe as a hook-visible label.
+    fn mode(self) -> &'static str {
+        match self {
+            Ingress::Mint => "mint",
+            Ingress::Sdp => "sdp",
+            Ingress::Sideband => "sideband",
+            Ingress::Telephony => "telephony",
+            Ingress::Gemini => "gemini",
+        }
+    }
+}
+
 /// The neutral inputs one governed session-open reads — bundled so the choke point takes ONE argument
 /// and a test constructs the SAME shape the route handler does. `host` is the owned host seam (cloned
 /// per blocking hook hop), `provider` the configured realtime endpoint (`None` ⇒ the mint / SDP passes
@@ -727,12 +744,13 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     };
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, ingress, &session_cfg).await
+    {
         return finish(*refused);
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
-    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, key, &call_id, now, ingress, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return finish(*refused),
@@ -802,11 +820,13 @@ fn finish(mut resp: axum::response::Response) -> axum::response::Response {
 /// The hooks-GATE leg (`host.gate_decide`) over the session-open params. `Ok(())` proceeds; `Err` is a
 /// finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the `gate_attached` presence
 /// pre-filter short-circuits before any serialize or blocking hop.
+#[allow(clippy::too_many_arguments)]
 async fn hook_gate(
     host: &Arc<dyn EngineHost>,
     key: Option<(String, String)>,
     session_id: &str,
     now: u64,
+    ingress: Ingress,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
     if !host.gate_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
@@ -824,8 +844,16 @@ async fn hook_gate(
             crate::PLANE_DECL.key,
             GATE_CONTAINER,
             now,
-            SESSION_OPEN_METHOD,
-            &args_json,
+            // THIS PLANE'S SUBJECT: the session MODE being opened. It used to be the literal
+            // `"session.open"` — a method name this protocol has never had, written into a
+            // neighbouring plane's word for a callable because the seam had no other slot. A gate
+            // told `"session.open"` learned only that a session was opening, which it already knew
+            // from the container; told the mode, it learns which of the five it is, which is the
+            // one fact an operator screening this door can act on.
+            busbar_substrate::plane_host::SubjectFacts {
+                subject: Some(ingress.mode()),
+                arguments: Some(&args_json),
+            },
             key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
             (!sid.is_empty()).then_some(sid.as_str()),
         )
@@ -847,11 +875,13 @@ async fn hook_gate(
 /// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
 /// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
 /// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a rewrite-gate rejection.
+#[allow(clippy::too_many_arguments)]
 async fn hook_tap(
     host: &Arc<dyn EngineHost>,
     key: Option<(String, String)>,
     session_id: &str,
     now: u64,
+    ingress: Ingress,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
     if !host.tap_attached(crate::PLANE_DECL.key, GATE_CONTAINER) {
@@ -865,8 +895,11 @@ async fn hook_tap(
             crate::PLANE_DECL.key,
             GATE_CONTAINER,
             now,
-            SESSION_OPEN_METHOD,
-            &args_json,
+            // The gate's subject, unchanged: the same mode, so both halves screen the same open.
+            busbar_substrate::plane_host::SubjectFacts {
+                subject: Some(ingress.mode()),
+                arguments: Some(&args_json),
+            },
             key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
             (!sid.is_empty()).then_some(sid.as_str()),
         )
@@ -1320,12 +1353,13 @@ where
     // gap where telephony (which has no preceding `ek_` mint pass) reached the media leg screened by
     // nothing but the destination gauntlet; both WS legs now honor the operator gate exactly as the
     // one-shot mint/SDP passes do in `open_governed`.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, ingress, &session_cfg).await
+    {
         return *refused;
     }
     // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
     // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
-    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, key, &call_id, now, ingress, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return *refused,

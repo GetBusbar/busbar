@@ -76,7 +76,14 @@ pub const ABI_MAJOR: u32 = 1;
 /// 20→21 (1.6.0 structured error seam): the append-only `error` field on the cold lane's
 /// `SecretResponse::Error` and the optional `busbar_catalog` symbol. Neither is read by an older
 /// peer; `check_preamble` still accepts an older minor.
-pub const ABI_MINOR: u32 = 21;
+///
+/// 21→22 (1.6.0 hook subject): the append-only `hot::GateSubjectRef` subject tail
+/// (`subject_ptr`/`subject_len`) — the plane's OWN answer to what a gate is deciding about, which
+/// the neutral request-admission seam used to be handed one plane's word for. Paired with
+/// `POD_VERSION` 3→4. An older caller advertises the shorter `size`, the host reads the tail only
+/// when `size` proves it was written, and falls back to `method_ptr` — the pre-22 spelling — so an
+/// unrebuilt peer gates exactly as it does today.
+pub const ABI_MINOR: u32 = 22;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

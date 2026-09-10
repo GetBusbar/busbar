@@ -71,7 +71,7 @@ pub use plane::{
 pub use hooks::{
     BudgetBucketState, CallerIdentity, Candidate, HookStatus, HookSubject, PolicyError,
     PolicyResult, PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
-    RoutingRequest, TransformOutcome,
+    RoutingRequest, SubjectFacts, TransformOutcome,
 };
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
 pub use signal::{Signal, SignalBag, SignalValue};

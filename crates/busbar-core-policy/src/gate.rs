@@ -94,6 +94,12 @@ pub struct GateSubject<'a> {
     pub container: &'a str,
     /// The dialect label, verbatim onto the wire. DATA: no code here compares it.
     pub ingress_protocol: &'a str,
+    /// WHAT IS BEING ASKED FOR, in the plane's own nouns — the answer to `Plane::hook_subject`,
+    /// read against the bytes that plane decoded. This module cannot derive it: `IrFacts` is the
+    /// family-blind view and a family has no opinion about which of its members is the target. The
+    /// firing site, which decoded the request, supplies it — the same relationship, and for the same
+    /// reason, that `container` above already has. `None` = this operation names no target.
+    pub subject: Option<&'a str>,
     /// The request-spine correlation id, so a hook can join this decision to the request's other
     /// records.
     pub request_id: u64,
@@ -349,7 +355,7 @@ fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> O
 /// must not merely have the content withheld from its wire, it must never have had it built, which
 /// is also what keeps the cost of a shape-only gate a shape-only cost.
 fn project<'a>(
-    subject: &'a GateSubject<'_>,
+    subject: &'a GateSubject<'a>,
     items: &'a ScreenedContent<'a>,
     send_prompt: bool,
     send_user: bool,
@@ -359,11 +365,13 @@ fn project<'a>(
         request_id: subject.request_id,
         pool: subject.container,
         ingress_protocol: subject.ingress_protocol,
-        // RESERVED on the shared wire (it is projected by no transport today), so this is carried
-        // for a future reader rather than claimed as a delivered signal. The target a hook can
-        // actually READ rides the content projection, as the label of the item that carries the
-        // arguments.
-        requested_model: None,
+        // THE PLANE'S OWN ANSWER, not a stand-in: whichever noun this dialect gives the thing being
+        // asked for — a tool, a skill, a model, a session mode — named by the plane that decoded the
+        // request. This member was `None` for the whole life of this seam, with a comment pointing a
+        // reader at the content projection's item label instead, which no wire has ever carried; the
+        // field is still RESERVED on the shared wire, so filling it moves no byte a hook can see and
+        // gives the value a home for the first time.
+        requested_model: subject.subject,
         message_count: shape.turn_count,
         tool_count: 0,
         has_tools: shape.has_tools,

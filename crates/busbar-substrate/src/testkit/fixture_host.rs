@@ -98,6 +98,7 @@ struct Inner {
     cells: BTreeMap<(String, usize), Cell>,
     gates: BTreeMap<(String, String), GateScript>,
     rewrites: BTreeMap<(String, String), RewriteScript>,
+    subjects: Vec<Option<String>>,
     ledger: BTreeMap<String, LedgerUsage>,
     leases: BTreeMap<u64, Lease>,
     slots: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
@@ -187,6 +188,15 @@ impl FixtureHost {
             .cells
             .get(&(pool.to_string(), lane))
             .map_or(BreakerState::Closed, |c| c.state)
+    }
+
+    /// Every SUBJECT a plane has named through the admission seams, in the order the gate and
+    /// transform legs saw them — what a hook would have been told this request was ASKING FOR.
+    /// `None` in the list is a plane answering that its operation names no target, which is a
+    /// different answer from an empty name.
+    #[must_use]
+    pub fn subjects_seen(&self) -> Vec<Option<String>> {
+        self.lock().subjects.clone()
     }
 
     /// What `key_id` has ledgered through the metering seams, or `None` if nothing ever landed.
@@ -621,18 +631,20 @@ impl AdmissionHost for FixtureHost {
         plane_key: &str,
         container: &str,
         _request_id: u64,
-        _tool: &str,
-        args_json: &[u8],
+        subject: busbar_contract::SubjectFacts<'_>,
         _key: Option<(&str, &str)>,
         _session_id: Option<&str>,
     ) -> GateOutcome {
-        let script = self
-            .lock()
-            .gates
-            .get(&(plane_key.to_string(), container.to_string()))
-            .cloned();
+        let script = {
+            let mut inner = self.lock();
+            inner.subjects.push(subject.subject.map(str::to_string));
+            inner
+                .gates
+                .get(&(plane_key.to_string(), container.to_string()))
+                .cloned()
+        };
         match script {
-            Some(s) => s(args_json),
+            Some(s) => s(subject.arguments.unwrap_or(&[])),
             None => GateOutcome::Proceed,
         }
     }
@@ -651,16 +663,19 @@ impl AdmissionHost for FixtureHost {
         plane_key: &str,
         container: &str,
         _request_id: u64,
-        _tool: &str,
-        args_json: &[u8],
+        subject: busbar_contract::SubjectFacts<'_>,
         _key: Option<(&str, &str)>,
         _session_id: Option<&str>,
     ) -> TransformVerdict {
-        let script = self
-            .lock()
-            .rewrites
-            .get(&(plane_key.to_string(), container.to_string()))
-            .cloned();
+        let args_json = subject.arguments.unwrap_or(&[]);
+        let script = {
+            let mut inner = self.lock();
+            inner.subjects.push(subject.subject.map(str::to_string));
+            inner
+                .rewrites
+                .get(&(plane_key.to_string(), container.to_string()))
+                .cloned()
+        };
         match script {
             Some(s) => s(args_json),
             None => TransformVerdict::Proceed {

@@ -1004,13 +1004,12 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
         plane_key: &str,
         container: &str,
         request_id: u64,
-        tool: &str,
-        args_json: &[u8],
+        subject: busbar_substrate::plane_host::SubjectFacts<'_>,
         key: Option<(&str, &str)>,
         session_id: Option<&str>,
     ) -> busbar_substrate::plane_host::GateOutcome {
         gate_decide_over(
-            &self.app, plane_key, container, request_id, tool, args_json, key, session_id,
+            &self.app, plane_key, container, request_id, subject, key, session_id,
         )
     }
 
@@ -1035,12 +1034,11 @@ impl busbar_substrate::plane_host::AdmissionHost for EngineHostImpl {
         plane_key: &str,
         container: &str,
         request_id: u64,
-        tool: &str,
-        args_json: &[u8],
+        subject: busbar_substrate::plane_host::SubjectFacts<'_>,
         _key: Option<(&str, &str)>,
         _session_id: Option<&str>,
     ) -> busbar_substrate::plane_host::TransformVerdict {
-        transform_over_over(&self.app, plane_key, container, request_id, tool, args_json)
+        transform_over_over(&self.app, plane_key, container, request_id, subject)
     }
 
     fn govern_admit_reason(
@@ -1298,9 +1296,9 @@ pub use busbar_substrate::plane_host::GateOutcome;
 /// read + the two copy-out buffers inside this audited module (busbar-core denies `unsafe` elsewhere).
 ///
 /// Byte-identical to the in-process firing site: the host reconstructs the same `InvokeReq`-shaped facts
-/// (`tool` + the caller's `arguments` JSON, which round-trips losslessly because `serde_json`'s
-/// `preserve_order` is OFF), the same key identity (`id`/`name`), and the same incremental-scan session
-/// substrate, and runs the SAME gate decision.
+/// (the plane's subject name + the caller's `arguments` JSON, which round-trips losslessly because
+/// `serde_json`'s `preserve_order` is OFF), the same key identity (`id`/`name`), and the same
+/// incremental-scan session substrate, and runs the SAME gate decision.
 ///
 /// The slot drives the ASYNC gate on a fresh current-thread runtime, so it MUST be invoked from a
 /// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. Fail-closed:
@@ -1312,6 +1310,10 @@ pub use busbar_substrate::plane_host::GateOutcome;
 /// back to the key to select the gate set and the `ingress_protocol` label — no hard-coded numbering,
 /// no plane token. `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session,
 /// `Some` only when non-empty.
+///
+/// `subject` is the firing plane's own answer to what the gate is judging. It is written into the
+/// POD's minor-22 subject tail AND into the frozen `method_ptr` the tail supersedes — the same bytes
+/// in both, so a host that predates the tail reads exactly what it reads today.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 #[must_use]
@@ -1320,11 +1322,15 @@ pub fn gate_decide_over(
     plane_key: &str,
     container: &str,
     request_id: u64,
-    tool: &str,
-    args_json: &[u8],
+    subject: busbar_substrate::plane_host::SubjectFacts<'_>,
     key: Option<(&str, &str)>,
     session_id: Option<&str>,
 ) -> GateOutcome {
+    // The plane's two values, read once. An absent subject is a NULL pointer on the wire (a
+    // different answer from an empty name); absent arguments are the empty range the host parses
+    // back to `Value::Null`, which is what an operation with nothing to screen projects.
+    let subject_name = subject.subject;
+    let args_json = subject.arguments.unwrap_or(&[]);
     // Resolve the plane's stable decl key to its opaque ABI registration index for the FFI POD; the
     // vtable slot resolves it back to the key string (see `dispatch::gate_decide`).
     let plane_key_idx = crate::plane::registry::plane_key_index(plane_key);
@@ -1335,7 +1341,7 @@ pub fn gate_decide_over(
     let sid = session_id.unwrap_or("");
     let scope = DispatchScope::new();
     let status = with_borrowed_host(app, &scope, |hctx, vt| {
-        let subject = busbar_plugin::hot::GateSubjectRef {
+        let pod = busbar_plugin::hot::GateSubjectRef {
             size: core::mem::size_of::<busbar_plugin::hot::GateSubjectRef>() as u32,
             version: busbar_plugin::hot::POD_VERSION,
             plane_key: plane_key_idx,
@@ -1345,8 +1351,8 @@ pub fn gate_decide_over(
             request_id,
             container_ptr: container.as_ptr(),
             container_len: container.len(),
-            method_ptr: tool.as_ptr(),
-            method_len: tool.len(),
+            method_ptr: subject_name.map_or(std::ptr::null(), str::as_ptr),
+            method_len: subject_name.map_or(0, str::len),
             args_ptr: args_json.as_ptr(),
             args_len: args_json.len(),
             key_id_ptr: key_id.as_ptr(),
@@ -1355,10 +1361,12 @@ pub fn gate_decide_over(
             key_name_len: key_name.len(),
             session_id_ptr: sid.as_ptr(),
             session_id_len: sid.len(),
+            subject_ptr: subject_name.map_or(std::ptr::null(), str::as_ptr),
+            subject_len: subject_name.map_or(0, str::len),
         };
         (vt.gate_decide.expect("gate_decide is a wired slot"))(
             hctx,
-            &subject as *const busbar_plugin::hot::GateSubjectRef,
+            &pod as *const busbar_plugin::hot::GateSubjectRef,
             msg_buf.as_mut_ptr(),
             msg_buf.len(),
             hook_buf.as_mut_ptr(),
@@ -1390,7 +1398,7 @@ pub fn gate_decide_over(
 /// `crate::hooks` or holding the resolved `Arc<dyn RoutingPolicy>` set (the Seam-B inversion), exactly
 /// as it fires the gate.
 ///
-/// The projection is the SAME `InvokeReq` the gate builds from `(tool, arguments)` — rebuilt from the
+/// The projection is the SAME `InvokeReq` the gate builds from the plane's subject — rebuilt from the
 /// CURRENT arguments on every iteration so a later hook sees the earlier rewrite (a true transform
 /// chain, mirroring the LLM `apply_global_rewrites` seam). Precedence on the transform path is the
 /// canonical **reject > rewrite > abstain**.
@@ -1411,10 +1419,10 @@ pub fn transform_over_over(
     plane_key: &str,
     container: &str,
     request_id: u64,
-    tool: &str,
-    args_json: &[u8],
+    subject: busbar_substrate::plane_host::SubjectFacts<'_>,
 ) -> busbar_substrate::plane_host::TransformVerdict {
     use busbar_substrate::plane_host::TransformVerdict;
+    let args_json = subject.arguments.unwrap_or(&[]);
     // Resolve THIS container's rewrite chain. Empty ⇒ nothing attached ⇒ byte-identical no-op. The
     // caller already guards on `tap_attached`; the re-check keeps the fn correct if invoked directly.
     let chain: &[(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)] = app
@@ -1455,11 +1463,11 @@ pub fn transform_over_over(
         // Re-read the InvokeReq facts from the CURRENT arguments so a later hook sees the earlier
         // rewrite — a true transform chain.
         let facts = crate::ir::invoke::InvokeReq {
-            tool: tool.to_string(),
+            tool: subject.subject.unwrap_or_default().to_string(),
             arguments: arguments.clone(),
             extra: Default::default(),
         };
-        let req = build_invoke_rewrite_request(&facts, ingress, request_id);
+        let req = build_invoke_rewrite_request(&facts, ingress, request_id, subject.subject);
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {
@@ -1513,6 +1521,7 @@ fn build_invoke_rewrite_request<'a>(
     facts: &'a dyn busbar_substrate::ir::facts::IrFacts,
     ingress_protocol: &'a str,
     request_id: u64,
+    subject: Option<&'a str>,
 ) -> busbar_api::RoutingRequest<'a> {
     use busbar_substrate::ir::facts::Slot;
     use std::borrow::Cow;
@@ -1539,7 +1548,9 @@ fn build_invoke_rewrite_request<'a>(
         // projection (RESERVED field, no reader), so the empty label is neutral.
         pool: "",
         ingress_protocol,
-        requested_model: None,
+        // The firing plane's own answer, exactly as the gate twin carries it — the transform pass
+        // must be told the same thing about the same request the gate was told.
+        requested_model: subject,
         message_count: shape.turn_count,
         tool_count: shape.tool_count,
         has_tools: shape.has_tools,
