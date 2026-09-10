@@ -82,6 +82,14 @@ if [ -n "$BATCH" ]; then
   rsh "$HOST" mkdir -p "$(dirname "$RBATCH")"
   rcp_to "$HOST" "$REPO/$BATCH" "$RBATCH" || rdie "could not copy $REPO/$BATCH to $HOST"
 fi
+# THE ENGINE THE BOX RUNS IS THE ONE THE RUNNER CHOSE. The tree's own scripts/land.sh at the pushed
+# HEAD is whatever landed last; the runner may be carrying a fixed land.sh that is itself in the
+# queue (the local runner already runs a copy of it, `land.run.sh`). Running the tree's copy on the
+# box meant a landing was judged by an engine older than the one on the laptop, and the first fleet
+# batch was bisected by a self-test the fix in the batch had already cured. So the runner's land.sh
+# — this script's sibling — travels to the box and is what runs there.
+rsh "$HOST" mkdir -p busbar-prove/target/gate
+rcp_to "$HOST" "$HERE/land.sh" "busbar-prove/target/gate/land.run.sh" || rdie "could not copy the runner's land.sh to $HOST"
 
 # The remote argv is this one with the batch path rewritten to the box's copy.
 RARGS=()
@@ -127,8 +135,10 @@ echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
 # The landed tip is published to the bare repo under refs/heads/<ref>-landed the moment land.sh
 # returns, whatever its status: a partially green batch has a tip too, and the local side
 # fast-forwards to exactly what the box proved.
+# The runner's engine, with its tree root pointed at this checkout.
+sed "s|^here=.*|here=\"$HOME/busbar-prove\"|" target/gate/land.run.sh >target/gate/land.run.local.sh
 setsid nohup bash -c '
-  ./scripts/land.sh "$@" >>"'"$LOG"'" 2>&1; rc=$?
+  bash target/gate/land.run.local.sh "$@" >>"'"$LOG"'" 2>&1; rc=$?
   git push -q --force prove "HEAD:refs/heads/'"$REF"'-landed" >>"'"$LOG"'" 2>&1
   echo $rc >"'"$RC"'"
 ' _ "$@" >/dev/null 2>&1 </dev/null &
