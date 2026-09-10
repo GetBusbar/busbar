@@ -344,6 +344,7 @@ dependencies = [
  "busbar-plane-a2a",
  "busbar-plane-admin",
  "busbar-plane-llm",
+ "busbar-plane-llm-anthropic",
  "busbar-plane-llm-openai",
  "busbar-plane-llm-responses",
  "busbar-plane-mcp",
