@@ -1708,7 +1708,11 @@ land_selftest() {
   printf '#!/bin/sh\necho "stub xtask $*"\nn=${6#*/}\necho "  shard $6: $((152 / n)) of 152 case(s)"\nexit 0\n' >"$stubbin/cargo"; chmod +x "$stubbin/cargo"
   _req() { # $1 = shards, $2 = fanout, $3 = inner, $4 = deliver (0|1), $5 = publish rc
     local out="$root/req-$1-$2-$3-$4-$5"; mkdir -p "$out"
-    ( export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=3 LAND_SHARD_POLL_SECS=1
+    # THE ENVIRONMENT IS THE CASE'S, NOT THE CALLER'S. On a fleet box this self-test runs INSIDE a
+    # landing, whose environment carries LAND_REMOTE_INNER=1; inherited, it turned "FANOUT without
+    # INNER is refused" into a request arm that timed out — found by the box, not by the laptop.
+    ( unset LAND_REMOTE_INNER LAND_SHARD_FANOUT
+      export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=3 LAND_SHARD_POLL_SECS=1
       [ -n "$2" ] && export LAND_SHARD_FANOUT="$2"; [ -n "$3" ] && export LAND_REMOTE_INNER=1
       eval "land_shard_publish() { return $5; }"
       # The leg names its own directory (land_shard_dir, sequence 1 of this subshell); the stand-in
