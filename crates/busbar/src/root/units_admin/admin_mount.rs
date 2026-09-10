@@ -220,6 +220,9 @@ pub(crate) fn refused_answer(
             if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
                 return scope_answer(request);
             }
+            if is_rate_refusal(end.outcome()) {
+                return rate_limited_answer();
+            }
             answer_for(end.outcome())
         }
         // The node's own sweep took the hold first, which means this unit is not going to produce an
@@ -241,6 +244,52 @@ pub(crate) fn is_credential_refusal(outcome: Outcome) -> bool {
         Outcome::Refused(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
             | Outcome::Failed(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
     )
+}
+
+/// Whether this ending is the one about the caller having spent its minute.
+///
+/// The mutation budget is the verbs unit's, and it is the ONLY limiter an admin mutation is judged
+/// against now that the layered surface no longer re-runs one behind the loop. So this ending is the
+/// one the caller used to receive from that surface, and the answer below has to be that surface's
+/// answer down to the header — the previous release advertises a back-off on this refusal and a
+/// compliant client reads it.
+#[cfg(feature = "root-admin")]
+pub(crate) fn is_rate_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::RateLimited) | Outcome::Failed(_, ReasonCode::RateLimited)
+    )
+}
+
+/// The frozen `code` the previous release writes when the mutation budget is spent.
+#[cfg(feature = "root-admin")]
+pub(crate) const RATE_LIMIT_CODE: &str = "rate_limited";
+
+/// The frozen human message beside it, character for character.
+#[cfg(feature = "root-admin")]
+pub(crate) const RATE_LIMIT_MESSAGE: &str = "admin mutation rate limit exceeded; retry next minute";
+
+/// What the previous release answers a caller whose mutation budget is spent.
+///
+/// THE BACK-OFF IS THE UNIT'S OWN WINDOW, not a literal beside it, for the same reason the surface
+/// underneath derives it that way: an advertised back-off that disagreed with the real window would
+/// send a compliant client back either too early (and refused again) or too late. `Retry-After`
+/// comes FIRST, because that is the order the previous release's builder emits the two headers in
+/// and a header order is a byte an oracle compares.
+#[cfg(feature = "root-admin")]
+pub(crate) fn rate_limited_answer() -> AdminAnswer {
+    AdminAnswer {
+        status: 429,
+        headers: vec![
+            (
+                "retry-after".to_string(),
+                busbar_unit_verbs::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+            ),
+            ("content-type".to_string(), "application/json".to_string()),
+        ],
+        body: busbar_plane_admin::refusal::envelope_of(RATE_LIMIT_CODE, RATE_LIMIT_MESSAGE)
+            .into_bytes(),
+    }
 }
 
 /// Whether this ending is the one about what the caller may DO, having been identified.
@@ -372,6 +421,16 @@ pub(crate) fn unavailable_answer() -> AdminAnswer {
 /// request the caller sent, hands it to the router the operation is mounted on, and returns that
 /// router's whole response. No status is computed here, no header is added and no body is touched —
 /// and that is the property the oracle measures.
+///
+/// THE ROUTER IT HANDS TO IS THE SERVED SURFACE, NOT THE LAYERED ONE. Both carry the same
+/// operations, the same handlers and the same state; what the layered one carries and this one does
+/// not is the auth chain. A unit that reaches this point has already been identified by the auth
+/// unit, authorized by the scope unit against the one authorization matrix, and rate-classed against
+/// the node's ONE mutation budget. Replaying it into the layered router ran all three a second time
+/// — and the third is money-adjacent: a looped mutation spent the caller's per-minute budget twice,
+/// so the sixth CONFIG mutation of a minute was refused with a 429 on a node that had admitted it
+/// the release before. What the loop decided instead travels WITH the request: the identity it
+/// resolved goes in as the request extension the surface has always read it from.
 /// One operation, handed across the boundary between the loop and the runtime.
 ///
 /// The request goes one way and the answer comes back the other, on a channel the caller owns. The
@@ -422,6 +481,24 @@ impl RouterDispatch {
     }
 }
 
+/// The identity the loop resolved, in the extension the surface has always read it from.
+///
+/// `AuthPrincipal(None)` is not a hole: it is the ANONYMOUS posture the surface already renders as
+/// `anonymous` everywhere it names an actor, and it is what the open administrative posture
+/// (`admin_auth: []`) has always put here. So the anonymous principal maps back to `None` rather
+/// than to a principal whose id happens to be that word, which keeps the two spellings one.
+///
+/// Only the stable id travels. Everything else a chain can learn about a caller — a display name,
+/// the roles the identifying module asserts — is what the loop's own steps are for, and a value
+/// invented here would be this seam asserting facts about a principal it did not identify.
+#[cfg(feature = "root-admin")]
+fn resolved_principal(request: &AdminRequest) -> busbar_api::AuthPrincipal {
+    match request.principal.as_deref() {
+        None | Some(busbar_unit_auth::ANONYMOUS) => busbar_api::AuthPrincipal(None),
+        Some(id) => busbar_api::AuthPrincipal(Some(busbar_api::Principal::from_id(id))),
+    }
+}
+
 /// Hand one request to the router and take its whole answer.
 #[cfg(feature = "root-admin")]
 async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
@@ -433,12 +510,19 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
     for (name, value) in &request.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
+    let Ok(mut http) = builder.body(axum::body::Body::from(request.body.clone())) else {
         // A method, path or header the http types themselves will not carry. That is a request
         // this surface cannot make sense of, which is the 400 answer and not the 403 one: nothing
         // here was denied, it was unreadable.
         return error_answer(400, "invalid_request");
     };
+    // The two extensions the auth chain used to insert, inserted by the step that decided them.
+    // `CallerToken` is the caller's own bearer, threaded for the data plane's passthrough
+    // forwarding; NO administrative operation reads it (the extractor appears in `ingress/` and
+    // nowhere under `admin/`), and an administrative token is not a caller's upstream credential, so
+    // what travels is the absence rather than a value this seam would be inventing a meaning for.
+    http.extensions_mut().insert(resolved_principal(request));
+    http.extensions_mut().insert(busbar_api::CallerToken(None));
 
     // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
     // among the things it can do. So there is no error arm to write here, and writing one anyway
@@ -561,9 +645,16 @@ pub(crate) fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::b
 
 /// Wrap a mounted admin surface so every request on it travels through the kernel.
 ///
-/// The router that goes in is the one that already answers; the router that comes out answers the
-/// same operations through the loop. The seam between them is [`RouterDispatch`], so the inner
-/// router remains the only thing that knows what any of these operations do.
+/// TWO ROUTERS GO IN AND THEY ARE NOT INTERCHANGEABLE. `inner` is the deployment's own admin
+/// listener, layered exactly as it has always been, and it answers everything this wrap does not
+/// claim — the liveness probe, the plugin routes, a path outside the control surface's claim, a body
+/// over the operator's cap. `served` is the same operations with the auth chain absent, and it is
+/// the ONLY thing [`RouterDispatch`] hands a unit to: the loop has already authenticated,
+/// authorized and rate-classed that unit, and a second crossing of the chain does all three again.
+///
+/// The router that comes out answers the same operations through the loop. The seam between them is
+/// [`RouterDispatch`], so the served router remains the only thing that knows what any of these
+/// operations do.
 ///
 /// The loop is synchronous and the router is not, so the walk runs on a blocking worker and the one
 /// await inside it — the inner router's own — is driven on the runtime this was handed. That is the
@@ -577,6 +668,7 @@ pub(crate) fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::b
 #[cfg(feature = "root-admin")]
 pub fn mount(
     inner: axum::Router,
+    served: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
     request_body_max_bytes: usize,
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
@@ -587,7 +679,7 @@ pub fn mount(
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
     busbar_core::admin::restart::drain_released_at_exit();
-    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
+    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(served, &runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 
     axum::Router::new().fallback(axum::routing::any(
@@ -652,6 +744,9 @@ pub fn mount(
                         .path_and_query()
                         .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
                     credential: presented_credential(&parts.headers),
+                    // Nobody has been identified yet: that is the AUTHENTICATE step's answer and it
+                    // has not run. An identity written here would be this wrap deciding one.
+                    principal: None,
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
                     at: std::time::SystemTime::now()

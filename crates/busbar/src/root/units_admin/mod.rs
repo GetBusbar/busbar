@@ -86,6 +86,15 @@ pub struct AdminRequest {
     pub path: String,
     /// The credential the caller presented, where one was.
     pub credential: Option<String>,
+    /// The identity the AUTHENTICATE step resolved, where the walk got that far.
+    ///
+    /// A credential is not an identity, and the surface that runs an operation needs the second, not
+    /// the first: it attributes the operation's own audit row to it and it is what the maker half of
+    /// the maker-checker rule names. It is stamped on the request at the step that resolves it, so
+    /// the one identity the loop decided is the one identity everything downstream of it reads —
+    /// including the operation's own body, on the far side of the seam. Empty until then, which is
+    /// the honest answer for a request that has not been identified yet.
+    pub principal: Option<String>,
     /// The request headers, in arrival order, names lowercased.
     pub headers: Vec<(String, String)>,
     /// The request body.
@@ -1511,6 +1520,14 @@ pub(crate) fn route(
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+    };
+    // THE IDENTITY THE LOOP RESOLVED, TRAVELLING WITH THE REQUEST. The surface an operation's body
+    // lives on used to establish this for itself, by running the whole auth chain a second time on
+    // the replayed request — so one arrival was identified twice, authorized twice and charged
+    // against its mutation budget twice. It is handed over now, from the step that decided it.
+    let request = AdminRequest {
+        principal: resolved_actor(binding, ctx.key),
+        ..request
     };
     let Some(verb) = kernel_verb(&resolved) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));

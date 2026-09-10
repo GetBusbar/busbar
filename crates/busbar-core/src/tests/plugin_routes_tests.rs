@@ -301,7 +301,7 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
         .unwrap(),
     );
     let app_a = app_with_table(table_a);
-    let (data_router, _admin_router, handle) = crate::build_split_routers_with_limits(
+    let (data_router, _admin_router, _served, handle) = crate::build_split_routers_with_limits(
         app_a,
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
@@ -400,7 +400,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
     );
     let mut app = (*base).clone();
     app.plugin_routes = table;
-    let (data_router, admin_router, _handle) = crate::build_split_routers_with_limits(
+    let (data_router, admin_router, _served, _handle) = crate::build_split_routers_with_limits(
         Arc::new(app),
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
@@ -495,7 +495,7 @@ async fn head_dispatches_to_the_declared_get_route() {
         )])
         .unwrap(),
     );
-    let (data_router, _admin_router, _handle) = crate::build_split_routers_with_limits(
+    let (data_router, _admin_router, _served, _handle) = crate::build_split_routers_with_limits(
         app_with_table(table),
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,

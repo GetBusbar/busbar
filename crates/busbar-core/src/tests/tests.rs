@@ -551,7 +551,7 @@ async fn split_admin_listener_no_double_exposure() {
         .pool("pa", &[(0, 1)])
         .governance(gov)
         .build();
-    let (data_router, admin_router, _handle) = build_split_routers_with_limits(
+    let (data_router, admin_router, _served, _handle) = build_split_routers_with_limits(
         app,
         busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,

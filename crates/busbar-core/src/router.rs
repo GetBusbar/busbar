@@ -658,6 +658,33 @@ pub(crate) fn apply_common_layers(
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
 ) -> Router {
+    let router = apply_auth_layer(router, core_routes, handle);
+    apply_layers_outside_auth(
+        router,
+        handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+    )
+}
+
+/// THE AUTH CHAIN, AS ITS OWN LAYER — the innermost of the stack, and the only one of them that
+/// DECIDES anything.
+///
+/// It is separable because there is one router in this process that must not carry it: the surface
+/// the kernel's loop dispatches an already-walked unit into. That unit has been
+/// authenticated, scope-checked and rate-classed by the loop's own units before it reaches here, and
+/// a request that crosses this layer a second time is authenticated twice, authorized twice and —
+/// the one that is money-adjacent — SPENDS THE MUTATION BUDGET TWICE. A caller's minute is a caller's
+/// minute however many routers a request passes through inside this process.
+///
+/// Everything outside it ([`apply_layers_outside_auth`]) is carried by both routers, unchanged and
+/// in the same order, because those layers shape bytes rather than decide them: the body cap, the
+/// 413 envelope, the plane ingress observation, the activity tick and the server-timing header.
+fn apply_auth_layer(
+    router: Router<std::sync::Arc<state::AppHandle>>,
+    core_routes: crate::core_routes::CoreRouteTable,
+    handle: &std::sync::Arc<state::AppHandle>,
+) -> Router<std::sync::Arc<state::AppHandle>> {
     // THIS ROUTER's core route-auth table, handed to the auth middleware as a `&'static`
     // borrow rather than through `axum::Extension`. The Extension form cost every request an
     // insert into its extensions map plus two `Arc` refcount round-trips (the layer's clone in,
@@ -668,18 +695,30 @@ pub(crate) fn apply_common_layers(
     // purpose, still: the data plane and the admin plane each leak THEIR OWN table, and a route's
     // bypass belongs to the plane that serves it.
     let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::new(core_routes));
+    // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
+    // handler reads the CURRENT snapshot via the `CurrentApp` extractor; the auth middleware
+    // loads it too. Until an admin apply calls `swap()`, this is identical to a fixed `Arc<App>`.
+    router.layer(axum::middleware::from_fn_with_state(
+        handle.clone(),
+        move |app: crate::state::CurrentApp,
+              req: axum::extract::Request,
+              next: axum::middleware::Next| {
+            auth::auth_middleware(app, core_routes, req, next)
+        },
+    ))
+}
+
+/// EVERY LAYER OUTSIDE THE AUTH CHAIN, in the order the stack has always carried them.
+///
+/// Applied to both of the operator surface's routers, so the two differ by the auth chain and by
+/// nothing else — which is what makes the loop-dispatched answer byte-identical to the layered one.
+fn apply_layers_outside_auth(
+    router: Router<std::sync::Arc<state::AppHandle>>,
+    handle: &std::sync::Arc<state::AppHandle>,
+    request_body_max_bytes: usize,
+    server_timing_enabled: bool,
+) -> Router {
     let router = router
-        // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
-        // handler reads the CURRENT snapshot via the `CurrentApp` extractor; the auth middleware
-        // loads it too. Until an admin apply calls `swap()`, this is identical to a fixed `Arc<App>`.
-        .layer(axum::middleware::from_fn_with_state(
-            handle.clone(),
-            move |app: crate::state::CurrentApp,
-                  req: axum::extract::Request,
-                  next: axum::middleware::Next| {
-                auth::auth_middleware(app, core_routes, req, next)
-            },
-        ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
         // (`busbar_substrate::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
@@ -746,7 +785,7 @@ pub fn build_split_routers_with_limits(
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
-) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+) -> (Router, Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -785,7 +824,27 @@ pub fn build_split_routers_with_limits(
         request_body_max_bytes,
         server_timing_enabled,
     );
-    (data, admin, handle)
+    // THE SURFACE AN ALREADY-WALKED UNIT REACHES. Same operations, same handlers, same state, same
+    // layers OUTSIDE the auth chain — and the auth chain itself is absent, because the kernel's loop
+    // has already run it. A unit that arrives here has been identified by the auth unit, authorized
+    // by the scope unit and rate-classed against the node's ONE mutation budget; sending it through
+    // the layered router as well ran every one of those a second time, and a budget spent twice is a
+    // caller refused inside its own rights.
+    //
+    // It carries THE OPERATOR SURFACE AND NOTHING ELSE — no liveness probe and no plugin routes. The
+    // loop dispatches only the operations the control surface's claim declares, so a route that is
+    // not one of them has no business being answerable on a router with no door on it. That is why
+    // it is built here rather than cloned from the one above: the difference is a route set, not a
+    // configuration.
+    let (served, _served_core_routes) = crate::core_routes::CoreRouter::new().into_parts();
+    let served = admin::transport::mount(served, &admin::JsonV1);
+    let served = apply_layers_outside_auth(
+        served,
+        &handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+    );
+    (data, admin, served, handle)
 }
 
 /// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a

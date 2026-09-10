@@ -25,6 +25,7 @@ fn a_request() -> AdminRequest {
         method: "GET".to_string(),
         path: "/api/v1/admin/audit?limit=4".to_string(),
         credential: Some("admin-token".to_string()),
+        principal: None,
         headers: vec![("accept".to_string(), "application/json".to_string())],
         body: Vec::new(),
         at: 1_700_000_000,
@@ -149,6 +150,7 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
     let wrapped = mount(
+        inner.clone(),
         inner,
         busbar_kernel::teller::Kernel::new(),
         4,
@@ -1896,6 +1898,7 @@ fn a_ledger_request(path: &str) -> AdminRequest {
         method: "GET".to_string(),
         path: path.to_string(),
         credential: Some("admin-token".to_string()),
+        principal: None,
         headers: vec![("accept".to_string(), "application/json".to_string())],
         body: Vec::new(),
         at: 1_700_000_000,
@@ -2882,4 +2885,184 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
+}
+
+// ── the double-run: an admin operation runs its steps ONCE ──────────────────────────────────────
+
+/// A router that counts what reaches it and answers the same thing every time.
+///
+/// Two of them stand in for the two surfaces the wrap is handed: the one the deployment's listener
+/// carries, which is layered with the auth chain, and the one an already-walked unit is dispatched
+/// into, which is not. Which of the two a looped operation reaches IS the claim.
+#[cfg(feature = "root-admin")]
+fn a_counting_router(seen: Arc<std::sync::atomic::AtomicUsize>) -> axum::Router {
+    axum::Router::new().fallback(axum::routing::any(move || {
+        let seen = Arc::clone(&seen);
+        async move {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            axum::http::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(r#"{"ok":true}"#))
+                .expect("the fixture answer builds")
+        }
+    }))
+}
+
+/// A LOOPED OPERATION CROSSES THE LAYERED SURFACE EXACTLY ZERO TIMES.
+///
+/// The layered surface is where the auth chain lives, and the auth chain is where an administrative
+/// request is authenticated, authorized against the route matrix and charged against its mutation
+/// budget. The wrap used to replay an already-walked unit into it — so every one of the 66 looped
+/// operations ran those three a second time, and the third is money: a caller's minute was spent
+/// twice per arrival.
+///
+/// This is asserted as a COUNT rather than as a status, because a status cannot tell the two apart:
+/// both routers answer, and the answer the caller receives is identical either way. What differs is
+/// how many times the door was opened, and that is exactly the quantity the budget is made of.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_looped_operation_never_crosses_the_surface_the_auth_chain_layers() {
+    use tower::ServiceExt;
+
+    let layered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wrapped = mount(
+        a_counting_router(Arc::clone(&layered)),
+        a_counting_router(Arc::clone(&served)),
+        busbar_kernel::teller::Kernel::new(),
+        1 << 20,
+        crate::root::kernel::ProductionUnits::admin_only,
+    );
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/config/apply")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(br#"{"config":{}}"#.to_vec()))
+        .expect("the request builds");
+    let response = wrapped.oneshot(request).await.expect("the wrap answers");
+    assert_eq!(response.status(), 200, "the operation reached a surface");
+
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the operation is answered by the surface the loop dispatches into, exactly once"
+    );
+    assert_eq!(
+        layered.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "an already-walked unit was replayed into the layered surface, where the auth chain, the \
+         scope check and the mutation budget all run a second time"
+    );
+}
+
+/// A PATH THE CLAIM DOES NOT DECLARE STILL GOES TO THE LAYERED SURFACE.
+///
+/// The control against the cell above: the wrap did not stop using the deployment's own router, it
+/// stopped replaying LOOPED units into it. Everything outside the control surface's declared table
+/// — the liveness probe, the plugin routes, a method-and-path pair nothing claims — reaches it
+/// exactly as before, with its door on.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_path_outside_the_claim_still_reaches_the_layered_surface() {
+    use tower::ServiceExt;
+
+    let layered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let wrapped = mount(
+        a_counting_router(Arc::clone(&layered)),
+        a_counting_router(Arc::clone(&served)),
+        busbar_kernel::teller::Kernel::new(),
+        1 << 20,
+        crate::root::kernel::ProductionUnits::admin_only,
+    );
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri("/healthz")
+        .body(axum::body::Body::empty())
+        .expect("the request builds");
+    let _ = wrapped.oneshot(request).await.expect("the wrap answers");
+
+    assert_eq!(
+        layered.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "a path outside the claim is the deployment's own router's to answer"
+    );
+    assert_eq!(
+        served.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a path the loop never walked has no business on a router with no door on it"
+    );
+}
+
+/// ONE LOOPED CONFIG MUTATION SPENDS THE MUTATION BUDGET ONCE.
+///
+/// The CONFIG class is the blast-radius budget: ten per principal per minute. With the replay alive
+/// each arrival spent two of them, so the SIXTH `POST /config/apply` of a minute was refused on a
+/// node that had admitted it the release before. Here the ten are admitted and the ELEVENTH is the
+/// refusal — which is the count the previous release enforces, driven through the same
+/// `MutationLimiter` the node holds.
+///
+/// AND THE REFUSAL IS THAT RELEASE'S BYTES. The loop's own refusal rendering had no arm for this
+/// ending at all, so it fell through to the surface's catch-all 403 with no `Retry-After` — which
+/// was invisible for exactly as long as the layered surface was refusing first. The status, the
+/// header and the frozen envelope are pinned here against the answer that surface writes.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_looped_config_mutation_spends_the_budget_once() {
+    let limiter = Arc::new(busbar_unit_verbs::rate::MutationLimiter::new());
+    let rules: Arc<[busbar_unit_verbs::rate::ConfigClassRule]> =
+        busbar_unit_verbs::rate::CONFIG_CLASS_RULES.into();
+    // The class this path is judged under, read off the table rather than asserted: a cell that
+    // assumed the class would keep passing on the day the path moved out of the blast-radius set.
+    assert_eq!(
+        busbar_unit_verbs::rate::MutationClass::for_path("/config/apply", &rules),
+        busbar_unit_verbs::rate::MutationClass::Config,
+        "a whole-config apply is the blast-radius class"
+    );
+    let budget = busbar_unit_verbs::rate::MutationClass::Config.limit();
+
+    let mutate = || {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_mutation_limiter(Arc::clone(&limiter))
+            .with_config_class_rules(Arc::clone(&rules));
+        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(AdminRequest {
+            method: "POST".to_string(),
+            path: "/api/v1/admin/config/apply".to_string(),
+            credential: Some("admin-token".to_string()),
+            principal: None,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: br#"{"config":{}}"#.to_vec(),
+            at: 1_700_000_000,
+            unit: a_fresh_unit(),
+        })
+    };
+
+    for i in 1..=budget {
+        assert_eq!(
+            mutate().status,
+            200,
+            "mutation {i} of {budget} is inside the minute's budget and the previous release \
+             admits it"
+        );
+    }
+
+    let refused = mutate();
+    assert_eq!(
+        refused,
+        rate_limited_answer(),
+        "the mutation after the budget is the previous release's rate-limit refusal, byte for byte"
+    );
+    assert_eq!(refused.status, 429);
+    assert_eq!(
+        refused.headers.first(),
+        Some(&("retry-after".to_string(), "60".to_string())),
+        "the back-off is advertised, and first, exactly as the surface underneath emits it"
+    );
+    assert_eq!(
+        String::from_utf8(refused.body).expect("the envelope is text"),
+        r#"{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next minute"}}"#
+    );
 }

@@ -1446,7 +1446,7 @@ async fn run(data_workers: usize) {
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
     // resolve cert/key/CA references through it below.
     let tls_secret_resolver = app.secret_resolver.clone();
-    let (data_router, admin_router, app_handle) = build_split_routers_with_limits(
+    let (data_router, admin_router, admin_served, app_handle) = build_split_routers_with_limits(
         app,
         req_body_max,
         max_inbound,
@@ -1480,6 +1480,9 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(
         admin_router,
+        // THE SURFACE THE LOOP DISPATCHES INTO: the same operations with the auth chain absent,
+        // because the loop's own units have already run it. See `units_admin::mount`.
+        admin_served,
         root::kernel::new_kernel(),
         // The same ingress cap the router below the wrap was built with, because the wrap reads the
         // body before that router's own limit can.

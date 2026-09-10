@@ -1156,7 +1156,8 @@ async fn auth_token_absent_from_admin_router() {
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
         .build();
-    let (data, admin, _handle) = crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let (data, admin, _served, _handle) =
+        crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     // Serve the ADMIN router: /auth/token must be ABSENT (404), while the DATA router serves it.
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1204,7 +1205,8 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
         .build();
-    let (_data, admin, _handle) = crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let (_data, admin, _served, _handle) =
+        crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin_addr = admin_listener.local_addr().unwrap();
