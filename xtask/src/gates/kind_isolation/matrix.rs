@@ -119,6 +119,11 @@ struct Needle {
     owner: String,
     /// The instance id this spells, or the empty string when the needle is a package name.
     id: String,
+    /// THE CARVE-OUT SHADOW. The segment forms of every LONGER crate name that extends this
+    /// spelling and belongs to a `core`-kind crate — `busbar-core-policy` over `busbar-core`. A
+    /// hit that one of these extends is that crate's own name, not the legacy crate's, and both
+    /// scanners skip it. Empty for every needle nothing extends.
+    shadows: Vec<Vec<String>>,
 }
 
 /// Split a dash/underscore-joined spelling into its lowercase segments.
@@ -172,6 +177,16 @@ fn alias_of(a: &str, b: &str) -> bool {
 /// names nothing in particular. `busbar`, the composition root's package name, is the prefix of
 /// every crate in the workspace, and counting it would report every `busbar_kernel::` path in the
 /// tree as a crate naming the root.
+///
+/// EXCEPT THE CARVE-OUT. `busbar-core` is the proper prefix of every `busbar-core-*` crate, and
+/// those crates exist BECAUSE `busbar-core` is being drained into them. Struck on that rule, the
+/// legacy needle vanished the day the first core-kind crate landed and every `× legacy` cell in the
+/// ledger measured zero — the retirement ratchet reported as done by the landing that had barely
+/// begun it (measured on `busbar-core-policy`: 28 `dead-cell` and 16 `dead-edge` findings, all of
+/// them the ratchet disappearing). So a needle whose ONLY extenders are `core`-kind crates is
+/// KEPT, and it carries those names as its [`Needle::shadows`]: a hit that a longer core-crate
+/// name extends is that crate's name, not the legacy crate's, and is not counted. Any other
+/// extender still strikes the needle, exactly as before.
 fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
     let mut out: BTreeMap<&'static str, Vec<Needle>> = BTreeMap::new();
     for c in crates {
@@ -181,6 +196,7 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             word: c.name.to_lowercase(),
             owner: c.name.clone(),
             id: String::new(),
+            shadows: Vec::new(),
         });
         let Some(id) = own_id(c) else { continue };
         let mut ids = vec![id.clone()];
@@ -196,26 +212,42 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
                 word: format!("{kind}-{id}"),
                 owner: c.name.clone(),
                 id: id.clone(),
+                shadows: Vec::new(),
             });
             if c.family != Family::Neutral {
                 entry.push(Needle {
                     word: id.clone(),
                     owner: c.name.clone(),
                     id,
+                    shadows: Vec::new(),
                 });
             }
         }
     }
-    let names: Vec<Vec<String>> = crates
+    let names: Vec<(Vec<String>, bool)> = crates
         .iter()
-        .map(|c| needle_segments(&c.name.to_lowercase()))
+        .map(|c| {
+            (
+                needle_segments(&c.name.to_lowercase()),
+                c.kind == Some("core"),
+            )
+        })
         .collect();
     for v in out.values_mut() {
-        v.retain(|n| {
+        v.retain_mut(|n| {
             let segs = needle_segments(&n.word);
-            !names
+            let extenders: Vec<&(Vec<String>, bool)> = names
                 .iter()
-                .any(|full| full.len() > segs.len() && full[..segs.len()] == segs[..])
+                .filter(|(full, _)| full.len() > segs.len() && full[..segs.len()] == segs[..])
+                .collect();
+            if extenders.is_empty() {
+                return true;
+            }
+            if extenders.iter().all(|(_, core)| *core) {
+                n.shadows = extenders.iter().map(|(full, _)| full.clone()).collect();
+                return true;
+            }
+            false
         });
         v.sort_by(|a, b| a.word.cmp(&b.word).then(a.owner.cmp(&b.owner)));
         v.dedup_by(|a, b| a.word == b.word);
@@ -312,12 +344,18 @@ fn line_buckets(chars: &[char]) -> Vec<Bucket> {
 }
 
 /// How many times `needle`'s segment run appears in the segment stream.
-fn count_by_segments(segs: &[String], needle: &[String]) -> usize {
+fn count_by_segments(segs: &[String], needle: &[String], shadows: &[Vec<String>]) -> usize {
     if needle.is_empty() || needle.len() > segs.len() {
         return 0;
     }
     (0..=(segs.len() - needle.len()))
         .filter(|&i| segs[i..i + needle.len()] == *needle)
+        // A hit a longer core-crate name extends at the same position is THAT crate's name.
+        .filter(|&i| {
+            !shadows
+                .iter()
+                .any(|sh| segs.len() >= i + sh.len() && segs[i..i + sh.len()] == sh[..])
+        })
         .count()
 }
 
@@ -372,7 +410,7 @@ fn window_at(chars: &[char], start: usize, needle: &[String]) -> Option<usize> {
 
 /// How many times `needle` appears in `chars` as a bounded, case-insensitive window. `chars` is the
 /// raw line, decoded once by the caller: decoding it per needle made the row minutes long.
-fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
+fn count_by_windows(chars: &[char], needle: &[String], shadows: &[Vec<String>]) -> usize {
     let mut hits = 0usize;
     let mut i = 0usize;
     while i < chars.len() {
@@ -381,6 +419,16 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
             if is_boundary(before, Some(chars[i]))
                 && is_boundary(Some(chars[end - 1]), chars.get(end).copied())
             {
+                // A window a longer core-crate name fills from the same start is THAT crate's
+                // name, not the legacy crate's: skip the whole of it.
+                let shadowed = shadows.iter().find_map(|sh| {
+                    window_at(chars, i, sh)
+                        .filter(|&e| is_boundary(Some(chars[e - 1]), chars.get(e).copied()))
+                });
+                if let Some(e) = shadowed {
+                    i = e;
+                    continue;
+                }
                 hits += 1;
                 i = end;
                 continue;
@@ -447,6 +495,7 @@ struct Resolved {
     kind: &'static str,
     word: String,
     parts: Vec<String>,
+    shadows: Vec<Vec<String>>,
 }
 
 /// A crate's needles, plus the two-letter index into them and the fingerprint the per-file memo is
@@ -478,11 +527,16 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
                 p.fingerprint.push_str(kind);
                 p.fingerprint.push(':');
                 p.fingerprint.push_str(&n.word);
+                for sh in &n.shadows {
+                    p.fingerprint.push_str(" !");
+                    p.fingerprint.push_str(&sh.join("-"));
+                }
                 p.fingerprint.push('\n');
                 p.needles.push(Resolved {
                     kind,
                     word: n.word.clone(),
                     parts,
+                    shadows: n.shadows.clone(),
                 });
             }
         }
@@ -596,8 +650,8 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         let segs = line_segments(raw);
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts);
-            let by_windows = count_by_windows(&chars, &n.parts);
+            let by_segments = count_by_segments(&segs, &n.parts, &n.shadows);
+            let by_windows = count_by_windows(&chars, &n.parts, &n.shadows);
             if by_segments == 0 && by_windows == 0 {
                 continue;
             }
@@ -1309,6 +1363,21 @@ pub fn selftest(
         return;
     }
 
+    // A CORE-KIND CRATE LANDING DOES NOT STRIKE THE LEGACY VOCABULARY. `busbar-core` is the proper
+    // segment prefix of every `busbar-core-*` name, and the prefix rule that strikes `busbar`
+    // struck it too: with one core-kind crate on disk every `× legacy` cell measured 0 and the
+    // ledger's retirement ratchet reported as done (28 dead cells, 16 dead classes, measured). The
+    // plant is a core crate that names nothing; the row must still read every legacy cell at its
+    // ledgered number, and the planted crate's own name — which the `busbar-core` needle matches
+    // as a prefix — must not be counted as busbar-core being named.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a core-kind crate on disk does not strike the legacy vocabulary: the × legacy cells still measure",
+        &[ROW_MATRIX],
+        landed_crate("busbar-core-planted", "//! Names nothing of any kind.\n"),
+    ));
+
     // A ROW THIS BRANCH MINTED IS A `0 -> N` RAISE, and it is the raise `ceiling-rose` cannot see:
     // that rule walks the numbers the BASE carries and asks whether they went up, so a key with no
     // `before` has nothing to be higher than and is skipped in silence. A red team walked straight
@@ -1668,11 +1737,49 @@ mod tests {
     use super::*;
 
     fn both(line: &str, needle: &str) -> (usize, usize) {
+        shadowed(line, needle, &[])
+    }
+
+    fn shadowed(line: &str, needle: &str, shadows: &[&str]) -> (usize, usize) {
         let n = needle_segments(needle);
+        let sh: Vec<Vec<String>> = shadows.iter().map(|s| needle_segments(s)).collect();
         (
-            count_by_segments(&line_segments(line), &n),
-            count_by_windows(&line.chars().collect::<Vec<char>>(), &n),
+            count_by_segments(&line_segments(line), &n, &sh),
+            count_by_windows(&line.chars().collect::<Vec<char>>(), &n, &sh),
         )
+    }
+
+    /// THE CARVE-OUT SHADOW. `busbar-core-policy` extends `busbar-core`; a spelling of the longer
+    /// name is that crate's and not the legacy crate's, in both scanners, in every spelling —
+    /// while a bare `busbar-core` beside it still counts.
+    #[test]
+    fn a_core_crate_name_is_not_the_legacy_crate_being_named() {
+        let sh = ["busbar-core-policy"];
+        assert_eq!(
+            shadowed("use busbar_core_policy::HookEnv;", "busbar-core", &sh),
+            (0, 0)
+        );
+        assert_eq!(
+            shadowed("busbar-core-policy = { path = \"..\" }", "busbar-core", &sh),
+            (0, 0)
+        );
+        assert_eq!(
+            shadowed("crates/busbar-core-policy/src/lib.rs", "busbar-core", &sh),
+            (0, 0)
+        );
+        assert_eq!(
+            shadowed(
+                "busbar_core::hooks and busbar_core_policy",
+                "busbar-core",
+                &sh
+            ),
+            (1, 1)
+        );
+        // Without the shadow the same line is two hits: the rule is the shadow, not the scanner.
+        assert_eq!(
+            both("busbar_core::hooks and busbar_core_policy", "busbar-core"),
+            (2, 2)
+        );
     }
 
     #[test]
