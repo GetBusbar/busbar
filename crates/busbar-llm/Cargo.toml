@@ -75,7 +75,9 @@ webhook-receiver = ["dep:busbar-plugin"]
 # THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP, written dark. DEFAULT OFF,
 # and off is byte-identical to not having them: `src/unit/mod.rs` carries the inner
 # `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to nothing
-# and the dependency below is not linked at all. The legacy `native_ingress` path is untouched either
+# and `busbar-caps` is not linked at all. (`busbar-contract` used to be in the same position and is
+# not any more: the store kind's records are named by the live engine — see the dependency's own
+# note.) The legacy `native_ingress` path is untouched either
 # way; the two coexist until the composition root flips the matrix leg.
 #
 # It carries `busbar-caps` — the capability vocabulary the loop's step seam is written in
@@ -84,7 +86,7 @@ webhook-receiver = ["dep:busbar-plugin"]
 # plane ABI rather than a reach into the kernel. `busbar-kernel` is deliberately NOT named here: the
 # type that implements the loop's step seam lives in the composition root, and these files are the
 # per-step bodies it delegates to.
-teller-waist = ["dep:busbar-caps", "dep:busbar-contract"]
+teller-waist = ["dep:busbar-caps"]
 
 [dependencies]
 # NO `busbar-core` HERE, ON PURPOSE. A plane is a plugin on the plane ABI: the ONLY surface between
@@ -151,8 +153,17 @@ busbar-plugin = { path = "../busbar-plugin", optional = true }
 # Optional so the default dependency graph — and therefore the default build — is unchanged.
 busbar-caps = { path = "../busbar-caps", optional = true }
 # The other half of the plugin-visible pair: the meter class direction the Meter step's usage lines
-# carry lives in the contract and nowhere else. Optional, and enabled only by `teller-waist`.
-busbar-contract = { path = "../busbar-contract", optional = true }
+# carry, AND the store kind's records — the virtual key this plane resolves a request against, the
+# usage ledger it accrues into — which live in the contract and nowhere else.
+#
+# NOT OPTIONAL any more. It was, and it was enabled only by `teller-waist`, because the only thing
+# that named it was the dark step files. The store records are named by the LIVE engine: they were
+# spelled `busbar_api::<name>` while `busbar-api` re-exported them, and `busbar-api` is being
+# deleted. `busbar-caps` + `busbar-contract` is the PLUGIN-VISIBLE pair, so this is the plane ABI
+# arriving rather than a reach into the kernel — the direction the plane-extraction design already
+# names. `teller-waist` therefore lists `busbar-caps` alone; the feature's own behaviour is
+# unchanged and its dark files still compile to nothing with the flag down.
+busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward

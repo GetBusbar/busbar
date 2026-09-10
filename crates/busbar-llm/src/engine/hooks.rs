@@ -519,7 +519,7 @@ pub(crate) async fn decide_policy_order(
     operation: busbar_api::operation::Operation,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_contract::store::VirtualKey>>,
 ) -> PolicyOutcome {
     // The hook CONTRACT projection types are api-owned; the resolved-policy carrier is neutral
     // substrate. Named at their canonical homes (the reverse-edge rule) rather than through the

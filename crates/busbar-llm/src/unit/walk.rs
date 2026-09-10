@@ -47,7 +47,7 @@ pub struct WalkArrival {
     /// The neutral engine host, minted core-side over the live snapshot.
     pub host: Arc<dyn EngineHost>,
     /// This request's governance context — the resolved key, or none.
-    pub gov: busbar_api::PlaneRequestCtx,
+    pub gov: busbar_contract::store::PlaneRequestCtx,
     /// The ingress dialect.
     pub proto: &'static str,
     /// The operation the dialect resolved off its own endpoint.
@@ -163,7 +163,7 @@ pub struct LateReport {
 pub struct Walk {
     host: Arc<dyn EngineHost>,
     rt: Arc<crate::engine::NativeRuntime>,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
     caller_token: Option<String>,
@@ -242,7 +242,7 @@ impl Walk {
 
     /// This request's governance context.
     #[must_use]
-    pub fn gov(&self) -> &busbar_api::PlaneRequestCtx {
+    pub fn gov(&self) -> &busbar_contract::store::PlaneRequestCtx {
         &self.gov
     }
 

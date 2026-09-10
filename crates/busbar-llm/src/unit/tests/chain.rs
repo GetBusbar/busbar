@@ -204,7 +204,7 @@ fn json_headers() -> HeaderMap {
 /// own, so the two legs' counters are compared rather than summed.
 struct Rig {
     app: Arc<crate::test_support::BuiltApp>,
-    key: Arc<busbar_api::VirtualKey>,
+    key: Arc<busbar_contract::store::VirtualKey>,
     server: MockServer,
     charged_at: u64,
     /// The group bucket this rig's key charges through. Unique per rig so two rigs never share a
@@ -256,12 +256,12 @@ async fn rig(fixture: Fixture) -> Rig {
 
     let store = Arc::new(busbar_store_memory::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
-        use busbar_api::Store as _;
+        use busbar_contract::store::Store as _;
         store
             .put_usage(
                 &format!("group:{group}@total"),
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::store::UsageLedger {
                     requests,
                     billable_requests: requests,
                     models: vec![],
@@ -317,8 +317,8 @@ async fn rig(fixture: Fixture) -> Rig {
 }
 
 impl Rig {
-    fn gov(&self) -> busbar_api::PlaneRequestCtx {
-        busbar_api::PlaneRequestCtx {
+    fn gov(&self) -> busbar_contract::store::PlaneRequestCtx {
+        busbar_contract::store::PlaneRequestCtx {
             key: Some(self.key.clone()),
         }
     }
@@ -430,7 +430,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_tokens", derived.tokens.to_string()));
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
-    let mut rows: Vec<busbar_api::MeteringRow> = gov
+    let mut rows: Vec<busbar_contract::store::MeteringRow> = gov
         .metering_for(busbar_substrate::governance::metering_bucket(
             rig.charged_at,
         ))
@@ -554,7 +554,7 @@ const OP_CLASS: OpClassId = OpClassId::new(busbar_api::operation::Operation::CHA
 /// before any destination existed to read.
 fn audit_ctx<'a>(
     host: &'a Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    gov: &'a busbar_api::PlaneRequestCtx,
+    gov: &'a busbar_contract::store::PlaneRequestCtx,
     destination: &'a str,
     started: Instant,
     charged_at: u64,
@@ -576,7 +576,7 @@ fn audit_ctx<'a>(
 fn refused_before_a_destination(
     seal: &KernelSeal,
     host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     started: Instant,
     charged_at: u64,
     resp: Response,
@@ -692,7 +692,7 @@ async fn drive(
     seal: &KernelSeal,
     host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     rt: &Arc<crate::engine::NativeRuntime>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     headers: &HeaderMap,
     body: &Bytes,
     started: Instant,
@@ -1532,8 +1532,8 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
             .map(|(k, v)| (k.as_str(), *v))
             .collect::<Vec<_>>(),
         vec![
-            (busbar_api::UNIT_INPUT, INPUT),
-            (busbar_api::UNIT_OUTPUT, OUTPUT)
+            (busbar_contract::store::UNIT_INPUT, INPUT),
+            (busbar_contract::store::UNIT_OUTPUT, OUTPUT)
         ],
         "and the split is the tap's own, not a figure the step invented"
     );
@@ -1628,7 +1628,7 @@ async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
     );
 
     // And an unrestricted name on the same deployment passes both.
-    let unkeyed = busbar_api::PlaneRequestCtx { key: None };
+    let unkeyed = busbar_contract::store::PlaneRequestCtx { key: None };
     let open = verify::HostPoolView::new(&*host, &*rt, None);
     assert_eq!(verify::destination_guard(&open, POOL), Ok(()));
     assert!(host

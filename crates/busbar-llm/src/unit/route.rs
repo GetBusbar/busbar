@@ -104,7 +104,7 @@ pub(crate) struct RouteInput<'a> {
     pub(crate) caller_token: Option<&'a str>,
     /// The key the Authenticate step resolved, so a group or SSO principal still projects its
     /// routing signals for a pool that reads them.
-    pub(crate) resolved_gov_key: Option<&'a Arc<busbar_api::VirtualKey>>,
+    pub(crate) resolved_gov_key: Option<&'a Arc<busbar_contract::store::VirtualKey>>,
     /// The meter half of the hold, built at the door: it carries the admission grant, so the leases
     /// live exactly as long as the response body does.
     pub(crate) usage_sink: Option<UsageSink>,

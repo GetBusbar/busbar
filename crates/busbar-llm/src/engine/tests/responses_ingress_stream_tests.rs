@@ -286,7 +286,8 @@ async fn run_case(egress: &str, shape: Upstream) {
     let base_url = canned_upstream(content_type, body).await;
 
     // A governed key on a fresh in-memory registry, so the ledger starts empty for this case.
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::store::Store> =
+        Arc::new(busbar_store_memory::MemoryStore::new());
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
         .expect("governance");

@@ -7,20 +7,20 @@ use busbar_caps::{KernelSeal, StepName};
 
 /// A key row carrying only what this step reads. Every other field is what the store's own
 /// default row carries, so the fixture cannot drift from the shape the middleware resolves.
-fn key(id: &str) -> std::sync::Arc<busbar_api::VirtualKey> {
-    std::sync::Arc::new(busbar_api::VirtualKey {
+fn key(id: &str) -> std::sync::Arc<busbar_contract::store::VirtualKey> {
+    std::sync::Arc::new(busbar_contract::store::VirtualKey {
         id: id.to_string(),
         enabled: true,
         ..Default::default()
     })
 }
 
-fn governed(id: &str) -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx { key: Some(key(id)) }
+fn governed(id: &str) -> busbar_contract::store::PlaneRequestCtx {
+    busbar_contract::store::PlaneRequestCtx { key: Some(key(id)) }
 }
 
-fn ungoverned() -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx { key: None }
+fn ungoverned() -> busbar_contract::store::PlaneRequestCtx {
+    busbar_contract::store::PlaneRequestCtx { key: None }
 }
 
 /// IDENTITY — the keys arm. The live path attributes a governed request to the resolved key's

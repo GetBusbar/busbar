@@ -100,7 +100,7 @@ pub(crate) struct Hop<'a> {
     pub(crate) gemini_json_array: bool,
     pub(crate) caller_token: Option<&'a str>,
     pub(crate) upstream_creds: busbar_api::UpstreamCreds,
-    pub(crate) resolved_gov_key: Option<&'a Arc<busbar_api::VirtualKey>>,
+    pub(crate) resolved_gov_key: Option<&'a Arc<busbar_contract::store::VirtualKey>>,
     pub(crate) remaining_secs: u64,
     pub(crate) breaker_cfg: &'a Arc<busbar_substrate::store::BreakerCfg>,
     pub(crate) client_fwd: &'a [(axum::http::HeaderName, axum::http::HeaderValue)],

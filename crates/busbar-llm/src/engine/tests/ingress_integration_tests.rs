@@ -60,7 +60,7 @@ fn test_finish_emits_request_metrics() {
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
         &minimal_app(),
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         "openai",
         "mypool",
         Instant::now(),
@@ -143,7 +143,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
-fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
+fn governed_app_with_key() -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -235,7 +235,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -308,7 +308,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -357,7 +357,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
         &minimal_app(),
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         "anthropic",
         "p2",
         Instant::now(),
@@ -405,7 +405,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         )
         .unwrap();
     let app = governed_minimal_app(gov.clone(), cost.clone());
-    let govctx = busbar_api::PlaneRequestCtx {
+    let govctx = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -531,7 +531,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         .expect("first request fits the cap exactly");
 
     let app = governed_minimal_app(gov.clone(), cost.clone());
-    let govctx = busbar_api::PlaneRequestCtx {
+    let govctx = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3273,7 +3273,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
-fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
+fn governed_app_pool_restricted() -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -3309,7 +3309,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3359,7 +3359,7 @@ async fn test_governance_guard_passes_when_allowed() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let passed = governance_guard(
@@ -3385,7 +3385,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = 1_700_000_000;
@@ -3437,7 +3437,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let resp =
@@ -3450,7 +3450,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // body-model protocols surface this as 429 (native OpenAI/Gemini quota semantics); no
     // vendor returns 402 here. ---
     let (app2, key2) = governed_app_over_budget();
-    let gov2 = busbar_api::PlaneRequestCtx {
+    let gov2 = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
     let resp = admit_check(&app2, &gov2, "openai", "", busbar_substrate::store::now())
@@ -3462,7 +3462,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // Bedrock ingress maps the same over-budget condition to a 400-class
     // ServiceQuotaExceededException (the native AWS shape), NOT 429.
     let (app2b, key2b) = governed_app_over_budget();
-    let gov2b = busbar_api::PlaneRequestCtx {
+    let gov2b = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
     let resp = admit_check(
@@ -3484,7 +3484,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 429: rate limited. A group with `requests: 0, per: minute` blocks the first request. ---
     let (app3, key3) = governed_app_rate_limited();
-    let gov3 = busbar_api::PlaneRequestCtx {
+    let gov3 = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
     let resp = admit_check(&app3, &gov3, "openai", "", busbar_substrate::store::now())
@@ -3527,7 +3527,7 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 }
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
-fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
+fn governed_app_over_budget() -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -3573,7 +3573,7 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
 
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
-fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
+fn governed_app_rate_limited() -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -6299,7 +6299,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// Governance-enabled App whose key binds to a ZERO-cap budget group ("finance") while the key
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
-fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
+fn governed_app_group_blocked() -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -6348,7 +6348,7 @@ async fn test_group_blocked_429_names_the_budget_group() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
     let (app, key) = governed_app_group_blocked();
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6385,7 +6385,7 @@ async fn test_missing_group_fails_closed_at_ingress() {
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
     orphan.group = Some("ghost".to_string());
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
     let resp = admit_check(&app, &gov, "openai", "", busbar_substrate::store::now())
@@ -6435,7 +6435,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         &std::collections::BTreeMap::new(),
     );
     let app = governed_minimal_app(gov, cost);
-    let gov_ctx = busbar_api::PlaneRequestCtx {
+    let gov_ctx = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     // An arbitrary passthrough model string (not a pool, not a by-model lane, not priced).
@@ -6474,7 +6474,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
-) -> (Arc<App>, busbar_api::VirtualKey) {
+) -> (Arc<App>, busbar_contract::store::VirtualKey) {
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
@@ -6491,9 +6491,9 @@ fn governed_app_downgrade(
                 metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 25,
                 per: Some(busbar_substrate::config::groups::LimitWindow::Day),
-                scope: Some(busbar_api::ScopeRef::pool("frontier")),
+                scope: Some(busbar_contract::store::ScopeRef::pool("frontier")),
                 on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
-                downgrade_to: Some(busbar_api::ScopeRef::pool("value")),
+                downgrade_to: Some(busbar_contract::store::ScopeRef::pool("value")),
             }],
             ..Default::default()
         },
@@ -6531,7 +6531,7 @@ fn governed_app_downgrade(
 async fn test_budget_exhaustion_downgrades_pool() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(None);
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6581,27 +6581,27 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
                     metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 10,
                     per: Some(busbar_substrate::config::groups::LimitWindow::Day),
-                    scope: Some(busbar_api::ScopeRef::pool("a")),
+                    scope: Some(busbar_contract::store::ScopeRef::pool("a")),
                     on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
-                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                    downgrade_to: Some(busbar_contract::store::ScopeRef::pool("b")),
                 },
                 // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
                 busbar_substrate::config::groups::LimitCfg {
                     metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 0,
                     per: Some(busbar_substrate::config::groups::LimitWindow::Day),
-                    scope: Some(busbar_api::ScopeRef::pool("b")),
+                    scope: Some(busbar_contract::store::ScopeRef::pool("b")),
                     on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
-                    downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
+                    downgrade_to: Some(busbar_contract::store::ScopeRef::pool("c")),
                 },
                 // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
                 busbar_substrate::config::groups::LimitCfg {
                     metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 0,
                     per: Some(busbar_substrate::config::groups::LimitWindow::Day),
-                    scope: Some(busbar_api::ScopeRef::pool("c")),
+                    scope: Some(busbar_contract::store::ScopeRef::pool("c")),
                     on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
-                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                    downgrade_to: Some(busbar_contract::store::ScopeRef::pool("b")),
                 },
             ],
             ..Default::default()
@@ -6635,7 +6635,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
         .pools
         .insert("c".to_string(), vec![]);
 
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6680,7 +6680,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
 async fn test_downgrade_never_bypasses_pool_acl() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
-    let gov = busbar_api::PlaneRequestCtx {
+    let gov = busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();

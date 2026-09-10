@@ -1782,7 +1782,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
     // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::store::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
@@ -1894,7 +1894,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
     // different synthesized principal key (exactly what a fallthrough from `Some(key) if
     // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::store::VirtualKey {
         id: "synthesized-principal".to_string(),
         generation_hash: "principal:synthesized-principal".to_string(),
         name: "synthesized-principal".to_string(),
@@ -1970,7 +1970,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool_runtime("p", rt)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let synth = std::sync::Arc::new(busbar_api::VirtualKey {
+    let synth = std::sync::Arc::new(busbar_contract::store::VirtualKey {
         id: "eng-oncall".to_string(),
         generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),

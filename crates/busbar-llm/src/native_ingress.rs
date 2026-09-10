@@ -209,7 +209,7 @@ pub(crate) fn multipart_model(content_type: &str, body: &[u8]) -> Option<String>
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn operation_ingress_inner(
     host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     caller_token: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,
@@ -543,7 +543,7 @@ impl busbar_substrate::plane_host::GauntletPlane for NativePlane<'_> {
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
@@ -590,7 +590,7 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 pub async fn operation_resolved(
     host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,
     op_handler: &'static dyn busbar_substrate::handlers::OperationHandler,
@@ -622,7 +622,7 @@ pub async fn operation_resolved(
 }
 pub(crate) fn usage_sink(
     host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     pool: &str,
     charged_at: u64,
     admit: Option<busbar_substrate::plane_host::AdmitHandle>,
@@ -679,7 +679,7 @@ pub(crate) fn affinity_header_for<'a>(rt: &'a Arc<NativeRuntime>, pool: &str) ->
 #[allow(clippy::too_many_arguments)]
 async fn ingress_path_model_inner(
     host: &Arc<dyn EngineHost>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     caller_token: Option<&str>,
     headers: &HeaderMap,
     body: Bytes,

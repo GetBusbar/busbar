@@ -33,7 +33,7 @@ fn completion() -> MockResponse {
 /// writes, and the token ledger the budget chain enforces against.
 #[derive(Debug, PartialEq, Eq)]
 struct Accrued {
-    row: busbar_api::MeteringRow,
+    row: busbar_contract::store::MeteringRow,
     ledger_tokens: u64,
     ledger_spend_cents: i64,
 }
@@ -43,14 +43,14 @@ struct Accrued {
 /// rather than summed.
 async fn rig() -> (
     std::sync::Arc<crate::test_support::BuiltApp>,
-    std::sync::Arc<busbar_api::VirtualKey>,
+    std::sync::Arc<busbar_contract::store::VirtualKey>,
     MockServer,
 ) {
     crate::testkit::install_test_seams();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(completion());
     let server = MockServer::new(state).await;
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)
@@ -80,7 +80,7 @@ async fn rig() -> (
 /// The sink the admit step builds and every accrual site carries to the end of the response.
 fn sink(
     host: &Arc<dyn EngineHost>,
-    key: &std::sync::Arc<busbar_api::VirtualKey>,
+    key: &std::sync::Arc<busbar_contract::store::VirtualKey>,
     charged_at: u64,
 ) -> crate::engine::UsageSink {
     crate::engine::UsageSink {
@@ -166,7 +166,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     assert_eq!(
         live,
         Accrued {
-            row: busbar_api::MeteringRow {
+            row: busbar_contract::store::MeteringRow {
                 key_id: key.id.clone(),
                 model: "m0".to_string(),
                 provider: "zai".to_string(),
@@ -219,7 +219,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
 
     assert_eq!(
         metered.row.as_ref().expect("a served response is metered"),
-        &busbar_api::MeteringRow {
+        &busbar_contract::store::MeteringRow {
             key_id: key2.id.clone(),
             model: "m0".to_string(),
             provider: "zai".to_string(),
@@ -450,8 +450,8 @@ fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
         .iter()
         .map(|(class, quantity)| {
             let per_unit = match class.as_str() {
-                busbar_api::UNIT_INPUT => 2_000,
-                busbar_api::UNIT_OUTPUT => 6_000,
+                busbar_contract::store::UNIT_INPUT => 2_000,
+                busbar_contract::store::UNIT_OUTPUT => 6_000,
                 _ => 0,
             };
             quantity * per_unit
@@ -464,10 +464,10 @@ fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
 /// here: this test drives the step directly over a usage report the reader already produced.
 fn priced_rig() -> (
     std::sync::Arc<busbar_core::state::App>,
-    std::sync::Arc<busbar_api::VirtualKey>,
+    std::sync::Arc<busbar_contract::store::VirtualKey>,
 ) {
     crate::testkit::install_test_seams();
-    let store: std::sync::Arc<dyn busbar_api::Store> =
+    let store: std::sync::Arc<dyn busbar_contract::store::Store> =
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, None)

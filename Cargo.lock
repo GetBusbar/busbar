@@ -694,6 +694,7 @@ name = "busbar-llm-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-core",
  "busbar-mcp",
  "busbar-substrate-values",

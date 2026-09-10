@@ -82,7 +82,7 @@ pub struct AdmitCtx<'a> {
     /// The neutral host seam the door is reached through.
     pub host: &'a Arc<dyn EngineHost>,
     /// This request's governance context — the resolved key, or none.
-    pub gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_contract::store::PlaneRequestCtx,
     /// The ingress protocol name, for the refusal's native error envelope.
     pub proto: &'static str,
     /// The destination the caller named: a pool, or a model that resolves to one lane.

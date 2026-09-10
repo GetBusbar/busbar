@@ -1051,7 +1051,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
-    use busbar_api::Store;
+    use busbar_contract::store::Store;
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
@@ -1085,7 +1085,7 @@ async fn test_governance_budget_over_quota() {
         .put_usage(
             "group:bgrp@total",
             0,
-            &busbar_api::UsageLedger {
+            &busbar_contract::store::UsageLedger {
                 requests: 250,
                 billable_requests: 250,
                 models: vec![],
@@ -1175,7 +1175,7 @@ async fn test_governance_budget_over_quota() {
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_api::Store;
+    use busbar_contract::store::Store;
     use busbar_store_memory::MemoryStore;
     use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
@@ -1208,7 +1208,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .put_usage(
             "group:bgrpm@total",
             0,
-            &busbar_api::UsageLedger {
+            &busbar_contract::store::UsageLedger {
                 requests: 250,
                 billable_requests: 250,
                 models: vec![],
@@ -5050,7 +5050,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     // Call openai_ingress handler directly
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5117,7 +5117,7 @@ async fn test_openai_ingress_missing_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5158,7 +5158,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp = ingress::adhoc(
         busbar_core::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
-        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
+        axum::extract::Extension(busbar_contract::store::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body.clone(),
@@ -5174,7 +5174,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp2 = ingress::adhoc(
         busbar_core::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
-        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
+        axum::extract::Extension(busbar_contract::store::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body,
@@ -5206,7 +5206,7 @@ async fn test_openai_ingress_unknown_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5351,7 +5351,7 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
@@ -5411,7 +5411,7 @@ async fn forwarded_openai_to_anthropic(
 
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),

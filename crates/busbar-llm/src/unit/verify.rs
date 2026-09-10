@@ -260,7 +260,7 @@ pub struct Verified {
 pub struct HostPoolView<'a> {
     host: &'a dyn EngineHost,
     tables: &'a dyn EngineTablesView,
-    key: Option<&'a busbar_api::VirtualKey>,
+    key: Option<&'a busbar_contract::store::VirtualKey>,
     cost: CostHandle,
 }
 
@@ -272,7 +272,7 @@ impl<'a> HostPoolView<'a> {
     pub fn new(
         host: &'a dyn EngineHost,
         tables: &'a dyn EngineTablesView,
-        key: Option<&'a busbar_api::VirtualKey>,
+        key: Option<&'a busbar_contract::store::VirtualKey>,
     ) -> Self {
         let cost = host.cost();
         HostPoolView {

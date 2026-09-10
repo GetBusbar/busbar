@@ -84,7 +84,7 @@ mod test_forward_entry {
         cands: Vec<WeightedLane>,
         body: Bytes,
         caller_token: Option<&str>,
-        resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+        resolved_gov_key: Option<&std::sync::Arc<busbar_contract::store::VirtualKey>>,
         pool_name: &str,
         affinity_key: Option<&str>,
         ingress_protocol: &str,
@@ -168,7 +168,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     mut v: Option<LazyBody>,
     req_content_type: &'a str,
     caller_token: Option<&'a str>,
-    resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&'a std::sync::Arc<busbar_contract::store::VirtualKey>>,
     pool_name: &'a str,
     affinity_key: Option<&'a str>,
     ingress_protocol: &'a str,
@@ -306,7 +306,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     caller_token: Option<&str>,
     // The key the auth layer already resolved/synthesized for this caller (`GovCtx.key`) — used as
     // the routing-signal source when the token is not a virtual-key secret (group/SSO principals).
-    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_contract::store::VirtualKey>>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,

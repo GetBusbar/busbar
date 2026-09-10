@@ -360,7 +360,10 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
     let tier = crate::wire_shim::tier_usage(&tu);
     let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
     assert_eq!(
-        (u(busbar_api::UNIT_INPUT), u(busbar_api::UNIT_OUTPUT)),
+        (
+            u(busbar_contract::store::UNIT_INPUT),
+            u(busbar_contract::store::UNIT_OUTPUT)
+        ),
         (90, 35)
     );
 }

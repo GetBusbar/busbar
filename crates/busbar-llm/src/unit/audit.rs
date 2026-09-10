@@ -208,7 +208,7 @@ pub struct AuditCtx<'a> {
     /// The neutral host seam the terminal is reached through.
     pub host: &'a Arc<dyn EngineHost>,
     /// This request's governance context — the resolved key, or none.
-    pub gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_contract::store::PlaneRequestCtx,
     /// The ingress protocol name, as the record spells the wire.
     pub proto: &'static str,
     /// The operation class the unit was, as the sealed facts name it.

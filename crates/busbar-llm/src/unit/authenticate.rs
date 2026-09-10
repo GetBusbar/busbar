@@ -6,7 +6,7 @@
 //! On this plane, today, that question is already answered by the time any plane code runs. The
 //! HTTP auth middleware runs the configured chain and resolves the one verdict
 //! (`busbar_core::auth::resolve_data_plane_identity`) before the request reaches a handler; what it
-//! leaves behind is a [`busbar_api::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
+//! leaves behind is a [`busbar_contract::store::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
 //! that context is the only thing the LLM ingress is handed about identity
 //! (`native_ingress::operation_ingress_inner`'s `gov` parameter, and everything it threads on).
 //!
@@ -54,7 +54,7 @@ fn anonymous_actor_id() -> &'static str {
 /// no handshake unit, so the challenge arm is unreachable from here rather than unimplemented.
 pub fn authenticate(
     token: &UnitToken<Authenticate>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
 ) -> Decision<Authenticate> {
     Decision::proceed(token, Authenticated::Principal(principal_id(gov)))
 }
@@ -67,7 +67,7 @@ pub fn authenticate(
 /// Separated from [`authenticate`] so the mapping can be checked against the live read directly,
 /// without a token in hand.
 #[must_use]
-pub fn principal_id(gov: &busbar_api::PlaneRequestCtx) -> PrincipalId {
+pub fn principal_id(gov: &busbar_contract::store::PlaneRequestCtx) -> PrincipalId {
     match gov.key() {
         Some(key) => PrincipalId::new(key.id.as_str()),
         None => PrincipalId::new(anonymous_actor_id()),
