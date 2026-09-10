@@ -82,6 +82,7 @@ LAND_ORACLE_DIFF="${LAND_ORACLE_DIFF:-merged}"
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_parse_args() {
   P_tests=""; P_features=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
+  P_preprove=0
   P_remote="${P_remote:-}"
   # --to is a POSTURE for the whole run, the same way --remote is a HOST for the whole run: a batch
   # LINE cannot pick its own destination any more than it can pick its own box, because the tree is
@@ -114,6 +115,15 @@ land_parse_args() {
       # in MAIN, not here, so land_parse_args stays a pure "read the flags" function and the refusal
       # (with its exit code and its message) lives in one place the selftest can call directly.
       --to) P_to="$2"; shift 2 ;;
+      # --preprove: the same as LAND_PREPROVE=1, AS AN ARGUMENT, and it has to be one.
+      #
+      # scripts/land-remote.sh hands the box a FIXED environment — PATH, the cargo and sccache
+      # variables, LAND_REMOTE_INNER, the oracle port base — and forwards the ARGV. So a
+      # `LAND_PREPROVE=1` set on this side reached the local process and nothing else: the box ran
+      # an ordinary landing, published its tip, and the transport fast-forwarded the caller's tree
+      # to a landing they had asked NOT to take. A mode that is silently dropped by the transport
+      # is worse than no mode. The argv is what travels, so the mode travels on the argv.
+      --preprove) P_preprove=1; shift ;;
       *) break ;;
     esac
   done
@@ -1485,6 +1495,14 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
   return 0
 }
 
+# PRE-PROVE MODE. `--preprove` is what survives the trip to a fleet box; `LAND_PREPROVE=1` is what
+# an operator types. MAIN folds the flag into the variable the moment the top-level argv is parsed,
+# so there is ONE reader — and it has to be the variable rather than `P_preprove`, because
+# land_parse_args is re-run over every batch LINE and would reset a flag read from it to 0.
+land_preproving() {
+  [ "${LAND_PREPROVE:-}" = 1 ]
+}
+
 land_run_batch() {  # $1 = batch file
   local bf="$1"
   [ -f "$bf" ] || { echo "land.sh: --batch: no such file: $bf" >&2; exit 2; }
@@ -1528,7 +1546,7 @@ land_run_batch() {  # $1 = batch file
   #     and a box that published its own base has nothing to fast-forward TO.
   # NOTHING LANDS ON A PRE-PROOF. The serial runner still runs the full proof over the union it
   # pops; a green here only chooses the ORDER of the queue, never its verdict.
-  [ "${LAND_PREPROVE:-}" = 1 ] && done_file="$here/target/land-preprove-$stamp.done"
+  land_preproving && done_file="$here/target/land-preprove-$stamp.done"
   mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
   local green=0 red=0 conflict=0
   i=0
@@ -1543,7 +1561,7 @@ land_run_batch() {  # $1 = batch file
   done
   echo "land.sh: batch $stamp: $green green, $red red, $conflict red-conflict; base $(git -C "$here" rev-parse --short "$base0"), tip $(git -C "$here" rev-parse --short HEAD)"
   echo "land.sh: per-line outcomes: $res"
-  if [ "${LAND_PREPROVE:-}" = 1 ]; then
+  if land_preproving; then
     git -C "$here" reset -q --hard "$base0"
     echo "land.sh: PRE-PROVE — published nothing; tree back at $(git -C "$here" rev-parse --short HEAD) (proven against $(git -C "$here" rev-parse --short "$base0"))"
   fi
@@ -1956,6 +1974,31 @@ EOF
     && printf '  ok   %-46s\n' "pre(red): the tree did NOT move" \
     || { printf '  FAIL %-46s\n' "pre(red): the tree did NOT move"; fails=$((fails + 1)); }
 
+  # THE FLAG FORM, which is the one that survives the trip to a fleet box. `LAND_PREPROVE=1` in the
+  # environment reaches the local process and NOTHING ELSE: scripts/land-remote.sh hands the box a
+  # fixed environment and forwards the argv, so the mode has to be an argument or the box takes an
+  # ordinary landing and the transport fast-forwards this tree onto it.
+  local bcf="$root/batchCflag.txt"
+  cp "$bc" "$bcf"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "--preprove (the flag) exits 0" 0 env LAND_SELFTEST_ROOT="$repo" \
+      LAND_DONE="$root/done-pre.txt" bash "$0" --preprove --batch "$bcf"
+  _stgrep "flag: it says it published nothing"  "$ST_OUT" 'PRE-PROVE — published nothing'
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$pre_before" ] \
+    && printf '  ok   %-46s\n' "flag: the tree did NOT move" \
+    || { printf '  FAIL %-46s\n' "flag: the tree did NOT move"; fails=$((fails + 1)); }
+  # AND IT SURVIVES BEING RE-PARSED PER LINE. land_parse_args runs again for every batch line and
+  # resets its own P_ variables; a mode read from those would be lost between the argv and the run.
+  [ "$(grep -c '^GREEN' "$bcf.result")" = 3 ] && printf '  ok   %-46s\n' "flag: three GREEN lines reported" \
+    || { printf '  FAIL %-46s\n' "flag: three GREEN lines reported"; fails=$((fails + 1)); }
+  # A `--prove <sha> --preprove` argv must not read `--preprove` as a commit-ish, which is why the
+  # delegation PREPENDS it. Here the same shape is parsed directly.
+  printf -- '--prove %s\n' "$c1" >"$root/batchG.txt"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "--preprove before the hashes parses" 0 env LAND_SELFTEST_ROOT="$repo" \
+      LAND_DONE="$root/done-pre.txt" bash "$0" --preprove --batch "$root/batchG.txt"
+  _stgrep "flag: one line, published nothing" "$ST_OUT" 'PRE-PROVE — published nothing'
+
   # CASE D — an empty batch is refused, not silently green.
   : >"$root/batchD.txt"
   _st "an empty batch is REFUSED (rc 2)" 2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --batch "$root/batchD.txt"
@@ -2143,7 +2186,18 @@ land_print_posture "$P_to"
 # LAND_REMOTE_INNER is what stops the delegation from being infinite: the copy running on the box
 # has it set, sees it, and falls through to the ordinary engine.
 [ -n "${LAND_REMOTE:-}" ] && [ -z "$P_remote" ] && P_remote="$LAND_REMOTE"
+# THE FLAG BECOMES THE VARIABLE, HERE AND ONLY HERE. Every batch line is parsed by the same
+# land_parse_args, which would reset `P_preprove` to 0; the mode is a property of the RUN.
+[ "$P_preprove" = 1 ] && LAND_PREPROVE=1
 if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
+  # THE PRE-PROVE MODE TRAVELS ON THE ARGV, because the environment does not travel at all: see
+  # `--preprove` in land_parse_args. `LAND_PREPROVE=1 land.sh --remote <host>` used to prove on the
+  # box in ORDINARY mode and fast-forward this tree onto the result.
+  if [ "${LAND_PREPROVE:-}" = 1 ] && [ "$P_preprove" != 1 ]; then
+    # PREPENDED, never appended: land_parse_args stops at the first non-flag and treats the rest as
+    # hashes, so `--prove <sha> --preprove` would have made `--preprove` a commit-ish.
+    exec "$(cd "$(dirname "$0")" && pwd)/land-remote.sh" --host "$P_remote" --preprove "$@"
+  fi
   exec "$(cd "$(dirname "$0")" && pwd)/land-remote.sh" --host "$P_remote" "$@"
 fi
 
