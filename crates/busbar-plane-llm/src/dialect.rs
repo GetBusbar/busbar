@@ -72,25 +72,15 @@ const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0
 
 /// The table, one row per dialect, in the order the codec crate declares them.
 pub const DIALECTS: &[Dialect] = &[
-    Dialect {
-        name: "anthropic",
-        model_location: MODEL,
-        max_response_pointers: &["/max_tokens"],
-        input_pointer: "/messages",
-        tokens_in_pointer: "/usage/input_tokens",
-        tokens_out_pointer: "/usage/output_tokens",
-        cache_read_pointer: Some("/usage/cache_read_input_tokens"),
-        cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
-        scheme_alt: "api-key",
-        egress_scheme: "bearer",
-        // The one dialect of the six whose upstreams refuse a request with no ceiling.
-        requires_max_response: true,
-    },
+    // THE `anthropic` ROW IS NOT HERE. It went to `busbar-plane-llm-anthropic`, the third crate
+    // carved out and the first detected by header rather than by path. It was also the one row of
+    // the six that REQUIRES a response ceiling; that fact is a column of the row now, declared
+    // where the row is declared, so this crate's crossing acts on it without naming the vendor.
     // THE `openai` ROW IS NOT HERE, and its absence is the split. It lives in
     // `busbar-plane-llm-openai`, which registers it into this plane by claim; this crate no longer
     // spells that vendor's name anywhere, and `tests/neutrality.rs` is what says so on the source
-    // rather than in this comment. The five rows below are the dialects that have not been carved
-    // out yet, each of which leaves on its own line.
+    // rather than in this comment. The rows below are the dialects that have not been carved out
+    // yet, each of which leaves on its own line.
     Dialect {
         name: "gemini",
         // The model is in the request target, not the body.

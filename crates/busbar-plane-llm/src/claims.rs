@@ -113,15 +113,14 @@ busbar_contract::claims_from_ladder! {
     // no other dialect's clients ever send one.
     1 => "bedrock", Selector::HeaderPrefix("authorization", "AWS4-HMAC-SHA256"),
 
-    // Rung 2: two vendor-specific version headers, either of which names the dialect on its own.
-    2 => "anthropic", Selector::HeaderPresent("anthropic-version"),
-    2 => "anthropic", Selector::HeaderPresent("anthropic-beta"),
+    // RUNGS 2 AND 4 ARE NOT HERE. They are the first HEADER rungs to leave this table — two version
+    // headers at two and a key header at four — and they belong to the dialect crate that claims
+    // them, `busbar-plane-llm-anthropic`. The registry's merged walk interleaves a registered
+    // header rung at its number exactly as it does a path rung, so a request carrying one of those
+    // headers is still answered at two or four, above every path rung, as it always was.
 
     // Rung 3: a vendor-specific key header.
     3 => "gemini", Selector::HeaderPresent("x-goog-api-key"),
-
-    // Rung 4: a key header two vendors could in principle send, which is why it sits below rung 2.
-    4 => "anthropic", Selector::HeaderPresent("x-api-key"),
 
     // Rung 5: the action suffixes of one vendor's model-scoped surface.
     5 => "gemini", Selector::PathContains(":generateContent"),
@@ -153,8 +152,8 @@ busbar_contract::claims_from_ladder! {
     // still. It is the second gap in this table, and a second gap is what says the split is a
     // pattern rather than one carve-out.
 
-    // Rung 11: a path that names a dialect only because nothing tighter claimed it.
-    11 => "anthropic", Selector::PathContains("/v1/messages"),
+    // RUNG 11 IS NOT HERE EITHER; it left with rungs 2 and 4, because all three are the same
+    // dialect's. It was the path a request reached only when no vendor header claimed it first.
 
     // Rung 12: one vendor's turn-shaped surface.
     12 => "bedrock", Selector::PathContains("/converse"),
