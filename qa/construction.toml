@@ -222,14 +222,14 @@ because = "busbar-transport-ws × transport (busbar-transport-ws, transport): th
 [[gate.ceiling_raises]]
 key = "cell.busbar.caps.count"
 file = "qa/kind-isolation.toml"
-by = 17
-because = "busbar × caps (busbar, caps): the root's session driver opens each frame's unit in the capability vocabulary the one-shot driver already opens one in — UnitKey, HoldCell, Hold, PrincipalId, OriginKind, Canary — plus the cells' own unit-set double, which is written against the sealed step tokens because that is the only way to observe which unit the driver opened"
+by = 22
+because = "THE PLANE CALL (Track 1 step 5) extends this by 5 (319 -> 324): the driver bridges a `dyn` unit set into the loop's generic one (`Borrowed`, the twelve step forwards), maps the kernel's step name onto the plane's, and reads a settled ending's refusal to hand the plane. busbar × caps (busbar, caps): the root's session driver opens each frame's unit in the capability vocabulary the one-shot driver already opens one in — UnitKey, HoldCell, Hold, PrincipalId, OriginKind, Canary — plus the cells' own unit-set double, which is written against the sealed step tokens because that is the only way to observe which unit the driver opened"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.control.count"
 file = "qa/kind-isolation.toml"
-by = 3
-because = "busbar × control (busbar, control): the root's own composition vocabulary reaching the new module — the driver declared beside its acceptor under the same neutral switch, and the one mapping from a loop ending to the eight words widened to the union of its two readers rather than copied"
+by = 5
+because = "THE PLANE CALL extends this by 2 (1065 -> 1068): `ProductionUnits` carries the composed session units as data and answers the seam over them. busbar × control (busbar, control): the root's own composition vocabulary reaching the new module — the driver declared beside its acceptor under the same neutral switch, and the one mapping from a loop ending to the eight words widened to the union of its two readers rather than copied"
 
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
@@ -1340,8 +1340,8 @@ because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root
 [[gate.ceiling_raises]]
 key = "cell.busbar.contract-transport.count"
 file = "qa/kind-isolation.toml"
-by = 10
-because = "cell (crate = \"busbar\", kind = \"contract-transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and now runs what the acceptor hands it through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. `busbar_contract::transport::…` is the seam both are written against — DuplexWire, SessionBudgets, SessionDriver, SessionEnd for the acceptor, and SessionOpen, SessionFrame, SessionReply, SessionHandle, the surface's Answering/Bar/Dispatch and CloseReason for the driver — and all of it is spelled through the contract rather than through the wire's crate precisely so no transport type is named at the root."
+by = 14
+because = "THE PLANE CALL extends this by 4 (38 -> 42): the driver reads the declared media off the row, the upgrade's transport facts (credential, path) through the seam's own keys, and the served-session cell opens on the plane's real row. cell (crate = \"busbar\", kind = \"contract-transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and now runs what the acceptor hands it through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. `busbar_contract::transport::…` is the seam both are written against — DuplexWire, SessionBudgets, SessionDriver, SessionEnd for the acceptor, and SessionOpen, SessionFrame, SessionReply, SessionHandle, the surface's Answering/Bar/Dispatch and CloseReason for the driver — and all of it is spelled through the contract rather than through the wire's crate precisely so no transport type is named at the root."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.kernel.count"
@@ -1352,5 +1352,5 @@ because = "cell (crate = \"busbar\", kind = \"kernel\"). The composition root co
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
-by = 10
-because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs what it accepts through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. Neither names a wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, the manifest switch that says this build carries a duplex wire, and, for the driver, the declared wire surface a session's row is read off, the registry key an upgrade arrived on and the published transport facts the credential bar is resolved against. All of that is data the plane declared, and none of it is a wire's type."
+by = 16
+because = "THE PLANE CALL extends this by 6 (980 -> 986): the transport view the driver hands the plane is built over the upgrade's own key, chain and published facts, and the served-session cell names the wire the row is carried on. cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs what it accepts through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. Neither names a wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, the manifest switch that says this build carries a duplex wire, and, for the driver, the declared wire surface a session's row is read off, the registry key an upgrade arrived on and the published transport facts the credential bar is resolved against. All of that is data the plane declared, and none of it is a wire's type."

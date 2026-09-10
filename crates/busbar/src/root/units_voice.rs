@@ -127,16 +127,16 @@ use busbar_caps::{
     ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitKey, UnitToken, Usage,
     UsageLine, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::dest::ClientMode;
+use busbar_contract::dest::{ClientMode, DestinationFacts};
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
-use busbar_contract::ClaimKey;
+use busbar_contract::{ClaimKey, UpstreamAddress};
 use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
-use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
+use busbar_unit_admission::{Admission as _, BucketChain, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
@@ -741,6 +741,27 @@ pub struct VoiceNode {
     /// exhaustion decides is every frame after it. Audio already streamed cannot be refunded, so
     /// the next door is the only enforcement point there is.
     exhausted: Mutex<std::collections::BTreeSet<u64>>,
+    /// WHAT THE OPENING UNIT SETTLED FOR EACH OPEN SESSION, for every later unit of it to read.
+    ///
+    /// The dialect the upgrade named, the chain the caller's principal resolved to, and the leg
+    /// Verify sealed — three facts decided ONCE, at the open, and lent to every turn. On the
+    /// node rather than on a unit for the reason the exhaustion marks are: a unit is one frame and
+    /// these outlive it. Written by unit zero's Verify, which is the first step handed the
+    /// principal and the only one that holds the trust token; read by the composition that builds
+    /// each later unit; dropped when the session closes.
+    sessions: Mutex<HashMap<u64, SessionBinding>>,
+}
+
+/// What unit zero settled for one session: read by every unit after it, decided by none of them.
+#[derive(Debug, Clone)]
+pub struct SessionBinding {
+    /// The dialect the upgrade named.
+    pub dialect: Dialect,
+    /// The buckets the caller's principal charges through, resolved once.
+    pub chain: std::sync::Arc<BucketChain>,
+    /// The upstream leg Verify sealed for the session, in the shape the PLANE reads: what the
+    /// plane's upstream half of the codec state is opened for.
+    pub destination: Option<busbar_contract::dest::VerifiedDestination>,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -800,7 +821,35 @@ impl VoiceNode {
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
+            sessions: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// What unit zero settled for a session, if it has.
+    #[must_use]
+    pub fn bound(&self, session: u64) -> Option<SessionBinding> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session)
+            .cloned()
+    }
+
+    /// Unit zero's settlement for a session, written once.
+    fn bind(&self, session: u64, binding: SessionBinding) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session, binding);
+    }
+
+    /// The session is over: its settlement and its open calls go with it.
+    pub fn unbind(&self, session: u64) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+        self.tool_calls.closed(session);
     }
 
     /// Resolve one caller's chain against the configured tree — once, at the session's open.
@@ -813,11 +862,7 @@ impl VoiceNode {
     /// and the unit lent no chain refuses. A caller bound to no group at all is `Some` — a chain of
     /// one uncapped attribution bucket, which is what a deployment with no `groups:` section has.
     #[must_use]
-    pub fn chain_for(
-        &self,
-        principal: &PrincipalId,
-        group: Option<&str>,
-    ) -> Option<busbar_unit_admission::BucketChain> {
+    pub fn chain_for(&self, principal: &PrincipalId, group: Option<&str>) -> Option<BucketChain> {
         self.groups.chain_for(principal.as_str(), group).ok()
     }
 
@@ -1026,6 +1071,30 @@ const TURN_OPENING_TOKENS: u64 = 4_096;
 /// each turn settles against it. This is what "the metering lease is the hold" is sized by.
 const SESSION_OPENING_TURNS: u64 = 8;
 
+/// The chain a unit charges through, however the composition holds it.
+///
+/// Borrowed where the composition owns one value for the node's life; shared where the session's
+/// own settlement owns it — the chain is resolved once at the open and every turn of the session
+/// reads the same one, and a handle to it costs a turn no bucket-id copy either way.
+#[derive(Debug, Clone)]
+pub enum Chain<'n> {
+    /// One value the composition holds for the node's life.
+    Borrowed(&'n BucketChain),
+    /// The session's own, resolved at its open and lent to every turn.
+    Shared(std::sync::Arc<BucketChain>),
+}
+
+impl Chain<'_> {
+    /// The chain itself.
+    #[must_use]
+    pub fn get(&self) -> &BucketChain {
+        match self {
+            Chain::Borrowed(chain) => chain,
+            Chain::Shared(chain) => chain,
+        }
+    }
+}
+
 /// One voice unit, as the loop reaches it.
 ///
 /// Constructed per unit, cheap, and holding only what this unit is about: the node's half is
@@ -1067,7 +1136,7 @@ pub struct VoiceUnit<'n> {
     /// node's configuration does not have, whose caps therefore could not be read. A caller bound
     /// to no group at all has a perfectly good chain of one uncapped attribution bucket, and gets
     /// it.
-    pub chain: Option<&'n busbar_unit_admission::BucketChain>,
+    pub chain: Option<Chain<'n>>,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
     /// The identifier a tool call's answer must carry, as the plane's draft minted it.
@@ -1186,8 +1255,15 @@ impl<'n> VoiceUnit<'n> {
     /// it would be a step deciding its own input — once per frame, for an answer that is the same
     /// every time.
     #[must_use]
-    pub fn charging_through(mut self, chain: &'n busbar_unit_admission::BucketChain) -> Self {
-        self.chain = Some(chain);
+    pub fn charging_through(mut self, chain: &'n BucketChain) -> Self {
+        self.chain = Some(Chain::Borrowed(chain));
+        self
+    }
+
+    /// The chain the session resolved at its open, shared with every turn of it.
+    #[must_use]
+    pub fn sharing_chain(mut self, chain: std::sync::Arc<BucketChain>) -> Self {
+        self.chain = Some(Chain::Shared(chain));
         self
     }
 
@@ -1336,7 +1412,7 @@ impl<'n> VoiceUnit<'n> {
     /// unbounded one. A caller whose caps could not be read is zero, the same fail-closed direction
     /// the door takes.
     fn headroom_nanos(&self) -> u64 {
-        let Some(chain) = self.chain else {
+        let Some(chain) = self.chain.as_ref().map(Chain::get) else {
             return 0;
         };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
@@ -1503,6 +1579,36 @@ impl Units for VoiceUnit<'_> {
             .upstream()
             .map(|upstream| vec![VerifiedDestination::seal(trust, upstream.lane)])
             .unwrap_or_default();
+        // UNIT ZERO SETTLES THE SESSION, here, because this is the first step handed the principal
+        // and the only one holding the sealing token. The chain is resolved once for the caller; the
+        // leg is sealed once more in the shape the PLANE reads, so the composition that drives
+        // this session can open the plane's upstream half for it without minting anything — a
+        // driver cannot seal a destination and must not.
+        if self.shape.is_handshake() {
+            if let Some(chain) = self.node.chain_for(principal, None) {
+                let transport = self.arrival.transport_chain.last().copied().unwrap_or("");
+                let destination = self.upstream().map(|upstream| {
+                    busbar_contract::dest::VerifiedDestination::seal(
+                        trust,
+                        DestinationFacts::Upstream {
+                            transport,
+                            address: UpstreamAddress::socket(upstream.host),
+                            lane: upstream.lane,
+                        },
+                        transport,
+                        None,
+                    )
+                });
+                self.node.bind(
+                    self.session,
+                    SessionBinding {
+                        dialect: self.dialect,
+                        chain: std::sync::Arc::new(chain),
+                        destination,
+                    },
+                );
+            }
+        }
         Decision::proceed(token, destinations)
     }
 
@@ -1592,7 +1698,7 @@ impl Units for VoiceUnit<'_> {
         // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
         // consulted, so a group's `concurrent: 1` would admit every turn that ever arrives. Read
         // from the session rather than resolved here, so this step allocates nothing to be judged.
-        let Some(chain) = self.chain else {
+        let Some(chain) = self.chain.as_ref().map(Chain::get) else {
             // Fail-closed, rendered the way the door renders the same cause: a principal whose caps
             // cannot be read is over quota, not merely rate-limited.
             return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
@@ -2011,6 +2117,95 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::reco
         }
         busbar_contract::FinishClass::Partial => busbar_unit_audit::record::FinishClass::Partial,
         busbar_contract::FinishClass::Error => busbar_unit_audit::record::FinishClass::Error,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The plane's units, composed for a declared duplex run
+// ---------------------------------------------------------------------------------------------
+
+/// THIS PLANE'S UNITS, AS A DECLARED DUPLEX RUN REACHES THEM — the composition the root's
+/// session driver is handed as data.
+///
+/// One unit per moment, built here from what the plane read: the opening moment is unit zero, a
+/// draft whose class is the tool-call class is a tool call, and every other draft the plane's
+/// duplex reader produces is a turn — those are the two classes it produces. The credential and the
+/// path come off the upgrade's published facts through the driver's own accessors; the dialect,
+/// the chain and the sealed leg come off what unit zero settled on the node. Nothing here reads a
+/// frame: the plane already did, and the draft is its reading.
+#[cfg(feature = "root-duplex-serve")]
+#[derive(Clone)]
+pub struct ComposedUnits {
+    node: std::sync::Arc<VoiceNode>,
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl std::fmt::Debug for ComposedUnits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComposedUnits").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl ComposedUnits {
+    /// Compose the plane's units over one node.
+    #[must_use]
+    pub fn new(node: std::sync::Arc<VoiceNode>) -> Self {
+        ComposedUnits { node }
+    }
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl crate::root::session_driver::SessionUnits for ComposedUnits {
+    fn unit<'f>(
+        &'f self,
+        read: &crate::root::session_driver::SessionRead<'_, '_>,
+    ) -> Box<dyn Units + 'f> {
+        let node: &'f VoiceNode = &self.node;
+        let bound = node.bound(read.session);
+        let shape = match read.draft {
+            None => UnitShape::SessionOpen,
+            Some(draft) if draft.op.as_str() == OP_TOOL_CALL => UnitShape::ToolCall,
+            Some(_) => UnitShape::Turn,
+        };
+        // The dialect the upgrade named, read once at the open through the plane's own selector
+        // and settled on the session by unit zero; every later unit reads the settlement.
+        let dialect = bound.as_ref().map_or_else(
+            || {
+                read.path()
+                    .and_then(busbar_plane_voice::claims::dialect_for)
+                    .unwrap_or(Dialect::OpenaiRealtime)
+            },
+            |binding| binding.dialect,
+        );
+        let now_ms = u64::try_from(read.clock.monotonic_nanos / 1_000_000).unwrap_or(u64::MAX);
+        let mut unit = VoiceUnit::new(node, shape, read.session, read.clock.unix_secs)
+            .on_dialect(dialect)
+            .at_ms(now_ms);
+        if let Some(credential) = read.credential() {
+            unit = unit.with_credential(credential);
+        }
+        if let Some(binding) = bound {
+            unit = unit.sharing_chain(binding.chain);
+        }
+        if let Some(CorrelationRef {
+            value: CorrelationValue::Str(call_id),
+            ..
+        }) = read.draft.and_then(|draft| draft.correlation_out)
+        {
+            unit = unit.calling(call_id);
+        }
+        Box::new(unit)
+    }
+
+    fn destination(&self, session: u64) -> Option<busbar_contract::dest::VerifiedDestination> {
+        self.node
+            .bound(session)
+            .and_then(|binding| binding.destination)
+    }
+
+    fn closed(&self, session: u64) {
+        self.node.unbind(session);
     }
 }
 

@@ -1319,7 +1319,7 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "319"
+count = "324"
 
 [[cell]]
 crate = "busbar"
@@ -1329,12 +1329,12 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "38"
+count = "42"
 
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1065"
+count = "1068"
 
 [[cell]]
 crate = "busbar"
@@ -1354,7 +1354,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1772"
+count = "1782"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1379,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "980"
+count = "986"
 
 [[cell]]
 crate = "busbar"

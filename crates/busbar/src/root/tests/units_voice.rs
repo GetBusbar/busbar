@@ -2434,15 +2434,126 @@ fn two_turns_of_one_session_are_handed_the_same_chain() {
 
     let first = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
     let second = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
-    let (Some(one), Some(two)) = (first.chain, second.chain) else {
+    let (Some(one), Some(two)) = (first.chain.as_ref(), second.chain.as_ref()) else {
         panic!("both turns were lent the session's chain");
     };
     assert!(
-        std::ptr::eq(one, two),
+        std::ptr::eq(one.get(), two.get()),
         "one resolved chain, lent twice — not two copies of one answer"
     );
     assert!(
-        std::ptr::eq(one, &chain),
+        std::ptr::eq(one.get(), &chain),
         "and it is the session's own value"
     );
+}
+
+// ── the plane's units, driven through the root's session driver ─────────────────────────────
+
+/// THIS PLANE'S ROW, THIS PLANE'S CODEC AND THIS PLANE'S UNITS, THROUGH THE GENERIC DRIVER.
+///
+/// The driver's own battery drives a plane that does not exist; this is the one cell that drives
+/// the real one through it, so that what the driver's cells prove for ANY plane is shown to hold
+/// for this one. Unit zero runs at the upgrade and settles the session on the node — the dialect,
+/// the chain, the sealed leg — then a first client event opens a turn, judged by this plane's own
+/// units under the session's identity, and the close unbinds what unit zero settled.
+#[cfg(feature = "root-duplex-serve")]
+mod driven {
+    use super::*;
+    use crate::root::session_driver::SessionLoopDriver;
+    use busbar_contract::transport::facts as tfacts;
+    use busbar_contract::transport::session::{
+        Cut, SessionDriver, SessionEnd, SessionFrame, SessionOpen,
+    };
+    use busbar_contract::transport::surface::Bar;
+    use busbar_contract::transport::Outcome;
+    use busbar_contract::wire::CloseReason;
+    use busbar_plane_voice::surface::{BINDING_OPENAI_REALTIME, SURFACE};
+
+    struct NoConfig;
+
+    impl busbar_contract::unit::ConfigView for NoConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_served_session_runs_unit_zero_at_the_upgrade_and_a_turn_per_client_event() {
+        let node = std::sync::Arc::new(node(serviceable()));
+        let units = ComposedUnits::new(std::sync::Arc::clone(&node));
+        let kernel = Kernel::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let driver =
+            SessionLoopDriver::new(&kernel, &units, &node.plane, &NoConfig, &gauge, &canary);
+
+        let facts = [
+            (tfacts::PATH, "/v1/realtime"),
+            (tfacts::CREDENTIAL, "token"),
+        ];
+        let session = driver
+            .open(
+                SessionOpen {
+                    facts: &facts,
+                    transport: "ws",
+                    chain: &["tcp", "http", "ws"],
+                    binding: BINDING_OPENAI_REALTIME,
+                    bar: Bar::Credential,
+                },
+                &SURFACE,
+            )
+            .expect("unit zero completes on a serviceable node with an open door");
+
+        // UNIT ZERO SETTLED THE SESSION: the dialect the path named, the caller's chain, and the
+        // leg sealed in the shape the plane reads.
+        let bound = node
+            .bound(session.0)
+            .expect("unit zero settled the session at Verify");
+        assert_eq!(bound.dialect, Dialect::OpenaiRealtime);
+        assert!(
+            bound.destination.is_some(),
+            "the leg was sealed for the plane's upstream half"
+        );
+
+        // A FIRST CLIENT EVENT OPENS A TURN, judged by this plane's own units and completed.
+        let reply = driver.drive(
+            session,
+            SessionFrame {
+                payload: br#"{"type":"session.update","session":{}}"#,
+                seq: 0,
+            },
+        );
+        assert_eq!(reply.outcome, Outcome::Completed, "the turn ran to its end");
+        assert_eq!(reply.close, None);
+
+        // A LATER EVENT RELAYS ONTO THE OPEN TURN — the upstream half's — and is consumed quietly.
+        let relay = driver.drive(
+            session,
+            SessionFrame {
+                payload: br#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#,
+                seq: 1,
+            },
+        );
+        assert_eq!(relay.outcome, Outcome::Completed);
+        assert!(relay.frames.is_empty());
+
+        // THE CLOSE UNBINDS what unit zero settled.
+        driver.close(
+            session,
+            SessionEnd {
+                cut: Cut::Client,
+                reason: CloseReason::PeerClosed,
+            },
+        );
+        assert!(
+            node.bound(session.0).is_none(),
+            "the settlement went with the session"
+        );
+    }
 }
