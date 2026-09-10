@@ -122,18 +122,18 @@ because = """A SIDEWAYS MOVE, re-pinned on both sides in the commit that makes i
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
-to = 3480
-because = """DECLARED FACE: `busbar_contract::RecordSink` -- the three verbs a plane's kernel-held durable records land in (`record_put`, `record_get`, `record_scan`), standing on their own because they are BOUND on their own: the only trait naming the narrow sink lived in `busbar-kernel`, a crate a store-kind plugin may not name, so the node could not bind a loaded store to a record leg without one side naming the other's crate. `Store` requires it, so nothing is declared twice and a full backend is a record sink without saying so. NET, NOT GROSS: the three verbs MOVE out of the twenty-two-verb `Store`, and what is left over is the trait header and its bound. Measured NET: scripts/loc-surface.py 3478 -> 3480 (+2) over busbar-contract + busbar-caps. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 3500
+because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: scripts/loc-surface.py 3478 -> 3500 over busbar-contract + busbar-caps, of which +2 is the RecordSink face two commits back and +20 is crates/busbar-caps/src/unit.rs plus its one `pub mod` / `pub use` pair; 3500 is section 1.1's 3.5k exactly and nothing was deleted to make room. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3480
-to = 3482
-because = """DECLARED FACE: `busbar_contract::RecordSink` -- the three verbs a plane's kernel-held durable records land in (`record_put`, `record_get`, `record_scan`), standing on their own because they are BOUND on their own: the only trait naming the narrow sink lived in `busbar-kernel`, a crate a store-kind plugin may not name, so the node could not bind a loaded store to a record leg without one side naming the other's crate. `Store` requires it, so nothing is declared twice and a full backend is a record sink without saying so. NET, NOT GROSS: the three verbs MOVE out of the twenty-two-verb `Store`, and what is left over is the trait header and its bound. Measured NET: the gate's own call-graph count 3480 -> 3482 (+2), busbar-caps 1153 + busbar-contract 2329. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 3502
+because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the gate's own call-graph count 3480 -> 3502, busbar-caps 1173 + busbar-contract 2329. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23467
-because = """DECLARED FACE: `busbar_contract::RecordSink` -- the three verbs a plane's kernel-held durable records land in (`record_put`, `record_get`, `record_scan`), standing on their own because they are BOUND on their own: the only trait naming the narrow sink lived in `busbar-kernel`, a crate a store-kind plugin may not name, so the node could not bind a loaded store to a record leg without one side naming the other's crate. `Store` requires it, so nothing is declared twice and a full backend is a record sink without saying so. NET, NOT GROSS: the three verbs MOVE out of the twenty-two-verb `Store`, and what is left over is the trait header and its bound. Measured NET: the same +2 read through the kernel + caps/contract + unit-* union, which sums caps/contract and therefore moves with it: 23465 -> 23467, against section 1.1's 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 23487
+because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the same +22 read through the kernel + caps/contract + unit-* union, which sums caps/contract and therefore moves with it: 23465 -> 23487, against section 1.1's 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."cell.54.count"]
 file = "qa/kind-isolation.toml"
@@ -153,7 +153,7 @@ because = """DECLARED: `[[cell]] busbar-store-memory x kernel` 2 -> 3. The one n
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3480
+contract_caps = 3500
 grammar = 388
 contract_transport = 845
 
@@ -374,12 +374,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3482
+caps_contract_ceiling = 3502
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23467
+union_ceiling = 23487
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
