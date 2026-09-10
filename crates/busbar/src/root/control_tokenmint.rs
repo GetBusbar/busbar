@@ -176,16 +176,28 @@ fn build_slot(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
             }
         }),
     );
-    Some(surface)
+    Some(Arc::new(Slot(surface)))
 }
+
+/// THE SLOT'S TYPE, and it is a newtype rather than the surface itself for a reason worth one line:
+/// the fold erases what `build` returns as `Arc<dyn Any>`, so a slot holding the surface DIRECTLY
+/// hands `routes` a `&TokenMint` it cannot get an `Arc` back out of — and the per-request handler
+/// closure has to own one. Holding the `Arc` inside a newtype keeps the one surface one object,
+/// shared by every route, rather than the seam forcing a second.
+struct Slot(Arc<TokenMint>);
 
 /// TRANSLATE THE CRATE'S DECLARED TABLE into the neutral route seam — one spec per row of
 /// `claims::ROUTES`, in the crate's own mount order, so a boot listing reads as it did.
 fn routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
-    let Some(surface) = slot.downcast_ref::<Arc<TokenMint>>() else {
-        return Vec::new();
-    };
-    ROUTES.iter().map(|route| spec_of(route, surface)).collect()
+    // A PANIC AND NOT AN EMPTY VEC. `routes` is only called for a key that produced a slot, and this
+    // row is the only thing that puts one under that key — so a failed downcast is this file
+    // disagreeing with itself. Returning no routes there leaves the issuer's seven paths unclaimed
+    // and lets the protocol catch-all answer them 401, which is a silent mis-mount indistinguishable
+    // from a deployment that is not an authorization server. It cost this rebuild one judge run.
+    let slot = slot
+        .downcast_ref::<Slot>()
+        .expect("the issuer's slot is what this row's own `build` put there");
+    ROUTES.iter().map(|route| spec_of(route, &slot.0)).collect()
 }
 
 /// One declared row, as one `PlaneRouteSpec`.
