@@ -26,30 +26,31 @@
 //! apply), while the `GovState` token ledger survives the apply - which is exactly what makes
 //! reprice-on-reload work.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use busbar_api::{ScopeRef, RESERVED_UNITS};
+use busbar_api::RESERVED_UNITS;
 // The engine's one seam onto the cost unit: every other module in this crate that needs one of the
 // unit's constants reads it through here rather than naming the unit itself.
 pub(crate) use busbar_unit_cost::{
-    CurrencyCode, LaneRates, RateCard, TierRates, NANOS_PER_CENT, NANOS_PER_MICRO,
+    CurrencyCode, GroupRuntime, LaneRates, RateCard, TierRates, NANOS_PER_CENT, NANOS_PER_MICRO,
 };
-
-use crate::config::groups::LimitMetric;
+// THE DRAIN EDGE, read rather than restated: the resolved topology is the cost unit's
+// (`GroupTable`) and the WALK over it is the admission unit's (`ChainWalk`, which yields a
+// `BucketChain`). This module used to declare a second copy of both — its own `GroupBucket`,
+// `GroupRuntime`, `project_groups` and `Chain` — and two projections of the money topology that must
+// agree exactly is how a deployment comes to be ADMITTED against one set of ledger cells and BILLED
+// against another. The copies are gone; what is left here is a CURSOR over the unit's values (see
+// [`BucketView`]), which holds no topology of its own.
+use busbar_unit_admission::{BucketChain, ChainWalk};
+use busbar_unit_cost::GroupTable;
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
-/// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
-/// are `group:<name>@<window>` - one ledger row per (group, window granularity), so a group with
-/// limits in several windows never double-counts a flush into one row. A SCOPE-QUALIFIED bucket
-/// (limits carrying `pool: <name>`, i.e. `scope: { kind: "pool", value: <name> }`) appends
-/// `#<kind>:<value>`: `group:<name>@<window>#pool:<name>` - its own ledger row, accounting only
-/// the traffic dispatched through that scope. (Generic-admission-topology generalization: the
-/// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
-/// since no store persists this literal string durably yet.)
-pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
+/// collide with a real key's bucket. Read from the crate that builds the ids rather than restated,
+/// so the reader that PARSES one and the projection that WRITES one cannot drift.
+pub(crate) use busbar_unit_cost::GROUP_BUCKET_PREFIX;
 
 /// Whether `bucket_id` is a bucket of the group named `group` — an EXACT structural match against
-/// the construction `project_groups` uses, NOT a prefix test.
+/// the construction the projection uses, NOT a prefix test.
 ///
 /// A GROUP NAME MAY CONTAIN `@` (and `#`). Nothing rejects it: `validate_groups` checks
 /// parent-existence / acyclicity / pool refs (the `amount > 0` rule lives in
@@ -92,71 +93,25 @@ fn reserved_nanos(lane: &LaneRates<'_>, units: &BTreeMap<String, u64>) -> u128 {
     })
 }
 
-/// One (group, window, pool?) ENFORCEMENT BUCKET, resolved from the group's windowed limits:
-/// every limit of the group that shares this window AND pool scope enforces against this one
-/// ledger cell. The three windowed metrics are independent caps on the same cell's counters
-/// (requests / total tokens / derived spend).
-#[derive(Debug, Clone)]
-pub(crate) struct GroupBucket {
-    /// The store/ledger bucket id: `group:<name>@<window>`, or `group:<name>@<window>#<pool>`
-    /// for a pool-scoped bucket.
-    pub(crate) bucket_id: String,
-    /// The window word (`minute` | `hour` | `day` | `month` | `total`) - the `budget_window`
-    /// period sentinel AND the metrics/error vocabulary.
-    pub(crate) window: &'static str,
-    /// Request-count cap per window (`{ requests: N, per: <window> }`), if any.
-    pub(crate) requests_cap: Option<u64>,
-    /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort like the
-    /// old TPM: tokens land post-response, so the cap blocks the NEXT request once crossed.
-    pub(crate) tokens_cap: Option<u64>,
-    /// Per-tier token caps (`{ tokens_input: N, per: <window> }` etc.), each best-effort exactly
-    /// like `tokens_cap`. Mirror the cost tiers: `tokens_input` = uncached input, `tokens_output`
-    /// = output, `tokens_cache_read`, `tokens_cache_write` = cache creation.
-    pub(crate) tokens_input_cap: Option<u64>,
-    pub(crate) tokens_output_cap: Option<u64>,
-    pub(crate) tokens_cache_read_cap: Option<u64>,
-    pub(crate) tokens_cache_write_cap: Option<u64>,
-    /// Spend cap per window (`{ budget: N, per: <window> }`) in abstract cents, if any. Derived at
-    /// check time from the cell's token ledger x the current rate card (+ the flat per-request
-    /// fee x requests).
-    pub(crate) budget_cap: Option<i64>,
-    /// `Some(scope)` = this bucket accounts ONLY traffic dispatched through that scope (limits
-    /// carrying `pool: <name>`, i.e. `kind: "pool"`); `None` = group-wide (every request through
-    /// the group).
-    pub(crate) scope: Option<ScopeRef>,
-    /// Where BUDGET-exhausted traffic goes instead of a rejection (`on_exhaust: downgrade,
-    /// downgrade_to: <pool>` on the governing budget limit). `None` = block (the default). When
-    /// several budget limits merge into this bucket, the MOST RESTRICTIVE (minimum) cap's
-    /// behavior governs - it is the one that actually blocks.
-    pub(crate) downgrade_to: Option<ScopeRef>,
-}
-
-/// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
-/// (by index, so the chain walk is index-chasing with zero hashing).
-#[derive(Debug, Clone)]
-pub(crate) struct GroupRuntime {
-    pub(crate) name: String,
-    /// `false` FREEZES the group: every request charging through it (its own keys AND every
-    /// descendant's) is rejected while history is kept.
-    pub(crate) enabled: bool,
-    /// The instantaneous in-flight cap (`{ concurrent: N }` - no window), if any.
-    pub(crate) concurrent_cap: Option<u64>,
-    /// The group's windowed enforcement buckets, one per distinct window its limits use (config
-    /// order of first use). Empty for a group with only a `concurrent` limit (or none).
-    pub(crate) buckets: Vec<GroupBucket>,
-    pub(crate) parent: Option<usize>,
-}
-
-/// One bucket of a resolved enforcement chain (borrowed views into the key / the `CostModel`).
+/// ONE ENFORCEMENT BUCKET OF A RESOLVED CHAIN, AS A CURSOR — every field is a borrow of, or a `Copy`
+/// off, a value the units own; nothing here is a copy of the topology.
+///
+/// It exists because a chain has TWO sources and the enforcement walks read them uniformly. The
+/// group half is [`busbar_unit_admission::ChainBucket`], resolved ONCE per group when the model is
+/// built and thereafter only borrowed. The principal's own attribution bucket is the KEY ID, which
+/// is per-request and belongs to the key — materialising it as an owned bucket would be one heap
+/// allocation on the admission path for a bucket that carries no caps and can never block. So the
+/// two are read through this view instead, and the admission path allocates NOTHING to resolve a
+/// chain (`cost_tests::chain_read_is_a_borrow_not_a_build` pins that: two keys of one group read
+/// the SAME chain, by address).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ChainBucket<'a> {
+pub(crate) struct BucketView<'a> {
     /// The store/ledger bucket id (the key id, or `group:<name>@<window>[#<pool>]`).
     pub(crate) bucket_id: &'a str,
     /// The operator-facing group name for diagnostics; `None` for the key's own bucket.
     pub(crate) group_name: Option<&'a str>,
     /// The bucket's window word - the `budget_window` period sentinel (`total` for the key's own
-    /// attribution bucket). `'static`: both sources (the group buckets and the key's `total`) are
-    /// compile-time sentinels.
+    /// attribution bucket).
     pub(crate) window: &'static str,
     pub(crate) requests_cap: Option<u64>,
     pub(crate) tokens_cap: Option<u64>,
@@ -165,115 +120,126 @@ pub(crate) struct ChainBucket<'a> {
     pub(crate) tokens_cache_read_cap: Option<u64>,
     pub(crate) tokens_cache_write_cap: Option<u64>,
     pub(crate) budget_cap: Option<i64>,
-    /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
-    /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
-    /// to every request through the group.
-    pub(crate) scope: Option<&'a ScopeRef>,
-    /// The budget limit's `downgrade_to` scope, when it declared `on_exhaust: downgrade`.
-    pub(crate) downgrade_to: Option<&'a ScopeRef>,
+    /// `Some(pool)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
+    /// request was dispatched through that pool. `None` = applies to every request through the
+    /// group.
+    pub(crate) scope: Option<&'a str>,
+    /// The budget limit's `downgrade_to` pool, when it declared `on_exhaust: downgrade`.
+    pub(crate) downgrade_to: Option<&'a str>,
 }
 
-impl ChainBucket<'_> {
+impl<'a> BucketView<'a> {
+    /// The principal's own attribution bucket: the key id, no caps, the all-time window. It is
+    /// there so every posting is attributed, it is charged on every admission, and it can never
+    /// block.
+    fn attribution(key_id: &'a str) -> Self {
+        BucketView {
+            bucket_id: key_id,
+            group_name: None,
+            window: crate::governance::WINDOW_TOTAL,
+            requests_cap: None,
+            tokens_cap: None,
+            tokens_input_cap: None,
+            tokens_output_cap: None,
+            tokens_cache_read_cap: None,
+            tokens_cache_write_cap: None,
+            budget_cap: None,
+            scope: None,
+            downgrade_to: None,
+        }
+    }
+
+    /// A cursor onto one of the walk's resolved group buckets. Borrows; copies only the caps,
+    /// which are integers.
+    fn of(b: &'a busbar_unit_admission::ChainBucket) -> Self {
+        BucketView {
+            bucket_id: &b.bucket_id,
+            group_name: b.group_name.as_deref(),
+            window: b.window,
+            requests_cap: b.requests_cap,
+            tokens_cap: b.tokens_cap,
+            tokens_input_cap: b.tokens_input_cap,
+            tokens_output_cap: b.tokens_output_cap,
+            tokens_cache_read_cap: b.tokens_cache_read_cap,
+            tokens_cache_write_cap: b.tokens_cache_write_cap,
+            budget_cap: b.budget_cap,
+            scope: b.scope.as_deref(),
+            downgrade_to: b.downgrade_to.as_deref(),
+        }
+    }
+
     /// Whether this bucket participates in a request dispatched through `pool` - group-wide
     /// buckets always do; a pool-scoped bucket only for its own pool. Every enforcement walk
     /// (admit / charge / refund / accrue / headroom) keys off this ONE predicate so the paths
-    /// can never disagree on what was charged vs what is refunded. Hardcodes `kind: "pool"`
-    /// deliberately - THIS call site is the one that knows it is checking pool admission (see
-    /// `ScopeRef`'s doc: each admission site names the kind it expects, `ScopeRef` itself stays
-    /// kind-agnostic).
+    /// can never disagree on what was charged vs what is refunded.
     pub(crate) fn applies_to_pool(&self, pool: &str) -> bool {
-        self.scope
-            .is_none_or(|s| s.kind == "pool" && s.value == pool)
+        self.scope.is_none_or(|s| s == pool)
     }
 }
 
-/// A resolved enforcement chain: the key's attribution bucket plus every ancestor group's
-/// per-window buckets, innermost group first. Sized by the chain actually walked (the tree is
-/// unbounded by policy; a chain can never exceed the number of groups — cycles are a validate
-/// error and the walk clamps there defensively). Also carries the GROUP INDICES walked (for the
-/// `enabled` freeze check and the `concurrent` gauges, which are per group, not per window
-/// bucket).
+/// A resolved enforcement chain for ONE KEY: the key's attribution bucket plus the GROUP HALF, which
+/// is a borrow of a chain the model resolved once and holds for its whole life.
+///
+/// The group half depends only on the group the key is bound to, and the model is immutable once
+/// resolved — so it is walked at BOOT, once per group, and every request that arrives on that group
+/// thereafter reads the same value. What is per-request is the key id and nothing else.
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Chain<'a> {
-    buckets: Vec<ChainBucket<'a>>,
-    groups: Vec<usize>,
+    key_id: &'a str,
+    groups: &'a BucketChain,
 }
 
 impl<'a> Chain<'a> {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &ChainBucket<'a>> {
-        self.buckets.iter()
+    /// Every bucket of the chain, innermost first: the key's attribution bucket, then the
+    /// innermost group's window buckets, then its parent's, to the root.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = BucketView<'a>> {
+        std::iter::once(BucketView::attribution(self.key_id))
+            .chain(self.groups.buckets().iter().map(BucketView::of))
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.buckets.len()
+        1 + self.groups.buckets().len()
     }
 
-    /// The `CostModel::groups()` indices of the chain's groups, innermost first.
-    pub(crate) fn group_indices(&self) -> &[usize] {
-        &self.groups
+    /// The chain's groups, innermost first — the `enabled` freeze flag and the `concurrent` gauge
+    /// are per GROUP, not per window bucket.
+    pub(crate) fn groups(&self) -> &'a [busbar_unit_admission::ChainGroup] {
+        self.groups.groups()
     }
 }
 
-/// One resolved group as plain, comparable data. See [`CostModel::resolved_view`].
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedGroupView {
-    /// The group's name.
-    pub name: String,
-    /// The freeze flag, verbatim from config.
-    pub enabled: bool,
-    /// The in-flight gauge, folded to the minimum across repeats.
-    pub concurrent_cap: Option<u64>,
-    /// The parent's index in the resolved order, or none.
-    pub parent: Option<usize>,
-    /// The group's windowed enforcement buckets, in the order the projection materialised them.
-    pub buckets: Vec<ResolvedBucketView>,
-}
+// THE BYTE-IDENTITY VIEW IS GONE, WITH THE SECOND PROJECTION IT EXISTED TO WATCH.
+//
+// `ResolvedGroupView`/`ResolvedBucketView`/`resolved_view`/`resolved_fee` were here so a cell could
+// drive one `(rate_card, fee, groups)` through this engine's projection AND the composition root's
+// and compare every field, because two projections of the money topology that must agree exactly is
+// how a deployment comes to be ADMITTED against one set of ledger cells and BILLED against another.
+// There is one projection now — `busbar_unit_cost::GroupTable::resolve`, over the values the one
+// `GroupCfg` -> `GroupSpec` relay hands it — and both readers drive it. A comparison of a value
+// against itself is not a cell, so the view died with the hazard rather than outliving it; what the
+// root's cell asserts instead is that the two readers resolve the SAME `GroupRuntime` values, by
+// the unit's own equality, which is the claim that is now worth making.
 
-/// One resolved enforcement bucket as plain, comparable data. See [`CostModel::resolved_view`].
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedBucketView {
-    /// The ledger cell this bucket reads and charges.
-    pub bucket_id: String,
-    /// The window word.
-    pub window: &'static str,
-    /// The request-count cap, folded to the most restrictive.
-    pub requests_cap: Option<u64>,
-    /// The total-token cap, folded to the most restrictive.
-    pub tokens_cap: Option<u64>,
-    /// The uncached-input token cap.
-    pub tokens_input_cap: Option<u64>,
-    /// The output token cap.
-    pub tokens_output_cap: Option<u64>,
-    /// The cache-read token cap.
-    pub tokens_cache_read_cap: Option<u64>,
-    /// The cache-write token cap.
-    pub tokens_cache_write_cap: Option<u64>,
-    /// The spend cap in abstract cents.
-    pub budget_cap: Option<i64>,
-    /// The bucket's scope as `(kind, value)`, or none for a group-wide bucket.
-    pub scope: Option<(String, String)>,
-    /// The governing budget limit's downgrade target as `(kind, value)`, or none for a block.
-    pub downgrade_to: Option<(String, String)>,
-}
-
-/// A scope reference as the `(kind, value)` pair the comparison is over.
-#[cfg(any(test, feature = "test-support"))]
-fn scope_pair(s: &ScopeRef) -> (String, String) {
-    (s.kind.to_string(), s.value.to_string())
-}
-
-/// The resolved cost model: the effective integer rate table + the group limit topology + the
-/// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
+/// The resolved cost model: the cost unit's own model (the effective integer rate table + the
+/// resolved `groups:` topology + the flat per-request fee) plus the two things the retiring engine
+/// needs on top of it. Immutable once resolved; rebuilt with the config on apply/reload.
 pub struct CostModel {
-    /// The cost unit's card: absent = token pricing 0 for every model; present = the AUTHORITATIVE
-    /// effective table, straight from the top-level `rate_card:` (the ONLY cost source), with the
-    /// flat per-request fee. The unit's `nano_rate` is the one micro-to-nano projection.
-    card: RateCard,
-    groups: Vec<GroupRuntime>,
-    group_idx: HashMap<String, usize>,
+    /// THE MODEL, resolved by the crate that owns money. The card and the group topology are one
+    /// value because a budget cap is a number in one configured section compared against a sum
+    /// derived from the other.
+    inner: busbar_unit_cost::CostModel,
+    /// THE CHAIN PER GROUP, WALKED ONCE. The group half of a chain depends only on the group a key
+    /// is bound to, and this model is immutable, so the admission unit's walk runs at BOOT — once
+    /// per group — and every request on that group thereafter READS the resolved value rather than
+    /// rebuilding it. Indexed by the group's position in the table, so the lookup is the same
+    /// index-chase the walk itself is.
+    chains: Vec<BucketChain>,
+    /// The chain of a key bound to NO group: no group buckets and no groups. Held as a value rather
+    /// than built per read for the same reason the rest are — an unbound key's chain is one shape,
+    /// and a read of it allocates nothing either.
+    empty_chain: BucketChain,
     /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
-    /// `project_groups` just emitted, indexed for O(1) membership. This is what makes
+    /// the projection just emitted, indexed for O(1) membership. This is what makes
     /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
     /// the ids the model produces?) instead of a parse of the id's internal structure.
     capped_bucket_ids: std::collections::HashSet<String>,
@@ -281,8 +247,8 @@ pub struct CostModel {
 
 impl CostModel {
     /// Resolve from config. Assumes `config_validate` has already passed (completeness, acyclic
-    /// groups, valid limit shapes); this is a pure projection and is defensive, never panicking,
-    /// on anything validation should have caught.
+    /// groups, valid limit shapes); the projection it delegates to is pure and is defensive, never
+    /// panicking, on anything validation should have caught.
     pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
@@ -310,13 +276,7 @@ impl CostModel {
             }),
             per_request_fee,
         );
-        let (groups, group_idx) = Self::project_groups(groups_cfg);
-        Self {
-            capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            card,
-            groups,
-            group_idx,
-        }
+        Self::from_card(card, groups_cfg)
     }
 
     /// Rebuild the model with a NEW groups map, reusing the resolved rate card + flat fee unchanged.
@@ -327,18 +287,64 @@ impl CostModel {
         &self,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
-        let (groups, group_idx) = Self::project_groups(groups_cfg);
+        Self::from_card(self.inner.card().clone(), groups_cfg)
+    }
+
+    /// The one construction point both entries share: relay the configured tree through the ONE
+    /// `GroupCfg` -> `GroupSpec` relay, hand it to the unit that projects it, and walk each group's
+    /// chain once.
+    ///
+    /// THE PROJECTION IS NOT HERE AND IS NOT ANYWHERE ELSE EITHER. It used to be here as well as in
+    /// the composition root, and two projections of the money topology that must agree exactly is
+    /// how a deployment comes to be ADMITTED against one set of ledger cells and BILLED against
+    /// another — silently, because both answers are internally consistent and neither knows the
+    /// other exists. Both readers now drive `busbar_unit_cost::GroupTable::resolve` over the values
+    /// `busbar_substrate::config::groups::group_specs` relays, so there is one reading of the
+    /// section and nothing left to disagree with.
+    ///
+    /// The relay's lease-id map is EMPTY here: interning a group name into a static vocabulary is
+    /// something only a composition root does, the projection is identical either way, and this
+    /// engine reads no lease id off the resolved table.
+    fn from_card(
+        card: RateCard,
+        groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    ) -> Self {
+        let specs = busbar_substrate::config::groups::group_specs(
+            groups_cfg,
+            &std::collections::BTreeMap::new(),
+        );
+        let inner = busbar_unit_cost::CostModel::resolve_parts(card, &specs);
+        let table = inner.groups();
+        let chains = (0..table.groups().len())
+            .map(|i| Self::group_chain(table, i))
+            .collect();
         Self {
-            capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            card: self.card.clone(),
-            groups,
-            group_idx,
+            capped_bucket_ids: Self::capped_bucket_ids(table.groups()),
+            chains,
+            empty_chain: BucketChain::unchecked(Vec::new(), Vec::new()),
+            inner,
         }
     }
 
+    /// The GROUP HALF of the chain that starts at `index`, walked once by the admission unit and
+    /// kept for the model's whole life.
+    ///
+    /// The walk yields the principal's attribution bucket first and then the groups', and the
+    /// attribution bucket is the one part that is NOT shareable — it is the key id, which is
+    /// per-request. So it is walked with an empty id and dropped, and each request supplies its own
+    /// through [`BucketView::attribution`], which borrows. That is the whole reason a chain read
+    /// costs no allocation.
+    fn group_chain(table: &GroupTable, index: usize) -> BucketChain {
+        let name = table.groups()[index].name.as_str();
+        let walked = table
+            .chain_for("", Some(name))
+            .expect("the name came from the table being walked");
+        BucketChain::unchecked(walked.buckets()[1..].to_vec(), walked.groups().to_vec())
+    }
+
     /// Index the ids of every projected bucket that carries at least one windowed cap. Built from
-    /// the SAME `GroupBucket`s the engine enforces against, so the set can never disagree with the
-    /// model about which cells are load-bearing.
+    /// the SAME buckets the engine enforces against, so the set can never disagree with the model
+    /// about which cells are load-bearing.
     fn capped_bucket_ids(groups: &[GroupRuntime]) -> std::collections::HashSet<String> {
         groups
             .iter()
@@ -363,187 +369,13 @@ impl CostModel {
         self.capped_bucket_ids.contains(bucket_id)
     }
 
-    /// Project a `GroupCfg` map into the runtime enforcement form: sorted `GroupRuntime` vec + a
-    /// name→index map (parents resolved to indices). Shared verbatim by `resolve_parts` (boot/apply)
-    /// and `with_groups` (runtime group mutation) so the two paths can never drift.
-    fn project_groups(
-        groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
-    ) -> (Vec<GroupRuntime>, HashMap<String, usize>) {
-        let mut group_names: Vec<&String> = groups_cfg.keys().collect();
-        group_names.sort();
-        let group_idx: HashMap<String, usize> = group_names
-            .iter()
-            .enumerate()
-            .map(|(i, n)| ((*n).clone(), i))
-            .collect();
-        let groups: Vec<GroupRuntime> = group_names
-            .iter()
-            .map(|name| {
-                let g = &groups_cfg[name.as_str()];
-                // Project the group's generic limits into per-(window, pool) enforcement buckets.
-                // A bucket materialises on first use (config order); a metric repeated for the
-                // same window + pool scope keeps the MOST RESTRICTIVE (minimum) amount - AND
-                // semantics inside one group, same as across the chain. A pool-qualified limit
-                // gets its OWN bucket (its own ledger row), so `budget: 5000 pool: frontier` and
-                // `budget: 5000 pool: value` account independently.
-                let mut buckets: Vec<GroupBucket> = Vec::new();
-                let mut concurrent_cap: Option<u64> = None;
-                for l in &g.limits {
-                    match (l.metric, l.per) {
-                        (LimitMetric::Concurrent, _) => {
-                            concurrent_cap =
-                                Some(concurrent_cap.map_or(l.amount, |c: u64| c.min(l.amount)));
-                        }
-                        (metric, Some(window)) => {
-                            let w = window.as_str();
-                            let bucket = match buckets
-                                .iter_mut()
-                                .find(|b| b.window == w && b.scope == l.scope)
-                            {
-                                Some(b) => b,
-                                None => {
-                                    let bucket_id = match &l.scope {
-                                        Some(s) => {
-                                            format!(
-                                                "{GROUP_BUCKET_PREFIX}{name}@{w}#{}:{}",
-                                                s.kind, s.value
-                                            )
-                                        }
-                                        None => format!("{GROUP_BUCKET_PREFIX}{name}@{w}"),
-                                    };
-                                    buckets.push(GroupBucket {
-                                        bucket_id,
-                                        window: w,
-                                        requests_cap: None,
-                                        tokens_cap: None,
-                                        tokens_input_cap: None,
-                                        tokens_output_cap: None,
-                                        tokens_cache_read_cap: None,
-                                        tokens_cache_write_cap: None,
-                                        budget_cap: None,
-                                        scope: l.scope.clone(),
-                                        downgrade_to: None,
-                                    });
-                                    buckets.last_mut().expect("just pushed")
-                                }
-                            };
-                            let min_u = |cur: Option<u64>| {
-                                Some(cur.map_or(l.amount, |c: u64| c.min(l.amount)))
-                            };
-                            match metric {
-                                LimitMetric::Requests => {
-                                    bucket.requests_cap = min_u(bucket.requests_cap)
-                                }
-                                LimitMetric::Tokens => bucket.tokens_cap = min_u(bucket.tokens_cap),
-                                LimitMetric::TokensInput => {
-                                    bucket.tokens_input_cap = min_u(bucket.tokens_input_cap)
-                                }
-                                LimitMetric::TokensOutput => {
-                                    bucket.tokens_output_cap = min_u(bucket.tokens_output_cap)
-                                }
-                                LimitMetric::TokensCacheRead => {
-                                    bucket.tokens_cache_read_cap =
-                                        min_u(bucket.tokens_cache_read_cap)
-                                }
-                                LimitMetric::TokensCacheWrite => {
-                                    bucket.tokens_cache_write_cap =
-                                        min_u(bucket.tokens_cache_write_cap)
-                                }
-                                LimitMetric::Budget => {
-                                    let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
-                                    // The MOST RESTRICTIVE budget's exhaustion behavior governs:
-                                    // it is the cap that actually blocks, so its downgrade (or
-                                    // its absence = block) is what fires.
-                                    if bucket.budget_cap.is_none_or(|c| amount < c) {
-                                        bucket.downgrade_to = l.downgrade_to.clone();
-                                    }
-                                    bucket.budget_cap = Some(
-                                        bucket.budget_cap.map_or(amount, |c: i64| c.min(amount)),
-                                    );
-                                }
-                                LimitMetric::Concurrent => unreachable!("matched above"),
-                            }
-                        }
-                        // A windowed metric with no `per` cannot deserialize (LimitCfg enforces the
-                        // shape at parse); defensively skip rather than panic.
-                        (_, None) => {}
-                    }
-                }
-                GroupRuntime {
-                    name: (*name).clone(),
-                    enabled: g.enabled,
-                    concurrent_cap,
-                    buckets,
-                    // A missing parent is a validate error; defensively resolve to None here so a
-                    // bad config that somehow booted degrades to a shorter chain, never a panic.
-                    parent: g.parent.as_deref().and_then(|p| group_idx.get(p).copied()),
-                }
-            })
-            .collect();
-        (groups, group_idx)
-    }
-
-    /// THE RESOLVED TOPOLOGY AS PLAIN DATA, for the byte-identity cell and nothing else.
-    ///
-    /// The `groups:` projection lives twice in the tree while the retirement is in flight: here, and
-    /// in the composition root's own resolution of the same section into the door's table. Two
-    /// projections of the money topology that must agree exactly is how a deployment comes to be
-    /// ADMITTED against one set of buckets and BILLED against another — silently, because both
-    /// answers are internally consistent and neither knows the other exists.
-    ///
-    /// Every field the projection decides is here, in the order it decides them, so the comparison
-    /// is over the whole resolved value rather than over a summary of it: a divergence this view
-    /// cannot express is a divergence the cell cannot catch. The scope and downgrade references
-    /// carry their KIND as well as their value, because the kind is the one field the two
-    /// projections do not both keep.
-    ///
-    /// Test-support only, and it dies with this module: nothing shipped reads it.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn resolved_view(&self) -> Vec<ResolvedGroupView> {
-        self.groups
-            .iter()
-            .map(|g| ResolvedGroupView {
-                name: g.name.clone(),
-                enabled: g.enabled,
-                concurrent_cap: g.concurrent_cap,
-                parent: g.parent,
-                buckets: g
-                    .buckets
-                    .iter()
-                    .map(|b| ResolvedBucketView {
-                        bucket_id: b.bucket_id.clone(),
-                        window: b.window,
-                        requests_cap: b.requests_cap,
-                        tokens_cap: b.tokens_cap,
-                        tokens_input_cap: b.tokens_input_cap,
-                        tokens_output_cap: b.tokens_output_cap,
-                        tokens_cache_read_cap: b.tokens_cache_read_cap,
-                        tokens_cache_write_cap: b.tokens_cache_write_cap,
-                        budget_cap: b.budget_cap,
-                        scope: b.scope.as_ref().map(scope_pair),
-                        downgrade_to: b.downgrade_to.as_ref().map(scope_pair),
-                    })
-                    .collect(),
-            })
-            .collect()
-    }
-
-    /// The resolved flat per-request fee, for the same cell. The fee is a clamped projection of a
-    /// configured number and the clamp is part of what has to agree.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn resolved_fee(&self) -> i64 {
-        self.price_per_request_cents()
-    }
-
     /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
     #[cfg(any(test, feature = "test-support"))]
     pub fn flat(price_per_request_cents: i64) -> Self {
-        Self {
-            card: RateCard::absent(price_per_request_cents),
-            groups: Vec::new(),
-            group_idx: HashMap::new(),
-            capped_bucket_ids: std::collections::HashSet::new(),
-        }
+        Self::from_card(
+            RateCard::absent(price_per_request_cents),
+            &std::collections::BTreeMap::new(),
+        )
     }
 
     /// Resolve a CONFIGURED model name to its rate-card key. 1.5.0: the rate card is keyed by the
@@ -561,20 +393,32 @@ impl CostModel {
     /// [`BudgetHost::cost_pricing_enabled`](busbar_substrate::plane_host::BudgetHost::cost_pricing_enabled)
     /// seam, which downcasts the opaque cost handle and drives this same read.
     pub fn pricing_enabled(&self) -> bool {
-        self.card.pricing_enabled()
+        self.inner.pricing_enabled()
     }
 
     /// The flat per-request fee in abstract cents, clamped at zero by the card.
     pub(crate) fn price_per_request_cents(&self) -> i64 {
-        self.card.per_request_fee(CurrencyCode::USD)
+        self.inner.card().per_request_fee(CurrencyCode::USD)
     }
 
+    /// THE RESOLVED TOPOLOGY, straight off the unit's table.
+    ///
+    /// `pub` under test support for the one-projection cell, which asserts that this engine and the
+    /// composition root resolve the SAME `GroupRuntime` values off one configuration — the claim
+    /// that replaced the field-by-field byte-identity view when the second projection died.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn groups(&self) -> &[GroupRuntime] {
+        self.inner.groups().groups()
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn groups(&self) -> &[GroupRuntime] {
-        &self.groups
+        self.inner.groups().groups()
     }
 
     pub(crate) fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
-        self.group_idx.get(name).map(|&i| &self.groups[i])
+        let table = self.inner.groups();
+        table.index_of(name).map(|i| &table.groups()[i])
     }
 
     /// The effective rates for `model` (post-`upstream_model` resolution), read off the card.
@@ -586,7 +430,7 @@ impl CostModel {
     ///   ledger rows written before a config change).
     #[inline]
     fn lane(&self, model: &str) -> Option<LaneRates<'_>> {
-        self.card.lane_rates(model, CurrencyCode::USD)
+        self.inner.card().lane_rates(model, CurrencyCode::USD)
     }
 
     /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
@@ -620,7 +464,7 @@ impl CostModel {
     /// seam over the same opaque handle.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
-        self.card.lane_unpriced(model)
+        self.inner.model_unpriced(model)
     }
 
     /// DERIVE the spend (in cents, abstract minor units) of a ledger view: a few multiply-adds
@@ -687,9 +531,14 @@ impl CostModel {
         }
     }
 
-    /// Resolve the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
-    /// buckets -> parent's -> ... root, innermost first. Borrows the key + this model's group
-    /// table; allocates only the chain vectors themselves.
+    /// READ the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
+    /// buckets -> parent's -> ... root, innermost first.
+    ///
+    /// A READ AND NOT A WALK, WHICH IS THE POINT. The group half of a chain is decided entirely by
+    /// the group the key names, and this model is immutable once resolved — so the admission unit's
+    /// walk ran at BOOT, once per group, and this is an index-chase into the result. Nothing is
+    /// allocated: the group buckets are borrowed from the model and the attribution bucket is the
+    /// key's own id, borrowed from the key.
     ///
     /// `Err(missing)` when the key names a `group` that does not exist in config - the
     /// FAIL-CLOSED outcome (mint validates the group; boot re-checks; this arm covers a shared
@@ -698,56 +547,17 @@ impl CostModel {
         &'a self,
         key: &'a busbar_api::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
-        let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
-        buckets.push(ChainBucket {
-            bucket_id: &key.id,
-            group_name: None,
-            window: crate::governance::WINDOW_TOTAL,
-            requests_cap: None,
-            tokens_cap: None,
-            tokens_input_cap: None,
-            tokens_output_cap: None,
-            tokens_cache_read_cap: None,
-            tokens_cache_write_cap: None,
-            budget_cap: None,
-            scope: None,
-            downgrade_to: None,
-        });
-        let mut groups: Vec<usize> = Vec::new();
-        let mut next = match key.group.as_deref() {
-            None => None,
-            Some(name) => match self.group_idx.get(name) {
-                Some(&i) => Some(i),
+        let groups = match key.group.as_deref() {
+            None => &self.empty_chain,
+            Some(name) => match self.inner.groups().index_of(name) {
+                Some(i) => &self.chains[i],
                 None => return Err(name),
             },
         };
-        while let Some(i) = next {
-            if groups.len() >= self.groups.len() {
-                // A distinct-node walk cannot exceed the group count without revisiting one, i.e.
-                // a cycle. Cycles are a validate error; clamp defensively (never loop).
-                break;
-            }
-            let g = &self.groups[i];
-            groups.push(i);
-            for b in &g.buckets {
-                buckets.push(ChainBucket {
-                    bucket_id: &b.bucket_id,
-                    group_name: Some(&g.name),
-                    window: b.window,
-                    requests_cap: b.requests_cap,
-                    tokens_cap: b.tokens_cap,
-                    tokens_input_cap: b.tokens_input_cap,
-                    tokens_output_cap: b.tokens_output_cap,
-                    tokens_cache_read_cap: b.tokens_cache_read_cap,
-                    tokens_cache_write_cap: b.tokens_cache_write_cap,
-                    budget_cap: b.budget_cap,
-                    scope: b.scope.as_ref(),
-                    downgrade_to: b.downgrade_to.as_ref(),
-                });
-            }
-            next = g.parent;
-        }
-        Ok(Chain { buckets, groups })
+        Ok(Chain {
+            key_id: &key.id,
+            groups,
+        })
     }
 }
 

@@ -399,30 +399,33 @@ fn a_group_this_node_does_not_have_is_fail_closed() {
     );
 }
 
-// ── the byte-identity cell: two live projections of the money topology ──────────────────────────
+// ── the one-projection cell: two readers of one reading of the money topology ───────────────────
 
-/// **The hazard.** The `groups:` section is projected into enforcement buckets TWICE while the
-/// retirement is in flight: once by the retiring core's `CostModel::resolve_parts`, and once by
-/// the cost unit's `CostModel::resolve_parts`, over the values [`group_specs`] relays to it, into
-/// the table the door walks. Both are shipped, both are internally consistent, and neither knows
-/// the other exists. Two projections of the MONEY topology that disagree by one field is how a
-/// deployment comes to be admitted against one set of ledger cells and billed against another —
-/// with no error, no refusal and nothing on any surface to say so.
+/// **What this used to guard, and why it now asserts something else.** The `groups:` section was
+/// projected into enforcement buckets TWICE: once by the retiring core's own `project_groups` and
+/// once by the cost unit's, over the values the relay hands it. Both were shipped, both were
+/// internally consistent, and neither knew the other existed — which is how a deployment comes to be
+/// ADMITTED against one set of ledger cells and BILLED against another, with no error, no refusal
+/// and nothing on any surface to say so. The cell drove one input through both and compared every
+/// field.
 ///
-/// So the cell drives the SAME `(rate_card, fee, groups)` inputs through both and compares every
-/// field of the resolved value: the group order, the freeze flag, the gauge, the parent index, and
-/// for every bucket its ledger id, its window, all seven caps, its scope and its downgrade target.
-/// Not a summary and not a spot check — a divergence the comparison cannot express is a divergence
-/// nobody catches.
+/// **There is one projection now.** [`GroupTable::resolve`] is the only reading of
+/// the section in the tree, over the values the only `GroupCfg` -> `GroupSpec` relay
+/// (`busbar_substrate::config::groups::group_specs`) produces, and the retiring engine drives it
+/// exactly as the composition root does. A comparison of a value against itself is not a cell, so
+/// the field-by-field view the old one needed (`CostModel::resolved_view` and its two plain-data
+/// types, ~95 lines of core) went with the hazard.
 ///
-/// The scope reference is the one field the two do not both keep: core carries `(kind, value)` and
-/// the door's table carries the value alone, because the configuration grammar can produce no kind
-/// but `pool` and the door compares by pool name. The cell asserts BOTH halves — that the value
-/// matches and that the kind core kept is the one the door's reading assumes — so the day a second
-/// scope kind lands, this is what goes red rather than a bill.
+/// What is left is the claim that is worth making and is not tautological: THE TWO READERS RESOLVE
+/// THE SAME VALUE. The engine reaches the projection through its own configuration types and its own
+/// relay call; the root reaches it through `group_table`; the resolved `GroupRuntime`s are compared
+/// whole, by the unit's own equality, so a divergence in the way EITHER reader feeds the projection
+/// — a metric arm dropped in one relay path, a lease id leaking into an engine reading, a fee clamp
+/// applied twice — is what goes red here. The scope kind is still asserted: the grammar can produce
+/// no kind but `pool` and the door's table keeps the value alone, so the day a second kind lands,
+/// this is what fails rather than a bill.
 fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     let core = CostModel::resolve_parts(None, fee, groups);
-    let core_view = core.resolved_view();
     let unit = UnitCostModel::resolve_parts(
         RateCard::absent(fee),
         &group_specs(groups, &BTreeMap::new()),
@@ -430,98 +433,33 @@ fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     let door = unit.groups().groups();
 
     assert_eq!(
-        core_view.len(),
-        door.len(),
-        "the two projections resolved a different number of groups"
+        core.groups(),
+        door,
+        "the engine and the root resolved DIFFERENT tables off one configuration — one projection, \
+         two readers, and the readers disagree"
     );
-    for (c, d) in core_view.iter().zip(door.iter()) {
-        assert_eq!(c.name, d.name, "group order or naming diverged");
-        assert_eq!(c.enabled, d.enabled, "freeze flag diverged for {}", c.name);
-        assert_eq!(
-            c.concurrent_cap, d.concurrent_cap,
-            "in-flight gauge diverged for {}",
-            c.name
-        );
-        assert_eq!(c.parent, d.parent, "parent index diverged for {}", c.name);
-        assert_eq!(
-            c.buckets.len(),
-            d.buckets.len(),
-            "bucket count diverged for {}",
-            c.name
-        );
-        for (cb, db) in c.buckets.iter().zip(d.buckets.iter()) {
-            assert_eq!(cb.bucket_id, db.bucket_id, "ledger cell diverged");
-            assert_eq!(cb.window, db.window, "window diverged for {}", cb.bucket_id);
-            assert_eq!(
-                cb.requests_cap, db.requests_cap,
-                "requests cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.tokens_cap, db.tokens_cap,
-                "tokens cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.tokens_input_cap, db.tokens_input_cap,
-                "input cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.tokens_output_cap, db.tokens_output_cap,
-                "output cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.tokens_cache_read_cap, db.tokens_cache_read_cap,
-                "cache-read cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.tokens_cache_write_cap, db.tokens_cache_write_cap,
-                "cache-write cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.budget_cap, db.budget_cap,
-                "budget cap diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.scope.as_ref().map(|(_, v)| v.clone()),
-                db.scope,
-                "bucket scope diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.scope.as_ref().map(|(k, _)| k.as_str()),
-                cb.scope.as_ref().map(|_| "pool"),
-                "a scope kind the door's table cannot express reached {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.downgrade_to.as_ref().map(|(_, v)| v.clone()),
-                db.downgrade_to,
-                "downgrade target diverged for {}",
-                cb.bucket_id
-            );
-            assert_eq!(
-                cb.downgrade_to.as_ref().map(|(k, _)| k.as_str()),
-                cb.downgrade_to.as_ref().map(|_| "pool"),
-                "a downgrade kind the door's table cannot express reached {}",
-                cb.bucket_id
-            );
+
+    // The scope kind the grammar can produce is the one the door's table assumes when it keeps the
+    // value alone. Asserted over the CONFIGURED tree rather than the resolved one, because the
+    // resolved one is where the kind has already been dropped.
+    for cfg in groups.values() {
+        for l in &cfg.limits {
+            for s in l.scope.iter().chain(l.downgrade_to.iter()) {
+                assert_eq!(
+                    s.kind, "pool",
+                    "a scope kind the door's table cannot express reached the projection"
+                );
+            }
         }
     }
 
     // The flat fee is the third configured money value and it is clamped on the way through, so
     // the clamp is part of what has to agree; with no card every class prices at nothing and the
     // fee is the whole of what a request bills.
-    assert_eq!(core.resolved_fee(), fee.max(0), "the clamped fee diverged");
     assert_eq!(
         unit.card().per_request_fee(CurrencyCode::USD),
-        core.resolved_fee(),
-        "the unit's clamped fee diverged from core's"
+        fee.max(0),
+        "the clamped fee diverged"
     );
     assert!(
         !core.pricing_enabled() && !core.model_unpriced("anything"),
