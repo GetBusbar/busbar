@@ -41,7 +41,8 @@ const MIGRATED_FILES: &[&str] = &[
     "src/boot.rs",
     "src/preflight.rs",
     "src/telemetry.rs",
-    "src/tls.rs",
+    // `tls.rs` (the inbound listeners) MOVED VERBATIM to the composition root (`crates/busbar/src/root/`);
+    // it still emits only `diag_warn!` and `tracing::debug!`, and core does not scan another crate's tree.
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",

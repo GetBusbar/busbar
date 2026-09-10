@@ -112,6 +112,15 @@ busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
 rustls = { workspace = true }
+# THE INBOUND LISTENERS (moved verbatim out of the legacy engine crate into `root/`): the accept
+# loops drive hyper directly (the body-timeout service is a `hyper::service::Service`) over
+# `hyper-util`'s auto builder + graceful shutdown, terminate the handshake through `tokio-rustls`,
+# and wrap every inbound body in the inter-frame timeout (`bytes::Buf` is the frame type that body
+# adapter forwards). Binary-only deps of the loops, exactly as they were in the crate they left.
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tokio-rustls = { workspace = true }
+bytes = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -291,7 +300,6 @@ futures = { workspace = true }
 # own stdin/stdout the same way the engine does; the binary crate no longer pulls base64 as a
 # runtime dep after the core split, so the integration test needs its own copy.
 base64 = { workspace = true }
-bytes = { workspace = true }
 serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }

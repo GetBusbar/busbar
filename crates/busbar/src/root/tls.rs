@@ -24,6 +24,31 @@
 //! The plain-HTTP path in `main.rs` is left exactly as it was; only `cfg.tls == Some(_)` reaches
 //! this module.
 //!
+//! ## Home
+//!
+//! MOVED VERBATIM out of the legacy engine crate's `tls.rs` (917 lines): the composition root owns
+//! its listeners, and every reader of this module was already here — `serve_thread_per_core` and
+//! `serve_listener` in `main.rs`. Nothing is re-exported back into the legacy crate: its one other
+//! reader was the engine test kit's `install_crypto_provider`, which now installs the same `ring`
+//! provider through the same one-line `rustls` call. What the code below reaches is spelled at its
+//! neutral home instead of through the legacy crate's re-exports — the same types, the same
+//! functions:
+//!
+//!   - `TlsCfg`                       -> the substrate's config sections
+//!   - `read_pem`                     -> the substrate's one PEM reader (the module of this name)
+//!   - the two listener timeouts      -> `busbar_substrate::config::limits::installed()`, the slot
+//!                                       the legacy accessors read, with the same defaults when
+//!                                       nothing is installed (`LimitsResolved::default()` carries
+//!                                       the same two `DEFAULT_*` constants)
+//!   - `diag_warn!` and its diagnostic -> the values leaf
+//!   - the translate-body cap         -> the values leaf too (`proxy::max_translate_body_bytes` is
+//!                                       defined there; the substrate's `proxy` is a glob re-export)
+//!   - the secret resolver            -> the ABI's `SecretResolve`, the neutral trait the engine's
+//!                                       resolver implements and the trait `read_pem` already took
+//!
+//! The behaviour, the accept loops, the balancer, the timeouts and every refusal text are
+//! byte-identical to the module this replaced.
+//!
 //! ## Crypto provider
 //!
 //! rustls 0.23 requires a process-wide [`rustls::crypto::CryptoProvider`]. busbar already links
@@ -41,7 +66,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
+use busbar_substrate_values::{diag_warn, diagnostics::TLS_ACCEPT_PERSISTENT_FAILURE};
 use std::time::{Duration, Instant};
 
 /// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that
@@ -49,10 +74,14 @@ use std::time::{Duration, Instant};
 /// indefinitely — this caps the pre-auth slowloris / handshake-flood surface. The cost is incurred
 /// BEFORE mTLS client-cert verification, so this guards the unauthenticated edge.
 /// Operator-tunable via `limits.tls_handshake_timeout_secs` (default 10s), read through the
-/// process-wide `crate::limits` install. A function (not a `const`) so the configured value is read
+/// process-wide limits install. A function (not a `const`) so the configured value is read
 /// per accepted connection; falls back to the historical 10s when limits aren't installed.
 fn handshake_timeout() -> Duration {
-    Duration::from_secs(crate::limits::tls_handshake_timeout_secs())
+    Duration::from_secs(
+        busbar_substrate::config::limits::installed()
+            .unwrap_or_default()
+            .tls_handshake_timeout_secs,
+    )
 }
 
 /// Max wall-clock time allowed BETWEEN inbound request-body frames before the connection is dropped.
@@ -62,10 +91,14 @@ fn handshake_timeout() -> Duration {
 /// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
 /// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
 /// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
-/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
+/// (default 30s), read per connection through the process-wide limits install; falls back to
 /// the default when limits aren't installed (tests / pre-install).
 fn body_read_timeout() -> Duration {
-    Duration::from_secs(crate::limits::request_body_read_timeout_secs())
+    Duration::from_secs(
+        busbar_substrate::config::limits::installed()
+            .unwrap_or_default()
+            .request_body_read_timeout_secs,
+    )
 }
 
 /// MINIMUM sustained throughput a body read must maintain once the grace period has elapsed. The
@@ -91,7 +124,7 @@ const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
 /// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
 /// configured the cap.
 fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_substrate::proxy::max_translate_body_bytes() as u64;
+    let cap_bytes = busbar_substrate_values::proxy::max_translate_body_bytes() as u64;
     Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
 }
 
@@ -113,7 +146,8 @@ use rustls::{RootCertStore, ServerConfig};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use crate::config::TlsCfg;
+use busbar_api::{SecretRef, SecretResolve};
+use busbar_substrate::config::sections::TlsCfg;
 
 /// Install ring's [`rustls::crypto::CryptoProvider`] as the process default.
 ///
@@ -129,19 +163,18 @@ pub fn install_crypto_provider() {
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
 /// source-named message. Never logs contents.
 ///
-/// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
-/// [`busbar_substrate::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
-/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so the A2A
-/// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
-/// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
-/// "never echo what you read" rule to be forgotten.
-pub(crate) use busbar_substrate::tls::read_pem;
+/// The ONE turn-a-`SecretRef`-into-TLS-PEM function lives NEUTRALLY in
+/// [`busbar_substrate::tls::read_pem`]; the inbound-listener call sites here
+/// (`load_cert_chain`/`load_private_key`/`load_client_roots`) name that home, exactly as the
+/// outbound client-identity resolver does. One place in the tree turns a `SecretRef` into TLS PEM;
+/// a second would be a second place for the "never echo what you read" rule to be forgotten.
+use busbar_substrate::tls::read_pem;
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
 /// public, but we still avoid echoing them.
 fn load_cert_chain(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
+    resolver: &dyn SecretResolve,
+    secret: &SecretRef,
 ) -> Result<Vec<CertificateDer<'static>>, String> {
     let src = secret.describe();
     let bytes = read_pem(resolver, secret, "cert")?;
@@ -159,8 +192,8 @@ fn load_cert_chain(
 /// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
 /// material - error messages name only the secret source.
 fn load_private_key(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
+    resolver: &dyn SecretResolve,
+    secret: &SecretRef,
 ) -> Result<PrivateKeyDer<'static>, String> {
     let src = secret.describe();
     let bytes = read_pem(resolver, secret, "key")?;
@@ -178,8 +211,8 @@ fn load_private_key(
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
 fn load_client_roots(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
+    resolver: &dyn SecretResolve,
+    secret: &SecretRef,
 ) -> Result<RootCertStore, String> {
     let src = secret.describe();
     let bytes = read_pem(resolver, secret, "client_ca")?;
@@ -208,7 +241,7 @@ fn load_client_roots(
 /// h2. Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
 pub fn build_server_config(
     tls: &TlsCfg,
-    resolver: &crate::config::secret::SecretResolver,
+    resolver: &dyn SecretResolve,
 ) -> Result<ServerConfig, String> {
     let certs = load_cert_chain(resolver, &tls.cert)?;
     let key = load_private_key(resolver, &tls.key)?;
@@ -324,8 +357,8 @@ impl AcceptBackoff {
 // Once per-worker counts exceed a few dozen the margin check is statistically never true, so the
 // high-concurrency cost is a handful of relaxed loads per ACCEPT (never per request).
 //
-// No knob, no mode: the composition root wires one balancer across the data workers; the admin
-// listener and non-unix builds simply pass `None` and behave exactly as before.
+// No knob, no mode: the composition root wires one balancer across the data workers; the
+// operations listener and non-unix builds simply pass `None` and behave exactly as before.
 
 /// Margin before a handoff: my live connections must exceed the minimum by at least this much.
 /// 2 bounds steady-state imbalance at ±1 while making handoff ping-pong impossible (a handoff
@@ -398,7 +431,7 @@ impl ConnBalancer {
             return Some((stream, peer));
         }
         // `into_std` detaches the accepted stream from THIS worker's reactor so it can cross the
-        // hand-off channel (each worker runs its own runtime; the channel carries std streams). It
+        // hand-off channel (each worker runs its own runtime; the channel carries std sockets). It
         // consumes `stream` by value and, on error, does NOT hand the stream back — the fd is gone.
         // This arm therefore cannot serve locally, but it also has not yet touched any counter (the
         // `fetch_add` is below), so it neither skews the balancer nor is the never-drop contract's
@@ -757,7 +790,7 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
 /// then trickles request headers one byte at a time would otherwise hold the connection task + FD
 /// indefinitely — `DefaultBodyLimit` only applies AFTER headers are fully received, so it does not
 /// help here. `header_read_timeout` bounds ONLY the header phase, so it never truncates a
-/// legitimately long response stream (an LLM completion can stream for minutes). 30s is far longer
+/// legitimately long response stream (a model completion can stream for minutes). 30s is far longer
 /// than any real client needs to send its request line + headers, so it cannot false-positive on a
 /// healthy connection. `header_read_timeout` requires a `Timer` (hyper panics otherwise), so the
 /// Tokio timer is wired to drive it from the runtime clock.
@@ -857,7 +890,7 @@ async fn serve_one_plain(
     peer: SocketAddr,
     router: Router,
 ) {
-    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
+    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted connections).
     if let Err(e) = stream.set_nodelay(true) {
         tracing::debug!(error = %e, %peer, "http: set_nodelay failed; continuing");
     }
@@ -879,7 +912,7 @@ async fn serve_one(
     peer: SocketAddr,
     router: Router,
 ) {
-    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
+    // TCP_NODELAY parity with axum::serve (which sets it by default on accepted connections).
     if let Err(e) = stream.set_nodelay(true) {
         tracing::debug!(error = %e, %peer, "tls: set_nodelay failed; continuing");
     }
@@ -913,5 +946,5 @@ async fn serve_one(
 }
 
 #[cfg(test)]
-#[path = "tests/tls_tests.rs"]
+#[path = "tests/tls.rs"]
 mod tests;

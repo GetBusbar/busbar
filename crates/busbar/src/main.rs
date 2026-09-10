@@ -59,12 +59,15 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, export, metrics, observability};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
+// The inbound listeners are the root's own now; imported under the same name so the boot code
+// below reads exactly as it did.
+use root::tls;
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -1730,7 +1733,7 @@ fn serve_thread_per_core(
     addr: String,
     data_router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<dyn busbar_api::SecretResolve>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -1741,7 +1744,7 @@ fn serve_thread_per_core(
     // reported exactly once and stop the boot (workers racing to `die` would each print it).
     if let Some(tls) = tls_cfg.as_ref() {
         tls::install_crypto_provider();
-        let _ = tls::build_server_config(tls, &secret_resolver)
+        let _ = tls::build_server_config(tls, &*secret_resolver)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1886,7 +1889,7 @@ async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<dyn busbar_api::SecretResolve>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
@@ -1918,7 +1921,7 @@ async fn serve_listener(
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
             // is not yet serving anything. It also completes before `tls::serve` below is reached,
             // so no connection on this listener can be waiting on it.
-            let server_config = tls::build_server_config(&tls, &secret_resolver)
+            let server_config = tls::build_server_config(&tls, &*secret_resolver)
                 .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
