@@ -457,7 +457,31 @@ impl LlmNode {
     /// out. Nothing is spawned here, so there is no detached task left holding either.
     #[must_use]
     pub async fn answer(&self, arrival: WalkArrival, model_hint: Option<String>) -> Response {
-        self.answer_with(arrival, model_hint, NATIVE_SEATS).await
+        // THE MOUNTED DOOR, WITH THE ENDING DROPPED — literally, and not merely equivalently. A
+        // driver that only has to write a response wants the bytes; the ending is what a mount is
+        // owed. Written as one call so the two doors cannot come to make different decisions about
+        // the seats or about the instant this unit arrived at.
+        self.walk(arrival, model_hint).await.1
+    }
+
+    /// **THE SAME DOOR [`answer`](Self::answer) IS, KEEPING THE ENDING.**
+    ///
+    /// The door a MOUNTED leg walks, and it is deliberately the same two decisions `answer` makes —
+    /// this node's own seats and this node's own arrival reading — so a mounted request and a driven
+    /// one differ in nothing a caller or an operator can see. `answer` is literally this with the
+    /// ending dropped; there is one drive underneath both and there is no second place either
+    /// decision is taken.
+    ///
+    /// The ending has already been settled, from a lend, and still carries its posting. A mount is
+    /// owed the kernel's own ending, which is what makes this the door rather than `answer`.
+    #[must_use]
+    pub async fn walk(
+        &self,
+        arrival: WalkArrival,
+        model_hint: Option<String>,
+    ) -> (busbar_kernel::teller::Ended, Response) {
+        self.walk_arriving_at(arrival, model_hint, NATIVE_SEATS, self.arrived())
+            .await
     }
 
     /// The same drive, with the Approve seats named rather than assumed.

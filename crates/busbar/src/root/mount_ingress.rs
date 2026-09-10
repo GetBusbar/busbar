@@ -55,6 +55,12 @@ pub trait ArrivalSource: Send + Sync + 'static {
     fn payload(&self, credential: Option<&str>) -> ArrivalPayload;
 }
 
+/// How one deployment turns a presented credential into a governance context.
+///
+/// A name rather than the type spelled inline, because spelled inline it is unreadable and what it
+/// says is simple: given what this caller presented — or nothing — who is it.
+type Resolve = dyn Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync;
+
 /// THE COMPOSITION ROOT'S ANSWER, sealed once and shared by every arrival on one mount.
 ///
 /// The host is the DEPLOYMENT's and does not change for the life of the node; the governance context
@@ -63,10 +69,10 @@ pub trait ArrivalSource: Send + Sync + 'static {
 /// request with the identity of whoever the boot happened to resolve first.
 pub struct BootIngress {
     host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    /// How this deployment turns a presented credential into a governance context. Boxed rather than
-    /// a generic parameter because a leg holds this as `dyn ArrivalSource`, and a parameter here
-    /// would have to travel through every type between the two for no gain.
-    resolve: Box<dyn Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync>,
+    /// This deployment's [`Resolve`]. Boxed rather than a generic parameter because a leg holds this
+    /// as `dyn ArrivalSource`, and a parameter here would have to travel through every type between
+    /// the two for no gain.
+    resolve: Box<Resolve>,
 }
 
 impl BootIngress {

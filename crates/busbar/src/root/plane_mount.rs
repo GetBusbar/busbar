@@ -828,6 +828,23 @@ fn arrival_over<'a>(
 /// The recognition question is a plain function call and wants the short spelling; the walk is a
 /// future and cannot use it. Both compose through [`arrival_over`], so there is still one arrival
 /// shape and not two.
+/// ONE ARRIVAL OVER ONE REQUEST, exactly as the mount composes one, for a cell that has to ask a leg
+/// a question the mount would have asked it.
+///
+/// Test-only and `pub(crate)`, so a plane's own cells reach the mount's composition rather than
+/// hand-building a fact set beside it. The alternative is the thing this whole file exists against:
+/// a second spelling of what a mounted arrival carries, in a test, drifting away from the one the
+/// mount actually publishes — and a leg asserted against the copy would pass while failing on the
+/// wire.
+#[cfg(test)]
+pub(crate) fn arrival_of_request<T>(
+    parts: &axum::http::request::Parts,
+    body: &[u8],
+    f: impl FnOnce(&busbar_contract::transport::Arrival<'_>) -> T,
+) -> T {
+    with_arrival(&mount_facts(parts), body, f)
+}
+
 fn with_arrival<T>(
     facts: &[(String, String)],
     body: &[u8],
