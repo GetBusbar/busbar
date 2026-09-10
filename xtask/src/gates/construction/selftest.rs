@@ -633,6 +633,8 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         &["is not a raise at the base"],
     ));
 
+    r.append(kind_row_identity_cases(gate, cx, base, &based, &text));
+
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
     let mut ov = on(base);
@@ -795,6 +797,176 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
 
 /// One ceiling per watched file, chosen FROM THE FILE rather than named here: a plant that
 /// hard-codes a key is a plant that stops planting the day the key is renamed, and goes green.
+/// THE STRIKE, AND THE DECLARATION THAT MUST SURVIVE IT.
+///
+/// `qa/kind-isolation.toml` is an array of tables, so [`crate::toml_doc`] spells every count in it
+/// by POSITION. Strike one `[[cell]]` and every later row renumbers by one — and a strike is the
+/// landing this entire ratchet exists to make cheap. Under an ordinal key that renumbering silently
+/// hands a declared raise to whichever cell slid into the slot, which is a waiver granted to a
+/// ceiling nobody wrote it for.
+///
+/// The plant is exactly that edit, three ways over one tree: the base carries a LOWERED ceiling for
+/// a cell deep in the file, and this branch strikes a cell ABOVE it. The rise is therefore real and
+/// the row it belongs to has moved.
+///
+/// * with no declaration, the refusal NAMES the cell — `cell.<crate>.<kind>.count`, not a slot;
+/// * a declaration keyed by that identity excuses it, across the renumbering;
+/// * a declaration keyed by the ordinal is refused outright, whatever it lines up with.
+fn kind_row_identity_cases(
+    gate: &dyn Gate,
+    cx: &Ctx,
+    base: &Overlay,
+    based: &str,
+    ceilings_text: &str,
+) -> Report {
+    let mut r = Report::new();
+    let file = ceilings::KIND_CEILINGS;
+    let Ok(kinds) = cx.read(file) else {
+        r.note_infra_failure(format!(
+            "{file} could not be read, so the rule that keys a declared raise by identity rather \
+             than by ordinal is unproven here rather than passing"
+        ));
+        return r;
+    };
+    // THE CELL THE RAISE IS DECLARED ON is the first one at or after position 178 that carries a
+    // count above zero, and the cell STRUCK is position 3 — far enough above it that the strike
+    // renumbers it. Both are read off the file rather than written down, because a case pinned to
+    // a literal ordinal is the very fragility this pair exists to refuse.
+    let struck = strike_cell(&kinds, 3);
+    let raised = (178..cell_count(&kinds)).find_map(|n| match cell_identity(&kinds, n) {
+        Some((k, kd, c)) if c > 0 => Some((n, k, kd, c)),
+        _ => None,
+    });
+    let (Some(struck), Some((ordinal, krate, kind, count))) = (struck, raised) else {
+        r.note_infra_failure(format!(
+            "{file} does not carry a strikable `[[cell]]` above a later one with a count above \
+             zero, so the identity-keyed declaration is unproven here rather than passing"
+        ));
+        return r;
+    };
+    let Some(base_kinds) = set_cell_count(&kinds, ordinal, count - 1) else {
+        r.note_infra_failure(format!(
+            "the `[[cell]]` at {ordinal} in {file} carries no count to lower at the base, so the \
+             identity-keyed declaration is unproven here rather than passing"
+        ));
+        return r;
+    };
+    let identity = format!("cell.{krate}.{kind}.count");
+    let plant = |declaration: &str| -> Overlay {
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{file}"), base_kinds.clone());
+        ov.set(file, struck.clone());
+        ov.set(CEILINGS, format!("{ceilings_text}{declaration}"));
+        ov
+    };
+    let because = "planted by the self-test: the cell above this one is struck on the same tree, \
+                   so an ordinal key would name a different cell entirely and this declaration \
+                   must follow the (crate, kind) it was written for";
+
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a risen `[[cell]]` ceiling is named by its (crate, kind), never by its position",
+        &[ceilings::ROW_ROSE],
+        plant(""),
+        &[&format!("{file} {identity}: {} -> {count}", count - 1)],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a declared raise keyed by (crate, kind) still names its own cell after a strike \
+         renumbers the file",
+        &[ceilings::ROW_ROSE],
+        plant(&format!(
+            "\n[gate.ceiling_raises.\"{identity}\"]\nfile = \"{file}\"\nfrom = {}\nto = {count}\n\
+             because = \"{because}\"\n",
+            count - 1
+        )),
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared raise keyed by ORDINAL is refused, whatever it happens to line up with",
+        &[ceilings::ROW_ROSE],
+        plant(&format!(
+            "\n[gate.ceiling_raises.\"cell.{ordinal}.count\"]\nfile = \"{file}\"\nfrom = {}\n\
+             to = {count}\nbecause = \"{because}\"\n",
+            count - 1
+        )),
+        &["keyed by ORDINAL", "renumbers every later row"],
+    ));
+    r
+}
+
+/// How many `[[cell]]` rows a kind-isolation ledger carries.
+fn cell_count(text: &str) -> usize {
+    text.lines().filter(|l| l.trim() == "[[cell]]").count()
+}
+
+/// The `n`th `[[cell]]` row's bytes, as a half-open range over `text`.
+fn nth_cell(text: &str, n: usize) -> Option<(usize, usize)> {
+    let mut at = 0usize;
+    let mut seen = 0usize;
+    let mut start: Option<usize> = None;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        match start {
+            Some(s) if t.starts_with('[') => return Some((s, at)),
+            Some(_) => {}
+            None => {
+                if t == "[[cell]]" {
+                    if seen == n {
+                        start = Some(at);
+                    }
+                    seen += 1;
+                }
+            }
+        }
+        at += line.len();
+    }
+    start.map(|s| (s, text.len()))
+}
+
+/// `(crate, kind, count)` of the `n`th `[[cell]]` row.
+fn cell_identity(text: &str, n: usize) -> Option<(String, String, i64)> {
+    let (start, end) = nth_cell(text, n)?;
+    let field = |key: &str| -> Option<String> {
+        text[start..end].lines().find_map(|l| {
+            let (k, v) = l.trim().split_once('=')?;
+            (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+        })
+    };
+    Some((
+        field("crate")?,
+        field("kind")?,
+        field("count")?.parse().ok()?,
+    ))
+}
+
+/// The ledger with the `n`th `[[cell]]` row struck out entirely — the deletion that renumbers.
+fn strike_cell(text: &str, n: usize) -> Option<String> {
+    let (start, end) = nth_cell(text, n)?;
+    Some(format!("{}{}", &text[..start], &text[end..]))
+}
+
+/// The ledger with the `n`th `[[cell]]` row's count set to `value`, and nothing else touched.
+fn set_cell_count(text: &str, n: usize, value: i64) -> Option<String> {
+    let (start, end) = nth_cell(text, n)?;
+    let mut hit = false;
+    let body: String = text[start..end]
+        .split_inclusive('\n')
+        .map(|line| match line.trim().split_once('=') {
+            Some((k, _)) if k.trim() == "count" && !hit => {
+                hit = true;
+                let nl = if line.ends_with('\n') { "\n" } else { "" };
+                format!("count = \"{value}\"{nl}")
+            }
+            _ => line.to_string(),
+        })
+        .collect();
+    hit.then(|| format!("{}{body}{}", &text[..start], &text[end..]))
+}
+
 fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
     let mut out = vec![(
         CEILINGS.to_string(),
