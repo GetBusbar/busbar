@@ -329,25 +329,51 @@ impl RateCard {
         self.currencies.contains(&currency)
     }
 
-    /// **THE FLAT PER-REQUEST FEE**, in the given currency's MINOR units, clamped at resolve so it is
-    /// never negative. Zero for a currency the card does not name a fee in.
+    /// **THE FLAT PER-REQUEST FEE**, in the given currency's MINOR units, clamped at resolve so it
+    /// is never negative. `None` — and never zero — for a currency the card names no fee in.
+    ///
+    /// PRESENT BUT UNPRICED IS NEVER A SILENT ZERO, and that is why this answers an `Option`. A
+    /// card can name a currency for its rates and stay silent about the fee in it: [`RateCard::set_rate`]
+    /// records the currency and [`RateCard::set_fee`] records the fee, and nothing obliges a caller
+    /// to do both. Such a card passes [`RateCard::prices_currency`], so the currency refusal does
+    /// not catch it, and a lookup that read the silence as zero would bill every fee at nothing and
+    /// say nothing about it — silent under-billing, fail-open, the one outcome the rest of this
+    /// crate refuses. The silence fails closed to VISIBLE instead: [`RateCard::fee_unpriced`] asks
+    /// of a fee exactly what [`RateCard::lane_unpriced`] asks of a lane, the read posture marks the
+    /// fee line unpriced, and [`crate::price_fail_closed`] turns it into
+    /// [`crate::Unpriceable::FeeUnpriced`].
     ///
     /// One spelling. The configuration calls it `per_request_fee`, and so does this: the card used
     /// to spell it `per_request_fee_cents` and the admission unit `price_per_request_cents`, three
     /// names for one number, each of which had to be kept in step with the other two by hand.
-    pub fn per_request_fee(&self, currency: CurrencyCode) -> i64 {
-        self.fees.get(&currency).copied().unwrap_or(0)
+    pub fn fee_for(&self, currency: CurrencyCode) -> Option<i64> {
+        self.fees.get(&currency).copied()
+    }
+
+    /// Whether a request must be refused because the card names no flat fee in this currency —
+    /// the fee's half of the fail-closed rule, and the same question [`RateCard::lane_unpriced`]
+    /// asks of a lane.
+    ///
+    /// Every constructor names a fee in the currency it builds in, so this is the multi-currency
+    /// card whose second currency was priced by hand: a currency the card is silent about is a
+    /// refusal, never a free request.
+    pub fn fee_unpriced(&self, currency: CurrencyCode) -> bool {
+        !self.fees.contains_key(&currency)
     }
 
     /// The flat fee as the unit price of its own usage line: minor units lifted to nano-units.
+    /// `None` where [`RateCard::fee_for`] is `None`, carried rather than flattened for the reason
+    /// that method gives.
     ///
     /// An exact multiple of one minor unit, which is the property that makes summing the fee in
     /// before the single truncation give the same answer as truncating the usage first and adding
     /// the fee afterwards.
-    pub fn fee_unit_price_nanos(&self, currency: CurrencyCode) -> u128 {
-        u128::try_from(self.per_request_fee(currency))
-            .unwrap_or(0)
-            .saturating_mul(currency.nanos_per_minor())
+    pub fn fee_unit_price_nanos(&self, currency: CurrencyCode) -> Option<u128> {
+        self.fee_for(currency).map(|fee| {
+            u128::try_from(fee)
+                .unwrap_or(0)
+                .saturating_mul(currency.nanos_per_minor())
+        })
     }
 
     /// Whether a request on this lane must be refused because a card is present and has no entry

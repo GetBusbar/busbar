@@ -278,6 +278,14 @@ pub enum Divergence {
         /// The lane the card is silent about.
         lane: String,
     },
+    /// The card in force names the line's currency but no FLAT FEE in it. Present but unpriced is
+    /// never a silent zero: a fee read as nothing bills the line's fees for free and says nothing.
+    FeeUnpriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The currency the card names no fee in.
+        currency: CurrencyCode,
+    },
     /// The entry the line says it resolved to is not the entry the snapshot resolves to.
     CardSeq {
         /// What the line says.
@@ -324,6 +332,10 @@ impl std::fmt::Display for Divergence {
             Divergence::LaneUnpriced { card_seq, lane } => write!(
                 f,
                 "the card at history entry {card_seq} names no rate for lane {lane}"
+            ),
+            Divergence::FeeUnpriced { card_seq, currency } => write!(
+                f,
+                "the card at history entry {card_seq} names no per-request fee in {currency}"
             ),
             Divergence::CardSeq { posted, resolved } => write!(
                 f,
@@ -564,6 +576,9 @@ pub fn divergence_of(why: Unpriceable) -> Divergence {
             Divergence::CurrencyNotPriced { card_seq, currency }
         }
         Unpriceable::LaneUnpriced { card_seq, lane } => Divergence::LaneUnpriced { card_seq, lane },
+        Unpriceable::FeeUnpriced { card_seq, currency } => {
+            Divergence::FeeUnpriced { card_seq, currency }
+        }
     }
 }
 

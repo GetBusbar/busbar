@@ -190,6 +190,10 @@ pub struct Priced {
     /// Whether the lane itself was absent from a present card. Every token line prices at nothing
     /// when this is set, and the caller decides whether that is a refusal — see [`price_fail_closed`].
     pub lane_unpriced: bool,
+    /// Whether the card names no flat fee in this currency. The fee line prices at nothing when
+    /// this is set and says so, and the caller decides whether that is a refusal — the same two
+    /// postures the lane gets, for the same reason: present but unpriced is never a silent zero.
+    pub fee_unpriced: bool,
     /// The tier multiplier in basis points that produced the priced amount.
     pub tier_bp: u32,
     /// How many flat fees the posting carried.
@@ -210,7 +214,9 @@ impl Priced {
         crate::project::micros_of(self.priced_nanos)
     }
 
-    /// Every class the card was present for but silent about.
+    /// Every class the card was present for but silent about — including [`FEE_CLASS`] when the
+    /// card names no flat fee in this currency, because a silent fee is a silent class like any
+    /// other and is reported like one.
     pub fn unpriced_classes(&self) -> Vec<&str> {
         self.lines
             .iter()
@@ -255,6 +261,19 @@ pub enum Unpriceable {
         card_seq: HistorySeq,
         /// The lane the card is silent about.
         lane: String,
+    },
+    /// The card in force names the currency but no FLAT FEE in it — the fee's half of the same
+    /// fail-closed rule, reached through the same [`price_fail_closed`].
+    ///
+    /// PRESENT BUT UNPRICED IS NEVER A SILENT ZERO. A card that priced its rates in a second
+    /// currency and was never given a fee in it would, read as a zero, bill every request's fees at
+    /// nothing and report nothing — free service, invisible. Fail closed to VISIBLE instead: the
+    /// read posture marks the fee line unpriced and settlement refuses here.
+    FeeUnpriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The currency the card names no fee in.
+        currency: CurrencyCode,
     },
 }
 
@@ -327,13 +346,20 @@ pub fn price_at_card(
     // The fee is a usage line, not a scalar bolted onto the total. Its unit price is an exact
     // multiple of one minor unit of its currency, which is why summing it in before the single
     // truncation gives the same answer as truncating the quantities first and adding the fee after.
-    let fee_unit_price_nanos = card.fee_unit_price_nanos(currency);
+    //
+    // A card that names this currency but no FEE in it prices the fee at nothing AND SAYS SO, on
+    // the line, exactly as a class the card is silent about does. Never a silent zero: a fee read
+    // as zero out of a map that does not hold it is a request served for free with nothing said.
+    let (fee_unit_price_nanos, fee_unpriced) = match card.fee_unit_price_nanos(currency) {
+        Some(nanos) => (nanos, false),
+        None => (0u128, true),
+    };
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
         quantity: posting.fee_count,
         unit_price_nanos: fee_unit_price_nanos,
         amount_nanos: u128::from(posting.fee_count).saturating_mul(fee_unit_price_nanos),
-        unpriced: false,
+        unpriced: fee_unpriced,
     });
 
     let pre_tier_nanos = lines
@@ -347,19 +373,22 @@ pub fn price_at_card(
         pre_tier_nanos,
         priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
         lane_unpriced: rates.is_none(),
+        fee_unpriced,
         tier_bp: posting.tier_bp,
         fee_count: posting.fee_count,
         estimated: posting.estimated,
     })
 }
 
-/// The settlement posture: [`price`], and a lane a present card is silent about is a REFUSAL.
+/// The settlement posture: [`price`], and anything a present card is silent about — a lane, or the
+/// flat fee in the currency asked for — is a REFUSAL rather than a figure of nothing.
 ///
 /// A policy wrapper and nothing else — it performs no arithmetic of its own and cannot disagree with
 /// [`price`] about a figure, because it either returns that call's answer or returns an error. The
 /// two postures exist because reads and settlement want different things from the same lookup: a
-/// read reports an unpriced lane per row so an operator can see it, and a settlement that refuses
-/// unpriced usage fails closed rather than serving for free.
+/// read reports an unpriced lane or fee per row so an operator can see it, and a settlement that
+/// refuses unpriced usage fails closed rather than serving for free. Neither posture is ever a
+/// SILENT nothing: the read says it on the line, and settlement says it here.
 pub fn price_fail_closed(
     view: &HistoryView<'_>,
     posting: &Posting,
@@ -370,6 +399,12 @@ pub fn price_fail_closed(
         return Err(Unpriceable::LaneUnpriced {
             card_seq: priced.card_seq,
             lane: posting.lane.clone(),
+        });
+    }
+    if priced.fee_unpriced {
+        return Err(Unpriceable::FeeUnpriced {
+            card_seq: priced.card_seq,
+            currency,
         });
     }
     Ok(priced)

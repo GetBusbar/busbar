@@ -52,7 +52,11 @@ pub fn micros_of(nanos: u128) -> i64 {
 /// the billable request count.
 ///
 /// Quantities are the truth and the amount is always derived, never stored as truth on this path.
-/// A lane a present card does not name derives at nothing.
+/// A lane a present card does not name derives at nothing, and so does the flat fee in a currency
+/// the card names no fee in. Neither is SILENT: this is a projection with no channel to refuse in,
+/// so the refusal lives where the lane's has always lived — [`RateCard::lane_unpriced`] and
+/// [`RateCard::fee_unpriced`] ask the question, and [`crate::price_fail_closed`] is the posture that
+/// answers it by refusing rather than serving for free.
 ///
 /// The nano-units accumulate across every lane FIRST and divide to minor units ONCE. Two lanes each
 /// contributing half a cent make a whole cent; a per-lane floor would drop both to nothing and
@@ -67,8 +71,12 @@ pub fn derive_spend_minor<'a>(
     let nanos = sum_nanos(card, currency, lanes);
     let mut minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
     if include_request_fee {
+        // `unwrap_or(0)` is the projection's documented arm and not a silent one: a card silent
+        // about the fee in this currency contributes no fee here, and says so through
+        // `fee_unpriced` to the caller that must decide.
         let fee = card
-            .per_request_fee(currency)
+            .fee_for(currency)
+            .unwrap_or(0)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         minor = minor.saturating_add(fee);
     }
@@ -109,8 +117,11 @@ pub fn derive_spend_micros_in<'a>(
     if include_request_fee {
         let micros_per_minor =
             i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
+        // As in [`derive_spend_minor`]: the projection's documented arm, `fee_unpriced` the
+        // question, `price_fail_closed` the refusal.
         let fee_micros = card
-            .per_request_fee(currency)
+            .fee_for(currency)
+            .unwrap_or(0)
             .saturating_mul(micros_per_minor)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         micros.saturating_add(fee_micros)

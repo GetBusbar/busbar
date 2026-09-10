@@ -55,6 +55,7 @@ fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
         .expect("an entry covers the instant")
         .1
         .fee_unit_price_nanos(node_currency())
+        .expect("a card built in the node's currency names a fee in it")
 }
 
 /// **APPEND, NEVER REWRITE.** A reload puts a SECOND entry on the history and leaves the first
@@ -84,7 +85,7 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let entries = view.entries();
     assert_eq!(
         entries[0].card().fee_unit_price_nanos(node_currency()),
-        30_000_000,
+        Some(30_000_000),
         "the entry the first apply wrote was rewritten by a later one"
     );
     assert_eq!(
@@ -94,11 +95,11 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     );
     assert_eq!(
         entries[1].card().fee_unit_price_nanos(node_currency()),
-        110_000_000
+        Some(110_000_000)
     );
     assert_eq!(
         entries[2].card().fee_unit_price_nanos(node_currency()),
-        290_000_000
+        Some(290_000_000)
     );
 }
 

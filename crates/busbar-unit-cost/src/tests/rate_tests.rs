@@ -92,8 +92,11 @@ fn lane_lookup_has_exactly_three_outcomes() {
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
     let c = RateCard::absent(-5);
-    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 0);
+    assert_eq!(c.fee_for(CurrencyCode::USD), Some(0));
+    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), Some(0));
+    // A fee CONFIGURED at nothing is a priced nothing, which is not the silence a card that names
+    // no fee in a currency at all answers with.
+    assert!(!c.fee_unpriced(CurrencyCode::USD));
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
@@ -102,9 +105,11 @@ fn negative_per_request_fee_clamps_to_zero() {
 #[test]
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     let c = RateCard::absent(3);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 30_000_000);
+    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), Some(30_000_000));
     assert_eq!(
-        c.fee_unit_price_nanos(CurrencyCode::USD) % crate::NANOS_PER_CENT,
+        c.fee_unit_price_nanos(CurrencyCode::USD)
+            .expect("the card names a fee in its own currency")
+            % crate::NANOS_PER_CENT,
         0
     );
 }
