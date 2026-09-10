@@ -1438,7 +1438,59 @@ plane on the commit that lands it. `impl_trait_on` now reads the qualified spell
 Four crates implement a foreign face today; each is a `[[face]]` row at its exact count with its
 citation and the line that deletes it, and the ship twin owes zero.
 
-### 9.3 `--write` re-pins DOWN, and refuses if anything would rise
+### 9.3 `kind-isolation:step-ownership` — every step served once, kind-neutrally, for every plane
+
+`:plane-steps` asks whether a plane DECLARES each step of the strict list. That is the right question
+to ask of a FACE, and it is half the contract: it is satisfied by a `fn <step>` that is not `todo!`,
+and it never asks who answers behind the face, whether the same crate answers for every plane, or
+whether that crate branches on which plane it is holding. `:step-ownership` asks the other half, in
+three spellings of one rule.
+
+**`unserved`** — for every plane × every step, the root's leg for that plane must name the unit that
+owns the step. The owner table is `ARCHITECTURE.md` §2.2's own assignment (authenticate →
+`busbar-unit-auth`, verify → `-trust`, approve → `-scope`, admit → `-admission`, route → `-egress`,
+meter → `-usage`, audit → `-audit`); the step LIST is not restated, it is read off
+`busbar-caps/src/step.rs` × `busbar-contract/src/plane.rs`, so a step added to the loop is owed by
+every plane on the commit that adds it.
+
+**`plane-local-driver`** — a task, thread or timer advancing a step's state inside a plane crate or a
+legacy body. The construct is read off the LINE and the subject off its NEIGHBOURHOOD (±12 lines),
+and both narrowings are the rule rather than a softening: reading the machinery word off the same
+line reported ZERO findings over `busbar-llm/src/engine/health.rs`, whose whole purpose is the
+schedule, because line 197 is `tokio::spawn(async move {` and nothing else; reading it off the whole
+FILE reported a TLS certificate reloader, because a 900-line file contains every word.
+
+**`instance-dispatch`** — a kind-neutral or still-serving-legacy crate whose production line carries a
+decision token AND a quoted literal that is a known instance of some kind. This is the owner's ruling
+spelled: core cannot `if x == token_auth else if x == OIDC`. The instance vocabulary is DERIVED from
+the census, never listed — `busbar-plane-llm` proves `llm` is a plane instance, `store-memory` proves
+`memory` is a store instance — so a kind that grows an instance grows this vocabulary on the same
+commit. A crate naming its own instance is skipped; that is `:name`'s and `:vocab`'s question.
+
+**Not a restatement of `:vocab`.** That row counts MENTIONS against a per-cell ledger that only goes
+down. This one names IMPLEMENTATIONS and DISPATCH SITES: a line is reported only if it composes a
+step, drives one, or decides between instances, so a doc line, a re-export or a type name is invisible
+to it. Both rows can fire on one file; neither count is derived from the other.
+
+Owed under `--ship` only, beside `:control-path`, which is the precedent for a row the tree does not
+meet yet. RED on the tip by construction, with **37 findings**: 10 `unserved` (llm ×
+authenticate/verify/approve/route/meter/audit, voice × meter/route, mcp × route, a2a × route),
+5 `plane-local-driver` (`engine/health.rs:197,199,205` — `spawn_probers`, the ruling's own example,
+found by construction — and `busbar-core/src/tls.rs:531,823`), and 22 `instance-dispatch`. The eight
+pre-existing ship reds are byte-identical before and after the row and the check-twin rows still PASS:
+the row adds exactly one FAIL and weakens nothing.
+
+Two costs, measured, because a rule that doubles the battery is a rule that gets deleted. One
+`kind-isolation-ship` run is **31.4 s at the base and 33.3 s with the row — +1.9 s, 6 %**; the first
+version hit the gate's own 300 s ceiling and reported itself hung, and was cut twice (the quoted
+needles are built once per run rather than once per line × instance, and a line with no `"` in it
+cannot be a dispatch site and is retired before any word is looked for). And one narrowing was
+deliberately NOT taken: the driver scan wants to skip `src/bin/` and `test_support/`, and the first
+attempt widened the shared `is_shipped_source` predicate to say so — which would have taken those
+files away from `:control-path`, `:vocab` and `:plane-steps` as well. **A new row is not entitled to
+make an old one see less**, so the narrowing is local to this rule.
+
+### 9.4 `--write` re-pins DOWN, and refuses if anything would rise
 
 An exact ratchet taxes the landing that does the right thing: a cut that removes two of a crate's
 plane hits leaves the row three too high and the gate is red until somebody edits a number by hand.
@@ -1450,7 +1502,7 @@ is a landing that has to be read, and a tool that quietly re-pinned the falls in
 would hand it a file that looks reviewed. The write is a line-by-line rewrite of one number per row
 rather than a re-render, because this file is written by hand and its comments ARE the reasoning.
 
-### 9.4 The self-test, and the sub-checks that had no plant
+### 9.5 The self-test, and the sub-checks that had no plant
 
 Every red-team case is a named case. Beyond them, eight arms of `:registry` had no plant of their
 own — `dead-kind`, `kind-arrived`, `alias-retired`, `no-construction-kinds`, `unmapped-kind`,

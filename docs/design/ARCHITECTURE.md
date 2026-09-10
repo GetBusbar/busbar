@@ -1645,9 +1645,13 @@ about a kind boundary, this register and that spec win.)*
   plugin kinds — plane, dialect, transport, auth, egress-auth, store, secret, hook, export — plus
   the core `unit` row, which is never loadable. `loader` and `abi` are TCB crates, not kinds; "rate
   card" is config, not a kind. Enforced by `cargo xtask gate kind-isolation` (`PLUGIN-TREE.md`
-  Appendix G) with ten rows: `:name :deps :vocab :registry :plane-steps
-  :transport-registration :matrix` on every push, and `:shape :testkit :control-path` on the ship
-  twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
+  Appendix G) with eleven rows: `:name :deps :vocab :registry :plane-steps
+  :transport-registration :matrix` on every push, and `:shape :testkit :control-path
+  :step-ownership` on the ship twin. **`:step-ownership` is `:plane-steps`' other half: every step
+  is served once, kind-neutrally, for every plane — the unit `§2.2` assigns the step is composed by
+  every plane's leg, no plane crate or legacy body runs a step's own schedule, and a kind-neutral
+  crate dispatching on which instance of a kind it is holding is a finding, not a cell to drain.**
+  **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
   how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
   included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
   ratchet down only. One exemption, ruled: **a comment is not a coupling; the root's prose does not
