@@ -662,6 +662,10 @@ fn duplicates(reg: &super::KindRegistry) -> Vec<String> {
     for m in &reg.minted {
         *seen.entry(format!("minted\t{}", m.krate)).or_default() += 1;
     }
+    // …AND TWO ADMISSIONS FOR ONE KIND IS TWO COLUMNS. Same map, same manoeuvre, keyed by kind.
+    for m in &reg.minted_kinds {
+        *seen.entry(format!("minted_kind\t{}", m.kind)).or_default() += 1;
+    }
     seen.into_iter()
         .filter(|(_, n)| *n > 1)
         .map(|(k, n)| {
@@ -779,7 +783,25 @@ pub fn measured_cells(
 /// crate, at which commit, how many cells, and — for a carve-out — which crate the vocabulary was
 /// moved from. Every one of those is checked against history rather than against the branch, which
 /// is the same reading the rest of this module gives every other row.
-fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
+///
+/// AND THE HINGE HAS TWO LEAVES, because a crate is not the only thing that can be new. The FIRST
+/// crate of a kind makes the kind's vocabulary COUNTABLE, and the tree answers with a whole COLUMN:
+/// every crate that already said the word grows a `<crate> × <kind>` cell, and every kind those
+/// crates belong to grows a `<kind> -> <new kind>` class. None of those rows is about the new crate
+/// by name, so the crate's `[[minted]]` row admits none of them — measured on the branch that
+/// landed the two dialect crates, twenty-six `minted-row`s and thirty `unlisted-edge`s with no
+/// honest way in. The second leaf is [`super::MintedKind`]: a kind the BASE announced (through the
+/// crates it announced as that kind) may mint its column ONCE, on the branch that lands its first
+/// crate, in a row that says how many cells and how many classes, with every cell at the count the
+/// tree measures and not one above it. `[[edge]]` classes are named by kinds and belong to the
+/// column, so the column's row is the ONLY thing that admits one; a `[[minted]]` row admits a
+/// crate's cells and disagreements and nothing else.
+fn minted_rows(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    matrix: &Matrix,
+    reg: &super::KindRegistry,
+) -> Vec<String> {
     let base = match super::base::read(cx) {
         Ok(b) => b,
         Err(why) => {
@@ -832,14 +854,51 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         }
         admits.insert(m.krate.as_str(), m);
     }
-    // kind -> the crate whose announcement mints it, for the `[[edge]]` half. An edge class is
-    // named by KINDS, not crates, so the row a first-of-its-kind crate needs is admitted through
-    // the kind the BASE announced it as — never through a kind this branch assigned it.
-    let mut minting_kind: BTreeMap<&str, &str> = BTreeMap::new();
-    for name in admits.keys() {
-        if let Some(kind) = at_base.announced.get(*name) {
-            minting_kind.insert(kind.as_str(), name);
+
+    // ── WHICH `[[minted_kind]]` ROWS ADMIT ANYTHING ─────────────────────────────────────────────
+    //
+    // The COLUMN admission, read on the same terms as the crate admission and refused on the same
+    // terms: a row that fails one of these three tests admits nothing, so every row it was written
+    // for stays `minted-row`. The kind is announced THROUGH ITS CRATES — the BASE's `[[announced]]`
+    // table names crates with kinds, and a kind is announced exactly when some crate is announced
+    // as it — never through a kind this branch assigned anything.
+    let announced_kinds_at_base: BTreeSet<&str> =
+        at_base.announced.values().map(String::as_str).collect();
+    let mut kind_admits: BTreeMap<&str, &super::MintedKind> = BTreeMap::new();
+    for mk in &reg.minted_kinds {
+        let kind = mk.kind.as_str();
+        if !announced_kinds_at_base.contains(kind) {
+            out.push(format!(
+                "unannounced-kind-mint\t[[minted_kind]] {kind}\tno `[[announced]]` row of {LEDGER} \
+                 at the merge-base {short} names a crate of kind `{kind}`, so this branch is \
+                 opening a column for a kind whose first crate nobody announced. Announcing the \
+                 crate and admitting its kind's column in one commit is the same signature twice: \
+                 land the `[[announced]]` row first, on the integration line, and mint the column \
+                 against it afterwards."
+            ));
+            continue;
         }
+        if at_base.minted_kinds.contains(kind) {
+            out.push(format!(
+                "second-mint\t[[minted_kind]] {kind}\tthe merge-base {short} already carries a \
+                 `[[minted_kind]]` row for `{kind}`: its column was minted once, at {}, and is \
+                 HISTORY now, so this row admits nothing. A kind's column is minted on the branch \
+                 that lands its first crate; every cell after that is a 0 -> N raise like any \
+                 other and lands on the integration line, in a commit that says why.",
+                mk.commit
+            ));
+            continue;
+        }
+        if !crates.iter().any(|c| c.kind == Some(kind)) {
+            out.push(format!(
+                "unlanded-kind-mint\t[[minted_kind]] {kind}\tno crate of kind `{kind}` is on disk, \
+                 so the column this row admits measures nothing, and every cell under it would be \
+                 a ceiling answering to no measurement. A kind's column is minted on the branch \
+                 that lands its first crate — the row and the crate land together."
+            ));
+            continue;
+        }
+        kind_admits.insert(kind, mk);
     }
 
     // ── THE MINTED ROWS THEMSELVES ──────────────────────────────────────────────────────────────
@@ -848,6 +907,9 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let renamed_to: BTreeMap<&str, &str> =
         reg.base_names().into_iter().map(|(k, v)| (v, k)).collect();
     let mut minted_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    // What each COLUMN admitted: the cells of OTHER crates in it, and the classes naming it.
+    let mut column_cells: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut column_edges: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (table, ids, what) in [
         (
             "cell",
@@ -872,18 +934,32 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
                 continue;
             }
             let (left, right) = key.split_once(" \u{d7} ").unwrap_or((key.as_str(), ""));
-            let admitted = match table {
-                // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name.
-                "cell" | "disagreement" => admits.contains_key(left),
-                // An `[[edge]]` row is about a CLASS, so either end may be the kind being minted.
-                _ => minting_kind.contains_key(left) || minting_kind.contains_key(right),
+            // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name — the crate's own
+            // admission takes it first, so a first-of-its-kind crate's own cells stay with its
+            // `[[minted]]` row even when they sit in the new column. Failing that, it is about one
+            // KIND's column. An `[[edge]]` row is a CLASS, named by kinds, and belongs to the
+            // column of whichever end is being minted — a `[[minted]]` row admits no class.
+            let by_crate = matches!(table, "cell" | "disagreement") && admits.contains_key(left);
+            let by_column: Option<&str> = if by_crate {
+                None
+            } else if table == "edge" {
+                [left, right]
+                    .into_iter()
+                    .find(|k| kind_admits.contains_key(k))
+            } else {
+                kind_admits.contains_key(right).then_some(right)
             };
-            if admitted {
-                if table == "cell" {
-                    minted_cells
-                        .entry(left.to_string())
-                        .or_default()
-                        .push((left.to_string(), right.to_string()));
+            if by_crate || by_column.is_some() {
+                let row = (left.to_string(), right.to_string());
+                match (table, by_column) {
+                    ("cell", None) => minted_cells.entry(left.to_string()).or_default().push(row),
+                    ("cell", Some(kind)) => {
+                        column_cells.entry(kind.to_string()).or_default().push(row)
+                    }
+                    ("edge", Some(kind)) => {
+                        column_edges.entry(kind.to_string()).or_default().push(row)
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -894,7 +970,8 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
                  `ceiling-rose` cannot see, because a key with no `before` has nothing to be higher \
                  than. Delete the coupling instead, land the row in a commit whose message says why \
                  the tree now needs it, or — if this is the FIRST crate of its kind landing — add \
-                 the `[[minted]]` row that admits it, against an `[[announced]]` row the base \
+                 the `[[minted]]` row that admits the crate's own cells and the `[[minted_kind]]` \
+                 row that admits the kind's column, against an `[[announced]]` row the base \
                  already carries."
             ));
         }
@@ -959,6 +1036,62 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         }
     }
 
+    // ── WHAT EACH COLUMN ADMISSION ACTUALLY MINTED, AGAINST WHAT ITS ROW SAYS ───────────────────
+    for (kind, mk) in &kind_admits {
+        let cells = column_cells.get(*kind).map(Vec::as_slice).unwrap_or(&[]);
+        let edges = column_edges.get(*kind).map(Vec::as_slice).unwrap_or(&[]);
+        let spelled = |rows: &[(String, String)], joint: &str| {
+            if rows.is_empty() {
+                "none".to_string()
+            } else {
+                rows.iter()
+                    .map(|(a, b)| format!("{a} {joint} {b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        for (field, said, got, what) in [
+            ("cells", mk.cells, cells.len(), spelled(cells, "\u{d7}")),
+            ("edges", mk.edges, edges.len(), spelled(edges, "->")),
+        ] {
+            if said != got as i64 {
+                out.push(format!(
+                    "kind-mint-count\t[[minted_kind]] {kind}\tthe row is recorded at {} and says \
+                     `{field} = {said}`, and this branch minted {got} under it ({what}). The number \
+                     is the size of the set the admission covers, so a branch that minted a \
+                     different number than it wrote down has an admission nobody priced: write the \
+                     number the branch actually mints.",
+                    mk.commit
+                ));
+            }
+        }
+        // A COLUMN IS A FIRST MEASUREMENT AND NOTHING ELSE. The crate admission has `moved_from`
+        // as its ceiling; the column's ceiling is the tree itself, because every cell in it is
+        // being measured for the first time and there is nothing else to price it against. A
+        // count above the measurement is slack minted with the row — the exact thing `ratchet`
+        // would later read as STALE and the exact thing a landing could hide a raise under.
+        for (krate, kd) in cells {
+            let said = listed
+                .get(&(krate.as_str(), kd.as_str()))
+                .copied()
+                .unwrap_or(0);
+            let measured = matrix
+                .iter()
+                .find(|((k, kk), _)| k == krate && *kk == kd.as_str())
+                .map(|(_, c)| c.count)
+                .unwrap_or(0);
+            if said > measured as i64 {
+                out.push(format!(
+                    "mint-over-measure\t[[cell]] {krate} \u{d7} {kd} = {said}\tthe tree measures \
+                     {measured} for this cell, and the `[[minted_kind]]` row for `{kind}` admits \
+                     it as a FIRST MEASUREMENT, which is the only thing a minted column is. A count \
+                     above the measurement is slack minted with the row, and slack is how drift \
+                     hides: write the measured number."
+                ));
+            }
+        }
+    }
+
     out
 }
 
@@ -1006,7 +1139,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let listed = read_ledger(reg);
 
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx, reg));
+    offenders.extend(minted_rows(cx, crates, &matrix, reg));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -1268,6 +1401,169 @@ fn minted_row(krate: &str, cells: usize, moved_from: Option<&str>) -> String {
     out
 }
 
+/// One `[[minted_kind]]` row.
+fn minted_kind_row(kind: &str, cells: usize, edges: usize) -> String {
+    format!(
+        "[[minted_kind]]\nkind = \"{kind}\"\ncommit = \"468bad131\"\ncells = \"{cells}\"\nedges = \
+         \"{edges}\"\n"
+    )
+}
+
+/// THE WHOLE LANDING OF A KIND'S FIRST CRATE, MEASURED RATHER THAN WRITTEN.
+///
+/// The crate on disk; the merge-base's ledger carrying its announcement (planted through
+/// `git-show`, so to the branch the announcement is HISTORY); and the branch's ledger carrying every
+/// row the planted tree measures — each new cell at its measured count, each class the new cells
+/// name, each disagreement the two scanners have, every already-listed cell the new crate's name
+/// raised re-pinned and every one it drained struck — under the two admissions that price them.
+/// Written by hand this would be thirty-odd rows copied out of a `--report` and stale the day a
+/// crate said `llm` one more time; measured, it is the landing the door has to be honest over
+/// whatever the tree says today, which is the same reading the door itself gives.
+struct KindLanding {
+    /// The tree with the crate on it.
+    tree: crate::ctx::Overlay,
+    /// The branch's ledger, complete.
+    ledger: String,
+    /// The `git-show` key the base's ledger is planted under, and that ledger: the real base's
+    /// text plus the announcement.
+    base_key: String,
+    base_registry: String,
+    announcement: String,
+    /// The crate's own `[[minted]]` row and the column's `[[minted_kind]]` row, verbatim, so a case
+    /// can strike or alter one of them.
+    minted: String,
+    minted_kind: String,
+    /// The crate's own new cells and the column's, `(crate, kind, count)`.
+    own: Vec<(String, String, usize)>,
+    column: Vec<(String, String, usize)>,
+    /// How many classes the column opened.
+    classes: usize,
+}
+
+impl KindLanding {
+    /// The overlay: the crate, the branch's ledger and the base's — with the two texts as given.
+    fn overlay(&self, ledger: &str, base_registry: &str) -> crate::ctx::Overlay {
+        let mut ov = self.tree.clone();
+        ov.set(LEDGER, ledger.to_string());
+        ov.set_command(self.base_key.clone(), base_registry.to_string());
+        ov
+    }
+
+    /// The text of the rows named, as they appear in the branch's ledger.
+    fn cell_rows(rows: &[(String, String, usize)]) -> Vec<String> {
+        rows.iter()
+            .map(|(k, kd, n)| format!("[[cell]]\n{}", cell_row(k, kd, &n.to_string())))
+            .collect()
+    }
+}
+
+fn kind_landing(cx: &Ctx, krate: &str, kind: &str, body: &str) -> Result<KindLanding, String> {
+    let base = super::base::read(cx)?;
+    let tree = landed_crate(krate, body);
+    let planted = cx.with_overlay(tree.clone());
+    let crates = super::census(&planted)?;
+    let (matrix, _) = measure(&planted, &crates)?;
+    let now = cx.read(LEDGER)?;
+    let listed = read_ledger(&super::parse_registry(&now));
+    let kind_of: BTreeMap<&str, &str> = crates
+        .iter()
+        .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
+        .collect();
+
+    let mut text = now.trim_end().to_string();
+    let mut fresh = String::new();
+    let mut own = Vec::new();
+    let mut column = Vec::new();
+    let mut classes: BTreeSet<(String, String)> = BTreeSet::new();
+    for ((k, kd), cell) in &matrix {
+        let key = (k.clone(), (*kd).to_string());
+        let count = cell.count.to_string();
+        match listed.cells.get(&key) {
+            Some(n) if *n as usize == cell.count => {}
+            // A LISTED CELL THAT MEASURES DIFFERENTLY ON THE PLANTED TREE — the new crate's own name
+            // raising its kind's cells, a struck spelling lowering another's — is an ordinary raise
+            // or fall with an ordinary row at the base, re-pinned so the case is red or green on
+            // the claim it is about.
+            Some(n) => {
+                text = text.replacen(
+                    &cell_row(k, kd, &n.to_string()),
+                    &cell_row(k, kd, &count),
+                    1,
+                );
+            }
+            None => {
+                fresh.push_str(&format!("\n\n[[cell]]\n{}", cell_row(k, kd, &count)));
+                if k == krate {
+                    own.push((k.clone(), (*kd).to_string(), cell.count));
+                } else if *kd == kind {
+                    column.push((k.clone(), (*kd).to_string(), cell.count));
+                } else {
+                    return Err(format!(
+                        "the landing raised {k} \u{d7} {kd} from nothing, which is neither the \
+                         crate's row nor the kind's column"
+                    ));
+                }
+            }
+        }
+        if cell.disagrees() && !listed.disagreements.contains_key(&key) {
+            fresh.push_str(&format!(
+                "\n\n[[disagreement]]\ncrate = \"{k}\"\nkind = \"{kd}\"\nnote = \"segment scanner \
+                 {}, window scanner {}; the higher is scored\"",
+                cell.by_segments, cell.by_windows
+            ));
+        }
+        let src = kind_of.get(k.as_str()).copied().unwrap_or("?");
+        if !listed
+            .edges
+            .contains_key(&(src.to_string(), (*kd).to_string()))
+        {
+            classes.insert((src.to_string(), (*kd).to_string()));
+        }
+    }
+    // A LISTED CELL THE PLANT DRAINED TO ZERO IS DEAD, and its row comes out for the same reason a
+    // raised one is re-pinned.
+    for ((k, kd), n) in &listed.cells {
+        let live = matrix
+            .iter()
+            .any(|((mk, mkd), c)| mk == k && mkd == kd && c.count > 0);
+        if !live {
+            text = text.replacen(
+                &format!("[[cell]]\n{}", cell_row(k, kd, &n.to_string())),
+                "",
+                1,
+            );
+        }
+    }
+    for (f, t) in &classes {
+        if f != kind && t != kind {
+            return Err(format!(
+                "the landing opened {f} -> {t}, which does not name the kind"
+            ));
+        }
+        fresh.push_str(&format!("\n\n{}", edge_row(f, t).trim_end()));
+    }
+    let minted = minted_row(krate, own.len(), None);
+    let minted_kind = minted_kind_row(kind, column.len(), classes.len());
+    let ledger = format!("{text}{fresh}\n\n{minted}\n{minted_kind}");
+    let announcement = format!(
+        "[[announced]]\ncrate = \"{krate}\"\nkind = \"{kind}\"\nreason = \"the first crate of the \
+         {kind} kind, announced so the door can mint its rows and its column\"\n"
+    );
+    let base_registry = format!("{}\n\n{announcement}", base.registry.trim_end());
+    Ok(KindLanding {
+        tree,
+        ledger,
+        base_key: format!("git-show:{}:{LEDGER}", base.commit),
+        base_registry,
+        announcement,
+        minted,
+        minted_kind,
+        own,
+        column,
+        classes: classes.len(),
+    })
+}
+
 /// A crate on disk that names one other kind's vocabulary once — the shape a FIRST-OF-ITS-KIND
 /// crate arrives in, which is the only tree a `[[minted]]` row is honest over.
 fn landed_crate(name: &str, body: &str) -> crate::ctx::Overlay {
@@ -1394,28 +1690,192 @@ pub fn selftest(
         },
     ));
 
-    // …AND THE `[[edge]]` HALF OF THE SAME LANDING, which is the one a FIRST-of-its-kind crate
-    // needs: `busbar-core-config` is the first `core` crate, so the class rows naming `core` are in
-    // no base either. They are admitted through the KIND the base announced the crate as, and the
-    // class is not scored DEAD while that kind has no crate — the same window `[[announced]]`
-    // already opens for the dead-kind ratchet, with the same expiry.
+    // ── THE DOOR'S SECOND LEAF: `[[minted_kind]]` ───────────────────────────────────────────────
     //
-    // This is `root -> core`: the composition root names every axis, and `core` is the carve-out of
-    // the crate it already names as `legacy`. `PENDING_EDGES` grants the dependency class; this row
-    // is the vocabulary class beside it.
-    report.push(prove_rows_green(
+    // The FIRST crate of a kind makes the kind's vocabulary countable, and the tree answers with a
+    // whole COLUMN: every crate that already said the word grows a `<crate> × <kind>` cell, and
+    // every kind those crates belong to grows a class naming the new kind. A `[[minted]]` row is
+    // about one crate by name and admits none of that. The landing below is MEASURED, not written:
+    // the third dialect D36 names lands on this tree, and every cell and class the tree grows for
+    // it is priced at what the tree says — which is the only fixture that stays honest as the tree
+    // moves, and the same reading the door gives the real landing.
+    match kind_landing(
+        cx,
+        "busbar-plane-llm-anthropic",
+        "dialect",
+        "//! The anthropic dialect of the llm plane. It names the mcp plane once, so it has a cell \
+         of its own to mint beside the column it opens.\n",
+    ) {
+        Err(why) => report.push(crate::gates::Case {
+            name: "a kind's first crate lands and the [[minted_kind]] row admits the whole column \
+                   the tree measures"
+                .to_string(),
+            covers: vec![ROW_MATRIX.to_string()],
+            expected: crate::gates::Expect::Green,
+            got: crate::gates::Expect::Red {
+                naming: vec![format!("the landing could not be measured: {why}")],
+            },
+        }),
+        Ok(landing) => {
+            // THE GREEN ARM: the crate on disk, the announcement at the base, and every row the
+            // planted tree measures under its two admissions — the crate's own cells under
+            // `[[minted]]`, the column and its classes under `[[minted_kind]]`.
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "a kind's first crate lands and the [[minted_kind]] row admits the whole column \
+                 the tree measures, at its measured counts",
+                &[ROW_MATRIX],
+                landing.overlay(&landing.ledger, &landing.base_registry),
+            ));
+
+            // A COUNT ABOVE THE MEASUREMENT IS SLACK MINTED WITH THE ROW. One column cell asks for
+            // one more than the tree measures; `ratchet` would read it as stale slack later, and
+            // the door reads it now, as the thing it is.
+            if let Some((k, kd, n)) = landing.column.first() {
+                report.push(prove_rows_red(
+                    cx,
+                    gate,
+                    "a column cell minted above what the tree measures is slack, not a first \
+                     measurement",
+                    &[ROW_MATRIX],
+                    landing.overlay(
+                        &landing.ledger.replacen(
+                            &cell_row(k, kd, &n.to_string()),
+                            &cell_row(k, kd, &(n + 1).to_string()),
+                            1,
+                        ),
+                        &landing.base_registry,
+                    ),
+                    &["mint-over-measure", &format!("{k} \u{d7} {kd}")],
+                ));
+            } else {
+                report.push(crate::gates::Case {
+                    name: "a column cell minted above what the tree measures is slack, not a \
+                           first measurement"
+                        .to_string(),
+                    covers: vec![ROW_MATRIX.to_string()],
+                    expected: crate::gates::Expect::Red {
+                        naming: vec!["mint-over-measure".to_string()],
+                    },
+                    got: crate::gates::Expect::Red {
+                        naming: vec!["the landing opened no column cell to raise".to_string()],
+                    },
+                });
+            }
+
+            // THE NUMBERS ARE EXACT. `edges` one above what the branch minted is an admission
+            // nobody priced — the same rule `[[minted]] cells` already answers to.
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a [[minted_kind]] row whose `edges` differs from what the branch minted is an \
+                 admission nobody priced",
+                &[ROW_MATRIX],
+                landing.overlay(
+                    &landing.ledger.replacen(
+                        &landing.minted_kind,
+                        &minted_kind_row("dialect", landing.column.len(), landing.classes + 1),
+                        1,
+                    ),
+                    &landing.base_registry,
+                ),
+                &["kind-mint-count", "[[minted_kind]] dialect", "edges"],
+            ));
+
+            // ONCE MEANS ONCE. The base already carries the column's admission; a second row for
+            // the kind admits nothing, whatever it says.
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a [[minted_kind]] row for a kind whose column the merge-base already minted is a \
+                 second mint",
+                &[ROW_MATRIX],
+                landing.overlay(
+                    &landing.ledger,
+                    &format!(
+                        "{}\n\n{}",
+                        landing.base_registry.trim_end(),
+                        minted_kind_row("dialect", 0, 0)
+                    ),
+                ),
+                &["second-mint", "[[minted_kind]] dialect"],
+            ));
+
+            // A `[[minted]]` ROW ADMITS A CRATE'S CELLS AND NOTHING ELSE. With the column's row
+            // struck, the crate's own admission stands and every class naming the kind is a row
+            // this branch minted — an edge class is named by kinds, and belongs to the column.
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a [[minted]] row alone admits no [[edge]] class: the class is the column's",
+                &[ROW_MATRIX],
+                landing.overlay(
+                    &landing.ledger.replacen(&landing.minted_kind, "", 1),
+                    &landing.base_registry,
+                ),
+                &["minted-row", "[[edge]]", "dialect"],
+            ));
+
+            // A LATER CRATE OF THE SAME KIND MINTS ITS OWN `[[minted]]` ROW AND NOTHING MORE. The
+            // base carries the column — its admission, its cells, its classes — and the crate's
+            // announcement; the branch carries the crate, its own cells and its own `[[minted]]`
+            // row, and no `[[minted_kind]]` at all. That is every dialect after the first.
+            let mut base_later = landing.ledger.replacen(&landing.minted, "", 1);
+            for row in KindLanding::cell_rows(&landing.own) {
+                base_later = base_later.replacen(&row, "", 1);
+            }
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "a later crate of a kind whose column is history mints its own [[minted]] row and \
+                 nothing more",
+                &[ROW_MATRIX],
+                landing.overlay(
+                    &landing.ledger.replacen(&landing.minted_kind, "", 1),
+                    &format!("{}\n\n{}", base_later.trim_end(), landing.announcement),
+                ),
+            ));
+        }
+    }
+
+    // A KIND THE BASE DID NOT ANNOUNCE OPENS NO COLUMN. `store` has crates and no announcement:
+    // the row answers to nothing at the base and admits nothing.
+    report.push(prove_rows_red(
         cx,
         gate,
-        "the first crate of a kind mints its [[edge]] class too, and the class is not scored dead",
+        "a [[minted_kind]] row for a kind the merge-base never announced admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &minted_kind_row("store", 0, 0)),
+        &["unannounced-kind-mint", "[[minted_kind]] store"],
+    ));
+
+    // A KIND WITH NO CRATE ON DISK HAS NO COLUMN TO MINT. `core` is announced and unlanded: the
+    // row would be a set of ceilings answering to no measurement.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[minted_kind]] row for an announced kind with no crate on disk admits nothing",
+        &[ROW_MATRIX],
+        ledger_plus(cx, &minted_kind_row("core", 0, 0)),
+        &["unlanded-kind-mint", "[[minted_kind]] core"],
+    ));
+
+    // TWO ROWS FOR ONE KIND ARE TWO COLUMNS.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a second [[minted_kind]] row for the same kind is two admissions, not one",
         &[ROW_MATRIX],
         ledger_plus(
             cx,
             &format!(
                 "{}\n{}",
-                edge_row("root", "core"),
-                minted_row("busbar-core-config", 0, None),
+                minted_kind_row("core", 0, 0),
+                minted_kind_row("core", 1, 1)
             ),
         ),
+        &["duplicate-row", "core", "`[[minted_kind]]` rows"],
     ));
 
     // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger
