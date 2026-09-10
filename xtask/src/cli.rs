@@ -194,7 +194,16 @@ fn gate(args: &[String]) -> i32 {
         return 1;
     }
 
-    let Some(name) = args.iter().find(|a| !a.starts_with("--")) else {
+    // THE SHARD'S VALUE IS NOT A GATE NAME. `--shard` in its spaced form takes the next argument,
+    // so `gate --selftest --shard 1/4 kind-isolation` used to look for a registered gate called
+    // `1/4` and refuse — a refusal that names the wrong thing sends the reader to the registry
+    // instead of to their argv.
+    let Some(name) = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && !(*i > 0 && args[i - 1] == "--shard"))
+        .map(|(_, a)| a)
+    else {
         eprintln!("xtask gate: no gate named");
         eprintln!("{USAGE}");
         return 2;
