@@ -28,7 +28,7 @@ W="$RAW/providers-env-work"; mkdir -p "$W"
 # script-cell verdict, which only looked at that file, recorded PASS. `fail` marks the run as a
 # harness error (never a busbar difference) so the recorder files it FAIL instead of freezing the
 # recorder's own breakage into the golden.
-fail() { jq -n --arg body "$1" '{status:0, headers:{}, body:$body, effects:{harness_error:$body}}' >"$RAW/captured.json"; exit 0; }
+fail() { jq -n --arg body "$1" '{status:0, headers:{}, body:$body, effects:{harness_error:$body}}' >"$RAW/captured.json"; exit 70; }
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null \
   || fail "--generate-signing-key exited non-zero; there is no signing key to configure"

@@ -51,7 +51,7 @@ LP="${GOV_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${GOV_ADMIN_PORT:-${SC
 # Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
 # a bound sized for an idle laptop reads a saturated host's second boot as "never came up".
 BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
-fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
+fail() { oracle_harness_give_up "$1"; }
 
 W="$RAW/gov-work"
 # record.sh reuses a FIXED raw dir per cell id across repeated recorder invocations (it is keyed by

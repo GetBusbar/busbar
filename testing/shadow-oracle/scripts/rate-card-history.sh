@@ -66,11 +66,11 @@ MP="${RCH_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48796}}"
 W="$RAW/rch-work"; mkdir -p "$W"
 
 for p in "$LP" "$AP" "$MP"; do
-  assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
+  assert_port_free "$p" || oracle_harness_give_up "port $p busy"
 done
 
 python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
-wait_for_http "http://127.0.0.1:${MP}/" 5 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"mock upstream did not come up"}}' >"$RAW/captured.json"; exit 0; }
+wait_for_http "http://127.0.0.1:${MP}/" 5 || oracle_harness_give_up "mock upstream did not come up"
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 cat >"$W/providers.yaml" <<YAML
@@ -106,7 +106,7 @@ YAML
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 70; }
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >"$W/busbar.log" 2>&1 &
@@ -192,10 +192,7 @@ if ! result="$(jq -n \
     spend_after_a:($usage_after_a.total.spend_micros // null),
     spend_after_b:($usage_after_b.total.spend_micros // null),
     spend_final:($usage_final.total.spend_micros // null)}' 2>"$W/result.err")"; then
-  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
-    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
-    >"$RAW/captured.json"
-  exit 0
+  oracle_harness_give_up "the cell body could not be assembled from its own measurements: $(tr '\n' ' ' <"$W/result.err" | tail -c 200)" "$eff"
 fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

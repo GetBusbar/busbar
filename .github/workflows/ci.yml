@@ -2206,6 +2206,13 @@ jobs:
           key: ${{ steps.rev.outputs.key }}
       - name: The differ can see a diff (replay selftest)
         run: ./bin/oracle replay-selftest
+      # A HARNESS FAILURE MUST NOT BE RECORDABLE (AUDIT NOTE-36). The script drivers used to write a
+      # fabricated capture — `{status:-1, effects:{error:"port N busy"}}` — and exit 0 on a give-up,
+      # which the recorder read as a named gap and filed SKIP: the cell left the owed set and was
+      # never compared again. This drives a PLANTED busy port through the driver and re-audits every
+      # sibling under scripts/, so the family cannot drift back one driver at a time.
+      - name: A give-up is refused, never recorded (driver selftest)
+        run: ./testing/shadow-oracle/scripts/documented-admin-restart.sh --selftest
       - name: Fetch the published 1.5.5 binary and plugins by digest
         run: |
           set -euo pipefail

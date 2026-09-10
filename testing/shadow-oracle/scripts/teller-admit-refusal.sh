@@ -30,14 +30,15 @@ W="$RAW/teller-work"; mkdir -p "$W"
 rm -rf "$W/egress"; mkdir -p "$W/egress"
 
 for p in "$LP" "$AP" "$MP"; do
-  assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
+  assert_port_free "$p" || oracle_harness_give_up "port $p busy"
 done
 
 ORACLE_MOCK_CAPTURE_DIR="$W/egress" python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
-# the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.
-wait_for_http "http://127.0.0.1:${MP}/" 5 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"mock upstream did not come up"}}' >"$RAW/captured.json"; exit 0; }
+# the same way the port-busy guard above does: oracle_harness_give_up marks harness_error AND exits
+# 70, so the recorder refuses the run instead of filing it SKIP and quietly dropping the cell.
+wait_for_http "http://127.0.0.1:${MP}/" 5 || oracle_harness_give_up "mock upstream did not come up"
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 cat >"$W/providers.yaml" <<YAML
@@ -77,8 +78,9 @@ stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$ef
 # any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
 # cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
 # the candidate agreed because it failed the same way. `harness_error` says which of the two this
-# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
+# is; record.sh refuses any cell that carries it, and this fail() exits 70 as well — AUDIT NOTE-36:
+# a give-up marked only by `status: -1` was filed SKIP, which takes the cell out of the owed set.
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 70; }
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >"$W/busbar.log" 2>&1 &
@@ -148,11 +150,9 @@ if ! result="$(jq -n \
   # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
   # measured something it cannot state and the body would go out EMPTY — and an empty body with
   # status 0 compares clean against a golden that failed the same way, which is the vacuous green
-  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
-  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
-    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
-    >"$RAW/captured.json"
-  exit 0
+  # the ledger exists to refuse. This is the HARNESS failing to assemble what it measured, not a
+  # cell this host cannot host, so it gives up (harness_error, exit 70) instead of filing a gap.
+  oracle_harness_give_up "the cell body could not be assembled from its own measurements: $(tr '\n' ' ' <"$W/result.err" | tail -c 200)" "$eff"
 fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

@@ -73,6 +73,40 @@ not_pass="$(awk -F'\t' 'NF && $2!="PASS"{printf " %s(%s)", $1, $2}' "$src/ledger
   pass is a finding to read, not a golden to import — the cells it would install are what the
   product did on a bad run, and every later replay would be measured against that."
 
+# A PASS ROW IS NOT ENOUGH: THE CELL BEHIND IT MUST BE AN ANSWER (AUDIT NOTE-36). A script driver
+# that gives up writes a capture nothing in the product produced — `{status:-1, effects:{error:
+# "port N busy"}}` was the shipped shape — and the recorder side of the refusal is the pinned tool's
+# (harness_error, and a non-zero driver exit). This is the MERGE side of the same rule, and it is
+# checked here rather than trusted upstream because a merge is the last place a cell can be stopped
+# before it becomes the reference every later candidate is measured against. Zero of the 915 cells
+# in the committed golden carry any of these markers: a recording that answers busbar's questions
+# has no `error` in its effects and no -1 status.
+bad_cells="$(python3 - "$src/cells" <<'PY'
+import json, pathlib, sys
+
+bad = []
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.json")):
+    try:
+        cell = json.load(path.open(encoding="utf-8"))
+    except Exception as exc:  # a cell that will not parse is not a cell
+        bad.append(f"{path.name}: unreadable ({exc})")
+        continue
+    effects = cell.get("effects")
+    marks = [k for k in ("harness_error", "error", "named_gap")
+             if isinstance(effects, dict) and k in effects]
+    if cell.get("status") == -1:
+        marks.append("status: -1")
+    if marks:
+        bad.append(f"{path.name}: {', '.join(marks)}")
+print("\n".join(bad))
+PY
+)"
+[ -z "$bad_cells" ] || die "the artifact carries a cell whose capture is a give-up, not an answer:
+$bad_cells
+  A harness failure that never reached the product is not a recording of the product. Merged, it
+  becomes a golden every later candidate is compared against — and a candidate that fails the same
+  way matches it exactly, which is a cell that is permanently green about nothing."
+
 jget() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],"") or "")' "$1" "$2"; }
 src_ver="$(jget "$src/meta.json" version)"
 src_sha="$(jget "$src/meta.json" binary_sha256)"

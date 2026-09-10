@@ -36,7 +36,7 @@ LP="${OVRL_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48901}}" AP="${OVRL_ADMIN_PORT:-${
 W="$RAW/overlay-work"; mkdir -p "$W"
 
 for p in "$LP" "$AP"; do
-  assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
+  assert_port_free "$p" || oracle_harness_give_up "port $p busy"
 done
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
@@ -52,7 +52,7 @@ case "$VARIANT" in
   overlay-unwritable) config_block='config:
   overlay:
     file: "/dev/null/oracle-overlay.json"' ;;
-  *) echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"unknown variant $VARIANT\"}}" >"$RAW/captured.json"; exit 0 ;;
+  *) oracle_harness_give_up "unknown variant $VARIANT" ;;
 esac
 
 cat >"$W/config.yaml" <<YAML
@@ -88,8 +88,9 @@ stepbool() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$ef
 # any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
 # cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
 # the candidate agreed because it failed the same way. `harness_error` says which of the two this
-# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
+# is; record.sh refuses any cell that carries it, and this fail() exits 70 as well — AUDIT NOTE-36:
+# a give-up marked only by `status: -1` was filed SKIP, which takes the cell out of the owed set.
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 70; }
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) \

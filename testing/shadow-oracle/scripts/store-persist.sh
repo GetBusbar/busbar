@@ -29,7 +29,7 @@ BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracl
 BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
-tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || oracle_harness_give_up "plugin fetch failed"
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 # The store's fixture. sqlite's lives in the tree (a path under this cell's own work dir). Every
@@ -48,18 +48,20 @@ esac
 if [ -z "$SETTINGS" ] && [ -n "$URL_VAR" ]; then
   url="${!URL_VAR:-}"
   # record.sh gates these cells on the same var, so an unset one should never reach here. If it
-  # does (a direct call), refuse in the -1 UNSUPPORTED shape rather than booting on `{}` and
+  # does (a direct call), refuse as a NAMED GAP -- this host has no backend to record against, which
+  # is not the harness breaking -- rather than booting on `{}` and
   # recording whatever a store with no backend answers as the 1.5.5 contract.
-  [ -n "$url" ] || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$URL_VAR is unset: no live backend for $PLUGIN\"}}" >"$RAW/captured.json"; exit 0; }
+  [ -n "$url" ] || oracle_named_gap "$URL_VAR is unset: no live backend for $PLUGIN"
   SETTINGS="{ url: \"${url}\" }"
 fi
 [ -n "$SETTINGS" ] || case "$alias_" in sqlite) SETTINGS="{ db_path: \"${W}/governance.db\" }" ;; *) SETTINGS="{}" ;; esac
-for p in "$LP" "$AP" "$MP"; do assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }; done
+for p in "$LP" "$AP" "$MP"; do assert_port_free "$p" || oracle_harness_give_up "port $p busy"; done
 python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
-# the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.
-wait_for_http "http://127.0.0.1:${MP}/" 5 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"mock upstream did not come up"}}' >"$RAW/captured.json"; exit 0; }
+# the same way the port-busy guard above does: oracle_harness_give_up marks harness_error AND exits
+# 70, so the recorder refuses the run instead of filing it SKIP and quietly dropping the cell.
+wait_for_http "http://127.0.0.1:${MP}/" 5 || oracle_harness_give_up "mock upstream did not come up"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 cat >"$W/providers.yaml" <<YAML
 openai-chat:
@@ -107,8 +109,9 @@ step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 # any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
 # cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
 # the candidate agreed because it failed the same way. `harness_error` says which of the two this
-# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
+# is; record.sh refuses any cell that carries it, and this fail() exits 70 as well — AUDIT NOTE-36:
+# a give-up marked only by `status: -1` was filed SKIP, which takes the cell out of the owed set.
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 70; }
 
 env_ "$BIN" --validate >"$W/validate.log" 2>&1; step validate_exit "$?"
 # STRIP THIS RUN'S DIRS BEFORE TRUNCATING, not after. The window is a fixed number of BYTES, so

@@ -28,7 +28,7 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${FETCH_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${FETCH_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49752}}" FP="${FETCH_FILE_PORT:-${SCRIPT_MOCK_PORT:-49761}}"
-fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
+fail() { oracle_harness_give_up "$1"; }
 for p in "$LP" "$AP" "$FP"; do assert_port_free "$p" || fail "port $p busy"; done
 
 W="$RAW/fetch-work"

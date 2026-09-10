@@ -50,22 +50,18 @@ rm -rf "$W"
 # fixture itself needs (providers catalog, signing key, logs) lives in `W`, outside both.
 mkdir -p "$W/run" "$W/cfg"
 
-# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. record.sh reads `status` alone for
-# the named-gap case (-1 -> SKIP, UNSUPPORTED) but records EVERY other status as PASS — so `fail 1
-# "busbar did not come up"` and `fail 2 "could not mint a key"` were written as a golden that says
-# "this cell is exit 1/2", with a PASS row behind it, and a candidate that failed the same way for the
-# same reason matched it exactly. This is the one driver in scripts/ whose fail() never carried
-# `harness_error`, the marker record.sh:835 refuses a cell for; every sibling already emits it. A
-# status of -1 stays a plain named gap (`error`), as before.
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. record.sh used to read `status`
+# alone: a -1 was a named gap (SKIP) and every other status was recorded as PASS — so `fail 1
+# "busbar did not come up"` became a golden that says "this cell is exit 1", and a candidate that
+# failed the same way for the same reason matched it exactly. The -1 half was no better: a SKIP
+# takes the cell out of the owed set, so it is never compared and nobody is told it stopped proving
+# anything (AUDIT NOTE-36). EVERY call below is the harness breaking on this host — a busy port, a
+# mock that never answered, a signing key that would not mint — and not one of them is something
+# this host cannot host, so all of them go to lib.sh's oracle_harness_give_up: harness_error marked,
+# exit 70, refused by the recorder twice over. The <status> argument is kept so the call sites still
+# read as they did, and is no longer load-bearing: a refused capture has no status to compare.
 fail() { # <status> <message>
-  if [ "$1" -lt 0 ] 2>/dev/null; then
-    jq -n --argjson st "$1" --arg err "$2" \
-      '{status:$st, headers:{}, body:"", effects:{error:$err}}' >"$RAW/captured.json"
-  else
-    jq -n --argjson st "$1" --arg err "$2" \
-      '{status:$st, headers:{}, body:$err, effects:{error:$err, harness_error:$err}}' >"$RAW/captured.json"
-  fi
-  exit 0
+  oracle_harness_give_up "$2"
 }
 
 for p in "$LP" "$AP" "$MP"; do

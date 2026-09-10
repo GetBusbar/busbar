@@ -37,7 +37,7 @@ W="$RAW/validate-checks-work"; mkdir -p "$W"
 # key minted on the next line; if that mint failed the steps would still run, still write a
 # well-formed captured.json, and the old file-only script-cell verdict would record PASS on a
 # recorder failure. `fail` marks a harness error so the run is FAILed, never frozen into the golden.
-fail() { jq -n --arg body "$1" '{status:0, headers:{}, body:$body, effects:{harness_error:$body}}' >"$RAW/captured.json"; exit 0; }
+fail() { jq -n --arg body "$1" '{status:0, headers:{}, body:$body, effects:{harness_error:$body}}' >"$RAW/captured.json"; exit 70; }
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null \
   || fail "--generate-signing-key exited non-zero; there is no signing key for the four --validate steps"
 [ -s "$W/signing.key" ] || fail "--generate-signing-key wrote an empty signing key"

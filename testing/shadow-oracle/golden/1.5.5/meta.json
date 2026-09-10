@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
+  "harness_rev": "e0355b0ead2d624eb4de18f34aac10cef9d5db11bff74f54b0c4677e73fc786d",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -74,6 +74,11 @@
         "from": "677d66b6262fad90a3a7530f3f4a0217486564cebba41f31553be9d3c361bf65",
         "to": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "why": "2026-09-08 documentation-only: accepted-differences.json is a harness_rev file, and F-013 validation wording moved from kind=improvement to kind=additive with text_list_growth (BOOT-P20/P29/P30's expected-one-of list grew by the four new token-limit metric names, proven by the tool's splice check rather than forgiven on say-so alone); no cell re-recorded"
+      },
+      {
+        "from": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
+        "to": "e0355b0ead2d624eb4de18f34aac10cef9d5db11bff74f54b0c4677e73fc786d",
+        "why": "2026-09-10 documentation-only: every script driver under scripts/ is a harness_rev file, and each now gives up through lib.sh's oracle_harness_give_up (harness_error marked, exit 70) or oracle_named_gap instead of fabricating a `{status:-1, error:\"port N busy\"}` capture and exiting 0 \u2014 a give-up the recorder filed SKIP, which took the cell out of the owed set entirely (AUDIT NOTE-36); no cell re-recorded and no cell's bytes changed"
       }
     ]
   },
