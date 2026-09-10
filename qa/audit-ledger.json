@@ -3665,35 +3665,16 @@
    "paths": [
     "crates/secret-grammar/src"
    ],
-   "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
-   },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
    "fixed_at": null,
    "exclude": [
     "crates/secret-grammar/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-prod-auditor-plugins",
-     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-     "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
-     "counts": {
-      "HIGH": 4,
-      "MEDIUM": 15,
-      "LOW": 24
-     },
-     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
-    }
    ]
   },
   {
@@ -5871,8 +5852,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/secret-grammar/tests",
