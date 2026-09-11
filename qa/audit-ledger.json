@@ -1446,6 +1446,60 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-streams-gemini/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streams-gemini/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streams-gemini/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-streams-openai/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streams-openai/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streams-openai/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-streams-twilio/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streams-twilio/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-streams-twilio/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plugin/src",
    "kind": "production",
    "paths": [
@@ -4527,10 +4581,25 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-streams/tests",
+   "id": "crates/busbar-plane-streams-twilio/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-streams/tests"
+    "crates/busbar-plane-streams-twilio/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streams-twilio/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streams-twilio/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
