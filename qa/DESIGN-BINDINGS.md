@@ -18,15 +18,15 @@ The three words are not interchangeable:
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
 - mapped (proven): **102**
-- unproven (cited, but nothing compared): **1**
-- unmapped (named gap): **0**
+- unproven (cited, but nothing compared): **0**
+- unmapped (named gap): **1**
 - checks by kind (mapped bindings only): gate 11, lint 5, oracle-cell 58, oracle-family 5, test 454
 
 ## Bindings
 
 | # | Surface | Status | Verdict | Why | Checks |
 |---|---|---|---|---|---|
-| PB-0 | master rule | unproven | FAIL | partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh | gate: `scripts/inventory-coverage.sh`<br>gate: `xtask/src/gates/construction.rs` |
+| PB-0 | master rule | unmapped | SKIP | unmapped: the inventory-coverage gate: every row id of docs/design/inventory/*.md either has a citing shadow-oracle cell the golden recorded, or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns it red. The retired scripts/inventory-coverage.{py,sh} that carried it are deleted from this tree and its Rust successor (xtask/src/gates/inventory_coverage.rs, wired into ci.yml and armed as the qa/segments.toml inventory-coverage segment) has not landed on this line yet -- until it does, the master rule is a NAMED gap and not a citation that settles nothing | _none_ |
 | PB-1 | hook `on_empty` | mapped | PASS |  | test: `enforce_restricts_reapplies_compliance_tags_across_pools`<br>test: `multi_restrict_disjoint_intersection_fails_closed` |
 | PB-2 | per-lane `max_concurrent` | mapped | PASS |  | test: `excluded_reasons_records_at_capacity`<br>test: `at_capacity_reject_sheds_503_not_queued`<br>test: `queue_dispatches_when_permit_frees_before_deadline`<br>test: `queue_times_out_to_503_when_capacity_never_frees`<br>gate: `scripts/release-check.sh` |
 | PB-3 | tripped / budget-exhausted / at-capacity lanes | mapped | PASS |  | test: `ordered_walk_skips_tripped_preferred_to_next`<br>test: `ordered_walk_skips_excluded_preferred`<br>test: `at_capacity_plus_tripped_member_rejects_503`<br>test: `least_bad_never_reaches_an_excluded_member`<br>test: `strengthened_lane_availability_invariant` |
@@ -130,14 +130,6 @@ The three words are not interchangeable:
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 
-## The unproven bindings: cited, but nothing was compared
-
-Each of these names one or more checks and is still proof of nothing. A binding here is
-red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
-or it is demoted to a named gap. It is never waived.
-
-- **PB-0** (master rule): partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh
-
 ## Findings: bindings in conflict with the tree
 
 A green test that asserts the opposite of a binding is not a proof. These need an owner decision.
@@ -160,6 +152,7 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 
 Each line is the check that would move the binding to `mapped`.
 
+- **PB-0** (master rule): the inventory-coverage gate: every row id of docs/design/inventory/*.md either has a citing shadow-oracle cell the golden recorded, or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns it red. The retired scripts/inventory-coverage.{py,sh} that carried it are deleted from this tree and its Rust successor (xtask/src/gates/inventory_coverage.rs, wired into ci.yml and armed as the qa/segments.toml inventory-coverage segment) has not landed on this line yet -- until it does, the master rule is a NAMED gap and not a citation that settles nothing
 
 ## Running the checks (a slower tier)
 

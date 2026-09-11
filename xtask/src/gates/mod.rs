@@ -123,16 +123,6 @@ pub const REPORT_ONLY: &[Posture] = &[
               `--all` on the dev line is not. Same standing as the ship twin it reads.",
         excuse: Excused::ReleaseTime,
     },
-    Posture {
-        name: "design-bindings",
-        why: "PB-0 cites `scripts/inventory-coverage.sh`, and that file is not in this tree — the \
-              shell retired without the gate being converted, so the binding names a check that \
-              settles nothing. That is a real finding and it is why the gate is red BY NAME. It is \
-              not a finding `--all` can act on, and it is the only one: this excuse holds ONLY \
-              while every non-PASS row of the gate names that absent path, so a design binding \
-              that breaks for any other reason is scored here like any other red.",
-        excuse: Excused::OnlyAbout("scripts/inventory-coverage.sh"),
-    },
 ];
 
 /// THE CONSTRUCTION GATE'S STANDING REDS, BY NAME.
@@ -1614,34 +1604,14 @@ mod posture_tests {
         Verdict::of(rows)
     }
 
-    /// The whole point of the narrow excuse: the standing red is excused, and one more red row
-    /// about anything else is scored. Without this, `--all` would have gone on being a switch that
-    /// is off for every future design-bindings break as well as for the known one.
-    #[test]
-    fn a_design_binding_that_breaks_for_a_new_reason_is_scored() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let known = Row::fail(
-            "PB-0",
-            "PB-0 master rule",
-            "partly proven; a referenced check settles nothing: \
-             gate:scripts/inventory-coverage.sh",
-        );
-        assert!(
-            excused_from_all("design-bindings", &cx, &verdict(vec![known.clone()])).is_some(),
-            "the standing red PB-0 names the absent check and is what the entry was written for"
-        );
-        let fresh = Row::fail(
-            "PB-7",
-            "PB-7 something else",
-            "a binding cites nothing at all",
-        );
-        assert!(
-            excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
-            "a second red about anything else is a regression, and an excuse that covered it would \
-             be a switch nobody could see was off"
-        );
-    }
-
+    /// `design-bindings` HAS NO POSTURE ENTRY ANY MORE, and that is the point of striking it.
+    /// The excuse stood on one fact — every non-PASS row named `scripts/inventory-coverage.sh` —
+    /// and no row names it: PB-12, PB-51 and PB-53 are bound to checks that compare something, and
+    /// PB-0 is a NAMED gap whose suggestion names the Rust port that will settle it. A posture
+    /// whose fact stopped holding is a switch nobody can see is off, so it is deleted rather than
+    /// carried, and every red this gate produces from here is scored by `--all` like any other
+    /// gate's — which `a_gate_with_no_posture_entry_is_always_scored` below proves generically.
+    ///
     /// The release-time posture is not a name on a list here: it is a lookup into the table that
     /// already knew, and that table's own claim is checked against the tree.
     #[test]
