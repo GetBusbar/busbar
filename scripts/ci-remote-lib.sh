@@ -215,11 +215,18 @@ _prove_count_snippet() {
 # THE WAIT IS ON NAMED PIDS, NEVER A BARE `wait`. This function is called from landq4.sh's sweep,
 # which by its second line already has backgrounded pre-proof children of its own; a bare `wait`
 # there would block the allocator on three hours of proving.
+# A BOX THAT HAS CLAIMED A STOP IS NOT A CANDIDATE, AND SAYS SO BEFORE IT SAYS ANYTHING ELSE.
+# scripts/ci-fleet-power.sh's stopper writes ~/.busbar-stopping under the box's own lock once it has
+# established that nothing is proving there, and the box then refuses to admit any further proof.
+# Offering it here would hand a line a box that is about to go to sleep and would refuse it anyway —
+# the allocation would be spent, the line would come back with no verdict, and the box would look
+# unreachable rather than deliberately asleep. `exit 1` is the same answer an unprepared box gives,
+# which the round already reads as "skipped".
 _fleet_probe_cmd_proof() {
-  printf '%s' "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg"
+  printf '%s' "test -e ~/.busbar-stopping && exit 1; test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg"
 }
 _fleet_probe_cmd_shard() {
-  printf '%s' "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f '[l]and.run.local.sh' >/dev/null 2>&1; then echo BUSY; else $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg; fi"
+  printf '%s' "test -e ~/.busbar-stopping && exit 1; test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f '[l]and.run.local.sh' >/dev/null 2>&1; then echo BUSY; else $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg; fi"
 }
 _fleet_probe_round() { # $1 = the remote command, $2.. = hosts; prints `<proofs> <load> <host>` rows in the order given
   local cmd="$1"; shift
@@ -807,6 +814,18 @@ STUB
   _t "one live proof and one stale pid counts 1" "1" "$(tail -1 "$root/cnt.txt")"
   ( export HOME="$H"; rm -f "$H"/busbar-prove-branch-*/.proof.pid; eval "$(_prove_count_snippet)" ) >"$root/cnt0.txt" 2>&1
   _t "no pid files counts 0"                     "0" "$(tail -1 "$root/cnt0.txt")"
+  # ── A BOX THAT HAS CLAIMED A STOP IS NOT OFFERED TO A PROOF ──────────────────────────────────
+  # The probe command is DRIVEN, not grepped: it is a shell line that travels over ssh, so running
+  # it against a fake HOME is the only reading of it that cannot drift from what the box executes.
+  echo "ci-remote-lib selftest: a box that has claimed a stop is skipped, not chosen"
+  mkdir -p "$H/busbar.git" "$H/busbar-prove"
+  ( export HOME="$H"; cd "$H" && eval "$(_fleet_probe_cmd_proof | sed 's|/proc/loadavg|'"$root"'/loadavg|')" ) >/dev/null 2>&1
+  _t "a prepared, unclaimed box answers"     0 "$( ( export HOME="$H"; printf '0.50 0.4 0.3 1/1 1\n' >"$root/loadavg"; eval "$(_fleet_probe_cmd_proof | sed "s|/proc/loadavg|$root/loadavg|")" ) >/dev/null 2>&1; echo $?)"
+  : >"$H/.busbar-stopping"
+  _t "  ...and a CLAIMED box exits 1 first"  1 "$( ( export HOME="$H"; eval "$(_fleet_probe_cmd_proof | sed "s|/proc/loadavg|$root/loadavg|")" ) >/dev/null 2>&1; echo $?)"
+  _t "  ...the shard probe refuses it too"   1 "$( ( export HOME="$H"; eval "$(_fleet_probe_cmd_shard | sed "s|/proc/loadavg|$root/loadavg|")" ) >/dev/null 2>&1; echo $?)"
+  rm -f "$H/.busbar-stopping"
+  _t "  ...and clearing it makes the box a candidate again" 0 "$( ( export HOME="$H"; eval "$(_fleet_probe_cmd_proof | sed "s|/proc/loadavg|$root/loadavg|")" ) >/dev/null 2>&1; echo $?)"
   echo "ci-remote-lib selftest: the request parser (a request half-understood is refused)"
   local sha; sha="$(printf '%040d' 7)"
   _t "a well-formed request parses"     0 "$(fanout_parse_request "gate=kind-isolation n=4 sha=$sha ref=shardreq-1 ceil=X=3600"; echo $?)"
@@ -818,7 +837,7 @@ STUB
   _t "an unknown field is refused"      1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=1 extra=1"; echo $?)"
   _t "a ceiling that is not seconds is refused" 1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=soon"; echo $?)"
   rm -rf "$root"
-  if [ "$fails" -eq 0 ]; then echo "ci-remote-lib selftest: GREEN (allocator, per-box proof ceiling, per-branch checkout, request parser)"; return 0; fi
+  if [ "$fails" -eq 0 ]; then echo "ci-remote-lib selftest: GREEN (allocator, per-box proof ceiling, the stop claim it refuses, per-branch checkout, request parser)"; return 0; fi
   echo "ci-remote-lib selftest: RED ($fails failure(s))" >&2; return 1
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _lib_selftest; exit $?; fi

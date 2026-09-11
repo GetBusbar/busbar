@@ -195,6 +195,18 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qE -- 'echo \$! >"\$[P]IDF"' "${BASH_SOURCE[0]}" && _ok "the box writes the detached proof's group id down" || _fail "the box writes the group id down"
   grep -qE -- '[P]IDF="target/land-remote-\$REF.pid"' "${BASH_SOURCE[0]}" && _ok "  ...beside the log, under the same ref" || _fail "the pid file is named by the ref"
   grep -qE -- '^if \[ "\$\{1:-\}" = "--[c]ancel" \]; then' "${BASH_SOURCE[0]}" && _ok "--cancel is a mode of this script" || _fail "--cancel is a mode of this script"
+  # THE BOX ADMITS THE LANDING BEFORE IT IS LAUNCHED, and the order is the whole point: an admit
+  # taken AFTER setsid is a landing already running on a box that has claimed a stop. The remote
+  # half is a QUOTED heredoc, so it cannot source ci-fleet-power.sh's text here; what is pinned is
+  # the call and its position, and ci-fleet-power.sh --selftest drives the protocol itself.
+  _adm="$(grep -n -- '\.busbar-power\.sh" admit "\$PWD/\$PIDF"' "${BASH_SOURCE[0]}" | head -n1 | cut -d: -f1)"
+  _sid="$(grep -n -- '^setsid nohup bash -c' "${BASH_SOURCE[0]}" | head -n1 | cut -d: -f1)"
+  [ -n "$_adm" ] && _ok "the box asks ~/.busbar-power.sh to admit the landing" || _fail "the box asks the power protocol to admit the landing"
+  [ -n "$_adm" ] && [ -n "$_sid" ] && [ "$_adm" -lt "$_sid" ] \
+    && _ok "  ...BEFORE the proof is detached, never after" || _fail "the admit must come before setsid"
+  grep -qE -- 'admits no further proof — this landing did not start' "${BASH_SOURCE[0]}" \
+    && _ok "  ...and a refusal is rc 2: a landing that did not happen, re-queued, never a red" \
+    || _fail "a refused landing must be rc 2, not a red"
 
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
@@ -424,6 +436,16 @@ sed "s|^here=.*|here=\"$HOME/busbar-prove\"|" target/gate/land.run.sh >target/ga
 # signals `-PGID` when the queue has learned that the answer cannot change any more (a chain root
 # proven RED under a rung that is still bisecting).
 PIDF="target/land-remote-$REF.pid"
+# THE BOX ADMITS THE PROOF BEFORE IT IS LAUNCHED. ~/.busbar-power.sh (scripts/ci-fleet-power.sh)
+# writes the pid file under the box's own lock — the lock the stopper takes to decide whether this
+# box may be put to sleep — so a landing and a stop can never both be in flight here. The pid
+# recorded is this shell's, which holds the slot for the seconds until `echo $! >"$PIDF"` below
+# replaces it with the detached group's: the registry is continuously non-empty across the swap.
+# A box without the protocol lands exactly as it always did; the stopper never stops such a box.
+if [ -x "$HOME/.busbar-power.sh" ]; then
+  "$HOME/.busbar-power.sh" admit "$PWD/$PIDF" $$ >/dev/null \
+    || { echo "$(hostname) has claimed a stop and admits no further proof — this landing did not start" | tee -a "$LOG"; exit 2; }
+fi
 setsid nohup bash -c '
   bash target/gate/land.run.local.sh "$@" >>"'"$LOG"'" 2>&1; rc=$?
   git push -q --force prove "HEAD:refs/heads/'"$REF"'-landed" >>"'"$LOG"'" 2>&1

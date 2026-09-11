@@ -172,6 +172,15 @@ if [ "${1:-}" = "--selftest" ]; then
     *) say FAIL "the extracted verdict could not be driven (rc $rc)" ;;
   esac
 
+  # THE SLOT ASKS THE BOX FOR ITS SLOT. A pre-proof that writes .proof.pid itself is a pre-proof the
+  # stopper cannot see coming; the admit half puts the write under the box's own lock.
+  grep -qF -- '"$HOME/.busbar-power.sh" admit "$W/.proof.pid" $$' "$HERE/prove-remote.sh" \
+    && say PASS "the slot asks ~/.busbar-power.sh to admit it before it proves" \
+    || say FAIL "the slot takes .proof.pid without asking the box's power protocol"
+  [ "$(grep -c '^echo \$\$ > "\$W/.proof.pid"' "$HERE/prove-remote.sh" || true)" = 0 ] \
+    && say PASS "  ...and never writes the pid file outside that protocol" \
+    || say FAIL "the pid file is still written outside the box's lock"
+
   if [ "$fails" -ne 0 ]; then
     echo "[selftest] FAILED: $fails case(s) did not hold." >&2
     exit 1
@@ -270,7 +279,23 @@ cd "$W" || { echo "no $W — run: ./scripts/prove-remote.sh --setup $(hostname)"
 # probe counts per box, and the ceiling it enforces is only real if the file goes away when the
 # proof does — including when it is killed. A pid whose process is gone is not counted, so a
 # crashed proof degrades to "not running" rather than to a box nobody may use again.
-echo $$ > "$W/.proof.pid"
+# …AND IT ASKS THE BOX FOR THE SLOT RATHER THAN TAKING IT. ~/.busbar-power.sh (installed by
+# scripts/ci-fleet-power.sh) writes the pid file under the box's own lock, which is the same lock
+# the stopper takes to decide whether this box may be put to sleep. Between those two, one of the
+# two orders always holds: either this proof is registered before the stopper counts (and the box
+# is reported BUSY and stays up) or the stop was claimed first (and this proof is REFUSED here,
+# before it has burned a minute). A proof half-started on a box that is about to stop is not a
+# thing that can happen.
+#
+# A BOX WITHOUT THE PROTOCOL PROVES AS IT ALWAYS DID. The stopper refuses to stop such a box, so
+# there is nothing for an admit to protect against; failing closed here would take every
+# un-converged box out of the fleet for a saving that box is not making anyway.
+if [ -x "$HOME/.busbar-power.sh" ]; then
+  "$HOME/.busbar-power.sh" admit "$W/.proof.pid" $$ >/dev/null \
+    || { echo "   $(hostname) has claimed a stop and admits no further proof — nothing was run"; exit 2; }
+else
+  echo $$ > "$W/.proof.pid"
+fi
 trap 'rm -f "$W/.proof.pid"' EXIT INT TERM
 echo "   proof pid $$ in $W (sccache port $SCCACHE_SERVER_PORT)"
 
