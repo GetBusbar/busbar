@@ -135,6 +135,46 @@ them). Each axis is blind to the other two; only the kernel composes them.
   471 -> 292 in the same transaction. 100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
+
+**A DECLARED FACE OWES ITS PARAGRAPH HERE, AND NOT ONLY WHEN A SURFACE CEILING MOVES.** The two
+ceiling disciplines above are written about the LOC figures, but the rule is about faces, not about
+which file the figure lives in: a `[[gate.ceiling_raises]]` entry in `qa/construction.toml` EXPIRES
+at landing, and the coupling it bought does not. So a face that raises a `kind-isolation:matrix`
+CELL — the per-crate, per-kind vocabulary ceilings in `qa/kind-isolation.toml` — is amended into this
+section in the same commit, on the same terms as a surface-ceiling raise: what the face is, why it
+is declared where it is, and which cells measure it. A raise whose only justification is an entry
+that will be struck is a coupling nobody will be able to read the reason for.
+
+The first is **`busbar_plugin_loader::routes`** — `RouteDecl`, `HttpDispatch`, `ProcessSnapshot` and
+the `RouteKind` word: **THE ROUTE-DECLARATION FACE**, what a plugin of a kind that serves HTTP says
+about the HTTP it serves, and how a host hands it a matched request. A plugin mounts nothing. It
+DECLARES, as data, the `{path, method, auth}` triples it will answer (`RouteDecl`, carrying the
+dispatcher that answers them); the host mounts what it was told, confines it to the namespace its
+KIND allows, refuses a collision, enforces the declared bar, and only then calls back through
+`HttpDispatch`. A dispatcher is handed the request and a `ProcessSnapshot` — the reading, taken at
+the moment of the request, of the process it was mounted into — and never the engine's own state:
+every method on that face is an ANSWER and none is a capability, so there is nothing on it a plugin
+can use to change the process it is mounted in.
+
+It is declared on the KIND-NEUTRAL LOADER (`crates/plugin-loader`, kind `plugin-tooling`) and not on
+the engine, because a dlopen'd sink and an in-tree sink the composition root builds must reach ONE
+face. The loader already owns the seam a loaded plugin's routes arrive over (`DynExport::routes`,
+`DynExport::handle_http`) and already re-exports the wire types the face is written over
+(`Route`, `RouteMethod`, `RouteAuth`, `HttpEndpointRequest`, `HttpEndpointResponse`) — so declaring
+it here adds no crate to anybody's graph. Declaring it on the engine instead would have left a
+second, engine-only spelling that only the built-in sinks could implement, which is exactly the
+special case the face exists to abolish: an export is an export, and the root mounts by KIND, never
+by name. The engine's own `PluginHttpDispatch`, with the `&App` arm that let one built-in sink read
+the engine's state, is deleted against it.
+
+It is MEASURED on two matrix cells, and both are the word `http` inside a name the plugin ABI
+already owns: **`busbar-plugin-loader × transport` 41 → 69** (the face and its cells — `HttpDispatch`,
+`HttpEndpointRequest`, `HttpEndpointResponse`, and the prose that says what they are for; a face
+about HTTP has no spelling that names fewer) and **`busbar × transport` 964 → 976** (the one
+composition-root file that says a composed sink's stated route in this process's router vocabulary).
+Against them, `busbar-core × transport` falls 2009 → 1979 in the same commit, because the engine
+file that used to spell those names for a built-in sink is deleted.
+
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
 `docs/design/D33-legacy-retirement.md` §7 carries the measurement):
 
