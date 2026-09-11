@@ -61,9 +61,9 @@ use axum::Router;
 
 use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
-    build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    build_app_from_config, build_split_routers_with_limits, engine_trust_policy,
+    load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+    LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
@@ -434,19 +434,17 @@ fn list_plugins_command() -> i32 {
             )
         }
     };
-    // The ROOT supplies the binary version itself: `env!("CARGO_PKG_VERSION")` HERE is the shipped
-    // binary's own version, which is exactly what a `TrustPolicy` carries it for (the string an
-    // operator reads in a plugin refusal and in telemetry). The in-core automatic paths have no
-    // root to ask, so they go through `preflight::engine_trust_policy`, which answers with the
-    // engine crate's — the same 1.6.0, from the one workspace version.
-    let policy = match busbar_plugin_loader::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
-        Ok(resolved) => {
-            // The resolver FINDS a malformed anti-downgrade floor; the engine crate SAYS it, at the
-            // one emit site every other path reaches. `--list-plugins` is an operator door like any
-            // other, so it prints the same two warnings boot does, in the same words.
-            busbar_core::preflight::warn_floor_findings(&resolved.floor_findings);
-            resolved.policy
-        }
+    // THE BINARY'S OWN VERSION is what a `TrustPolicy` carries (the string an operator reads in a
+    // plugin refusal and in telemetry), and `preflight::engine_trust_policy` supplies it from the
+    // one workspace version — the same 1.6.0 the root would have passed by hand. One answer, given
+    // in one place, for every door.
+    // `--list-plugins` IS AN OPERATOR DOOR LIKE ANY OTHER, so it goes through the same one: the
+    // resolver FINDS a malformed anti-downgrade floor and the engine crate SAYS it, at the single
+    // emit site boot, config reload, config apply, admin plugin reload and the admin catalog all
+    // reach. Calling the resolver directly here would have meant a second place that decides
+    // whether those two warnings are printed, which is how one door goes quiet.
+    let policy = match engine_trust_policy(&plugins_cfg) {
+        Ok(policy) => policy,
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",

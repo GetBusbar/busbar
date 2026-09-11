@@ -1413,8 +1413,8 @@ because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that make
 [[gate.ceiling_raises]]
 key = "cell.busbar-substrate.substrate.count"
 file = "qa/kind-isolation.toml"
-by = 8
-because = """THE COST OF THE MOVE, STATED. busbar-substrate x substrate rises 26 -> 34 because busbar-substrate now NAMES the crate it handed the grammar to: the re-export module in lib.rs that puts every moved item back at `busbar_substrate::config::` (seven module re-exports plus the one `limits` item that could not travel -- LIMITS_TEST_LOCK is a tokio mutex and the values crate forbids tokio by manifest rule), and `pub use busbar_substrate_values::failover::{...}` in failover.rs. Eight lines, and they are the price of the module leaving: without them the historical spelling would break for every reader and the move would be a rename instead of a move. The crate's every OTHER cell falls in this same commit (api 134 -> 127, control 352 -> 217, dialect 90 -> 62, legacy 298 -> 266, plane 770 -> 756, secret 35 -> 13, store 5 -> 3, transport 1140 -> 1099) and three of its cells plus three edge classes go to zero and are struck, so the crate is 3,547 production lines and 690 matrix hits lighter for these four."""
+by = 6
+because = """THE COST OF THE MOVE, STATED. busbar-substrate x substrate rises 26 -> 32 because busbar-substrate now NAMES the crate it handed the grammar to: the re-export module in lib.rs that puts every moved item back at `busbar_substrate::config::` (seven module re-exports plus the one `limits` item that could not travel -- LIMITS_TEST_LOCK is a tokio mutex and the values crate forbids tokio by manifest rule), and `pub use busbar_substrate_values::failover::{...}` in failover.rs. Six lines, and they are the price of the module leaving: without them the historical spelling would break for every reader and the move would be a rename instead of a move. The crate's every OTHER cell falls in this same commit (api 134 -> 127, control 352 -> 217, dialect 90 -> 62, legacy 298 -> 266, plane 770 -> 756, secret 35 -> 13, store 5 -> 3, transport 1140 -> 1099) and three of its cells plus three edge classes go to zero and are struck, so the crate is 3,547 production lines and 690 matrix hits lighter for these four."""
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.substrate.count"
@@ -1457,11 +1457,6 @@ file = "qa/kind-isolation.toml"
 by = 9
 because = """THE ROOT COMPOSING WHAT IT MOUNTS. busbar x unit rises 1169 -> 1178 for the admin leg's ownership table: WHICH of the 88 administrative operations the teller loop OWNS, written down as a join and then MEASURED by a test that walks all 88 rather than asserting a hand-kept list -- a hand-kept list is how an operation ends up owned by nobody and served by nobody with both halves looking healthy. The hits are the units the leg binds, each named at the site where it is wired. A composition root names the kinds it wires BY CONSTRUCTION; no dependency edge is added in any table, no cell row is minted, and `kind-isolation:deps`, `:test-deps` and `:build-inputs` are green."""
 
-[[gate.ceiling_raises]]
-key = "cell.busbar.control.count"
-file = "qa/kind-isolation.toml"
-by = 18
-because = """THE SAME TABLE, THE SAME MEASUREMENT. busbar x control rises 916 -> 934 because the admin leg's ownership table is ABOUT the control surface: it names, per administrative operation, which of the 88 the teller loop owns and which the mount answers directly, and the test that proves it walks all 88 and joins the two sides rather than asserting a list somebody kept by hand. Naming an operation is how the join is written down; a table of ownership that did not spell the operations would be a table about nothing. No dependency edge is added and no cell row is minted -- the root already names this kind by construction, which is what a composition root is FOR."""
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-plane-admin.legacy.count"
@@ -1487,10 +1482,71 @@ because = """THE POOL-FAILOVER VALUE GRAMMAR ARRIVING, second delta on the same 
 key = "cell.busbar-core.substrate.count"
 file = "qa/kind-isolation.toml"
 by = 1
-because = """ONE HIT, the reader's end of the same move. busbar-core x substrate rises by a further 1 because the config layer now names its neutral leaves DIRECTLY -- `busbar_substrate::config::...` -- instead of reaching them through busbar-core's own re-export shims. A shim is a second name for one thing, and a second name is how two call sites end up meaning different things while both look right. The crate is 46 production lines lighter across this row for naming what it uses; the row that would grow without the direct naming is the shim count, and it falls to zero."""
+because = """THE READER'S END OF THE MOVE, and this entry covers every further hit of it on this branch (the key's declared raises SUM: 3 for the test that pins the `phase:` field doc by reading the file it lives in, and 1 here; the measured net at the tip is 4, because row 11's three new spellings land against falls in the same cell). busbar-core x substrate rises because the config layer now names its neutral leaves DIRECTLY -- `busbar_substrate::config::...` -- instead of reaching them through busbar-core's own re-export shims. A shim is a second name for one thing, and a second name is how two call sites end up meaning different things while both look right. The crate is 46 production lines lighter across this row for naming what it uses; the row that would grow without the direct naming is the shim count, and it falls to zero."""
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.api.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = """TWO HITS, the same direct naming. busbar-core x api rises 610 -> 612 because the config layer, having stopped reaching its neutral leaves through busbar-core's own re-export shims, now spells the two `busbar_api::` types those leaves are written against at the sites that use them instead of inheriting them from a shim's signature. A shim is a second name for one thing and a second name is how two call sites end up meaning different things while both look right, so the two hits are the cost of the shims going: the crate is 46 production lines lighter across this row, and the retiring api crate gains no new capability here -- these are the same two types the same code already passed through, now visible where they are used."""
+
+# ── ROW 11: the config grammar's last three blocks leave busbar-core, and the `plugins:` grammar ─
+#            goes to the crate that reads it. busbar-substrate is NET-NEGATIVE across the row
+#            (26 556 -> 26 550) and 0 or negative in every commit of it.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.control.count"
+file = "qa/kind-isolation.toml"
+by = 54
+because = """THE `oauth_as:` BLOCK ARRIVING, and it is the authorization server's own vocabulary. busbar-substrate-values x control rises to 307 for the 288-line grammar that names the AS identity, its issuer and the `default_grant` CEILING that decides what a self-registered client may ever hold -- every one of those is a control-surface noun, because the block IS the control surface's configuration. The same text, moved out of `busbar_core::oauth_as::config` and scored against the crate it now sits in; K12d's cut of this move put it INTO busbar-substrate (+289 lines into a frozen crate) and this one does not add a line to that crate at all. `busbar-substrate` re-exports the module through the glob it already carries, so `busbar_substrate::config::oauth_as::` resolves unchanged and the wire form does not move a byte."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 57
+because = """THE EXPORT PROJECTION GRAMMAR ARRIVING. busbar-substrate-values x plane rises to 236 because `Projection` -- which export FIELDS a sink's `streams:` selection resolves to -- is written per stream, and a stream is a plane's: the grammar's field docs and its resolution tables name the planes whose records each stream carries. That is the same text it carried in `busbar_core::export::projection`, scored against the crate it now sits in. It is config-key resolution and nothing else (it reads what an operator wrote and answers which fields that means), which is why it belongs with the config grammar rather than beside the sinks that consume it -- and why a plane crate can now name it without naming busbar-core. busbar-substrate is NET -5 on the commit that does this."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = """THE PROSE THAT RECORDS WHERE EACH BLOCK CAME FROM, third delta on this row. busbar-substrate-values x legacy rises to 179 on the doc lines in `config::{projection, oauth_as, admin, auth}` that name the `busbar_core::` paths those grammars were moved OUT of. That is the record of the retirement, written at the destination, and it is how the next reader checks the two ends of a move agree. It is not a reach INTO the retiring crate: no item is imported, no dependency edge is added, and the root's own reach is unmoved -- `legacy-reach` stays at 91 total, 48 for busbar_substrate, 4 for busbar_mcp and 2 for busbar_a2a, every row PASS."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.secret.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = """THE `{ env: ... }` FIELDS OF THE BLOCKS THAT ARRIVED. busbar-substrate-values x secret rises to 33 because the `oauth_as:` grammar and the last `auth:` value shapes carry the secret-reference fields an operator writes -- a signing key, a client secret, the env name each is read from. Naming the secret vocabulary is what a config grammar for a credential-bearing block DOES; the grammar holds no secret material, it holds the SHAPE of the reference, and `SecretRef` is the same type at the same spelling it was in busbar-core. No new dependency edge: busbar-substrate-values already named busbar-api's reference types before this row."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """THREE HITS, the same arriving blocks. busbar-substrate-values x api rises to 43 on the `busbar_api::` signature types the `oauth_as:` and `auth:` value shapes are written against -- the same three spellings the same code carried in busbar-core, scored against the crate it now sits in. The retiring api crate gains no new capability here and no dependency edge is added: this crate already names busbar-api, and the count is today's measurement in both directions."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = """FOUR HITS, the same arriving blocks. busbar-substrate-values x transport rises to 410 because the `oauth_as:` grammar names the token endpoint and the admin path constants name the `/api` root a request is classified against -- transport nouns in a grammar whose whole job is to describe what an operator may write about endpoints. The same text as before the move. `kind-isolation:transport-registration` is untouched and no wire is composed here."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.api.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """TWO FURTHER HITS, the same direct naming as row 10's. busbar-core x api rises to 614 because the `oauth_as` and export call sites, having stopped reaching the grammar through busbar-core's own re-export shims, now spell the `busbar_api::` types those grammars are written against where they are used instead of inheriting them from a shim's signature. The crate is 1 118 production lines LIGHTER across this row (78 798 -> 77 680) for the same trade, and every other busbar-core cell falls with it: control 5519 -> 5517, plane 3066 -> 3010, plugin-tooling 266 -> 260, secret 337 -> 331, transport 2145 -> 2141."""
+
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = """THE `plugins:` GRAMMAR ARRIVING AT THE CRATE THAT READS IT (integrator ruling, 2026-09-11 03:22). `PluginsCfg` / `PluginFetch` -- the `plugins:` block's value shapes -- are plugin tooling's and nobody else's: their ONE reader is the plugin subsystem, and busbar-core read them only to hand them straight back. They move to `busbar_plugin_loader::config`, beside the resolution of them, and busbar-core reads them through the core -> plugin-tooling edge it already has. This row counts the loader naming its OWN kind's sibling, `busbar-plugin-sign`, in the moved grammar's signatures: a plugin's fetch and verification policy is written in the same block. Not the contract, not busbar-plugin-sign as a home, and not the substrate: nothing about a `plugins:` block is a neutral value family."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.control.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """THREE HITS, the same arriving grammar. busbar-plugin-loader x control rises 50 -> 53 because the `plugins:` block is an OPERATOR-WRITTEN block, so its field docs name the administrative surface an operator configures it from. The grammar moved whole out of busbar-core -- which is why that crate's own plugin-tooling cell FALLS 266 -> 260 in the same commit -- and the loader's resolution of it is unchanged: what moved is the declaration, not the behaviour, and the config-schema snapshot renders byte-identical."""
+

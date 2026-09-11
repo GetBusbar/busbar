@@ -254,7 +254,8 @@ pub use appbuild::{
     ENV_CONFIG, ENV_PROVIDERS,
 };
 pub use preflight::{
-    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+    engine_trust_policy, plugins_preflight, preflight_plugins_and_secrets,
+    validate_builtin_secrets_resolve,
 };
 pub use router::{
     build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,

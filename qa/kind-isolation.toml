@@ -1712,7 +1712,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "612"
+count = "614"
 
 [[cell]]
 crate = "busbar-core"
@@ -1727,7 +1727,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5519"
+count = "5517"
 
 [[cell]]
 crate = "busbar-core"
@@ -1737,17 +1737,17 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3066"
+count = "3010"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "266"
+count = "260"
 
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "337"
+count = "331"
 
 [[cell]]
 crate = "busbar-core"
@@ -1767,7 +1767,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+count = "2141"
 
 [[cell]]
 crate = "busbar-core"
@@ -1877,7 +1877,7 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "legacy"
-count = "79"
+count = "78"
 
 [[cell]]
 crate = "busbar-llm"
@@ -2262,7 +2262,7 @@ count = "6"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "control"
-count = "50"
+count = "53"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2287,7 +2287,7 @@ count = "55"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plugin-tooling"
-count = "19"
+count = "35"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2502,7 +2502,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "substrate"
-count = "34"
+count = "32"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2517,7 +2517,7 @@ count = "1099"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "api"
-count = "40"
+count = "43"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2527,22 +2527,22 @@ count = "1"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "control"
-count = "253"
+count = "307"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "166"
-
-[[cell]]
-crate = "busbar-substrate-values"
-kind = "plane"
 count = "179"
 
 [[cell]]
 crate = "busbar-substrate-values"
+kind = "plane"
+count = "236"
+
+[[cell]]
+crate = "busbar-substrate-values"
 kind = "secret"
-count = "27"
+count = "33"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2552,7 +2552,7 @@ count = "4"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "transport"
-count = "406"
+count = "410"
 
 [[cell]]
 crate = "busbar-timing"
