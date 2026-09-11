@@ -185,9 +185,11 @@ fi
 # ── 5. Top the fleet up: the ON-DEMAND FLOOR first, then the SPOT capacity ──────────────────
 # The two are counted SEPARATELY, off `InstanceLifecycle`, because "the fleet has 8 boxes" is not
 # the fact that matters after a reclaim — "the fleet has 0 boxes that cannot be reclaimed" is.
-have_od="$(n_of "$(fleet_ondemand_ids)")"
-have_spot="$(n_of "$(fleet_spot_ids)")"
-log "have: on-demand $have_od/$FLOOR, spot $have_spot/$COUNT"
+# REGISTERED, not awake: a stopped box still counts toward the floor (see ci-runners-lib.sh) — the
+# awake-only query would launch a replacement for every box the idle stopper just put to sleep.
+have_od="$(n_of "$(fleet_registered_ondemand_ids)")"
+have_spot="$(n_of "$(fleet_registered_spot_ids)")"
+log "have: on-demand $have_od/$FLOOR, spot $have_spot/$COUNT registered"
 
 want_od=$(( FLOOR - have_od ))
 if [ "$want_od" -gt 0 ]; then

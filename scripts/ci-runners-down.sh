@@ -33,9 +33,12 @@ if [ "$ALL" = 1 ]; then
   IDS="$(fleet_instance_ids)"
   log "--all: taking the WHOLE fleet down, on-demand floor included"
 else
-  IDS="$(fleet_spot_ids | tr '\n' ' ' | sed 's/ $//')"
-  KEEP="$(fleet_ondemand_ids | tr '\n' ' ' | sed 's/ $//')"
-  log "spot down, floor kept: keeping $(n_of "$(fleet_ondemand_ids)") on-demand box(es)${KEEP:+ — $KEEP}"
+  # REGISTERED, not awake: the floor being "kept" must include a box the idle stopper already put
+  # to sleep, or this log (and a caller reading it) would say the floor is short by exactly the
+  # boxes ci-fleet-power.sh --stop-idle just stopped — see ci-runners-lib.sh.
+  IDS="$(fleet_registered_spot_ids | tr '\n' ' ' | sed 's/ $//')"
+  KEEP="$(fleet_registered_ondemand_ids | tr '\n' ' ' | sed 's/ $//')"
+  log "spot down, floor kept: keeping $(n_of "$(fleet_registered_ondemand_ids)") on-demand box(es)${KEEP:+ — $KEEP}"
 fi
 
 if [ -n "$IDS" ]; then

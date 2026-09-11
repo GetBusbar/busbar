@@ -85,10 +85,21 @@ reconcile_selftest() {
   echo "ci-runners-reconcile selftest: the floor counts what the fleet HAS, not what is awake"
   _t "the top-up counts REGISTERED on-demand boxes" 1 \
      "$(grep -c 'have_od="\$(n_of "\$(fleet_registered_onde[m]and_ids)")"' "${BASH_SOURCE[0]}")"
-  _t "  ...and never the running-only query"        0 \
-     "$(grep -c 'have_od="\$(n_of "\$(fleet_onde[m]and_ids)")"' "${BASH_SOURCE[0]}")"
   _t "  ...and the same for spot"                   1 \
      "$(grep -c 'have_spot="\$(n_of "\$(fleet_registered_sp[o]t_ids)")"' "${BASH_SOURCE[0]}")"
+  # ── THE BAN IS ON EVERY SCRIPT, NOT JUST THIS ONE ────────────────────────────────────────────
+  # A ban that greps only "${BASH_SOURCE[0]}" proves the one file it was fixed in and nothing
+  # else — a scripted RE-INTRODUCTION of the awake-only pair one file over (ci-runners-up.sh,
+  # ci-runners-down.sh, or a new caller) sails through GREEN. The awake-only names
+  # (`fleet_ond[e]mand_ids`, `fleet_sp[o]t_ids`) were deleted from ci-runners-lib.sh entirely, so
+  # their bare re-appearance anywhere under scripts/ci-runners-*.sh — a call, or the function
+  # definition coming back — is itself the defect. `fleet_registered_ondemand_ids` /
+  # `fleet_registered_spot_ids` do not contain either substring, so this cannot self-match the
+  # fixed names.
+  _t "no scripts/ci-runners-*.sh calls the awake-only on-demand query" 0 \
+     "$(grep -hc 'fleet_onde[m]and_ids' "$HERE"/ci-runners-*.sh | awk '{s+=$1} END{print s+0}')"
+  _t "  ...or the awake-only spot query"                              0 \
+     "$(grep -hc 'fleet_sp[o]t_ids' "$HERE"/ci-runners-*.sh | awk '{s+=$1} END{print s+0}')"
   _t "the summary reports awake against the ceiling" 1 \
      "$(grep -c 'awake, online runn[e]rs' "${BASH_SOURCE[0]}")"
   echo "ci-runners-reconcile selftest: the idle stopper runs on the timer, not when someone remembers"

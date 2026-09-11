@@ -139,8 +139,12 @@ fleet_instances_tsv() {
     --query 'Reservations[].Instances[].[InstanceId,InstanceLifecycle,Placement.AvailabilityZone,InstanceType]' \
     --output text
 }
-fleet_spot_ids()     { fleet_instances_tsv | awk '$2=="spot" {print $1}'; }
-fleet_ondemand_ids() { fleet_instances_tsv | awk '$2!="spot" {print $1}'; }
+# NO per-lifecycle AWAKE-ONLY id functions live here any more. `fleet_registered_ondemand_ids` /
+# `fleet_registered_spot_ids` above are the ones every caller that is deciding "does the fleet have
+# enough boxes" must use — a stopped box is still a box. The only awake-only query below,
+# `fleet_instance_ids`, is unsplit by lifecycle and exists for the one caller that legitimately
+# wants "how many are AWAKE right now" (CI_RUNNER_RUNNING_MAX). Do not re-add a split awake-only
+# pair beside it: that is the exact defect this file once shipped, and the selftest below bans it.
 
 fleet_vpc_id() {
   aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text
