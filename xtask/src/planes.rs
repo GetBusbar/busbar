@@ -62,14 +62,57 @@ pub fn plane_src_roots() -> Vec<String> {
 /// REMOVING A ROOT IS A NAMED CHANGE, NEVER A SILENT ONE. A root that is listed but absent means
 /// the gate scans zero files of it and reports the passing answer to every ban, which is why the
 /// walk refuses a missing root rather than narrowing itself.
+///
+/// THE KERNEL AND THE UNITS ARE NEUTRAL TOO, and this list did not say so. The four roots below the
+/// kernel are the RETIRING crates — the ones a plane must not leak into on the way out. The kernel
+/// and the fourteen `busbar-unit-*` crates are what those crates are being retired INTO, and they
+/// are the strictest neutral surface in the tree: the kernel knows its plugin KINDS and nothing
+/// past them, and every core step is served once by a kind-neutral unit. A gate that scanned the
+/// crates on their way out and not the crates they were landing in was watching the wrong end of
+/// the move, and it printed green the whole way.
 pub fn neutral_src_roots() -> Vec<String> {
-    vec![
+    let mut out = vec![
         "crates/busbar-core/src".to_string(),
         "crates/busbar-substrate/src".to_string(),
         "crates/busbar-substrate-values/src".to_string(),
         "crates/api/src".to_string(),
-    ]
+        "crates/busbar-kernel/src".to_string(),
+    ];
+    out.extend(
+        UNIT_KEYS
+            .iter()
+            .map(|k| format!("crates/busbar-unit-{k}/src")),
+    );
+    out
 }
+
+/// The units whose sources this gate scans, by the segment that names the step each answers.
+///
+/// Spelled out rather than globbed for the reason the roots above are: a glob that stops matching
+/// is a scan that quietly narrows, and the walk can only refuse a root it was told to expect.
+///
+/// TWO OF THE FOURTEEN ARE NOT HERE YET, AND THIS IS WHERE THEY ARE OWED. `busbar-unit-trust` and
+/// `busbar-unit-ledger` carry vendor-named FIXTURE strings in their test code — a vendor hostname
+/// a host-normaliser is judged against, a vendor meter label a migration is keyed on. Measured on
+/// this tree they are worth seven DIALECT hits and seven KEY hits in the `--strict` (test-scope)
+/// pass, which is seven and seven above ceilings that only go down. Adding the two roots before
+/// those fixtures are neutral would force both ceilings UP, which is the move the ratchet exists to
+/// refuse. Neutralising the fixtures is a landing in those crates, not in this one; the two lines
+/// go in here on the commit that makes them.
+const UNIT_KEYS: [&str; 12] = [
+    "admission",
+    "audit",
+    "auth",
+    "breaker",
+    "cost",
+    "egress",
+    "egress-auth",
+    "scope",
+    "transport-key",
+    "usage",
+    "verbs",
+    "wal",
+];
 
 #[derive(Debug, Clone)]
 pub enum PlaneRootError {

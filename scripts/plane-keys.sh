@@ -72,7 +72,24 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # but absent means the gate scans zero files of it and reports the passing answer to every ban. The
 # consumer (scripts/plane-purity-lint.sh) therefore treats a listed-but-missing root as RED and refuses
 # a zero-file scan outright — so the only way a root leaves the set is through this line.
-NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
+#
+# THE KERNEL AND THE UNITS ARE NEUTRAL TOO, and this line did not say so. The four roots the list
+# opens with are the RETIRING crates — the ones a plane must not leak into on the way out. The
+# kernel and the `busbar-unit-*` crates are what those crates are being retired INTO, and they are
+# the strictest neutral surface in the tree: the kernel knows its plugin KINDS and nothing past
+# them, and every core step is served once by a kind-neutral unit. A gate that scanned the crates
+# on their way out and not the crates they were landing in was watching the wrong end of the move,
+# and it printed green the whole way.
+#
+# TWO OF THE FOURTEEN UNITS ARE NOT HERE YET, AND THIS IS WHERE THEY ARE OWED. `busbar-unit-trust`
+# and `busbar-unit-ledger` carry vendor-named FIXTURE strings in their test code — a vendor
+# hostname a host-normaliser is judged against, a vendor meter label a migration is keyed on.
+# Measured on this tree they are worth seven DIALECT hits and seven KEY hits in the test-scope
+# pass, which is seven and seven above ceilings that only go down. Adding the two roots before
+# those fixtures are neutral would force both ceilings UP, which is the move the ratchet exists to
+# refuse. Neutralising the fixtures is a landing in those crates; the two roots go in here on the
+# commit that makes them.
+NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src crates/busbar-kernel/src crates/busbar-unit-admission/src crates/busbar-unit-audit/src crates/busbar-unit-auth/src crates/busbar-unit-breaker/src crates/busbar-unit-cost/src crates/busbar-unit-egress/src crates/busbar-unit-egress-auth/src crates/busbar-unit-scope/src crates/busbar-unit-transport-key/src crates/busbar-unit-usage/src crates/busbar-unit-verbs/src crates/busbar-unit-wal/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 

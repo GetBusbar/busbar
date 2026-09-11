@@ -1235,28 +1235,229 @@ because = """The union of the three rows above, moved by the one face and by not
 delta is the 35 lines of busbar_contract::kinds::CredentialSignature; the kernel did not move and \
 the unit union did not move, which is the shape a face that lands on the ABI is supposed to have."""
 
-# The four positional raises the STRUCK dialect cell caused in qa/kind-isolation.toml.
-[gate.ceiling_raises."cell.348.count"]
+# ── POSITIONAL RAISES ────────────────────────────────────────────────────────────────────────
+# Every entry below is one index whose NEIGHBOUR it now reads, caused by the two struck cells.
+# None of them is a coupling that grew; all expire the moment this commit lands.
+
+[gate.ceiling_raises."cell.279.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 4
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 279: it held busbar-unit-auth x transport (2) and now holds busbar-unit-auth x unit (4), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.280.count"]
+file = "qa/kind-isolation.toml"
+from = 4
+to = 11
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 280: it held busbar-unit-auth x unit (4) and now holds busbar-unit-breaker x caps (11), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.283.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 232
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 283: it held busbar-unit-breaker x plane (5) and now holds busbar-unit-breaker x transport (232), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.285.count"]
+file = "qa/kind-isolation.toml"
+from = 4
+to = 12
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 285: it held busbar-unit-breaker x unit (4) and now holds busbar-unit-cost x caps (12), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.287.count"]
+file = "qa/kind-isolation.toml"
+from = 6
+to = 34
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 287: it held busbar-unit-cost x unit (6) and now holds busbar-unit-egress x caps (34), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.288.count"]
+file = "qa/kind-isolation.toml"
+from = 34
+to = 55
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 288: it held busbar-unit-egress x caps (34) and now holds busbar-unit-egress x contract-transport (55), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.291.count"]
+file = "qa/kind-isolation.toml"
+from = 1
+to = 59
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 291: it held busbar-unit-egress x plane (1) and now holds busbar-unit-egress x transport (59), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.295.count"]
 file = "qa/kind-isolation.toml"
 from = 3
+to = 4
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 295: it held busbar-unit-egress-auth x transport (3) and now holds busbar-unit-egress-auth x unit (4), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.296.count"]
+file = "qa/kind-isolation.toml"
+from = 4
+to = 17
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 296: it held busbar-unit-egress-auth x unit (4) and now holds busbar-unit-ledger x caps (17), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.297.count"]
+file = "qa/kind-isolation.toml"
+from = 17
+to = 20
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 297: it held busbar-unit-ledger x caps (17) and now holds busbar-unit-ledger x unit (20), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.299.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 139
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 299: it held busbar-unit-scope x caps (3) and now holds busbar-unit-scope x control (139), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.301.count"]
+file = "qa/kind-isolation.toml"
+from = 1
+to = 6
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 301: it held busbar-unit-scope x legacy (1) and now holds busbar-unit-scope x transport (6), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.302.count"]
+file = "qa/kind-isolation.toml"
+from = 6
+to = 10
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 302: it held busbar-unit-scope x transport (6) and now holds busbar-unit-transport-key x caps (10), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.304.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 6
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 304: it held busbar-unit-transport-key x contract-transport (3) and now holds busbar-unit-transport-key x legacy (6), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.305.count"]
+file = "qa/kind-isolation.toml"
+from = 6
+to = 106
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 305: it held busbar-unit-transport-key x legacy (6) and now holds busbar-unit-transport-key x transport (106), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.308.count"]
+file = "qa/kind-isolation.toml"
+from = 8
+to = 20
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 308: it held busbar-unit-trust x contract-transport (8) and now holds busbar-unit-trust x plane (20), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.309.count"]
+file = "qa/kind-isolation.toml"
+from = 20
+to = 45
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 309: it held busbar-unit-trust x plane (20) and now holds busbar-unit-trust x transport (45), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.312.count"]
+file = "qa/kind-isolation.toml"
+from = 16
+to = 486
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 312: it held busbar-unit-verbs x caps (16) and now holds busbar-unit-verbs x control (486), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.315.count"]
+file = "qa/kind-isolation.toml"
+from = 6
+to = 37
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 315: it held busbar-unit-verbs x transport (6) and now holds busbar-unit-wal x caps (37), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.316.count"]
+file = "qa/kind-isolation.toml"
+from = 37
+to = 65
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 316: it held busbar-unit-wal x caps (37) and now holds busbar-voice x api (65), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.318.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 17
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 318: it held busbar-voice x codec (10) and now holds busbar-voice x control (17), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.320.count"]
+file = "qa/kind-isolation.toml"
+from = 11
+to = 811
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 320: it held busbar-voice x legacy (11) and now holds busbar-voice x plane (811), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.323.count"]
+file = "qa/kind-isolation.toml"
+from = 1
+to = 290
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 323: it held busbar-voice x store (1) and now holds busbar-voice x transport (290), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.326.count"]
+file = "qa/kind-isolation.toml"
+from = 1
+to = 117
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 326: it held busbar-voice-codec x legacy (1) and now holds busbar-voice-codec x plane (117), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.328.count"]
+file = "qa/kind-isolation.toml"
+from = 15
+to = 19
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 328: it held busbar-voice-codec x substrate (15) and now holds busbar-voice-codec x transport (19), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.329.count"]
+file = "qa/kind-isolation.toml"
+from = 19
+to = 175
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 329: it held busbar-voice-codec x transport (19) and now holds busbar x dialect (175), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.333.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 14
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 333: it held busbar-caps x dialect (2) and now holds busbar-contract x dialect (14), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.334.count"]
+file = "qa/kind-isolation.toml"
+from = 14
+to = 1196
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 334: it held busbar-contract x dialect (14) and now holds busbar-core x dialect (1196), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.336.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 3208
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 336: it held busbar-hooks-ranking x dialect (2) and now holds busbar-llm x dialect (3208), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.337.count"]
+file = "qa/kind-isolation.toml"
+from = 3208
+to = 11200
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 337: it held busbar-llm x dialect (3208) and now holds busbar-llm-codec x dialect (11200), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.341.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 9
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 341: it held busbar-plugin x dialect (3) and now holds busbar-plugin-loader x dialect (9), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.343.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 90
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 343: it held busbar-secret-ref x dialect (2) and now holds busbar-substrate x dialect (90), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.344.count"]
+file = "qa/kind-isolation.toml"
+from = 90
+to = 252
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 344: it held busbar-substrate x dialect (90) and now holds busbar-substrate-values x dialect (252), a number no commit of this branch touched."""
+
+[gate.ceiling_raises."cell.347.count"]
+file = "qa/kind-isolation.toml"
+from = 4
 to = 5
-because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 348 was `busbar-unit-breaker x dialect` = 3 and is now `busbar-unit-egress-auth x dialect` = 5. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 347: it held busbar-unit-auth x dialect (4) and now holds busbar-unit-egress-auth x dialect (5), a number no commit of this branch touched."""
 
 [gate.ceiling_raises."cell.350.count"]
 file = "qa/kind-isolation.toml"
 from = 2
-to = 5
-because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 350 was `busbar-unit-ledger x dialect` = 2 and is now `busbar-unit-trust x dialect` = 5. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+to = 7
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 350: it held busbar-unit-ledger x dialect (2) and now holds busbar-unit-usage x dialect (7), a number no commit of this branch touched."""
 
 [gate.ceiling_raises."cell.351.count"]
 file = "qa/kind-isolation.toml"
 from = 5
-to = 7
-because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 351 was `busbar-unit-trust x dialect` = 5 and is now `busbar-unit-usage x dialect` = 7. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+to = 335
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 351: it held busbar-unit-trust x dialect (5) and now holds busbar-voice x dialect (335), a number no commit of this branch touched."""
 
 [gate.ceiling_raises."cell.352.count"]
 file = "qa/kind-isolation.toml"
 from = 7
-to = 335
-because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 352 was `busbar-unit-usage x dialect` = 7 and is now `busbar-voice x dialect` = 335, a number no commit of this branch touched. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+to = 257
+because = """POSITIONAL, NOT A RISE. ceiling-rose keys an array-of-tables ceiling by its INDEX, so striking one [[cell]] renumbers every cell after it and each surviving path reads its neighbour's number. Two cells were STRUCK on this branch because kind-isolation:matrix refuses a row that covers nothing: `busbar-unit-auth x dialect` (4 -> struck; the unit stopped naming a dialect at all) and `busbar-unit-auth x plane` (2 -> struck; its last plane-named test fixture became a neutral one). The only cell whose own number moved is `busbar-unit-egress-auth x dialect`, 34 -> 5, and it moved DOWN. This path is index 352: it held busbar-unit-usage x dialect (7) and now holds busbar-voice-codec x dialect (257), a number no commit of this branch touched."""
 

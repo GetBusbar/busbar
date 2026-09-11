@@ -2698,11 +2698,6 @@ count = "24"
 
 [[cell]]
 crate = "busbar-unit-auth"
-kind = "plane"
-count = "2"
-
-[[cell]]
-crate = "busbar-unit-auth"
 kind = "transport"
 count = "2"
 

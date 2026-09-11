@@ -454,15 +454,45 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
     assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
+    // THE NEUTRAL SET, IN THE ORDER THE SHELL TWIN SPELLS IT. The four retiring crates, then the
+    // kernel, then the units — the crates the retiring four are being drained INTO, which is the
+    // end of the move this gate was not watching.
+    let neutral = planes::neutral_src_roots();
     assert_eq!(
-        planes::neutral_src_roots(),
+        neutral,
         vec![
             "crates/busbar-core/src",
             "crates/busbar-substrate/src",
             "crates/busbar-substrate-values/src",
             "crates/api/src",
+            "crates/busbar-kernel/src",
+            "crates/busbar-unit-admission/src",
+            "crates/busbar-unit-audit/src",
+            "crates/busbar-unit-auth/src",
+            "crates/busbar-unit-breaker/src",
+            "crates/busbar-unit-cost/src",
+            "crates/busbar-unit-egress/src",
+            "crates/busbar-unit-egress-auth/src",
+            "crates/busbar-unit-scope/src",
+            "crates/busbar-unit-transport-key/src",
+            "crates/busbar-unit-usage/src",
+            "crates/busbar-unit-verbs/src",
+            "crates/busbar-unit-wal/src",
         ]
     );
+    // AND THE TWO THAT ARE OWED, asserted absent on purpose. Their test code still carries
+    // vendor-named fixtures, so adding them today would force the test-scope DIALECT and KEY
+    // ceilings UP — the move the ratchet exists to refuse. Naming them here means the day they are
+    // added is a day this cell changes, rather than a quiet widening nobody reads.
+    for owed in [
+        "crates/busbar-unit-trust/src",
+        "crates/busbar-unit-ledger/src",
+    ] {
+        assert!(
+            !neutral.contains(&owed.to_string()),
+            "{owed} joined the scan set: neutralise its fixtures and update this cell together"
+        );
+    }
 }
 
 #[test]
