@@ -25,9 +25,9 @@
 //! | stream | scope of a chain | rate |
 //! |---|---|---|
 //! | [`crate::admin::audit`] — admin MUTATIONS | one chain, process-wide | operator-rate |
-//! | [`crate::calllog`] — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
+//! | the per-call record — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
 //!
-//! `calllog.rs`'s own header records why the per-call event was moved OFF the admin ring: an admin
+//! The per-call record's history records why the per-call event was moved OFF the admin ring: an admin
 //! mutation is operator-rate and a tool call is REQUEST-rate, so sharing one bounded ring means a
 //! busy afternoon evicts every admin record, silently. Unifying the MECHANISM must not re-merge the
 //! STREAMS, and it does not: `ChainedRecord::scope_of` is what keeps
@@ -45,9 +45,10 @@
 //!
 //! ADDING A FOURTH STREAM COSTS A RECORD TYPE AND NOTHING ELSE. `tests/chain_tests.rs` writes a
 //! throwaway fourth record type against the unit's trait and chains and verifies it with no new
-//! mechanism, so the claim is checked rather than asserted; `tests/boot_verify_golden.rs` holds this
-//! crate's three real streams against frozen persisted bytes, which is what proves the mechanism
-//! moved without moving a digest.
+//! mechanism, so the claim is checked rather than asserted. The frozen-persisted-bytes tripwire —
+//! the one that proves the mechanism moved without moving a digest — lives with the code that
+//! produces each stream now, which for the two chained streams left in this tree is the composition
+//! root's record-leg golden.
 //!
 //! ## The claim, stated honestly
 //!
@@ -69,7 +70,3 @@ pub mod vocab {
 #[cfg(test)]
 #[path = "tests/chain_tests.rs"]
 mod chain_tests;
-
-#[cfg(test)]
-#[path = "tests/boot_verify_golden.rs"]
-mod boot_verify_golden;

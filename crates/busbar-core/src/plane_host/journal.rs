@@ -223,24 +223,6 @@ fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
     })
 }
 
-/// TEST ONLY: point an already-registered stream's durable journal at `store` (or detach it) WITHOUT
-/// re-registering — so a global-`TASKS` chain test can aim the process-wide `kind_id` at its own
-/// ledger for the duration it holds `TASKS_SINK_LOCK`, leaving the chain POSITIONS untouched (a
-/// re-register would reset every position and race the no-sink registration the working-set tests
-/// share). A no-op if the stream is not registered.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn set_stream_sink_for_test(
-    kind_id: u32,
-    store: Option<Arc<dyn crate::plane::store::PlaneStore>>,
-) {
-    if let Some(s) = streams_lock().get(&kind_id) {
-        match store {
-            Some(store) => s.journal.set_sink(store),
-            None => s.journal.clear_sink_for_test(),
-        }
-    }
-}
-
 /// Read a borrowed `(ptr, len)` range into owned bytes; a null/empty range is the empty vector.
 fn read_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
     if ptr.is_null() || len == 0 {
@@ -262,7 +244,7 @@ fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`, `calllog`)
+/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`)
 /// still owns its own native `Fn(&str, &[u8]) -> StoreResult<PlaneJournalRecord>` decode bridge, but
 /// the durable seam addresses reframe over the [`JournalReframeFn`] FFI shape. This is the adapter:
 /// the plane's `extern "C-unwind"` reframe slot forwards the raw buffers here, and this reads the body,
@@ -509,54 +491,6 @@ fn register_stream(
     .unwrap_or(StatusClass::Fault)
 }
 
-/// APPEND one record and return its MINTED chain fields `(seq, prev_hash, hash)` — the WITHIN-CORE
-/// analogue of [`journal_append_scoped`] for a seam user that must reconstruct the TYPED record it
-/// returns to its caller (the MCP call log hands back an `McpCallRecord` carrying `prev_hash`/`hash`,
-/// which the `Seq`-only ABI append does not surface). `Err` carries the STORE's own error verbatim (a
-/// durable-write failure the caller surfaces to decide on), an unregistered stream / empty scope, or a
-/// caught panic — so the caller reports the same reason the pre-cleave `Journal::record` did.
-pub(crate) fn journal_append_scoped_full(
-    host: HostCtx,
-    kind_id: u32,
-    scope: &str,
-    content: &[u8],
-) -> Result<(u64, String, String), busbar_api::StoreError> {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
-        let Some(h) = stream_handle(kind_id) else {
-            return Err(busbar_api::StoreError(
-                "journal stream is not registered".to_string(),
-            ));
-        };
-        if scope.is_empty() {
-            return Err(busbar_api::StoreError(
-                "journal scope must be a non-empty key".to_string(),
-            ));
-        }
-        let input = PlaneJournalInput {
-            content: content.to_vec(),
-            framing: h.framing,
-            digests_scope: h.digests_scope,
-        };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
-            Ok(record) => Ok((
-                record.seq(),
-                record.prev_hash().to_string(),
-                record.hash().to_string(),
-            )),
-            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
-        }
-    }))
-    .unwrap_or_else(|_| {
-        Err(busbar_api::StoreError(
-            "journal append panicked".to_string(),
-        ))
-    })
-}
-
 /// HOSTLESS append for a within-core seam user that has NO `HostCtx` to open — the deferred MCP
 /// client-leg path (`mcp::client::issue`), which is `async` (a `HostCtx` is `!Send` and cannot cross
 /// its `.await`s) and reaches no `App`. It appends to the registered `kind_id` stream WITHOUT recovering
@@ -607,20 +541,6 @@ pub(crate) fn journal_append_scoped_full_hostless(
             "journal append panicked".to_string(),
         ))
     })
-}
-
-/// The sequence the next record for `scope` on the registered `kind_id` stream will carry (1 for an
-/// uncached scope) — a diagnostic on the position, read WITHIN CORE (the ABI exposes no `next_seq`).
-pub(crate) fn journal_next_seq_scoped(kind_id: u32, scope: &str) -> u64 {
-    stream_handle(kind_id)
-        .map(|h| h.journal.next_seq(scope))
-        .unwrap_or(1)
-}
-
-/// How many scope positions the registered `kind_id` stream is holding — the diagnostic the MCP call
-/// log's bounded-map test reads, exposed WITHIN CORE (the ABI has no `len`).
-pub(crate) fn journal_len_scoped(kind_id: u32) -> usize {
-    stream_handle(kind_id).map(|h| h.journal.len()).unwrap_or(0)
 }
 
 /// APPEND one record to a registered stream's durable `scope`: mint the seq/prev_hash/hash through the

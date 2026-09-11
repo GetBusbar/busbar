@@ -8,7 +8,7 @@
 //!
 //! `grep crate::audit` over `proxy/` and `handlers/` returned ZERO production hits. Model traffic
 //! landed in billing (`governance`), in telemetry (`/metrics`) and in the request-log export, and in
-//! NO tamper-evident chain — while the MCP plane chained every `tools/call` (`calllog`) and the
+//! NO tamper-evident chain — while the MCP plane chained every `tools/call` (the per-call record) and the
 //! A2A plane chained every task event (`provenance`). The owner's ruling is that auditing is
 //! core functionality and *"LLM == MCP == A2A — just different protocols, not a different pathway
 //! through the engine at all"*, so the flagship plane being the unaudited one is the doctrine
@@ -28,7 +28,7 @@
 //! ## ONE MECHANISM IS NOT ONE STREAM
 //!
 //! This stream stays SEPARATE from the admin ring, the MCP call log and the A2A task chain, for the
-//! reason `mcp/calllog.rs` records: an admin mutation is operator-rate and a model request is
+//! reason the per-call record records: an admin mutation is operator-rate and a model request is
 //! REQUEST-rate, so sharing one bounded ring means a busy afternoon evicts every admin record,
 //! silently. [`crate::audit`]'s verifier refuses a record whose scope is not the chain's, so one
 //! caller's evidence can never be made to depend on another caller's rows.
@@ -36,7 +36,7 @@
 //! ## Scoped to the PRINCIPAL, like the call log and unlike the task chain
 //!
 //! A model request has no durable object of its own to be scoped to — there is no task — so the
-//! bounded unit is the presenting key, exactly as `calllog` is. That is also the unit an
+//! bounded unit is the presenting key, exactly as the per-call record is. That is also the unit an
 //! auditor asks about ("what did this key do"), and it means one caller's chain is verifiable
 //! without possessing any other caller's records.
 //!
@@ -55,13 +55,13 @@
 //! NOT WRITTEN — durability. `busbar_api::Store` carries no model-request method, and adding one is
 //! a plugin-ABI change fanned out to four external store repositories; it is deliberately not made
 //! here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT. That is the same floor
-//! `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are documented with, it is
+//! `a2a::pushdeliver`'s pin map and the per-call record under `store: memory` are documented with, it is
 //! stated here rather than discovered, and NOTHING may describe this stream as durable until a
 //! store method exists. What IS true of it today: within one process lifetime the window is
 //! append-only, hash-linked and verifiable, so an in-process edit of a retained record is detected.
 //!
 //! NOT MOUNTED — the operator-facing read surface. [`RequestLog::verify_principal_chain`] and
-//! [`RequestLog::records_for`] have no admin verb, exactly as `calllog`'s equivalents do
+//! [`RequestLog::records_for`] have no admin verb, exactly as the per-call record's equivalents do
 //! not; each carries its own `#[allow(dead_code)]` and its own note rather than a module-wide
 //! blanket, so the next thing to lose its caller BREAKS THE BUILD instead of joining a silent
 //! amnesty. It is a REAL GAP and it is named here.
@@ -97,7 +97,7 @@ pub const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 
 /// How many records the process keeps, across every principal.
 ///
-/// ONE ring rather than one per principal, and the argument `mcp/calllog.rs` makes against a shared
+/// ONE ring rather than one per principal, and the argument the per-call record makes against a shared
 /// ring does NOT apply: that one was about mixing an operator-rate population with a request-rate
 /// one, where the fast population silently evicts the slow one's entire history. Every record here
 /// is the same population at the same rate, so oldest-first eviction across the whole ring means
@@ -113,13 +113,13 @@ pub const PRINCIPAL_UNGOVERNED: &str = "ungoverned";
 const MAX_RETAINED_REQUESTS: usize = 2048;
 
 /// The upper bound on how many principals' chain POSITIONS this process keeps in RAM at once —
-/// the SAME value and the same LRU eviction shape as `calllog`'s position cache
-/// (`calllog::MAX_TRACKED_PRINCIPALS`), mirrored here because the two streams share the growth
+/// the SAME value and the same LRU eviction shape as the per-call record's position cache
+/// (the per-call record's own cap), mirrored here because the two streams share the growth
 /// mode: one entry per DISTINCT principal ever seen, never evicted, is a leak on any deployment
 /// minting many short-lived keys. Eviction only ever drops the least-recently-USED chain, and
 /// only while the map is over this cap, so every LIVE key's chain position is untouched.
 ///
-/// THE EVICTED-THEN-RETURNING CONTRACT mirrors calllog's no-sink arm (`Journal::resume_missing`:
+/// THE EVICTED-THEN-RETURNING CONTRACT mirrors the per-call record's no-sink arm (`Journal::resume_missing`:
 /// "with no sink there is no durable log to fork, so a fresh chain is the honest answer"): this
 /// stream has NO durable store (see the module header — a restart already loses it), so a
 /// returning evicted principal opens a fresh chain at seq 1. The retained window stays verifiable
@@ -296,8 +296,8 @@ pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'st
 #[derive(Default)]
 struct LogState {
     /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. BOUNDED at
-    /// [`MAX_TRACKED_PRINCIPALS`], the same cap and the same LRU discipline as `calllog`'s
-    /// position cache (`calllog::MAX_TRACKED_PRINCIPALS`, enforced host-side by
+    /// [`MAX_TRACKED_PRINCIPALS`], the same cap and the same LRU discipline as the per-call record's
+    /// position cache (the per-call record's own cap, enforced host-side by
     /// `audit::journal::Journal::commit_position`): an [`IndexMap`] so insertion order doubles as
     /// recency order — a recorded principal moves to the back (most-recently-used), and once the
     /// map exceeds the cap the FRONT (least-recently-used) chain is dropped. Without the bound
@@ -315,7 +315,7 @@ pub struct RequestLog {
 
 /// THE PROCESS-WIDE MODEL REQUEST LOG. Process state, not config-derived state, so it lives as a
 /// global rather than on the swappable `App` snapshot — exactly like [`crate::admin::audit::AUDIT`]
-/// and [`crate::calllog::CALLS`], and for the same reason: a config apply must not reset the
+/// and the per-call record's position cache, and for the same reason: a config apply must not reset the
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse
 /// than no chain at all.
@@ -326,7 +326,7 @@ impl RequestLog {
         Self::default()
     }
 
-    /// Poison-recovering lock, for the reason `calllog` gives: the critical section only
+    /// Poison-recovering lock, for the reason the per-call record gives: the critical section only
     /// mutates chain positions and a record ring, so the data stays consistent after a panic, and
     /// cascading a poison would wedge the whole data plane because one request panicked.
     fn state(&self) -> MutexGuard<'_, LogState> {
@@ -349,8 +349,8 @@ impl RequestLog {
         // hand-writes its `Default` to be its `new`, and pins the two against each other
         // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
         // hazard is closed once, in core, for every stream — which is the whole argument for
-        // one mechanism. `calllog` reads identically.
-        // LRU + cap discipline mirrors `audit::journal::Journal::commit_position` (calllog's
+        // one mechanism. the per-call record reads identically.
+        // LRU + cap discipline mirrors `audit::journal::Journal::commit_position` (the per-call record's
         // bound): touch-to-back on every record, evict from the front only while over the cap.
         let chains = &mut state.chains;
         let idx = match chains.get_index_of(principal) {
@@ -402,7 +402,7 @@ impl RequestLog {
 
     /// RECOMPUTE one principal's retained window and report the first break.
     ///
-    /// NO PRODUCTION CALLER — the same real gap `calllog::verify_principal_chain` names, and it
+    /// NO PRODUCTION CALLER — the same real gap the per-call record's own unmounted verifier names, and it
     /// matters for the same reason: a chain nothing ever recomputes proves nothing, because nobody
     /// ever finds out that it does not verify. Nothing anywhere may describe this stream as
     /// continuously verified.

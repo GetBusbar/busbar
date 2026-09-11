@@ -4,7 +4,7 @@
 //! THE ENGINE'S IMPLEMENTATION of the neutral engine test-kit seam
 //! (`busbar_substrate::testkit::engine_kit`): every verb is a thin delegate to the fixture or
 //! process-wide service a plane's tests used to name directly (`TestApp`, `GovState`, `metrics::init`,
-//! the call log, the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
+//! the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
 //! `plane_host::engine_host`, `AppHandle`). A plane's test tree binds [`CORE_ENGINE_KIT`] in one
 //! function and reaches all of it through `busbar_substrate::testkit::engine_kit::EngineTestKit` —
 //! the plane names this crate in exactly that one binding line and nowhere else.
@@ -25,6 +25,12 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// What the four retired per-call verbs say when something still calls one.
+const RETIRED: &str =
+    "this engine holds no per-call chain: the record is landed and rehydrated on \
+                       the composition root's kernel-held record leg, and a test that needs one \
+                       drives that leg. Answering here would report success for work nothing did.";
 
 /// The engine's kit, as the `&'static` a plane's binding function hands back.
 pub static CORE_ENGINE_KIT: CoreEngineKit = CoreEngineKit;
@@ -93,20 +99,32 @@ impl EngineTestKit for CoreEngineKit {
         .map(|env| Box::new(env) as HookEnvHandle)
     }
 
-    fn call_next_seq(&self, principal: &str) -> u64 {
-        crate::calllog::CALLS.next_seq(principal)
+    // ── the four RETIRED per-call methods ──────────────────────────────────────────────────────
+    //
+    // This engine held a per-call chain, a sink and a verifier once. It does not any more: the
+    // record is landed and rehydrated on the composition root's kernel-held record leg, and the
+    // battery that used to reach the store through these four moved to the root and drives that leg
+    // directly. They stay on the frozen kit surface with no caller.
+    //
+    // EACH PANICS, and none of them answers. A `0` from `call_next_seq`, an `Ok(())` from
+    // `verify_call_rows` or a silent `aim_call_sink` would be a test kit reporting success for work
+    // it did not do, which is the one failure mode a test kit must not have: every assertion built
+    // on it would go green against nothing at all. A panic names the leg the caller should be
+    // driving instead.
+    fn call_next_seq(&self, _principal: &str) -> u64 {
+        panic!("{RETIRED}");
     }
 
     fn ensure_call_stream_registered(&self) {
-        crate::calllog::ensure_global_call_stream_registered();
+        panic!("{RETIRED}");
     }
 
-    fn aim_call_sink(&self, store: Option<Arc<dyn PlaneStore>>) {
-        crate::calllog::aim_global_call_sink(store);
+    fn aim_call_sink(&self, _store: Option<Arc<dyn PlaneStore>>) {
+        panic!("{RETIRED}");
     }
 
-    fn verify_call_rows(&self, rows: &[CallRecorded]) -> Result<(), String> {
-        crate::calllog::verify_call_rows(rows).map_err(|e| format!("{e:?}"))
+    fn verify_call_rows(&self, _rows: &[CallRecorded]) -> Result<(), String> {
+        panic!("{RETIRED}");
     }
 
     fn audit_high_water_seq(&self) -> u64 {

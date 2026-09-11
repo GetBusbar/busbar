@@ -141,6 +141,63 @@ fn verbs_here() -> Vec<UpstreamVerb> {
         .collect()
 }
 
+// ── THE RECORDING DURABLE PATH ──────────────────────────────────────────────────────────────────
+//
+// The claim these tests make about the governance record is REACH, not durability: does the client
+// leg write ONE record per verb it issues, on the caller's own chain. Durability — the real C ABI,
+// the close-and-reopen, the read-back — is proven where it has to be, in the composition root, which
+// is the only home entitled to name both this plane and the record leg that lands its rows.
+//
+// So the path installed here KEEPS the records in memory and counts them per principal. It is not a
+// stand-in for a store and does not pretend to be one: it never claims a row was persisted, and the
+// sequence it hands back is its own count, which is exactly what the assertions below read.
+//
+// ONE sink for the whole binary, installed idempotently, keyed BY PRINCIPAL: sibling tests here run
+// concurrently and each uses its own caller id, so no two of them can see each other's rows and no
+// lock is needed.
+#[derive(Default)]
+struct RecordingSink {
+    rows: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+}
+
+static RECORDING: std::sync::LazyLock<std::sync::Arc<RecordingSink>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(RecordingSink::default()));
+
+impl super::super::callrecord::CallRecordSink for RecordingSink {
+    fn record(
+        &self,
+        principal: &str,
+        _input: &super::super::callrecord::CallInput,
+    ) -> Result<u64, String> {
+        let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = rows.entry(principal.to_string()).or_insert(0);
+        *seq += 1;
+        Ok(*seq)
+    }
+}
+
+/// Install the recording path, once per process. Calling it again is a no-op that keeps the SAME
+/// sink, so a test that runs after another one still sees its own principal's count and not a reset.
+fn install_recording_sink() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        super::super::callrecord::install(Some(RECORDING.clone()));
+    });
+}
+
+/// The sequence the NEXT record on `principal`'s chain would take — the count so far plus one, which
+/// is what a chain's `next_seq` means.
+fn call_next_seq(principal: &str) -> u64 {
+    RECORDING
+        .rows
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(principal)
+        .copied()
+        .unwrap_or(0)
+        + 1
+}
+
 async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<dyn EngineApp>) {
     metrics_init();
     let peer = Peer::start(behaviour, ISSUED).await;
@@ -148,9 +205,10 @@ async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<dyn EngineApp>) {
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(SERVER, exchanging_server(&peer, SUBJECT))
         .build();
-    // The client-leg `issue()` chains its outcome on the process-wide `call` stream; this harness does
-    // not boot through `mcp_hydrate`, so register that stream once (no-sink) so the emit mints a Seq.
-    engine().ensure_call_stream_registered();
+    // The client-leg `issue()` records its outcome through the plane's one chokepoint. This harness
+    // does not boot, so nothing has installed a durable path — install the RECORDING one below, once
+    // for the whole binary, so the records this file counts are observable without a store.
+    install_recording_sink();
     (peer, app)
 }
 
@@ -222,7 +280,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     let caller = key_with_scopes("k-http-sweep", &[("mcp_server", SERVER)]);
     let principal = caller.id.clone();
     let auth = authorise(&app, Some(&caller)).expect("a caller granted the server is admitted");
-    let before = engine().call_next_seq(&principal);
+    let before = call_next_seq(&principal);
 
     let verbs = verbs_here();
     for (n, verb) in verbs.iter().enumerate() {
@@ -329,7 +387,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     // operator asking "what did this key cause busbar to send" would be answered with the tool calls
     // and silence about everything else.
     assert_eq!(
-        engine().call_next_seq(&principal) - before,
+        call_next_seq(&principal) - before,
         verbs.len() as u64,
         "every issued verb must leave exactly one per-call record"
     );
@@ -555,7 +613,7 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
 
     // The record's own fields are asserted through the chain the dispatcher wrote to, which is the
     // caller's — `issue` attributes to `auth.caller.id`.
-    let seq = engine().call_next_seq(&caller.id);
+    let seq = call_next_seq(&caller.id);
     assert!(
         seq > 1,
         "the failed verb still left a record: a call that went out and broke is exactly the call an \

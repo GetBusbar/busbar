@@ -40,7 +40,7 @@
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
 
-// The MCP call log (`calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
+// The MCP per-call record (`plane-mcp`) and the A2A task store (`plane::taskstore`,
 // `plane-a2a`) both wire this in production. But with BOTH planes compiled out
 // (`--no-default-features`) nothing instantiates a `Journal`, so every method here is dead on that
 // configuration — exactly as the plane modules themselves are, which carry the same blanket. Hence
@@ -159,14 +159,6 @@ impl<R: ChainedRecord> Journal<R> {
     /// Attach the configured durable store as the write-through SINK. Called once at boot.
     pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
-    }
-
-    /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide journal leaves it
-    /// as it found it. No production caller: detaching a live deployment's sink mid-run would silently
-    /// stop persisting evidence, the exact failure this module exists to prevent.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn clear_sink_for_test(&self) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Commit `chain` as `scope`'s current position and record it as the MOST-recently-used, evicting

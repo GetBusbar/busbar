@@ -12,9 +12,7 @@
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
 //! `BudgetHost`, `IdentityHost`, `AdmissionHost`, `CompletionHost`). Every plane holds an
 //! `Arc<dyn EngineHost>` and inherits EVERY method of EVERY slice. Some of those methods are
-//! SINGLE-PLANE-PURPOSED — `JournalHost::call_log_emit`/`call_log_emit_hostless` (payload
-//! `plane::calllog::CallInput` carries MCP vocabulary: `server`/`tool`/`tool_digest`/`pin_generation`),
-//! `IdentityHost::quarantine_settle`/`approval_redeem`/`ask_state_sealer` (MCP durable trust/audit),
+//! SINGLE-PLANE-PURPOSED — `IdentityHost::quarantine_settle`/`approval_redeem`/`ask_state_sealer` (MCP durable trust/audit),
 //! `CompletionHost::synthesize_completion` (LLM completion, reached only by MCP's sampling bridge). They
 //! are GENERICALLY NAMED, so the token-level plane-purity gates (F1/plane-abi-neutrality) are
 //! structurally blind to them: the coupling is SEMANTIC (what the method is FOR), not lexical. A NEW
@@ -109,8 +107,6 @@ const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
     ("ask_state_sealer", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
     ("audit_record", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("budget_state", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("call_log_emit", "mcp", "F3/F6 tracked debt: MCP durable call-log engine (CallInput carries MCP vocabulary server/tool/tool_digest/pin_generation). Owner-ruled core-resident today; pending extraction to a narrowed McpJournalHost slice that is NOT a supertrait of EngineHost."),
-    ("call_log_emit_hostless", "mcp", "F3/F6 tracked debt: MCP durable call-log engine (CallInput carries MCP vocabulary server/tool/tool_digest/pin_generation). Owner-ruled core-resident today; pending extraction to a narrowed McpJournalHost slice that is NOT a supertrait of EngineHost."),
     ("caller_in_hook_groups", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("cost", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("cost_close", "voice", "Neutral single-consumer money-lease (MeteringHost reserve/settle): generic nanodollar signature, no voice-transport vocabulary; sole current caller is the voice D2 live-session lease (see F4 oracle)."),

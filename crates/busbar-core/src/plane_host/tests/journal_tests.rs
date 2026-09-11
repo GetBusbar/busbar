@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 // Base 10_000 so these unit streams never collide in the process-global registry with the
 // production ids (1 = A2A `task_event`, 2 = MCP `call`) a within-core plane test registers, nor
-// with the plane test ranges (taskstore 100_000+, calllog 200_000+).
+// with the plane test ranges (taskstore 100_000+).
 static NEXT_KIND_ID: AtomicU32 = AtomicU32::new(10_000);
 fn fresh_kind_id() -> u32 {
     NEXT_KIND_ID.fetch_add(1, Ordering::SeqCst)
@@ -412,14 +412,14 @@ fn durable_unregistered_kind_fails_closed() {
 
 // ── THE CHAIN-COMPAT GOLDEN (minor-9) — frozen PRE-CHANGE bodies through the DURABLE seam ──────
 //
-// The SECOND, independent tripwire beside `audit::boot_verify_golden`. Those same frozen
+// An independent tripwire beside the composition root's record-leg golden. Those same frozen
 // `serde_json` bodies a store held before the cleave are fed through the NEW durable seam
 // (`journal_register` + `journal_restore` + `journal_verify_scoped`), reframed PLANE-SIDE back into
 // records, and the host's ONE verifier RECOMPUTES each digest from the reframed prelude ⧺ suffix.
 // If that recompute no longer equals the frozen `hash`, restore reports a chain break and verify
-// fails — RED before a single deployed store does. The frozen bytes are DUPLICATED from
-// `boot_verify_golden.rs` on purpose: two independent tripwires, so a slip in one is caught by the
-// other. DO NOT regenerate these bytes to make a failing test pass.
+// fails — RED before a single deployed store does. The frozen bytes are DUPLICATED from the root's
+// golden on purpose: two independent tripwires, so a slip in one is caught by the other. DO NOT
+// regenerate these bytes to make a failing test pass.
 
 const G_MCP_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
 const G_MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;

@@ -245,7 +245,7 @@ because = "the per-call record's store reach, in the root, and the battery's rea
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
-by = 92
+by = 83
 because = "the MOVE of the per-call record's dlopen battery into the composition root, plus the mount that installs the durable path behind the plane's chokepoint. The battery drives the MCP plane's real dispatcher and reads the MCP plane's own record type back out, so every name it spells is a plane name; it spelled them in the plane crate before this landing and spells them here now, and `busbar-mcp × plane` falls 3345 -> 3298 against it. The mount names `busbar_plane_mcp::records` (the call schema, its append/scan table, the seven-field length-prefixed suffix) and `busbar_mcp::mcp::callrecord` (the chokepoint's sink trait and its restore narrator), which is the composition root naming what it mounts."
 
 [[gate.ceiling_raises]]
@@ -1547,7 +1547,11 @@ because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: co
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 32
+# 32 -> 28: the SECOND call log's deletion took four of these reader files out of the engine
+# altogether (`calllog.rs`, its battery, and the frozen-bytes golden whose engine went with them), so
+# four of the thirty-two names the face measured are no longer in this tree to be counted. A `by` is
+# what the face measured against the tree it lands in, and this is that number now.
+by = 28
 because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
 
 # THE RECORD MOVE (line 4 of gate/CORE-HOMES-design.md). `busbar-core/src/admin/audit.rs` held a

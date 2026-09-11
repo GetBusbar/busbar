@@ -132,10 +132,10 @@ fn the_ring_is_bounded_and_the_surviving_suffix_still_verifies() {
         .expect("the retained suffix must still verify as a window");
 }
 
-// ── the per-principal chain map is BOUNDED, mirroring calllog's LRU discipline ─────────────────
+// ── the per-principal chain map is BOUNDED, mirroring the per-call record's LRU discipline ─────────────────
 
 /// The chain-position map is a bounded LRU, not an unbounded ledger — the same cap and eviction
-/// shape as calllog's (`the_chain_position_map_stays_bounded_across_many_distinct_principals`):
+/// shape as the per-call record's (`the_chain_position_map_stays_bounded_across_many_distinct_principals`):
 /// after many DISTINCT principals it holds at most [`MAX_TRACKED_PRINCIPALS`], where before it
 /// grew one never-evicted entry per key id ever seen. A LIVE (recently recorded) principal is
 /// never the one evicted: recording moves it to the back, so eviction only ever takes the

@@ -783,15 +783,15 @@ pub trait JournalHost: Send + Sync {
     /// WEDGE 3 (App-retype): the neutral home of the engine's `AUDIT.record_by(...)` reach.
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str);
 
-    /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
-    /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
-    /// registers no host handle, so the arena choice is immaterial). Identical to
-    /// `busbar_core::calllog::emit`.
+    /// RETIRED, and FROZEN with no caller. The per-call record is landed on the composition root's
+    /// kernel-held record leg through the plane's own chokepoint, so no plane reaches this and the
+    /// engine answers it as retired rather than accepting an evidence record and dropping it. It stays
+    /// on this surface because the surface is frozen, not because anything uses it.
     fn call_log_emit(&self, principal: &str, input: CallInput);
 
-    /// The DEFERRED-SITE twin of [`call_log_emit`](Self::call_log_emit): emit through the
-    /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
-    /// `busbar_core::calllog::emit_hostless`.
+    /// The DEFERRED-SITE twin of [`call_log_emit`](Self::call_log_emit), retired with it and for the
+    /// same reason: a record leg registers no host handle, so the client-leg site that had no
+    /// `HostCtx` to open needs no separate seam any more.
     fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
 }
 

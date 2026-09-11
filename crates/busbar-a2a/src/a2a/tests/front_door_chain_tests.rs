@@ -11,7 +11,7 @@
 //! `TaskChain` IN PROCESS and appends to it directly. That is a fine test OF THE MECHANISM and it is
 //! not evidence about the plane: **it would pass, unchanged, if the A2A front door chained
 //! nothing at all**. A cell that closes on a test the plane never touches is exactly the failure
-//! mode `mcp/tests/calllog_dispatch_tests.rs` was written about — a complete, verified, tested
+//! mode the per-call record's own dlopen battery was written about — a complete, verified, tested
 //! subsystem with no production call site.
 //!
 //! So nothing here constructs a chain, a record or a registry. A caller POSTs `message/send` at a

@@ -388,7 +388,7 @@ fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero()
 
 // ══ THE THREE REAL DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════
 
-/// The MCP per-call digest is byte-for-byte what `mcp/calllog.rs` computed before the unification:
+/// The MCP per-call digest is byte-for-byte what the engine computed before the unification:
 /// length-prefixed, in this field order. Minted through the NEUTRAL journal seam — a genesis
 /// `PlaneJournalRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
 /// production persists — and required to agree with the legacy single-buffer formula, recomputed
@@ -410,7 +410,7 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
         out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
         out.extend_from_slice(bytes);
     };
-    // The plane's LengthPrefixed content suffix (the tail after the prelude), as `calllog::call_suffix`
+    // The plane's LengthPrefixed content suffix (the tail after the prelude), as `busbar_plane_mcp::records::call_suffix`
     // builds it: ts, server, tool, outcome, reason, tool_digest, pin_generation.
     let mut content: Vec<u8> = Vec::new();
     lp(&mut content, &ts.to_be_bytes());

@@ -646,7 +646,7 @@ fn finish_inner(
         });
     }
 
-    // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism `calllog`
+    // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism the per-call record
     // and `provenance` append to, with a record type of its own and nothing else of its own
     // (`crate::proxy::reqlog`). Here, at the plane's single terminal, for the same reason the metric
     // emit is here: every model request passes through this function exactly once, admitted or
