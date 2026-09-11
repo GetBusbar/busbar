@@ -251,17 +251,21 @@ CHAIN FORM AGAIN, off P5's tip 3550: +27, and all of it is the tier. `busbar-con
 
 [gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
 from = 14624
-to = 14787
+to = 14818
 because = """+152, all in `busbar-unit-egress`, and all of it one change: the walk hands the RELAY back instead of running it. `deliver` used to loop on the answer's frames inside the attempt, so the walk could not return until the last frame had gone past — which made the kernel's hold over the routed body a hold over a body that was already drained, and is the gap P4 handed back as owed with the reason attached (the pump has no home here, because this crate has no runtime and must not grow one). It still has none: `BodyPump` is an ordinary future over the same ports the walk itself awaits, a clock that is a port and a stream the transport handed over, and the ROOT drives it on the runtime the frames are already arriving on. The 152 are that value and its drain, the `Routed` the walk now answers with, the `Relayed` the drain produces — how many frames went past, what the PLANE made of the ending, and what the answer carried per declared dimension, three readings of one instant kept together because they are one instant — and the prose for each. `Delivered` gets SMALLER: three fields that were hollow for the length of an upstream call come off it and become one option, because a caller that reads a frame count of zero off an answer whose body has not started arriving has read a lie and there is no spelling of zero that says "not yet".
 
-CHAIN FORM AGAIN, off P5's tip 14776: +11, all in `busbar-unit-auth`. `ResolvedKey` and `Principal` each gain the key's configured group, and the unit's own answer fills the caps field from it. The unit CARRIES the tier and never reads it: it does not know what a tier costs and must not. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path."""
+CHAIN FORM AGAIN, off P5's tip 14776: +11, all in `busbar-unit-auth`. `ResolvedKey` and `Principal` each gain the key's configured group, and the unit's own answer fills the caps field from it. The unit CARRIES the tier and never reads it: it does not know what a tier costs and must not. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path.
+
+CHAIN FORM AGAIN, off 50dd22e2c's tip 14787: +31, all in `busbar-unit-cost`. `TieredAt` — the multiplier a posting resolved at AND the scope it was resolved at, together, so a reader of a booked line cannot mistake a half-price tier for the standard price of a halved card — replaces the bare `tier_bp: u32` `Posting::from_usage` took, and `Posting` itself gains the `tier_scope` field the journal row carries the word on. This crate does not resolve a tier to a price; that is the root's one site. What it holds is the SHAPE the resolution travels in, so every caller of `from_usage` states which scope it resolved at rather than a figure with no account of where it came from."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23769
-to = 24008
+to = 24039
 because = """CHAIN FORM off P3's tip 23769. +188 = the kernel's 36 and the unit crates' 152; `caps_contract` does not move, because this landing reads faces P3 and P4 already landed and reading one costs it nothing. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`.
 
-CHAIN FORM AGAIN, off P5's tip 23957: +51 = the kernel's 13, caps/contract's 27 and the unit crates' 11. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
+CHAIN FORM AGAIN, off P5's tip 23957: +51 = the kernel's 13, caps/contract's 27 and the unit crates' 11. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`.
+
+CHAIN FORM AGAIN, off 50dd22e2c's tip 24008: +31, all `busbar-unit-cost`'s and already counted once above in `unit-total`; the kernel figure and caps/contract do not move for this raise."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3539
@@ -561,10 +565,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3577
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14787
+unit_total_ceiling = 14818
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24008
+union_ceiling = 24039
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

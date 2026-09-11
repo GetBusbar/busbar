@@ -480,3 +480,74 @@ fn the_interner_leaks_a_repeated_key_once() {
     assert!(std::ptr::eq(first, second));
     assert_eq!(registration.len(), 1);
 }
+
+/// **THE SCOPE LADDER, AT THE ONE SITE THAT RESOLVES IT.**
+///
+/// The tariff scopes tier over pool over plane over default and the tier is the principal's — a
+/// key's configured group. This is the only place in the tree that turns that NAME into a price, so
+/// what it answers is the whole of what a tier is worth, on every plane and every leg.
+///
+/// Four answers, and only one of them is a tier:
+///
+/// * a caller on a tier whose group declares a multiplier resolves AT that tier, and the row says
+///   `tier`;
+/// * a caller on a tier whose group declares NONE falls through — a group is not a tier just by
+///   existing, and the fall-through is what keeps a deployment that configures limits and no prices
+///   billing exactly as it did;
+/// * a caller on no tier at all — the anonymous front door, a key bound to no group — falls through
+///   for the same reason and the row says `default`;
+/// * and the fall-through's multiplier is the STANDARD one, which is one times the card. That is
+///   what makes the money path byte-identical for every deployment that configures no tier, which
+///   is every cell in the recorded corpus.
+///
+/// The table is installed once per process, so this cell installs it: it is the only test in this
+/// binary that does, and a second installer would be a second answer to what a tier costs.
+#[test]
+fn the_one_site_resolves_a_tier_to_its_price_and_everything_else_to_the_standard_one() {
+    use busbar_unit_cost::{TieredAt, STANDARD_TIER_BP, TIER_SCOPE_DEFAULT, TIER_SCOPE_TIER};
+
+    // Before anything is installed: no table, no tier, standard price. This is a `--validate` run
+    // and every unit test in the tree, and it must not be a refusal or a zero.
+    assert_eq!(tier_at(None), TieredAt::STANDARD);
+    assert_eq!(tier_at(None).scope(), TIER_SCOPE_DEFAULT);
+
+    let gold = crate::config::GroupCfg {
+        tier_bp: Some(5_000),
+        ..crate::config::GroupCfg::default()
+    };
+    let capped = crate::config::GroupCfg {
+        tier_bp: None,
+        ..crate::config::GroupCfg::default()
+    };
+    let groups = std::collections::BTreeMap::from([
+        ("gold".to_string(), gold),
+        ("capped-only".to_string(), capped),
+    ]);
+    install_tier_table(groups.iter().map(|(name, group)| (name, group.tier_bp)));
+
+    let at_gold = tier_at(Some(&busbar_caps::TierId::new("gold")));
+    assert_eq!(at_gold.bp, 5_000, "a key in `gold` prices at gold");
+    assert_eq!(at_gold.tier.as_deref(), Some("gold"));
+    assert_eq!(
+        at_gold.scope(),
+        TIER_SCOPE_TIER,
+        "and the row records which scope decided it"
+    );
+
+    for (who, tier) in [
+        ("a group that declares no tier", Some("capped-only")),
+        ("a tier this node has never heard of", Some("platinum")),
+        ("no tier at all", None),
+    ] {
+        let resolved = tier_at(tier.map(busbar_caps::TierId::new).as_ref());
+        assert_eq!(
+            resolved.bp, STANDARD_TIER_BP,
+            "{who} prices at the standard multiplier"
+        );
+        assert_eq!(
+            resolved.scope(),
+            TIER_SCOPE_DEFAULT,
+            "{who} records the default scope"
+        );
+    }
+}

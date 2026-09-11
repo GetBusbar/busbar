@@ -2327,6 +2327,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
                 step: busbar_caps::StepName::Meter,
                 stamp: crate::root::durability::PostingStamp {
                     rate_card_version: 3,
+                    tier_scope: busbar_unit_cost::TIER_SCOPE_DEFAULT,
                     wall: 1_700_000_000,
                     mono: 42,
                 },

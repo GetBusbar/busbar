@@ -332,7 +332,12 @@ pub fn group_table(
                 lease_id: lease_ids.get(name).copied(),
                 enabled: cfg.enabled,
                 concurrent_cap,
-                tier_bp: STANDARD_TIER_BP,
+                // THE GROUP'S OWN TIER, as the deployment configured it. A group that declares
+                // none is at the standard multiplier, which is one times the price and is what
+                // every group in this tree was hardwired to before this key had a source. The
+                // door sizes its hold through this; the fee site prices through the root's table
+                // built from the same block, so the two are one reading of one configuration.
+                tier_bp: cfg.tier_bp.unwrap_or(STANDARD_TIER_BP),
                 buckets,
                 parent: cfg.parent.as_deref().and_then(|p| index_of.get(p).copied()),
             }

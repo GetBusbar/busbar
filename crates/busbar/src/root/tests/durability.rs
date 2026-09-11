@@ -176,6 +176,7 @@ fn posting() -> Posting {
             BucketScope::All,
         ),
         window: 86_400,
+        tier_scope: busbar_unit_cost::TIER_SCOPE_DEFAULT,
         reserved: 5_000,
         settled: 4_200,
         overdraft: 0,
@@ -611,6 +612,7 @@ fn totals_key(bucket: &str) -> TotalsKey {
 fn stamp() -> PostingStamp {
     PostingStamp {
         rate_card_version: 3,
+        tier_scope: busbar_unit_cost::TIER_SCOPE_DEFAULT,
         wall: 1_700_000_000,
         mono: 42,
     }
@@ -682,6 +684,102 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
     assert_eq!(replayed.len(), 1, "one posting, one record");
     assert_eq!(replayed[0].class, RecordClass::Transaction);
     assert_eq!(replayed[0].body, settled.posting.body());
+}
+
+/// **THE JOURNAL ROW RECORDS WHICH SCOPE PRICED IT** — `tier` where a caller's own tier named the
+/// multiplier, not re-derived from a configuration a replay would have to trust.
+///
+/// The figure a gold-tier posting settles at is not this cell's to prove — `tier_at` (see
+/// `root/tests/kernel.rs`) is the one site that turns the name into a number, and this settlement
+/// takes whatever stamp the caller hands it, exactly as every other settlement here does. What this
+/// cell proves is narrower and just as load-bearing: the SCOPE that stamp carries survives onto the
+/// row unchanged, so a reader of the journal — an audit, a dispute, a replay — can tell a half-price
+/// tier from the standard price of a halved card without re-reading a `groups:` block that may have
+/// been edited since.
+///
+/// RED FIRST: this cell was written against a `Settling` whose stamp still spelled
+/// `TIER_SCOPE_DEFAULT`, and it read `left: "default", right: "tier"` — the row said default for a
+/// posting the caller resolved at a tier. Naming `TIER_SCOPE_TIER` in the stamp below is what turns
+/// it green, and it is the same field every served leg's own settlement passes through unread.
+#[test]
+fn a_tier_scoped_settlement_records_the_scope_on_the_journal_row() {
+    use busbar_caps::{
+        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, UsageToken,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let mut durability = memory_node();
+    let key = totals_key("vk_gold");
+    durability.ledger.record_hold_opened(&key, 86_400, 5_000);
+
+    let hold = Hold::open(
+        &AdmitToken::<Admit>::mint(&seal),
+        PrincipalId::new("vk_gold"),
+        5_000,
+    );
+    let usage = Usage::report(
+        &UsageToken::mint(&seal),
+        vec![UsageLine {
+            class: MeterClassId::new("nano_units"),
+            quantity: 4_200,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+
+    let durability_token = token();
+    let gold_stamp = PostingStamp {
+        rate_card_version: 3,
+        tier_scope: busbar_unit_cost::TIER_SCOPE_TIER,
+        wall: 1_700_000_000,
+        mono: 42,
+    };
+    let settled = durability
+        .settle(
+            &Settling {
+                key: &key,
+                window: 86_400,
+                durability: &durability_token,
+                step: StepName::Meter,
+                stamp: gold_stamp,
+            },
+            hold,
+            4_200,
+            &usage,
+            &LedgerToken::mint(&seal),
+        )
+        .expect("the null shipper takes it");
+
+    assert_eq!(
+        settled.posting.tier_scope,
+        busbar_unit_cost::TIER_SCOPE_TIER,
+        "the posting the settlement built carries the scope the caller resolved it at"
+    );
+
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("and verifies");
+    assert_eq!(replayed.len(), 1, "one posting, one record");
+    assert_eq!(
+        replayed[0].body,
+        settled.posting.body(),
+        "the row on the chain is the same bytes the settlement built, scope included"
+    );
+
+    // The default-scope row is a DIFFERENT row: same figures, same clocks, different scope, and the
+    // encoded body must disagree or the scope was never on the chain at all.
+    let default_stamp = stamp();
+    assert_ne!(gold_stamp.tier_scope, default_stamp.tier_scope);
+    let mut default_posting = settled.posting.clone();
+    default_posting.tier_scope = default_stamp.tier_scope;
+    assert_ne!(
+        replayed[0].body,
+        default_posting.body(),
+        "a row that swapped the scope word must not encode to the same bytes"
+    );
 }
 
 /// A unit that ran past everything reservable leaves TWO records: the settlement, and the carry.

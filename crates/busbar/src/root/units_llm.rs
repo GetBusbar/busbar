@@ -409,6 +409,7 @@ impl LlmNode {
     fn settle_end(
         &self,
         principal: &PrincipalId,
+        tiered: &busbar_unit_cost::TieredAt,
         arrived: Arrived,
         ended: busbar_kernel::teller::Ended,
     ) {
@@ -425,6 +426,7 @@ impl LlmNode {
         let _settled = settle(
             &mut durability,
             principal,
+            tiered,
             arrived,
             &self.durability_token,
             posted,
@@ -517,6 +519,7 @@ impl LlmNode {
             charged_at: arrived.secs(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
+            tiered: std::sync::OnceLock::new(),
             walk: Walk::open(arrival),
         };
 
@@ -587,7 +590,17 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                self.settle_end(&principal, arrived, ended);
+                // THE UNIT'S OWN RESOLUTION, read off it before its parts are taken apart. The
+                // record is gone by the time the body drains, so what the late posting prices at is
+                // what THIS unit resolved while it ran. A unit that never reached the metering step
+                // resolved none and has no late posting to make either, so the standard multiplier
+                // here is the answer for a figure that never arrives.
+                let tiered = unit
+                    .tiered
+                    .get()
+                    .cloned()
+                    .unwrap_or(busbar_unit_cost::TieredAt::STANDARD);
+                self.settle_end(&principal, &tiered, arrived, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -601,7 +614,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, arrived, history)
+                self.attach_late_accrual(response, walk, &principal, tiered, arrived, history)
             }
         }
     }
@@ -621,6 +634,7 @@ impl LlmNode {
         response: Response,
         walk: Walk,
         principal: &PrincipalId,
+        tiered: busbar_unit_cost::TieredAt,
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) -> Response {
@@ -647,6 +661,7 @@ impl LlmNode {
             ledger_token: self.kernel.ledger_token(),
             usage_token: self.kernel.usage_token(),
             principal: principal.clone(),
+            tiered,
             // The unit's PINNED ARRIVAL, not a clock read at drain time. The late posting lands on
             // the same balance and in the same window the terminal settled in, which is the whole of
             // what makes it the same row: a body that drained past midnight would otherwise open a
@@ -739,6 +754,7 @@ fn priced_posting(
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
+    tiered: &busbar_unit_cost::TieredAt,
 ) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -749,7 +765,14 @@ fn priced_posting(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
-        busbar_unit_cost::STANDARD_TIER_BP,
+        // THE CALLER'S TIER, resolved once at the root's one site from the tier the authenticate
+        // step sealed onto this unit. It was the literal standard multiplier here until this line,
+        // which is to say the chain's own tier reached the door and died there: the admission unit
+        // has sized its hold through `BucketChain::tier_bp` since it was written, and the fee site
+        // four steps later priced every caller at one times the card. A key on a tier is now charged
+        // at it — its metered lines AND its flat fee together, through the single divide
+        // `apply_tier` has always performed — and a key on none prices exactly as before.
+        tiered,
         arrived.ms(),
         arrived.mono(),
     );
@@ -780,8 +803,9 @@ fn priced_amount(
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
+    tiered: &busbar_unit_cost::TieredAt,
 ) -> u64 {
-    let (_posting, priced) = priced_posting(history, arrived, token, report);
+    let (_posting, priced) = priced_posting(history, arrived, token, report, tiered);
     priced
         .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -815,6 +839,14 @@ struct LateAccrual {
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
     principal: PrincipalId,
+    // WHAT THE CALLER'S TIER PRICES AT, resolved at the root's one site while the unit's record
+    /// still existed.
+    ///
+    /// Carried rather than resolved here for the same reason the history snapshot beside it is: by
+    /// the time this arm runs the unit is over, its record is gone and the tier the authenticate
+    /// step sealed onto it cannot be read any more. Resolving at drain time would also mean reading
+    /// a table an operator may have reloaded underneath a request that was admitted before the edit.
+    tiered: busbar_unit_cost::TieredAt,
     arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
     /// table the walk resolved and the facts the Route and Meter steps left, and both live here.
@@ -834,6 +866,7 @@ impl LateAccrual {
             ledger_token,
             usage_token,
             principal,
+            tiered,
             arrived,
             walk,
             tap,
@@ -862,7 +895,7 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&history, arrived, &usage_token, &report);
+        let amount = priced_amount(&history, arrived, &usage_token, &report, &tiered);
         if amount == 0 {
             return;
         }
@@ -873,6 +906,7 @@ impl LateAccrual {
         let _settled = settle(
             &mut durability,
             &principal,
+            &tiered,
             arrived,
             &durability_token,
             posted,
@@ -1051,6 +1085,17 @@ pub struct LlmUnit<'n> {
     deferred: Mutex<Option<decode::DecodeRefusal>>,
     /// The model the caller named, once the ladder has read it.
     model: Mutex<String>,
+    // WHAT THE CALLER'S TIER PRICES AT, resolved ONCE from the tier the kernel sealed onto this
+    /// unit's record and kept for the two readings that need it.
+    ///
+    /// Write-once, because the two readings are two readings of ONE unit: the metering step's, taken
+    /// while the record still exists, and the late accrual's, taken after the body has drained and
+    /// the record is gone. A second resolution at drain time would read a table an operator may have
+    /// reloaded since this unit was admitted, and the same request would price at two tiers.
+    ///
+    /// Resolved through the composition root's one site and nowhere else. This leg reads the same
+    /// field every other leg reads and holds no tariff of its own.
+    tiered: std::sync::OnceLock<busbar_unit_cost::TieredAt>,
     /// THE LOOP'S OWN METER, held here as well as lent to the loop.
     ///
     /// The same value on both sides: the kernel is handed a borrow of this and the Meter step
@@ -1068,6 +1113,18 @@ impl std::fmt::Debug for LlmUnit<'_> {
 }
 
 impl LlmUnit<'_> {
+    /// WHAT THIS CALLER'S TIER PRICES AT, off the unit's own record, once.
+    ///
+    /// THE SAME FIELD EVERY LEG READS. The tier itself is `record.tier()` — sealed by the
+    /// authenticate step off the key's own binding, carried by the kernel, read-only from Verify
+    /// onward — and what it is WORTH is the composition root's one resolution site. There is no arm
+    /// here that knows a plane and no table this leg holds: a leg that resolved a caller's group for
+    /// itself would be a second answer to a question the authenticate step already answered.
+    fn tiered(&self, ctx: &UnitRecord<'_>) -> &busbar_unit_cost::TieredAt {
+        self.tiered
+            .get_or_init(|| crate::root::kernel::tier_at(ctx.tier()))
+    }
+
     /// THE ANSWER'S HEAD, read once off the walk.
     ///
     /// This surface is HTTP and HTTP reports its class on the first response frame — which is what
@@ -1460,10 +1517,11 @@ impl Units for LlmUnit<'_> {
         // instant: it would price whatever the report said at whatever card the door happened to
         // hold, and a unit whose price changed underneath it would settle at the wrong entry with
         // nothing on the record saying so.
+        let tiered = self.tiered(ctx);
         self.walk.meter(token, usage, &|report| {
             self.history
                 .as_ref()
-                .map(|history| priced_amount(history, self.arrived, usage, report))
+                .map(|history| priced_amount(history, self.arrived, usage, report, tiered))
                 .unwrap_or(0)
         })
     }
@@ -1653,6 +1711,10 @@ fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
 pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
+    // WHAT THE CALLER'S TIER PRICES AT, resolved once at the composition root's one site from the
+    // tier the authenticate step sealed onto this unit. The row records the SCOPE it was resolved
+    // at; the figure it produced is already in the posting.
+    tiered: &busbar_unit_cost::TieredAt,
     arrived: Arrived,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
@@ -1674,6 +1736,11 @@ pub fn settle(
         // exactly what the field exists to prevent.
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
+            // THE SCOPE THIS UNIT'S TIER WAS RESOLVED AT, on the row, from the one site that
+            // resolved it. Not re-derived here and not re-read from a configuration: a journal is a
+            // financial record, and a scope a replay had to work out later is a scope an edit can
+            // change after the fact.
+            tier_scope: tiered.scope(),
             wall: arrived.secs(),
             mono: arrived.mono(),
         },

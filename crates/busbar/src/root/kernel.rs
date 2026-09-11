@@ -299,6 +299,66 @@ impl RootHistory {
 /// report arriving that early should be priced in — it isn't.
 pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default);
 
+/// THE NODE'S TIER TABLE: what each configured tier prices at, in basis points.
+///
+/// Installed once, at boot, from the deployment's `groups:` — a key binds to at most one group, so
+/// a group IS a tier and its `tier_bp` is what being in it is worth. Never installed twice and never
+/// mutated after: a tier an operator edits takes effect on the next boot, exactly as the enforcement
+/// chain built from the same block does, so a request cannot be admitted against one reading of a
+/// group and billed against another.
+///
+/// A node that never installs one — a `--validate` run, a unit test, a build without a composition
+/// root — answers the standard tier for every caller, which is the answer the whole tree gave before
+/// a tier could be configured at all.
+static ROOT_TIERS: LazyLock<std::sync::OnceLock<std::collections::BTreeMap<String, u32>>> =
+    LazyLock::new(std::sync::OnceLock::new);
+
+/// Bind the process's one tier table to the deployment's configured groups. Boot only, once.
+///
+/// A relay and nothing more: it copies the multipliers the config declared and computes nothing. A
+/// group that declares none is not in the table, which is a different thing from a group that
+/// declares the standard multiplier — the first resolves at the scope out from the tier and the
+/// second resolves AT the tier, to the same number, and the journal row says which.
+///
+/// Takes the projection rather than the config's own group type: the caller already holds the
+/// `groups:` block, and this function's whole job is copying one field out of it, so it names no
+/// shape the retiring config crate owns and the legacy-reach ratchet does not move for a relay.
+pub fn install_tier_table<'g>(groups: impl IntoIterator<Item = (&'g String, Option<u32>)>) {
+    let table = groups
+        .into_iter()
+        .filter_map(|(name, tier_bp)| tier_bp.map(|bp| (name.clone(), bp)))
+        .collect();
+    let _ = ROOT_TIERS.set(table);
+}
+
+/// **THE ONE SITE A TIER IS RESOLVED TO A PRICE AT**, for every plane and every leg.
+///
+/// The tier is the caller's, sealed by the authenticate step off the key's own binding and carried
+/// on the unit's record; what it is WORTH is the deployment's, read here. Every leg calls this with
+/// the same field, so there is no per-plane arm and no second table: five legs each resolving a
+/// caller's group for themselves is five chances for one unit to be admitted against one group and
+/// billed against another.
+///
+/// THE SCOPE LADDER, and the whole of it that this tree has a source for. A caller on a tier whose
+/// group declares a multiplier resolves AT that tier. Everything else — a caller on no tier, a tier
+/// whose group declares none, and a node with no table installed — falls through to the standard
+/// multiplier at the default scope, which is byte-for-byte what every posting in this tree resolved
+/// at before a tier could be configured. Pool and plane scope have no configured source here and
+/// are therefore not arms of this function: an arm that could never be taken would be a scope this
+/// node claims to price at and cannot.
+#[must_use]
+pub fn tier_at(tier: Option<&busbar_caps::TierId>) -> busbar_unit_cost::TieredAt {
+    let Some(name) = tier else {
+        return busbar_unit_cost::TieredAt::STANDARD;
+    };
+    ROOT_TIERS
+        .get()
+        .and_then(|table| table.get(name.as_str()))
+        .map_or(busbar_unit_cost::TieredAt::STANDARD, |bp| {
+            busbar_unit_cost::TieredAt::at(name.as_str(), *bp)
+        })
+}
+
 /// The configured rates, in the cost unit's own card.
 ///
 /// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the root's;

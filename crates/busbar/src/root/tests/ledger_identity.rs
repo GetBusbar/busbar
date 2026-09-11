@@ -8,8 +8,7 @@ use busbar_caps::{Admit, AdmitToken};
 use busbar_caps::{Hold, LedgerToken, Usage, UsageToken};
 use busbar_caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_unit_cost::{
-    derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,
-    STANDARD_TIER_BP,
+    derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard, TieredAt,
 };
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::settle::Ledger;
@@ -155,7 +154,7 @@ fn drive(
         let usage = Usage::report(&usage_token(), lines(s.input, s.output))
             .expect("the usage report is within the line limit");
         let fee_count = u64::from(s.billable);
-        let quantities = Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
+        let quantities = Posting::from_usage(s.lane, &usage, fee_count, &TieredAt::STANDARD, 0, 0);
         let posting = price(&view, &quantities, CurrencyCode::USD)
             .expect("the opening entry covers instant zero and names USD");
 
@@ -245,7 +244,7 @@ fn every_dual_written_row_carries_the_figures_its_posting_moved() {
             settlement.lane,
             &usage,
             u64::from(settlement.billable),
-            STANDARD_TIER_BP,
+            &TieredAt::STANDARD,
             0,
             0,
         );

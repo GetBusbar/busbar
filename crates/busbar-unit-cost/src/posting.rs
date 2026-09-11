@@ -23,6 +23,68 @@ use crate::rate::RateCard;
 /// The neutral tier multiplier, in basis points: one times the price, so no tier at all.
 pub const STANDARD_TIER_BP: u32 = 10_000;
 
+/// THE SCOPE A POSTING'S TIER MULTIPLIER WAS RESOLVED AT, and the multiplier itself.
+///
+/// The tariff scopes tier over pool over plane over default, and what a reader of a booked line
+/// needs to know is not only WHAT it was charged but at WHICH scope that charge was decided: a
+/// figure that is half the standard price and a figure that is the standard price of a halved card
+/// are the same number and two different facts, and only the scope tells them apart.
+///
+/// So the resolution answers both together. `tier` is the name of the tier the multiplier came from
+/// — the principal's own, which is the key's configured group — and `None` is a resolution that
+/// fell through to the scope out from it, which on a deployment that configures no tier is every
+/// posting it has ever made. [`TieredAt::scope`] is the word a journal row writes, and it is derived
+/// from the name rather than carried beside it so the two cannot disagree.
+///
+/// It carries no card and resolves nothing itself: the composition root reads the deployment's
+/// configuration and hands this over, which is the same division the rate card is built under.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TieredAt {
+    /// The multiplier, in basis points. [`STANDARD_TIER_BP`] is one times the price.
+    pub bp: u32,
+    /// The tier the multiplier came from, where one named it.
+    pub tier: Option<String>,
+}
+
+/// The word a journal row writes for a posting that resolved at no tier.
+pub const TIER_SCOPE_DEFAULT: &str = "default";
+
+/// The word a journal row writes for a posting that resolved at a tier.
+pub const TIER_SCOPE_TIER: &str = "tier";
+
+impl TieredAt {
+    /// THE RESOLUTION THAT NAMES NO TIER: the standard multiplier, at the default scope.
+    ///
+    /// The answer for a caller on no tier, for a tier no group declares a multiplier for, and for
+    /// every deployment that configures none. It is a constant rather than a `Default` impl because
+    /// it is a statement about the tariff and not a convenience: one times the price is what this
+    /// tree charged before a tier could be configured at all, so every posting under it is
+    /// byte-identical to the one the previous release made.
+    pub const STANDARD: TieredAt = TieredAt {
+        bp: STANDARD_TIER_BP,
+        tier: None,
+    };
+
+    /// Name a tier and what it prices at.
+    pub fn at(tier: impl Into<String>, bp: u32) -> Self {
+        TieredAt {
+            bp,
+            tier: Some(tier.into()),
+        }
+    }
+
+    /// THE SCOPE, as the journal row spells it: `tier` where a tier named the multiplier,
+    /// `default` where none did.
+    #[must_use]
+    pub fn scope(&self) -> &'static str {
+        if self.tier.is_some() {
+            TIER_SCOPE_TIER
+        } else {
+            TIER_SCOPE_DEFAULT
+        }
+    }
+}
+
 /// The meter class the flat per-request fee posts under. It is a usage line like any other, which
 /// is what lets the whole posting be one sum instead of a sum plus a special case.
 pub const FEE_CLASS: &str = "fee";
@@ -79,6 +141,17 @@ pub struct Posting {
     pub fee_count: u64,
     /// The chain's tier multiplier, in basis points.
     pub tier_bp: u32,
+    /// THE SCOPE THE MULTIPLIER WAS RESOLVED AT: the tier that named it, or `None` for a posting
+    /// that fell through to the scope out from the tier.
+    ///
+    /// A booked line that kept only the multiplier could not tell a half-price tier from the
+    /// standard price of a halved card — the same number, two different facts — so the scope travels
+    /// with the figure it explains. It is a NAME and never a price: what a tier is worth is the
+    /// card's and the deployment's, resolved once at the composition root, and a posting that
+    /// carried a rate would be a posting that could disagree with the lookup.
+    ///
+    /// [`TieredAt::scope`] is the word a journal row writes for it.
+    pub tier_scope: Option<String>,
     /// The instant, as a wall clock reads it, in milliseconds. A wall clock DATES a record and
     /// cannot order one, which is why the monotonic reading is beside it rather than instead of it.
     /// This is the field the history is resolved at.
@@ -103,7 +176,7 @@ impl Posting {
         lane: impl Into<String>,
         usage: &Usage,
         fee_count: u64,
-        tier_bp: u32,
+        tiered: &TieredAt,
         arrived_ms: u64,
         arrived_mono: u64,
     ) -> Self {
@@ -115,7 +188,8 @@ impl Posting {
                 .map(|l| Quantity::new(l.class.as_str(), l.quantity))
                 .collect(),
             fee_count,
-            tier_bp,
+            tier_bp: tiered.bp,
+            tier_scope: tiered.tier.clone(),
             arrived_ms,
             arrived_mono,
             estimated: usage.is_estimated(),

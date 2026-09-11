@@ -1622,6 +1622,7 @@ fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
                 downgrade_to: None,
             }],
             child_default: None,
+            tier_bp: None,
         },
     )]);
     // Through the interner the root uses at boot, so the name the slot records is the same

@@ -7,7 +7,7 @@
 use super::*;
 use crate::{
     nano_rate, price, Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass,
-    Posting, RateCard, STANDARD_TIER_BP,
+    Posting, RateCard,
 };
 
 /// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
@@ -137,8 +137,8 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     );
 
     let report = usage(&[(INPUT, 1_000_000)]);
-    let before = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 4_999, 4_999);
-    let after = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 5_000, 5_000);
+    let before = Posting::from_usage("m", &report, 0, &crate::TieredAt::STANDARD, 4_999, 4_999);
+    let after = Posting::from_usage("m", &report, 0, &crate::TieredAt::STANDARD, 5_000, 5_000);
 
     let view = history.current();
     let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");

@@ -564,6 +564,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
         settle(
             &mut durability,
             &who,
+            &busbar_unit_cost::TieredAt::STANDARD,
             arrived,
             &busbar_caps::DurabilityToken::mint(&seal),
             posted,
@@ -746,8 +747,20 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
 
-    let early = priced_amount(&history, Arrived::at(4_999, 1), &token, &report_of(1_000));
-    let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
+    let early = priced_amount(
+        &history,
+        Arrived::at(4_999, 1),
+        &token,
+        &report_of(1_000),
+        &busbar_unit_cost::TieredAt::STANDARD,
+    );
+    let late = priced_amount(
+        &history,
+        Arrived::at(5_000, 2),
+        &token,
+        &report_of(1_000),
+        &busbar_unit_cost::TieredAt::STANDARD,
+    );
 
     assert_eq!(
         early, 1_000_000,
@@ -814,12 +827,24 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
-        priced_amount(&admitted, at, &token, &report_of(1_000)),
+        priced_amount(
+            &admitted,
+            at,
+            &token,
+            &report_of(1_000),
+            &busbar_unit_cost::TieredAt::STANDARD
+        ),
         1_000_000,
         "the pinned snapshot saw an entry appended after the unit was admitted"
     );
     assert_eq!(
-        priced_amount(&next, at, &token, &report_of(1_000)),
+        priced_amount(
+            &next,
+            at,
+            &token,
+            &report_of(1_000),
+            &busbar_unit_cost::TieredAt::STANDARD
+        ),
         100_000_000,
         "the next admission did not see the appended entry"
     );
@@ -842,12 +867,24 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
-        priced_amount(&earlier, at, &token, &report_of(1_000)),
+        priced_amount(
+            &earlier,
+            at,
+            &token,
+            &report_of(1_000),
+            &busbar_unit_cost::TieredAt::STANDARD
+        ),
         1_000_000,
         "a snapshot at seq 0 resolved an entry that was appended after it"
     );
     assert_eq!(
-        priced_amount(&head, at, &token, &report_of(1_000)),
+        priced_amount(
+            &head,
+            at,
+            &token,
+            &report_of(1_000),
+            &busbar_unit_cost::TieredAt::STANDARD
+        ),
         100_000_000,
         "the head snapshot did not resolve the entry appended onto it"
     );
@@ -867,7 +904,13 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
     let history = history_of(&[(0, 1.0)]);
     let at = Arrived::at(4_000, 7);
 
-    let (mut posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
+    let (mut posting, priced) = priced_posting(
+        &history,
+        at,
+        &token,
+        &report_of(1_000),
+        &busbar_unit_cost::TieredAt::STANDARD,
+    );
     let priced = priced.expect("a card in force at the instant prices the report");
     let cached = posting
         .cached
@@ -942,6 +985,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let settled = settle(
         &mut durability,
         &who,
+        &busbar_unit_cost::TieredAt::STANDARD,
         Arrived::at(EPOCH * 1_000, 0),
         &busbar_caps::DurabilityToken::mint(&seal),
         posted,
@@ -1067,6 +1111,7 @@ async fn drive_keeping_the_unit<'n>(
         arrived: Arrived::at(EPOCH * 1_000, 0),
         deferred: Mutex::new(None),
         model: Mutex::new(String::new()),
+        tiered: std::sync::OnceLock::new(),
         walk: Walk::open(arrival),
     };
     let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal);

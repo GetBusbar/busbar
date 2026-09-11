@@ -545,6 +545,12 @@ pub fn price_line(
             PostingOrigin::Internal => 0,
         },
         tier_bp,
+        // THE SCOPE IS NOT THE RE-PRICE'S TO STATE. This posting is built to ask the lookup what a
+        // stored line costs under a snapshot, and it is thrown away on the next line; the scope the
+        // line's own multiplier was resolved at was recorded when it was BOOKED, by the site that
+        // resolved it. Naming one here would be this function inventing a fact about a line it is
+        // only re-reading.
+        tier_scope: None,
         arrived_ms: posting.arrived_ms,
         arrived_mono: 0,
         estimated: false,

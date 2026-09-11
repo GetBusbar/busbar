@@ -8,7 +8,7 @@
 use super::*;
 use crate::{
     price, price_fail_closed, Author, CachedPrice, CardEntryDraft, CurrencyCode, History,
-    HistorySeq, LaneClass, Posting, RateCard, Unpriceable, STANDARD_TIER_BP,
+    HistorySeq, LaneClass, Posting, RateCard, Unpriceable,
 };
 
 /// A card pricing one class on one lane at a named rate.
@@ -263,8 +263,14 @@ fn a_back_dated_entry_is_visible_as_one() {
 fn a_corrupted_cache_never_becomes_the_bill() {
     let history = History::opening(card_at(2.0), 0);
     let view = history.current();
-    let mut posting =
-        Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
+    let mut posting = Posting::from_usage(
+        "m",
+        &usage(&[(INPUT, 1_000)]),
+        0,
+        &crate::TieredAt::STANDARD,
+        0,
+        0,
+    );
 
     let honest = price(&view, &posting, CurrencyCode::USD).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);

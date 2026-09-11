@@ -1333,6 +1333,13 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::kernel::install_card_repricer();
 
+    // THE NODE'S TIER TABLE, from the same `groups:` block the enforcement chain is built from. One
+    // reading of one configuration: the door counts against the group and the fee site prices at the
+    // group's tier, and neither can be looking at a different edit of it. Ungated by any plane
+    // feature, because the tier a caller is on is the root's fact and not one plane's — every leg
+    // resolves through the same site.
+    root::kernel::install_tier_table(cfg.groups.iter().map(|(name, group)| (name, group.tier_bp)));
+
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here

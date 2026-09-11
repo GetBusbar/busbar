@@ -41,6 +41,23 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use busbar_api::ScopeRef;
 
+/// FULL PRICE, in basis points — one times the card, which is what a group that declares no tier
+/// charges at.
+///
+/// Declared here, beside the field it prices, because this is the config layer's own vocabulary:
+/// the admission side and the pricing side each need the same constant for their own arithmetic,
+/// and a config surface that reached elsewhere for a number would be a kind boundary crossed to
+/// spell ten thousand.
+pub const STANDARD_TIER_BP: u32 = 10_000;
+
+/// The largest tier multiplier a configuration may declare: a hundred times the card.
+///
+/// Not a policy about what a deployment may charge — a bound on a MISTAKE. The figure is in basis
+/// points, so a `50` meaning "half" is a two-hundredth of the price; that direction undercharges
+/// silently and no ceiling can catch it. What a ceiling DOES catch is the other one, where a
+/// percentage written as a percentage is corrected a hundredfold in the wrong direction.
+pub const MAX_TIER_BP: u32 = 1_000_000;
+
 /// One `groups:` entry.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +80,23 @@ pub struct GroupCfg {
     /// group sets no template. Does NOT affect enforcement of THIS group — provisioning-time only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_default: Option<ChildDefault>,
+    /// THE TIER THIS GROUP PRICES AT, in basis points of the standard price. `10_000` is the
+    /// standard tier — one times the price, which is what every group has always charged at.
+    ///
+    /// A key binds to at most one group, so a group IS a tier: this is where a deployment says what
+    /// being in that group is worth. The multiplier applies ONCE, over the summed pre-tier amount of
+    /// a posting — its metered lines AND its flat fee line together — which is the divide the
+    /// pricing side has always performed and which this is the first configured source for. One
+    /// tier per enforcement chain: two groups in one chain declaring different multipliers is a BOOT
+    /// refusal, never a request-time one, so no admitted request ever sees a chain whose price is
+    /// ambiguous.
+    ///
+    /// Absent is not `10_000` written out: it is a group that declares no tier, and a posting whose
+    /// principal is in one prices at the scope out from it exactly as it did before this key
+    /// existed. That is what keeps every recorded cell byte-identical for a deployment that
+    /// configures no tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_bp: Option<u32>,
 }
 
 impl Default for GroupCfg {
@@ -75,6 +109,7 @@ impl Default for GroupCfg {
             enabled: true,
             limits: Vec::new(),
             child_default: None,
+            tier_bp: None,
         }
     }
 }

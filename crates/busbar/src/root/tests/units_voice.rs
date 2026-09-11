@@ -1865,7 +1865,12 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
 
     let who = PrincipalId::new("acct:voice");
     let settled = unit
-        .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
+        .settle(
+            &who,
+            &busbar_unit_cost::TieredAt::STANDARD,
+            posted,
+            &busbar_caps::DurabilityToken::mint(&seal),
+        )
         .expect("the memory-buffered journal takes it");
     assert_eq!(
         settled.settlement.released,
@@ -1973,7 +1978,12 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     let settled = unit
-        .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
+        .settle(
+            &who,
+            &busbar_unit_cost::TieredAt::STANDARD,
+            posted,
+            &busbar_caps::DurabilityToken::mint(&seal),
+        )
         .expect("the journal takes both records");
     let note = settled
         .settlement
@@ -2262,6 +2272,7 @@ fn one_turn_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
                 downgrade_to: None,
             }],
             child_default: None,
+            tier_bp: None,
         },
     )]);
     // Through the interner the root uses at boot, so the name the slot records is the same

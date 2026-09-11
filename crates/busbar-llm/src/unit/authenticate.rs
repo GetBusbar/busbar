@@ -34,7 +34,7 @@
 //! `Revoked` refusal respectively, and the table above grows a row; until they do, an empty refusal
 //! set is the honest description of what the plane's authenticate step does.
 
-use busbar_caps::{Authenticate, Authenticated, Decision, PrincipalId, UnitToken};
+use busbar_caps::{Authenticate, Authenticated, Decision, PrincipalId, TierId, UnitToken};
 
 /// The actor id an unkeyed request is attributed to.
 ///
@@ -58,15 +58,31 @@ pub fn authenticate(
 ) -> Decision<Authenticate> {
     Decision::proceed(
         token,
-        // NO TIER ON THIS LEG, and it is a fact about the leg rather than a default. This is the
-        // legacy authenticate step: it reads a governance handle directly and never resolves the
-        // key's binding, so there is no tier here to seal. A leg that sealed one it had not
-        // resolved would be inventing the caller's tier.
         Authenticated::Principal {
             id: principal_id(gov),
-            tier: None,
+            tier: tier_of(gov),
         },
     )
+}
+
+/// WHICH TIER THE CALLER IS ON, read off the SAME enforcement key the identity is.
+///
+/// One read of one binding. The middleware already resolved the key and left it on the context; the
+/// group is a field of that row, beside the id this file's sibling reads out of it. So the tier
+/// costs this step nothing it was not already holding, and there is no second lookup here that
+/// could come to a different answer about which group a key is in — which is the whole reason the
+/// tier is established at the step that settles the identity rather than at the step that prices.
+///
+/// `None` for an unkeyed request (the open front door, governance off) and for a key bound to no
+/// group. Neither is a default tier: both price at the scope out from the tier, which is what every
+/// request in this tree did before this function existed.
+///
+/// It names no price and cannot: what a tier is WORTH is the composition root's, resolved at its one
+/// pricing site against the deployment's configuration. This plane reports which tier, exactly as it
+/// reports quantities against classes it declares and never an amount.
+#[must_use]
+pub fn tier_of(gov: &busbar_api::PlaneRequestCtx) -> Option<TierId> {
+    gov.key().and_then(|key| key.group.clone()).map(TierId::new)
 }
 
 /// The identity the rest of the loop attributes to, as the loop spells identities.
