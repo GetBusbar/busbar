@@ -40,7 +40,12 @@ path = "src/lib.rs"
 [dependencies]
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
-# The object notation the admin wire speaks. Used only in tests, to read the pinned openapi fixture
-# and assert this plane's table against it; the codec itself never parses a whole document; it scans
-# spans by hand (see `scan.rs`) over the arena-free, borrowed body bytes.
+
+[dev-dependencies]
+# The object notation the admin wire speaks, and it is a TEST dependency now. It was a shipped one
+# only because this crate rendered the frozen refusal envelope itself; that rendering is the
+# contract's, and this crate delegates to it. What is left is what the comment always said: reading
+# the pinned openapi fixture and asserting this plane's table against it. The codec itself never
+# parses a whole document -- it scans spans by hand (see `scan.rs`) over the arena-free, borrowed
+# body bytes.
 serde_json = { workspace = true }

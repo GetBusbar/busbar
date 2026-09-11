@@ -187,30 +187,27 @@ pub(crate) fn envelope(reason: RefusalReason) -> String {
 
 /// The 1.5.5 admin error envelope around one code and one message.
 ///
-/// THE SHAPE LIVES HERE AND NOWHERE ELSE. Which code a condition renders under is a different
-/// question for a plane (which maps a `RefusalReason`) than for a composition root (which maps a
-/// `ReasonCode` and pairs it with a status), and those two tables legitimately differ because they
-/// answer different questions — but the two keys, their order, the quoting and the absence of a
-/// trailing byte are one frozen wire shape, and a second `format!` of it somewhere else is a second
-/// chance for the surface a client pinned to change in one place and not the other. So the callers
-/// bring the code and the message, and this brings the envelope.
+/// A DELEGATION, and that is the whole point of it. The two keys, their order, the quoting and the
+/// absence of a trailing byte are ONE frozen wire shape that every kind's face renders a refusal
+/// into, so the shape belongs to the contract every kind is written against, not to this plane:
+/// [`busbar_contract::envelope_of`] is where it lives now, and this function forwards to it. A
+/// second `format!` of a frozen shape is a second chance for the surface a client pinned to change
+/// in one place and not the other; a delegation cannot drift from what it delegates to.
 ///
-/// SERIALIZED, not hand-formatted. It was hand-formatted while the only callers brought closed,
-/// quote-free prose, and for those callers the two are the same bytes. They stop being the same
-/// bytes the moment a message carries text a CALLER wrote — a resource name in a `not_found`, the
-/// human half of a validation complaint — because a `"` in one of those closes the string early and
-/// hands the reader a different document from the one this rendered, with a `code` its parser never
-/// reaches. The escape set is JSON's, not this module's, so the honest way to apply it is to ask the
-/// serializer, which is also what `busbar-core`'s administrative surface has always asked: the two
-/// renderings are byte-identical by construction rather than by a comparison somebody has to keep
-/// re-running.
+/// WHAT STAYS HERE is the part that is genuinely this plane's: WHICH code a `RefusalReason` renders
+/// under. That is a different question for a plane than for a composition root (which maps a
+/// `ReasonCode` and pairs it with a status), and the two tables legitimately differ because they
+/// answer different questions. The ten frozen 1.5.5 admin codes are this plane's vocabulary and are
+/// not a second taxonomy on the contract.
 ///
-/// The key order is `code` then `message` whichever way the map is built — the serializer orders a
-/// map's keys, and `code` sorts before `message` — so the frozen shape does not depend on the order
-/// this function happens to insert them in.
+/// The contract's rendering is SERIALIZED rather than hand-formatted, for the reason this module
+/// documented before it moved: the two are the same bytes only while every caller brings closed,
+/// quote-free prose, and they stop being the same bytes the moment a message carries text a CALLER
+/// wrote. The escape set is JSON's, so the honest way to apply it is to ask the serializer — which
+/// is what the contract does, and what `busbar-core`'s administrative surface has always done.
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
-    serde_json::json!({ "error": { "code": code, "message": message } }).to_string()
+    busbar_contract::envelope_of(code, message)
 }
 
 #[cfg(test)]
