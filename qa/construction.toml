@@ -282,7 +282,7 @@ because = """CHAIN FORM off P3's tip 67. `busbar-kernel` x `caps`, +5, all in th
 [gate.ceiling_raises."cell.288.count"]
 file = "qa/kind-isolation.toml"
 from = 34
-to = 37
+to = 36
 because = """`busbar-unit-egress` x `caps`, +3, all of them import lines. `Delivered` gains the routed body's lease and what the relay counted; both are caps types because BOTH the kernel and this unit have to name them and neither may name the other, which is the one place a shared name can sit. `wire.rs` gains one import, `attempt.rs` widens the one it had, and the cell that measures the widening carries one. The first draft fully-qualified every use and scored nine — naming each type once and then using the symbol is what took it to three. AND THIS LANDING GIVES ONE BACK, 37 -> 36: `Delivered` stopped carrying what the relay made of the body — three fields that were hollow for the length of an upstream call — and what carries it now is this crate's own `Relayed`. The completion is still caps and is still named once, on the value that actually has one."""
 
 [gate.ceiling_raises."cell.289.count"]
