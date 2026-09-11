@@ -140,8 +140,16 @@ RULES = [
         # vocabulary for a gate's own pass/fail state (`plugins.yaml`, `config-stability-gate.sh`,
         # `release-check.sh` all use them correctly), and flagging them would make the gate a nuisance
         # on exactly the files that are most careful. Both are GREEN fixtures below.
+        #
+        # "RED BEFORE GREEN" alone is ALSO ordinary vocabulary here for a regression test's own
+        # provenance: `xtask/tests/gate_ceiling.rs`, `xtask/tests/git_batch.rs` and `scripts/land.sh`
+        # all use the phrase, on its own line, to say a real hang/deadlock/watchdog-timeout is what
+        # made the test fail before the fix — a fact about the BUG the test guards against, not our
+        # process. What IS our process, and stays flagged, is the phrase paired with `TDD` on the
+        # same line: that combination names the development methodology rather than the failure mode,
+        # which is the distinction the `require` below draws.
         [
-            Pat(r"RED[-_ ]before[-_ ]GREEN"),
+            Pat(r"RED[-_ ]before[-_ ]GREEN", require=r"\bTDD\b"),
             Pat(r"\bTDD\b", flags=0),
         ],
     ),
@@ -157,8 +165,13 @@ RULES = [
             Pat(r"\bsurviv(?:ing|ed|es)\s+mutants?\b"),
         ],
         # A file whose SUBJECT is the mutation-testing run may name the tool it runs. Basename-scoped,
-        # so it exempts `scripts/run-mutants-ec2.sh` and nothing that merely mentions it in passing.
-        skip_paths=r"(^|/)[^/]*mutants[^/]*$",
+        # so it exempts `scripts/run-mutants-ec2.sh` and `xtask/tests/gate_mutation_proof.rs` — the
+        # actual bridge test `cargo-mutants` drives — and nothing that merely mentions the tool in
+        # passing. `docs/ci/` is the same exemption at directory scope: it exists to document this
+        # repo's own CI machinery, including the pinned tool (`cargo-mutants`, run by
+        # `scripts/gate-mutants.sh`) a gate wraps — obscuring that name would make the doc
+        # describing the gate less accurate, not more honest.
+        skip_paths=r"(^|/)[^/]*mutants[^/]*$|(^|/)[^/]*mutation_proof[^/]*$|(^|/)docs/ci/",
     ),
     Rule(
         "internal-issue-id",
@@ -542,13 +555,17 @@ def report(hits, allowed, out=sys.stdout):
 # weaker copy of the red one.
 FIXTURES = {
     "tdd-narration": (
-        "// RED-BEFORE-GREEN: the pre-fix branch returned None here, so this assertion failed.\n"
-        "// Proven by TDD before the fix landed.\n",
+        "// RED-BEFORE-GREEN, proven by TDD: the pre-fix branch returned None here, so this\n"
+        "// assertion failed before the fix landed.\n",
         "// The pre-1.5.3 branch returned None here; this asserts the 1.5.3 behaviour instead.\n"
         "fn red_before_green_guard() {}\n"
         "const TDD_NOTE: &str = \"x\";\n"
         "// The registry gate goes RED until every consumer is wired, and its own self-test proves\n"
-        "// the classifier's RED/GREEN discipline before its verdict is trusted.\n",
+        "// the classifier's RED/GREEN discipline before its verdict is trusted.\n"
+        # RED BEFORE GREEN alone, with no TDD on the line, is provenance about a real bug (a hang
+        # this test used to trip before the fix), not development-process narration.
+        "// RED BEFORE GREEN: this hung against a deadlocked pipe before the write-order fix; the\n"
+        "// watchdog below is what a regression back to that shape now trips.\n",
     ),
     "mutation-testing": (
         "// cargo-mutants flags this comparison; the test below kills the `<=` mutant.\n",
@@ -656,13 +673,26 @@ EXTRA_GREEN = {
         "          git config user.name \"Matthew Jackson\"\n"
         "          git config user.email \"matthew@example.com\"\n"
     ),
+    # A doc under docs/ci/ whose SUBJECT is the CI's own mutation-testing job: naming the pinned
+    # tool it wraps is the doc doing its job, not a campaign leaking into unrelated shipped prose.
+    "docs/ci/gate-integrity.md": (
+        "`scripts/gate-mutants.sh` runs `cargo-mutants` (pinned by version, cached) over the gate\n"
+        "sources changed on this branch, with the four gates' own `--selftest` as the test command.\n"
+    ),
+    # A test file whose SUBJECT is the mutation bridge itself (basename carries `mutation`, not
+    # `mutants`): it must name the tool it drives to explain why the file exists at all.
+    "xtask/tests/gate_mutation_proof.rs": (
+        "//! The one runner `cargo-mutants` knows how to drive. Under `cargo-mutants` the binary\n"
+        "//! these commands build is the mutated one, so a stub no self-test case holds down\n"
+        "//! leaves all four green and the mutant SURVIVES.\n"
+    ),
 }
 
 # An allow-marker fixture: the escape hatch must be PROVEN to work, or the first legitimate exception
 # turns into an argument for switching the whole gate off.
 ALLOWED_FIXTURE = (
     "// public-hygiene-lint: allow — this file documents the lint's own vocabulary\n"
-    "// RED-BEFORE-GREEN narration, deliberately quoted.\n"
+    "// RED-BEFORE-GREEN, proven by TDD, narration, deliberately quoted.\n"
 )
 
 
