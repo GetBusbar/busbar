@@ -1419,7 +1419,7 @@ pub fn build_app_from_config(
             // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
             prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
         };
-        crate::plane::registry::plane_decls()
+        crate::plane::registry::plane_behaviours()
             .iter()
             .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
             .collect()
@@ -1438,7 +1438,7 @@ pub fn build_app_from_config(
     // keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and the
     // config that produced it never disagree. With `plane-mcp` off there is no built-in decl, so no
     // slot is inserted and nothing downcasts it (no MCP accessor exists then).
-    if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
+    if let Some((slot_key, runtime_slot)) = crate::plane::registry::behaviour_for_config_section(
         busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
     )
     .and_then(|d| {
@@ -1527,7 +1527,7 @@ pub fn build_app_from_config(
     // With the LLM plane's `build_runtime` still `None` (pre-M3b) no slot is inserted and
     // `App::llm_runtime` reads the empty default — byte-identical to the featureless zero-plane boot.
     if crate::plane::is_fallback(crate::plane::fallback_key()) {
-        if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+        if let Some(f) = crate::plane::registry::behaviour_for(crate::plane::fallback_key())
             .and_then(|d| d.build_runtime)
         {
             let slot = f(
@@ -1575,7 +1575,7 @@ pub fn build_app_from_config(
                 .endpoint_resources
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for_config_section(
+                    crate::plane::registry::behaviour_for_config_section(
                         busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
@@ -1803,7 +1803,7 @@ pub fn build_app_from_config(
                     .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
                     .collect();
             crate::plane::registry::build_dispatch(
-                crate::plane::registry::plane_decls(),
+                &crate::plane::registry::plane_behaviours(),
                 &ref_slots,
             )?
         }),
@@ -1893,7 +1893,7 @@ pub fn build_app_from_config(
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
     // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         if let Some(retain) = decl.retain_verify_gates {
             retain(&app);
         }

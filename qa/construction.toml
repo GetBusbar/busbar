@@ -160,6 +160,101 @@ from = 20
 to = 22
 because = "busbar-contract x control: PlaneDeclaration::admin_noun, the plane-neutral fact the owner ruled into the contract declaration, plus its row in tests/plane_registry.rs. The instance word is the FIELD'S NAME -- the face names no plane, and busbar-contract x plane does not move. Ordinal 52 is the busbar-contract x control row; this tree's raises() cannot key an array-of-tables by identity, and the row carries the same note beside its count."
 
+# ── THE PLANE-DECLARATION MOVE'S CELLS ───────────────────────────────────────────────────────────
+#
+# The plane declaration left busbar-core. Which planes exist is now contract DATA, each shipped plane
+# states its own facts in its pure `busbar-plane-*` half, and the composition root installs both
+# halves in one call. Three cells FALL and are re-pinned by `--write`; eleven RISE and are declared
+# here, one entry each, keyed by the cell's ordinal because that is the only key this tree's
+# `ceilings.rs::raises()` can resolve against an array of tables. Every ordinal was verified by
+# counting `[[cell]]` headers; the one row this commit ADDS is a `[[dep]]`, a different array, so no
+# `[[cell]]` ordinal moves.
+#
+# THE FALLS, for the reader who wants the net: busbar x legacy 98 -> 97 (the root stopped naming
+# core's `install_planes`, its `PlaneDecl` path and its `config_sections`, and picked up three
+# shorter names in their place), busbar-core x api 610 -> 608 (the scope-kind registration left the
+# fold with the fold), busbar-core x plane 3067 -> 3056 (the fold, its readers and their prose, gone).
+#
+# TWO LEGACY-REACH FIGURES, AND BOTH ARE HONEST RATHER THAN FLATTERING. `legacy-reach:busbar_core`
+# stays at 27: the root traded `install_planes` / `plane::registry::PlaneDecl` / `config_sections`
+# for `install_plane_behaviours` / `PlaneRow` / `config_sections_folded`, which is three names for
+# three names. It did NOT fall, and this comment says so rather than letting a re-pin imply it did.
+# `legacy-reach:busbar_substrate` STAYS AT 47 -- and that is the whole point of doing this move
+# without adding a line to the frozen substrate. The earlier cut of this move put the behaviour table
+# in `busbar-substrate` and paid 47 -> 51 for it; keeping the table in the crate that is being
+# deleted costs nothing on either prefix, and the glue dies with `busbar-core`.
+#
+# hold-escapes: `crates/busbar-core/src/plane/registry.rs` is STRUCK from `known_sites`. Core's
+# leaking fold left with the fold, the root's installer stores what the root already owns rather than
+# leaking a projection of it, and the row is back at its standing 2 (busbar-timing's two
+# `AssertUnwindSafe`). The contract's own `leak_fold` site was added with the face.
+
+[gate.ceiling_raises."cell.0.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 123
+because = "busbar x api: crates/busbar/src/root/plane_install.rs registers each plane's scope kinds with the neutral scope-kind wire registry. That was the boot fold's job until the fold became contract data, and the contract cannot name that registry -- so the INSTALL SITE does it, idempotent, the same set, earlier. A MOVE: busbar-core x api falls by the same 2 in the same commit. Ordinal 0 is the busbar x api row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.5.count"]
+file = "qa/kind-isolation.toml"
+from = 1063
+to = 1069
+because = "busbar x control: the root's installer and its agreement test read the declaration's `admin_noun` -- the plane-neutral fact the owner ruled into the declaration, whose instance word is the FIELD'S NAME. the composition root now composes what it mounts on this axis: it pairs each plane's declaration with its behaviour row and installs both in one call. Ordinal 5 is the busbar x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1860
+because = "busbar x plane: the root's new plane_install.rs (the installer, its composition refusals and their proofs) and crates/busbar/tests/plane_declaration_agreement.rs. the composition root now composes what it mounts on this axis: it pairs each plane's declaration with its behaviour row and installs both in one call. The rise is the root spelling the plane axis it owns, in the one crate the architecture allows to; busbar-core x plane falls 3067 -> 3056 in the same commit as the readers move off core's copy. Ordinal 9 is the busbar x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.65.count"]
+file = "qa/kind-isolation.toml"
+from = 5521
+to = 5522
+because = "busbar-core x control: one line: the cfg(test)-only `declaration_of`, which hands a behaviour row's `admin_noun` across to the contract declaration for core's OWN test built-ins. It dies with the row's data fields, in SUB-1. Ordinal 65 is the busbar-core x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.130.count"]
+file = "qa/kind-isolation.toml"
+from = 13
+to = 14
+because = "busbar-plane-a2a x control: one line: `admin_noun` on this plane's own PLANE_DECLARATION, the plane-neutral fact the owner ruled into the contract declaration. The plane states its own facts in its pure half now, which is the whole shape of this landing; the word is the FIELD'S name, not another kind's instance. Ordinal 130 is the busbar-plane-a2a x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.144.count"]
+file = "qa/kind-isolation.toml"
+from = 12
+to = 13
+because = "busbar-plane-llm x control: one line: `admin_noun` on this plane's own PLANE_DECLARATION, the plane-neutral fact the owner ruled into the contract declaration. The plane states its own facts in its pure half now, which is the whole shape of this landing; the word is the FIELD'S name, not another kind's instance. Ordinal 144 is the busbar-plane-llm x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.151.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 11
+because = "busbar-plane-mcp x control: one line: `admin_noun` on this plane's own PLANE_DECLARATION, the plane-neutral fact the owner ruled into the contract declaration. The plane states its own facts in its pure half now, which is the whole shape of this landing; the word is the FIELD'S name, not another kind's instance. Ordinal 151 is the busbar-plane-mcp x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.159.count"]
+file = "qa/kind-isolation.toml"
+from = 13
+to = 14
+because = "busbar-plane-voice x control: one line: `admin_noun` on this plane's own PLANE_DECLARATION, the plane-neutral fact the owner ruled into the contract declaration. The plane states its own facts in its pure half now, which is the whole shape of this landing; the word is the FIELD'S name, not another kind's instance. Ordinal 159 is the busbar-plane-voice x control row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.133.count"]
+file = "qa/kind-isolation.toml"
+from = 17
+to = 18
+because = "busbar-plane-a2a x plane: this plane's pure half names `busbar_contract::plane::PlaneDeclaration` to state its own facts. A plane crate spelling the plane axis's own declaration type is the face this landing exists to create, and it replaces the same facts being spelt for it by busbar-core. Ordinal 133 is the busbar-plane-a2a x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.147.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 6
+because = "busbar-plane-llm x plane: this plane's pure half names `busbar_contract::plane::PlaneDeclaration` to state its own facts. A plane crate spelling the plane axis's own declaration type is the face this landing exists to create, and it replaces the same facts being spelt for it by busbar-core. Ordinal 147 is the busbar-plane-llm x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
+[gate.ceiling_raises."cell.160.count"]
+file = "qa/kind-isolation.toml"
+from = 43
+to = 44
+because = "busbar-plane-voice x plane: this plane's pure half names `busbar_contract::plane::PlaneDeclaration` to state its own facts. A plane crate spelling the plane axis's own declaration type is the face this landing exists to create, and it replaces the same facts being spelt for it by busbar-core. Ordinal 160 is the busbar-plane-voice x plane row -- this tree's raises() cannot key an array of tables by identity, and the row carries the same note beside its count."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -751,7 +846,6 @@ known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
   "crates/busbar-contract/src/plane/registry.rs::leak_fold",
   "crates/busbar-core/src/plane_host/",
-  "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
   "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
   "crates/busbar-substrate/src/plane_host/mod.rs",

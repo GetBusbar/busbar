@@ -2569,7 +2569,7 @@ pub fn resolve(
                 // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
                 // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
                 // deletion-gate refusal below.
-                match crate::plane::registry::plane_decl_for_config_section(
+                match crate::plane::registry::behaviour_for_config_section(
                     busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                 )
                 .and_then(|d| d.lower_endpoint)

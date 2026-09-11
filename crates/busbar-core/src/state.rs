@@ -569,7 +569,7 @@ impl App {
         // substrate-resident EMPTY_VIEW (zero pools/models).
         let key = self.llm_runtime_key;
         match (
-            crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
+            crate::plane::registry::behaviour_for(crate::plane::fallback_key())
                 .and_then(|d| d.viewer),
             self.plane_slot(key),
         ) {
@@ -973,7 +973,7 @@ impl AppHandle {
         // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
         // hook reconciles only `next` (its pool is Arc-carried onto `next` already).
         let prior = self.load();
-        for decl in crate::plane::registry::plane_decls() {
+        for decl in crate::plane::registry::plane_behaviours() {
             if let Some(on_swap) = decl.on_swap {
                 on_swap(
                     &*prior as &dyn busbar_substrate::plane_host::PlaneSlots,
