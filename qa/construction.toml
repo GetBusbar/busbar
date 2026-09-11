@@ -113,12 +113,44 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
-# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
-# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
-# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# The three entries below are ONE FACE, declared once and measured three times, because three rules
+# read the same body of source through three different sums. `busbar_contract::error` is the
+# structured-error face every plugin kind refuses through -- see ARCHITECTURE.md section 1.1, amended
+# in the same commit that raises these. When that commit lands the base carries the new numbers, the
+# rises disappear, and `ceiling-rose` refuses all three as stale, which is the expiry working.
+#
+# The previous entry here (`rules.legacy-reach.prefixes.busbar_substrate.figure`, the one-time
+# 26 -> 47 calibration) expired exactly that way and was struck.
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3688
+because = """FACE: busbar_contract::error -- the ONE structured error every plugin kind answers \
+with (PluginError { class, code, params, developer_message, advisory }), the CLOSED ten-class \
+ErrorClass taxonomy a host keys status, retry, audit severity and client visibility off, the \
+catalog-as-data a plugin ships beside its claims (Catalog: code -> template per locale, read and \
+never called into), and envelope_of, the frozen two-key refusal envelope a client pinned. It is \
+surface a plugin author reads, so it is spent here and declared in ARCHITECTURE.md section 1.1 in \
+this same commit. Measured: scripts/loc-surface.py reads 3688 on this tree against 3478 at the \
+base. It is not additive on balance -- the per-kind StoreError and SecretError enums this replaces \
+are DELETED in the same commit, and the 210 is the net after that deletion."""
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3690
+because = """The same face as gate.surface_ceilings.contract_caps above, measured by the OTHER \
+rule that sums the same two crates: `loc-ceilings:caps-contract` counts production bodies where \
+`surface-ceiling:contract+caps` counts plugin-visible surface, so the two figures differ by two \
+lines and both have to move for one face. busbar-caps 1153 + busbar-contract 2537 = 3690 on this \
+tree against 3480 at the base; the delta is the same 210 lines, counted once here."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23335
+to = 23545
+because = """The same face again, third sum: `loc-ceilings:union` adds the kernel, the caps/contract \
+pair and the unit-* crates, so every line that lands in busbar-contract lands in this total too. \
+kernel 5379 + caps/contract 3690 + unit-* 14476 = 23545 against 23335 at the base -- the same 210 \
+lines and nothing else; neither the kernel nor any unit crate is touched by this commit."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -126,7 +158,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3688
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +379,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3690
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14476
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23335
+union_ceiling = 23545
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

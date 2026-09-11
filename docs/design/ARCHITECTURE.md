@@ -68,13 +68,27 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.7k **of plugin-visible SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  (`--ceiling busbar-contract,busbar-caps=3688`), which the construction gate runs as
+  `surface-ceiling:contract+caps`. **The plugin structured-error face** (owner ruling, 2026-09-11;
+  `busbar_contract::error`) is inside that number and is what the 3478 → 3688 raise buys: every
+  plugin kind's face fails with ONE `PluginError { class, code, params, developer_message,
+  advisory }` — `class` the contract's CLOSED ten-class `ErrorClass` taxonomy the host keys status,
+  retry, audit severity and client visibility off and nothing else; `code` the plugin's own stable
+  namespaced identifier; `params` bounded structured values; `developer_message` the plugin's
+  rendered text for the log only; `advisory` hints — and each plugin ships a CATALOG AS DATA
+  (`Catalog`: code → template per locale, a default locale every code is templated in, a missing
+  locale falling back to the default and never to the developer message) beside its claims, which
+  the host reads at load and never calls into. Beside them sits `envelope_of`, the frozen two-key
+  refusal envelope (`{"error":{"code":…,"message":…}}`) EVERY refusal of the node reaches a client
+  through — a plugin's, the management surface's, the composition root's — rendered here so a shape
+  a client pinned has one definition rather than one per crate that renders it. The per-kind
+  `StoreError` and `SecretError` enums are DELETED, not kept beside it: there is one structured
+  error in the tree. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

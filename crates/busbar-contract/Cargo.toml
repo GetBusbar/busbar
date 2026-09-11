@@ -34,9 +34,12 @@ license = "Apache-2.0"
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
+# `envelope_of` renders the frozen two-key refusal envelope, and the escape set that keeps it ONE
+# document when a message carries text a caller wrote is JSON's rather than this crate's — so the
+# honest way to apply it is to ask the serializer rather than to hand-format the braces here.
+serde_json = { workspace = true }
 futures = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
-# test that asserts what a serialisation does NOT contain has to run a real serializer over it.
-[dev-dependencies]
-serde_json = { workspace = true }
+# test that asserts what a serialisation does NOT contain has to run a real serializer over it —
+# `serde_json` is a real dependency now (see above), so nothing test-only is left to name here.
