@@ -9,6 +9,9 @@
 //! exempt from the suite, one level up. A green row means something only if a red one was reachable.
 
 use super::*;
+// `StoreResult` is this module's alone — the suite's own surface never names it, and an import
+// on the parent would be dead code in every build that is not a test build.
+use busbar_api::StoreResult;
 
 /// A backend with the defect [`assert_usage_survives_reopen_atomically`] exists for: the
 /// BUCKET-level request counters are stored on its per-`(bucket, window, MODEL)` rows, so a delta

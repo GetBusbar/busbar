@@ -40,8 +40,8 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, StoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+    ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
