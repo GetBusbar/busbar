@@ -344,7 +344,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5593
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -352,7 +352,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23679
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -361,7 +361,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 634
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -982,7 +982,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 89
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1015,7 +1015,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+figure = 45
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1193,3 +1193,50 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── declared ceiling raises (gate.ceiling_raises) ────────────────────────────────────────────────
+#
+# THE ONE ROUTE THROUGH `ceiling-rose`, and it is a transaction rather than a hole: each entry names
+# the exact dotted path and BOTH numbers, carries a reason, and expires by itself — once the commit
+# lands, the base carries the new number, the rise is gone, and the entry describes nothing and is
+# refused as stale. See xtask/src/gates/construction/ceilings.rs::raises.
+#
+# THE RAISE BELOW IS ONE MOVE AND ONE FACE, in one landing.
+#
+# The MOVE: the hot-path stage profiler left `busbar-substrate` (202 code lines, deleted there) and
+# arrived in `busbar-kernel` as `profile.rs` (176). It had to move, because the thing it now times is
+# the LOOP, and the loop cannot name the substrate — `busbar-kernel` depends on `busbar-caps`,
+# `busbar-contract` and `busbar-grammar`, and on nothing else in the workspace. Across the tree the
+# profiler SHRANK: 202 lines out, 176 in, plus ~40 lines of per-plane taps deleted from
+# `busbar-llm` and `busbar-core`.
+#
+# The FACE: timing a step is now one of the loop's declared duties (ARCHITECTURE.md section 1.1), so
+# `teller.rs` carries the tap for each of the ten steps and for the transport wait — 28 lines, one
+# wrapper per step call, and no second site anywhere. That face is why the old table could not be
+# kept: it enumerated three stages with NO call site in the tree and nineteen more that named one
+# HTTP egress pipeline's internals, so the report promised an attribution the code never made.
+#
+# The section 1.1 design figures do not move and are not close: the Teller loop's design allowance is
+# 1.5k and `busbar-kernel`'s is 8k. What moves is the RATCHET, which is tighter than both.
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
+from = 606
+to = 634
+because = """The loop times each step it calls: one `profile::on_step` wrapper per step call in \
+`run_unit_async`, `terminal`, the refused door and `under_hold`, plus the transport wait nested \
+inside Route. 28 lines, one tap site, no second copy — the face section 1.1 now declares."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 5379
+to = 5593
+because = """The stage profiler MOVED into the kernel (`profile.rs`, 176 lines) because the table it \
+reports is the loop's own steps and the loop cannot name the substrate it used to live in; plus the \
+28 lines of taps in `teller.rs`. It left 202 lines behind in `busbar-substrate` and took ~40 lines \
+of per-plane taps out of `busbar-llm` and `busbar-core` with it, so the tree is smaller."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23679
+because = """The kernel's own rise, carried into the union arithmetic unchanged: the stage \
+profiler's move into `busbar-kernel` (176 lines) and the loop's per-step taps (28). Neither \
+`busbar-caps`/`busbar-contract` nor the `busbar-unit-*` union moved a line on this landing."""

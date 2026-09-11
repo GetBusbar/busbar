@@ -343,6 +343,22 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **The `BUSBAR_PROFILE` stage report names the steps of the request, and every row it prints is a
+  row something times.** This is a DIAGNOSTIC surface only — no client, config, metric or ledger
+  row changes, and the dump's shape is byte-identical (stderr, every 20 s, `BUSBAR_PROFILE
+  stage=<name> n=<count> mean=<us> p50=<us> p99=<us>` in microseconds, leading spaces marking
+  nesting). What changes is the STAGE NAMES, and it is stated here because an operator with a
+  script that greps for one of them will need to know. 1.5.5's table named an HTTP egress
+  pipeline's internals — `lane_pick`, `client_build`, `cb_auth`, `rb_pre`, `rbf_build` and the rest
+  — so it could only ever describe one plane, and three of its rows (`inbound_parse`,
+  `upstream_send`, `post_send`) had no call site anywhere in the product and were reported as
+  stages that never fire. The table is now the loop's own steps — `arrival`, `decode`,
+  `authenticate`, `verify`, `approve`, `admit`, `route`, `  wait`, `meter`, `audit`, `encode` —
+  where `  wait` is the transport wait nested inside `route`. Every row means the same thing
+  whichever plane served the request, every row is timed from one place, and a step that did not
+  run (a request refused at the door never reaches `route`) is absent rather than zero. Finer
+  attribution inside a plane's own `route` step is the per-method timer table (`BUSBAR_TIMING`),
+  which nests inside these stages and is unchanged.
 
 ### Breaking
 
