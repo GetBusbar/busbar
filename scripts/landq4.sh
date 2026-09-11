@@ -987,6 +987,25 @@ $(lq_oracle_fail_detail "$log")
 EOF
   lq_log "base state: $(printf '%.9s' "$tip") measured — $(lq_base_red_rows "$tip" | grep -c . || true) oracle row(s) red at the tip itself"
 }
+# WHAT THE MEASUREMENT WAS, WRITTEN DOWN BESIDE THE LOG IT CAME FROM. A tip is measured one of two
+# ways — the last wholly-green landed batch, or the base-only replay below — and the comparison is
+# only as good as what those two record. Both write the SAME result: one line per red row at the
+# tip, `<cell id>TAB<class list>TAB<first divergence>`, which is exactly the three columns
+# lq_line_red_is_base_oracle compares a line's reds against. It is also the answer to the first
+# question an operator asks about a NONE:base ("what was the base's red on that row?") without
+# opening a proof log on a fleet box's copy-back.
+lq_base_red_result() { # $1 = tip, $2 = the log that measured it, $3 = where the result goes
+  local tip="${1:-}" log="${2:-}" out="${3:-}" r
+  [ -n "$tip" ] && [ -n "$out" ] || return 1
+  mkdir -p "$(dirname "$out")" 2>/dev/null || true
+  lq_oracle_fail_detail "$log" >"$out" || { : >"$out"; return 1; }
+  lq_log "base state: $(printf '%.9s' "$tip") measured — $(grep -c . "$out" || true) red row(s) at the tip itself, with the divergence each carries (result: $out)"
+  while IFS= read -r r || [ -n "$r" ]; do
+    [ -n "$r" ] || continue
+    lq_log "base state:   $(printf '%s' "$r" | tr "$TAB" ' ')"
+  done <"$out"
+  return 0
+}
 lq_base_red_prune() { # $1 = the tip to keep; every other tip's rows go
   [ -s "$BASERED" ] || return 0
   awk -F"$TAB" -v tp="$1" '$1 == tp' "$BASERED" >"$BASERED.tmp" && mv -f "$BASERED.tmp" "$BASERED"
@@ -1645,8 +1664,13 @@ $chained" "$hosts" || true
   # THE BASE IS LEARNED BEFORE A SINGLE LINE IS SCORED: the per-line verdicts below ask which rows
   # were already red at this tip.
   if [ -f "$dir/base.log" ]; then
-    lq_base_red_learn "$key" "$dir/base.log" \
-      || lq_log "base state: the base replay did not reach the oracle leg; $(printf '%.9s' "$key") stays unmeasured (log: $dir/base.log)"
+    if lq_base_red_learn "$key" "$dir/base.log"; then
+      # THE REPLAY'S RESULT, in the same three columns the comparison uses — so "what the base's
+      # red on that row was" is a file beside the replay's log, not a re-read of the log.
+      lq_base_red_result "$key" "$dir/base.log" "$dir/base.detail" || true
+    else
+      lq_log "base state: the base replay did not reach the oracle leg; $(printf '%.9s' "$key") stays unmeasured (log: $dir/base.log)"
+    fi
   fi
 
   # RECORD, one row per line, keyed by the tip. A sweep whose box never reported leaves NO row —
@@ -2517,6 +2541,32 @@ lq_selftest() {
   BASERED="$savedBR"; L="$savedL9"
 
   # ── THE BASE REPLAY: HOW A TIP GETS MEASURED WHEN NO PROOF HAS ──────────────────────────────
+  # ── AND THE REPLAY'S RESULT SAYS WHAT IT MEASURED, IN THE SAME THREE COLUMNS ─────────────────
+  # A tip is measured one of two ways — the last wholly-green landed batch, or a base-only replay
+  # (a batch with NO hashes, the tip itself, proven on a box the lines did not take). The
+  # comparison above is only as good as what those two write down, so BOTH write the same result
+  # beside the log they read: the row, its class list and its first divergence. An operator asking
+  # "what was the base's red on that row" reads a file rather than a 40 MB proof log, and the
+  # engine's answer and the operator's are the same bytes.
+  echo "landq4 selftest: the base-only replay's result carries the divergence, not just the row"
+  local savedBR2="$BASERED" savedL2="$L"; BASERED="$root/basered2.txt"; : >"$BASERED"; L="$root/basered2-log.txt"; : >"$L"
+  local tipC=cccccccccccccccccccccccccccccccccccccccc
+  lq_base_red_learn "$tipC" "$root/orc1.log"
+  lq_base_red_result "$tipC" "$root/orc1.log" "$root/base.detail"
+  _t "the replay's result is the row AND its divergence" \
+     "$(printf 'boot.refusal|BOOT-P29|validate\teffects.stderr\tadditive: not a superset')" "$(head -1 "$root/base.detail")"
+  _t "  ...one row per red row at the tip"      2 "$(grep -c . "$root/base.detail")"
+  _t "  ...and it is exactly what the comparison reads" \
+     "$(lq_base_red_detail "$tipC" 'boot.refusal|BOOT-P29|validate')" \
+     "$(awk -F"$TAB" '$1 == "boot.refusal|BOOT-P29|validate" { print $2 FS $3 }' "$root/base.detail")"
+  _t "  ...and the queue log names each divergence" 1 \
+     "$(grep -c 'boot.refusal|BOOT-P29|validate effects.stderr additive: not a superset' "$L")"
+  # A GREEN replay measures the empty set, and says so rather than leaving a stale file behind.
+  lq_base_red_result "$tipC" "$root/orcg.log" "$root/base.detail"
+  _t "a green replay's result is empty, not stale" 0 "$(grep -c . "$root/base.detail")"
+  _t "the sweep writes the replay's result down"   1 "$(grep -c 'lq_base_red_result "\$key" "\$dir/base.log"' "$0")"
+  _t "  ...and the landed batch's, in the same shape" 1 "$(grep -c 'lq_base_red_result "\$newtip" "\$batch.log"' "$0")"
+  BASERED="$savedBR2"; L="$savedL2"
   echo "landq4 selftest: the families a sweep must measure at the base"
   _t "a quoted families regex is read off a line" "^(llm|route\\.failover|hooks)[|]" "$(lq_line_families "--prove --tests busbar --families '^(llm|route\\.failover|hooks)[|]' abc1234")"
   _t "a bare one is read too"                     "^(boot)[|]" "$(lq_line_families "--prove --families ^(boot)[|] abc1234")"
@@ -3670,7 +3720,8 @@ while true; do
   # every other tip's rows go with the pre-proof ledger's.
   [ "$newtip" = "$tip" ] || lq_base_red_prune "$newtip"
   if [ "$newtip" != "$tip" ] && [ "${nred:-0}" = 0 ] && [ "${nheld:-0}" = 0 ] && [ -s "$batch.log" ]; then
-    lq_base_red_learn "$newtip" "$batch.log" || true
+    lq_base_red_learn "$newtip" "$batch.log" \
+      && lq_base_red_result "$newtip" "$batch.log" "$batch.base-detail" || true
   fi
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD; tip $(git -C "$W" rev-parse --short HEAD)"
