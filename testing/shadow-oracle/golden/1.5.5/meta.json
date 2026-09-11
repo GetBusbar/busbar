@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 928,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
+  "harness_rev": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -88,6 +88,11 @@
         "from": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5",
         "to": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
         "why": "2026-09-11 ADDITIVE + documentation-only, and it closes a stamp that was ALREADY STALE. Three things moved this tree's revision since the golden was last stamped, and only the third of them is this line's: (a) the two a2a reachability cells and the two accepted-gaps entries that landed with them, which moved the revision d63a7c5e -> 3e039aec and were never re-stamped — so the committed golden claimed a revision nothing in this tree computed, and the skew guard would have refused it against every candidate recorded from here; (b) oracle.pin moving v0.3.7 -> v0.3.14, which is in the harness-rev set by design so a tool upgrade shows up in every recording made after it; (c) one cells.json byte, the `needs_fixture` lifted off llm|responses|responses|request|ok_citation. ONE cell was recorded under the new revision — that one — and it had no bytes before: it was a SKIP. Not one of the 927 existing cells was re-recorded and not one of their bytes changed, which is measured rather than asserted: the aggregate sha256 over the 927 committed cells/*.json is bea3c8aee8a5e9b22c5b3b3de49d6bde1bf39d9efe25e1e121621302cb8830be before this merge and over the same 927 after it."
+      },
+      {
+        "from": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
+        "to": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
+        "why": "2026-09-11 documentation-only: accepted-gaps.json is a harness_rev file, and three of its four entries were rewritten to the reason that is still true after the v0.3.14 pin (the mid-stream entry narrowed to the one leg still open, the billing|key-usage|after-upstream-down defect re-attributed from a dead pre-control to a measured 5/5 nondeterminism in `applied`, and the a2a pair extended with what a recorder run would actually require). No cell was re-recorded and not one cells/*.json byte changed; neither did the ledger, `recorded`, `binary_sha256`, `at`, `version` or `host_triple`. Only which reasons the register states moved."
       }
     ],
     "merges": [
