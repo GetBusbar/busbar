@@ -6718,7 +6718,7 @@ impl Gate for KindIsolationGate {
             self,
             "the crate census collapsed below its floor",
             &[ROW_REGISTRY],
-            all_but(cx, "toml", 4),
+            move || all_but(cx, "toml", 4),
             &["floor", &MIN_MANIFESTS.to_string()],
         ));
         report.push(prove_rows_red(
@@ -6726,7 +6726,7 @@ impl Gate for KindIsolationGate {
             self,
             "the source walk collapsed below its floor",
             &[ROW_VOCAB],
-            all_but(cx, "rs", 4),
+            move || all_but(cx, "rs", 4),
             &["floor", &MIN_SOURCES.to_string()],
         ));
 
@@ -6743,7 +6743,7 @@ impl Gate for KindIsolationGate {
             self,
             "a :vocab scan that reached zero kind-bearing files is refused, not read as clean",
             &[ROW_VOCAB],
-            all_but(cx, "toml", 0),
+            move || all_but(cx, "toml", 0),
             &["0 file(s) reached the vocabulary rule"],
         ));
 
@@ -6780,7 +6780,7 @@ impl Gate for KindIsolationGate {
             self,
             "a tree with no plane crate at all is refused by the step rule",
             &[ROW_STEPS],
-            kind_gone(cx, "busbar-plane-"),
+            move || kind_gone(cx, "busbar-plane-"),
             &["0 plane crate(s)"],
         ));
 
@@ -6790,7 +6790,7 @@ impl Gate for KindIsolationGate {
             self,
             "a tree with no transport crate at all is refused by the registration rule",
             &[ROW_WIRES],
-            kind_gone(cx, "busbar-transport-"),
+            move || kind_gone(cx, "busbar-transport-"),
             &["0 wire(s)"],
         ));
 
@@ -6802,7 +6802,7 @@ impl Gate for KindIsolationGate {
             self,
             "the registration rule's source walk below its floor is refused",
             &[ROW_WIRES],
-            all_but(cx, "rs", 4),
+            move || all_but(cx, "rs", 4),
             &["a scan of no files finds no second registration"],
         ));
 
@@ -8251,7 +8251,7 @@ impl Gate for KindIsolationGate {
             self,
             "no crate of any exemplar kind reached the shape rule is refused, not read as clean",
             &[ROW_SHAPE],
-            kinds_gone(cx, &["plane", "transport", "unit"]),
+            move || kinds_gone(cx, &["plane", "transport", "unit"]),
             &["0 crate(s) reached the shape rule"],
         ));
 
@@ -8262,7 +8262,7 @@ impl Gate for KindIsolationGate {
             self,
             "no crate of any battery kind reached the battery rule is refused, not read as clean",
             &[ROW_TESTKIT],
-            kinds_gone(cx, BATTERY_KINDS),
+            move || kinds_gone(cx, BATTERY_KINDS),
             &["0 crate(s) reached the battery rule"],
         ));
 
@@ -8276,7 +8276,7 @@ impl Gate for KindIsolationGate {
             self,
             "no control surface reached the control-path rule is refused, not read as clean",
             &[ROW_CONTROL],
-            kinds_gone(cx, &["control"]),
+            move || kinds_gone(cx, &["control"]),
             &["0 control crate(s)"],
         ));
 
@@ -8289,7 +8289,7 @@ impl Gate for KindIsolationGate {
             self,
             "the source index below its floor is refused on both ship rows, not read as no findings",
             &[ROW_SHAPE, ROW_TESTKIT],
-            all_but(cx, "rs", 4),
+            move || all_but(cx, "rs", 4),
             &["the source index did not run", &MIN_SOURCES.to_string()],
         ));
 
