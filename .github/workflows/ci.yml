@@ -1533,6 +1533,84 @@ jobs:
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.
         run: cargo test ${{ matrix.tests }} --features "${{ matrix.features }}" --locked
+
+  # ── EVERY H2 RIG SCENARIO THE TREE CARRIES IS RUN ─────────────────────────────────────────────
+  # `qa/teller-steps.json` maps every Teller step of every gating plane to the scenario that proves
+  # it, and `cargo xtask gate teller-steps` asserts each cell NAMES A REAL SCRIPT. It does not run
+  # one. For the two rig planes that meant twelve executable scenarios — `scripts/mcp-subject/h2-*.sh`
+  # and `scripts/a2a-subject/h2-*.sh`, the admission path end to end: authenticate, verify, admit,
+  # route, meter, audit, exit — sitting in the tree, cited by the matrix as proof, and executed by no
+  # job in any workflow. A scenario nothing runs is the same defect as a feature nothing builds: it
+  # rots at the speed the tree moves and the citation goes on reading as proof.
+  #
+  # ONE STEP PER RIG, NAMED. Not a `for f in scripts/*-subject/h2-*.sh` loop: `cargo xtask gate
+  # feature-sets` requires every `h2-*.sh` in the tree to be NAMED by a step here, and a loop names
+  # none of them, so a rig added tomorrow would be silently covered by a glob that never ran it (the
+  # glob expands on the runner, where nobody reads the expansion). A step per scenario is a line a
+  # reviewer can count against the directory listing, and it is what the gate counts too.
+  #
+  # FAST TIER — no `if:` guard. These are the ADMISSION path: the money decisions. A full-tier job on
+  # the integration line is a job that does not run them on the line where the work happens.
+  plane-rigs:
+    name: plane rigs (every H2 gating scenario for mcp and a2a, RUN)
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. The release build dominates
+    # (`teller-steps`, the other job that compiles the binary crate outside `check`'s cache, carries
+    # 30); each rig boots its own throwaway busbar plus its own mock on its own ports and asserts one
+    # step, seconds apiece. 45 leaves cold-cache headroom for the release profile.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The rigs' mock upstream and mock agent are Node; the port picker and the JSON readers are
+      # python3, which the runner image already carries.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: '22' }
+      # SELF-TEST FIRST, then the claim. The matrix is what says these scripts are the proof, so a
+      # matrix that can lie about which script a cell names makes every verdict below meaningless.
+      # `--selftest` plants exactly that (a cell naming a scenario that does not exist) and requires
+      # a red; the bare form then asserts today's matrix over today's tree.
+      - name: Teller-steps self-test (a lying matrix is refused)
+        run: cargo xtask gate teller-steps --selftest
+      - name: Teller-steps matrix (every gating plane x step cell names a real scenario)
+        run: cargo xtask gate teller-steps
+      - name: Build the subject the rigs boot
+        # RELEASE, because that is what `h2-lib.sh` resolves by default
+        # (`${…_SUBJECT_BUSBAR_BIN:-target/release/busbar}`) and a rig that silently graded a debug
+        # binary would be proving the admission path of something nobody ships.
+        run: cargo build -p busbar --release --locked
+      # ── the MCP plane's six ───────────────────────────────────────────────────────────────────
+      - name: mcp.rig authenticate-refusal
+        run: ./scripts/mcp-subject/h2-authenticate-refusal.sh
+      - name: mcp.rig verify-refusal
+        run: ./scripts/mcp-subject/h2-verify-refusal.sh
+      - name: mcp.rig admit-refusal
+        run: ./scripts/mcp-subject/h2-admit-refusal.sh
+      - name: mcp.rig meter-row
+        run: ./scripts/mcp-subject/h2-meter-row.sh
+      - name: mcp.rig audit-record
+        run: ./scripts/mcp-subject/h2-audit-record.sh
+      - name: mcp.rig exit-terminal
+        run: ./scripts/mcp-subject/h2-exit-terminal.sh
+      # ── the A2A plane's six ───────────────────────────────────────────────────────────────────
+      - name: a2a.rig verify-refusal
+        run: ./scripts/a2a-subject/h2-verify-refusal.sh
+      - name: a2a.rig admit-refusal
+        run: ./scripts/a2a-subject/h2-admit-refusal.sh
+      - name: a2a.rig route-failover
+        run: ./scripts/a2a-subject/h2-route-failover.sh
+      - name: a2a.rig meter-row
+        run: ./scripts/a2a-subject/h2-meter-row.sh
+      - name: a2a.rig audit-record
+        run: ./scripts/a2a-subject/h2-audit-record.sh
+      - name: a2a.rig exit-terminal
+        run: ./scripts/a2a-subject/h2-exit-terminal.sh
   # ── WHERE THE OTHER FORTY NON-DEFAULT FEATURES ARE BUILT ──────────────────────────────────────
   # `cargo xtask gate feature-sets` requires EVERY non-default feature in the tree to appear either
   # in the matrix above or on one of these lines, and requires every line to name a feature that
@@ -2743,6 +2821,7 @@ jobs:
       - no-default-features
       - deletion-test-matrix
       - feature-sets
+      - plane-rigs
       - no-plugins-gate
       - txn-guards
       - timing
@@ -2807,6 +2886,7 @@ jobs:
         no-default-features|full|${{ needs.no-default-features.result }}
         deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
         feature-sets|fast|${{ needs.feature-sets.result }}
+        plane-rigs|fast|${{ needs.plane-rigs.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}

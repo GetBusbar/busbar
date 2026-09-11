@@ -64,6 +64,9 @@ pub const ROW_COVERED: &str = "feature-sets:every-non-default-feature-is-built";
 pub const ROW_DECL_LIVE: &str = "feature-sets:declaration-names-a-live-feature";
 pub const ROW_DECL_JOB: &str = "feature-sets:declaration-names-a-live-job";
 pub const ROW_DECL_REASON: &str = "feature-sets:declaration-reason";
+/// The SECOND axis this gate holds: an executable scenario the tree carries and no job runs is the
+/// same defect as a feature no job builds. See [`RIG_DIRS`].
+pub const ROW_RIGS_RUN: &str = "feature-sets:every-h2-rig-is-run-by-a-named-step";
 
 /// The discovery floor under the non-default feature count. Measured at 46 on the 1.6.0 integration
 /// tree. Deliberately NOT overridable from the environment: a floor a caller can lower is a floor a
@@ -76,6 +79,21 @@ pub const FEATURE_FLOOR: usize = 30;
 pub const MATRIX_FLOOR: usize = 1;
 /// The shortest exemption reason that is a reason rather than a shrug. `ci-umbrella`'s number.
 pub const MIN_REASON: usize = 30;
+
+/// WHERE THE EXECUTABLE RIG SCENARIOS LIVE. `qa/teller-steps.json` cites these scripts as the proof
+/// of a Teller step, and `teller-steps` asserts each cell names a real one — but naming a file is
+/// not running it. Twelve of them sat in the tree, cited as proof, executed by no job in any
+/// workflow.
+pub const RIG_DIRS: &[&str] = &["scripts/mcp-subject", "scripts/a2a-subject"];
+/// The prefix that makes a script a scenario.
+pub const RIG_PREFIX: &str = "h2-";
+/// The shared helper every scenario sources. It is a library, not a scenario, and running it
+/// directly asserts nothing — so it is excluded BY NAME rather than by a pattern that could quietly
+/// grow to swallow a real scenario.
+pub const RIG_NOT_A_SCENARIO: &[&str] = &["h2-lib.sh"];
+/// The discovery floor under the rig count. Measured at 12 on the 1.6.0 integration tree. Same
+/// reasoning as every other floor here: a walk that found nothing reports every rig covered.
+pub const RIG_FLOOR: usize = 10;
 
 /// One crate's feature table, reduced to what this gate reads.
 #[derive(Debug, Clone)]
@@ -323,6 +341,75 @@ fn split_features(value: &str) -> impl Iterator<Item = &str> {
     value.split(',').map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Every executable rig scenario the tree carries, as a repo-relative path.
+///
+/// Derived by listing, never by a hand-maintained constant: a scenario added tomorrow is discovered
+/// tomorrow, which is the whole point — a list somebody has to remember to extend is the mechanism
+/// that let twelve of these go unrun.
+fn rig_scripts(cx: &Ctx) -> Vec<String> {
+    let spec = crate::ctx::WalkSpec::new(RIG_DIRS.iter().copied()).ext("sh");
+    let Ok(paths) = cx.list(&spec) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|rel| {
+            let name = rel.rsplit('/').next().unwrap_or(rel);
+            name.starts_with(RIG_PREFIX) && !RIG_NOT_A_SCENARIO.contains(&name)
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The rig row: every scenario is NAMED by a step of the workflow, and enough of them were found for
+/// that to mean anything.
+///
+/// "Named" is a literal path match against the workflow text on purpose. A
+/// `for f in scripts/*-subject/h2-*.sh` loop would run them all and name none, and a glob expands on
+/// the runner where nobody reads the expansion — so a scenario added tomorrow would be covered by a
+/// loop that never listed it and no diff would show the difference. A step per scenario is a line a
+/// reviewer can count against the directory listing.
+fn rig_row(rigs: &[String], workflow: &str) -> Row {
+    if rigs.len() < RIG_FLOOR {
+        return Row::fail(
+            ROW_RIGS_RUN,
+            "the rig scenario walk collapsed below its discovery floor",
+            format!(
+                "only {} scenario(s) were found under {:?} (floor {RIG_FLOOR}). A walk that found \
+                 nothing reports every rig covered.",
+                rigs.len(),
+                RIG_DIRS
+            ),
+        );
+    }
+    let unrun: Vec<&str> = rigs
+        .iter()
+        .filter(|r| !workflow.contains(r.as_str()))
+        .map(String::as_str)
+        .collect();
+    if unrun.is_empty() {
+        Row::pass(
+            ROW_RIGS_RUN,
+            "every H2 rig scenario is run by a step that names it",
+            format!("{} scenario(s) across {:?}", rigs.len(), RIG_DIRS),
+        )
+    } else {
+        Row::fail(
+            ROW_RIGS_RUN,
+            "an executable rig scenario is run by no step of this workflow",
+            format!(
+                "{} — qa/teller-steps.json cites scenarios like these as the proof of a Teller \
+                 step, and `teller-steps` asserts the cell names a real file. Naming a file is not \
+                 running it: add a step to {WORKFLOW} that names this path.",
+                unrun.join(" | ")
+            ),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // the gate
 // ---------------------------------------------------------------------------------------------
@@ -343,7 +430,12 @@ fn unproven(why: &str) -> Verdict {
         Row::fail(ROW_COVERED, "no feature was checked", detail.clone()),
         Row::fail(ROW_DECL_LIVE, "no declaration was checked", detail.clone()),
         Row::fail(ROW_DECL_JOB, "no declaration was checked", detail.clone()),
-        Row::fail(ROW_DECL_REASON, "no declaration was checked", detail),
+        Row::fail(
+            ROW_DECL_REASON,
+            "no declaration was checked",
+            detail.clone(),
+        ),
+        Row::fail(ROW_RIGS_RUN, "no rig scenario was checked", detail),
     ])
 }
 
@@ -361,6 +453,7 @@ impl Gate for FeatureSetsGate {
             ROW_DECL_LIVE.to_string(),
             ROW_DECL_JOB.to_string(),
             ROW_DECL_REASON.to_string(),
+            ROW_RIGS_RUN.to_string(),
         ]
     }
 
@@ -561,6 +654,8 @@ impl Gate for FeatureSetsGate {
             )
         });
 
+        rows.push(rig_row(&rig_scripts(cx), &workflow));
+
         Verdict::of(rows)
     }
 
@@ -702,6 +797,23 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
                 ov
             });
 
+    // A RIG SCENARIO NO STEP RUNS — the second defect this gate is named for, re-planted: the
+    // scenario is in the tree and cited by the matrix as proof, and the step that ran it is gone.
+    let unrun_rig = workflow
+        .as_ref()
+        .zip(rig_scripts(cx).first().cloned())
+        .map(|(t, rig)| {
+            let mut ov = Overlay::new();
+            ov.set(
+                WORKFLOW,
+                t.lines()
+                    .filter(|l| !l.contains(rig.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            ov
+        });
+
     // THE ROOT MANIFEST GONE. Everything below rule 1 is UNPROVEN, never passed.
     let mut no_root = Overlay::new();
     no_root.remove(ROOT_MANIFEST);
@@ -742,6 +854,12 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             rule: ROW_FEATURE_FLOOR,
             naming: vec![format!("floor {FEATURE_FLOOR}")],
             overlay: tiny_workspace,
+        },
+        Plant {
+            label: "a rig scenario the tree carries is run by no step of the workflow",
+            rule: ROW_RIGS_RUN,
+            naming: vec!["run by no step".to_string()],
+            overlay: unrun_rig,
         },
         Plant {
             label: "the root manifest is unreadable",
@@ -857,6 +975,32 @@ mod tests {
                 p.rule
             );
         }
+    }
+
+    /// THE RIG FLOOR BITES ON ITS OWN. It cannot be reached by an overlay -- the scenarios are files
+    /// on disk and a plant that "removes" ten of them is planting the walk, not the tree -- so it is
+    /// driven directly. A walk that found nothing must not report every rig covered.
+    #[test]
+    fn the_rig_floor_refuses_a_walk_that_found_almost_nothing() {
+        let thin: Vec<String> = (0..RIG_FLOOR - 1)
+            .map(|i| format!("scripts/mcp-subject/h2-{i}.sh"))
+            .collect();
+        let row = rig_row(&thin, "");
+        assert_ne!(row.status, crate::ledger::Status::Pass);
+        assert!(
+            row.detail.contains(&format!("floor {RIG_FLOOR}")),
+            "{row:?}"
+        );
+        // ...and a full list whose every member the workflow names is clean.
+        let full: Vec<String> = (0..RIG_FLOOR)
+            .map(|i| format!("scripts/mcp-subject/h2-{i}.sh"))
+            .collect();
+        let text = full.join("\n");
+        assert_eq!(
+            rig_row(&full, &text).status,
+            crate::ledger::Status::Pass,
+            "the floor must not reject a list that is big enough and fully named"
+        );
     }
 
     #[test]

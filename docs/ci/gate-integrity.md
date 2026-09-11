@@ -42,6 +42,18 @@ be promoted.
 | `gate-mutants` | the gates themselves, under mutation | qa, main |
 | `ship-ready` | the ship criterion, as five rows | qa, main |
 
+### Which executable scenario runs on the integration/dev push
+
+Same question, one layer down. `qa/teller-steps.json` maps every Teller step of every gating plane to
+the scenario that proves it, and `cargo xtask gate teller-steps` asserts each cell NAMES A REAL
+SCRIPT. It does not run one. Measured on this line: the twelve `scripts/mcp-subject/h2-*.sh` and
+`scripts/a2a-subject/h2-*.sh` scenarios — the admission path end to end, authenticate through exit —
+were executed by no job of any workflow, while being cited by the matrix as proof.
+
+`ci.yml`'s `plane-rigs` job runs all twelve on every push to `integration/**`, `dev`, `qa` and
+`main`, one named step each, and it is in `ci-umbrella`'s `needs` and RESULTS. `feature-sets`'s
+eighth row holds the membership: a `h2-*.sh` in the tree that no step of `ci.yml` names is red.
+
 ### Which registered gate runs on the integration/dev push
 
 Measured on this line, not assumed. Every gate in `xtask`'s registry is either invoked by
