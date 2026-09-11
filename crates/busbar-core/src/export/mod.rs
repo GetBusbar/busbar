@@ -130,9 +130,9 @@ pub struct RequestLogWebhookInstance {
 pub fn request_log_webhook_instances(cfg: &ExportCfg) -> Vec<RequestLogWebhookInstance> {
     let mut instances = Vec::new();
     for w in &cfg.request_log_webhooks {
-        match crate::observability::validate_webhook_url(Some(w.url.clone())) {
+        match busbar_unit_egress::sink_guard::validate_webhook_url(Some(w.url.clone())) {
             Ok(Some(url)) => instances.push(RequestLogWebhookInstance {
-                display_url: crate::observability::mask_userinfo(&url),
+                display_url: busbar_unit_egress::sink_guard::mask_userinfo(&url),
                 url,
                 auth: w
                     .auth_header

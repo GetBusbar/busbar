@@ -1845,7 +1845,7 @@ pub(crate) struct FileSettings {
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
-/// `observability.otlp_url`. The tracer/log-init machinery in `crate::observability` is
+/// `observability.otlp_url`. The tracer/log-init machinery the composition root installs is
 /// unchanged; only the config surface that drives it moved.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
