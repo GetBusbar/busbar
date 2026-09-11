@@ -324,6 +324,53 @@ battery PLUS a whole serial one (1234.97 s, of which 201.01 s is the battery). T
 the battery: the wall clock from process start to the first printed case, which is the point the
 report resolves.
 
+**AND THE PLANT MAY BE THE CLOSURE THAT MAKES ONE.** Rust evaluates arguments where they are
+written, so an `Overlay` handed to `prove_*` is built ON THE PUSH THREAD. For most cases that is a
+map insert; for the dear ones it is a walk of `crates/`, a census, or a re-rendered registry. Solve
+`kind-isolation`'s two readings (1621 s serial, 201 s across eighteen cores) for the serial fraction
+and it was about 117 s — after the gate runs were spread across the box, more than half of what was
+left was plants being built one after another. A plant is therefore either an `Overlay` or a
+`FnOnce() -> Overlay`, both through one `Plant` trait (possible because `Overlay` is a local type
+and cannot implement `FnOnce`), and the closure is called on the worker. `kind-isolation`'s eleven
+whole-tree plants took it from ~117 s to **22.7 s measured**, and what is left is one shared
+derivation — `kind_landing`, 22.4 s of the 22.7 s — which is not a plant but an input four cases
+share.
+
+**WHAT A BATTERY SPENT PLANTING IS PRINTED BESIDE ITS TOTAL**, with the case that owns most of it.
+The serial fraction is the only part a bigger box cannot help, so it is the only part worth
+rewriting, and a number beats a guess.
+
+**THE BUDGET'S RULER IS READ ON THE WORKER, BETWEEN CASES.** Cases are summed by wall clock, so
+taking N at once inflates every one of them while a ruler measured once on one thread does not —
+`construction` measured 68 063 units against a budget of 50 000 at `--jobs 18` and was under it at
+`--jobs 1`, on the same tree, in the same minute. That is a gate red because the box was busy, the
+exact failure work units exist to avoid. Calibrating N arithmetic threads up front does not fix it
+(`structure-lint`'s ruler moved 11.0 → 11.6 ms while its cases went 85.7 → 152.5 s: arithmetic on a
+quiet box is not what a battery does to a box). So each worker reads the ruler immediately after the
+case it took, with the others still scanning, and each case is scored against the ruler read on its
+own thread:
+
+| jobs | summed | units | vs serial |
+|---|---|---|---|
+| 1 | 96.0 s | 7934 | 1.00× |
+| 4 | 99.1 s | 7980 | 1.01× |
+| 8 | 116.5 s | 8330 | 1.05× |
+| 12 | 142.1 s | 9323 | 1.18× |
+| 18 | 179.7 s | 11367 | 1.43× |
+
+Flat to eight — up to there the box really is doing the same work — and past it the residual is
+oversubscription this ruler still cannot see.
+
+**A BATTERY IS NOT A GATE RUN, AND GETS ITS OWN WALL-CLOCK CEILING.** `kind-isolation`'s self-test
+drives the whole gate 176 times; five minutes is right for "this gate has stopped making progress"
+and plainly wrong for 176 of them. A serial `construction --selftest` takes 617 s and was being
+killed at 300 s with `construction hung`; a `kind-isolation --selftest` was killed at 300.03 s on a
+contended box. It was never new — a battery always ran under that watchdog — it was MASKED for one
+commit by the lazy report (the work happened after the watchdog was dropped), and resolving under
+the watchdog put it back. `DEFAULT_SELFTEST_CEILING` is thirty minutes, still a ceiling and not a
+budget; `XTASK_SELFTEST_CEILING_SECS` moves it, `0` disables it, a gate-specific
+`XTASK_GATE_CEILING_SECS_<GATE>` still wins, and an unreadable value is the default.
+
 **IT COMPOSES WITH SHARDING RATHER THAN COMPETING WITH IT.** The two axes are orthogonal and stay
 that way: a shard partitions the CASE LIST across boxes, and `--jobs` takes one box's share across
 that box's cores. A shard selector filters what is pushed; `--jobs` decides how what was pushed is
