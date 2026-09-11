@@ -2183,7 +2183,7 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
             || {
                 read.path()
                     .and_then(busbar_plane_streams::claims::dialect_for)
-                    .and_then(dialect::dialect)
+                    .and_then(busbar_plane_streams::dialect::dialect)
                     .unwrap_or(&busbar_plane_streams_openai::OPENAI_REALTIME)
             },
             |binding| binding.dialect,

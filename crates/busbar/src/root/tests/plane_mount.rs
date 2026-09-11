@@ -218,11 +218,18 @@ async fn any_declared_duplex_surface_is_mountable_on_the_one_listener() {
         "the node has ONE bound address, and the sessions below arrive on it"
     );
     for mount in SURFACE.bindings[0].mounts {
-        let (binding, bar) =
+        let (binding, bar, captures) =
             busbar_contract::transport::surface::duplex_binding_at(&SURFACE, "ws", mount)
                 .expect("the wire addresses the route the plane declared");
         assert_eq!(binding.name, BINDING);
         assert_eq!(bar, Bar::Credential);
+        // THE THIRD VALUE IS THE MOUNT'S OWN CAPTURES, and this plane's mount is a literal path
+        // with no `{capture}` in it — so the honest answer is none. Asserted rather than dropped
+        // because a mount that silently grew a capture would change what facts a session publishes.
+        assert!(
+            captures.is_empty(),
+            "a literal mount declares no capture, got {captures:?}"
+        );
     }
 }
 
