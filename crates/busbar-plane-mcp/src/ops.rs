@@ -269,6 +269,29 @@ pub fn is_known_notification(method: &str) -> bool {
     NOTIFICATIONS.contains(&method)
 }
 
+/// **THE SETTLED ANSWER'S DOCUMENT, where this plane's FACE carries it.**
+///
+/// `refusal_of` on the root's mcp leg answers `None` for a unit that SETTLED, with the note that a
+/// settled unit's bytes are its answer and the plane writes them. This is the read by which the
+/// plane does: the bare result document for one class, when that class's answer is a fact about the
+/// deployment's vocabulary rather than about the request. The caller frames it — the identifier is
+/// the one the decode step recorded and the envelope is
+/// [`crate::jsonrpc::success`]'s — so what is returned here is deliberately NOT an envelope.
+///
+/// `None` is the ordinary answer and it is not a gap. A class whose answer depends on the caller's
+/// grant, on a catalogue snapshot or on an upstream cannot have its bytes on a static table, and
+/// saying so by returning nothing is what keeps this from becoming a second place a real answer
+/// could be computed. Exactly one of the thirteen client-sent classes is on the table today, and it
+/// is the one whose answer this protocol fixes: `completion/complete` offers no completions, which
+/// is a property of what this node is rather than of who asked.
+#[must_use]
+pub fn settled_document(op: OpClassId) -> Option<&'static [u8]> {
+    match op {
+        OP_COMPLETION => Some(busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY.as_bytes()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/ops.rs"]
 mod tests;
