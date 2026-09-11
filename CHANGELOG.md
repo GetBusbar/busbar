@@ -556,6 +556,18 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 
 ### Added
 
+- **The mid-stream upstream failure is in the shadow oracle's corpus, on all six dialects.** A
+  stream that fails PART WAY THROUGH — N good events delivered to the caller, then the upstream
+  dies — is the one LLM arm no recorded cell had ever seen: every other `upstream_down` cell
+  refuses before a byte is sent. Six cells
+  (`llm|<dialect>|<dialect>|request|stream_upstream_error`) now pin it against the published 1.5.5,
+  recorded four times across two hosts and byte-identical on all four. What they freeze is the
+  money answer: 1.5.5 draws the request (`usage delta {"requests": 1}`) and bills NO tokens and no
+  spend for the text it had already delivered when the stream died. These rows existed before but
+  were named gaps with nothing behind them, and the last time they were driven they recorded a
+  BUFFERED success under the name of the failure — so the corpus now answers the question the cell
+  asks instead of agreeing with itself.
+
 - **Two 64-bit ARM Linux builds, and the default one got faster.** The default arm64 artifacts
   (the `busbar-aarch64-unknown-linux-gnu.tar.gz` download and the multi-arch image's `linux/arm64`
   entry) now target ARMv8.1+, using the CPU's native atomic instructions instead of the baseline's

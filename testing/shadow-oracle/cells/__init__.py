@@ -233,39 +233,39 @@ def llm_cells(inv: dict) -> list[dict]:
     # error looks like on the wire, the door decides what the client is told, and the diagonal
     # covers all six of each.
     #
-    # THESE SIX STAY `needs_fixture`, AND BOTH OF THE TWO REASONS ARE NOW CLOSED. The mock grew the
-    # `stream-error` verb for all six dialects and has shipped it since v0.3.7. What was missing was
-    # the RECORDER, and it was missing twice, on the two INDEPENDENT legs of the cell:
+    # THESE SIX ARE RECORDED, AND WHAT THEY RECORD IS NOT WHAT THEY USED TO. Both of the two
+    # reasons they were `needs_fixture` are closed, and the recording that closed them was taken
+    # rather than assumed. The mock grew the `stream-error` verb for all six dialects and has
+    # shipped it since v0.3.7; what was missing was the RECORDER, on two INDEPENDENT legs:
     #   1. CLOSED BY v0.3.14. record.sh's built-in `llm` driver wrote the mock control for exactly
     #      ONE outcome — `if [ "$outcome" = upstream_down ]` -> "down" — so a cell's own
     #      `mock_control` was dead on this driver and the mock answered the HEALTHY 200. v0.3.14
     #      routes all three drivers and the `pre` runner through one `cell_mock_control()`, so the
     #      cell's own `{"stream-error": true}` now lands.
-    #   2. CLOSED BY v0.3.15, and this comment said otherwise until the pin that closed it was
-    #      already in the tree — which is the failure mode the whole file is about, one level up.
-    #      build-request.py decided streaming by `oc in ("ok_stream", "ok_stream_array")`, two
-    #      outcome NAMES; `stream_upstream_error` is in neither, so the request was BUFFERED, and
-    #      the mock's own rule is that `stream-error` "only ever applies to a request that IS a
-    #      stream" (every dialect arm reads `if want_stream and stream_error`), because answering a
-    #      buffered request with half a stream is a shape no upstream produces. v0.3.15 replaced the
-    #      name test with `declares_stream(cell)`, which reads the CELL most specific first: an
-    #      explicit `stream` field, then a `mock_control` only a stream can reach
-    #      (`STREAM_ONLY_CONTROLS`, which is exactly `stream-error`), then the two names LAST.
-    #      MEASURED at the pin this tree carries, by driving the pinned build-request.py directly on
-    #      one of these six cells: `declares_stream` -> True, and the emitted request is
-    #      `"stream": true` both as the request's own field and inside the body.
-    # SO WHAT IS OWED IS A RECORDER RUN, NOT A TOOL RELEASE — and that is the only reason they are
-    # still `needs_fixture`. A run has to happen on an IDLE box (these cells snapshot metrics either
-    # side of a stream, so a loaded host is how a timing sample becomes part of the record), and the
-    # same is true of the two a2a reachability cells. Until one lands, what the six would freeze is
-    # unmeasured on this pin: MEASURED ON THE OLD ONE (2026-09-10, published 1.5.5,
-    # aarch64-apple-darwin, when leg 2 was open) they recorded
-    # `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a buffered
-    # `chat.completion` body — the happy path frozen under the name of the failure, and frozen
-    # identically on the candidate, so the cell proved the opposite of what it claims. That number is
-    # kept here as the reason the rows were not lifted blind, not as a claim about this pin.
-    # The behaviour itself is pinned TODAY by the `llm.stream|<dialect>|<fault>` family above, in the
-    # half of the harness busbar owns.
+    #   2. CLOSED BY v0.3.15. build-request.py decided streaming by `oc in ("ok_stream",
+    #      "ok_stream_array")`, two outcome NAMES; `stream_upstream_error` is in neither, so the
+    #      request was BUFFERED, and the mock's own rule is that `stream-error` "only ever applies
+    #      to a request that IS a stream" (every dialect arm reads `if want_stream and
+    #      stream_error`), because answering a buffered request with half a stream is a shape no
+    #      upstream produces. v0.3.15 replaced the name test with `declares_stream(cell)`, which
+    #      reads the CELL most specific first: an explicit `stream` field, then a `mock_control`
+    #      only a stream can reach (`STREAM_ONLY_CONTROLS`, exactly `stream-error`), then the two
+    #      names LAST.
+    # RECORDED 2026-09-11 from the published 1.5.5 (84bde0a0…, x86_64-unknown-linux-gnu) on an idle
+    # on-demand fleet box, TWICE, and all six cells/*.json are byte-identical across the two runs —
+    # which is the bar, because a cell that is a coin flip freezes a coin flip into the golden.
+    # WHAT MOVED, AND IT IS THE WHOLE POINT OF THE CELL. Measured on 2026-09-10 with leg 2 still
+    # open, these six recorded `usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a BUFFERED
+    # `chat.completion` body — the happy path frozen under the name of the failure, reproduced
+    # identically by any candidate, so the cell proved the opposite of what it claims. They now
+    # record a real STREAM that breaks: `content-type: text/event-stream` (bedrock on its own
+    # `application/vnd.amazon.eventstream` framing), a first good frame carrying the answer text,
+    # then the upstream's failure translated into the door's own dialect — and
+    # `usage Δ {"requests":1}`, with NO `spend_cents` and NO `tokens` key at all. The egress body
+    # carries `"stream": true`. So the money answer this family was minted to pin is now in the
+    # corpus: 1.5.5 charges the visit and bills nothing for the tokens it had already delivered when
+    # the stream died. The `llm.stream|<dialect>|<fault>` family above pins the same arm from inside
+    # the half of the harness busbar owns; these six pin it from the caller's side of the door.
     # gemini is not in the inventory's `streams` set (its streaming is the path-selected
     # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
     # failure is exactly as unrecorded there — so it gets the cell too: all six backends.
@@ -273,7 +273,6 @@ def llm_cells(inv: dict) -> list[dict]:
         if d not in streams and d != "gemini":
             continue
         c = cell(d, d, *STREAM_UPSTREAM_ERROR_OUTCOME)
-        c["needs_fixture"] = True
         c["mock_control"] = {"stream-error": True}
         cells.append(c)
     # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. The cachePoint cell below is still
@@ -367,9 +366,19 @@ def protocol_cells(inv: dict) -> list[dict]:
     # the guard with --accept-family-shrink or deleting the two cells. Restating them here, byte for
     # byte, is the only answer that keeps the corpus and its generator the same object.
     #
-    # They stay `needs_fixture`: no recorder drives this plane (see accepted-gaps.json), and the
-    # expected bytes each is owed are written into its own `why` so the recording that eventually
-    # lands can be checked against what was claimed before it was made.
+    # They stay `needs_fixture`, and the reason CHANGED on 2026-09-11: it is no longer "no recorder
+    # drives this plane". v0.3.15 deleted the by-plane skip and added plane-subject.sh, which drives
+    # the product's own conformance rig, and v0.3.16 made it ASK the rig — so `undecodable-body` is
+    # one of the 13 cells the pinned tool returns a real scenario for. What stops it is OLDER and
+    # larger: THE GOLDEN'S BINARY HAS NO A2A PLANE. Driven against the published 1.5.5 the rig's
+    # h2_boot does not fail on a port or a fixture — the binary refuses the configuration, listing
+    # its own accepted top-level keys, and `agents` is not among them. A cell recorded from a binary
+    # with no plane records nothing about the plane, so the before/after pair this change is owed has
+    # no BEFORE to take. `no-agents-configured` is blocked a second time, independently: ps_rig_can
+    # asks h2_boot's argument guard for a `lane-absent` configuration and the guard names only
+    # `probe|none`, and `none` is the other configuration that was wearing this row's name. Both are
+    # named in accepted-gaps.json; the expected bytes each is owed stay in its own `why` so a
+    # recording that eventually lands can be checked against what was claimed before it was made.
     cells.extend([
         {"id": "a2a|jsonrpc|client|client|SendMessage|no-agents-configured",
          "plane": "a2a", "method": "SendMessage", "originator": "client", "role": "client",
@@ -1520,13 +1529,18 @@ def llm_stream_fault_cells(inv: dict) -> list[dict]:
     moving into it (L2 MOVE 7); a first activation on the money path cannot be proven byte-identical
     against a recording that stops at the first byte.
 
-    WHY NOT THE SIX `llm|<d>|<d>|request|stream_upstream_error` ROWS BELOW. Because under the PINNED
-    recorder they cannot record what they name, and they fail green. See the comment on those rows:
-    record.sh's llm driver writes the mock control for `upstream_down` and nothing else, and
-    build-request.py only streams for `ok_stream`/`ok_stream_array`. Measured against 1.5.5 with
-    their `needs_fixture` lifted, all six recorded the BUFFERED HAPPY PATH -- `usage delta
-    {"requests":1,"spend_cents":250,"tokens":18}` -- under the name of the failure. Those rows stay a
-    NAMED gap owed to a tool release; this family pins the behaviour in the half busbar owns.
+    WHY THIS FAMILY STILL EXISTS NOW THAT THE SIX `llm|<d>|<d>|request|stream_upstream_error` ROWS
+    BELOW ARE RECORDED. It was written when they could not record what they name and failed green:
+    record.sh's llm driver wrote the mock control for `upstream_down` and nothing else, and
+    build-request.py only streamed for `ok_stream`/`ok_stream_array`, so measured against 1.5.5 with
+    their `needs_fixture` lifted all six recorded the BUFFERED HAPPY PATH -- `usage delta
+    {"requests":1,"spend_cents":250,"tokens":18}` -- under the name of the failure. v0.3.14 and
+    v0.3.15 closed both legs and those six are recordings now (`text/event-stream`, a good frame then
+    the fault, `usage delta {"requests":1}`). The two families do NOT collapse into one: those six
+    are the CALLER'S side of the door, one response per dialect, and this family is the half busbar
+    owns -- the ledger row, the second usage read after a settle pause (a late or doubled posting),
+    what the breaker recorded, and what busbar sent upstream, across both fault SHAPES (in-band error
+    and socket cut) where the recorded six carry only the in-band one.
 
     DIALECT-DRIVEN, NEVER DIALECT-SPECIFIC. The list comes from the field inventory, exactly as
     llm_cells' does, so a seventh backend is a new cell the day it is inventoried and nobody is in

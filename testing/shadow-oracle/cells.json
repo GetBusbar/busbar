@@ -19127,7 +19127,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }
@@ -19463,7 +19462,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }
@@ -19786,7 +19784,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }
@@ -20122,7 +20119,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }
@@ -20445,7 +20441,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }
@@ -20783,7 +20778,6 @@
       "op": "chat",
       "outcome": "stream_upstream_error",
       "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
-      "needs_fixture": true,
       "mock_control": {
         "stream-error": true
       }

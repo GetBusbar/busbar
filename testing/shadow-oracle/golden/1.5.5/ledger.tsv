@@ -1208,7 +1208,7 @@ llm|anthropic|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,
 llm|anthropic|anthropic|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|anthropic|anthropic|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|anthropic|anthropic|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
-llm|anthropic|anthropic|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|anthropic|anthropic|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|anthropic|anthropic|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|anthropic|anthropic|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|anthropic|bedrock|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1235,7 +1235,7 @@ llm|bedrock|bedrock|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spe
 llm|bedrock|bedrock|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget_total	PASS	HTTP 400; usage Δ {}	
-llm|bedrock|bedrock|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|bedrock|bedrock|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|bedrock|bedrock|request|unauthenticated	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|bedrock|cohere|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1261,7 +1261,7 @@ llm|cohere|cohere|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend
 llm|cohere|cohere|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|cohere|cohere|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|cohere|cohere|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
-llm|cohere|cohere|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|cohere|cohere|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|cohere|cohere|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|cohere|cohere|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|cohere|gemini|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1287,7 +1287,7 @@ llm|gemini|gemini|request|ok_stream_array	PASS	HTTP 200; usage Δ {"requests":1,
 llm|gemini|gemini|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|gemini|gemini|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|gemini|gemini|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
-llm|gemini|gemini|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|gemini|gemini|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|gemini|gemini|request|unauthenticated	PASS	HTTP 400; usage Δ {}	
 llm|gemini|gemini|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|gemini|openai|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1313,7 +1313,7 @@ llm|openai|openai|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend
 llm|openai|openai|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|openai|openai|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|openai|openai|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
-llm|openai|openai|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|openai|openai|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|openai|openai|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|openai|openai|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|openai|responses|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1340,7 +1340,7 @@ llm|responses|responses|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,
 llm|responses|responses|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|responses|responses|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|responses|responses|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
-llm|responses|responses|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
+llm|responses|responses|request|stream_upstream_error	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|responses|responses|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|responses|responses|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
