@@ -654,9 +654,10 @@ pub fn mount(
                     credential: presented_credential(&parts.headers),
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
+                    // The one production wall clock, read once and read here — the same source
+                    // every other reading on this path already names, not a second
+                    // implementation of "what time is it" beside it.
+                    at: busbar_substrate::store::now(),
                     unit,
                 };
                 // AND THE EXIT PATH RUNS EVEN WHERE THERE IS NO EXIT. A client that hangs up while

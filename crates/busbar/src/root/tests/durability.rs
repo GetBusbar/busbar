@@ -918,3 +918,21 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
 }
+
+/// The composition root's audit clock is the node's one production wall clock
+/// (`busbar_substrate::store::now`), not a second implementation of the same idea sitting beside it
+/// in the root. Two independent `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)`
+/// readings agree almost always and diverge exactly when one of them changes how it rounds,
+/// converts, or handles a clock that reads before the epoch — which is the day this test is what
+/// catches it instead of a mismatched audit record.
+#[test]
+fn root_wall_clock_reads_the_one_composition_clock() {
+    let before = busbar_substrate::store::now();
+    let stamped = RootWallClock.now();
+    let after = busbar_substrate::store::now();
+    assert!(
+        stamped >= before && stamped <= after,
+        "RootWallClock stamp {stamped} is not bracketed by the composition clock's own reading \
+         [{before}, {after}] -- a second clock implementation would not be"
+    );
+}

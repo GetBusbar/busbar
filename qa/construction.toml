@@ -825,6 +825,73 @@ max_zero_stamps = 0
 # the ABI can drop the derive.
 max_default_derives = 1
 
+# HALF THREE: a second wall-clock IMPLEMENTATION beside the one this node has. A plane or root file
+# that names `busbar-substrate` at all (so the one source is one `use` away) and reads
+# `SystemTime::now()` for itself anyway is not saving a dependency edge, it is a second clock that
+# agrees with the first by coincidence rather than by construction — which is exactly the shape the
+# admin mount and the root's own audit clock were found in: `SystemTime::now().duration_since(UNIX_
+# EPOCH).map_or(0, ...)`, hand-rolled beside `busbar_substrate::store::now`, the same computation
+# with the same silent-zero convention, under a different name. A crate that CANNOT name
+# `busbar-substrate` — the dependency edge runs the other way, or is forbidden outright by the
+# crate's own split (`busbar-unit-*`, the pluggable store backends, the transport/codec halves kept
+# pure on purpose) — has no second source to be a duplicate OF, so it is not in scope here at all;
+# nor is a `SystemTime::now()` read whose result is entropy or an RNG seed rather than a time value,
+# because a jitter draw is not a clock reading that could disagree with one.
+second_clock_scope_globs = ["crates/*/src/*"]
+# Each entry is one site, exempt with its own argument. Nothing may be added without one.
+#
+#  - `busbar-substrate-values/src/lib.rs` IS the one source: `now`/`now_ms` are its definition, not
+#    a second reading of something else.
+#  - `busbar-substrate-values/src/breaker.rs`'s `parse_retry_after` reads the clock to turn a
+#    provider's HTTP-date `Retry-After` into a relative delay. The result is never stored — it is
+#    consumed in the same expression — so there is no stamp for a second clock to disagree with;
+#    and the crate the one source is DEFINED in has no more-canonical clock to defer to.
+#  - `busbar-substrate/src/egress_auth/bearer_token.rs`'s `now_epoch` is the egress-auth module TS-1
+#    froze (unreachable-by-construction `timestamp_epoch: 0` sibling, this row's HALF ONE exemption
+#    above). It backs a token-cache TTL comparison, not a persisted stamp, and carries its own
+#    bracket-tested regression cell already.
+#  - `busbar-unit-breaker/src/clock.rs`'s `unix_time_secs` is documented, in the file itself, as
+#    existing ONLY so the composition root has one spelling of the value this UNIT crate's `now: u64`
+#    parameters expect — the unit-no-wall-clock rule is why nothing in the crate may call it, and
+#    nothing in the tree does (a unit crate may not name `busbar-substrate` to delegate to it either).
+#  - `busbar-llm-codec/src/openai_chat/handler.rs`'s multipart-boundary fallback and
+#    `busbar-core/src/state.rs`'s `seed_request_id_counter` both read the clock ONLY as an entropy
+#    fallback for a CSPRNG failure — RNG seed bytes, not a time value — and `busbar-llm-codec` is
+#    split from `busbar-substrate` on purpose (its own manifest: "nothing here may take a
+#    busbar-substrate edge back").
+#  - `busbar-core/src/store/in_memory/breaker.rs`'s `time_seed` is the same RNG-seed shape, gated
+#    `#[cfg(not(test))]` beside the crate's own `now_for_test()` on the test side.
+#  - `busbar-transport-http/src/lib.rs`'s `now_unix_secs` (a `Retry-After` computed at answer time)
+#    and `store-memory` / `store-example-plugin`'s backend-local `now()` are all in crates with no
+#    `busbar-substrate` dependency at all — the pluggable store backends and the transport plugin are
+#    kept dependency-free of it by their own manifests, so there is no one-source edge to have taken.
+#  - `plugin-loader/src/store_adapter.rs`'s `system_clock` is the same shape: the crate does not
+#    depend on `busbar-substrate`, and the clock is injected as a `Fn() -> u64` the caller may
+#    override — the real one is the fallback for a caller that named none.
+second_clock_exempt_sites = [
+  "crates/busbar-substrate-values/src/lib.rs:96",
+  "crates/busbar-substrate-values/src/lib.rs:107",
+  "crates/busbar-substrate-values/src/breaker.rs:158",
+  "crates/busbar-substrate/src/egress_auth/bearer_token.rs:248",
+  "crates/busbar-unit-breaker/src/clock.rs:15",
+  "crates/busbar-llm-codec/src/openai_chat/handler.rs:312",
+  "crates/busbar-core/src/state.rs:865",
+  "crates/busbar-core/src/store/in_memory/breaker.rs:521",
+  "crates/busbar-transport-http/src/lib.rs:480",
+  "crates/store-memory/src/lib.rs:48",
+  "crates/store-example-plugin/src/ram.rs:47",
+  "crates/plugin-loader/src/store_adapter.rs:181",
+]
+# Ratchet, not zero: two sites read `SystemTime::now()` directly from a crate that already names
+# `busbar-substrate` for other reasons (so the one source is reachable) without going through it —
+# `busbar-voice`'s sweep-deadline clock and `busbar-core/src/oauth_as/plane.rs`'s expiry sweep. Both
+# are ephemeral (never written to a stamped field the HALF ONE/TWO checks above would catch) rather
+# than the silent-zero-on-failure shape the admin mount and the root's audit clock were fixed for in
+# this same pass, so they are counted rather than fixed here: fixing them is a change to a plane and
+# to busbar-core this pass did not otherwise touch. Tightens to 0 when they route through
+# `busbar_substrate::store::now` like every other reading on their own path already does.
+max_second_clocks = 2
+
 # ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
 [rules.unit-no-finding-ids]
 why = """A comment that cites a finding identifier or a bare document section number tells a reader \
