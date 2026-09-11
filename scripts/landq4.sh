@@ -48,6 +48,8 @@ QLOCK="${LANDQ_QUEUE_LOCK:-$W/target/gate/land-queue.lock}"
 # three waiting for that nothing. It goes back to the FRONT of the next sweep's list rather than to
 # the back of a queue of a hundred and twenty.
 FRONT="${LANDQ_PREPROVE_FRONT:-$W/target/gate/preprove-front.txt}"
+# THE ORACLE ROWS THAT ARE RED AT THE TIP ITSELF, keyed by the tip, one row per cell id.
+BASERED="${LANDQ_BASE_RED:-$W/target/gate/oracle-base-red.txt}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
@@ -907,6 +909,128 @@ lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live l
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH ORACLE ROWS ARE RED AT THE TIP — SO A LINE IS NEVER RED FOR THE BASE'S REDS (rule 2c, for
+# the oracle the way lq_base_state_red already does it for the construction gate's ceilings)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# Measured 2026-09-10: line 12 (a base probe) and line 8 of the sweep were parked RED on
+# `boot.refusal|BOOT-P29|validate`, `boot.refusal|BOOT-P30|validate` and
+# `neutrality|routes|admin-openapi-paths` — rows that are RED AT THE BASE, on the tip, with no picks
+# on the tree at all. The engine wrote RED, not NONE:base, because its base-state predicate only
+# knows the construction gate's own words for a figure that rose ("at the base", "ROSE since the
+# base"); a shadow-oracle row says no such thing, it just FAILs. So the engine keeps the SET.
+#
+# A LINE'S OWN RED IS A ROW THAT WAS PASS AT THE BASE. That is the whole rule, and it is why the
+# set has to be MEASURED rather than declared: a standing list would have to be edited by hand
+# every time the tip moved, and the rows that go red at a tip are exactly the rows the queue is
+# there to repair.
+#
+# TWO WAYS A TIP GETS MEASURED, and neither is a guess:
+#   * THE LAST LANDED PROOF. A batch that landed green at a new tip proved the oracle families it
+#     names ON THAT TIP; its own log is the measurement, read as the tree moves.
+#   * A BASE-ONLY REPLAY (lq_base_red_replay), when the tip moved and no such proof exists: one box
+#     is handed a batch line with NO HASHES — `--prove --families <the sweep's union>` — which is
+#     the tip itself, proven. It takes a box only after every line in the sweep has one.
+# Until a tip is measured, NOTHING is laundered: an unmeasured tip scores an oracle red RED.
+lq_oracle_fail_rows() { # $1 = a proof log; prints the cell ids of its FAIL rows, in order, deduped
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  sed -n "s/^\( *| \)\{0,1\}\([^$TAB]*\)${TAB}FAIL${TAB}.*/\2/p" "$1" | awk '!seen[$0]++'
+}
+# THE ORACLE LEG REPORTED — green or red. A proof that died before it (a failed build, a lost box)
+# measures nothing, and recording "measured, no red rows" from it would launder every base red at
+# that tip. This is the precondition on every learn.
+lq_oracle_leg_ran() { # $1 = log
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qE 'land[.]sh: (oracle green on:|RED — oracle (families|shard))' "$1" 2>/dev/null
+}
+lq_base_red_known() { # $1 = tip; 0 when this tip has been measured
+  [ -s "$BASERED" ] || return 1
+  awk -F"$TAB" -v tp="$1" '$1 == tp && $2 == "#measured" { f = 1 } END { exit !f }' "$BASERED"
+}
+lq_base_red_rows() { # $1 = tip; prints the cell ids red at it
+  [ -s "$BASERED" ] || return 0
+  awk -F"$TAB" -v tp="$1" '$1 == tp && $2 != "#measured" { print $2 }' "$BASERED"
+}
+lq_base_red_learn() { # $1 = tip, $2 = the log of a proof taken AT that tip
+  local tip="$1" log="$2" r
+  [ -n "$tip" ] || return 1
+  lq_oracle_leg_ran "$log" || return 1
+  lq_base_red_known "$tip" && return 0
+  mkdir -p "$(dirname "$BASERED")"
+  printf '%s%s#measured\n' "$tip" "$TAB" >>"$BASERED"
+  while IFS= read -r r; do [ -n "$r" ] && printf '%s%s%s\n' "$tip" "$TAB" "$r" >>"$BASERED"; done <<EOF
+$(lq_oracle_fail_rows "$log")
+EOF
+  lq_log "base state: $(printf '%.9s' "$tip") measured — $(lq_base_red_rows "$tip" | grep -c . || true) oracle row(s) red at the tip itself"
+}
+lq_base_red_prune() { # $1 = the tip to keep; every other tip's rows go
+  [ -s "$BASERED" ] || return 0
+  awk -F"$TAB" -v tp="$1" '$1 == tp' "$BASERED" >"$BASERED.tmp" && mv -f "$BASERED.tmp" "$BASERED"
+}
+# THE LINE'S RED IS THE BASE'S when the tip is measured, the log's reds are the ORACLE's alone, it
+# has at least one failing row, and EVERY failing row was already red at the tip. One row that was
+# PASS at the base is the line's own red and the whole line is RED.
+lq_line_red_is_base_oracle() { # $1 = tip, $2 = log
+  local tip="${1:-}" log="${2:-}" r n=0
+  [ -n "$tip" ] && [ -n "$log" ] && [ -f "$log" ] || return 1
+  lq_base_red_known "$tip" || return 1
+  # Every red this proof declared must be an oracle red: a test, a clippy or a gate red at the same
+  # time is the line's, whatever the oracle rows say.
+  grep -E 'land[.]sh: RED — ' "$log" 2>/dev/null | grep -qvE 'land[.]sh: RED — oracle' && return 1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    n=$((n + 1))
+    lq_base_red_rows "$tip" | grep -qxF -- "$r" || return 1
+  done <<EOF
+$(lq_oracle_fail_rows "$log")
+EOF
+  [ "$n" -gt 0 ]
+}
+# The families a sweep's lines ask the oracle for — the set a base replay has to measure, and no
+# more: a replay of every family would cost the box a full recording to answer a question nobody
+# in this sweep asked.
+lq_line_families() { # $1 = queue line; prints its --families value, unquoted
+  local l="${1:-}" v
+  v="$(printf '%s' "$l" | sed -n "s/.*--families[[:space:]]*'\([^']*\)'.*/\1/p" | head -1)"
+  [ -n "$v" ] || v="$(printf '%s' "$l" | sed -n 's/.*--families[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$v" ] || v="$(printf '%s\n' "$l" | awk '{for (i = 1; i <= NF; i++) if ($i == "--families") { print $(i + 1); exit }}')"
+  printf '%s\n' "$v"
+}
+# ONE BOX, NO PICKS, THE TIP ITSELF. The batch line carries `--prove` and `--families` and NO
+# HASHES, which land.sh accepts (a line with no hashes AND no --prove is the one it refuses) and
+# which proves exactly the tree the sweep's lines are being judged against. It takes its box AFTER
+# every line in the sweep has one, so measuring the base never costs a line its proof.
+lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4 = the sweep's lines, $5 = hosts already taken
+  local tree="$1" dir="$2" key="$3" taken="$5" fams h="" try=0
+  fams="$(printf '%s\n' "$4" | lq_families_union)"
+  [ -n "$fams" ] || { lq_log "base state: no line in this sweep asks the oracle for a family; there is nothing to measure at $(printf '%.9s' "$key")"; return 1; }
+  while [ "$try" -lt 4 ]; do
+    try=$((try + 1))
+    h="$( fleet_pick_host )" || h=""
+    [ -n "$h" ] || break
+    case " $taken " in *" $h "*) h="" ;; *) break ;; esac
+  done
+  [ -n "$h" ] || { lq_log "base state: no free box for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red stays RED"; return 1; }
+  printf -- '--prove --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
+  lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams"
+  (
+    env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$h" --batch "$dir/base.batch" \
+      >"$dir/base.log" 2>&1
+    echo $? >"$dir/base.rc"
+  ) &
+  return 0
+}
+lq_families_union() { # lines on stdin; prints their families joined by |, deduped, or nothing
+  local l f out=""
+  while IFS= read -r l || [ -n "$l" ]; do
+    [ -n "$l" ] || continue
+    f="$(lq_line_families "$l")"; [ -n "$f" ] || continue
+    case "|$out|" in *"|$f|"*) continue ;; esac
+    out="${out:+$out|}$f"
+  done
+  printf '%s\n' "$out"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE FRONT OF THE PRE-PROOF LIST: the lines the FLEET failed, not the lines that failed
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # The sweep hands boxes to the first N disjoint live lines in queue order. A line whose box was
@@ -1018,7 +1142,7 @@ lq_box_gone() { # $1 = rc, $2 = log; 0 when the BOX went away rather than the pr
   grep -qE "$LQ_BOX_GONE_RE" "$2" 2>/dev/null
 }
 
-lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line outcome file (optional)
+lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line outcome file (optional), $4 = the tip the proof was taken at (optional)
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
   if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
@@ -1027,6 +1151,8 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   if lq_box_gone "$1" "$2"; then echo "NONE:box"; return 0; fi
   if lq_harness_gave_up "$2"; then echo "NONE:harness"; return 0; fi
   if lq_base_state_red "$2"; then echo "NONE:base"; return 0; fi
+  # …and the same rule for the oracle's rows, which have no sentence of their own to say it with.
+  if lq_line_red_is_base_oracle "${4:-}" "$2"; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
 }
@@ -1047,7 +1173,7 @@ lq_outcome_row() { # $1 = per-line outcome file, $2 = the line text; prints that
 # and is recorded NONE (rule 2g), never parked; and with no row at all the transport's rules stand
 # exactly as they do for an unchained sweep — with NO whole-file outcome, because a union that is
 # red in the predecessor says nothing about the dependent either way.
-lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $4 = the CHAINED line's own text
+lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $4 = the CHAINED line's own text, $5 = the tip (optional)
   local own; own="$(lq_outcome_row "${3:-}" "$4")"
   case "$own" in
     GREEN) echo GREEN; return 0 ;;
@@ -1057,6 +1183,7 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
     RED|RED-*) if lq_box_gone "$1" "$2"; then echo "NONE:box"
                elif lq_harness_gave_up "$2"; then echo "NONE:harness"
                elif lq_base_state_red "$2"; then echo "NONE:base"
+               elif lq_line_red_is_base_oracle "${5:-}" "$2"; then echo "NONE:base"
                else echo RED; fi; return 0 ;;
     # HELD is land.sh's word for "a line BEFORE this one in the unit was the culprit, so this line
     # was never proven": its picks went back out with its predecessor's and nothing was judged. It
@@ -1064,7 +1191,7 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
     # recorded as nothing at all, and the next sweep may hand it a box again.
     HELD) echo "NONE:held"; return 0 ;;
   esac
-  lq_preproof_verdict "$1" "$2" ""
+  lq_preproof_verdict "$1" "$2" "" "${5:-}"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1462,8 +1589,22 @@ EOF
   done <<EOF
 $chained
 EOF
+  # ── AND THE BASE ITSELF, IF NOTHING HAS MEASURED THIS TIP ────────────────────────────────────
+  # Only when it is unknown, only on a box the lines above did not take, and never when the sweep
+  # has no oracle family to ask about. An unmeasured tip is not an emergency — it only means an
+  # oracle red is scored RED, which is what the engine did before this existed.
+  if [ "${LANDQ_BASE_REPLAY:-1}" = 1 ]; then
+    lq_base_red_known "$key" || lq_base_red_replay "$tree" "$dir" "$key" "$lines
+$chained" "$hosts" || true
+  fi
   lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$key")"
   wait
+  # THE BASE IS LEARNED BEFORE A SINGLE LINE IS SCORED: the per-line verdicts below ask which rows
+  # were already red at this tip.
+  if [ -f "$dir/base.log" ]; then
+    lq_base_red_learn "$key" "$dir/base.log" \
+      || lq_log "base state: the base replay did not reach the oracle leg; $(printf '%.9s' "$key") stays unmeasured (log: $dir/base.log)"
+  fi
 
   # RECORD, one row per line, keyed by the tip. A sweep whose box never reported leaves NO row —
   # which reads as NONE, which is "not pre-proven", which is exactly true. A missing verdict is
@@ -1479,7 +1620,7 @@ EOF
     local rkey
     if [ -f "$dir/line-$j.chainkey" ]; then
       rkey="$(cat "$dir/line-$j.chainkey")"; text="$(cat "$dir/line-$j.chaintext")"
-      case "$(lq_chain_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result" "$text")" in
+      case "$(lq_chain_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result" "$text" "$key")" in
         GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$rkey" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"
                lq_log "pre-prove: chained GREEN for $(printf '%.70s' "$text") at $rkey" ;;
         RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$rkey" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
@@ -1487,7 +1628,7 @@ EOF
       esac
       j=$((j + 1)); continue
     fi
-    case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result")" in
+    case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result" "$key")" in
       GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       NONE:box)  lq_front_add "$text"
@@ -2159,7 +2300,7 @@ lq_selftest() {
   _t "  ...as is ROSE since the base"          "NONE:base" "$(lq_preproof_verdict 1 "$root/pl2.log")"
   _t "the tree-moved guard's red is NONE (re-queued)" "NONE:moved" "$(lq_preproof_verdict 2 "$root/pl3.log")"
   _t "an ordinary red is RED"                  RED "$(lq_preproof_verdict 1 "$root/pl4.log")"
-  _t "the sweep records through the verdict"   1 "$(grep -c 'case "\$(lq_preproof_verdict "\$rc" "\$dir/line-\$j.log" "\$dir/line-\$j.batch.result")" in' "$0")"
+  _t "the sweep records through the verdict"   1 "$(grep -c 'case "\$(lq_preproof_verdict "\$rc" "\$dir/line-\$j.log" "\$dir/line-\$j.batch.result" "\$key")" in' "$0")"
 
   # T0-D5, THE DEFECT ITSELF, in the shape it really arrived: the box's per-line outcome says GREEN,
   # the log's last two lines are the pruned landed-ref warning and the exit, no tree-moved guard is
@@ -2242,6 +2383,65 @@ lq_selftest() {
   _t "a vanished box outranks it (nothing ran)"  "NONE:box" "$(lq_preproof_verdict 75 "$root/plharn.log")"
   _t "the sweep re-queues a NONE:harness line to the front" 1 "$(grep -c 'NONE:harness)  lq_front_add "\$text"' "$0")"
 
+  # ── THE ORACLE ROWS THAT ARE RED AT THE TIP ITSELF ───────────────────────────────────────────
+  # Measured 2026-09-10: line 12 (a base probe) and line 8 were parked RED on
+  # `boot.refusal|BOOT-P29|validate`, `boot.refusal|BOOT-P30|validate` and
+  # `neutrality|routes|admin-openapi-paths` — rows that are RED AT THE BASE, on the tip, with no
+  # picks at all. The engine recorded RED rather than NONE:base because its base-state predicate
+  # only knows the construction gate's CEILING words ("at the base", "ROSE since the base"); an
+  # oracle row has no such sentence. A line's own red is a row that was PASS at the base.
+  echo "landq4 selftest: an oracle row red at the tip is the BASE's red, not the line's"
+  local savedBR="$BASERED" savedL9="$L"; BASERED="$root/basered.txt"; : >"$BASERED"; L="$root/basered-log.txt"; : >"$L"
+  local tipA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa tipB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  printf '  | boot.refusal|BOOT-P29|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >"$root/orc1.log"
+  printf '  | boot.refusal|BOOT-P30|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >>"$root/orc1.log"
+  printf '  | boot.warning|BOOT-W21|boot\tPASS\t\t\n' >>"$root/orc1.log"
+  printf 'land.sh: RED — oracle families: ^(boot)[|] (see /home/ubuntu/x.report)\n' >>"$root/orc1.log"
+  _t "the FAIL rows are read out of a log"     "$(printf 'boot.refusal|BOOT-P29|validate\nboot.refusal|BOOT-P30|validate')" "$(lq_oracle_fail_rows "$root/orc1.log")"
+  _t "a PASS row is not one of them"           0 "$(lq_oracle_fail_rows "$root/orc1.log" | grep -c 'BOOT-W21')"
+  _t "nothing is known about a tip yet"        1 "$(lq_base_red_known "$tipA"; echo $?)"
+  lq_base_red_learn "$tipA" "$root/orc1.log"
+  _t "  ...and known once a proof at that tip has been read" 0 "$(lq_base_red_known "$tipA"; echo $?)"
+  _t "  ...with the rows it measured"          2 "$(lq_base_red_rows "$tipA" | grep -c .)"
+  _t "  ...keyed by the tip, so another tip knows nothing" 1 "$(lq_base_red_known "$tipB"; echo $?)"
+  _t "a proof that never reached the oracle leg teaches nothing" 1 \
+     "$(printf 'land.sh: RED — tests failed in: busbar-core\n' >"$root/orc0.log"; lq_base_red_learn "$tipB" "$root/orc0.log"; lq_base_red_known "$tipB"; echo $?)"
+  # A GREEN proof at a tip is a MEASUREMENT TOO: it says the base has no red oracle row at all.
+  printf 'land.sh: oracle green on: ^(boot)[|] (240 owed, 3 merged shard(s))\n' >"$root/orcg.log"
+  lq_base_red_learn "$tipB" "$root/orcg.log"
+  _t "a green oracle leg measures the empty set" 0 "$(lq_base_red_known "$tipB"; echo $?)"
+  _t "  ...which is empty"                       0 "$(lq_base_red_rows "$tipB" | grep -c .)"
+  # THE RULE ITSELF.
+  _t "a line whose only red rows are the base's is NONE:base" "NONE:base" "$(lq_preproof_verdict 1 "$root/orc1.log" "" "$tipA")"
+  printf '  | boot.refusal|BOOT-P31|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >"$root/orc2.log"
+  printf 'land.sh: RED — oracle families: ^(boot)[|]\n' >>"$root/orc2.log"
+  _t "  ...and ONE row that was PASS at the base is the line's own RED" RED "$(lq_preproof_verdict 1 "$root/orc2.log" "" "$tipA")"
+  cat "$root/orc1.log" >"$root/orc3.log"
+  printf 'land.sh: RED — tests failed in: busbar-core\n' >>"$root/orc3.log"
+  _t "a red that is not the oracle's is still RED"  RED "$(lq_preproof_verdict 1 "$root/orc3.log" "" "$tipA")"
+  _t "an unmeasured tip cannot launder anything"    RED "$(lq_preproof_verdict 1 "$root/orc1.log" "" "$tipB")"
+  _t "  ...and with no tip at all the rule does not run" RED "$(lq_preproof_verdict 1 "$root/orc1.log")"
+  _t "a GREEN outcome still outranks it"            GREEN "$(lq_preproof_verdict 1 "$root/orc1.log" "$root/pl5.batch.result" "$tipA")"
+  # The ledger is keyed by the tip and pruned with it, exactly like the pre-proof ledger.
+  _t "a tip move drops every other tip's rows"  1 "$(lq_base_red_prune "$tipA"; lq_base_red_known "$tipB"; echo $?)"
+  _t "  ...and keeps the tip it was pruned to"   0 "$(lq_base_red_known "$tipA"; echo $?)"
+  BASERED="$savedBR"; L="$savedL9"
+
+  # ── THE BASE REPLAY: HOW A TIP GETS MEASURED WHEN NO PROOF HAS ──────────────────────────────
+  echo "landq4 selftest: the families a sweep must measure at the base"
+  _t "a quoted families regex is read off a line" "^(llm|route\\.failover|hooks)[|]" "$(lq_line_families "--prove --tests busbar --families '^(llm|route\\.failover|hooks)[|]' abc1234")"
+  _t "a bare one is read too"                     "^(boot)[|]" "$(lq_line_families "--prove --families ^(boot)[|] abc1234")"
+  _t "a line with none says nothing"              "" "$(lq_line_families "--prove --tests xtask abc1234")"
+  _t "the sweep's families are the union"         "^(boot)[|]|^(documented)[|]" \
+     "$(printf -- '--prove --families ^(boot)[|] aaa1111\n--prove --tests xtask bbb2222\n--prove --families ^(documented)[|] ccc3333\n' | lq_families_union)"
+  _t "  ...deduplicated"                          "^(boot)[|]" \
+     "$(printf -- '--prove --families ^(boot)[|] aaa1111\n--prove --families ^(boot)[|] bbb2222\n' | lq_families_union)"
+  _t "  ...and empty when no line names one"      "" "$(printf -- '--prove --tests xtask aaa1111\n' | lq_families_union)"
+  _t "the sweep measures the base when nothing else has" 1 "$(grep -c 'lq_base_red_known "\$key" || lq_base_red_replay' "$0")"
+  _t "  ...on a box the lines did not take"       1 "$(grep -c '^lq_base_red_[r]eplay() {' "$0")"
+  _t "  ...and the batch it sends has NO hashes"  1 "$(grep -c "printf -- '--prove --famil[i]es %s.n' " "$0")"
+  _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
+
   echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
   local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"
   _t "the stamp parses on this host"           1 "$( [ -n "$now0" ] && echo 1 || echo 0)"
@@ -2265,7 +2465,8 @@ lq_selftest() {
   lq_stage_engine
   _t "land.run.sh's root is the runner's tree, not the scratch" "here=$W" "$(bash "$W/target/gate/land.run.sh")"
   _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
-  _t "the sweep launches the staged engine, live lines and chains alike" 2 \
+  # THREE: the live lines, the chained holds, and the base replay that measures the tip itself.
+  _t "the sweep launches the staged engine, live lines, chains and the base alike" 3 \
      "$(grep -c 'bash "\$tree/target/gate/land.run.sh" --preprove' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
   # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
@@ -3263,6 +3464,11 @@ while true; do
   # BACKGROUNDED, so the next sweep runs while the box proves. It is the same foreground wait either
   # way — `wait` is what `rc` is read from — but between the launch and the wait the runner has the
   # idle boxes and a tip to spend them on.
+  # THE BATCH'S OWN SEGMENT OF THE LOG. The landing streams into $L as it always has (an operator
+  # tails it); the byte offset is remembered here so the segment this batch wrote can be cut out
+  # afterwards and read as the measurement of the tip it produced. No redirection changes: a pipe
+  # into `tee` would make `wait` read TEE's exit status and every batch would be green.
+  lq_l0="$(wc -c <"$L" 2>/dev/null || echo 0)"; case "$lq_l0" in ''|*[!0-9]*) lq_l0=0 ;; esac
   bash "$W/target/gate/land.run.sh" --batch "$batch" >>"$L" 2>&1 &
   bpid=$!
   if [ -n "$predicted" ]; then
@@ -3281,6 +3487,7 @@ while true; do
 
   # THE LANDING LINES, NOT THE FILE'S LINES: a batch file carries `#UNIT <k>` markers now, and
   # land.sh writes one outcome per LANDING line (see lq_batch_lines).
+  tail -c +"$((lq_l0 + 1))" "$L" >"$batch.log" 2>/dev/null || : >"$batch.log"
   want="$(lq_batch_lines "$batch" | grep -c . || true)"
   got="$(grep -c . "$batch.result" 2>/dev/null || true)"
   if [ "${got:-0}" != "${want:-0}" ]; then
@@ -3345,6 +3552,14 @@ while true; do
   # a row taken at the OLD tip goes whichever shape it has: a chained green is evidence about the
   # tree it was taken on, and the tip moving is exactly what makes it not evidence any more.
   [ "$newtip" = "$tip" ] || { awk -F"$TAB" -v tip="$newtip" '$2 == tip || index($2, tip "@") == 1' "$PP" >"$PP.tmp" 2>/dev/null; mv "$PP.tmp" "$PP"; }
+  # THE LANDED PROOF IS THE NEXT SWEEP'S MEASUREMENT OF THE BASE (see lq_base_red_learn). Only a
+  # batch that was WHOLLY green counts: a batch with a red line in it recorded the oracle over a
+  # tree carrying that line's picks, and the rows it failed on may be the picks'. The tip moved, so
+  # every other tip's rows go with the pre-proof ledger's.
+  [ "$newtip" = "$tip" ] || lq_base_red_prune "$newtip"
+  if [ "$newtip" != "$tip" ] && [ "${nred:-0}" = 0 ] && [ "${nheld:-0}" = 0 ] && [ -s "$batch.log" ]; then
+    lq_base_red_learn "$newtip" "$batch.log" || true
+  fi
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD; tip $(git -C "$W" rev-parse --short HEAD)"
   rm -f "$batch" "$batch.chain" "$red"
