@@ -1484,7 +1484,7 @@ fn cell_row(krate: &str, kind: &str, count: &str) -> String {
 
 /// Every RED case this row owes, and the GREEN one it is measured against.
 pub fn selftest<'a>(
-    cx: &Ctx,
+    cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
@@ -1522,7 +1522,7 @@ pub fn selftest<'a>(
         gate,
         "a :matrix scan below its floor is refused, not read as a matrix of zeroes",
         &[ROW_MATRIX],
-        all_but_scanned(cx, 4),
+        move || all_but_scanned(cx, 4),
         &["below the floor of", &MIN_SCANNED.to_string()],
     ));
 
