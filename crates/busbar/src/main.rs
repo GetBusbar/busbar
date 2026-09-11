@@ -684,10 +684,13 @@ fn register_protocols() {
 // shape `register_protocols` has, minus its unconditional `extend`.
 #[allow(clippy::vec_init_then_push)]
 fn register_planes() {
-    #[allow(unused_mut)]
     // ONE NAME FOR THE REGISTRY, used by both installs below. Two spellings of one module is two
     // chances for the declarations and what they meter to be installed against different registries.
     use busbar_core::plane::registry as planes;
+    // With every plane compiled out (`--no-default-features`) nothing below pushes, so the binding
+    // needs no `mut` in that build. The allow belongs HERE, on the binding it is about: on the
+    // `use` above it named a lint that statement cannot emit, which is a lint of its own.
+    #[allow(unused_mut)]
     let mut installed: Vec<&'static planes::PlaneDecl> = Vec::new();
     // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
