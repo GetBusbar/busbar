@@ -5762,3 +5762,50 @@ fn a_per_unit_rate_for_a_dimension_no_plane_declares_is_refused_by_name() {
         "and the refusal points at the declared name the operator meant: {named}"
     );
 }
+
+/// **THE SHADOWED PLANE AMOUNT IS A BOOT REFUSAL THAT NAMES BOTH CELLS.**
+///
+/// The section's own cells prove WHICH pairs collide; this proves the node stops for them, through
+/// the real validator, and that the refusal names the plane cell, the narrower cell and the edit
+/// that resolves it. A deployment that wrote a fee at `tariff.plane.llm` and anything at all at
+/// `tariff.pool.p` was booting and charging that fee to every llm unit except the ones in `p` —
+/// which is not the schedule it wrote, and which no surface reported.
+#[test]
+fn a_plane_amount_shadowed_by_a_narrower_scope_stops_the_boot() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.tariff = Some(
+        serde_yaml::from_str(
+            "plane:\n  llm:\n    transaction_fee:\n      flat_cents: 7\npool:\n  p:\n    \
+             minimum_cents: 1\n",
+        )
+        .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    let named = errors
+        .iter()
+        .find(|e| e.contains("tariff.plane.llm sets an amount"))
+        .unwrap_or_else(|| {
+            panic!("an amount no unit in the pool would pay must stop boot: {errors:?}")
+        });
+    assert!(
+        named.contains("tariff.pool.p") && named.contains("NEVER tariff.plane.llm"),
+        "the refusal names BOTH cells and says which one wins: {named}"
+    );
+
+    // AND THE SAME SECTION WITHOUT THE NARROWER CELL BOOTS — so this is a rule about the collision
+    // and not a rule against scoping a plane at all.
+    cfg.tariff = Some(
+        serde_yaml::from_str("plane:\n  llm:\n    transaction_fee:\n      flat_cents: 7\n")
+            .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        !errors.iter().any(|e| e.contains("sets an amount")),
+        "a plane-scoped amount with nothing narrower beside it is exactly what the card carries: \
+         {errors:?}"
+    );
+}

@@ -1694,7 +1694,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3074"
+count = "3094"
 
 [[cell]]
 crate = "busbar-core"

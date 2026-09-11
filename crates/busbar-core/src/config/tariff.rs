@@ -325,6 +325,55 @@ impl TariffCfg {
         out
     }
 
+    /// **WHERE A SCOPED AMOUNT COULD NEVER BE CHARGED** — every `(plane cell, inner cell)` pair
+    /// whose units would resolve past the plane's amounts and never pay them.
+    ///
+    /// The counts half and the amounts half both fold [`Self::scopes`]: tier, pool, plane, default,
+    /// most specific first, field by field. The CARD does not carry one cell per unit — it carries
+    /// one per configured SCOPE, and a posting records the single innermost scope that applied, so
+    /// that an auditor holding the posting and the dated history can re-derive the figure without
+    /// re-walking a configuration that has since moved. Those two shapes are compatible for exactly
+    /// as long as the chain above a recorded scope is the default and nothing else.
+    ///
+    /// It stops being compatible the moment a deployment writes BOTH a `tariff.plane.<k>` cell and
+    /// a `tariff.pool.<p>` or `tariff.tier.<t>` cell. A unit on that plane in that pool records the
+    /// POOL, and the card's pool entry is the pool folded over the default — there is no plane
+    /// layer between them, because a pool entry is resolved with no plane to resolve against and a
+    /// pool does not name its plane. So an amount the operator wrote at the plane was charged to
+    /// every unit of that plane OUTSIDE the scoped pool and to none inside it: two units on one
+    /// plane, priced by two schedules, one of which the deployment never wrote. Nothing said so.
+    ///
+    /// It is reported rather than resolved, and refused rather than picked. Folding the plane in
+    /// would charge a unit under a schedule its own row does not name; dropping it is what the
+    /// previous behaviour did. The honest answer is that the deployment has written a schedule this
+    /// card cannot carry, and the node says which two cells collide.
+    #[must_use]
+    pub fn shadowed_plane_amounts(&self) -> Vec<(String, String)> {
+        let has_amounts = |c: &TariffScopeCfg| {
+            c.entry_fee
+                .as_ref()
+                .is_some_and(|e| e.amount_cents.is_some())
+                || c.transaction_fee.as_ref().is_some_and(|t| {
+                    t.flat_cents.is_some() || t.per_units.as_ref().is_some_and(|u| !u.is_empty())
+                })
+                || c.minimum_cents.is_some()
+                || c.maximum_cents.is_some()
+                || c.rounding.is_some()
+        };
+        let mut out = Vec::new();
+        for (plane, cell) in &self.plane {
+            if !has_amounts(cell) {
+                continue;
+            }
+            for (label, inner) in [("pool", &self.pool), ("tier", &self.tier)] {
+                for name in inner.keys() {
+                    out.push((format!("plane.{plane}"), format!("{label}.{name}")));
+                }
+            }
+        }
+        out
+    }
+
     /// **WHERE ONE FEE IS NAMED TWICE.** Every scope of this section against the previous release's
     /// own two keys.
     ///
