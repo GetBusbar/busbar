@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+count = "121"
 
 [[cell]]
 crate = "busbar"
@@ -1319,7 +1319,7 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "302"
+count = "319"
 
 [[cell]]
 crate = "busbar"
@@ -1329,12 +1329,12 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "18"
+count = "27"
 
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+count = "1066"
 
 [[cell]]
 crate = "busbar"
@@ -1344,17 +1344,17 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+count = "165"
 
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "96"
+count = "97"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1846"
+count = "1989"
 
 [[cell]]
 crate = "busbar"
@@ -1379,12 +1379,12 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "941"
+count = "956"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+count = "1205"
 
 [[cell]]
 crate = "busbar-a2a"
