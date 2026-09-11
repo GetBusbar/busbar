@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 928,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "231984c31047b5a024f47a354da0b3d27be18b4fb037d46b723a482e746a791b",
+  "harness_rev": "e770958ddf1a76a3de5c26fed8124111f5113dbe92c9dff58745c67358384fdf",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -98,6 +98,11 @@
         "from": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
         "to": "231984c31047b5a024f47a354da0b3d27be18b4fb037d46b723a482e746a791b",
         "why": "2026-09-11 documentation-only: owed-baseline.txt is a harness_rev file (it is the floor the replay is measured against, so it decides the verdict), and it gained the 13 golden PASS ids it did not name — the 12 llm.stream cells merged on 2026-09-10 and llm|responses|responses|request|ok_citation merged today. Coverage GROWING needs no gap entry and is always allowed; what was wrong is that a PASS the baseline does not name can stop being owed with no red row, which is what replay-selftest reports. No cell was re-recorded and not one cells/*.json byte changed."
+      },
+      {
+        "from": "231984c31047b5a024f47a354da0b3d27be18b4fb037d46b723a482e746a791b",
+        "to": "e770958ddf1a76a3de5c26fed8124111f5113dbe92c9dff58745c67358384fdf",
+        "why": "2026-09-11 documentation-only: testing/shadow-oracle/oracle.pin moved v0.3.14 -> v0.3.15, and the pin is in the harness-rev file set BY DESIGN — bin/oracle exports it as BUSBAR_ORACLE_TOOL_DIGEST and harness-rev.sh folds `tag@sha256` in, so a tool upgrade shows up in every recording made after it exactly as a recorder change does. This tree computed 231984c3 with the v0.3.14 pin in place and e770958d with the v0.3.15 pin and NOTHING ELSE changed — measured by restoring the one file and re-asking — so the pin is the whole of this delta. The golden was NOT stale before this line (it carried 231984c3, the revision this tree computed); it would have been stale from the bump onward, and the differ's skew guard compares a recording's WHOLE provenance set, so a golden claiming a revision nothing computes any more is refused against every candidate recorded from here on. No cell was re-recorded and not one cells/*.json byte changed; neither did the ledger, `recorded`, `binary_sha256`, `at`, `version` or `host_triple`. Measured, not asserted: the aggregate sha256 over the 928 committed cells/*.json is 2a34e622b9e7c9057c72bf9f8ad4a817abb3307136a3c5057917a51b985fa58c before this re-stamp and after it. Only which judge the recording names moved."
       }
     ],
     "merges": [
