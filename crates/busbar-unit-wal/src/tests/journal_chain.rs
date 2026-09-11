@@ -512,6 +512,59 @@ fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
     assert_eq!(breaks[0].body, overflows[0].body());
 }
 
+/// The break record is sealed with the reading the append that detected it already carries on its
+/// own entries — never a literal zero. A `ChainBreak` stamped `wall: 0, mono: 0` reads as having
+/// happened in 1970, which is "infinitely old" on the very retention axis this record exists to
+/// protect: a sweep that trusted the stamp would drop the one record naming a durability loss
+/// before it would drop anything else. The unit may not read a wall clock itself
+/// (`unit-no-wall-clock`), so the reading has to be the one the caller already threaded onto the
+/// entries of the SAME append that tripped the bound.
+#[test]
+fn a_chain_break_carries_the_reading_of_the_append_that_detected_it() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    // Fills the buffer to 3, well under the bound of 4 — nothing overflows yet.
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 3, 1),
+        )
+        .expect_err("a store that refuses is a durability loss on a node with no data directory");
+
+    // The batch that actually reaches the bound, stamped with a reading of its own — the reading
+    // the sealed break has to carry rather than invent.
+    let overflowing_wall = 1_701_234_567;
+    let overflowing_mono = 42;
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &[
+                Entry::new(RecordClass::Transaction, vec![9, 0])
+                    .at(overflowing_wall, overflowing_mono),
+                Entry::new(RecordClass::Transaction, vec![9, 1])
+                    .at(overflowing_wall, overflowing_mono),
+            ],
+        )
+        .expect_err("the store is still refusing");
+
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let breaks: Vec<&JournalRecord> = on_the_medium
+        .iter()
+        .filter(|r| r.class == RecordClass::ChainBreak)
+        .collect();
+    assert_eq!(breaks.len(), 1, "one break record for the one overflow");
+    assert_ne!(breaks[0].wall, 0, "a wall of 0 dates the marker 1970");
+    assert_eq!(
+        (breaks[0].wall, breaks[0].mono),
+        (overflowing_wall, overflowing_mono),
+        "the break record must carry the reading of the append that detected it, never 0"
+    );
+}
+
 /// The overflow history is a window plus a running total, not one entry per overflowing append.
 ///
 /// Once the buffer is full EVERY append overflows, so an unbounded history is a per-request memory
