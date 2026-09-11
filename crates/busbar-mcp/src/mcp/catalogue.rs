@@ -1257,47 +1257,17 @@ impl CatalogueItem for ToolEntry {
     /// is the moment it is shown or fed as context, and that moment is exactly where the strip
     /// belongs.
     fn render(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        // The NAMESPACED name is the wire name, because it is the routing key — the bound identity a
-        // route is decided on, never the free-text description — and the value an `mcp_tool` grant
-        // carries. Exposing the bare upstream name would let two servers collide in one caller's
-        // catalogue, so one server's tool would silently answer for another's.
-        obj.insert("name".into(), self.namespaced.clone().into());
-        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
-            obj.insert("description".into(), d.into());
-        }
-        obj.insert(
-            "inputSchema".into(),
-            self.input_schema
-                .clone()
-                // A tool with no declared schema still needs a schema-shaped answer: clients reject
-                // a tool whose `inputSchema` is absent, and an empty object is the honest "no
-                // constraints declared" rather than a fabricated one.
-                .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
-        );
-        // THE OUTPUT SCHEMA, when the operator approved one — and ONLY then. Unlike `inputSchema`
-        // there is no schema-shaped stand-in for its absence: an absent `outputSchema` means "this
-        // tool makes no promise about structured output", and `{}` would mean "it promises, and the
-        // promise is vacuous". The spec reads the PRESENCE of this key, not its contents, to decide
-        // whether conforming structured results are a MUST, so inventing one would invent an
-        // obligation.
-        //
-        // Dropping it is the mirror-image defect: a client that would have validated the structured
-        // result has nothing to validate against and cannot tell a conforming result from a
-        // violating one. `mcp::method::tools_call` therefore also CHECKS what comes back — see
-        // `structured_output_violation`.
-        if let Some(s) = &self.output_schema {
-            obj.insert("outputSchema".into(), s.clone());
-        }
-        // The approved schema hash is published because it is the operator's approval, not a secret,
-        // and a client that pins what it saw is a client that notices a rug-pull too.
-        if let Some(h) = &self.schema_hash {
-            obj.insert(
-                "_meta".into(),
-                serde_json::json!({ "io.busbar/schemaHash": h }),
-            );
-        }
-        serde_json::Value::Object(obj)
+        // WHAT the wire carries is `busbar_plane_mcp::view`'s; what is decided here is only which of
+        // this entry's fields answer it, and that the description is normalised before it leaves.
+        // `mcp::method::tools_call` CHECKS the structured result against `output_schema` — see
+        // `structured_output_violation` — which is why an absent one must stay absent.
+        busbar_plane_mcp::view::tool(&busbar_plane_mcp::view::ToolView {
+            name: &self.namespaced,
+            description: super::sanitize::normalise_opt(self.description.as_deref()).as_deref(),
+            input_schema: self.input_schema.as_ref(),
+            output_schema: self.output_schema.as_ref(),
+            schema_hash: self.schema_hash.as_deref(),
+        })
     }
 }
 
@@ -1324,12 +1294,10 @@ impl CatalogueItem for PromptEntry {
     }
 
     fn render(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        obj.insert("name".into(), self.namespaced.clone().into());
-        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
-            obj.insert("description".into(), d.into());
-        }
-        serde_json::Value::Object(obj)
+        busbar_plane_mcp::view::prompt(&busbar_plane_mcp::view::PromptView {
+            name: &self.namespaced,
+            description: super::sanitize::normalise_opt(self.description.as_deref()).as_deref(),
+        })
     }
 }
 
@@ -1356,21 +1324,12 @@ impl CatalogueItem for ResourceEntry {
     }
 
     fn render(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        // THE RAW URI, because that is what a client hands back on `resources/read`. The namespaced
-        // form stays the grant value and the map key — both of which must remain unique per
-        // (server, uri) — but it is not what a client has to say.
-        obj.insert("uri".into(), self.uri.clone().into());
-        if let Some(n) = super::sanitize::normalise_opt(self.name.as_deref()) {
-            obj.insert("name".into(), n.into());
-        }
-        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
-            obj.insert("description".into(), d.into());
-        }
-        if let Some(m) = &self.mime_type {
-            obj.insert("mimeType".into(), m.clone().into());
-        }
-        serde_json::Value::Object(obj)
+        busbar_plane_mcp::view::resource(&busbar_plane_mcp::view::ResourceView {
+            address: &self.uri,
+            name: super::sanitize::normalise_opt(self.name.as_deref()).as_deref(),
+            description: super::sanitize::normalise_opt(self.description.as_deref()).as_deref(),
+            mime_type: self.mime_type.as_deref(),
+        })
     }
 }
 
@@ -1397,18 +1356,11 @@ impl CatalogueItem for ResourceTemplateEntry {
     }
 
     fn render(&self) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        // The operator's own template: the caller expands what it is given.
-        obj.insert("uriTemplate".into(), self.uri_template.clone().into());
-        if let Some(n) = super::sanitize::normalise_opt(self.name.as_deref()) {
-            obj.insert("name".into(), n.into());
-        }
-        if let Some(d) = super::sanitize::normalise_opt(self.description.as_deref()) {
-            obj.insert("description".into(), d.into());
-        }
-        if let Some(m) = &self.mime_type {
-            obj.insert("mimeType".into(), m.clone().into());
-        }
-        serde_json::Value::Object(obj)
+        busbar_plane_mcp::view::resource_template(&busbar_plane_mcp::view::ResourceView {
+            address: &self.uri_template,
+            name: super::sanitize::normalise_opt(self.name.as_deref()).as_deref(),
+            description: super::sanitize::normalise_opt(self.description.as_deref()).as_deref(),
+            mime_type: self.mime_type.as_deref(),
+        })
     }
 }

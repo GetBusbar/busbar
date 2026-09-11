@@ -260,7 +260,7 @@ pub(crate) async fn as_event_stream(
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         // A stream of one request's own answer is never a shared cache's business, and the catalogue
-        // answers are computed under the CALLER'S GRANT — the same reasoning `method::CACHE_SCOPE`
+        // answers are computed under the CALLER'S GRANT — the same reasoning `busbar_plane_mcp::view::CACHE_SCOPE`
         // states for the JSON form, restated at the transport because a cache reads the header and
         // not the body.
         .header("cache-control", "no-cache, no-store")
