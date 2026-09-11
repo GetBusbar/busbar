@@ -155,10 +155,10 @@ pub(crate) fn toks_tiers(
 ) -> BTreeMap<String, u64> {
     let mut m = BTreeMap::new();
     for (k, v) in [
-        (crate::price::UNIT_INPUT, input),
-        (crate::price::UNIT_OUTPUT, output),
-        (crate::price::UNIT_CACHE_READ, cache_read),
-        (crate::price::UNIT_CACHE_WRITE, cache_write),
+        (busbar_contract::ids::DIM_TOKENS_IN, input),
+        (busbar_contract::ids::DIM_TOKENS_OUT, output),
+        (busbar_contract::ids::DIM_CACHE_READ, cache_read),
+        (busbar_contract::ids::DIM_CACHE_WRITE, cache_write),
     ] {
         if v != 0 {
             m.insert(k.to_string(), v);

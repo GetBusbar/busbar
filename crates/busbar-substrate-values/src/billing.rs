@@ -65,7 +65,7 @@ pub enum Billing {
 // ── The neutral usage_units billing spine (1.6.0 M1b) ───────────────────────────────────────────
 //
 // `Usage` is the ONE neutral carrier a plane hands core: a SINGLE opaque name-keyed unit map. The
-// reserved four (input/output/cache_read/cache_write) are now ORDINARY KEYS in that one map beside
+// reserved four (tokens_in/tokens_out/cache_read/cache_write) are now ORDINARY KEYS in that one map beside
 // every open (operator/plane) unit — `TierTokens` is dissolved (M1b). This crate stays PURE: it
 // names no reserved key literal at all; it is just a `BTreeMap<String, u64>` here. Core prices it by
 // looking each key up against the rate card (the reserved four via the tier rates, opens via the
@@ -91,7 +91,7 @@ pub enum ServiceTier {
 /// The one neutral usage representation every plane hands core (§2 of `billing-unified.md`).
 ///
 /// (1.6.0 M1b) `usage_units` is the SOLE representation: the reserved four
-/// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside every open (non-reserved)
+/// (`tokens_in`/`tokens_out`/`cache_read`/`cache_write`) are ordinary keys beside every open (non-reserved)
 /// keyed count. Core iterates it opaquely and prices each key against the rate card. This crate
 /// names no reserved literal — the map is pure DATA here.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -102,7 +102,7 @@ pub struct Usage {
 
 /// THE NEUTRAL RAW-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as RAW
 /// micro-float-per-token values (1e-6 abstract cost unit per token), in the CANONICAL reserved-four
-/// order the engine already fixes ([`busbar_api::RESERVED_UNITS`] = input, output, cache_read,
+/// order the engine already fixes ([`busbar_api::RESERVED_UNITS`] = tokens_in, tokens_out, cache_read,
 /// cache_write). The field names are the neutral reserved-unit spellings (`busbar_api::UNIT_INPUT`
 /// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
 ///

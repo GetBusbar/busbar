@@ -249,23 +249,23 @@ impl BudgetCell {
 
     /// Current UNCACHED-INPUT tokens across models — the `tokens_input` per-tier cap's counter.
     fn total_input(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_INPUT)
+        self.total_tier(busbar_contract::DIM_TOKENS_IN)
     }
 
     /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
     fn total_output(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_OUTPUT)
+        self.total_tier(busbar_contract::DIM_TOKENS_OUT)
     }
 
     /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
     fn total_cache_read(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_READ)
+        self.total_tier(busbar_contract::DIM_CACHE_READ)
     }
 
     /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
     /// per-tier cap's counter.
     fn total_cache_write(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_WRITE)
+        self.total_tier(busbar_contract::DIM_CACHE_WRITE)
     }
 }
 

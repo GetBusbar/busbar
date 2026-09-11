@@ -136,7 +136,7 @@ fn add_usage_to_a_current_store_still_sends_the_unit_map() {
     let model = &sent["AddUsage"]["delta"]["models"][0];
     assert_eq!(
         model["usage_units"],
-        serde_json::json!({"input": 6, "output": 12}),
+        serde_json::json!({"tokens_in": 6, "tokens_out": 12}),
         "a current store keeps receiving the open unit map: {sent}"
     );
     assert!(model.get("tokens").is_none(), "no legacy row: {sent}");

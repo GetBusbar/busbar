@@ -1529,8 +1529,8 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
             .map(|(k, v)| (k.as_str(), *v))
             .collect::<Vec<_>>(),
         vec![
-            (busbar_api::UNIT_INPUT, INPUT),
-            (busbar_api::UNIT_OUTPUT, OUTPUT)
+            (busbar_contract::DIM_TOKENS_IN, INPUT),
+            (busbar_contract::DIM_TOKENS_OUT, OUTPUT)
         ],
         "and the split is the tap's own, not a figure the step invented"
     );

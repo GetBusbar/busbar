@@ -23,7 +23,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::price::{units_total, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_contract::ids::{DIM_CACHE_READ, DIM_CACHE_WRITE, DIM_TOKENS_IN, DIM_TOKENS_OUT};
+
+use crate::price::units_total;
 
 /// The most models one cell interns before the coldest one is evicted.
 ///
@@ -154,22 +156,22 @@ impl LedgerCell {
 
     /// Current uncached-input tokens.
     pub fn total_input(&self) -> u64 {
-        self.total_tier(UNIT_INPUT)
+        self.total_tier(DIM_TOKENS_IN)
     }
 
     /// Current output tokens.
     pub fn total_output(&self) -> u64 {
-        self.total_tier(UNIT_OUTPUT)
+        self.total_tier(DIM_TOKENS_OUT)
     }
 
     /// Current cache-read tokens.
     pub fn total_cache_read(&self) -> u64 {
-        self.total_tier(UNIT_CACHE_READ)
+        self.total_tier(DIM_CACHE_READ)
     }
 
     /// Current cache-write tokens.
     pub fn total_cache_write(&self) -> u64 {
-        self.total_tier(UNIT_CACHE_WRITE)
+        self.total_tier(DIM_CACHE_WRITE)
     }
 
     /// Drop the least recently used model, moving its counters into the cell's evicted tally.

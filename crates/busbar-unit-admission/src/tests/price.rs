@@ -10,13 +10,15 @@
 
 use std::collections::BTreeMap;
 
-use crate::price::{
-    RateNanos, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+use busbar_contract::ids::{
+    DIM_CACHE_READ, DIM_CACHE_WRITE, DIM_TOKENS_IN, DIM_TOKENS_OUT, TOKEN_DIMENSIONS,
 };
+
+use crate::price::RateNanos;
 
 /// A unit map holding the largest count each of the four reserved keys can carry.
 fn maximal_units() -> BTreeMap<String, u64> {
-    RESERVED_UNITS
+    TOKEN_DIMENSIONS
         .iter()
         .map(|u| ((*u).to_string(), u64::MAX))
         .collect()
@@ -51,7 +53,7 @@ fn one_key_at_the_maximum_is_exact_and_does_not_saturate() {
         ..RateNanos::default()
     };
     let mut units = BTreeMap::new();
-    units.insert(UNIT_INPUT.to_string(), u64::MAX);
+    units.insert(DIM_TOKENS_IN.to_string(), u64::MAX);
     let expected = u128::from(u64::MAX) * u128::from(u64::MAX);
     assert_eq!(rate.reserved_nanos(&units), expected);
     assert!(expected < u128::MAX);
@@ -82,7 +84,7 @@ fn a_negative_configured_fee_is_clamped_at_resolve_and_can_never_credit_a_bucket
     assert_eq!(pricer.price_per_request_cents(), 0);
 
     let mut units = BTreeMap::new();
-    units.insert(UNIT_INPUT.to_string(), 1_000_000u64);
+    units.insert(DIM_TOKENS_IN.to_string(), 1_000_000u64);
     assert_eq!(
         pricer.derive_spend_cents([("m", &units)].into_iter(), 100, true),
         100,
@@ -123,10 +125,10 @@ fn ordinary_counts_still_sum_exactly() {
         cache_write: 11,
     };
     let mut units = BTreeMap::new();
-    units.insert(UNIT_INPUT.to_string(), 100);
-    units.insert(UNIT_OUTPUT.to_string(), 200);
-    units.insert(UNIT_CACHE_READ.to_string(), 300);
-    units.insert(UNIT_CACHE_WRITE.to_string(), 400);
+    units.insert(DIM_TOKENS_IN.to_string(), 100);
+    units.insert(DIM_TOKENS_OUT.to_string(), 200);
+    units.insert(DIM_CACHE_READ.to_string(), 300);
+    units.insert(DIM_CACHE_WRITE.to_string(), 400);
     assert_eq!(
         rate.reserved_nanos(&units),
         100 * 3 + 200 * 5 + 300 * 7 + 400 * 11

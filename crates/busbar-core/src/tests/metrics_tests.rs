@@ -139,7 +139,7 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                 models: vec![busbar_api::ModelTokens {
                     model: "m".to_string(),
                     usage_units: std::collections::BTreeMap::from([(
-                        busbar_api::UNIT_INPUT.to_string(),
+                        busbar_contract::DIM_TOKENS_IN.to_string(),
                         5000u64,
                     )]),
                 }],
@@ -279,10 +279,10 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
         "",
         "gpt-5",
         &std::collections::BTreeMap::from([
-            (busbar_api::UNIT_INPUT.to_string(), 100u64),
-            (busbar_api::UNIT_OUTPUT.to_string(), 40),
-            (busbar_api::UNIT_CACHE_READ.to_string(), 7),
-            (busbar_api::UNIT_CACHE_WRITE.to_string(), 3),
+            (busbar_contract::DIM_TOKENS_IN.to_string(), 100u64),
+            (busbar_contract::DIM_TOKENS_OUT.to_string(), 40),
+            (busbar_contract::DIM_CACHE_READ.to_string(), 7),
+            (busbar_contract::DIM_CACHE_WRITE.to_string(), 3),
         ]),
         1_700_000_000,
     );
@@ -916,7 +916,7 @@ fn test_key_gauge_limit_truncation() {
                     models: vec![busbar_api::ModelTokens {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
-                            busbar_api::UNIT_INPUT.to_string(),
+                            busbar_contract::DIM_TOKENS_IN.to_string(),
                             10u64,
                         )]),
                     }],
@@ -993,7 +993,7 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
                     models: vec![busbar_api::ModelTokens {
                         model: "m".to_string(),
                         usage_units: std::collections::BTreeMap::from([(
-                            busbar_api::UNIT_INPUT.to_string(),
+                            busbar_contract::DIM_TOKENS_IN.to_string(),
                             1u64,
                         )]),
                     }],

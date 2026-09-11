@@ -8,7 +8,8 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::{VirtualKey, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_api::VirtualKey;
+use busbar_contract::ids::{DIM_TOKENS_IN, DIM_TOKENS_OUT};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -81,7 +82,10 @@ fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let cm = resolve_card_fee(Some(&c), 0);
     let r = cm.card().lane_rates("gpt-5", CurrencyCode::USD).unwrap();
     assert_eq!(
-        (r.nanos_per_unit(UNIT_INPUT), r.nanos_per_unit(UNIT_OUTPUT)),
+        (
+            r.nanos_per_unit(DIM_TOKENS_IN),
+            r.nanos_per_unit(DIM_TOKENS_OUT)
+        ),
         (2_500, 10_000),
         "nano-unit rates come straight from the card"
     );

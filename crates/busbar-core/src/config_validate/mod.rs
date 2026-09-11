@@ -1519,7 +1519,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // one they did not mean rather than discovering next month which one won.
         for clash in tariff.amount_conflicts(cfg.per_request_fee, &|dimension| {
             cfg.rate_card.as_ref().is_some_and(|c| !c.is_empty())
-                && busbar_unit_cost::RESERVED_CLASSES.contains(&dimension)
+                && busbar_contract::TOKEN_DIMENSIONS.contains(&dimension)
         }) {
             errors.push(format!(
                 "tariff.{}.{} says {} and {} says {}: one fee, two numbers, and nothing here will \

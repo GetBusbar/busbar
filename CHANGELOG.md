@@ -424,6 +424,25 @@ Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
 
+- **A billable dimension is named by the plane that meters it, everywhere, and the four internal
+  spellings that were not are gone.** A `tariff:` block prices a dimension by name, and the node
+  accepts a name exactly when some mounted plane declares it meters one — so `tokens_in`,
+  `tokens_out`, `cache_read` and `cache_write` are the names, because that is what the llm plane's
+  face says. Three other vocabularies existed for the same four quantities: the response codec
+  reported counts under `input`/`output`, the rate card priced by a hand-kept list of the same, and
+  the usage ledger persisted them under those keys. A `per_units` rate for `tokens_in` therefore
+  validated at boot and then multiplied a quantity that was filed under another spelling — it
+  charged nothing, for the life of the deployment, with no surface anywhere saying so — and a rate
+  for `input` was refused by name although it was what the card actually priced. One vocabulary
+  now: the declared keys are the names end to end. **If your `tariff:` block prices `input` or
+  `output`, rename them to `tokens_in` and `tokens_out`** — a node refuses to boot on the old
+  spellings and names the dimensions it does meter. Persisted usage rows written under the old keys
+  are folded onto the declared ones at boot; a store plugin receives the declared keys in the
+  `usage_units` map it is handed. Every public figure is unchanged: `prompt_tokens`,
+  `completion_tokens`, `input_tokens`, `tokens.input_tokens` and every other rendered field keeps
+  its 1.5.5 spelling and its 1.5.5 value, because those are renderings of these counts and never
+  were these keys. See [the 1.6 migration guide](docs/migration-1.6.md).
+
 - **What a half-delivered exchange costs changed, and it changed to one answer for every dialect.**
   A stream that dies after a good first frame is a unit whose two endings disagree: the client was
   handed the start of an answer, and the plane afterwards says it failed. 1.5.5 billed the flat

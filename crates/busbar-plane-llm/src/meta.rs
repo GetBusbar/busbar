@@ -5,7 +5,7 @@
 //! boot proved non-overlapping stop being the claims in force.
 
 use busbar_contract::ids::{
-    AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
+    AdminVerbId, ClassDirection, MeterClassDecl, OpClassId, RecordSchemaId,
 };
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::wire::StatusAt;
@@ -53,32 +53,39 @@ const TOKEN_NOUN: &str = "token";
 /// quantity, and the reading comes first. The op class list below is unaffected: a unit is priced by
 /// the class it is, and the token classes price the ones this plane can actually read.
 ///
+/// THE SPELLINGS ARE TAKEN, NOT RESTATED. The four keys are `busbar_contract::ids`' token-class
+/// constants. This plane still declares WHICH four it meters, in what family, at what divisor and
+/// under what noun — that is the declaration, and it is this plane's. What it does not do is spell
+/// the names a second time: the codec that projects an upstream's usage figures into counts is
+/// UPSTREAM of this crate and cannot read this table, so a name spelled here and spelled again
+/// there is a name that can drift, and the drift charges nothing for a price the node accepted.
+///
 /// The aggregate token class is deliberately ABSENT. It is declared by the kernel, not by a plane,
 /// and the registry refuses it from one.
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
-        key: MeterClassId::new("tokens_in"),
+        key: busbar_contract::ids::CLASS_TOKENS_IN,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
         unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("tokens_out"),
+        key: busbar_contract::ids::CLASS_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
         unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_read"),
+        key: busbar_contract::ids::CLASS_CACHE_READ,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
         unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_write"),
+        key: busbar_contract::ids::CLASS_CACHE_WRITE,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheWrite,
         default_divisor: BYTES_PER_TOKEN,

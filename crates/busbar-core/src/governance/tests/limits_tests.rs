@@ -242,10 +242,10 @@ fn toks_tiers(
 ) -> std::collections::BTreeMap<String, u64> {
     let mut m = std::collections::BTreeMap::new();
     for (k, v) in [
-        (busbar_api::UNIT_INPUT, input),
-        (busbar_api::UNIT_OUTPUT, output),
-        (busbar_api::UNIT_CACHE_READ, cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, cache_write),
+        (busbar_contract::DIM_TOKENS_IN, input),
+        (busbar_contract::DIM_TOKENS_OUT, output),
+        (busbar_contract::DIM_CACHE_READ, cache_read),
+        (busbar_contract::DIM_CACHE_WRITE, cache_write),
     ] {
         if v != 0 {
             m.insert(k.to_string(), v);

@@ -412,8 +412,8 @@ fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
         .iter()
         .map(|(class, quantity)| {
             let per_unit = match class.as_str() {
-                busbar_api::UNIT_INPUT => 2_000,
-                busbar_api::UNIT_OUTPUT => 6_000,
+                busbar_contract::DIM_TOKENS_IN => 2_000,
+                busbar_contract::DIM_TOKENS_OUT => 6_000,
                 _ => 0,
             };
             quantity * per_unit

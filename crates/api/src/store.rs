@@ -556,19 +556,35 @@ impl std::fmt::Debug for CredentialSecret {
     }
 }
 
-/// THE CANONICAL RESERVED UNIT NAMES (1.6.0 M1b). The reserved four pricing tiers are no longer a
-/// distinct `TierTokens` struct; they are PLAIN KEYS in the name-keyed `usage_units` ledger, sharing
-/// the one map with every open (operator/plane) unit. These constants are the single source of truth
-/// for those four names, so the pricer, the ledger, the flush primitive, and the boot migration can
-/// never disagree on the spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older
-/// `cache_creation` name is folded onto it at migration (see [`usage_migration`]).
-pub const UNIT_INPUT: &str = "input";
-pub const UNIT_OUTPUT: &str = "output";
+/// **THE DECLARED DIMENSION NAMES, AS THE PERSISTED LEDGER KEYS THEM.**
+///
+/// A unit key in this ledger is the name of a billable dimension, and a dimension's name is the
+/// PLANE'S: it is what an operator prices by in a `tariff:` block, what the boot check accepts, and
+/// what the metering step reports under. The spelling is DECLARED at
+/// `busbar_contract::ids::RESERVED_UNITS`, and these four constants are that declaration's value,
+/// restated here for one reason and one only: the kind graph does not let a crate of this kind name
+/// the contract crate (`kind-isolation:deps` refuses `api -> contract` outright), so this crate
+/// cannot take the declaration by reference. It is not permitted to DRIFT from it either — a cell
+/// in the one crate that may name both sides asserts these four equal the declared four, and goes
+/// red the moment either moves.
+///
+/// THEY USED TO SAY SOMETHING ELSE, AND IT COST MONEY. They were `input`/`output`/`cache_read`/
+/// `cache_write` — a vocabulary this crate invented, which the codec reported under and the card
+/// priced by, while the llm plane declared `tokens_in`/`tokens_out`. A `per_units` rate for
+/// `tokens_in` was ACCEPTED at boot (a plane declared it) and then multiplied a quantity filed
+/// under `input`: it charged nothing, forever, silently, while the operator read a file that said
+/// otherwise. A persisted row written under the old spellings is folded onto these ONCE, at boot,
+/// by the store-versioned migration (see [`usage_migration`]) — the same thing that already
+/// happened to `cache_creation`.
+pub const UNIT_INPUT: &str = "tokens_in";
+/// The response token dimension, as the llm plane declares it.
+pub const UNIT_OUTPUT: &str = "tokens_out";
+/// A prompt read back from an upstream cache, priced apart from uncached input.
 pub const UNIT_CACHE_READ: &str = "cache_read";
+/// The cache-write (cache creation) dimension.
 pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
-/// The reserved four, in canonical order — the set the pricer prices via the `RateNanos` tiers and
-/// the migration folds the old `TierTokens` fields onto.
+/// The declared four, in the canonical order every reader that folds them folds them in.
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
 /// One model's accumulated billable-unit counts inside a [`UsageLedger`]. RAW counts, never money:

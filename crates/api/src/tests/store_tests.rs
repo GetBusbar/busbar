@@ -861,7 +861,14 @@ fn model_tokens_usage_units_is_the_sole_representation() {
         usage_units: units(10, 20, 0, 0),
     };
     let json = serde_json::to_string(&reserved).unwrap();
-    assert!(json.contains("usage_units") && json.contains("\"input\":10"));
+    // THE PERSISTED KEY IS THE DECLARED DIMENSION. It was `input` — a spelling this crate invented
+    // and no plane ever declared — and a row on disk under that key is a count no schedule can
+    // reach, because the names an operator may price by are the planes' own. Rows written under the
+    // old spelling are folded onto this one at boot (see `usage_migration`).
+    assert!(
+        json.contains("usage_units") && json.contains("\"tokens_in\":10"),
+        "{json}"
+    );
     // Round-trips losslessly.
     let rt: ModelTokens = serde_json::from_str(&json).unwrap();
     assert_eq!(rt, reserved);
