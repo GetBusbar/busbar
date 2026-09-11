@@ -72,6 +72,35 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$(_arm 1 "")"    = 2 ] && _ok "  ...pre-proof + no outcome at all + no ref = exit 2" || _fail "pre-proof + no outcome + no ref = exit 2"
   [ "$(_arm 0 "$_st")" = 2 ] && _ok "  ...LANDING + GREEN outcome + no ref = exit 2 (cannot fast-forward)" || _fail "landing + no ref = exit 2"
   rm -f "$_st"
+  # ── A BOX THAT STOPPED ANSWERING IS NOT A RED LINE ──────────────────────────────────────────
+  # Measured 2026-09-10: two pre-proofs (1735 s and 10116 s) ended here, at "unreachable for 10
+  # polls", because AWS reclaimed the SPOT instances they were running on. This side exited 2 and
+  # the queue engine had no way to tell that from a proof that ran and failed, so both lines were
+  # scored RED — a colour about picks whose proof never finished. Exit 75 (EX_TEMPFAIL) is the
+  # transport's own word for "the BOX went away, ask again", and landq4.sh reads it as NONE:box.
+  # ONLY ON A PRE-PROOF: a LANDING that loses its box must keep exiting 2, because the queue runner
+  # treats any non-zero landing as a landing that did not happen and re-queues its lines already.
+  # THE PATTERNS MUST NOT MATCH THEMSELVES: these greps travel in the same file they search, so
+  # each one hides a letter of its own needle in a bracket.
+  grep -qE -- 'RC=2; [V]ANISHED=1; break' "${BASH_SOURCE[0]}" && _ok "a box that stops answering is remembered as vanished" || _fail "a box that stops answering is remembered"
+  grep -qE -- 'unreachable for 10 [p]olls — no verdict' "${BASH_SOURCE[0]}" && _ok "  ...and the log still says so in the words the ledgers carry" || _fail "the unreachable sentence is unchanged"
+  grep -qE -- 'the box [v]anished mid-proof' "${BASH_SOURCE[0]}" && _ok "  ...and the exit says it in a sentence a log reader can grep" || _fail "the exit names the vanished box"
+  _vanish() { # $1 = VANISHED  $2 = PREPROVE  $3 = outcome file ('' = none); prints the RC
+    VANISHED="$1" PREPROVE="$2" OUTCOME="$3" RC=2 bash -c '
+      if [ "$VANISHED" = 1 ] && [ "$PREPROVE" = 1 ] && { [ -z "$OUTCOME" ] || [ ! -s "$OUTCOME" ]; }; then RC=75; fi
+      echo "$RC"'
+  }
+  _vt="$(mktemp "${TMPDIR:-/tmp}/land-remote-vanish.XXXXXX")"
+  printf 'GREEN\t--prove --tests xtask 6d5bba552\n' >"$_vt"
+  [ "$(_vanish 1 1 "")"    = 75 ] && _ok "  ...a vanished box on a PRE-PROOF exits 75 (NONE:box)" || _fail "a vanished box on a pre-proof exits 75"
+  [ "$(_vanish 1 1 "$_vt")" = 2 ] && _ok "  ...but a GREEN outcome that got back first still wins" || _fail "a returned outcome outranks the vanished box"
+  [ "$(_vanish 1 0 "")"    = 2 ]  && _ok "  ...and a LANDING that loses its box still exits 2" || _fail "a landing that loses its box exits 2"
+  [ "$(_vanish 0 1 "")"    = 2 ]  && _ok "  ...and an ordinary pre-proof red is untouched" || _fail "an ordinary pre-proof red is untouched"
+  rm -f "$_vt"
+  # Twice: the stub exercised above, and the arm that really runs.
+  [ "$(grep -cE -- 'if \[ "\$[V]ANISHED" = 1 \] && \[ "\$PREPROVE" = 1 \]' "${BASH_SOURCE[0]}")" = 2 ] \
+    && _ok "  ...and the arm exercised above is the arm in this file" || _fail "the arm exercised above is the arm in this file"
+
   # THE DONE LEDGER IS MERGED AFTER THE VERDICT, NOT BEFORE IT (audit 17).
   grep -qF -- 'rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null || true' "${BASH_SOURCE[0]}" && _ok "the box's done rows are only FETCHED beside the outcome" || _fail "the box's done rows are only fetched early"
   _vline="$(grep -n '^# THE LANDED TIP COMES BACK TOO' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1)"
@@ -433,13 +462,17 @@ EOF
 # POLL. Every 60 s: the .rc file (the verdict), then the log's new bytes (the operator's view), then
 # the fan-out's requests and deliveries.
 RC=""; SEEN=0; QUIET=0
+VANISHED=0
 while :; do
   sleep 60
   [ "$SHARDS" -gt 0 ] && serve_requests
   out="$(rsh "$HOST" bash -c "cat $RRC 2>/dev/null; echo ::; wc -c <$RLOG 2>/dev/null" </dev/null 2>/dev/null)"
   if [ -z "$out" ]; then
     QUIET=$((QUIET + 1))
-    [ "$QUIET" -ge 10 ] && { rlog "ERROR: $HOST unreachable for 10 polls — no verdict"; RC=2; break; }
+    # TEN MINUTES OF SILENCE IS THE BOX, NOT THE PROOF. Measured 2026-09-10: two pre-proofs ended
+    # here after 1735 s and 10116 s because AWS reclaimed the spot instances under them. The verdict
+    # that follows is about the transport; whether it is about the LINE is decided at the exit.
+    [ "$QUIET" -ge 10 ] && { rlog "ERROR: $HOST unreachable for 10 polls — no verdict"; RC=2; VANISHED=1; break; }
     continue
   fi
   QUIET=0
@@ -569,6 +602,16 @@ if [ -n "$BATCH" ] && [ -f "$REPO/$BATCH.remote-done" ]; then
     grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true
     rm -f "$REPO/$BATCH.remote-done"
   fi
+fi
+# ── A BOX THAT WENT AWAY IS NOT A RED LINE ──────────────────────────────────────────────────────
+# Exit 75 (EX_TEMPFAIL) is this transport's word for "the BOX stopped answering; nothing was learned
+# about the picks" — landq4.sh reads it as NONE:box, records no colour, and re-queues the line to
+# the front of the next sweep. It is a PRE-PROOF's exit only: a landing that loses its box must keep
+# exiting 2, because the queue runner already treats a non-zero landing as one that did not happen.
+# An outcome file that got back before the box went away is still the proof's own verdict and wins.
+if [ "$VANISHED" = 1 ] && [ "$PREPROVE" = 1 ] && { [ -z "$OUTCOME" ] || [ ! -s "$OUTCOME" ]; }; then
+  rlog "NONE: the box vanished mid-proof ($HOST stopped answering and never reported) — no verdict on these picks; exit 75 so the queue re-queues them rather than scoring them RED"
+  RC=75
 fi
 rlog "host $HOST   exit $RC   wall $(( END - START ))s"
 exit "$RC"

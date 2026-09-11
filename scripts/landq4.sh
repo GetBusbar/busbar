@@ -43,6 +43,11 @@ D="${LANDQ_DONE:-$W/target/gate/land-done.txt}"
 L="${LANDQ_LOG:-$W/target/gate/landq.out}"
 PP="${LANDQ_PREPROVED:-$W/target/gate/preproved.txt}"
 QLOCK="${LANDQ_QUEUE_LOCK:-$W/target/gate/land-queue.lock}"
+# THE LINES THE FLEET OWES AN ANSWER TO. A line whose box was reclaimed mid-proof, or whose proof
+# died of a harness failure, learned NOTHING about itself — and it has already spent an hour or
+# three waiting for that nothing. It goes back to the FRONT of the next sweep's list rather than to
+# the back of a queue of a hundred and twenty.
+FRONT="${LANDQ_PREPROVE_FRONT:-$W/target/gate/preprove-front.txt}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
@@ -902,6 +907,40 @@ lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live l
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE FRONT OF THE PRE-PROOF LIST: the lines the FLEET failed, not the lines that failed
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The sweep hands boxes to the first N disjoint live lines in queue order. A line whose box was
+# reclaimed by AWS mid-proof is live and unproven exactly as it was before — and it is at whatever
+# depth in the queue it always was, so on a queue of 120 lines the next sweep is overwhelmingly
+# likely to hand its box to somebody else and the three hours are simply lost. These two functions
+# are the whole of the re-queue: a name is remembered, and the next sweep reads a queue with those
+# names moved to the top. NOTHING ELSE CHANGES — the disjointness rule, the claim check, the chain
+# preference and the ceiling all run over the reordered queue exactly as they ran over the queue.
+#
+# A LINE ON THIS LIST THAT IS NO LONGER LIVE IS NOT OFFERED. The list is matched against the queue
+# by whole-line equality every time it is read, so a line that landed, was parked or was edited
+# simply falls out of it; the file is never a second queue.
+lq_front_add() { # $1 = the queue line the fleet owes an answer to
+  [ -n "${1:-}" ] || return 0
+  mkdir -p "$(dirname "$FRONT")"
+  grep -qxF -- "$1" "$FRONT" 2>/dev/null || printf '%s\n' "$1" >>"$FRONT"
+}
+lq_front_drop() { # $1 = a line that has now had a real verdict
+  [ -n "${1:-}" ] && [ -s "$FRONT" ] || return 0
+  grep -vxF -- "$1" "$FRONT" >"$FRONT.tmp" 2>/dev/null || : >"$FRONT.tmp"
+  mv -f "$FRONT.tmp" "$FRONT"
+}
+lq_front_queue() { # $1 = queue file; prints that queue with the owed lines first
+  local qf="$1" l
+  [ -s "${FRONT:-}" ] || { cat "$qf"; return 0; }
+  while IFS= read -r l || [ -n "$l" ]; do
+    [ -n "$l" ] || continue
+    grep -qxF -- "$l" "$qf" 2>/dev/null && printf '%s\n' "$l"
+  done <"$FRONT"
+  grep -vxF -f "$FRONT" -- "$qf" || true
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # WHAT A PRE-PROOF'S EXIT MEANS. GREEN and RED are the colours the ledger records. Two reds are NOT
 # a verdict on the line and are recorded as nothing (NONE — "not pre-proven"), so the popper neither
 # parks nor prefers them: a red whose log names the BASE ("at the base", "ROSE since the base") is
@@ -947,10 +986,27 @@ lq_outcome_green() { # $1 = per-line outcome file; 0 when it exists, has rows, a
   [ "${bad:-1}" = 0 ]
 }
 
+# THE BOX WENT AWAY. Measured 2026-09-10: two of twelve pre-proofs ended `exit 2` "unreachable for
+# 10 polls — no verdict" / "scp: Connection closed" after 1735 s and 10116 s, because the spot
+# instances under them were reclaimed by AWS mid-proof ("Service initiated"). Nothing about the
+# LINE was learned, so RED is a lie about it and a park is three hours thrown after three hours.
+# Two signals, either of which is enough: the transport's own exit status (land-remote.sh exits 75,
+# EX_TEMPFAIL, when the box it was polling stopped answering) and its own sentence in the log, for
+# a log copied back by an older transport.
+LQ_BOX_GONE_RE='unreachable for [0-9]+ polls — no verdict|the box vanished mid-proof'
+lq_box_gone() { # $1 = rc, $2 = log; 0 when the BOX went away rather than the proof failing
+  [ "${1:-}" = 75 ] && return 0
+  [ -n "${2:-}" ] && [ -f "$2" ] || return 1
+  grep -qE "$LQ_BOX_GONE_RE" "$2" 2>/dev/null
+}
+
 lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line outcome file (optional)
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
   if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
+  # …and only then the box: a proof that finished and reported GREEN before the box was reclaimed
+  # is a green proof, and the outcome file is the proof's own word.
+  if lq_box_gone "$1" "$2"; then echo "NONE:box"; return 0; fi
   if lq_base_state_red "$2"; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
@@ -1241,11 +1297,20 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
   local key="${2:-$tip}"
-  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$tree" "$key" "$inflight")"
-  local nlive; nlive="$(printf '%s\n' "$lines" | grep -c . || true)"
-  case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
   local dir="$tree/target/gate/preprove-$key"
   mkdir -p "$dir"
+  # THE LINES THE FLEET OWES AN ANSWER TO GO FIRST (see lq_front_add). The reordering is a copy of
+  # the queue, never the queue itself: the queue file is the operator's, and the runner rewrites it
+  # only when it pops or parks.
+  local qf="$Q"
+  if [ -s "$FRONT" ]; then
+    lq_front_queue "$Q" >"$dir/queue-front.txt"
+    qf="$dir/queue-front.txt"
+    lq_log "pre-prove: $(grep -c . "$FRONT" || true) line(s) the fleet owes an answer to are offered a box first"
+  fi
+  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$qf" "$tree" "$key" "$inflight")"
+  local nlive; nlive="$(printf '%s\n' "$lines" | grep -c . || true)"
+  case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
   # THE HELD LINES THAT CAN BE PROVEN TODAY (see the chained pre-proof note). They take the boxes the
   # live lines leave, and their claim is checked against everything already spoken for: the batch in
   # flight, the lines already green at this key, and the live lines this sweep is about to hand out.
@@ -1398,8 +1463,10 @@ EOF
       j=$((j + 1)); continue
     fi
     case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result")" in
-      GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
-      RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
+      GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
+      RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
+      NONE:box)  lq_front_add "$text"
+                 lq_log "pre-prove: line $j lost its BOX mid-proof (reclaimed, or it stopped answering); no verdict on the line — re-queued to the front (log: $dir/line-$j.log)" ;;
       NONE:never-reported) lq_log "pre-prove: line $j never reported; no record written (log: $dir/line-$j.log)" ;;
       NONE:base)  lq_log "pre-prove: line $j red against the BASE (a ceiling the head repairs); recorded NONE, not parked (log: $dir/line-$j.log)" ;;
       NONE:moved) lq_log "pre-prove: line $j refused by the tree-moved guard; re-queued, not parked (log: $dir/line-$j.log)" ;;
@@ -2086,6 +2153,40 @@ lq_selftest() {
   _t "an empty outcome file rules nothing"        RED   "$(lq_preproof_verdict 1 "$root/pl4.log" "$root/pl8.batch.result")"
   _t "a missing outcome file rules nothing"       "NONE:base" "$(lq_preproof_verdict 1 "$root/pl1.log" "$root/nope.result")"
   _t "  ...and the tree-moved guard still wins over no outcome" "NONE:moved" "$(lq_preproof_verdict 2 "$root/pl3.log" "$root/nope.result")"
+
+  # ── A BOX THAT VANISHED MID-PROOF IS NO VERDICT ON THE LINE ──────────────────────────────────
+  # Measured 2026-09-10 (the sweep of twelve that started 14:12): lines 10 and 11 ended `exit 2`
+  # "unreachable for 10 polls — no verdict" / "scp: Connection closed" after 1735 s and 10116 s
+  # because AWS reclaimed the spot instances under them. The engine had no word for that, so both
+  # were scored RED — a colour about a line whose proof never finished. It is NONE:box: nothing was
+  # learned, so nothing is recorded, and the line goes back to the FRONT of the pre-proof list
+  # (it has already waited two hours for an answer that never came).
+  echo "landq4 selftest: a box reclaimed mid-proof is NONE:box, re-queued, never RED"
+  printf 'land.sh: [lines 1] plan: plugins fmt gatefiles tests clippy kind-isolation gate\n' >"$root/plbox.log"
+  printf '[remote 21:43:50] ERROR: i-07af07dd77dfea9d9 unreachable for 10 polls — no verdict\n' >>"$root/plbox.log"
+  printf 'scp: Connection closed\n' >>"$root/plbox.log"
+  printf '[remote 21:44:08] host i-07af07dd77dfea9d9   exit 2   wall 1735s\n' >>"$root/plbox.log"
+  _t "the box vanished: NONE:box, not RED"     "NONE:box" "$(lq_preproof_verdict 2 "$root/plbox.log")"
+  _t "  ...and the transport's own rc 75 says it alone" "NONE:box" "$(lq_preproof_verdict 75 "$root/pl4.log")"
+  _t "a GREEN outcome still outranks it"       GREEN "$(lq_preproof_verdict 75 "$root/plbox.log" "$root/pl5.batch.result")"
+  _t "an ordinary red is still RED"            RED   "$(lq_preproof_verdict 1 "$root/pl4.log")"
+  _t "the sweep re-queues a NONE:box line to the front" 1 "$(grep -c 'NONE:box)  lq_front_add "\$text"' "$0")"
+  # THE FRONT LIST: the lines that were denied an answer by the fleet, not by their own picks.
+  local savedFRONT="$FRONT"; FRONT="$root/front.txt"; : >"$FRONT"
+  local fq="$root/frontq.txt"
+  printf -- '--prove aaa1111\n--prove bbb2222\n--prove ccc3333\n' >"$fq"
+  lq_front_add "--prove ccc3333"
+  _t "a re-queued line comes first"            "--prove ccc3333" "$(lq_front_queue "$fq" | head -1)"
+  _t "  ...and every other line is still there, in order" "$(printf -- '--prove aaa1111\n--prove bbb2222')" "$(lq_front_queue "$fq" | tail -n +2)"
+  _t "  ...and it is not there twice"          1 "$(lq_front_add "--prove ccc3333"; grep -c . "$FRONT")"
+  _t "a line that left the queue leaves the front list" 3 "$(lq_front_queue "$fq" | grep -c .)"
+  printf -- '--prove aaa1111\n--prove bbb2222\n' >"$fq"
+  _t "  ...and is simply not offered"          2 "$(lq_front_queue "$fq" | grep -c .)"
+  _t "an empty front list changes nothing"     "$(cat "$fq")" "$(: >"$FRONT"; lq_front_queue "$fq")"
+  lq_front_add "--prove bbb2222"; lq_front_drop "--prove bbb2222"
+  _t "a line that got a real verdict is dropped from the front" 0 "$(grep -c . "$FRONT")"
+  FRONT="$savedFRONT"
+  _t "the sweep asks the front-ordered queue for its lines" 1 "$(grep -c 'lq_disjoint_lines "\$PREPROVE_LINES" "\$qf"' "$0")"
 
   echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
   local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"

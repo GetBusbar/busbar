@@ -96,6 +96,42 @@ fleet_hosts() {
   awk 'NF && $1 !~ /^#/ {print $1}' "$FLEET_FILE"
 }
 
+# ── WHICH BOXES MAY HOLD A PROOF: THE ON-DEMAND ONES ────────────────────────────────────────────
+# Measured 2026-09-10: two of twelve pre-proofs ended `exit 2` "unreachable for 10 polls — no
+# verdict" after 1735 s and 10116 s, because AWS reclaimed the SPOT instances they were running on
+# ("Service initiated" in `describe-instances`). Nothing in the engine was wrong; the boxes went
+# away. A proof, a pre-proof and a landing are all 30–160 minutes of work that cannot be resumed
+# from the middle, so they go to boxes AWS cannot take back. A SHARD is different — a self-test leg
+# of a few minutes, re-runnable, and a lost one is already reported honestly on both sides — so
+# `fleet_pick_hosts`, which only ever places shards, keeps the whole fleet.
+#
+# The lifecycle is the host file's fourth column (ci-runners-lib.sh's `fleet_file_rows`): `spot`,
+# `ondemand`, or `unknown` for a row that does not say. UNKNOWN IS NOT ONDEMAND — a box we cannot
+# name is a box we do not bet three hours on.
+#
+# THE ONE EXCEPTION, AND IT IS LOUD: a file written before the column existed records the lifecycle
+# NOWHERE, and refusing every box there would stop every proof on this laptop over a stale file.
+# When NO row carries a lifecycle the whole fleet is offered and the log says the allocator is
+# guessing; when SOME row does, the file is current and a row without one is `unknown`.
+fleet_file_has_lifecycle() {
+  awk 'NF && $1 !~ /^#/ && NF >= 4 && $4 != "" { f = 1 } END { exit !f }' "$FLEET_FILE"
+}
+fleet_proof_hosts() {
+  [ -f "$FLEET_FILE" ] || rdie "no $FLEET_FILE — run ./scripts/ci-runners-ssh.sh first"
+  if ! fleet_file_has_lifecycle; then
+    rlog "fleet: $FLEET_FILE records no lifecycle column — every box is offered to this proof; re-run ./scripts/ci-runners-ssh.sh to record it"
+    fleet_hosts; return 0
+  fi
+  local h lc
+  while read -r h lc; do
+    [ -n "$h" ] || continue
+    rlog "fleet: $h skipped ($lc — a proof only goes to an ondemand box; a reclaimed box is a proof with no verdict)"
+  done <<EOF
+$(awk 'NF && $1 !~ /^#/ && $4 != "ondemand" { print $1, ($4 == "" ? "unknown" : $4) }' "$FLEET_FILE")
+EOF
+  awk 'NF && $1 !~ /^#/ && $4 == "ondemand" {print $1}' "$FLEET_FILE"
+}
+
 # READY AND LEAST LOADED, NOT BLIND ROUND-ROBIN. Measured 20:2x: the cursor handed a landing to a
 # box that no longer answered (a reclaimed spot instance) and the whole queue HALTed on "push
 # failed"; every box also hosts four CI runner agents, so the 1-minute load differs threefold across
@@ -166,9 +202,9 @@ _prove_count_snippet() {
 }
 fleet_pick_host() {
   local hosts n cur cursor h probe np ld best="" bestload="" bestn=""
-  hosts="$(fleet_hosts)"
+  hosts="$(fleet_proof_hosts)"
   n="$(printf '%s\n' "$hosts" | grep -c .)"
-  [ "$n" -gt 0 ] || rdie "$FLEET_FILE names no hosts"
+  [ "$n" -gt 0 ] || rdie "no on-demand box in $FLEET_FILE for a proof to run on ($(fleet_hosts | grep -c .) box(es) in the file, none of them ondemand) — the fleet needs an on-demand floor"
   cursor="${FLEET_FILE}.cursor"
   cur="$(cat "$cursor" 2>/dev/null || echo 0)"
   case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
@@ -191,7 +227,7 @@ fleet_pick_host() {
       best="$h"; bestload="$ld"; bestn="$np"
     fi
   done
-  [ -n "$best" ] || rdie "no prepared, reachable box among the $n in $FLEET_FILE"
+  [ -n "$best" ] || rdie "no prepared, reachable on-demand box among the $n in $FLEET_FILE"
   rlog "fleet: $best chosen ($bestn proof(s) running, 1-min load $bestload)"
   printf '%s\n' "$best"
 }
@@ -498,6 +534,40 @@ STUB
      "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_host 2>/dev/null)"
   _t "  ...and never the box at the ceiling"   1 \
      "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_host 2>&1 >/dev/null | grep -c 'box-g skipped (2 proof(s) running, ceiling 2)')"
+
+  # ── A PROOF GOES TO AN ON-DEMAND BOX; A SPOT BOX SERVES SHARDS OR NOTHING ─────────────────────
+  # Measured 2026-09-10: of twelve pre-proofs, two ended `exit 2` "unreachable for 10 polls — no
+  # verdict" after 1735 s and 10116 s because AWS reclaimed the spot instances under them
+  # ("Service initiated"). A pre-proof is 30–160 minutes of work that cannot be resumed; a SHARD is
+  # a self-test leg of a few minutes that the fan-out already re-reports honestly when it is lost.
+  # So the single-host allocator — the one that places a proof, a pre-proof or a landing — takes
+  # on-demand boxes ONLY, and fleet_pick_hosts (the shard fan-out) still takes the whole fleet.
+  # A lifecycle the file does not record is `unknown`, and unknown is not offered a proof either.
+  echo "ci-remote-lib selftest: a proof goes to an on-demand box only"
+  printf 'box-c us-east-1a 10.0.0.3 spot\nbox-e us-east-1a 10.0.0.5 ondemand\nbox-a us-east-1a 10.0.0.1 ondemand\nbox-h us-east-1a 10.0.0.8 unknown\n' >"$root/fleet-lc"
+  _lc() { FLEET_FILE="$root/fleet-lc"; rm -f "$root/fleet-lc.cursor"; _fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; "$@"; }
+  _t "the quietest ON-DEMAND box wins"          "box-e" "$(_lc fleet_pick_host 2>/dev/null)"
+  _t "  ...and the quieter SPOT box is skipped, and named" 1 \
+     "$(_lc fleet_pick_host 2>&1 >/dev/null | grep -c 'box-c skipped (spot')"
+  _t "  ...and an unknown lifecycle is skipped too" 1 \
+     "$(_lc fleet_pick_host 2>&1 >/dev/null | grep -c 'box-h skipped (unknown')"
+  _t "a spot box is never returned to a proof"   0 "$(_lc fleet_pick_host 2>/dev/null | grep -c '^box-c$')"
+  _t "the SHARD allocator still takes the spot box" "box-c" "$(_lc fleet_pick_hosts 4 2>/dev/null | head -1)"
+  _t "  ...and every box in the file is a shard candidate" 4 "$(_lc fleet_pick_hosts 8 2>/dev/null | grep -c .)"
+  # A FLEET FILE WRITTEN BEFORE THE COLUMN EXISTED must not starve every proof on this laptop: with
+  # no lifecycle recorded ANYWHERE the allocator offers the whole fleet and SAYS it is guessing.
+  printf 'box-c\nbox-e\nbox-a\n' >"$root/fleet-old"
+  _old() { FLEET_FILE="$root/fleet-old"; rm -f "$root/fleet-old.cursor"; _fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; "$@"; }
+  _t "an old file without the column still allocates" "box-c" "$(_old fleet_pick_host 2>/dev/null)"
+  _t "  ...and says the lifecycle is unrecorded"      1 \
+     "$(_old fleet_pick_host 2>&1 >/dev/null | grep -c 'records no lifecycle column')"
+  # ...and a file whose every box is spot gives a proof NOTHING, by name, rather than a box.
+  printf 'box-c us-east-1a 10.0.0.3 spot\nbox-a us-east-1a 10.0.0.1 spot\n' >"$root/fleet-spot"
+  _sp() { FLEET_FILE="$root/fleet-spot"; rm -f "$root/fleet-spot.cursor"; _fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; "$@"; }
+  _t "an all-spot fleet offers a proof no box at all" 2 "$( ( _sp fleet_pick_host ) >/dev/null 2>&1; echo $?)"
+  _t "  ...and says why"                              1 \
+     "$(_sp fleet_pick_host 2>&1 >/dev/null | grep -c 'no on-demand box')"
+  FLEET_FILE="$root/fleet"
 
   # ── THE SLUG: A BRANCH NAME THAT CANNOT BECOME THE SHARED TREE ────────────────────────────────
   echo "ci-remote-lib selftest: the per-branch checkout name"

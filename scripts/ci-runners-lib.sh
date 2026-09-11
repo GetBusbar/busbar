@@ -429,16 +429,38 @@ ssm_wait() { # $1 = command id, $2 = polls, $3 = seconds between. Echoes the fin
 # The host list every remote entry point reads. Written here rather than only in ci-runners-ssh.sh
 # because it goes STALE the moment a spot box is reclaimed, and a stale entry makes the round-robin
 # allocator in ci-remote-lib.sh hand an agent a host that no longer exists.
+# `<id> <az> <ip> <lifecycle>` out of `describe-instances --output text` rows of the same shape,
+# with the lifecycle NORMALISED to one of three words. EC2 renders an absent `InstanceLifecycle`
+# (which is what an on-demand instance has) as the string `None`, and a spot instance as `spot`.
+#
+# THE THIRD WORD IS `unknown`, AND IT IS NOT A SYNONYM FOR `ondemand`. A row that arrives without a
+# fourth field — an older file, a query somebody narrowed, an AWS shape that changed — says nothing
+# about how the box is held, and the proof allocator must refuse it rather than assume the durable
+# answer. A lifecycle EC2 invents (`capacity-block`, …) is carried through as itself for the same
+# reason: it is not `ondemand`, so it is not taken for one.
+fleet_file_rows() {
+  awk -F'\t' 'NF >= 3 {
+      lc = (NF >= 4 ? $4 : "")
+      if (lc == "spot") o = "spot"
+      else if (lc == "None") o = "ondemand"
+      else if (lc == "") o = "unknown"
+      else o = lc
+      printf "%s\t%s\t%s\t%s\n", $1, $2, $3, o
+    }'
+}
+
 write_fleet_file() {
   local f="${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet}"
   if dry; then printf '[dry-run] would rewrite %s from the live fleet\n' "$f" >&2; return 0; fi
   {
     echo "# busbar CI fleet — written by scripts/ci-runners-*.sh at $(date -u +%FT%TZ)"
-    echo "# <instance-id> <az> <private-ip>   (ssh reaches these over SSM; there is no public port)"
+    echo "# <instance-id> <az> <private-ip> <lifecycle>   (ssh reaches these over SSM; there is no public port)"
+    echo "# lifecycle is EC2's own InstanceLifecycle: spot | ondemand | unknown. A PROOF only ever"
+    echo "# goes to an ondemand box — a reclaimed spot box is a proof with no verdict (see ci-remote-lib.sh)."
     aws ec2 describe-instances \
       --filters "Name=tag:Name,Values=$FLEET" "Name=instance-state-name,Values=running" \
-      --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone,PrivateIpAddress]' \
-      --output text
+      --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone,PrivateIpAddress,InstanceLifecycle]' \
+      --output text | fleet_file_rows
   } > "$f"
 }
 
@@ -505,7 +527,33 @@ _runners_lib_selftest() {
   _t "an operator can still override it"     "m7a.16xlarge" \
      "$(CI_RUNNER_PROVE_ITYPE=m7a.16xlarge bash -c 'printf "%s" "${CI_RUNNER_PROVE_ITYPE:-c7a.8xlarge}"')"
 
-  if [ "$fails" -eq 0 ]; then echo "ci-runners-lib selftest: GREEN (prove box is not a runner; the prove type's default is measured)"; return 0; fi
+  # ── THE HOST FILE RECORDS EACH BOX'S LIFECYCLE ───────────────────────────────────────────────
+  # Measured 2026-09-10: two pre-proofs (1735 s and 10116 s of proof) ended "unreachable for 10
+  # polls — no verdict" because AWS reclaimed the SPOT instances they were running on
+  # (`describe-instances` says "Service initiated"). The allocator could not have avoided them: the
+  # host file records `<id> <az> <ip>` and nothing about how the box is held, so every box looks
+  # equally durable to `fleet_pick_host`. The lifecycle is EC2's own answer (InstanceLifecycle is
+  # absent — rendered `None` — on an on-demand box), it is written as a fourth column, and a row
+  # that does not carry one is `unknown`, which the proof allocator refuses rather than guesses.
+  echo "ci-runners-lib selftest: the host file records each box's lifecycle"
+  _t "a spot row is written spot"      "i-1 us-east-1a 10.0.0.1 spot" \
+     "$(printf 'i-1\tus-east-1a\t10.0.0.1\tspot\n' | fleet_file_rows | tr '\t' ' ')"
+  _t "an on-demand row (None) is written ondemand" "i-2 us-east-1b 10.0.0.2 ondemand" \
+     "$(printf 'i-2\tus-east-1b\t10.0.0.2\tNone\n' | fleet_file_rows | tr '\t' ' ')"
+  _t "a row with NO lifecycle column is unknown, never ondemand" "i-3 us-east-1c 10.0.0.3 unknown" \
+     "$(printf 'i-3\tus-east-1c\t10.0.0.3\n' | fleet_file_rows | tr '\t' ' ')"
+  _t "  ...and so is an empty one"     "i-4 us-east-1c 10.0.0.4 unknown" \
+     "$(printf 'i-4\tus-east-1c\t10.0.0.4\t\n' | fleet_file_rows | tr '\t' ' ')"
+  _t "a lifecycle EC2 invents is carried, not translated" "i-5 us-east-1d 10.0.0.5 capacity-block" \
+     "$(printf 'i-5\tus-east-1d\t10.0.0.5\tcapacity-block\n' | fleet_file_rows | tr '\t' ' ')"
+  _t "the writer asks EC2 for the lifecycle" 1 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c 'PrivateIpAddress,InstanceLifecycle\]')"
+  _t "  ...and pipes its rows through the normaliser" 1 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c 'fleet_file_rows')"
+  _t "the header names the fourth column" 1 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c '<lifecycle>')"
+
+  if [ "$fails" -eq 0 ]; then echo "ci-runners-lib selftest: GREEN (prove box is not a runner; the prove type's default is measured; the host file records each box's lifecycle)"; return 0; fi
   echo "ci-runners-lib selftest: RED ($fails failure(s))" >&2; return 1
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _runners_lib_selftest; exit $?; fi
