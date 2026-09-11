@@ -103,6 +103,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `busbar-core`, which re-exports every moved item at its historical `config::` path.
         // Tracked as a DIRECTORY so a future file split under it is automatically covered.
         "crates/busbar-substrate/src/config".to_string(),
+        // The `plugins.fetch:` grammar is declared beside the fetch machinery that consumes it
+        // (`PluginFetch` and its three shapes), so the tracked set follows it there. A single FILE
+        // and not the directory: the rest of `plugin-loader/src` is ABI and runtime, not grammar.
+        "crates/plugin-loader/src/fetch.rs".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.

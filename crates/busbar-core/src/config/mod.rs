@@ -1416,124 +1416,15 @@ pub struct PluginsCfg {
     pub(crate) fetch: Vec<PluginFetch>,
 }
 
-/// One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a
-/// `org/repo@tag` release ref (asset resolved by the loader); `url` is a direct tarball URL; `env`
-/// names an environment variable holding a URL (or `url@sha256`). `sha256` (github/url) is the
-/// lowercase-hex integrity pin: it is BOTH the download-skip cache key (a file in `dir` already
-/// hashing to it ⇒ no network) and the verify-before-write gate. Per-variant `deny_unknown_fields`
-/// so a typo'd key can't be silently reinterpreted as a different variant.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(untagged)]
-pub(crate) enum PluginFetch {
-    /// `- { github: "org/repo@v1.2.3", sha256?: "…" }`
-    Github(GithubFetch),
-    /// `- { url: "https://host/plugin.tar.gz", sha256?: "…" }`
-    Url(UrlFetch),
-    /// `- { env: "BUSBAR_PLUGIN_URL" }` (the VAR holds a url, or `url@sha256`)
-    Env(EnvFetch),
-}
-
-/// The `{ github, sha256? }` fetch shape. `deny_unknown_fields` on each variant struct is what gives
-/// the untagged enum real typo rejection: an entry with a stray key matches NO variant and errors,
-/// rather than being silently reinterpreted.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GithubFetch {
-    pub(crate) github: String,
-    #[serde(default)]
-    pub(crate) sha256: Option<String>,
-}
-
-/// The `{ url, sha256? }` fetch shape.
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct UrlFetch {
-    pub(crate) url: String,
-    #[serde(default)]
-    pub(crate) sha256: Option<String>,
-}
-
-/// The `{ env }` fetch shape (the VAR's value is a url, optionally `url@sha256`).
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvFetch {
-    pub(crate) env: String,
-}
-
-/// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
-/// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
-fn fetch_filename_from_url(url: &str) -> Result<String, String> {
-    let path = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let path = path.split(['?', '#']).next().unwrap_or(path);
-    let base = path.rsplit('/').next().unwrap_or("");
-    if base.is_empty() {
-        return Err(format!(
-            "plugins.fetch url '{url}' has no filename (a signed tarball basename is required)"
-        ));
-    }
-    Ok(base.to_string())
-}
-
-/// Map one [`PluginFetch`] to a loader [`busbar_plugin_loader::FetchSpec`].
-fn fetch_spec_from(f: &PluginFetch) -> Result<busbar_plugin_loader::FetchSpec, String> {
-    match f {
-        PluginFetch::Github(g) => {
-            // "org/repo@tag" → the GitHub release-asset URL. busbar plugins ship one signed
-            // `{repo}.tar.gz` per release, so the asset name is derived, not discovered.
-            let (repo_path, tag) = g.github.split_once('@').ok_or_else(|| {
-                format!(
-                    "plugins.fetch github '{}' must be 'org/repo@tag' (missing '@tag')",
-                    g.github
-                )
-            })?;
-            let (org, repo) = repo_path.split_once('/').ok_or_else(|| {
-                format!(
-                    "plugins.fetch github '{}' must be 'org/repo@tag' (missing 'org/repo')",
-                    g.github
-                )
-            })?;
-            if org.is_empty() || repo.is_empty() || tag.is_empty() {
-                return Err(format!(
-                    "plugins.fetch github '{}' must be a non-empty 'org/repo@tag'",
-                    g.github
-                ));
-            }
-            let filename = format!("{repo}.tar.gz");
-            let url = format!("https://github.com/{org}/{repo}/releases/download/{tag}/{filename}");
-            Ok(busbar_plugin_loader::FetchSpec {
-                url,
-                sha256: g.sha256.clone(),
-                filename,
-            })
-        }
-        PluginFetch::Url(u) => Ok(busbar_plugin_loader::FetchSpec {
-            url: u.url.clone(),
-            sha256: u.sha256.clone(),
-            filename: fetch_filename_from_url(&u.url)?,
-        }),
-        PluginFetch::Env(e) => {
-            let raw = std::env::var(&e.env).map_err(|_| {
-                format!(
-                    "plugins.fetch env '{}' is not set (it must hold a url or 'url@sha256')",
-                    e.env
-                )
-            })?;
-            // The var value is `url` or `url@sha256`. Split on the LAST '@' so a userinfo '@' in the
-            // URL isn't mistaken for the pin separator (pins are hex, no '@').
-            let (url, sha256) = match raw.rsplit_once('@') {
-                Some((u, s)) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit()) => {
-                    (u.to_string(), Some(s.to_string()))
-                }
-                _ => (raw.clone(), None),
-            };
-            Ok(busbar_plugin_loader::FetchSpec {
-                filename: fetch_filename_from_url(&url)?,
-                url,
-                sha256,
-            })
-        }
-    }
-}
+// THE `plugins.fetch:` GRAMMAR MOVED to `busbar_plugin_loader::fetch`, beside the machinery that
+// consumes it: `PluginFetch` and its three shapes ARE the loader's own words, and the lowering to a
+// `FetchSpec` was already writing that crate's type. Re-exported at the historical `config::` path,
+// so every engine-side call site and the frozen `PluginsCfg::fetch` field are unchanged.
+pub(crate) use busbar_plugin_loader::fetch::PluginFetch;
+// The three variant shapes are named in core only by the config test that writes one by hand; the
+// production path constructs none of them and reaches them through the enum it re-exports above.
+#[cfg(test)]
+pub(crate) use busbar_plugin_loader::fetch::UrlFetch;
 
 impl Default for PluginsCfg {
     fn default() -> Self {
@@ -1587,7 +1478,10 @@ impl PluginsCfg {
     /// `url@sha256`), erroring if the var is unset. Called at boot/reload BEFORE the fetch; never in
     /// `--validate` (the zero-network contract).
     pub(crate) fn fetch_specs(&self) -> Result<Vec<busbar_plugin_loader::FetchSpec>, String> {
-        self.fetch.iter().map(fetch_spec_from).collect()
+        self.fetch
+            .iter()
+            .map(busbar_plugin_loader::fetch::spec_from)
+            .collect()
     }
 
     /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +
