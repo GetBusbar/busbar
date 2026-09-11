@@ -1715,3 +1715,20 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 8
 because = "the units the seven steps are SERVED BY, named by the composition that binds them: `busbar_unit_auth::{Auth, AuthChain}`, `busbar_unit_trust::{Trust, BreakerView, Unavailable}`, `busbar_unit_scope::Grants`, `busbar_unit_admission::{Door, InMemoryCells, Pricer, GroupTable, BucketChain}`, `busbar_unit_usage::KernelLine` and `busbar_unit_wal::NullShipper`. Every one of them is the node's one instance handed to this leg; nothing here is a second copy of a unit and nothing here is plane-specific."
+
+# ------------------------------------------------------------------------------------------------
+# ONE HOME FOR THE STEP BODIES EVERY MOUNTING SHARES (A2A-T, 1.6.0)
+# ------------------------------------------------------------------------------------------------
+#
+# `crates/busbar/src/root/units_common.rs` lands as the ONE home of the step bodies that do not ask
+# which protocol they are serving: the read through whatever ingress decoder a plane brought, the
+# per-unit poisoned-lock read, the total join from the kernel's ten step names onto the contract's,
+# the refusal the loop sealed, and what the encode step reports. Every one of them was about to
+# exist twice -- once in `units_mcp.rs` and once in `units_a2a.rs` -- and a body identical in two
+# files is two bodies with one of them free to drift.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "root/units_common.rs, the one home of the step bodies every mounted plane shares. The bodies MOVED out of root/units_mcp.rs rather than being copied, so the capability vocabulary they carry -- `ReasonCode`, `Outcome`, the ten `StepName` arms of `refusal_step` -- is unchanged in total; the rise is the new file's own `use busbar_caps::{...}` lines, which is the whole price of a body having one home instead of two. A composition root is the ONE kind entitled to name the loop's vocabulary, and this file names nothing else: it names no plane at all, which is the test of whether a body belongs in it."

@@ -1611,6 +1611,8 @@ use busbar_caps::{Canary, Hold, HoldCell};
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit, Ended as LoopEnd, Kernel, Run};
 
+use crate::root::units_common::refusal_of;
+
 /// One request, built the way the conformance rig's own request builder builds one.
 ///
 /// The rig is the oracle for this plane until the recorder can drive it, so the fixture is the

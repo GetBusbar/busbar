@@ -82,6 +82,12 @@ pub mod transports;
 pub mod units_a2a;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
+/// The step bodies that are the SAME on every plane, written once: the read through whatever
+/// ingress decoder a plane brought, the per-unit lock, the join from the loop's step names onto the
+/// contract's, and what the encode step reports. A body identical in two mountings is two bodies
+/// with one of them free to drift.
+#[cfg(any(feature = "root-a2a", feature = "root-mcp"))]
+pub mod units_common;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
 #[cfg(feature = "root-mcp")]

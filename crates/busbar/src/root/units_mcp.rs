@@ -48,6 +48,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::root::units_common::{encoded_frame, read_through_poison};
+
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
@@ -176,77 +178,13 @@ pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Ar
 // Step 0b — decode, through the plane's own reading of the envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// What the plane made of one inbound frame.
+/// What the plane made of one inbound frame, and the read that produces it.
 ///
-/// Three answers rather than two, because "not a unit" is not one thing. A notice nothing
-/// recognises is dropped and a partial frame is waited on, and neither is a refusal: this protocol
-/// forbids answering a message that carries no identifier, so refusing one would be an answer to a
-/// caller who is owed silence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Read<'u> {
-    /// A draft the loop runs. Boxed because the fact map is a fixed array sized for the declared
-    /// key ceiling, and an enum whose other arms are empty should not be that wide everywhere.
-    Unit(Box<Decoded<'u>>),
-    /// A notice this node does not recognise. Counted, never answered.
-    Dropped,
-    /// Not a whole frame yet.
-    NeedMore,
-}
-
-/// What the plane's read of one request body yielded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Decoded<'u> {
-    /// The operation class the plane's method table named.
-    pub op: OpClassId,
-    /// Whether the unit holds its direction open rather than being answered once.
-    pub streaming: bool,
-    /// The facts the plane read off the bytes, including the caller's metadata block.
-    pub facts: busbar_contract::bounded::Facts<'u>,
-}
-
-/// Read one inbound frame through the plane's own ingress decoder.
-///
-/// The root does not parse this protocol and must not: the envelope shape, the method table and the
-/// pointer table are all the plane's, and a second reading here would be a second grammar. What the
-/// root owns is the mapping from the plane's decode failure onto the loop's closed reason
-/// vocabulary, which is the thing the journal and the refusal both name.
-///
-/// # Errors
-/// Returns the reason a refusal at the decode step carries when the plane could not read the bytes.
-pub fn read_ingress<'u>(
-    plane: &McpPlane,
-    frames: &mut busbar_contract::wire::FrameCursor<'u>,
-    ctx: &busbar_contract::unit::Ctx<'u>,
-) -> Result<Read<'u>, ReasonCode> {
-    let ingress = plane
-        .decode_ingress(frames, None, ctx)
-        .map_err(|failure| match failure {
-            // The arena running out is a budget, not a misread body, and the two carry different
-            // reasons because a caller who is over a bound and a caller who sent nonsense are owed
-            // different answers.
-            busbar_contract::wire::Decode::Oversize => ReasonCode::ArenaBudget,
-            _ => ReasonCode::DecodeFailed,
-        })?;
-    Ok(match ingress {
-        busbar_contract::plane::Ingress::OneShot(draft) => Read::Unit(Box::new(Decoded {
-            op: draft.op,
-            streaming: false,
-            facts: draft.facts,
-        })),
-        busbar_contract::plane::Ingress::Open(draft) => Read::Unit(Box::new(Decoded {
-            op: draft.op,
-            streaming: true,
-            facts: draft.facts,
-        })),
-        busbar_contract::plane::Ingress::Discard { .. } => Read::Dropped,
-        busbar_contract::plane::Ingress::NeedMore => Read::NeedMore,
-        // This plane opens no handshake unit and closes no session of its own — every claim it
-        // makes carries its credential on the first frame. A decoder that started answering either
-        // would be a plane whose shape changed, and carrying such a frame on as a unit would give
-        // it a class nobody decoded.
-        _ => return Err(ReasonCode::DecodeFailed),
-    })
-}
+/// Both are [`crate::root::units_common`]'s, because neither asks which protocol it is serving:
+/// the three answers a read can have and the join from a decode failure onto the loop's closed
+/// reason vocabulary are the LOOP's questions, and every plane this root mounts answers them the
+/// same way. Named here so this file reads as the whole of one plane's mounting.
+use crate::root::units_common::{read_ingress, Read};
 
 /// Answer the decode step with the class the plane named.
 ///
@@ -1954,16 +1892,6 @@ pub struct McpBindings<'r> {
     pub expires_at: u64,
 }
 
-/// A lock this plane holds, taken the way the root takes its locks.
-///
-/// A poisoned lock is read through rather than refused. The panic that poisoned it happened
-/// somewhere else, and what is behind it is written once per field and then read — so a reader
-/// after a panic sees a prefix of the truth rather than a corrupted one. The alternative is a node
-/// whose audit chain stops sealing because one unrelated unit panicked once.
-fn read_through_poison<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(|p| p.into_inner())
-}
-
 /// What the steps recorded as they ran.
 ///
 /// The settlement table and the audit record read this once, at the end. It is behind a lock
@@ -2414,27 +2342,11 @@ impl Units for McpUnits<'_> {
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
-        // The plane's encoders take the unit's arena, and this signature carries neither an arena
-        // nor the plane's draft, so the bytes are written where the borrow lives — see
-        // [`refusal_of`], which is how the root hands the loop's ending back to the plane to render
-        // — and this step reports what left. A root that allocated a second buffer here would be
-        // writing the wire format twice.
+        // What left, reported by the one body every mounting reports it with: the bytes were
+        // written where the borrow lives, because this signature carries neither an arena nor the
+        // plane's draft.
         let bytes = read_through_poison(&self.progress).encoded;
-        Decision::proceed(
-            token,
-            busbar_contract::wire::Frame {
-                direction: busbar_contract::wire::Direction::Outbound,
-                stream: busbar_contract::ids::StreamId(0),
-                bytes: busbar_contract::bounded::SlabBytes::new(Arc::from(&[][..])),
-                meta: busbar_contract::wire::FrameMeta {
-                    bytes,
-                    transport_units: None,
-                    status: None,
-                    status_code: None,
-                    retry_after_secs: None,
-                },
-            },
-        )
+        Decision::proceed(token, encoded_frame(bytes))
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
@@ -2443,60 +2355,12 @@ impl Units for McpUnits<'_> {
     }
 }
 
-/// **The bytes the caller is owed, from the ending the loop sealed.**
-///
-/// The loop decides how a unit ended and the PLANE renders it — that is the split, and this is the
-/// hinge. What the root owns is the join between the kernel's own closed vocabulary and the
-/// contract's spelling of it, so that a refusal a caller reads is the refusal the loop raised rather
-/// than an envelope this file wrote out by hand. The reason side of the join already exists as one
-/// `From` in the capability crate, walked by that crate's own tests; the step side is written here,
-/// totally, so a step added to the loop does not compile until a caller can be told which one it was.
-///
-/// `None` is a unit that SETTLED. A settled unit's bytes are its answer, which the plane writes from
-/// the unit's own arena, and rendering a refusal for one would be inventing an error nothing raised.
-#[must_use]
-pub fn refusal_of(
-    ended: &busbar_kernel::teller::Ended,
-) -> Option<busbar_contract::unit::Refusal<'static>> {
-    let (step, reason) = match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => match end.outcome() {
-            Outcome::Refused(step, reason) => (step, reason),
-            // Every other ending either delivered an answer or lost the unit before one could be
-            // written, and neither is a refusal a caller is owed an envelope for.
-            _ => return None,
-        },
-        // The node's own sweep took the hold first, so this unit will not produce an answer at all.
-        busbar_kernel::teller::Ended::AlreadySettled => return None,
-    };
-    Some(busbar_contract::unit::Refusal {
-        step: refusal_step(step),
-        reason: reason.into(),
-        retry_after_secs: None,
-        stream: None,
-        correlates: None,
-    })
-}
-
-/// The contract's spelling of the step a refusal was raised at.
-///
-/// Two crates name the same ten steps and neither depends on the other, so the mapping is written
-/// once, here, where both are in scope. Totality is what makes it safe: an eleventh step would not
-/// compile.
-#[must_use]
-pub fn refusal_step(step: busbar_caps::StepName) -> busbar_contract::unit::Step {
-    match step {
-        StepName::Arrival => busbar_contract::unit::Step::Arrival,
-        StepName::Decode => busbar_contract::unit::Step::Decode,
-        StepName::Authenticate => busbar_contract::unit::Step::Authenticate,
-        StepName::Verify => busbar_contract::unit::Step::Verify,
-        StepName::Approve => busbar_contract::unit::Step::Approve,
-        StepName::Admit => busbar_contract::unit::Step::Admit,
-        StepName::Route => busbar_contract::unit::Step::Route,
-        StepName::Meter => busbar_contract::unit::Step::Meter,
-        StepName::Audit => busbar_contract::unit::Step::Audit,
-        StepName::Encode => busbar_contract::unit::Step::Encode,
-    }
-}
+// THE BYTES THE CALLER IS OWED, and the join the envelope's step name comes through, are
+// `crate::root::units_common::{refusal_of, refusal_step}`. The loop decides how a unit ended and
+// the PLANE renders it; what the root owns is the join between the kernel's closed vocabulary and
+// the contract's spelling of it, and that join is about the LOOP rather than about this protocol,
+// so it is written once for every mounting rather than once per plane. This file writes no envelope
+// and parses no JSON-RPC: it hands the ending back and the plane renders it.
 
 #[cfg(test)]
 #[path = "tests/units_mcp.rs"]
