@@ -1253,6 +1253,15 @@ models:
 /// proves the refusal carries no credential material — a diagnostic must never print a resolved
 /// secret, and the whole point of this change is that the credential path is fail-closed WITHOUT
 /// becoming a place secrets leak.
+// PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
+// `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
+// "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
+// reaches the credential field this test is about. The 18 sibling provider tests in this file are
+// already `proto-llm`-gated for exactly that reason; these two were not, so
+// `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
+// is asking about. The question here genuinely needs a provider lane, so it is gated rather than
+// re-fixtured.
+#[cfg(feature = "proto-llm")]
 #[test]
 fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     let dir = fixture_dir("apikey-unresolvable");
@@ -1278,6 +1287,15 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
 /// `api_key: none` — the explicit keyless declaration for a local ollama / vLLM — validates CLEAN
 /// with no variable set for it anywhere. This is the migration path off the removed
 /// degrade-to-an-empty-credential behaviour, so it has to work at the outermost surface.
+// PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
+// `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
+// "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
+// reaches the credential field this test is about. The 18 sibling provider tests in this file are
+// already `proto-llm`-gated for exactly that reason; these two were not, so
+// `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
+// is asking about. The question here genuinely needs a provider lane, so it is gated rather than
+// re-fixtured.
+#[cfg(feature = "proto-llm")]
 #[test]
 fn validate_accepts_api_key_none_for_a_keyless_upstream() {
     let dir = fixture_dir("apikey-none");
