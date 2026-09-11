@@ -27,7 +27,7 @@
 //! operator grant (AND the signed-manifest declared intent) allow it — the plugin has no say and
 //! cannot cause content to be sent. This ABI just carries whatever the core chose to project.
 
-use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use busbar_contract::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The hook-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: hook`).

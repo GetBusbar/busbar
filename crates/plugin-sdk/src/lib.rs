@@ -847,10 +847,10 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
 
-/// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
-/// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
-/// `busbar-plugin` dependency.
-pub use busbar_plugin::cold::http_endpoint::{
+/// Re-export the route-declaration face so an author names `busbar_plugin_sdk::Route` (etc.) at the
+/// path this SDK has always published it under. The one definition is
+/// `busbar_contract::http_endpoint`'s — see `docs/design/1.6.0-one-face-per-kind.md` §2.
+pub use busbar_contract::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 

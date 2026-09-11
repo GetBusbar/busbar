@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **HTTP endpoint** wire (kind = [`crate::cold::kind::EXPORT`] / [`crate::cold::kind::HOOK`]) that rides the
+//! The **HTTP endpoint** wire (kind = `export` / `hook`) that rides the
 //! kind-neutral `call`: plugin HTTP route registration ([`Route`]) and the inbound-request dispatch
 //! pair ([`HttpEndpointRequest`] / [`HttpEndpointResponse`]).
 //!
@@ -146,7 +146,3 @@ impl HttpEndpointResponse {
         safe_relay_status(self.status)
     }
 }
-
-#[cfg(test)]
-#[path = "tests/http_endpoint_tests.rs"]
-mod tests;

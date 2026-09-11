@@ -32,5 +32,11 @@ license = "Apache-2.0"
 # lane's: `busbar-api` + serde.
 [dependencies]
 busbar-api = { path = "../api" }
+# THE FACE. `busbar_contract::http_endpoint` is the route-declaration face a hook or an export sink
+# DECLARES and ANSWERS, and it lives in the one crate a plugin manifest may name (owner ruling
+# 2026-09-10; see docs/design/1.6.0-one-face-per-kind.md section 2). The envelopes this crate
+# declares carry those face types, so the crate that declares the ABI names the crate that declares
+# the face.
+busbar-contract = { path = "../busbar-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }

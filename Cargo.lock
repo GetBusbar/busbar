@@ -793,6 +793,7 @@ name = "busbar-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "serde",
  "serde_json",
 ]
@@ -839,6 +840,7 @@ name = "busbar-plugin-sdk"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin",
  "busbar-store-memory",
  "serde_json",

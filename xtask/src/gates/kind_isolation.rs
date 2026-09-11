@@ -533,6 +533,18 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("kernel", "grammar"),
     ("legacy", "contract"),
     ("plane", "contract"),
+    // THE PLUGIN ABI CRATE IS GRANTED THE CONTRACT, and it is its own `allowed` row rather than a
+    // hole in the TCB table below. `busbar-plugin` is the cold lane's wire, and a kind's FACE — the
+    // trait a plugin implements and the types that trait names — lives in `busbar-contract` because
+    // that is the one crate a plugin manifest may name (`docs/design/1.6.0-one-face-per-kind.md`
+    // §2). The envelope this crate declares CARRIES those face types, so the crate that declares
+    // the ABI must name the crate that declares the face. `ARCHITECTURE.md` 1.4 says `abi` is a TCB
+    // crate and not a kind, and that is exactly why this is `allowed` and not `tcb`: TCB is a hole
+    // for edges the kind rules have NO OPINION about, and the architecture HAS an opinion here —
+    // every kind is granted `busbar-contract` and the ABI is written on the same face the plugins
+    // are. Owner ruling 2026-09-10. No closure widens: `busbar-api`, which this crate already
+    // links, links `busbar-contract`.
+    ("plugin-abi", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
     ("root", "caps"),
@@ -568,6 +580,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
+    // THE EDGE THE FACE MOVE PUTS THE TOOLING ON, and it is the same class as the `api` line above
+    // rather than a new permission. The SDK's job is to hand a plugin author the C glue for a face,
+    // and the loader's is to bridge that face across the ABI; both hold a face by definition, and
+    // which crate DECLARES it is what 1.6.0 changes. Leaving this out would make the move itself
+    // inadmissible — the tooling cannot stop naming `busbar-api` without naming what replaces it —
+    // and the ship twin still refuses the whole TCB hole, so nothing here becomes permanent.
+    ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),

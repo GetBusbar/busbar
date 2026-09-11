@@ -105,6 +105,19 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
   CI failure. **The one exception, and the only cross-crate edge in the whole plugin tree:** a
   DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
   type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
+  **EVERY KIND IS GRANTED `busbar-contract`, AND SO ARE THE TWO TCB FAMILIES THAT ARE NOT KINDS**
+  (OWNER RULING 2026-09-10, the same sentence this list already makes for `store` and `secret`). A
+  kind's FACE — the trait a plugin implements and the types that trait names — lives in
+  `busbar-contract`, because that is the one crate a plugin manifest may name
+  (`docs/design/1.6.0-one-face-per-kind.md` §2). `busbar-plugin` (kind `plugin-abi`, the TCB crate
+  of §1.4) declares the JSON envelope that CARRIES those face types, so the crate that declares the
+  ABI names the crate that declares the face; `busbar-plugin-sdk` and `busbar-plugin-loader` (kind
+  `plugin-tooling`) hand that face to a plugin author and bridge it across the ABI respectively, so
+  both hold a face by definition. All three reached the face through `busbar-api`'s re-export while
+  that crate drained, and `busbar-api` is being deleted. The grant WIDENS NO CLOSURE —
+  `busbar-api` links `busbar-contract` already, so each edge moves rather than appears — and it
+  grants nothing else: `plugin-abi -> api` and the rest of the TCB hole stay exactly where they are,
+  and the ship twin still refuses the whole TCB hole.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
   static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,

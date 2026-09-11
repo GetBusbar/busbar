@@ -120,13 +120,62 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
+# THE SAME IDENTITY MOVE, SEEN BY THE KIND-ISOLATION MATRIX. `busbar-contract` now carries the
+# words the moved file carries, and `busbar-plugin` no longer does: the four cells that FALL
+# (busbar-plugin x control 35 -> 25, x plane 81 -> 80, x transport 137 -> 107, busbar-plugin-sdk x
+# transport 44 -> 43) are re-pinned downward in the same commit, and the three that RISE are these.
+# `ceiling-rose` keys a qa/kind-isolation.toml row by its ORDINAL on this base, so the keys below
+# are ordinals; they name the busbar-contract x control, x plane and x transport cells and no other
+# row, and they are re-keyed by identity when the fix that does that lands.
+[gate.ceiling_raises."cell.52.count"]
+file = "qa/kind-isolation.toml"
+from = 20
+to = 30
+because = "busbar-contract x control: the plugin HTTP-endpoint face moves in from busbar-plugin by identity, and `RouteAuth::Admin` (the level the operator admin chain enforces before a matched request is forwarded) is control vocabulary wherever the file lives. Eight of the ten new hits are crates/busbar-contract/src/http_endpoint.rs; the mirror is busbar-plugin x control falling 35 -> 25 in this same commit. Not one word changed -- the file moved"
+
+[gate.ceiling_raises."cell.56.count"]
+file = "qa/kind-isolation.toml"
+from = 42
+to = 43
+because = "busbar-contract x plane: the same identity move, one hit, in crates/busbar-contract/src/http_endpoint.rs -- the namespace-confinement sentence that says a matched inbound request is forwarded to the plugin and never to the data-plane paths. The mirror is busbar-plugin x plane falling 81 -> 80 in this same commit"
+
+[gate.ceiling_raises."cell.58.count"]
+file = "qa/kind-isolation.toml"
+from = 41
+to = 76
+because = "busbar-contract x transport: the same identity move, and the largest of the three because the face IS an HTTP route declaration -- the method tokens, the path, the header set, the body caps. Twenty-two of the new hits are crates/busbar-contract/src/http_endpoint.rs and twelve are its battery, which moves with it to crates/busbar-contract/tests/http_endpoint.rs. The mirror is busbar-plugin x transport falling 137 -> 107 in this same commit; the two do not net to zero because the battery is counted under a crate's own tests on both sides and the file moved between crates"
+
+# THE PLUGIN HTTP-ENDPOINT FACE MOVED HOME (busbar-plugin -> busbar-contract), BY IDENTITY.
+# `Route`, `RouteAuth`, `RouteMethod`, `HttpEndpointRequest`, `HttpEndpointResponse` and
+# `safe_relay_status` are what a hook or an export sink DECLARES and ANSWERS, so they belong in the
+# one crate a plugin manifest may name -- see docs/design/1.6.0-one-face-per-kind.md section 2. The
+# file moved verbatim (`crates/busbar-plugin/src/cold/http_endpoint.rs` ->
+# `crates/busbar-contract/src/http_endpoint.rs`); not one field, serde spelling or doc line changed,
+# so no POD changed and no ABI version moves. The three ceilings that COUNT busbar-contract rise by
+# exactly what the file measures and by nothing else; busbar-plugin falls by the same lines, but it
+# is counted by none of these three rows, which is why a move shows here as a rise.
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3542
+because = "the plugin HTTP-endpoint face moves busbar-plugin -> busbar-contract by identity: busbar-contract measures 2327 -> 2389 under this rule's own counter (+62, the whole of crates/busbar-contract/src/http_endpoint.rs plus its one module line), busbar-caps 1153 unmoved, so the pair measures 3480 -> 3542. busbar-plugin sheds the identical 62 lines and is counted by no loc-ceilings row, which is why an identity move reads as a rise here"
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23527
+because = "the same identity move seen through the union, which sums the kernel (5379, unmoved), caps/contract and the units (14606, unmoved): the HTTP-endpoint face lands in busbar-contract and in no kernel or unit crate, so the +62 here is the caps/contract +62 by arithmetic and nothing else"
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3540
+because = "the plugin-visible surface a plugin author reads grows by the HTTP-endpoint face and nothing else: Route, RouteAuth, RouteMethod, HttpEndpointRequest, HttpEndpointResponse, safe_relay_status and HttpEndpointResponse::safe_status. scripts/loc-surface.py measures the contract pair 3478 -> 3540; every one of those 62 lines was already plugin-visible surface one crate over, published at busbar_plugin::cold::http_endpoint, and both old paths still resolve to the one definition"
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3540
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +396,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3542
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23527
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

@@ -52,7 +52,15 @@ use std::os::raw::c_void;
 pub mod auth;
 pub mod export;
 pub mod hook;
-pub mod http_endpoint;
+
+/// The plugin HTTP-endpoint FACE, at the path this crate has always published it under.
+///
+/// The types themselves are `busbar_contract::http_endpoint`'s now — `Route`, `RouteAuth`,
+/// `RouteMethod` and the inbound request/response pair are what a plugin DECLARES and ANSWERS, so
+/// they live in the one crate a plugin manifest may name (see
+/// `docs/design/1.6.0-one-face-per-kind.md` §2). There is exactly one definition; this line is the
+/// path it has always been published under, not a second home.
+pub use busbar_contract::http_endpoint;
 
 /// The "decision observability" signal catalog — re-exported wholesale from
 /// `busbar-api` (where it actually lives; see that crate's `signal` module doc comment for why) so

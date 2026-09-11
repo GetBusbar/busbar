@@ -13,6 +13,11 @@ license = "Apache-2.0"
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
+# THE FACE CRATE. The route-declaration face this SDK's hook and export glue is written against is
+# busbar_contract's -- see docs/design/1.6.0-one-face-per-kind.md section 2. A plugin author names
+# the contract for the face and this crate for the C glue, and nothing re-exports the one through
+# the other.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
 

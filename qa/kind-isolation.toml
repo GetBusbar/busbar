@@ -1569,7 +1569,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "30"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1589,7 +1589,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "43"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1599,7 +1599,7 @@ count = "6"
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "41"
+count = "76"
 
 [[cell]]
 crate = "busbar-contract-transport"
@@ -2124,7 +2124,7 @@ count = "58"
 [[cell]]
 crate = "busbar-plugin"
 kind = "control"
-count = "35"
+count = "25"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2134,7 +2134,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plugin"
 kind = "plane"
-count = "81"
+count = "80"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2144,7 +2144,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin"
 kind = "transport"
-count = "137"
+count = "107"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2259,7 +2259,7 @@ count = "7"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "transport"
-count = "44"
+count = "43"
 
 [[cell]]
 crate = "busbar-plugin-sign"
@@ -4091,6 +4091,16 @@ why     = "busbar-plugin names busbar-api: declared normal in the shipped graph,
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-plugin."
 
 [[dep]]
+from    = "busbar-plugin"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 (owner ruling 2026-09-10) — every kind is granted busbar-contract, and so are the two TCB families that are not kinds. A kind's FACE lives in busbar-contract because that is the one crate a plugin manifest may name; the envelope this crate declares CARRIES those face types, so the crate that declares the ABI names the crate that declares the face."
+why     = "busbar-plugin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-api"
 half    = "shipped"
@@ -4209,6 +4219,16 @@ verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-sdk names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 — the SDK is plugin TOOLING and not a kind, so its edges are the TCB hole rather than a clause of the kind graph; ARCHITECTURE.md 1.2 (owner ruling 2026-09-10) says which crate declares the face this SDK hands a plugin author the C glue for."
+why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the SDK is outside the kind system. The ship twin refuses the whole TCB hole, so this row holds the NUMBER until the ruling that gives the trusted base a kind of its own."
 
 [[dep]]
 from    = "busbar-plugin-sdk"

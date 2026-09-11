@@ -20,7 +20,7 @@
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
 
-use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use busbar_contract::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).

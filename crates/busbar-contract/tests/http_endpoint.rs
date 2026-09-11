@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/plugin-abi/src/http_endpoint.rs`.
+//! Tests for `crates/busbar-contract/src/http_endpoint.rs` — the plugin HTTP-endpoint face.
+//!
+//! An integration battery rather than an in-crate `mod tests`: `busbar-contract`'s surface is
+//! measured without a cfg, so a battery that lives under `src/` is counted as surface it is not.
 
-use super::*;
+use busbar_contract::http_endpoint::*;
 
 /// The method tokens are the stable UPPERCASE wire spellings a non-Rust author matches on, and
 /// [`RouteMethod::as_str`] agrees with the serde spelling (the diagnostic + wire cannot drift).

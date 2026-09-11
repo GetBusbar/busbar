@@ -257,13 +257,13 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     /// The [`status`](Self::status), VALIDATED via
-    /// [`crate::cold::http_endpoint::safe_relay_status`] — a real HTTP status code, or `502` when the
+    /// [`busbar_contract::http_endpoint::safe_relay_status`] — a real HTTP status code, or `502` when the
     /// value is out of range. THE safe conversion for any host path that turns this plugin-chosen
     /// status into a `StatusCode`, so an attacker-chosen `0`/`65535` can never panic a naive
     /// `from_u16(status).unwrap()`.
     #[must_use]
     pub fn safe_status(&self) -> u16 {
-        crate::cold::http_endpoint::safe_relay_status(self.status)
+        busbar_contract::http_endpoint::safe_relay_status(self.status)
     }
 }
 
