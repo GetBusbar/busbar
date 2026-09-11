@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-export-otlp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The built-in `otlp` export sink: one OTLP protobuf export request per drained batch of spans, framed here and put on the wire by its composer. Kind `export`."
+license = "Apache-2.0"
+
+# THE ZERO-DEPENDENCY PROPERTY OF THE OTHER THREE SINKS DOES NOT EXTEND HERE, and a reviewer should
+# be told that before reading the file rather than after. The three sinks that landed before this
+# one name the contract and nothing else, because a JSONL line, a request body and a Prometheus
+# exposition are formats a sink can write out of the standard library. OTLP is not: it is protobuf
+# against a FIXED resource/scope/span schema published by the OpenTelemetry project, and a sink that
+# framed that schema out of nothing would be a hand-written re-implementation of
+# `opentelemetry-proto` — a wire fact copied instead of taken from its publisher, which is the class
+# of mistake the vendored-schema rule exists to stop.
+#
+# So this crate names the SCHEMA and the protobuf RUNTIME, and nothing else of the OpenTelemetry
+# stack: no exporter, no SDK tracer provider, no batch processor, no client, no subscriber.
+# `gen-tonic-messages` is the generated MESSAGE types only; the companion feature that would also
+# pull a generated service client and the runtime under it is deliberately off, because the wire
+# this sink states a delivery for is opened by its composer and this crate opens none.
+#
+# A crate of kind `export` may name crates.io (the kind table constrains WORKSPACE edges), so this
+# is not a refusal. It is a measurement: four dependencies, three of which are the protobuf schema
+# and its runtime, and the fourth of which is the face this sink implements.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
+# The record shape the composer fills and this sink reads back. `ExportItem` hands a sink BYTES —
+# already serialized, already bounded — so the span batch crosses as the one serialization this tree
+# already uses for an export record, exactly as the request-log line does. The shape is declared
+# ONCE, here, on the sink that consumes it, so there is no second spelling for a composer to drift
+# from.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

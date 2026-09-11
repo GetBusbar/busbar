@@ -57,6 +57,7 @@ members = [
     "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/busbar-export-file",
+    "crates/busbar-export-otlp",
     "crates/busbar-export-prometheus",
     "crates/busbar-export-webhook",
     "crates/hooks-ranking",
@@ -217,6 +218,18 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
     "http-proto",
 ] }
 opentelemetry_sdk = "0.32.1"
+# THE OTLP WIRE SCHEMA, named directly because `busbar-export-otlp` frames the export request
+# itself. Already in `Cargo.lock` and already in the shipped artifact (opentelemetry-otlp depends on
+# it), so this adds no supply-chain surface — what changes is that the SINK can say its name instead
+# of reaching the same generated types through an exporter it does not use.
+#
+# `gen-tonic-messages` is the generated prost MESSAGE types; `trace` selects the trace signal's
+# modules. `gen-tonic` — the gRPC client/server transport — is deliberately NOT enabled: the wire is
+# opened by the composition root over the engine's egress client, and OTLP/HTTP is the binding.
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = [
+    "gen-tonic-messages",
+    "trace",
+] }
 proptest = "1"
 rcgen = "0.14"
 # ── MCP, from the specification authors' own crate ─────────────────────────────────────────────

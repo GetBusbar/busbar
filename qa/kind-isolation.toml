@@ -111,15 +111,13 @@ crate = "busbar-core-hooks"
 kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
-[[announced]]
-crate  = "busbar-export-prometheus"
-kind   = "export"
-reason = "the /metrics pull exporter lifted out of busbar-core/src/export/prometheus.rs; export kind, Export face, declares its route through ExportHandler::routes"
-
-[[announced]]
-crate  = "busbar-export-otlp"
-kind   = "export"
-reason = "the OTLP trace sink, the export half of busbar-core/src/observability.rs; export kind, Export face"
+# THE FOUR EXPORT ANNOUNCEMENTS ARE ALL STRUCK, and this comment is the last of them. Every crate
+# the export row announced has LANDED — `busbar-export-file`, `-webhook`, `-prometheus` and now
+# `-otlp` — and each reaches the `export` kind through its own name, which is what an announcement
+# exists to stand in for until a crate exists. An announced row for a landed crate is a dead row by
+# this table's own expiry rule (`kind-isolation-ship` is RED for one), so the last two go here
+# together: `-otlp`'s because this commit lands it, `-prometheus`'s because the commit that landed
+# that crate left its announcement behind.
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1728,6 +1726,19 @@ crate = "busbar-export-file"
 kind = "plane"
 count = "2"
 
+# MINTED, and at the same 2 as every other sink of this kind. Both hits are the word `streams` —
+# `Export::streams`, the method a sink declares what it carries with, and the one assertion that
+# reads it back — and `streams` is also the bare instance id of a plane member of this tree, so a
+# matrix that scores whole text reads the face's own vocabulary as this crate naming a plane. It is
+# the SAME HOMONYM the export projection grammar's +53 and the contract face's +1 already flagged
+# for the owner, and there is no coupling here to drain: this crate has no dependency, no type and
+# no call against any plane. Identical to the rows above and below it, which is the point — every
+# sink of this kind measures the same, because every sink of this kind implements the same face.
+[[cell]]
+crate = "busbar-export-otlp"
+kind = "plane"
+count = "2"
+
 [[cell]]
 crate = "busbar-export-prometheus"
 kind = "plane"
@@ -3189,6 +3200,16 @@ drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-export-prometheus"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 - the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
+why     = "busbar names busbar-export-prometheus: declared normal in the shipped graph, 1 declaration(s) at this commit. WRITTEN DOWN LATE: the commit that landed the crate left its [[announced]] row standing, and an announcement suppresses the edge question until the crate exists - so the edge shipped for a landing without a row of its own. Struck the announcement, wrote the row. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing - what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-export-webhook"
 half    = "shipped"
 count   = "1"
@@ -3836,6 +3857,16 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list / ARCHITECTURE.md 1.1 — busbar-contract is the face every kind is written against, and `busbar_contract::Export` is the entry face of the export kind."
 why     = "busbar-export-file names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the face this sink IMPLEMENTS — until it existed the crate had no dependencies at all and no face either, and its composer paired it up by hand. The count is TODAY'S MEASUREMENT, exact in both directions."
 drain   = "none: naming the face a plugin implements is what being a plugin of a kind means. What this row holds is the NUMBER, so a SECOND edge out of this sink is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-otlp"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list / ARCHITECTURE.md 1.1 - busbar-contract is the face every kind is written against, and `busbar_contract::Export` is the entry face of the export kind."
+why     = "busbar-export-otlp names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the face this sink IMPLEMENTS. This crate's OTHER dependencies are crates.io and not workspace edges - the OTLP wire schema and its protobuf runtime, plus the serialization the record shape crosses on - and the reason the three-sinks-name-nothing pattern stops here is stated in its Cargo.toml and its crate docs. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: naming the face a plugin implements is what being a plugin of a kind means. What this row holds is the NUMBER, so a SECOND workspace edge out of this sink is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-export-prometheus"

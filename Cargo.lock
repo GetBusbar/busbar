@@ -614,6 +614,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-export-otlp"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "opentelemetry-proto",
+ "prost",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-export-prometheus"
 version = "1.6.0"
 dependencies = [

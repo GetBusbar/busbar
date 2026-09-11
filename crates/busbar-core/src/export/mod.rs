@@ -53,10 +53,17 @@ pub(crate) const REQUEST_LOG_FILE_STREAMS: &[ExportStream] = &[ExportStream::Log
 /// operator's `module:` token names and what that sink was therefore granted.
 pub(crate) const STREAMS_PROMETHEUS: &[ExportStream] = &[ExportStream::Metrics];
 
-/// The streams the `otlp` sink carries. It has no module of its own in this crate — its config
-/// surface is `ExportCfg::otlp` and its span pipeline is the tracing subscriber — so its
-/// declaration sits here beside its siblings'. It moves to `busbar-export-otlp` with the pipeline.
-pub(crate) const OTLP_STREAMS: &[ExportStream] = &[ExportStream::Traces];
+/// The streams the `otlp` sink carries. Its BODY is a crate of kind `export`, which this crate may
+/// not name — the same split as its three siblings above: resolving which sink an operator's
+/// `module:` token names, and what that sink was therefore granted, is the config layer's own job
+/// and stays here beside the token.
+///
+/// THIS IS THE LAST ENTRY THIS TABLE WILL EVER GROW, and it is not even a new one — `traces` has
+/// been declared here since the OTLP instance became an `export:` module. Four tokens, four
+/// modules, and the table is CLOSED: a fifth built-in sink is a plugin, which declares what it
+/// carries across the ABI and is never resolved from a const in this crate. The whole table dies
+/// with this crate's config layer, which is where every one of these four already belongs.
+pub(crate) const STREAMS_OTLP: &[ExportStream] = &[ExportStream::Traces];
 
 /// The streams the `request-log-webhook` sink carries. Its BODY is a crate of kind `export`, which
 /// this crate may not name — the same split as the file sink's below: resolving which sink an

@@ -322,10 +322,10 @@ fn test_otlp_folds_into_an_export_instance() {
     )
     .expect("an otlp export instance parses");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let resolved = crate::config::resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
-        export.otlp.as_ref().map(|o| o.url.as_str()),
+        resolved.otlp.as_ref().map(|o| o.url.as_str()),
         Some("http://localhost:4318/v1/traces")
     );
 
