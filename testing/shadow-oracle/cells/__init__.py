@@ -79,6 +79,7 @@ Output: testing/shadow-oracle/cells.json  (stable ids, sorted; the recorder/repl
 Regenerate: bin/oracle cells --write   (--check, --summary, --selftest, --accept-family-shrink).
 """
 import json
+import re
 from pathlib import Path
 
 # Set by bind(). Never derived from __file__: this module is data the engine loads by path, so its
@@ -102,7 +103,15 @@ def bind(root: Path, data: Path) -> None:
     BOOT_MUTATIONS = FIXTURES / "boot-mutations.json"
     PLUGIN_DIGESTS = DATA / "plugin-digests.tsv"
     DERIVED_FROM = {"method_inventory": str(METHOD_INV.relative_to(ROOT)),
-                    "field_inventory": str(FIELD_INV.relative_to(ROOT))}
+                    "field_inventory": str(FIELD_INV.relative_to(ROOT)),
+                    # The op axis is not in any inventory: it is measured, every run, from the three
+                    # busbar source files that DECLARE it. They are named here for the same reason
+                    # the inventories are -- `derived_from` is what a reader consults to find out
+                    # what a cells.json diff was caused by, and a source file that decides 31 cells
+                    # belongs in it exactly as much as a generated inventory does.
+                    "llm_plane_claims": LLM_PLANE_CLAIMS_REL,
+                    "llm_plane_codec": LLM_PLANE_CODEC_REL,
+                    "llm_leaf_codec": LLM_LEAF_CODEC_REL}
 
 
 # The outcome classes every plane's governed path must reproduce. Order is the pipeline order the
@@ -150,6 +159,41 @@ BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME = (
     "yields no IR block, ahead of a block the reader parks by wire position — the index-space "
     "disagreement the `ping` fixture's single text block cannot produce")
 
+
+# ── THE TOOL-CALL ROUND TRIP, AND THE 429 THE CLIENT CAN SEE ─────────────────────────────────────
+# Three shapes the recorded corpus has never contained, all of them forwarded outcomes on the chat
+# op, all of them enumerated over every (ingress, egress) pair for the same reason `ok` and
+# `upstream_down` are: they reach Route, and the translation between the two dialects IS the thing.
+#
+# THE ROUND TRIP IS A PAIR OF ONE-REQUEST CELLS, not one two-request cell, and that is a measured
+# choice rather than a preference. The recorder's only multi-step primitive (`request.pre`) records
+# the setup call's STATUS and discards its bytes, so a round trip driven that way would record turn
+# two and silently drop turn one -- the half where the tool CALL itself is translated, which is the
+# half that has never been recorded. Two cells record both halves with no new driver, no new
+# effects class, and no cell whose name promises more than its bytes hold.
+TOOL_CALL_OUTCOME = (
+    "ok_tool_call",
+    "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with "
+    "a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a "
+    "JSON string on four dialects, an object on two) and the stop token, which on Responses and "
+    "Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn")
+TOOL_RESULT_OUTCOME = (
+    "ok_tool_result",
+    "turn TWO: the request echoes the assistant's tool-call turn back together with the tool "
+    "RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar "
+    "SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn "
+    "carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a "
+    "functionResponse part on gemini")
+# The upstream's OWN 429, as the client sees it -- NOT busbar's 429 at Admit, which is what
+# `over_budget` and `over_budget_total` already record. The whole corpus's 429s are refusals busbar
+# PRODUCED; this is one it RECEIVED and had to translate, which is a different writer on every door
+# and a different disposition in the engine (`Retry-After: 7` is on the wire, and the breaker
+# classifies 429 as TransientUpstream -- `busbar-unit-breaker/src/classify.rs` -- so the lane is
+# parked exactly as a 5xx parks it).
+UPSTREAM_429_OUTCOME = (
+    "upstream_429",
+    "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in "
+    "the door's own dialect, as distinct from the 429 busbar itself produces at Admit")
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
 # same-proto only (ingress == egress). Forwarded outcomes reach Route and exercise the cross-protocol
@@ -208,6 +252,28 @@ def llm_cells(inv: dict) -> list[dict]:
             if e in streams:
                 for oc, why in STREAMING_OUTCOMES:
                     cells.append(cell(i, e, oc, why))
+    # THE THREE FORWARDED OUTCOMES THE CORPUS HAS NEVER HELD. Same loop shape as the forwarded
+    # outcomes above -- every ordered (ingress, egress) pair -- because each is a statement about
+    # the translation between the two, not about either one alone.
+    #
+    # `upstream_429` carries `fresh`, for the same measured reason `upstream_down` does: the breaker
+    # classifies a 429 as TransientUpstream, so the lane is parked afterwards and a later cell on it
+    # would record "overloaded" instead of its own outcome.
+    for i in dialects:
+        for e in dialects:
+            for oc, why in (TOOL_CALL_OUTCOME, TOOL_RESULT_OUTCOME, UPSTREAM_429_OUTCOME):
+                c = cell(i, e, oc, why)
+                c["needs_fixture"] = True
+                if oc == "ok_tool_call":
+                    c["mock_control"] = {"tool-call": True}
+                elif oc == "upstream_429":
+                    c["mock_control"] = {"429": True}
+                    c["fresh"] = True
+                # `ok_tool_result` declares NO mock control, and the absence is the point: the plain
+                # happy-path answer IS the final answer of a round trip, so a verb here would be
+                # inventing a shape rather than recording one. Its fixture is the REQUEST, exactly
+                # as the bedrock cachePoint cell's is.
+                cells.append(c)
     # Not gated on the inventory's `streaming` flag: the array framing is a gemini path selector
     # (`streamGenerateContent` without `alt=sse`), not a field the inventory lists.
     if "gemini" in dialects:
@@ -1744,6 +1810,203 @@ def hazard_cells() -> list[dict]:
     ]
 
 
+# ── THE OP AXIS: the six NON-CHAT operations, MEASURED from busbar's own declarations ───────────
+# Every recorded LLM cell in the corpus is `op: "chat"`. That is not because busbar only serves
+# chat -- it serves seven operations -- it is because the wire builder only ever knew how to word a
+# conversation. So embeddings, images, audio, moderation and rerank have NO recorded bytes at all:
+# a codec defect on any of them is invisible to the differ, and the whole class is unfalsifiable.
+#
+# NOTHING BELOW IS A LIST OF WHAT BUSBAR SUPPORTS. Three busbar source files already declare it, and
+# a fourth copy here would be a memorised measurement -- the exact defect 0.3.16 took out of the
+# recorder's rig probe. So the matrix is PARSED, every run, from:
+#
+#   crates/busbar-plane-llm/src/claims.rs    the ladder: which DIALECT a request's path names.
+#                                            A path claim is the only kind the op axis can use --
+#                                            `op_class_for` reads the TARGET only, so a claim that
+#                                            matches on a HEADER says nothing about which operation
+#                                            arrived, and is skipped rather than guessed at.
+#   crates/busbar-plane-llm/src/codec.rs     `op_class_for`: which OPERATION a target names.
+#                                            Parsed IN SOURCE ORDER, because the function is an
+#                                            if/else-if chain and the first arm that matches wins.
+#   crates/busbar-llm-codec/src/leaf_codec.rs the per-(operation, egress-protocol) write dispatch:
+#                                            which protocols can be the EGRESS of each leaf op.
+#                                            An arm that is absent is a protocol busbar cannot
+#                                            write that operation to, so there is no such cell.
+#
+# The two halves answer different questions and neither is the other: a dialect can be an INGRESS
+# for an op (its door claims the path) without being an EGRESS for it (no writer arm), and the
+# reverse -- bedrock writes embeddings, images and rerank but claims no path for any of them, so it
+# appears in this matrix only ever as an egress. The product of the two is the cell list.
+LLM_PLANE_CLAIMS_REL = "crates/busbar-plane-llm/src/claims.rs"
+LLM_PLANE_CODEC_REL = "crates/busbar-plane-llm/src/codec.rs"
+LLM_LEAF_CODEC_REL = "crates/busbar-llm-codec/src/leaf_codec.rs"
+
+# The one operation name every cell id, every `op` field and every mock verb agrees on is the one
+# `op_class_for` returns, so there is no second vocabulary to keep in step.
+_CLAIM_ROW = re.compile(
+    r'^\s*\d+\s*=>\s*"(?P<dialect>[a-z0-9-]+)"\s*,\s*Selector::(?P<form>\w+)\((?P<args>[^)]*)\)\s*,',
+    re.M)
+_STR_LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _op_class_rules(codec_src: str) -> list[tuple[str, str, str]]:
+    """`op_class_for`'s if/else-if chain, IN SOURCE ORDER: (how, literal, op).
+
+    `how` is `ends` or `contains`, the two predicates the function uses. Order is everything: the
+    chain is first-match-wins, so a rule list that reordered them would answer a different question
+    than busbar does for a path two arms both match.
+    """
+    body = codec_src.split("fn op_class_for(", 1)
+    if len(body) < 2:
+        raise SystemExit(f"cells: {LLM_PLANE_CODEC_REL} has no op_class_for -- the op axis cannot be measured")
+    body = body[1]
+    rules, pending = [], []
+    for m in re.finditer(r'path\.(ends_with|contains)\("((?:[^"\\]|\\.)*)"\)|OpClassId::new\("([a-z]+)"\)', body):
+        if m.group(3) is not None:
+            for how, lit in pending:
+                rules.append(("ends" if how == "ends_with" else "contains", lit, m.group(3)))
+            pending = []
+            if m.group(3) == "chat":      # the final `else` arm closes the chain
+                break
+        else:
+            pending.append((m.group(1), m.group(2)))
+    if not rules:
+        raise SystemExit(f"cells: op_class_for in {LLM_PLANE_CODEC_REL} yielded no rules")
+    return rules
+
+
+def _op_of_claim(literal: str, form: str, rules: list[tuple[str, str, str]]) -> str:
+    """Which operation the CLAIM's own path literal names, by busbar's own chain.
+
+    The claim literal is not a path, it is the part of one the door matches on -- so a `PathSuffix`
+    claim is tested against the `ends_with` rules as a suffix of itself, and every claim is tested
+    against the `contains` rules as a substring. That is exactly what a real arriving path would do
+    for the claim that admitted it.
+    """
+    for how, lit, op in rules:
+        if how == "ends" and (literal.endswith(lit) or (form == "PathContains" and lit in literal)):
+            return op
+        if how == "contains" and lit in literal:
+            return op
+    return "chat"
+
+
+def _leaf_egress(leaf_src: str) -> dict[str, list[str]]:
+    """Which egress protocols each leaf op has a WRITER for -- the `<op>_write_request` dispatchers.
+
+    Read off the request half only. The response half is the mirror of it by construction (the file
+    asserts as much with an `unreachable!` on both), and reading both would only invite a matrix
+    that disagreed with itself over which half was the claim.
+    """
+    out: dict[str, list[str]] = {}
+    for m in re.finditer(r'pub fn (?P<op>[a-z]+)_write_request\(proto: &str.*?\n\}', leaf_src, re.S):
+        protos = re.findall(r'^\s*"([a-z0-9-]+)" =>', m.group(0), re.M)
+        if protos:
+            out[m.group("op")] = protos
+    if not out:
+        raise SystemExit(f"cells: no <op>_write_request dispatchers in {LLM_LEAF_CODEC_REL}")
+    return out
+
+
+# `leaf_codec.rs` names the embeddings dispatcher `embeddings_write_request` and `op_class_for`
+# returns `embeddings`; five of the six agree letter for letter. The sixth does not, and rather
+# than rename either product symbol the one disagreement is written down here, where it is one line
+# instead of a refactor of two crates.
+_LEAF_FN_TO_OP = {"embeddings": "embeddings", "rerank": "rerank", "image": "image",
+                  "transcription": "transcription", "speech": "speech", "moderation": "moderation"}
+
+
+def llm_op_matrix() -> dict[str, dict[str, list[str]]]:
+    """{op: {"ingress": [dialect...], "egress": [protocol...]}} for every NON-chat operation.
+
+    An op with an empty `ingress` is a real, measured answer and not a hole in this function: busbar
+    can WRITE that operation upstream but no door on the LLM plane claims a path that names it, so
+    no client can ever ask this plane for one. `speech` is that shape today -- `/v1/audio/speech` is
+    claimed by the VOICE plane, by name, and the LLM ladder's rung 14 says so in its own comment --
+    and the right answer is a NAMED GAP, not an invented cell that would record a 404.
+    """
+    rules = _op_class_rules((ROOT / LLM_PLANE_CODEC_REL).read_text())
+    egress = _leaf_egress((ROOT / LLM_LEAF_CODEC_REL).read_text())
+    ingress: dict[str, list[str]] = {}
+    for m in _CLAIM_ROW.finditer((ROOT / LLM_PLANE_CLAIMS_REL).read_text()):
+        form = m.group("form")
+        if form not in ("PathSuffix", "PathContains", "ExactPath"):
+            continue  # a header claim, or a pattern: neither names an operation (see the note above)
+        lit = _STR_LIT.search(m.group("args"))
+        if not lit:
+            continue  # PathPattern(IDENT): a chat surface, and not a literal this can read
+        op = _op_of_claim(lit.group(1), form, rules)
+        if op == "chat":
+            continue
+        d = m.group("dialect")
+        if d not in ingress.setdefault(op, []):
+            ingress[op].append(d)
+    matrix = {}
+    for fn, op in sorted(_LEAF_FN_TO_OP.items(), key=lambda kv: kv[1]):
+        matrix[op] = {"ingress": sorted(ingress.get(op, [])), "egress": sorted(egress.get(fn, []))}
+    return matrix
+
+
+# The outcomes the op axis records. Deliberately TWO, not the whole vocabulary:
+#
+#   `ok` is the one that has never existed. It is enumerated over every (ingress, egress) pair the
+#   matrix admits, exactly as chat's forwarded outcomes are, because that product IS the
+#   cross-protocol translation the LLM plane exists for -- an embeddings request arriving on the
+#   OpenAI door and leaving on Cohere's is a different codec path from the diagonal, and neither has
+#   a recorded byte.
+#
+#   `unauthenticated` is enumerated same-proto only, one per (op, door), and it is here to pin a
+#   claim busbar makes IN PROSE and nowhere else: `crates/busbar-core/src/handlers/mod.rs` states
+#   that a refusal on `/v1/embeddings` carries the envelope it carries on `/v1/chat/completions`.
+#   That is a sentence, and a sentence is not a golden. One cheap cell per door turns it into bytes.
+#
+# The other four refusals are NOT enumerated per op, and that is the same claim read the other way:
+# they are produced before Route, from the same envelope writer, and `unauthenticated` is the
+# cheapest witness of the whole set. If the op-scoped `unauthenticated` cells ever diverge from
+# their chat siblings, the assumption behind leaving the other four out has been falsified, loudly,
+# on a recorded cell -- which is the only way an assumption like that should be allowed to fail.
+OP_FORWARDED = [("ok", "happy path: authenticated, in-scope, under budget, upstream healthy")]
+OP_REFUSAL = [("unauthenticated", "no / bad credential -> refused at Authenticate (native 401); "
+                                  "pins that the refusal envelope is the SAME one the chat door "
+                                  "emits, which busbar states in prose and in no recorded byte")]
+
+
+def llm_op_cells() -> list[dict]:
+    """One cell per (op, ingress dialect, egress protocol, outcome) the measured matrix admits.
+
+    Cell id: `llm|<ingress>|<egress>|<op>|<outcome>`. The chat family's fourth segment is the
+    literal `request` (the field inventory's DIRECTION axis); here it is the OPERATION, because for
+    a non-chat op the operation is the thing the segment has to say and the direction is always the
+    request. Nothing parses these ids positionally -- they are file names on both sides of the
+    differ -- so the segment carries the fact that distinguishes the cell and nothing else.
+
+    Every cell is `needs_fixture` until it is RECORDED from the published 1.5.5 binary: the golden
+    is made by recording a released binary, never by the release that changed the judge, so a cell
+    defined here and not yet recorded must read as a NAMED gap and never as a silent pass.
+    """
+    matrix = llm_op_matrix()
+    cells = []
+    for op, sides in sorted(matrix.items()):
+        ing, egr = sides["ingress"], sides["egress"]
+        for i in ing:
+            for e in egr:
+                for oc, why in OP_FORWARDED:
+                    cells.append({
+                        "id": f"llm|{i}|{e}|{op}|{oc}",
+                        "plane": "llm", "family": "llm.op", "ingress_dialect": i,
+                        "egress_dialect": e, "cross_protocol": i != e, "transport": "http",
+                        "op": op, "outcome": oc, "why": f"{op}: {why}", "needs_fixture": True,
+                    })
+            for oc, why in OP_REFUSAL:
+                cells.append({
+                    "id": f"llm|{i}|{i}|{op}|{oc}",
+                    "plane": "llm", "family": "llm.op", "ingress_dialect": i,
+                    "egress_dialect": i, "cross_protocol": False, "transport": "http",
+                    "op": op, "outcome": oc, "why": f"{op}: {why}", "needs_fixture": True,
+                })
+    return cells
+
+
 # -- THE EXPORTS THE ENGINE READS ---------------------------------------------------------------
 # The two `_comment` lines still name testing/shadow-oracle/enumerate-cells.py. That is deliberate:
 # cells.json's BYTES are the contract the recorder, the replayer and every parity report agree on,
@@ -1758,7 +2021,9 @@ COMMENT = [
 # The `outcomes` block, flattened. Order is the pipeline order the refusal is produced at.
 OUTCOME_ROWS = [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES
                 + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME,
-                   RESPONSES_CITATION_OUTCOME, BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME]]
+                   RESPONSES_CITATION_OUTCOME, BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME,
+                   TOOL_CALL_OUTCOME, TOOL_RESULT_OUTCOME, UPSTREAM_429_OUTCOME]
+                + OP_FORWARDED + OP_REFUSAL]
 
 # `derived_from`, filled in by bind() (it is product-root-relative, and only bind() knows the root).
 DERIVED_FROM: dict = {}
@@ -1777,6 +2042,7 @@ def protocol_wire_cells() -> list[dict]:
 # The 22 builders, in order. The engine calls them all and sorts the union by id.
 BUILDERS = [
     ("llm.wire", llm_wire_cells),
+    ("llm.op", llm_op_cells),
     ("protocol", protocol_wire_cells),
     ("cli", cli_cells),
     ("config.migrate", migrate_cells),

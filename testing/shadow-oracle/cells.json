@@ -6,7 +6,10 @@
   ],
   "derived_from": {
     "method_inventory": "qa/method-inventory.json",
-    "field_inventory": "qa/field-inventory.json"
+    "field_inventory": "qa/field-inventory.json",
+    "llm_plane_claims": "crates/busbar-plane-llm/src/claims.rs",
+    "llm_plane_codec": "crates/busbar-plane-llm/src/codec.rs",
+    "llm_leaf_codec": "crates/busbar-llm-codec/src/leaf_codec.rs"
   },
   "outcomes": [
     {
@@ -52,14 +55,34 @@
     {
       "outcome": "ok_cachepoint_document",
       "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position \u2014 the index-space disagreement the `ping` fixture's single text block cannot produce"
+    },
+    {
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn"
+    },
+    {
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini"
+    },
+    {
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit"
+    },
+    {
+      "outcome": "ok",
+      "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "outcome": "unauthenticated",
+      "why": "no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte"
     }
   ],
   "counts": {
-    "total": 2318,
+    "total": 2457,
     "by_plane": {
       "a2a": 468,
       "core": 789,
-      "llm": 149,
+      "llm": 288,
       "mcp": 912
     },
     "by_family": {
@@ -80,7 +103,8 @@
       "hooks": 10,
       "http.crosscut": 23,
       "ledger": 5,
-      "llm.wire": 142,
+      "llm.op": 31,
+      "llm.wire": 250,
       "mcp": 912,
       "neutrality": 18,
       "ops.scrape": 15,
@@ -18828,6 +18852,35 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
       "id": "llm|anthropic|anthropic|request|out_of_scope",
       "plane": "llm",
       "family": "llm.wire",
@@ -18892,6 +18945,23 @@
       "why": "no / bad credential -> refused at Authenticate (native 401)"
     },
     {
+      "id": "llm|anthropic|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|anthropic|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -18927,6 +18997,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|anthropic|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|anthropic|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|anthropic|bedrock|request|upstream_down",
@@ -18966,6 +19082,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|anthropic|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|anthropic|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -18989,6 +19151,52 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|anthropic|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|anthropic|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|anthropic|gemini|request|upstream_down",
@@ -19028,6 +19236,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|anthropic|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|anthropic|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19065,6 +19319,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|anthropic|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|anthropic|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|anthropic|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19100,6 +19400,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|bedrock|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|bedrock|anthropic|request|upstream_down",
@@ -19162,6 +19508,35 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
     },
     {
       "id": "llm|bedrock|bedrock|request|out_of_scope",
@@ -19228,6 +19603,23 @@
       "why": "no / bad credential -> refused at Authenticate (native 401)"
     },
     {
+      "id": "llm|bedrock|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|bedrock|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19265,6 +19657,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|bedrock|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|bedrock|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|bedrock|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19288,6 +19726,52 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|bedrock|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|bedrock|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|bedrock|gemini|request|upstream_down",
@@ -19327,6 +19811,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|bedrock|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|bedrock|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|bedrock|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19362,6 +19892,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|bedrock|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|bedrock|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|bedrock|responses|request|upstream_down",
@@ -19401,6 +19977,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|cohere|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|cohere|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19412,6 +20034,19 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|cohere|bedrock|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|cohere|bedrock|request|ok",
@@ -19438,6 +20073,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|cohere|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|cohere|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19449,6 +20130,45 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|cohere|bedrock|rerank|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "rerank",
+      "outcome": "ok",
+      "why": "rerank: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|cohere|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|cohere|embeddings|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "unauthenticated",
+      "why": "embeddings: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
     },
     {
       "id": "llm|cohere|cohere|request|malformed",
@@ -19485,6 +20205,35 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
     },
     {
       "id": "llm|cohere|cohere|request|out_of_scope",
@@ -19551,6 +20300,23 @@
       "why": "no / bad credential -> refused at Authenticate (native 401)"
     },
     {
+      "id": "llm|cohere|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|cohere|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19562,6 +20328,45 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|cohere|cohere|rerank|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "rerank",
+      "outcome": "ok",
+      "why": "rerank: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|cohere|rerank|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "rerank",
+      "outcome": "unauthenticated",
+      "why": "rerank: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|gemini|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|cohere|gemini|request|ok",
@@ -19576,6 +20381,52 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
+      "id": "llm|cohere|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|cohere|gemini|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19587,6 +20438,19 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|cohere|openai|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|cohere|openai|request|ok",
@@ -19611,6 +20475,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|cohere|openai|request|upstream_down",
@@ -19650,6 +20560,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|cohere|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|cohere|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|cohere|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|cohere|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19687,6 +20643,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|gemini|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19698,6 +20700,32 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|gemini|bedrock|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|bedrock|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|gemini|bedrock|request|ok",
@@ -19724,6 +20752,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|gemini|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19735,6 +20809,19 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|gemini|cohere|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|gemini|cohere|request|ok",
@@ -19761,6 +20848,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|gemini|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19772,6 +20905,58 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|gemini|gemini|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|gemini|embeddings|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "unauthenticated",
+      "why": "embeddings: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|gemini|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|gemini|image|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "image",
+      "outcome": "unauthenticated",
+      "why": "image: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
     },
     {
       "id": "llm|gemini|gemini|request|malformed",
@@ -19808,6 +20993,35 @@
       "op": "chat",
       "outcome": "ok_stream_array",
       "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
+    },
+    {
+      "id": "llm|gemini|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
     },
     {
       "id": "llm|gemini|gemini|request|ok_tool_use_tokens",
@@ -19887,6 +21101,23 @@
       "why": "no / bad credential -> refused at Authenticate (native 401)"
     },
     {
+      "id": "llm|gemini|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|gemini|gemini|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19898,6 +21129,32 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|gemini|openai|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|openai|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|gemini|openai|request|ok",
@@ -19922,6 +21179,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|gemini|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|gemini|openai|request|upstream_down",
@@ -19961,6 +21264,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|gemini|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|gemini|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|gemini|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -19998,6 +21347,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|openai|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20009,6 +21404,32 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|openai|bedrock|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|bedrock|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|bedrock|request|ok",
@@ -20035,6 +21456,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|openai|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20046,6 +21513,19 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|openai|cohere|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|cohere|request|ok",
@@ -20072,6 +21552,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|openai|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20083,6 +21609,32 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|openai|gemini|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|gemini|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|gemini|request|ok",
@@ -20097,6 +21649,52 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
+      "id": "llm|openai|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|openai|gemini|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20108,6 +21706,97 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|openai|gemini|transcription|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "transcription",
+      "outcome": "ok",
+      "why": "transcription: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|embeddings|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "ok",
+      "why": "embeddings: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|embeddings|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "embeddings",
+      "outcome": "unauthenticated",
+      "why": "embeddings: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|image|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "image",
+      "outcome": "ok",
+      "why": "image: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|image|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "image",
+      "outcome": "unauthenticated",
+      "why": "image: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|moderation|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "moderation",
+      "outcome": "ok",
+      "why": "moderation: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|moderation|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "moderation",
+      "outcome": "unauthenticated",
+      "why": "moderation: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|openai|request|malformed",
@@ -20144,6 +21833,35 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|openai|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|openai|request|out_of_scope",
@@ -20210,6 +21928,23 @@
       "why": "no / bad credential -> refused at Authenticate (native 401)"
     },
     {
+      "id": "llm|openai|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|openai|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20221,6 +21956,32 @@
       "outcome": "upstream_down",
       "why": "upstream refuses/times out -> Route failover / native upstream error",
       "fresh": true
+    },
+    {
+      "id": "llm|openai|openai|transcription|ok",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "transcription",
+      "outcome": "ok",
+      "why": "transcription: happy path: authenticated, in-scope, under budget, upstream healthy",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|openai|transcription|unauthenticated",
+      "plane": "llm",
+      "family": "llm.op",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "transcription",
+      "outcome": "unauthenticated",
+      "why": "transcription: no / bad credential -> refused at Authenticate (native 401); pins that the refusal envelope is the SAME one the chat door emits, which busbar states in prose and in no recorded byte",
+      "needs_fixture": true
     },
     {
       "id": "llm|openai|responses|request|ok",
@@ -20245,6 +22006,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|openai|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|openai|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|openai|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|openai|responses|request|upstream_down",
@@ -20284,6 +22091,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|responses|anthropic|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|anthropic|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|responses|anthropic|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|responses|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20319,6 +22172,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|bedrock|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|bedrock|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|responses|bedrock|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|responses|bedrock|request|upstream_down",
@@ -20358,6 +22257,52 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|responses|cohere|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|cohere|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|responses|cohere|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
+    },
+    {
       "id": "llm|responses|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -20381,6 +22326,52 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|responses|gemini|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|gemini|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|responses|gemini|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|responses|gemini|request|upstream_down",
@@ -20418,6 +22409,52 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|openai|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|openai|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
+      "id": "llm|responses|openai|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|responses|openai|request|upstream_down",
@@ -20485,6 +22522,35 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|responses|responses|request|ok_tool_call",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_call",
+      "why": "turn ONE of a tool-call round trip: the request declares a tool and the upstream answers with a CALL. Pins the door's rendering of it -- the block type, the id, the argument encoding (a JSON string on four dialects, an object on two) and the stop token, which on Responses and Gemini does not exist at all and is PROMOTED by busbar from a plain end-of-turn",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-call": true
+      }
+    },
+    {
+      "id": "llm|responses|responses|request|ok_tool_result",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_result",
+      "why": "turn TWO: the request echoes the assistant's tool-call turn back together with the tool RESULT, and the upstream answers with ordinary text. Mostly a statement about what busbar SENT UPSTREAM (effects.egress) -- a result is a `tool` role on two dialects, a `user` turn carrying a toolResult block on bedrock, a flat function_call_output item on Responses and a functionResponse part on gemini",
+      "needs_fixture": true
+    },
+    {
       "id": "llm|responses|responses|request|out_of_scope",
       "plane": "llm",
       "family": "llm.wire",
@@ -20547,6 +22613,23 @@
       "op": "chat",
       "outcome": "unauthenticated",
       "why": "no / bad credential -> refused at Authenticate (native 401)"
+    },
+    {
+      "id": "llm|responses|responses|request|upstream_429",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "upstream_429",
+      "why": "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in the door's own dialect, as distinct from the 429 busbar itself produces at Admit",
+      "needs_fixture": true,
+      "mock_control": {
+        "429": true
+      },
+      "fresh": true
     },
     {
       "id": "llm|responses|responses|request|upstream_down",
