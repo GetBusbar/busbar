@@ -121,8 +121,7 @@ busbar-voice = ["busbar-voice-codec"]
 # --write` strikes it. An entry the base does NOT carry, naming a ceiling that did not rise, is a
 # deleted face's leftover and IS red.
 #
-# THE SHAPE a face commit carries (the `[gate.ceiling_raises."<key>"]` `from`/`to` header this
-# table used to take is refused by name — it could name one face per key and never expired):
+# THE SHAPE a face commit carries:
 #
 #   [[gate.ceiling_raises]]
 #   key = "rules.loc-ceilings.caps_contract_ceiling"   # the dotted path of the integer that rose
@@ -134,6 +133,22 @@ busbar-voice = ["busbar-voice-codec"]
 # `dep.<from>.<to>.<half>.count`, `face.<crate>.<face>.count` — never by its ordinal, because
 # striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
 # the face.
+#
+# THE OTHER SHAPE, WHILE THE QUEUE DRAINS. `[gate.ceiling_raises."<key>"]` with `from`/`to` is the
+# header this table used to take. It cannot sum with a second face's declaration and it does not
+# expire on its own, which is why it was retired — but the lines waiting to land were measured
+# against the reader that took it, and refusing them would turn a queue of honest faces red one
+# line at a time over a matter of spelling. So it is READ, as the delta `to - from` it always was
+# and keyed by the same identity, and `ceiling-rose` WARNS; `--write` migrates it into the array
+# shape above, which preserves the entry exactly (same key, same delta, same reason), so it still
+# expires on the ordinary terms. The content rules are identical in both shapes: a delta that
+# raises, 80 characters of reason, a key that names a row and never a slot. The array shape
+# written with `from`/`to` is neither shape and stays refused by name.
+#
+# THE TRANSITION CLOSES ON A DATE. When the last line cut in the retired header has landed, the
+# commit `gate ceiling-rose: the from/to transition closes — the retired header is refused again`,
+# cut on 2026-09-18, deletes the acceptance arm and restores the refusal. It is not a second
+# supported shape; it is a ramp with an end written on it.
 
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
 # every entry that ever stood here was struck once the base carried it.

@@ -864,25 +864,76 @@ fn declared_raise_cases<'a>(
             "the face it was declared for is gone",
         ],
     ));
+    // THE TRANSITION. The retired header is READ as the delta it always was, and warned about —
+    // a queue of lines cut against the reader that took only that shape has to be able to land.
+    let pair = |key: &str, from: i64, to: i64| -> String {
+        format!(
+            "\n[gate.ceiling_raises.\"{key}\"]\nfrom = {from}\nto = {to}\nbecause = \"planted \
+             by the self-test in the retired header: its {} measured lines are the whole of this \
+             declared raise, and nothing else on this tree is\"\n",
+            to - from
+        )
+    };
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "a raise declared in the retired `from`/`to` header is read as a delta and warned about",
+        ceilings::ROW_ROSE,
+        plant(
+            lowered.clone(),
+            format!("{text}{}", pair(&dotted, now - RISE, now)),
+        ),
+        &[
+            "1 declared raise(s):",
+            "retired `from`/`to` header",
+            "--write",
+        ],
+    ));
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "the two shapes mix in one tree and their deltas sum against one rise",
+        ceilings::ROW_ROSE,
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}{}{}",
+                entry(&dotted, 10, "virtual-key"),
+                pair(&dotted, 0, 5)
+            ),
+        ),
+        &["1 declared raise(s):", "#1 +10", "+5"],
+    ));
     r.push(prove_rows_red(
         cx,
         gate,
-        "the retired `from`/`to` shape is refused by name, and the array shape is printed",
+        "a retired-header raise is judged by the same rules: a delta above the rise is refused",
         &[ceilings::ROW_ROSE],
         plant(
             lowered.clone(),
             format!(
-                "{text}\n[gate.ceiling_raises.\"{dotted}\"]\nfrom = {}\nto = {now}\n\
-                 because = \"planted by the self-test in the shape this reader retired: a pair \
-                 of numbers that cannot sum with a second face's or expire on its own\"\n",
+                "{text}{}{}",
+                entry(&dotted, 10, "virtual-key"),
+                pair(&dotted, 0, 10)
+            ),
+        ),
+        &["over-declared", "rose by 15", "sum to 20"],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the array shape written with `from`/`to` is neither shape, and stays refused by name",
+        &[ceilings::ROW_ROSE],
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}\n[[gate.ceiling_raises]]\nkey = \"{dotted}\"\nfrom = {}\nto = {now}\n\
+                 because = \"planted by the self-test in a shape that is neither: an array row \
+                 naming a pair of numbers, which no reader of this file has ever taken\"\n",
                 now - RISE
             ),
         ),
-        &[
-            "retired `from`/`to` shape",
-            "[[gate.ceiling_raises]]",
-            "by = 10",
-        ],
+        &["carries `from`/`to`", "[[gate.ceiling_raises]]", "by = 10"],
     ));
 
     // THE STRIKE MUST NOT MANUFACTURE A RISE. The declarations carry an integer, `by`, and an
@@ -941,11 +992,12 @@ fn declared_raise_cases<'a>(
     ));
     let planted = cx.with_overlay(ov);
     let got = match ceilings::struck_text(&planted) {
-        Ok((after, struck)) => {
+        Ok((after, struck, migrated)) => {
             let struck: Vec<usize> = struck.iter().map(|s| s.ordinal).collect();
-            let (left, refused) = ceilings::raises_in(&after);
+            let (left, refused, _) = ceilings::raises_in(&after);
             let left: Vec<(usize, i64)> = left.iter().map(|s| (s.ordinal, s.by)).collect();
-            if struck == [1, 2] && left == [(1, SMALL)] && refused.is_empty() {
+            if struck == [1, 2] && left == [(1, SMALL)] && refused.is_empty() && migrated.is_empty()
+            {
                 Expect::Green
             } else {
                 Expect::Red {

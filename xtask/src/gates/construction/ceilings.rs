@@ -256,11 +256,11 @@ pub fn rewrite(cx: &Ctx) -> Result<String, String> {
             orphan.join(", ")
         ));
     }
-    let (mut out, struck) = struck_text(cx)?;
-    if slack.is_empty() && struck.is_empty() {
+    let (mut out, struck, migrated) = struck_text(cx)?;
+    if slack.is_empty() && struck.is_empty() && migrated.is_empty() {
         return Ok(
             "every ratcheted ceiling already equals what it measures, and no declared raise has \
-             expired; nothing to write"
+             expired or is still in the retired shape; nothing to write"
                 .to_string(),
         );
     }
@@ -277,16 +277,31 @@ pub fn rewrite(cx: &Ctx) -> Result<String, String> {
     }
     for r in &struck {
         done.push(format!(
-            "struck [[{RAISES}]] #{}: {} +{} — the base already carries it",
-            r.ordinal, r.key, r.by
+            "struck {}: {} +{} — the base already carries it",
+            match &r.pair {
+                Some(key) => format!("[{RAISES}.\"{key}\"]"),
+                None => format!("[[{RAISES}]] #{}", r.ordinal),
+            },
+            r.key,
+            r.by
+        ));
+    }
+    for r in &migrated {
+        done.push(format!(
+            "migrated [{RAISES}.\"{}\"] into [[{RAISES}]]: {} +{} — the same declaration, in the \
+             shape that sums and expires",
+            r.pair.as_deref().unwrap_or(""),
+            r.key,
+            r.by
         ));
     }
     std::fs::write(&path, &out).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(format!(
-        "re-pinned {} ceiling(s) (downward only) and struck {} expired declared raise(s) in \
-         {CEILINGS}:\n  {}",
+        "re-pinned {} ceiling(s) (downward only), struck {} expired declared raise(s) and \
+         migrated {} out of the retired shape in {CEILINGS}:\n  {}",
         slack.len(),
         struck.len(),
+        migrated.len(),
         done.join("\n  ")
     ))
 }
@@ -503,6 +518,20 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
                 .join(", ")
         )
     };
+    // A RETIRED-SHAPE ENTRY IS A WARNING WHILE THE TRANSITION IS OPEN, for the same reason a
+    // carried entry is: the entry says a true thing about this tree, and the only thing wrong
+    // with it is how it is spelled. See [`raises_in`] for the commit that closes this.
+    let warned = if declared.warned.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; WARN {} declared raise(s) still in the retired `from`/`to` header, read as deltas \
+             — `cargo xtask gate construction --write` migrates them: {}",
+            declared.warned.len(),
+            declared.warned.join("; ")
+        )
+    };
+    let carried = format!("{carried}{warned}");
     let detail = if ok && allowed.is_empty() {
         format!(
             "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base \
@@ -571,12 +600,21 @@ pub struct Raise {
     /// commit cannot name that commit's own hash, so nothing is keyed on it.
     pub commit: Option<String>,
     /// Which `[[gate.ceiling_raises]]` this is, counting from 1, so a refusal can point at it.
+    /// Zero for an entry read from the retired header, which has no position in the array.
     pub ordinal: usize,
+    /// THE RETIRED HEADER THIS ENTRY WAS READ FROM, when it was read from one: the dotted key
+    /// inside `[gate.ceiling_raises."<key>"]`. See [`raises_in`] — during the transition such an
+    /// entry is READ (as the delta `to - from`) and warned about, and `--write` migrates it into
+    /// the array shape. `None` is the array shape, which is the shape everything ends up in.
+    pub pair: Option<String>,
 }
 
 impl Raise {
     fn line(&self) -> String {
-        format!("#{} +{} ({})", self.ordinal, self.by, self.because_short())
+        match &self.pair {
+            Some(key) => format!("[\"{key}\"] +{} ({})", self.by, self.because_short()),
+            None => format!("#{} +{} ({})", self.ordinal, self.by, self.because_short()),
+        }
     }
 
     /// The reason, cut to a report-sized excerpt.
@@ -591,6 +629,11 @@ impl Raise {
 
     /// What makes two entries THE SAME ENTRY — the base carrying one of these is the base carrying
     /// this one.
+    ///
+    /// THE SHAPE IS NOT PART OF THE IDENTITY, and that is what makes the migration safe: an entry
+    /// the base carries as `[gate.ceiling_raises."k"] from/to` and this tree carries as
+    /// `[[gate.ceiling_raises]] key/by` is ONE entry, read once, so `--write` may rewrite the
+    /// shape in a commit of its own without the rewrite reading as a second face's declaration.
     fn identity(&self) -> (&str, i64, &str) {
         (&self.key, self.by, &self.because)
     }
@@ -604,12 +647,16 @@ impl Raise {
 ///   figure they declared, and the only thing left to do is strike them. Never red; `--write`
 ///   strikes them (see [`expired`]);
 /// * `refused` — entries of a shape this reader will not honour, each with the shape it should
-///   have had, so a landing cannot get through by writing a declaration this row does not read.
+///   have had, so a landing cannot get through by writing a declaration this row does not read;
+/// * `warned` — entries READ in the retired `from`/`to` header, one line each. They are `live` or
+///   `carried` like any other; the warning is about the SHAPE, and it is a warning rather than a
+///   refusal only until the transition closes. See [`raises_in`].
 #[derive(Debug, Clone, Default)]
 pub struct Declared {
     pub live: Vec<Raise>,
     pub carried: Vec<Raise>,
     pub refused: Vec<String>,
+    pub warned: Vec<String>,
 }
 
 /// The declared raises, read from this tree's ceilings file and partitioned against the base's.
@@ -641,7 +688,7 @@ pub fn raises(cx: &Ctx, base: &str) -> Declared {
     let Ok(text) = cx.read(CEILINGS) else {
         return Declared::default();
     };
-    let (entries, refused) = raises_in(&text);
+    let (entries, refused, warned) = raises_in(&text);
     let at_base = cx
         .git_show(base, CEILINGS)
         .ok()
@@ -649,6 +696,7 @@ pub fn raises(cx: &Ctx, base: &str) -> Declared {
         .unwrap_or_default();
     let mut out = partition(entries, at_base);
     out.refused = refused;
+    out.warned = warned;
     out
 }
 
@@ -670,30 +718,47 @@ fn partition(entries: Vec<Raise>, mut at_base: Vec<Raise>) -> Declared {
     out
 }
 
-/// Every declared raise in one ceilings-file text, plus the refusals: the `from`/`to` form this
-/// table used to have, and any entry that does not spell a ceiling, a delta and a face.
-pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>) {
+/// Every declared raise in one ceilings-file text, the refusals, and the transition warnings.
+///
+/// BOTH SHAPES ARE READ WHILE THE QUEUE DRAINS. The array of deltas is the shape, and it is the
+/// shape for the reasons the module header gives — a pair of numbers cannot sum with a second
+/// face's and cannot expire by itself. But the lines waiting to land were cut against a tree whose
+/// reader took `[gate.ceiling_raises."<key>"] from/to` and nothing else, and a reader that refuses
+/// them turns a queue of already-measured faces red one line at a time for a reason that is about
+/// the SHAPE of a declaration rather than about a single line of the tree. So the retired header is
+/// READ, as the delta it always was — `to - from`, keyed by the same identity — and WARNED about,
+/// in the same place a carried entry is warned about, and `--write` migrates it.
+///
+/// THE CONTENT RULES ARE THE SAME FOR BOTH SHAPES: at least [`MIN_REASON`] characters of reason, a
+/// delta that is a raise, and a key that is a row's IDENTITY and never its ordinal. The transition
+/// is about how a declaration is spelled, not about what it has to say.
+///
+/// AND IT CLOSES ON A DATE. The warning is not a second supported shape — it is a ramp with an end
+/// written on it. When the last line cut in the retired header has landed, the commit
+/// **`gate ceiling-rose: the from/to transition closes — the retired header is refused again`**,
+/// cut on **2026-09-18**, deletes [`read_pair`]'s acceptance arm and restores the refusal below it.
+/// Until then a from/to entry is a warning; after it, a refusal, and nothing else changes.
+pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
     let mut out = Vec::new();
     let mut refused = Vec::new();
+    let mut warned = Vec::new();
     let Ok(doc) = crate::toml_doc::parse_str(text) else {
-        return (out, refused);
+        return (out, refused, warned);
     };
-    // THE OLD SHAPE IS REFUSED BY NAME. `[gate.ceiling_raises."<key>"]` with `from`/`to` named a
-    // pair of numbers, so two faces off one base could not both be declared and an entry never
-    // expired on its own. It is not migrated silently: a landing that carried the old shape was
-    // making a claim this reader no longer reads, and the author is told the shape that does.
     let prefix = format!("{RAISES}.");
-    for (path, _) in doc.tables() {
+    for (path, t) in doc.tables() {
         let Some(rest) = path.strip_prefix(prefix.as_str()) else {
             continue;
         };
         let head = rest.split('.').next().unwrap_or(rest);
         if head.is_empty() || !head.chars().all(|c| c.is_ascii_digit()) {
-            refused.push(format!(
-                "[{RAISES}.\"{rest}\"]: a declared raise in the retired `from`/`to` shape, which \
-                 names a pair of numbers and so can neither sum with a second face's nor expire \
-                 by itself. Declare one delta per face:\n{RAISE_SHAPE}"
-            ));
+            match read_pair(rest, t) {
+                Ok((r, warning)) => {
+                    warned.push(warning);
+                    out.push(r);
+                }
+                Err(why) => refused.push(why),
+            }
         }
     }
     for (i, t) in doc.array_of_tables(RAISES).into_iter().enumerate() {
@@ -713,45 +778,81 @@ pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>) {
             ));
             continue;
         };
-        if by <= 0 {
-            refused.push(format!(
-                "{at} ({key}): `by = {by}` is not a raise. A ceiling that goes DOWN is re-pinned \
-                 by `--write` with no declaration at all"
-            ));
-            continue;
+        match judged(&at, key, by, t, ordinal, None) {
+            Ok(r) => out.push(r),
+            Err(why) => refused.push(why),
         }
-        let because = t.str_of("because").unwrap_or("").trim().to_string();
-        if because.chars().count() < MIN_REASON {
-            refused.push(format!(
-                "{at} ({key}): a {}-character `because` names no face. A declared raise names \
-                 the face it lands and the lines that face measured, in at least {MIN_REASON} \
-                 characters:\n{RAISE_SHAPE}",
-                because.chars().count()
-            ));
-            continue;
-        }
-        let file = t.str_of("file").unwrap_or(CEILINGS);
-        // AN ORDINAL KEY IS REFUSED OUTRIGHT, whatever it happens to line up with. A declaration
-        // is a transaction about ONE ceiling, and `cell.178.count` does not name a ceiling — it
-        // names a slot, which the next `[[cell]]` struck above it hands to a different crate.
-        if let Some((name, fields)) = ordinal_form(key) {
-            refused.push(format!(
-                "{at} ({key}): a declared raise keyed by ORDINAL. Striking one `[[{name}]]` \
-                 renumbers every later row, so this entry re-targets whichever row slides into \
-                 that position. Key it by identity: `{name}.<{}>.count`",
-                fields.join(">.<")
-            ));
-            continue;
-        }
-        out.push(Raise {
-            key: format!("{file}:{key}"),
-            by,
-            because,
-            commit: t.str_of("commit").map(str::to_string),
-            ordinal,
-        });
     }
-    (out, refused)
+    (out, refused, warned)
+}
+
+/// One entry in the retired `[gate.ceiling_raises."<key>"]` header, read as the delta `to - from`.
+///
+/// A header with neither `from` nor `to` is not that shape at all and is refused as the shapeless
+/// thing it is; a `to` at or below its `from` is a FALL, which needs no declaration of any kind.
+fn read_pair(key: &str, t: &crate::toml_doc::Table) -> Result<(Raise, String), String> {
+    let at = format!("[{RAISES}.\"{key}\"]");
+    let (Some(from), Some(to)) = (t.int_of("from"), t.int_of("to")) else {
+        return Err(format!(
+            "{at}: a declared raise names a `key` and a `by`, and this one does not:\n{RAISE_SHAPE}"
+        ));
+    };
+    let r = judged(&at, key, to - from, t, 0, Some(key.to_string()))?;
+    let warning = format!(
+        "{at} {from} -> {to}: the retired `from`/`to` header, read as the delta +{} it always \
+         was. It cannot sum with a second face's declaration and it does not expire on its own, \
+         so `cargo xtask gate construction --write` MIGRATES it into the shape that does:\n\
+         {RAISE_SHAPE}",
+        r.by
+    );
+    Ok((r, warning))
+}
+
+/// THE RULES A DECLARATION HAS TO MEET, whichever shape it is written in: a delta that raises, a
+/// reason long enough to be one, and a key that names a row rather than a slot.
+fn judged(
+    at: &str,
+    key: &str,
+    by: i64,
+    t: &crate::toml_doc::Table,
+    ordinal: usize,
+    pair: Option<String>,
+) -> Result<Raise, String> {
+    if by <= 0 {
+        return Err(format!(
+            "{at} ({key}): `by = {by}` is not a raise. A ceiling that goes DOWN is re-pinned by \
+             `--write` with no declaration at all"
+        ));
+    }
+    let because = t.str_of("because").unwrap_or("").trim().to_string();
+    if because.chars().count() < MIN_REASON {
+        return Err(format!(
+            "{at} ({key}): a {}-character `because` names no face. A declared raise names the \
+             face it lands and the lines that face measured, in at least {MIN_REASON} \
+             characters:\n{RAISE_SHAPE}",
+            because.chars().count()
+        ));
+    }
+    // AN ORDINAL KEY IS REFUSED OUTRIGHT, whatever it happens to line up with. A declaration
+    // is a transaction about ONE ceiling, and `cell.178.count` does not name a ceiling — it
+    // names a slot, which the next `[[cell]]` struck above it hands to a different crate.
+    if let Some((name, fields)) = ordinal_form(key) {
+        return Err(format!(
+            "{at} ({key}): a declared raise keyed by ORDINAL. Striking one `[[{name}]]` renumbers \
+             every later row, so this entry re-targets whichever row slides into that position. \
+             Key it by identity: `{name}.<{}>.count`",
+            fields.join(">.<")
+        ));
+    }
+    let file = t.str_of("file").unwrap_or(CEILINGS);
+    Ok(Raise {
+        key: format!("{file}:{key}"),
+        by,
+        because,
+        commit: t.str_of("commit").map(str::to_string),
+        ordinal,
+        pair,
+    })
 }
 
 /// THE ENTRIES `--write` STRIKES: every declared raise the base already carries. See [`raises`].
@@ -765,13 +866,44 @@ pub fn expired(cx: &Ctx) -> Result<Vec<Raise>, String> {
 /// A line editor for the same reason [`set_int`] is one — the file is the owner's prose, and a
 /// strike a reviewer can read is one that removes one block and touches nothing else.
 pub fn strike(text: &str, ordinal: usize) -> Option<String> {
+    splice(text, &format!("[[{RAISES}]]"), ordinal, "")
+}
+
+/// The ceilings-file text with the retired `[gate.ceiling_raises."<key>"]` header STRUCK — the
+/// same block edit [`strike`] performs, over the other header. Used when the base already carries
+/// the entry, so nothing has to be written in its place.
+pub fn strike_pair(text: &str, key: &str) -> Option<String> {
+    splice(text, &format!("[{RAISES}.\"{key}\"]"), 1, "")
+}
+
+/// The ceilings-file text with the retired `[gate.ceiling_raises."<key>"]` header REPLACED by the
+/// same declaration in the array shape — the migration `--write` performs while the transition is
+/// open. The entry says the same thing afterwards: same key, same delta (`to - from`), same
+/// reason, so [`Raise::identity`] is unchanged and the base still carries it when its face lands.
+pub fn migrate_pair(text: &str, r: &Raise) -> Option<String> {
+    let key = r.pair.as_deref()?;
+    let file = r.key.split_once(':').map(|(f, _)| f).unwrap_or(CEILINGS);
+    let mut block = format!("[[{RAISES}]]\nkey = \"{key}\"\n");
+    if file != CEILINGS {
+        block.push_str(&format!("file = \"{file}\"\n"));
+    }
+    block.push_str(&format!("by = {}\nbecause = \"{}\"\n", r.by, r.because));
+    if let Some(c) = &r.commit {
+        block.push_str(&format!("commit = \"{c}\"\n"));
+    }
+    splice(text, &format!("[{RAISES}.\"{key}\"]"), 1, &block)
+}
+
+/// The `nth` block (counting from 1) whose header line is exactly `header`, replaced by `with`.
+/// `with` empty is a strike. One block editor for both headers, so the comment rules below are
+/// the same rules in both shapes.
+fn splice(text: &str, header: &str, nth: usize, with: &str) -> Option<String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let header = format!("[[{RAISES}]]");
     let start = lines
         .iter()
         .enumerate()
         .filter(|(_, raw)| raw.trim() == header)
-        .nth(ordinal.checked_sub(1)?)
+        .nth(nth.checked_sub(1)?)
         .map(|(i, _)| i)?;
     let mut end = start + 1;
     while end < lines.len() && !lines[end].trim_start().starts_with('[') {
@@ -787,29 +919,55 @@ pub fn strike(text: &str, ordinal: usize) -> Option<String> {
     while from > 0 && lines[from - 1].trim_start().starts_with('#') {
         from -= 1;
     }
-    let mut out = String::with_capacity(text.len());
+    let mut out = String::with_capacity(text.len() + with.len());
     out.extend(lines[..from].iter().copied());
+    out.push_str(with);
     out.extend(lines[end..].iter().copied());
     Some(out)
 }
 
 /// The ceilings-file text with every expired entry struck, and the entries struck — the same
 /// derivation [`rewrite`] commits, exposed so the self-test can prove it without writing a file.
-pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>), String> {
-    let expired = expired(cx)?;
+pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String> {
+    let base = base_ref(cx)?;
+    let declared = raises(cx, &base);
+    let expired = declared.carried;
     let mut out = cx.read(CEILINGS)?;
-    // Highest ordinal first, so each strike leaves the ordinals below it where they were.
+    // Highest ordinal first, so each strike leaves the ordinals below it where they were. A
+    // retired-header entry has no ordinal and is found by its key, so the two orders do not
+    // interfere — but the array strikes are still done first, before any migration adds one.
     let mut order: Vec<&Raise> = expired.iter().collect();
     order.sort_by_key(|r| std::cmp::Reverse(r.ordinal));
     for r in order {
-        out = strike(&out, r.ordinal).ok_or_else(|| {
+        out = match &r.pair {
+            None => strike(&out, r.ordinal).ok_or_else(|| {
+                format!(
+                    "{CEILINGS} has no [[{RAISES}]] #{} to strike (declared raise {})",
+                    r.ordinal, r.key
+                )
+            })?,
+            Some(key) => strike_pair(&out, key).ok_or_else(|| {
+                format!("{CEILINGS} has no [{RAISES}.\"{key}\"] header to strike")
+            })?,
+        };
+    }
+    // AND THE LIVE RETIRED-SHAPE ENTRIES ARE MIGRATED, never struck: their face has not landed, so
+    // the declaration is still doing its job and only its spelling is wrong. Migrating preserves
+    // the identity exactly (key, delta, reason), so the entry expires later on the same terms.
+    let migrated: Vec<Raise> = declared
+        .live
+        .into_iter()
+        .filter(|r| r.pair.is_some())
+        .collect();
+    for r in &migrated {
+        out = migrate_pair(&out, r).ok_or_else(|| {
             format!(
-                "{CEILINGS} has no [[{RAISES}]] #{} to strike (declared raise {})",
-                r.ordinal, r.key
+                "{CEILINGS} has no [{RAISES}.\"{}\"] header to migrate",
+                r.pair.as_deref().unwrap_or("")
             )
         })?;
     }
-    Ok((out, expired))
+    Ok((out, expired, migrated))
 }
 
 /// THE ARRAY-OF-TABLES ROWS WHOSE NAME IS THEIR IDENTITY, and the fields that spell it.
@@ -1058,8 +1216,9 @@ mod tests {
             entry("rules.x.n", 10, BECAUSE),
             entry("rules.x.n", 5, BECAUSE)
         );
-        let (raises, refused) = raises_in(&text);
+        let (raises, refused, warned) = raises_in(&text);
         assert!(refused.is_empty(), "{refused:?}");
+        assert!(warned.is_empty(), "{warned:?}");
         assert_eq!(
             raises.iter().map(|r| (r.ordinal, r.by)).collect::<Vec<_>>(),
             vec![(1, 10), (2, 5)]
@@ -1069,29 +1228,103 @@ mod tests {
             .all(|r| r.key == "qa/construction.toml:rules.x.n"));
     }
 
-    /// THE RETIRED `from`/`to` SHAPE IS REFUSED BY NAME, in both places it could be written, and
-    /// the refusal prints the shape that is read now — a landing told "no" without being told what
-    /// "yes" looks like is a landing that edits the rule.
+    /// THE RETIRED HEADER IS READ WHILE THE TRANSITION IS OPEN, as the delta `to - from` it
+    /// always was, and WARNED about rather than refused — a queue of lines cut against the reader
+    /// that took only that shape must be able to land. The array shape written with `from`/`to`
+    /// is a different thing entirely: it is neither shape, and it stays refused.
     #[test]
-    fn the_from_to_shape_is_refused_and_the_array_shape_is_printed() {
+    fn the_retired_from_to_header_is_read_as_a_delta_and_warned_about() {
         let old = format!(
-            "{DOC}\n[gate.ceiling_raises.\"rules.x.n\"]\nfrom = 1\nto = 2\nbecause = \"{BECAUSE}\"\n"
+            "{DOC}\n[gate.ceiling_raises.\"rules.x.n\"]\nfrom = 1\nto = 9\nbecause = \"{BECAUSE}\"\n"
         );
-        let (raises, refused) = raises_in(&old);
+        let (raises, refused, warned) = raises_in(&old);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(raises.len(), 1, "{raises:?}");
+        assert_eq!(raises[0].by, 8);
+        assert_eq!(raises[0].key, "qa/construction.toml:rules.x.n");
+        assert_eq!(raises[0].pair.as_deref(), Some("rules.x.n"));
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("retired `from`/`to` header"));
+        assert!(warned[0].contains("1 -> 9"));
+        assert!(warned[0].contains(RAISE_SHAPE));
+
+        // A `to` at or below its `from` is a FALL, and a fall is re-pinned with no declaration.
+        let fall = format!(
+            "{DOC}\n[gate.ceiling_raises.\"rules.x.n\"]\nfrom = 9\nto = 9\nbecause = \"{BECAUSE}\"\n"
+        );
+        let (raises, refused, _) = raises_in(&fall);
         assert!(raises.is_empty());
         assert_eq!(refused.len(), 1, "{refused:?}");
-        assert!(refused[0].contains("retired `from`/`to` shape"));
-        assert!(refused[0].contains(RAISE_SHAPE));
+        assert!(refused[0].contains("is not a raise"));
 
+        // THE ARRAY SHAPE WITH `from`/`to` IS NEITHER SHAPE and is still refused by name.
         let mixed = format!(
             "{DOC}\n[[gate.ceiling_raises]]\nkey = \"rules.x.n\"\nfrom = 1\nto = 2\n\
              because = \"{BECAUSE}\"\n"
         );
-        let (raises, refused) = raises_in(&mixed);
+        let (raises, refused, warned) = raises_in(&mixed);
         assert!(raises.is_empty());
+        assert!(warned.is_empty(), "{warned:?}");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(refused[0].contains("carries `from`/`to`"));
         assert!(refused[0].contains("by = 10"));
+    }
+
+    /// THE TWO SHAPES MIX IN ONE TREE AND SUM AGAINST ONE RISE. This is the transition's whole
+    /// point: a line cut in the retired header lands beside a line cut in the array shape, and
+    /// `ceiling-rose` adds their deltas exactly as it adds two array entries'.
+    #[test]
+    fn both_shapes_are_read_in_one_tree_and_key_the_same_ceiling() {
+        let text = format!(
+            "{DOC}{}\n[gate.ceiling_raises.\"rules.x.n\"]\nfrom = 100\nto = 105\n\
+             because = \"{BECAUSE}\"\n",
+            entry("rules.x.n", 10, BECAUSE)
+        );
+        let (raises, refused, warned) = raises_in(&text);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert_eq!(raises.len(), 2, "{raises:?}");
+        // One key, whichever shape spells it, so the deltas sum against one rise.
+        assert!(raises
+            .iter()
+            .all(|r| r.key == "qa/construction.toml:rules.x.n"));
+        assert_eq!(raises.iter().map(|r| r.by).sum::<i64>(), 15);
+    }
+
+    /// MIGRATION PRESERVES THE IDENTITY. `--write` rewrites the header into the array shape and
+    /// the entry says the same thing afterwards — same key, same delta, same reason — so the base
+    /// still carries it when the face lands and it expires on the ordinary terms.
+    #[test]
+    fn migrating_a_retired_header_keeps_the_entry_identical() {
+        let text = format!(
+            "{DOC}\n# face A\n[gate.ceiling_raises.\"cell.busbar.export.count\"]\n\
+             file = \"qa/kind-isolation.toml\"\nfrom = 39\nto = 64\nbecause = \"{BECAUSE}\"\n\
+             \n[rules.y]\nm = 2\n"
+        );
+        let (raises, _, _) = raises_in(&text);
+        assert_eq!(raises.len(), 1, "{raises:?}");
+        let out = migrate_pair(&text, &raises[0]).expect("the header is there");
+        assert!(!out.contains("from = 39"), "{out}");
+        assert!(out.contains("[[gate.ceiling_raises]]"), "{out}");
+        assert!(out.contains("file = \"qa/kind-isolation.toml\""), "{out}");
+        assert!(out.contains("[rules.y]"), "{out}");
+        let (after, refused, warned) = raises_in(&out);
+        assert!(
+            refused.is_empty() && warned.is_empty(),
+            "{refused:?} {warned:?}"
+        );
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            (after[0].key.clone(), after[0].by, after[0].because.clone()),
+            (
+                raises[0].key.clone(),
+                raises[0].by,
+                raises[0].because.clone()
+            )
+        );
+        // And a struck header leaves every other byte where it was.
+        let struck = strike_pair(&text, "cell.busbar.export.count").expect("the header is there");
+        assert_eq!(struck, format!("{DOC}\n[rules.y]\nm = 2\n"));
     }
 
     /// An entry that names no face, no delta, or a delta that is not a raise, excuses nothing and
@@ -1103,7 +1336,7 @@ mod tests {
             entry("rules.x.n", 3, "too short"),
             entry("rules.x.n", 0, BECAUSE),
         );
-        let (raises, refused) = raises_in(&text);
+        let (raises, refused, _) = raises_in(&text);
         assert!(raises.is_empty(), "{raises:?}");
         assert_eq!(refused.len(), 3, "{refused:?}");
         assert!(refused[0].contains("names no face"));
@@ -1118,7 +1351,7 @@ mod tests {
             "{DOC}\n[[gate.ceiling_raises]]\nkey = \"cell.178.count\"\n\
              file = \"qa/kind-isolation.toml\"\nby = 1\nbecause = \"{BECAUSE}\"\n"
         );
-        let (raises, refused) = raises_in(&text);
+        let (raises, refused, _) = raises_in(&text);
         assert!(raises.is_empty());
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(refused[0].contains("keyed by ORDINAL"));
@@ -1136,6 +1369,7 @@ mod tests {
             because: BECAUSE.into(),
             commit: None,
             ordinal: ord,
+            pair: None,
         };
         let b = Raise { by: 5, ..a(3) };
         let now = vec![a(1), a(2), b.clone()];
