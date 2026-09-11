@@ -59,18 +59,17 @@ use super::client::catalogue::LiveSightings;
 use super::inputreq::{self, Outcome, Refusal, RoundRecord};
 use super::sanitize;
 
-/// The methods this server implements. A method absent from here takes the ingress `-32601` / `404`
-/// arm, which stays the correct answer for anything still unimplemented.
-///
-/// Exposed as a slice so `server/discover` advertises exactly what dispatch accepts: two lists that
-/// can disagree is a client told it may call something it may not. The LIST lives in
-/// `busbar-mcp-codec` and this is a re-export, because a THIRD reader — `busbar-plane-mcp`, which
-/// carries a row per method and may not name this crate — has to be able to see it; a method this
-/// server dispatches and the plane does not carry arrives as an unsupported operation. Nothing
-/// about the list changed crossing the seam, including that `subscriptions/listen` is on it (SEP-2575
-/// made it a METHOD rather than a route, which is why `super::envelope::legacy_verb` can go on
-/// answering `405` without that being a statement that busbar cannot notify a client).
-pub(crate) use busbar_mcp_codec::codec::IMPLEMENTED_METHODS;
+/// THE METHODS THIS SERVER IMPLEMENTS, read off the PLANE'S OWN TABLE — the only one left. The codec's
+/// `IMPLEMENTED_METHODS` was the same names without the three columns, kept in agreement by a cell; a
+/// checked copy is still a copy, so it is deleted. Declaration order is the retired list's.
+#[must_use]
+pub(crate) fn implemented_methods() -> Vec<&'static str> {
+    busbar_plane_mcp::ops::METHODS
+        .iter()
+        .filter(|r| r.sender == busbar_plane_mcp::ops::Sender::Client)
+        .map(|r| r.method)
+        .collect()
+}
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
@@ -191,33 +190,38 @@ impl Ctx<'_> {
 
 /// DISPATCH one JSON-RPC method. `None` means "not implemented", which ingress renders as `404` +
 /// `-32601`.
+/// THE METHOD NAME IS NOT SPELLED HERE: it is looked up in the plane's vocabulary table and what this
+/// selects on is the CLASS that table says it is. A name it does not carry takes the same arm.
 pub(crate) async fn dispatch(
     ctx: &Ctx<'_>,
     method: &str,
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Option<Response> {
-    match method {
-        "server/discover" => Some(discover(ctx, id)),
-        "tools/list" => Some(tools_list(ctx, id)),
-        "tools/call" => Some(tools_call_via_gauntlet(ctx, params, id).await),
-        "prompts/list" => Some(prompts_list(ctx, id)),
-        "prompts/get" => Some(prompts_get(ctx, params, id)),
-        "resources/list" => Some(resources_list(ctx, id)),
-        "resources/templates/list" => Some(resources_templates_list(ctx, id)),
-        "resources/read" => Some(resources_read(ctx, params, id)),
-        "completion/complete" => Some(completion_complete(id)),
-        "tasks/get" => Some(tasks_get(ctx, params, id)),
-        "tasks/update" => Some(tasks_update(ctx, params, id)),
-        "tasks/cancel" => Some(tasks_cancel(ctx, params, id)),
-        // The one method whose answer is a STREAM rather than a document. It returns through the
-        // same `Response` as every other arm — what makes it different is the `content-type`, which
-        // is also what tells `super::envelope` not to re-frame it.
-        super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN => {
-            Some(super::subscribe::listen(ctx, params, id))
-        }
-        _ => None,
+    use busbar_plane_mcp::ops;
+    let row = ops::row_for(method)?;
+    if row.sender != ops::Sender::Client {
+        return None;
     }
+    Some(match row.op {
+        ops::OP_DISCOVER => discover(ctx, id),
+        ops::OP_TOOLS_LIST => tools_list(ctx, id),
+        ops::OP_TOOL_CALL => tools_call_via_gauntlet(ctx, params, id).await,
+        ops::OP_PROMPTS_LIST => prompts_list(ctx, id),
+        ops::OP_PROMPT_GET => prompts_get(ctx, params, id),
+        ops::OP_RESOURCES_LIST => resources_list(ctx, id),
+        ops::OP_RESOURCE_TEMPLATES_LIST => resources_templates_list(ctx, id),
+        ops::OP_RESOURCE_READ => resources_read(ctx, params, id),
+        ops::OP_COMPLETION => completion_complete(id),
+        ops::OP_TASK_GET => tasks_get(ctx, params, id),
+        ops::OP_TASK_UPDATE => tasks_update(ctx, params, id),
+        ops::OP_TASK_CANCEL => tasks_cancel(ctx, params, id),
+        // The one class whose answer is a STREAM rather than a document. It returns through the same
+        // `Response` — what differs is the `content-type`, which tells `super::envelope` not to re-frame it.
+        ops::OP_SUBSCRIPTIONS_LISTEN => super::subscribe::listen(ctx, params, id),
+        // A client-sent class the plane declares and this server has no body for is a gap.
+        _ => return None,
+    })
 }
 
 /// The `-32021` gate every tasks-namespace method sits behind.
@@ -518,7 +522,7 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // and a server advertising both would be claiming two protocols at once.
                 "extensions": { super::tasks::TASKS_EXTENSION_ID: {} },
             },
-            "methods": IMPLEMENTED_METHODS,
+            "methods": implemented_methods(),
             "servers": servers,
             "counts": {
                 "tools": tools.len(),

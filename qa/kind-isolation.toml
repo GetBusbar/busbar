@@ -52,6 +52,17 @@ from = "busbar-voice"
 to = "busbar-plane-voice"
 reason = "legacy drain"
 
+# The same phenomenon on the mcp pair, and it lands for the same reason the voice one did: the
+# METHOD TABLE collapsed onto the plane's own `ops::METHODS`, so `busbar-mcp`'s dispatch selects a
+# handler on the CLASS a plane row states instead of re-spelling the thirteen wire names, and the
+# codec's second copy of the list (`IMPLEMENTED_METHODS`) is deleted in the same commit. The edge
+# points legacy -> plane, which is the drain's own direction; nothing points back, and
+# `busbar-plane-mcp` still may not name this crate.
+[[transitional]]
+from = "busbar-mcp"
+to = "busbar-plane-mcp"
+reason = "legacy drain"
+
 # ------------------------------------------------------------------------------------------------
 # [[announced]] — CRATES THAT ARE LANDING
 # ------------------------------------------------------------------------------------------------
@@ -1901,7 +1912,7 @@ count = "9"
 [[cell]]
 crate = "busbar-mcp"
 kind = "codec"
-count = "43"
+count = "39"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1921,7 +1932,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3301"
+count = "3316"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1971,7 +1982,7 @@ count = "8"
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "plane"
-count = "241"
+count = "238"
 
 [[cell]]
 crate = "busbar-mcp-codec"
@@ -2101,7 +2112,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "codec"
-count = "34"
+count = "33"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -4021,6 +4032,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-mcp names busbar-mcp-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-mcp-codec dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-plane-mcp"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plane-mcp dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-mcp"

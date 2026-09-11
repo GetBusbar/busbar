@@ -206,42 +206,13 @@ pub const CODES: &[i64] = &[
 /// not intend.
 pub const RETIRED_CODES: &[i64] = &[-32002, -32042];
 
-/// THE METHODS THIS DIALECT DISPATCHES. A method absent from here takes the `-32601` / `404` arm.
+/// The wire name of SEP-2575's listen method.
 ///
-/// On the codec side because it is the one list two crates read: the server half dispatches over it
-/// and advertises it on `server/discover`, and `busbar-plane-mcp` carries a row for each. Two lists
-/// that can disagree is a client told it may call something it may not — or a method the server
-/// answers that the plane reports as an unsupported operation.
-///
-/// `subscriptions/listen` is spelled here as a literal rather than read off the SDK's const-string
-/// type: `rmcp` hard-depends on `tokio` and a plane's entire transitive closure is scanned, so the
-/// SDK cannot cross into this crate. THE SDK IS STILL THE ACCEPTANCE TEST — `busbar-mcp`, which
-/// keeps the `rmcp` edge, asserts this entry against `SubscriptionsListenRequestMethod::VALUE`,
-/// exactly as it does for the five `METHOD_*` constants above.
-pub const IMPLEMENTED_METHODS: &[&str] = &[
-    "server/discover",
-    "tools/list",
-    METHOD_TOOLS_CALL,
-    "prompts/list",
-    "prompts/get",
-    "resources/list",
-    "resources/templates/list",
-    "resources/read",
-    "completion/complete",
-    // SEP-2663. The three v2 tasks methods, and ONLY the three: `tasks/result` and `tasks/list`
-    // were REMOVED by the extension's v2 wire — the result is inlined on `tasks/get` and there is
-    // no list — so their absence here is what makes them answer `-32601`, which is the conformant
-    // answer and not a gap.
-    "tasks/get",
-    "tasks/update",
-    "tasks/cancel",
-    // SEP-2575's replacement for the GET stream. It is a METHOD in this revision, so it belongs in
-    // this list rather than in the route table.
-    METHOD_SUBSCRIPTIONS_LISTEN,
-];
-
-/// The wire name of SEP-2575's listen method. See [`IMPLEMENTED_METHODS`] for why it is a literal
-/// here and an SDK-pinned assertion one crate over.
+/// A literal here rather than the SDK's own const-string type: `rmcp` hard-depends on `tokio` and a
+/// plane's entire transitive closure is scanned, so the SDK cannot cross into this crate. THE SDK IS
+/// STILL THE ACCEPTANCE TEST — `busbar-mcp`, which keeps the `rmcp` edge, asserts this constant
+/// against `SubscriptionsListenRequestMethod::VALUE`, exactly as it does for the five `METHOD_*`
+/// constants above.
 pub const METHOD_SUBSCRIPTIONS_LISTEN: &str = "subscriptions/listen";
 
 /// **THE SETTLED ANSWER FOR `completion/complete`, AS THE BARE RESULT DOCUMENT.**

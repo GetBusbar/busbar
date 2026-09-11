@@ -42,8 +42,8 @@ fn every_wire_name_this_cell_serves_is_the_one_the_sdk_declares() {
         busbar_mcp_codec::codec::METHOD_NOTIFY_RESOURCES_UPDATED,
         rmcp::model::ResourceUpdatedNotificationMethod::VALUE
     );
-    // SEP-2575's listen method, which joined the codec when `IMPLEMENTED_METHODS` did — the dispatch
-    // list has to be readable by `busbar-plane-mcp`, and this crate is where the SDK edge still is.
+    // SEP-2575's listen method. The name is the codec's and the SDK edge is this crate's; which
+    // operation class it is, and that a caller may send it, is `busbar_plane_mcp::ops::METHODS`'s.
     assert_eq!(
         busbar_mcp_codec::codec::METHOD_SUBSCRIPTIONS_LISTEN,
         rmcp::model::SubscriptionsListenRequestMethod::VALUE

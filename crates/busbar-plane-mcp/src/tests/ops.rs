@@ -71,32 +71,6 @@ fn the_two_lists_do_not_overlap() {
     }
 }
 
-/// Every method the codec's own dispatch table names is one this plane carries.
-///
-/// The table itself, iterated. This SCRAPED it out of the server half's source once — an
-/// `include_str!` over `../../busbar-mcp/src/…` followed by a hand-rolled parse for quoted
-/// pieces containing a slash — which coupled this crate to a sibling its manifest does not name
-/// and could only ever see what the parse happened to catch. The table is the codec's now, so
-/// the assertion is over the values themselves. A method the codec dispatches and this plane
-/// does not carry would arrive here as an unsupported operation.
-#[test]
-fn every_dispatched_method_is_carried() {
-    let mut seen = 0usize;
-    for method in busbar_mcp_codec::codec::IMPLEMENTED_METHODS {
-        if method.contains('/') {
-            assert!(
-                row_for(method).is_some(),
-                "the codec dispatches {method} and this plane does not carry it"
-            );
-            seen += 1;
-        }
-    }
-    assert!(
-        seen >= 12,
-        "only {seen} methods were read out of the codec's table"
-    );
-}
-
 /// The name pointer is the codec's own reading of where a request's subject is.
 ///
 /// The codec answers the same question in a small function; this CALLS it and asserts the two
