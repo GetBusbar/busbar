@@ -243,6 +243,16 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux there are two builds of equal standing: the default (ARMv8.1+ — any cloud ARM, Raspberry Pi 5) and an `-armv8.0` compat build for Raspberry Pi 4-class boards — the ["which ARM build?" table](docs/getting-started.md#step-1-get-the-binary) picks for you in one glance.
 
+### Persistence
+
+The default store is in-memory: keys, usage counters, ledgers and the audit trail all reset on
+restart (one WARN at boot says so). The admin-API config overlay is separate and persists on its
+own writable path regardless. Durable keys/usage/ledgers/audit need a store plugin (`sqlite`,
+`postgres`, `mysql` or `valkey`, each its own signed release) wired up with four config keys, not
+just a mounted volume — see [Durable store: giving persistence a writable
+volume](docs/getting-started.md#durable-store-giving-persistence-a-writable-volume) for the
+complete recipe.
+
 ---
 
 ## Kubernetes

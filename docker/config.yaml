@@ -37,3 +37,21 @@ pools:
   default:
     members:
       - model: claude
+
+# ── Durable store (optional; commented out — this image ships plugin-free) ────────────────────────
+# Default is in-memory: keys/usage/ledgers/audit reset on restart (one WARN at boot). Turning this
+# on needs all FOUR of the keys below, not just a writable volume — see
+# docs/getting-started.md#durable-store-giving-persistence-a-writable-volume for the full recipe
+# and the exact refusal text for each way this goes wrong, and docker/docker-compose.yml for a
+# working end-to-end example (docker/config.persistent.yaml is that example's active config, i.e.
+# this same block un-commented).
+# store:
+#   module: sqlite
+#   settings:
+#     db_path: /var/lib/busbar/governance.db     # directory must exist on a writable volume
+#
+# plugins:
+#   enabled: true                                # master switch — default false
+#   dir: /etc/busbar/plugins                     # ABSOLUTE — the default ("plugins") resolves to /plugins here
+#   fetch:
+#     - github: "GetBusbar/store-sqlite@v1.0.0"  # or omit `fetch` and bind-mount the signed tarball yourself
