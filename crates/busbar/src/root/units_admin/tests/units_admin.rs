@@ -587,7 +587,10 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         busbar_kernel::teller::requests_drawn(record.origin(), evidence.upstream_candidate),
         0
     );
-    assert_eq!(busbar_kernel::teller::fee_count(&evidence.fee).0, 0);
+    assert_eq!(
+        busbar_kernel::teller::fee_count(&evidence.fee, record.head()).0,
+        0
+    );
 }
 
 /// The nonce is drawn, not derived. Two draws over the same unit must not agree, or a one-time

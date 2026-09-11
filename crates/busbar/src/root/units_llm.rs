@@ -86,7 +86,9 @@ use busbar_caps::{
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_contract::{
+    FinishClass, LaneId, Registration, StatusAt, StatusClass, StatusLeg, UnitKey,
+};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
@@ -1066,6 +1068,47 @@ impl std::fmt::Debug for LlmUnit<'_> {
 }
 
 impl LlmUnit<'_> {
+    /// THE ANSWER'S HEAD, read once off the walk.
+    ///
+    /// This surface is HTTP and HTTP reports its class on the first response frame — which is what
+    /// `busbar-transport-http` declares in its own `STATUS_CLASS`, and the composition root is the
+    /// one place entitled to know which transport is under which plane. So `at` is that frame, and
+    /// a status that is present is the transport's own reading of it.
+    ///
+    /// The finish beside it is this plane's classification of THE SAME NUMBER, and that is stated
+    /// rather than dressed up: on this leg the two sources of the fee decision are still one
+    /// source, so they cannot yet disagree and the kernel's dispute arm is armed but not reached.
+    /// The second source arrives when the served leg's own `Delivered` carries the plane's reading
+    /// of the body instead of the head's number, which is where a mid-stream failure after a good
+    /// head becomes visible — and it is a cutover that moves money, so it is not this landing's.
+    ///
+    /// `None` for a unit that never got an answer: nothing was relayed, and there is no head.
+    fn served_head(&self) -> Option<StatusLeg> {
+        self.walk.served_status().map(|status| {
+            let ok = (200..300).contains(&status);
+            StatusLeg {
+                at: Some(StatusAt::FirstFrame),
+                status: Some(if ok {
+                    StatusClass::Success
+                } else if (400..500).contains(&status) {
+                    StatusClass::ClientError
+                } else if (500..600).contains(&status) {
+                    StatusClass::ServerError
+                } else {
+                    StatusClass::Other
+                }),
+                finish: Some(if ok {
+                    FinishClass::Complete
+                } else {
+                    FinishClass::Error
+                }),
+                delivered: true,
+                degraded: false,
+                relayed_error: None,
+            }
+        })
+    }
+
     /// The model the caller named.
     fn model(&self) -> String {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -1383,9 +1426,21 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
+        // THE ANSWER'S HEAD GOES ONTO THE UNIT HERE, which is the first step on this plane that can
+        // see it: the walk reports the served status when the answer comes back, and the step that
+        // decides the fee is the unit's exit. Without a cell on the unit for it, every leg in the
+        // tree wrote "this transport reports no status" as a literal and the kernel's dispute arm
+        // was unreachable on all five planes at once.
+        //
+        // Recorded only where there IS one. A unit that never got an answer records no head, which
+        // is what the fee decision reads as "nothing was relayed" — the same answer the literal
+        // `relayed_first_response_frame: status.is_some()` gave when this file decided it.
+        if let Some(head) = self.served_head() {
+            let _ = ctx.record_head(token, head);
+        }
         // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
         // choice. What the unit is worth is what the response's tap reports, and the tap fills its
         // cell when the BODY is consumed — which on this surface is after the loop's terminal has
@@ -1468,11 +1523,20 @@ impl Units for LlmUnit<'_> {
         let status = self.walk.served_status();
         Evidence {
             // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
-            // zero. The figure exists — the walk's tap prices it and puts it on the governance
-            // ledger — but it exists LATER: the tap fills its cell when the response body is
-            // consumed, which is after this unit has ended. So there is no reading of it a unit's
-            // own evidence could take, and a floor invented in its place would be a number the
-            // books could not defend.
+            // zero. The reason is no longer the one this comment used to give. It used to say the
+            // figure arrived after the unit ended — the tap fills its cell when the response body
+            // is consumed — and that stopped being true when the routed body became a handle the
+            // unit HOLDS: a completed body's count is on the record at `completion()`, readable at
+            // the Meter step and at this one, which is the whole point of the hold.
+            //
+            // What blocks it now is a shape, and it is measured rather than assumed: `Evidence`
+            // carries ONE located quantity against ONE class, and what a unit on this plane spent
+            // is FOUR declared dimensions priced against the card it was admitted under. There is
+            // no single class this figure could honestly be reported in, and reporting the
+            // answer's byte count in place of it would settle bytes as money. So it stays `None`
+            // until the fee and the quantity move onto the kernel's own reading together, which is
+            // a cutover that moves money and is gated on the byte-identity cell that precedes it.
+            // A floor invented in its place would be a number the books could not defend.
             //
             // This is what keeps the root's ledger empty for this plane. A settlement of zero is not
             // a row, so the totals view answers over nothing and the identity holds vacuously; the
@@ -1503,18 +1567,6 @@ impl Units for LlmUnit<'_> {
                 // the one fact that answers this, so it is the one thing read.
                 client_open_or_one_shot: ctx.origin() == OriginKind::Client,
                 selected_upstream: self.walk.upstream_candidate(),
-                relayed_first_response_frame: status.is_some(),
-                // This transport reports no status leg of its own: the response IS the status, and
-                // the plane's finish is decided from the frame the client saw.
-                status_at: None,
-                status: None,
-                finish: status.map(|s| {
-                    if (200..300).contains(&s) {
-                        busbar_contract::FinishClass::Complete
-                    } else {
-                        busbar_contract::FinishClass::Error
-                    }
-                }),
             },
         }
     }

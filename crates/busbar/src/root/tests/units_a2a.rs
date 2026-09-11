@@ -676,22 +676,38 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
     let served = draft(ops::OP_MESSAGE_SEND);
     assert!(served.has_upstream());
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Client, true)).0,
+        fee_count(
+            &fee_identity(&served, OriginKind::Client),
+            Some(&served_head(&served, true))
+        )
+        .0,
         1
     );
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Provider, true)).0,
+        fee_count(
+            &fee_identity(&served, OriginKind::Provider),
+            Some(&served_head(&served, true))
+        )
+        .0,
         0
     );
     assert_eq!(
-        fee_count(&fee_evidence(&served, OriginKind::Client, false)).0,
+        fee_count(
+            &fee_identity(&served, OriginKind::Client),
+            Some(&served_head(&served, false))
+        )
+        .0,
         0
     );
 
     let mut failed = served.clone();
     failed.finish = FinishClass::Error;
     assert_eq!(
-        fee_count(&fee_evidence(&failed, OriginKind::Client, true)).0,
+        fee_count(
+            &fee_identity(&failed, OriginKind::Client),
+            Some(&served_head(&failed, true))
+        )
+        .0,
         0
     );
 
@@ -703,7 +719,11 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
     records_only.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
     assert!(!records_only.has_upstream());
     assert_eq!(
-        fee_count(&fee_evidence(&records_only, OriginKind::Client, true)).0,
+        fee_count(
+            &fee_identity(&records_only, OriginKind::Client),
+            Some(&served_head(&records_only, true))
+        )
+        .0,
         0
     );
 }

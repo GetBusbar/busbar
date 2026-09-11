@@ -1272,7 +1272,7 @@ impl Shape {
     }
 }
 
-/// The facts this plane's flat per-request fee is decided from.
+/// WHAT THE UNIT IS, for the fee decision — and nothing about the answer.
 ///
 /// Written once, as a function over the unit's shape rather than as a table each caller fills in,
 /// because the exit path and the audit record are two readers of ONE decision: a settlement that
@@ -1284,24 +1284,42 @@ impl Shape {
 /// The origin is the client rule the request slot is drawn under — a notification the server pushed
 /// is not a caller's request and pays nothing. The upstream is the KIND of leg the plan carries, not
 /// its price: with no rate card the fee still posts, which is why a listing answered entirely from
-/// this node's own records draws none. The relayed frame is the metering step's own locator, which is
-/// set when the plane read an answer to hand back; a unit that never got that far relayed nothing.
-/// This protocol carries no status leg of its own — the answer document IS the response — so the
-/// plane's finish is the single source, and an error ending posts nothing.
+/// this node's own records draws none.
 #[must_use]
-pub fn fee_evidence(
+pub fn fee_identity(
     shape: Shape,
     origin: busbar_caps::OriginKind,
-    relayed_first_response_frame: bool,
-    finish: busbar_contract::unit::FinishClass,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: shape.hops_upstream,
-        relayed_first_response_frame,
-        status_at: None,
+    }
+}
+
+/// THE ANSWER'S HEAD, as this plane's one place that sees it reads it.
+///
+/// This protocol carries no status leg of its own — the answer document IS the response — so `at`
+/// is `None` and the plane's finish is the single source, which is exactly what the kernel's fee
+/// decision does with it. `delivered` is the metering step's own locator: it is set when the plane
+/// read an answer to hand back, and a unit that never got that far relayed nothing.
+///
+/// It is built off [`Ended`] rather than put on the per-unit record, and that is a fact about this
+/// plane and not a second design: mcp has no `impl Units` in this tree and never enters the Teller
+/// loop, so there is no record for a step to write to. `Ended` is this plane's own "one borrowed
+/// value both readers read", so the head is built there — once — and the two readers read it. The
+/// day this plane enters the loop, the head moves onto the record with the rest of it.
+#[must_use]
+pub fn served_head(
+    delivered: bool,
+    finish: busbar_contract::unit::FinishClass,
+) -> busbar_contract::StatusLeg {
+    busbar_contract::StatusLeg {
+        at: None,
         status: None,
         finish: Some(finish),
+        delivered,
+        degraded: false,
+        relayed_error: None,
     }
 }
 
@@ -1331,6 +1349,14 @@ pub struct Ended<'a> {
     pub resource: Option<Resource>,
 }
 
+impl Ended<'_> {
+    /// THE ANSWER'S HEAD, built once from the facts this value already carries.
+    #[must_use]
+    pub fn head(&self) -> busbar_contract::StatusLeg {
+        served_head(self.metered.is_some(), self.finish)
+    }
+}
+
 /// The evidence one ended unit settles against.
 ///
 /// The class is the byte-shaped one: the floor and the located figure are both readings of the
@@ -1353,12 +1379,7 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
         class: Some(CLASS_BYTES),
         // The fee's upstream rule and the request slot's are the same rule, read from the same fact.
         upstream_candidate: ended.shape.hops_upstream,
-        fee: fee_evidence(
-            ended.shape,
-            ended.origin,
-            ended.metered.is_some(),
-            ended.finish,
-        ),
+        fee: fee_identity(ended.shape, ended.origin),
     }
 }
 
@@ -1466,12 +1487,10 @@ pub fn audit_inputs(
     origin: busbar_caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
-    let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
-        ended.shape,
-        ended.origin,
-        ended.metered.is_some(),
-        ended.finish,
-    ));
+    let (fee_count, _) = busbar_kernel::teller::fee_count(
+        &fee_identity(ended.shape, ended.origin),
+        Some(&ended.head()),
+    );
     AuditInputs {
         subject: match ended.principal {
             Some(who) => busbar_unit_audit::Subject::PrincipalId(who.as_str().to_string()),

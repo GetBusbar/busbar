@@ -11,7 +11,7 @@ use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
     fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, StatusClass,
+    StatusAt, StatusClass, StatusLeg,
 };
 
 fn live_end() -> Outcome {
@@ -207,20 +207,37 @@ fn no_row_ever_resolves_upward() {
 
 // ── the fee ──────────────────────────────────────────────────────────────────────────────────────
 
+/// WHAT THE UNIT IS: a client's request that selected an upstream. Nothing about the answer.
 fn billable() -> FeeEvidence {
     FeeEvidence {
         client_open_or_one_shot: true,
         selected_upstream: true,
-        relayed_first_response_frame: true,
-        status_at: None,
+    }
+}
+
+/// WHAT THE ANSWER WAS, as the one step that saw it recorded it on the unit.
+fn delivered() -> StatusLeg {
+    StatusLeg {
+        at: None,
         status: Some(StatusClass::Success),
         finish: Some(FinishClass::Complete),
+        delivered: true,
+        degraded: false,
+        relayed_error: None,
     }
+}
+
+/// The fee for one unit and the head it saw, through the kernel's one decision.
+fn fee(evidence: &FeeEvidence, head: Option<&StatusLeg>) -> (u32, PostingFlags) {
+    fee_count(evidence, head)
 }
 
 #[test]
 fn the_fee_posts_once_on_a_relayed_success() {
-    assert_eq!(fee_count(&billable()), (1, PostingFlags::NONE));
+    assert_eq!(
+        fee(&billable(), Some(&delivered())),
+        (1, PostingFlags::NONE)
+    );
 }
 
 #[test]
@@ -229,95 +246,103 @@ fn a_provider_push_posts_no_fee() {
         client_open_or_one_shot: false,
         ..billable()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(fee(&evidence, Some(&delivered())), (0, PostingFlags::NONE));
 }
 
 #[test]
 fn a_unit_that_never_relayed_a_response_frame_posts_no_fee() {
-    let evidence = FeeEvidence {
-        relayed_first_response_frame: false,
-        ..billable()
+    let head = StatusLeg {
+        delivered: false,
+        ..delivered()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(fee(&billable(), Some(&head)), (0, PostingFlags::NONE));
+    // And a unit that recorded no head at all relayed nothing either, which is the same answer.
+    assert_eq!(fee(&billable(), None), (0, PostingFlags::NONE));
 }
 
 #[test]
 fn a_non_success_status_posts_no_fee() {
-    let evidence = FeeEvidence {
+    let head = StatusLeg {
         status: Some(StatusClass::ServerError),
         finish: Some(FinishClass::Error),
-        ..billable()
+        ..delivered()
     };
-    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+    assert_eq!(fee(&billable(), Some(&head)), (0, PostingFlags::NONE));
 }
 
 #[test]
 fn a_plane_whose_finish_contradicts_the_status_posts_the_lower_and_disputes_it() {
-    let lying = FeeEvidence {
+    let lying = StatusLeg {
         status: Some(StatusClass::Success),
         finish: Some(FinishClass::Error),
-        ..billable()
+        ..delivered()
     };
-    assert_eq!(fee_count(&lying), (0, PostingFlags::METER_DISPUTED));
+    assert_eq!(
+        fee(&billable(), Some(&lying)),
+        (0, PostingFlags::METER_DISPUTED)
+    );
 
-    let other_way = FeeEvidence {
+    let other_way = StatusLeg {
         status: Some(StatusClass::ServerError),
         finish: Some(FinishClass::Complete),
-        ..billable()
+        ..delivered()
     };
-    assert_eq!(fee_count(&other_way), (0, PostingFlags::METER_DISPUTED));
+    assert_eq!(
+        fee(&billable(), Some(&other_way)),
+        (0, PostingFlags::METER_DISPUTED)
+    );
 }
 
 #[test]
 fn with_no_transport_status_the_planes_finish_decides_alone() {
-    let evidence = FeeEvidence {
+    let head = StatusLeg {
         status: None,
         finish: Some(FinishClass::Partial),
-        ..billable()
+        ..delivered()
     };
     // A partial answer is still an answer: only an error finish posts nothing.
-    assert_eq!(fee_count(&evidence), (1, PostingFlags::NONE));
+    assert_eq!(fee(&billable(), Some(&head)), (1, PostingFlags::NONE));
 
-    let errored = FeeEvidence {
+    let errored = StatusLeg {
         status: None,
         finish: Some(FinishClass::Error),
-        ..billable()
+        ..delivered()
     };
-    assert_eq!(fee_count(&errored), (0, PostingFlags::NONE));
+    assert_eq!(fee(&billable(), Some(&errored)), (0, PostingFlags::NONE));
 }
 
 #[test]
 fn a_stream_that_dies_before_its_status_trailer_posts_nothing() {
     // The transport reports its status on the terminal frame, and the stream ended before it.
-    let no_trailer = FeeEvidence {
-        status_at: Some(StatusAt::Terminal),
+    let no_trailer = StatusLeg {
+        at: Some(StatusAt::Terminal),
         status: None,
         finish: Some(FinishClass::Partial),
-        ..billable()
+        ..delivered()
     };
-    assert_eq!(fee_count(&no_trailer), (0, PostingFlags::NONE));
+    assert_eq!(fee(&billable(), Some(&no_trailer)), (0, PostingFlags::NONE));
 
     // The plane says the answer was whole against a status that never arrived. That is the second
     // source disagreeing with the first, so it is the lower figure and a dispute.
-    let claiming_complete = FeeEvidence {
-        status_at: Some(StatusAt::Terminal),
+    let claiming_complete = StatusLeg {
+        at: Some(StatusAt::Terminal),
         status: None,
         finish: Some(FinishClass::Complete),
-        ..billable()
+        ..delivered()
     };
     assert_eq!(
-        fee_count(&claiming_complete),
+        fee(&billable(), Some(&claiming_complete)),
         (0, PostingFlags::METER_DISPUTED)
     );
 
     // The trailer that did arrive still bills, on both kinds of transport.
     for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
-        let arrived = FeeEvidence {
-            status_at: Some(at),
+        let arrived = StatusLeg {
+            at: Some(at),
             status: Some(StatusClass::Success),
-            ..billable()
+            ..delivered()
         };
-        assert_eq!(fee_count(&arrived), (1, PostingFlags::NONE));
+        assert_eq!(fee(&billable(), Some(&arrived)), (1, PostingFlags::NONE));
     }
 }
 
@@ -801,12 +826,12 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
         3 * 5 * 5,
         "one row per combination, none skipped"
     );
-    for &(status_at, status, finish, fee, disputed) in rows {
-        let evidence = FeeEvidence {
-            status_at,
+    for &(status_at, status, finish, expected_fee, disputed) in rows {
+        let head = StatusLeg {
+            at: status_at,
             status,
             finish,
-            ..billable()
+            ..delivered()
         };
         let expected = if disputed {
             PostingFlags::METER_DISPUTED
@@ -814,28 +839,40 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             PostingFlags::NONE
         };
         assert_eq!(
-            fee_count(&evidence),
-            (fee, expected),
+            fee_count(&billable(), Some(&head)),
+            (expected_fee, expected),
             "at {status_at:?} / {status:?} / {finish:?}"
         );
         // The three preconditions dominate the whole table: fail any one and the row posts nothing,
-        // undisputed, whatever the evidence says.
-        for ineligible in [
-            FeeEvidence {
-                client_open_or_one_shot: false,
-                ..evidence
-            },
-            FeeEvidence {
-                selected_upstream: false,
-                ..evidence
-            },
-            FeeEvidence {
-                relayed_first_response_frame: false,
-                ..evidence
-            },
-        ] {
+        // undisputed, whatever the evidence says. Two of them are facts about the UNIT and the
+        // third is the head's own — a unit with no head recorded relayed nothing.
+        let ineligible: [(FeeEvidence, Option<&StatusLeg>); 4] = [
+            (
+                FeeEvidence {
+                    client_open_or_one_shot: false,
+                    ..billable()
+                },
+                Some(&head),
+            ),
+            (
+                FeeEvidence {
+                    selected_upstream: false,
+                    ..billable()
+                },
+                Some(&head),
+            ),
+            (billable(), None),
+            (
+                billable(),
+                Some(&StatusLeg {
+                    delivered: false,
+                    ..head
+                }),
+            ),
+        ];
+        for (evidence, head) in ineligible {
             assert_eq!(
-                fee_count(&ineligible),
+                fee_count(&evidence, head),
                 (0, PostingFlags::NONE),
                 "ineligible at {status_at:?} / {status:?} / {finish:?}"
             );
@@ -849,10 +886,13 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
 #[test]
 fn the_upstream_leg_of_the_fee_is_the_destination_kinds_answer() {
     let posts = |dest: DestinationFacts| {
-        fee_count(&FeeEvidence {
-            selected_upstream: dest.is_upstream_kind(),
-            ..billable()
-        })
+        fee_count(
+            &FeeEvidence {
+                selected_upstream: dest.is_upstream_kind(),
+                ..billable()
+            },
+            Some(&delivered()),
+        )
     };
     assert_eq!(
         posts(DestinationFacts::Upstream {

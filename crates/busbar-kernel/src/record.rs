@@ -47,7 +47,7 @@ use busbar_caps::{
     UnitKey, UnitToken, VerifiedDestination,
 };
 use busbar_contract::bounded::{Arena, Labels, Span, MAX_KEYS};
-use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
+use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, StatusLeg, TransportView};
 
 use crate::arena::{span_slab, ArenaBuf, UnitArena};
 use crate::registry::Generation;
@@ -176,6 +176,7 @@ pub struct UnitRecord<'u> {
     pinned_key: OnceLock<TransportKeyHandle>,
     body: OnceLock<BodyLease>,
     carried: OnceLock<Completion>,
+    head: OnceLock<StatusLeg>,
     body_released: AtomicBool,
 }
 
@@ -202,6 +203,7 @@ impl<'u> UnitRecord<'u> {
             pinned_key: OnceLock::new(),
             body: OnceLock::new(),
             carried: OnceLock::new(),
+            head: OnceLock::new(),
             body_released: AtomicBool::new(false),
         }
     }
@@ -328,6 +330,39 @@ impl<'u> UnitRecord<'u> {
             return None;
         }
         self.carried.get()
+    }
+
+    /// THE ANSWER'S HEAD, FROM THE ONE STEP THAT SAW IT. Once per unit.
+    ///
+    /// The fee is decided at the unit's exit and the head is seen long before it, so until there
+    /// was a cell for it every leg wrote "this transport reports no status" as a literal and the
+    /// kernel's dispute arm was unreachable on every plane at once. This is that cell.
+    ///
+    /// Which step records it is the step that SAW it, and that is not the same step on every
+    /// plane: a routed answer's head comes off the wire at Route, a locally served plane's comes
+    /// off its own response encoder, and a plane whose answer document IS the response knows its
+    /// finish at the step that read the document. So the token this takes is any step's — what
+    /// makes the head trustworthy is not which step wrote it but that exactly ONE did.
+    ///
+    /// Write-once, and it answers whether this call is the one that wrote. A second reading of one
+    /// answer is how a unit ends up with two heads and the fee decision reads whichever ran last,
+    /// so the second writer is told rather than quietly ignored.
+    pub fn record_head<S: busbar_caps::Step>(
+        &self,
+        _token: &UnitToken<S>,
+        head: StatusLeg,
+    ) -> bool {
+        self.head.set(head).is_ok()
+    }
+
+    /// THE ANSWER'S HEAD, as the Meter step and the settlement table read it.
+    ///
+    /// `None` for a unit that never got an answer — refused at the door, or a leg that dialled and
+    /// heard nothing. The fee decision reads that as "nothing was relayed", which is the same
+    /// answer it gave before this face existed.
+    #[must_use]
+    pub fn head(&self) -> Option<&StatusLeg> {
+        self.head.get()
     }
 
     /// GIVE THE BODY BACK. The exit path, and nothing before it.
