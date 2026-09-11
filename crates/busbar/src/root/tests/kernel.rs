@@ -568,3 +568,69 @@ fn the_schedule_holder_carries_the_plane_the_pool_and_the_tier() {
          not invent a schedule"
     );
 }
+
+/// **EVERY MOUNTED PLANE DECLARES ITS BILLABLE DIMENSIONS, AND EACH ONE SAYS WHAT ONE OF THEM IS
+/// CALLED.**
+///
+/// The dimension vocabulary is the union of the planes' own declarations and is a list NOWHERE.
+/// This cell is the property that makes that safe to rely on: read the table the root hands the
+/// engine and every entry answers the whole declaration — a key, and the noun an operator writes a
+/// price against. A plane that declared a key and left the noun blank would be a dimension an
+/// operator can price and cannot read, and `cents per 1000` of WHAT is the first question anybody
+/// writing a schedule asks.
+///
+/// It is written over the TABLE rather than over any one plane, because every plugin of a kind is
+/// identical to every other of that kind and a cell that named one plane would be a cell about that
+/// plane. A sixth plane is covered by this cell on the day it is mounted, with nothing edited here.
+#[test]
+fn every_declared_dimension_carries_a_key_and_the_noun_one_of_them_is_called() {
+    let table = super::plane_meter_table();
+    assert!(
+        !table.is_empty(),
+        "this build mounts planes, so something declares what it meters"
+    );
+    let mut planes: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (plane, classes) in table {
+        assert!(
+            planes.insert(plane),
+            "one plane, one declaration: `{plane}` appears twice and the two could disagree"
+        );
+        for class in *classes {
+            assert!(
+                !class.key.as_str().is_empty(),
+                "{plane} declares a nameless dimension"
+            );
+            assert!(
+                !class.unit_noun.is_empty(),
+                "{plane}.{} declares no noun: a dimension an operator can price and cannot read",
+                class.key.as_str()
+            );
+        }
+    }
+
+    // A DIMENSION TWO PLANES BOTH METER IS THE SAME DIMENSION ON BOTH. Billing a plane is billing a
+    // plane: a key that meant a token here and a byte there would be one rate card entry pricing
+    // two different things, and an operator could not write a schedule that was true of both.
+    let mut noun_of: std::collections::BTreeMap<&str, (&str, &str)> =
+        std::collections::BTreeMap::new();
+    for (plane, classes) in table {
+        for class in *classes {
+            if let Some((first_plane, noun)) =
+                noun_of.insert(class.key.as_str(), (plane, class.unit_noun))
+            {
+                assert_eq!(
+                    noun,
+                    class.unit_noun,
+                    "`{}` is a {noun} on {first_plane} and a {} on {plane}: one key, two things",
+                    class.key.as_str(),
+                    class.unit_noun
+                );
+            }
+        }
+    }
+
+    // AND WHAT THE ROOT HANDS THE ENGINE IS WHAT THE ENGINE JUDGES A SCHEDULE AGAINST. A build that
+    // installed the declarations and forgot the meters would refuse every dimension its own planes
+    // declare, which is the one failure this seam can have that looks like a configuration error.
+    busbar_core::plane::registry::install_plane_meters(table);
+}

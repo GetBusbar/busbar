@@ -124,7 +124,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   crosses the configuration engine, the rate-apply seam, the card and the ledger, and all four must
   spell it the same way or a row is booked under one schedule and re-priced under another. ONE scope
   and never a chain: a row that recorded a chain would record the unit's ROUTING rather than the
-  schedule it was billed under. Two crates carry their own surface ceilings beside it, because
+  schedule it was billed under. The sixth is **`MeterClassDecl::unit_noun`** (1 line): what
+  ONE of a declared dimension is called — a token, a byte, a call, a second. A dimension without it
+  is a key an operator can price and cannot read, because `cents per 1000` of WHAT is the first
+  question anybody writing a schedule asks; and a noun invented anywhere but the plane that produced
+  the quantity is a second opinion about what the quantity IS. It joins the family and the divisor
+  on the declaration table every plane already fills in, and it is what a boot refusal shows an
+  operator who priced a dimension no mounted plane declares. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

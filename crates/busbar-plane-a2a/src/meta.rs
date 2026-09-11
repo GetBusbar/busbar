@@ -37,6 +37,7 @@ const BYTE_FAMILY: &str = "byte";
 /// adapter, and changing it is a design decision rather than a code change here.
 const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
     key: MeterClassId::new("bytes"),
+    unit_noun: "byte",
     family: BYTE_FAMILY,
     direction: ClassDirection::Response,
     // A byte is a byte: the class's own quantity is the quantity, so nothing is divided.

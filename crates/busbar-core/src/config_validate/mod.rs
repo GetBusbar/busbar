@@ -1574,6 +1574,51 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             // in front of them. What is still refused here is a scope naming a pool, a group or a
             // plane that does not exist — see the check above — because that is still a schedule
             // nothing will ever select.
+            // **A PRICE FOR A DIMENSION NOBODY METERS IS REFUSED, NAMING THE PLANE AND THE
+            // DIMENSION.**
+            //
+            // A `per_units` entry names a dimension. If no mounted plane DECLARES it, nothing will
+            // ever report a quantity for it — so the rate is multiplied by zero on every unit
+            // forever, the deployment is silently not charged what its file says, and the operator
+            // reads a schedule that is not in force. That is the same defect as a `tariff.pool`
+            // keyed by a pool nobody defined, and it is refused on the same terms.
+            //
+            // The vocabulary is READ OFF THE DECLARATIONS and is not a list here: a dimension
+            // exists exactly when some plane's `METER_CLASSES` says it does. The refusal names what
+            // this build DOES meter, plane by plane and with the noun each plane declares one of
+            // them is called, because "which of these did I mean" is answerable only if the
+            // operator can see what is on offer — and because a dimension missing from that list is
+            // very often a plane compiled OUT of the build rather than a typo.
+            for unit in cell
+                .transaction_fee
+                .as_ref()
+                .and_then(|t| t.per_units.as_ref())
+                .into_iter()
+                .flatten()
+            {
+                if crate::plane::registry::plane_meters()
+                    .any(|(_, class)| class.key.as_str() == unit.dimension)
+                {
+                    continue;
+                }
+                let offered: Vec<String> = crate::plane::registry::plane_meters()
+                    .map(|(plane, class)| {
+                        format!("{plane}.{} (per {})", class.key.as_str(), class.unit_noun)
+                    })
+                    .collect();
+                let offered = if offered.is_empty() {
+                    "this build mounts no plane that meters anything".to_string()
+                } else {
+                    offered.join(", ")
+                };
+                errors.push(format!(
+                    "tariff.{scope}.transaction_fee.per_units[{}] prices a dimension no mounted \
+                     plane declares: nothing reports a quantity for it, so the rate would be \
+                     multiplied by nothing on every unit and the deployment would read a schedule \
+                     it is not charged under. This build meters: {offered}",
+                    unit.dimension
+                ));
+            }
             let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             for unit in cell
                 .transaction_fee

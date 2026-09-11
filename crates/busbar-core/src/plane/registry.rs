@@ -304,6 +304,51 @@ pub(crate) fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + S
 #[cfg(not(any(test, feature = "test-support")))]
 static PLANES: std::sync::OnceLock<Vec<&'static PlaneDecl>> = std::sync::OnceLock::new();
 
+/// **WHAT EACH MOUNTED PLANE METERS**, installed by the composition root beside its declarations.
+///
+/// `(plane key, that plane's own `PlaneMeta::METER_CLASSES`)` — the SAME slice the metering step
+/// reports under, handed over by reference. There is no list of dimension names on this side of the
+/// seam and there is not going to be one: a dimension exists exactly when a plane's declaration says
+/// it does, and a second list would be a vocabulary that could disagree with the plane that owns it.
+///
+/// It is a SEPARATE install from [`install_planes`] for the reason `PlaneDecl` does not carry the
+/// classes: a plane's declaration is a `const` on its own TYPE, the registry's neutral decl carries
+/// data and not the type, and the one crate entitled to name every plane's type is the composition
+/// root. So the root reads the declarations and hands them here, where the engine that validates a
+/// deployment's schedule can ask whether anything meters the dimension it priced.
+///
+/// Empty until the root installs one, which is the honest answer for a binary that has mounted no
+/// plane yet: nothing is metered, so nothing is priceable, and a schedule naming a dimension is
+/// refused rather than quietly accepted.
+static PLANE_METERS: std::sync::OnceLock<
+    &'static [(
+        &'static str,
+        &'static [busbar_contract::ids::MeterClassDecl],
+    )],
+> = std::sync::OnceLock::new();
+
+/// INSTALL WHAT EACH PLANE METERS — the composition root's one write, at boot, beside
+/// [`install_planes`]. Idempotent by `OnceLock`: a second install is a no-op.
+pub fn install_plane_meters(
+    table: &'static [(
+        &'static str,
+        &'static [busbar_contract::ids::MeterClassDecl],
+    )],
+) {
+    let _ = PLANE_METERS.set(table);
+}
+
+/// Every dimension this build meters, as `(plane key, the declaration)`.
+pub(crate) fn plane_meters(
+) -> impl Iterator<Item = (&'static str, &'static busbar_contract::ids::MeterClassDecl)> {
+    PLANE_METERS
+        .get()
+        .copied()
+        .unwrap_or(&[])
+        .iter()
+        .flat_map(|(plane, classes)| classes.iter().map(move |class| (*plane, class)))
+}
+
 /// Declarations the COMPOSITION ROOT installed before the plane list was first read.
 static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync::OnceLock::new();
 

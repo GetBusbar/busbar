@@ -220,6 +220,18 @@ pub struct MeterClassDecl {
     pub direction: ClassDirection,
     /// Bytes per unit of the class's own quantity.
     pub default_divisor: u32,
+    /// **WHAT ONE OF THEM IS CALLED** — the noun an operator writes a price against: a token, a
+    /// byte, a call, a second.
+    ///
+    /// A dimension without it is a key an operator can price and cannot read: `cents per 1000` of
+    /// WHAT is the first question anybody writing a schedule asks, and a tree that could not answer
+    /// it left every reader to guess from the key's spelling. It is DECLARED here, by the plane that
+    /// knows what it counted, for the same reason the family and the divisor are: a noun invented
+    /// anywhere else is a second opinion about what a quantity IS, and the one place a quantity's
+    /// meaning is known is the plane that produced it.
+    ///
+    /// Singular, lower case, and the word alone: the readers that show it put it beside a number.
+    pub unit_noun: &'static str,
 }
 
 /// The closed shape of a cappable dimension over an open key.

@@ -499,6 +499,49 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "the composition root re-exports `busbar_unit_cost::TariffScope` beside the holder that answers it, so every leg and every cell that writes a scope onto a posting names the ROOT's own module and not the unit crate -- one spelling for the whole binary instead of one per site. Measured 1199 -> 1201, which is the re-export and the card constructor the relay now calls; the 33 sites that carry the scope cost nothing."
 
+# ── THE PLANE DECLARES WHAT IT METERS, AND A PRICE FOR ANYTHING ELSE IS REFUSED ──────────────────
+#
+# The dimension vocabulary is the union of what the MOUNTED planes declare and it is a list NOWHERE.
+# It was already half true: every plane declares its `METER_CLASSES`, and the metering step reports
+# under exactly that slice. What was missing is that nothing could READ them at the moment a
+# schedule is judged -- the registry's neutral `PlaneDecl` carries a plane's config section, its
+# scope kinds and its nouns, and it carries no TYPE, so an engine reading the registry can learn that
+# a plane is mounted and cannot learn what it meters. So a `per_units` rate for a dimension nothing
+# reports validated, and then charged nothing, forever, while the operator read a file that said
+# otherwise.
+#
+# The composition root is the one crate entitled to name every plane's type. It reads the five
+# declarations and installs them BESIDE the declarations themselves, by reference, in the same
+# breath -- and the engine refuses a dimension no mounted plane declares, naming the dimension, the
+# planes that do declare one, and the noun each plane says one of them is called by.
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 1
+because = "FACE busbar_contract::ids::MeterClassDecl::unit_noun: what ONE of a declared dimension is called -- a token, a byte, a call, a second. One field line on the declaration table every plane already fills in. A dimension without it is a key an operator can price and cannot read, because `cents per 1000` of WHAT is the first question anybody writing a schedule asks; and a noun invented anywhere but the plane that produced the quantity is a second opinion about what the quantity IS. Measured 3683 -> 3684."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 1
+because = "the same one field, on the pair's own line count: one line in crates/busbar-contract/src/ids.rs, no import added and no other file in the pair touched. It is the half of a dimension's declaration an operator READS, beside the half a card keys on."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "the same one field again, because the union carries the caps/contract pair. Neither the kernel nor the unit total moves on this landing: the declaration is the plane's and the refusal is the config engine's, and no ceiling covers either."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "the composition root reads every mounted plane's own `METER_CLASSES` off its own type and hands the table to the engine: four plane types named once each in one macro that treats them identically, and the cell that drives the table. It is written over the TABLE and not over any one plane -- every plugin of a kind is identical to every other of that kind -- so a sixth plane is one line of the same shape and this figure moves by what that line measures. There is nowhere else this read can happen: a plane's declaration is a `const` on its type and the registry's neutral decl carries no type. Measured 1893 -> 1913."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the fifth plane in the same macro is the admin surface, which is registered as `control` until the R7 rename. It declares NO meter classes, and it is in the table anyway: a build that read four of five declarations would be one plane's dimensions away from refusing a schedule that is correct, and the day the control surface meters something the table already carries it. Measured 1081 -> 1085."
+
 # ── THE POOL AND THE TIER REACH THE SCHEDULE ─────────────────────────────────────────────────────
 
 [[gate.ceiling_raises]]
@@ -562,7 +605,7 @@ because = "the boot validator's refusal for a tariff scope naming a pool, group 
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3683
+contract_caps = 3684
 grammar = 388
 contract_transport = 845
 
@@ -783,12 +826,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5433
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3685
+caps_contract_ceiling = 3686
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15165
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24283
+union_ceiling = 24284
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1426,7 +1469,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 90
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1438,7 +1481,7 @@ ceiling = 91
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 25
+figure = 24
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"

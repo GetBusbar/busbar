@@ -5675,3 +5675,66 @@ fn an_amount_at_a_pool_scope_validates_and_reaches_the_card_for_that_pool() {
         "a count at a pool scope is resolvable per unit and is not refused: {remaining:?}"
     );
 }
+
+/// **A DIMENSION NO MOUNTED PLANE DECLARES IS A BOOT REFUSAL, NAMING BOTH.**
+///
+/// The dimension vocabulary is not a list anywhere: it is the union of what the mounted planes
+/// declare, read off their own `METER_CLASSES`. A `per_units` rate for anything else is multiplied
+/// by a quantity nothing reports — so it charges nothing, forever, silently, while the operator
+/// reads a file that says otherwise. The refusal names the dimension that was priced AND what this
+/// build actually meters, plane by plane with the noun one of them is called by, because a name
+/// missing from that list is as often a plane compiled out as it is a typo.
+///
+/// RED before the planes' declarations reach the engine: with nothing installed the check has no
+/// vocabulary to judge against, and a rate for `tokens_in` and a rate for `sprockets` are
+/// indistinguishable.
+#[test]
+fn a_per_unit_rate_for_a_dimension_no_plane_declares_is_refused_by_name() {
+    use busbar_contract::ids::{ClassDirection, MeterClassDecl, MeterClassId};
+    static DECLARED: &[MeterClassDecl] = &[MeterClassDecl {
+        key: MeterClassId::new("tokens_in"),
+        family: "token",
+        direction: ClassDirection::Input,
+        default_divisor: 4,
+        unit_noun: "token",
+    }];
+    static TABLE: &[(&str, &[MeterClassDecl])] = &[("a-kind", DECLARED)];
+    crate::plane::registry::install_plane_meters(TABLE);
+
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.tariff = Some(
+        serde_yaml::from_str(
+            "default:\n  transaction_fee:\n    per_units:\n      - dimension: sprockets\n        \
+             per: 1000\n        cents: 3\n",
+        )
+        .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    let named = errors
+        .iter()
+        .find(|e| e.contains("per_units[sprockets]"))
+        .unwrap_or_else(|| panic!("a dimension nothing meters must be refused: {errors:?}"));
+    assert!(
+        named.contains("a-kind.tokens_in (per token)"),
+        "the refusal must name the plane, the dimension and the noun one of them is called: {named}"
+    );
+
+    // AND A DIMENSION A PLANE DOES DECLARE IS ACCEPTED — the same check, the other way, so a rule
+    // that refused everything would be red here rather than green everywhere.
+    cfg.tariff = Some(
+        serde_yaml::from_str(
+            "default:\n  transaction_fee:\n    per_units:\n      - dimension: tokens_in\n        \
+             per: 1000\n        cents: 3\n",
+        )
+        .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        !errors.iter().any(|e| e.contains("per_units[tokens_in]")),
+        "a dimension a mounted plane declares is priceable: {errors:?}"
+    );
+}

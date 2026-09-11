@@ -366,6 +366,55 @@ impl RootTariff {
     }
 }
 
+/// **EVERY BILLABLE DIMENSION THIS BINARY CAN METER, AS THE PLANES THEMSELVES DECLARE IT.**
+///
+/// `(plane key, that plane's own `METER_CLASSES`)` — the SAME slice the metering step reports under
+/// and the same slice a class cap is written over, handed over by reference. There is no list of
+/// dimension names in this file and there is not going to be one: a dimension exists exactly when
+/// some plane's declaration says it does, and the day a list here disagreed with a plane's
+/// declaration one of them would be pricing something nothing reports.
+///
+/// **THE COMPOSITION ROOT IS WHERE THIS CAN BE READ AND NOWHERE ELSE IS.** A plane's declaration is
+/// a `const` on its own TYPE; the registry's neutral `PlaneDecl` carries a plane's config section,
+/// its scope kinds and its nouns, but it carries no type — so an engine reading the registry can
+/// learn that a plane is mounted and cannot learn what it meters. The root can name every plane's
+/// type, and this is the root doing it, in the same breath it installs the declarations themselves.
+///
+/// **A PLANE COMPILED OUT DECLARES NOTHING**, and that is the honest answer rather than an
+/// omission: a build without a plane's feature has no units of that kind to meter, so a schedule
+/// naming one of its dimensions prices traffic that cannot arrive, and the boot refusal says which
+/// plane would have had to be in the build.
+///
+/// Every plane is read identically — key off the declaration, classes off the declaration, nothing
+/// about the plane read anywhere else — so a sixth plane is one more line of exactly this shape.
+#[must_use]
+pub fn plane_meter_table() -> &'static [(
+    &'static str,
+    &'static [busbar_contract::ids::MeterClassDecl],
+)] {
+    use busbar_contract::plane::PlaneMeta as _;
+    let mut out: Vec<(
+        &'static str,
+        &'static [busbar_contract::ids::MeterClassDecl],
+    )> = Vec::new();
+    macro_rules! declared {
+        ($plane:path) => {
+            out.push((<$plane>::KEY, <$plane>::METER_CLASSES))
+        };
+    }
+    #[cfg(feature = "root-llm")]
+    declared!(busbar_plane_llm::LlmPlane);
+    #[cfg(feature = "root-mcp")]
+    declared!(busbar_plane_mcp::McpPlane);
+    #[cfg(feature = "root-a2a")]
+    declared!(busbar_plane_a2a::A2aPlane);
+    #[cfg(feature = "root-voice")]
+    declared!(busbar_plane_voice::VoicePlane);
+    #[cfg(feature = "root-admin")]
+    declared!(busbar_plane_admin::AdminPlane);
+    out.leak()
+}
+
 /// **THE SCHEDULE ONE UNIT IS CHARGED UNDER**, by the scope it was admitted for.
 ///
 /// Three keys and no branch: the plane's own declared registry key, the pool it was routed to and

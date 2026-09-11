@@ -176,6 +176,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   journal body, length-prefixed, last, so a row written by the previous release is byte-for-byte what
   it was and reads back as `default` — the only schedule it could have been charged under.
 
+  **A `per_units` rate for a dimension no mounted plane meters is refused at boot, by name.** The
+  dimension vocabulary is the union of what the mounted planes declare and it is a list nowhere:
+  every plane declares its own meter classes, and each class now also declares the NOUN one of them
+  is called by — a token, a byte, a call, a second — so a refusal can tell an operator what this
+  build actually meters, plane by plane, beside the name they wrote. A rate for anything else would
+  be multiplied by a quantity nothing reports, charge nothing forever, and leave the file saying
+  otherwise.
+
 - **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
   "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,
   so a task for which no agent was configured resolved to an upstream-shaped destination with no
