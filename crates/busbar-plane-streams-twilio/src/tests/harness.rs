@@ -4,6 +4,7 @@
 //! configuration view, a transport view and a label set. It is copied rather than shared because
 //! the alternative is the plane taking a dev-dependency on this crate — the plane naming a dialect,
 //! which is the one edge the kind gate says can never exist. Nothing here is shipped.
+use busbar_plane_streams::dialect::Dialect;
 
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
 use busbar_contract::ids::{SessionId, StreamId};
@@ -144,3 +145,22 @@ pub fn frame(bytes: &[u8]) -> Frame {
         meta: FrameMeta::default(),
     }
 }
+
+/// AN UPSTREAM DIALECT THAT IS NOT A SIBLING, declared here.
+///
+/// These cells route a carrier session at an upstream, and the upstream speaks SOME dialect; which
+/// one is not what any of them is about. They used to name the GA realtime row, which was a
+/// `&'static` the neutral plane declared — and the day that dialect got a crate of its own, naming
+/// it would have made this crate depend on a SIBLING DIALECT, which is the plane fusion one level
+/// down and is refused. A row declared in this crate's own tests says exactly as much and depends
+/// on no one.
+pub static AN_UPSTREAM_DIALECT: Dialect = Dialect {
+    name: "an-upstream-dialect",
+    duplex_upstream: true,
+    authenticates_from_session: true,
+    meters_own_uplink: false,
+    envelope: None,
+    locked_session_config: None,
+    reader: None,
+    writer: None,
+};

@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "620"
+count = "652"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1826"
+count = "1860"
 
 [[cell]]
 crate = "busbar"
@@ -3527,6 +3527,26 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-streams-openai"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and the only place a plugin INSTANCE may be named."
+why     = "the root links the plane to its THIRD and last dialect: 1 declaration(s) at this commit, one `register` call beside the other two. It is registered FIRST, and the order is load-bearing: the table's first row is the plane's own answer to `no dialect was negotiated`, which is what this dialect's row used to be spelled as, by name, inside the neutral crate. Registering it first keeps that answer byte-identical while its reason stops being a vendor's name."
+drain   = "none: ARCHITECTURE.md grants this class, and a registration is the shape a composition root's knowledge is supposed to take. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-plane-streams-openai"
+to      = "busbar-plane-streams"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / xtask/src/gates/kind_isolation.rs — the dialect names its plane; the plane never names a dialect, and the plane-to-dialect edge never can be."
+why     = "the dialect names the plane it is a dialect OF, and names its dialect FACE: 1 declaration(s) at this commit — and it is this crate's ONLY workspace edge, which is the strongest form the kind admits. Its reader is the plane's own pre-split codec half, so it takes no `dialect -> codec` edge at all: what would be that dependency is the SHARED IR the plane already carries, and a second crate reaching for it to re-declare the same reader would be two opinions about one wire."
+drain   = "none: this is the kind's defining edge. Draining it would be deleting the dialect."
 
 [[dep]]
 from    = "busbar"

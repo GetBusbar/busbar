@@ -31,12 +31,13 @@
 //!
 //! ## What is in the table today, and what is deliberately not
 //!
-//! ONE row is still declared BY this crate — `openai-realtime` — because it has no crate of its own
-//! yet. That is a stated remainder, not a design: it becomes its own dialect crate and its row
-//! leaves this file the way the carrier's and the Gemini Live dialect's already have. The other two
-//! duplex dialects are not here at all: each lives in its own crate and reaches this table through
-//! [`register`], which is what the direction rule requires and what lets the delete test remove one
-//! and get an honest absence.
+//! NOTHING. No row is declared by this crate any more, and that is the end state the two previous
+//! cuts were walking toward rather than a gap in this one. All three of this plane's dialects live
+//! in crates of their own and reach this table through [`register`], which is what the direction
+//! rule requires and what lets `scripts/plane-delete-test.sh` remove any one of them and get an
+//! honest absence instead of a link error. [`DECLARED`] is an empty slice and is kept, rather than
+//! deleted, because the next dialect to be written in-tree before it earns a crate has a place to
+//! sit and a reader who can see it is meant to be temporary.
 //!
 //! AND THE ROW NOW CARRIES ITS OWN READER. Until the Gemini dialect was cut, this crate held two
 //! functions whose whole body was `if dialect.name == <that vendor> { one codec } else { the
@@ -50,6 +51,15 @@
 // The two one-shot operations are NOT rows here and are not dialects of this plane's duplex
 // sessions: they are single request/response operations that leave this crate in a later pass.
 // They stay where they are, named as strings by `crate::claims` alone, until that pass.
+//!
+//! ## And the plane no longer has a DEFAULT dialect either
+//!
+//! [`first`] is this crate's answer to "no dialect was negotiated". It used to be one vendor's row,
+//! by name, at five call sites in [`crate::plane`] — a neutral crate whose fallback is an instance,
+//! which is the same fusion an `if name ==` is and is only quieter because the vendor it named
+//! happened to be written first. A POSITION is not an instance: the first row is the declaration
+//! order the composition root registered in, which is the order the operator wrote, and it stays
+//! correct on a node that registers a different set.
 //!
 //! Nothing in this module parses, writes, allocates or reads a clock. A row is data and three
 //! function pointers, and the functions belong to whoever declared the row.
@@ -162,27 +172,13 @@ impl core::fmt::Debug for Dialect {
     }
 }
 
-/// The OpenAI Realtime dialect's name.
-pub const NAME_OPENAI_REALTIME: &str = "openai-realtime";
-
-/// The OpenAI Realtime (GA) dialect — PCM16 frames, tool calls, full duplex.
-///
-/// Declared by this crate because no dialect crate of its own exists yet. See the module header.
-pub static OPENAI_REALTIME: Dialect = Dialect {
-    name: NAME_OPENAI_REALTIME,
-    duplex_upstream: true,
-    authenticates_from_session: true,
-    meters_own_uplink: false,
-    envelope: None,
-    locked_session_config: None,
-    // DECLARED `None`, not left blank: this dialect's frames ARE the shared duplex IR, so the IR's
-    // own reader is the reader and there is no second one to name.
-    reader: None,
-    writer: None,
-};
-
 /// The rows this crate declares itself, in claim-declaration order.
-static DECLARED: &[&Dialect] = &[&OPENAI_REALTIME];
+///
+/// EMPTY, and that is the shape this file was walking toward: every dialect of this plane is a
+/// crate, and a neutral crate holds no instance. It is kept rather than deleted so that a dialect
+/// written in-tree before it earns a crate has a place to sit where a reader can see it is meant to
+/// be temporary — the two rows that sat here both left, on the two commits that cut their crates.
+static DECLARED: &[&Dialect] = &[];
 
 /// The rows a composition root registered at boot, in registration order.
 ///
@@ -215,6 +211,32 @@ pub fn dialect(name: &str) -> Option<&'static Dialect> {
     }
     let rows = REGISTERED.read().ok()?;
     rows.iter().find(|d| d.name == name).copied()
+}
+
+/// THE FIRST ROW THE TABLE ANSWERS FOR, or `None` on a node with no dialect registered at all.
+///
+/// The plane's own "no dialect was negotiated" answer, and it is a POSITION rather than a vendor.
+/// Five call sites in [`crate::plane`] used to spell that answer as one particular row, by name — a
+/// neutral crate defaulting to an instance, which is the same fusion an `if name ==` is and only
+/// quieter because that vendor was written first. The position is the declaration order the
+/// composition root registered in, which is the order the operator wrote; choosing among several
+/// when more than one qualifies is not this table's job, and neither is inventing a name when none
+/// was negotiated.
+#[must_use]
+pub fn first() -> Option<&'static Dialect> {
+    if let Some(d) = DECLARED.first() {
+        return Some(d);
+    }
+    let rows = REGISTERED.read().ok()?;
+    rows.first().copied()
+}
+
+/// HOW MANY ROWS THIS CRATE DECLARES ITSELF. Zero, and it is a function rather than a comment so a
+/// cell can assert it: a neutral crate that starts declaring instances again would be caught by the
+/// arithmetic and not by a reviewer noticing a `static`.
+#[must_use]
+pub fn declared_count() -> usize {
+    DECLARED.len()
 }
 
 /// How many dialects the table answers for, declared and registered together.

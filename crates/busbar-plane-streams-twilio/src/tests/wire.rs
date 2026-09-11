@@ -37,7 +37,7 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &super::harness::AN_UPSTREAM_DIALECT,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -100,7 +100,7 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &super::harness::AN_UPSTREAM_DIALECT,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -155,7 +155,7 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &super::harness::AN_UPSTREAM_DIALECT,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;
@@ -199,7 +199,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &super::harness::AN_UPSTREAM_DIALECT,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
     let arena = LeakArena;

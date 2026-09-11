@@ -14,15 +14,15 @@ use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Sessio
 use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
-use crate::dialect;
 use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
 use crate::{Upstream, VoicePlane};
 
 fn openai_plane() -> VoicePlane {
+    super::harness::compose_a_dialect();
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &super::harness::A_DIALECT,
     }];
     VoicePlane::new(UPSTREAMS)
 }
@@ -86,9 +86,14 @@ fn session_update_opens_a_turn_and_names_the_dialect() {
         panic!("expected Ingress::Open, got {ingress:?}");
     };
     assert_eq!(draft.op.as_str(), "duplex_turn");
+    // The NAME OF THE ROW THE SESSION OPENED ON, which is this crate's own test row — not a
+    // vendor's. The assertion is that the draft names the dialect it opened on, and a vendor's
+    // string here only ever looked like more than that because this crate used to declare one.
     assert_eq!(
         draft.facts.get(crate::meta::FACT_DIALECT),
-        Some(busbar_contract::bounded::FactValue::Str("openai-realtime"))
+        Some(busbar_contract::bounded::FactValue::Str(
+            super::harness::A_DIALECT.name
+        ))
     );
     assert!(draft.correlation_out.is_some());
 }

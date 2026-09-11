@@ -737,6 +737,7 @@ fn every_dialect_this_node_serves_is_a_registered_plugin() {
     use busbar_plane_streams::dialect::Dialect;
     use busbar_plane_streams::{claims, dialect};
     use busbar_plane_streams_gemini as live;
+    use busbar_plane_streams_openai as ga;
     use busbar_plane_streams_twilio as carrier;
 
     // COMPOSE. `register_all` is the ONE place in the tree that names a dialect instance.
@@ -744,7 +745,14 @@ fn every_dialect_this_node_serves_is_a_registered_plugin() {
     let _ = register_all(&transports).expect("the composition registers its planes");
 
     // Every dialect with a crate of its own, paired with the claim URL the plane serves it at.
-    let rows: [(&str, &Dialect, &str); 2] = [
+    // ALL THREE, and the ruling is that there are exactly three: a roster of two would have let a
+    // dialect the plane still declared itself pass unexamined.
+    let rows: [(&str, &Dialect, &str); 3] = [
+        (
+            ga::NAME,
+            &ga::OPENAI_REALTIME,
+            "/v1/realtime/sideband/c-0001",
+        ),
         (live::NAME, &live::GEMINI_LIVE, "/v1/realtime/gemini/c-0001"),
         (
             carrier::NAME,
@@ -752,6 +760,24 @@ fn every_dialect_this_node_serves_is_a_registered_plugin() {
             "/v1/realtime/telephony/c-0001",
         ),
     ];
+
+    // AND THE PLANE DECLARES NONE OF ITS OWN. The table's whole content is what was registered two
+    // lines above, so a row the neutral crate wrote for itself would show up as a count this
+    // composition did not produce.
+    assert_eq!(
+        dialect::declared_count(),
+        0,
+        "the neutral plane declares {} dialect row(s) of its own; every dialect of this plane is a \
+         plugin and the declared table is empty",
+        dialect::declared_count()
+    );
+    assert_eq!(
+        dialect::count(),
+        rows.len(),
+        "the table answers for {} dialect(s); this composition registered {}",
+        dialect::count(),
+        rows.len()
+    );
 
     for (name, plugin_row, served) in rows {
         // (1) THE TABLE ANSWERS, AND ANSWERS WITH THE PLUGIN'S OWN ROW. Compared by ADDRESS, so a

@@ -18,7 +18,6 @@ use busbar_contract::plane::{PlaneSessionState, SessionPlane};
 use busbar_contract::unit::{Clock, ConfigView, Ctx};
 use busbar_voice_codec::ir::config::{self, SessionConfig};
 
-use crate::dialect;
 use crate::session::VoiceSessionState;
 use crate::tests::harness::{ctx, EmptyConfig, LeakArena, WsStack};
 use crate::VoicePlane;
@@ -62,7 +61,7 @@ fn a_declared_default_is_what_a_session_projects_and_the_section_default_when_no
     // ── THE CONTROL: nothing declared ⇒ the section default, byte for byte.
     let empty = EmptyConfig;
     let c = ctx(&arena, &empty, &stack, &labels);
-    let mut st = opened(&dialect::OPENAI_REALTIME);
+    let mut st = opened(&super::harness::A_DIALECT);
     let params = SessionPlane::session_params(&plane(), &mut st, &c).expect("a session projects");
     assert_eq!(
         params.declared,
@@ -91,7 +90,7 @@ fn a_declared_default_is_what_a_session_projects_and_the_section_default_when_no
         &labels,
         &arena,
     );
-    let mut st = opened(&dialect::OPENAI_REALTIME);
+    let mut st = opened(&super::harness::A_DIALECT);
     let params = SessionPlane::session_params(&plane(), &mut st, &c).expect("a session projects");
     assert_eq!(
         params.declared,
@@ -111,7 +110,7 @@ fn an_adopted_rewrite_replaces_the_projection_and_an_unreadable_one_does_not() {
     let c = ctx(&arena, &cfg, &stack, &labels);
     let p = plane();
 
-    let mut st = opened(&dialect::OPENAI_REALTIME);
+    let mut st = opened(&super::harness::A_DIALECT);
     let locked = SessionPlane::session_params(&p, &mut st, &c)
         .expect("a session projects")
         .declared

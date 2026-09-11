@@ -210,6 +210,22 @@ file = "qa/kind-isolation.toml"
 by = 32
 because = "busbar x plane: the SAME second-dialect registration, counted a second time under the plane kind. A dialect's INSTANCE IS ITS PLANE — the matrix says so in the carrier's own edge rows — so every spelling of `busbar-plane-streams-<dialect>` that the root writes is one dialect hit and one plane hit, and the two columns rise together by construction rather than for two different reasons. There is no line here that is not already declared above: the manifest edge, the feature forward, the registration, the two upstream rows and the registry cell are the whole of it, and no new plane vocabulary enters the root by any other route. The plane's own crate fell in the same landing, which is the half of this that is not a raise (1794 -> 1826)"
 
+# ── declared raises: THE THIRD AND LAST DIALECT CRATE'S REGISTRATION. With this one the neutral
+# plane declares NO dialect row at all — its table is empty and every row it answers with arrived
+# through `register` — so this is the last time either ceiling rises for this reason. Both entries
+# expire when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 32
+because = "busbar x dialect: the streams plane's THIRD and last dialect crate is linked, registered and proved by the composition root, and the neutral plane's declared table is empty from this commit on. Same shape as the second dialect's entry and for the same reason — a dialect is a PLUGIN KIND and the root is the only crate permitted to name a plugin instance — with one addition the other two did not have: this dialect's row was also the plane's own DEFAULT, spelled by name at five call sites as the answer to `no dialect was negotiated`. Those sites answer with a POSITION in the table now, the first registered row, so the root's registration ORDER carries a fact the plane used to carry as a vendor's name, and one of the hits here is that order being made explicit rather than implied (620 -> 652)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 34
+because = "busbar x plane: the SAME third-dialect registration, counted a second time under the plane kind, because a dialect's INSTANCE IS ITS PLANE and every spelling of `busbar-plane-streams-<dialect>` the root writes is one hit in each column. There is no line here that is not already declared above: the manifest edge, the feature forward, the registration, the upstream rows and the registry cell that now walks all three dialects are the whole of it. The dialect crate this pays for names NOTHING but its own plane — zero cells in every other column, which is the strongest form the kind admits and the reason this entry is the whole cost (1826 -> 1860)"
+
 # ── declared raise: THE CLOSE SLOT. The neutral duplex acceptor gains a third value out of its own
 # seam and the cells that prove it, both inside the crate that owns the acceptor. Expires when the
 # base carries the number.

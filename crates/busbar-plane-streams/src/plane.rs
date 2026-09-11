@@ -122,16 +122,20 @@ pub const TOOL_REPLY_DEADLINE_SECS: u32 = 30;
 /// ([`Dialect::reader`] is `None`) is declaring that its frames ARE the shared duplex IR, and the
 /// shared IR is what it gets — named here as the IR it is, which is the one thing this crate is
 /// entitled to know about frames.
-pub(crate) fn reader_for(dialect: &Dialect) -> Box<dyn DuplexReader> {
-    match dialect.reader {
+/// `None` for the dialect itself — a session whose dialect this node could not name — gets the
+/// shared IR for the same reason a row that declared `None` does: the shared IR is the one frame
+/// vocabulary this crate is entitled to know, and it is the honest answer when no plugin claimed
+/// the frames.
+pub(crate) fn reader_for(dialect: Option<&Dialect>) -> Box<dyn DuplexReader> {
+    match dialect.and_then(|d| d.reader) {
         Some(f) => f(),
         None => Box::new(OpenAiRealtimeCodec),
     }
 }
 
 /// See [`reader_for`].
-pub(crate) fn writer_for(dialect: &Dialect) -> Box<dyn DuplexWriter> {
-    match dialect.writer {
+pub(crate) fn writer_for(dialect: Option<&Dialect>) -> Box<dyn DuplexWriter> {
+    match dialect.and_then(|d| d.writer) {
         Some(f) => f(),
         None => Box::new(OpenAiRealtimeCodec),
     }
@@ -239,7 +243,7 @@ impl Plane for VoicePlane {
                 // The reader is the one the stash existed to avoid calling twice, so it is called
                 // once either way.
                 None => {
-                    let reader = reader_for(client_dialect);
+                    let reader = reader_for(Some(client_dialect));
                     let events = reader.read_up_ref(WireRef(f.bytes.as_slice()), &mut state.codec);
                     match events.into_iter().next() {
                         Some(ev) => ev,
@@ -295,7 +299,7 @@ impl Plane for VoicePlane {
             .get_mut::<VoiceSessionState>()
             .ok_or(Decode::MissingDeclaredFact)?;
         let upstream_dialect = upstream_dialect_for(self, dest);
-        let client_dialect = client_dialect_from_session(ctx).unwrap_or(upstream_dialect);
+        let client_dialect = client_dialect_from_session(ctx).or(upstream_dialect);
 
         let frame = frames.next_frame().ok_or(Decode::Malformed)?;
         // The reader is handed the frame WHERE IT IS. It parses the bytes and keeps none of them, so
@@ -409,9 +413,12 @@ impl Plane for VoicePlane {
                     .unwrap_or(busbar_contract::ids::LaneId::new("voice")),
             };
         }
-        // The dialect the decode step named, off the unit's own sealed draft facts.
-        let arriving = draft_dialect(u).unwrap_or(&dialect::OPENAI_REALTIME);
-        match self.default_upstream(arriving) {
+        // The dialect the decode step named, off the unit's own sealed draft facts, else the first
+        // row this node has — a POSITION in the table, which is the order the composition root
+        // registered in. It used to be one vendor's row by name, which made a neutral crate's
+        // fallback an instance.
+        let arriving = draft_dialect(u).or_else(dialect::first);
+        match arriving.and_then(|a| self.default_upstream(a)) {
             Some(up) => DestinationFacts::Upstream {
                 transport: claims::WS_TRANSPORT,
                 address: busbar_contract::UpstreamAddress::socket(up.host),
@@ -561,13 +568,13 @@ impl SessionPlane for VoicePlane {
             .fact(FACT_PATH)
             .and_then(claims::dialect_for)
             .and_then(dialect::dialect)
-            .unwrap_or(&dialect::OPENAI_REALTIME);
-        PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
+            .or_else(dialect::first);
+        PlaneSessionState::new(VoiceSessionState::for_maybe_dialect(dialect))
     }
 
     fn open_upstream<'u>(&self, dest: &VerifiedDestination, _ctx: &Ctx<'u>) -> PlaneSessionState {
         let dialect = upstream_dialect_for(self, dest);
-        PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
+        PlaneSessionState::new(VoiceSessionState::for_maybe_dialect(dialect))
     }
 
     /// THE PROJECTION: what an operator's gate or tap sees when this plane's session is opened.
@@ -683,22 +690,31 @@ fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str
 }
 
 /// Which dialect the upstream a verified destination names speaks, by matching its host against
-/// this plane's configured upstream list. Falls back to OpenAI Realtime (the more common of the two
-/// and this plane's documented default elsewhere) when the destination is a `SessionUpstream` this
-/// function cannot resolve a host for, or names no configured upstream at all.
-fn upstream_dialect_for(plane: &VoicePlane, dest: &VerifiedDestination) -> &'static Dialect {
+/// this plane's configured upstream list.
+///
+/// Falls back to the FIRST ROW OF THE TABLE — a position, which is the declaration order the
+/// composition root registered in — when the destination is a `SessionUpstream` this function cannot
+/// resolve a host for, or names no configured upstream at all, and to `None` on a node with no
+/// dialect registered at all. It used to fall back to one particular vendor's row, by name, with a
+/// doc comment calling that vendor "the more common of the two": a neutral crate ranking instances,
+/// which is the fusion the dialect kind exists to forbid, written down as if it were a fact about
+/// wires.
+fn upstream_dialect_for(
+    plane: &VoicePlane,
+    dest: &VerifiedDestination,
+) -> Option<&'static Dialect> {
     match dest.facts() {
         DestinationFacts::Upstream { address, .. } => plane
             .upstreams()
             .iter()
             .find(|u| Some(u.host) == address.authority())
             .map(|u| u.dialect)
-            .unwrap_or(&dialect::OPENAI_REALTIME),
+            .or_else(dialect::first),
         _ => plane
             .upstreams()
             .first()
             .map(|u| u.dialect)
-            .unwrap_or(&dialect::OPENAI_REALTIME),
+            .or_else(dialect::first),
     }
 }
 
@@ -854,7 +870,7 @@ fn decode_ws_frame<'u>(
     // ever arrives to complete an already-complete WS frame that failed to decode as UTF-8.
     std::str::from_utf8(frame.bytes.as_slice()).map_err(|_| Decode::Malformed)?;
     // Borrowed, not copied: see `decode_response`'s own note on the downlink side of this.
-    let reader = reader_for(dialect);
+    let reader = reader_for(Some(dialect));
     let events = reader.read_up_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
     let Some(event) = events.into_iter().next() else {
         // A JSON document this dialect does not recognise is answered exactly the way
@@ -987,7 +1003,7 @@ pub fn open_or_relay<'u>(
 fn progress_from_server_event<'u>(
     event: IrServerEvent,
     state: &mut VoiceSessionState,
-    client_dialect: &Dialect,
+    client_dialect: Option<&Dialect>,
     ctx: &Ctx<'u>,
 ) -> Result<Progress<'u>, Decode> {
     let for_ = state.turn_correlation;
@@ -1072,7 +1088,7 @@ fn progress_from_server_event<'u>(
             // per-frame owner put back exactly the allocation per frame the renderer exists to
             // remove — the renderer's committed zero was true of the renderer and false of its only
             // caller.
-            let bytes = match client_dialect.envelope {
+            let bytes = match client_dialect.and_then(|d| d.envelope) {
                 Some(envelope) => {
                     (envelope.render_downlink_audio)(state, &f.media);
                     ctx.arena()

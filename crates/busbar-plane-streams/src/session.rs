@@ -101,8 +101,19 @@ impl VoiceSessionState {
     /// once the claim that matched the connection is known.
     #[must_use]
     pub fn for_dialect(dialect: &'static Dialect) -> Self {
+        Self::for_maybe_dialect(Some(dialect))
+    }
+
+    /// A fresh session state for a dialect this plane could not name.
+    ///
+    /// `None` is a real answer and has been since this field was an `Option`: a session opened on a
+    /// path no claim matched, or on a node with no dialect registered, has no dialect and saying so
+    /// is honest. The caller that used to hand a VENDOR here — one particular row, by name, because
+    /// that vendor happened to be written first — is what this constructor replaces.
+    #[must_use]
+    pub fn for_maybe_dialect(dialect: Option<&'static Dialect>) -> Self {
         Self {
-            dialect: Some(dialect),
+            dialect,
             ..Self::default()
         }
     }

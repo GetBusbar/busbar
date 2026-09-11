@@ -73,8 +73,9 @@ use busbar_contract::transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 
-/// The OpenAI Realtime binding's name — the dialect's own word for itself.
-pub const BINDING_OPENAI_REALTIME: &str = crate::dialect::NAME_OPENAI_REALTIME;
+/// The OpenAI Realtime binding's name — the dialect's own word for itself, borrowed from the claim
+/// table rather than re-spelled here, the same way [`BINDING_CARRIER`] is.
+pub const BINDING_OPENAI_REALTIME: &str = crate::claims::OPENAI_REALTIME;
 
 /// The Gemini Live binding's name — the dialect's own word for itself, borrowed from the claim
 /// table rather than re-spelled here, the same way [`BINDING_CARRIER`] is.

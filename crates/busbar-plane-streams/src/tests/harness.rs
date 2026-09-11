@@ -191,3 +191,35 @@ pub fn destination(host: &'static str, lane: LaneId) -> VerifiedDestination {
         None,
     )
 }
+
+/// THE ROW THIS CRATE'S OWN CELLS RUN OVER — a dialect of NO ONE, declared here.
+///
+/// Every cell in this crate that needs a dialect used to name one particular vendor's row, because
+/// this crate declared two of them. It declares none now: all three of this plane's dialects are
+/// plugins, and a cell that reached for one would take the dependency this crate's own direction
+/// rule forbids AND would buy its own fixture out of the neutral crate's ceiling.
+///
+/// It is the DEFAULT SHAPE of the face — dialable upstream, one credential at open, metered by the
+/// plane off the shared IR, no envelope, no locked posture, no reader of its own — which is the
+/// shape the cells were written against when they named a vendor, so nothing they assert moved.
+pub static A_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect {
+    name: "a-dialect",
+    duplex_upstream: true,
+    authenticates_from_session: true,
+    meters_own_uplink: false,
+    envelope: None,
+    locked_session_config: None,
+    reader: None,
+    writer: None,
+};
+
+/// REGISTER [`A_DIALECT`], once per test process.
+///
+/// Nothing declares a dialect any more, so a cell that drives a session open has to compose one the
+/// way a composition root does — which is the point rather than a chore: before this, the plane's
+/// cells were driving a session against a row the plane had written for itself, so the one thing
+/// the direction rule cares about was the one thing they could not have caught.
+pub fn compose_a_dialect() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| crate::dialect::register(&A_DIALECT));
+}

@@ -16,7 +16,7 @@ static UPSTREAMS: &[Upstream] = &[
     Upstream {
         lane: REALTIME,
         host: "api.openai.com",
-        dialect: &dialect::OPENAI_REALTIME,
+        dialect: &busbar_plane_streams_openai::OPENAI_REALTIME,
     },
     Upstream {
         lane: LIVE,
@@ -527,7 +527,7 @@ fn a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction() {
     let node = node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
-        .on_dialect(&dialect::OPENAI_REALTIME)
+        .on_dialect(&busbar_plane_streams_openai::OPENAI_REALTIME)
         .reporting(TurnUsage {
             audio_tokens_in: 10,
             audio_tokens_out: 20,
@@ -677,7 +677,10 @@ fn the_two_endpoints_compose_from_borrowed_names() {
         LIVE,
     );
     let pair = endpoints.as_slice();
-    assert_eq!(pair[0].dialect, &dialect::OPENAI_REALTIME);
+    assert_eq!(
+        pair[0].dialect,
+        &busbar_plane_streams_openai::OPENAI_REALTIME
+    );
     assert_eq!(pair[1].dialect, &busbar_plane_streams_gemini::GEMINI_LIVE);
     assert!(pair.iter().all(|u| u.dialect.duplex_upstream));
 }
@@ -1274,7 +1277,9 @@ fn priced_node(io: VoiceIo) -> VoiceNode {
     let mut node = node(io);
     let mut rates = std::collections::BTreeMap::new();
     rates.insert(
-        dialect::OPENAI_REALTIME.name.to_string(),
+        busbar_plane_streams_openai::OPENAI_REALTIME
+            .name
+            .to_string(),
         busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
     );
     node.pricer = Pricer::with_card(0, rates);
@@ -1560,7 +1565,9 @@ fn a_paid_turns_record_names_its_principal() {
     );
     let mut rates = std::collections::BTreeMap::new();
     rates.insert(
-        dialect::OPENAI_REALTIME.name.to_string(),
+        busbar_plane_streams_openai::OPENAI_REALTIME
+            .name
+            .to_string(),
         busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
     );
     node.pricer = Pricer::with_card(0, rates);
@@ -2104,8 +2111,9 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         monotonic_nanos: 0,
     };
     let plane = VoicePlane::new(UPSTREAMS);
-    let mut state =
-        PlaneSessionState::new(VoiceSessionState::for_dialect(&dialect::OPENAI_REALTIME));
+    let mut state = PlaneSessionState::new(VoiceSessionState::for_dialect(
+        &busbar_plane_streams_openai::OPENAI_REALTIME,
+    ));
 
     // The first client event of the session. `session.update` is what a real client sends
     // first, and it opens the turn.
@@ -2527,7 +2535,7 @@ mod driven {
         let bound = node
             .bound(session.0)
             .expect("unit zero settled the session at Verify");
-        assert_eq!(bound.dialect, &dialect::OPENAI_REALTIME);
+        assert_eq!(bound.dialect, &busbar_plane_streams_openai::OPENAI_REALTIME);
         assert!(
             bound.destination.is_some(),
             "the leg was sealed for the plane's upstream half"

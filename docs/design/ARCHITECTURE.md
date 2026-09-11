@@ -1711,7 +1711,12 @@ about a kind boundary, this register and that spec win.)*
   SESSIONS of any media type, and G.711 is one codec among them. `busbar-voice` KEEPS its name
   until it is deleted — it is the retiring 1.5.x crate, and a legacy name says what it retires
   from. **The streams plane's dialects are `openai-realtime`, `gemini-live` and
-  `twilio-media-streams`;** one-shot TTS and transcribe are REQUEST/RESPONSE, not duplex sessions,
+  `twilio-media-streams`, and all three are CRATES** — `busbar-plane-streams-openai`,
+  `busbar-plane-streams-gemini`, `busbar-plane-streams-twilio`, each registered by the composition
+  root and each removable by `scripts/plane-delete-test.sh` — so the plane's own dialect table
+  declares no row at all and holds no vendor's name. Its "no dialect was negotiated" answer is the
+  first row of that table, a POSITION, never an instance; one-shot TTS and transcribe are
+  REQUEST/RESPONSE, not duplex sessions,
   and leave this plane for the `llm` plane's speech routes in a later line. Non-voice dialects are
   expected — Gemini Live video and screen frames, the Realtime text modality, live transcription
   and translation, streaming TTS, realtime tool sessions. The 1.5.5-frozen `export.<n>.streams`

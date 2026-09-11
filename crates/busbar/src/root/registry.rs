@@ -469,6 +469,12 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // REGISTRATION ORDER IS THE TABLE'S ORDER, and the table's first row is the plane's own "no
     // dialect was negotiated" answer, so this list is the operator-visible declaration order and not
     // an accident of how the lines were typed.
+    // FIRST, and the order is load-bearing: the table's first row is the plane's own answer to "no
+    // dialect was negotiated", and this is the dialect that answer used to be spelled as, by name,
+    // inside the neutral plane. Registering it first is what makes that answer byte-identical while
+    // its REASON stops being a vendor's name.
+    #[cfg(feature = "plane-voice")]
+    busbar_plane_streams::dialect::register(&busbar_plane_streams_openai::OPENAI_REALTIME);
     #[cfg(feature = "plane-voice")]
     busbar_plane_streams::dialect::register(&busbar_plane_streams_gemini::GEMINI_LIVE);
     #[cfg(feature = "plane-voice")]

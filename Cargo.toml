@@ -31,6 +31,7 @@ members = [
     "crates/busbar-plane-admin",
     "crates/busbar-plane-streams",
     "crates/busbar-plane-streams-gemini",
+    "crates/busbar-plane-streams-openai",
     "crates/busbar-plane-streams-twilio",
     "crates/busbar-unit-admission",
     "crates/busbar-unit-cost",

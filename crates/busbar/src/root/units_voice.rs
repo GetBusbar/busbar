@@ -134,7 +134,7 @@ use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
-use busbar_plane_streams::dialect::{self, Dialect};
+use busbar_plane_streams::dialect::Dialect;
 use busbar_plane_streams::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, BucketChain, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
@@ -204,7 +204,7 @@ impl ProviderEndpoints {
             realtime: Upstream {
                 lane: realtime_lane,
                 host: realtime_host,
-                dialect: &dialect::OPENAI_REALTIME,
+                dialect: &busbar_plane_streams_openai::OPENAI_REALTIME,
             },
             live: Upstream {
                 lane: live_lane,
@@ -1222,7 +1222,7 @@ impl<'n> VoiceUnit<'n> {
             // refuse a caller nobody has authenticated rather than one who was found wanting.
             grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
-            dialect: &dialect::OPENAI_REALTIME,
+            dialect: &busbar_plane_streams_openai::OPENAI_REALTIME,
             chain: None,
             usage: TurnUsage::default(),
             call_id: None,
@@ -2184,7 +2184,7 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
                 read.path()
                     .and_then(busbar_plane_streams::claims::dialect_for)
                     .and_then(dialect::dialect)
-                    .unwrap_or(&dialect::OPENAI_REALTIME)
+                    .unwrap_or(&busbar_plane_streams_openai::OPENAI_REALTIME)
             },
             |binding| binding.dialect,
         );

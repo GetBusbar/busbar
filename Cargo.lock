@@ -347,6 +347,7 @@ dependencies = [
  "busbar-plane-mcp",
  "busbar-plane-streams",
  "busbar-plane-streams-gemini",
+ "busbar-plane-streams-openai",
  "busbar-plane-streams-twilio",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -796,6 +797,13 @@ version = "1.6.0"
 dependencies = [
  "busbar-plane-streams",
  "busbar-voice-codec",
+]
+
+[[package]]
+name = "busbar-plane-streams-openai"
+version = "1.6.0"
+dependencies = [
+ "busbar-plane-streams",
 ]
 
 [[package]]

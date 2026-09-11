@@ -42,8 +42,8 @@ mod selectors {
     #[test]
     fn each_served_leg_names_its_own_dialect_and_the_base_names_none() {
         use crate::claims::GEMINI_LIVE as NAME_GEMINI_LIVE;
+        use crate::claims::OPENAI_REALTIME as NAME_OPENAI_REALTIME;
         use crate::claims::{dialect_for, CARRIER};
-        use crate::dialect::NAME_OPENAI_REALTIME;
 
         assert_eq!(
             dialect_for("/v1/realtime/sideband/rtc_c0ffee"),
@@ -87,14 +87,14 @@ mod purity {
         static UPSTREAMS: &[Upstream] = &[Upstream {
             lane: LaneId::new("realtime"),
             host: "api.openai.example",
-            dialect: &dialect::OPENAI_REALTIME,
+            dialect: &super::harness::A_DIALECT,
         }];
         let a = VoicePlane::new(UPSTREAMS);
         let b = VoicePlane::new(UPSTREAMS);
         assert_eq!(a, b);
         assert_eq!(
-            a.upstream_for_dialect(&dialect::OPENAI_REALTIME),
-            b.upstream_for_dialect(&dialect::OPENAI_REALTIME)
+            a.upstream_for_dialect(&super::harness::A_DIALECT),
+            b.upstream_for_dialect(&super::harness::A_DIALECT)
         );
         // A DIALECT THIS UPSTREAM LIST DOES NOT CARRY — and it is a row declared HERE, not a
         // sibling dialect crate's. The assertion is "a list with one dialect answers None for a
@@ -117,9 +117,8 @@ mod purity {
     /// panicking or fabricating a host.
     #[test]
     fn empty_plane_names_no_upstream() {
-        use crate::dialect;
         assert!(VoicePlane::EMPTY
-            .upstream_for_dialect(&dialect::OPENAI_REALTIME)
+            .upstream_for_dialect(&super::harness::A_DIALECT)
             .is_none());
         assert_eq!(VoicePlane::EMPTY, VoicePlane::default());
     }
@@ -281,14 +280,14 @@ mod dialect_face {
         let mut st = DecodeState::default();
         let ga = br#"{"type":"session.created","session":{}}"#;
 
-        let brought = crate::plane::reader_for(&BRINGS_ITS_OWN);
+        let brought = crate::plane::reader_for(Some(&BRINGS_ITS_OWN));
         assert!(
             brought.read_down_ref(WireRef(ga), &mut st).is_empty(),
             "the row declared its OWN reader and the plane reached for a different one; a dialect              whose declared reader is ignored is instance dispatch by another name"
         );
 
         let mut st = DecodeState::default();
-        let shared = crate::plane::reader_for(&RIDES_THE_SHARED_IR);
+        let shared = crate::plane::reader_for(Some(&RIDES_THE_SHARED_IR));
         assert!(
             !shared.read_down_ref(WireRef(ga), &mut st).is_empty(),
             "the row declared `None` — the SHARED IR — and did not get it; `None` is an answer on              this face, not a blank to be filled by whichever vendor was written first"
@@ -301,14 +300,14 @@ mod dialect_face {
     #[test]
     fn a_dialects_writer_comes_off_its_own_row_and_not_off_its_name() {
         let mut st = DecodeState::default();
-        let brought = crate::plane::writer_for(&BRINGS_ITS_OWN);
+        let brought = crate::plane::writer_for(Some(&BRINGS_ITS_OWN));
         assert!(
             brought.write_down(session_created(), &mut st).is_none(),
             "the row declared its OWN writer and the plane reached for a different one"
         );
 
         let mut st = DecodeState::default();
-        let shared = crate::plane::writer_for(&RIDES_THE_SHARED_IR);
+        let shared = crate::plane::writer_for(Some(&RIDES_THE_SHARED_IR));
         assert!(
             shared.write_down(session_created(), &mut st).is_some(),
             "the row declared `None` — the SHARED IR — and did not get it"

@@ -115,6 +115,15 @@ pub const TTS: &str = "tts";
 /// on this line and needs the constant to become a declaration the root can fill.
 pub const CARRIER: &str = "twilio-media-streams";
 
+/// The OpenAI Realtime (GA) dialect's name — the same `&'static str` its own crate declares as
+/// `NAME`, and the same one the session fact carries.
+///
+/// A NAME AND NOTHING ELSE, for the reason [`CARRIER`] states above it. It was
+/// `crate::dialect::NAME_OPENAI_REALTIME` until that dialect got a crate, and with this one the
+/// plane's dialect table declares no row and holds no name at all: every dialect of this plane is a
+/// plugin, and the only thing left in the neutral crate is the WORD a claim matches on.
+pub const OPENAI_REALTIME: &str = "openai-realtime";
+
 /// The Gemini Live dialect's name — the same `&'static str` its own crate declares as `NAME`, and
 /// the same one the session fact carries.
 ///
@@ -184,7 +193,7 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
     // claim it under and no `webrtc` claim to make: this node carries no RTP and no ICE, and a plane
     // may not claim a transport it cannot read frames from.
     DialectClaim {
-        dialect: crate::dialect::NAME_OPENAI_REALTIME,
+        dialect: OPENAI_REALTIME,
         claim: claim(WS_TRANSPORT, SIDEBAND, WS_SCHEME_ALTS),
     },
     DialectClaim {

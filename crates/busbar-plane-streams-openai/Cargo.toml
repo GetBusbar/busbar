@@ -1,0 +1,41 @@
+# busbar-plane-streams-openai — ONE VENDOR'S DUPLEX EVENT VOCABULARY, AND NOTHING ELSE.
+#
+# THE KIND IS `dialect`, the second crate of that kind in the tree and the second of this plane's
+# three. The name is the four-segment dialect form `busbar-plane-<plane>-<dialect>` and nothing
+# else. `busbar-plane-streams-openai-realtime` — the spelling `ARCHITECTURE.md` §1.1 carried as its
+# own example — is FIVE segments and the gate refuses a fifth outright
+# (`MAX_NAME_SEGMENTS = 4`, xtask/src/gates/kind_isolation.rs); the architecture's example was a
+# name no gate in this tree would admit, and the commit that mints this crate corrects it rather
+# than widening the cap. The WIRE name is two words (`openai-realtime`) and is declared once, as
+# `NAME` in this crate's own source, on the dialect row that carries it — the same correction VT-2
+# made for the carrier, whose wire name is three.
+#
+# WHY THIS CRATE HOLDS A ROW AND NOT A READER. The plane's pre-split codec half is
+# SIMULTANEOUSLY this dialect's reader/writer and the SHARED duplex IR every `envelope: None`
+# dialect of this plane rides — the Gemini reader maps INTO it, and the carrier's µ-law transform
+# targets it. Moving it here would gut the IR two sibling dialects depend on and put this crate in
+# their dependency path, which is the plane fusion one level down. So the row-only mint is the
+# honest one: what leaves the neutral plane is this dialect's NAME and its ROW, which is what made
+# the plane an instance-namer. What "shared IR" means once the shape it was cut from is one dialect
+# among three is the codec split's question, not this crate's.
+[package]
+name = "busbar-plane-streams-openai"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The OpenAI Realtime (GA) dialect of the busbar streams plane: the vendor's duplex event vocabulary, as a row of the plane's dialect table."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_streams_openai"
+path = "src/lib.rs"
+
+# NO FEATURES. A dialect compiled two ways is two dialects speaking one name.
+
+[dependencies]
+# THE PLANE THIS IS A DIALECT OF. The direction the kind gate fixes: the dialect names its plane and
+# the plane never names a dialect. What is named is the plane's own dialect FACE — never a second
+# plane, and never a sibling dialect.
+busbar-plane-streams = { path = "../busbar-plane-streams" }
