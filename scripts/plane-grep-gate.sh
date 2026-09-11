@@ -134,7 +134,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 # all three numbered rows had rotted: `config/mod.rs` is 2692 lines and two rows pinned 2974 and 5017,
 # so they could never match anything — dead rules carried as if they were protecting something. The
 # third pinned line 1291 for a `DEFAULT_PROTOCOL = "anthropic"` that had since moved to another crate
-# entirely (busbar-substrate/src/config/providers.rs), leaving the row shielding whatever now occupies
+# entirely (busbar-substrate-values/src/config/providers.rs), leaving the row shielding whatever now occupies
 # line 1291 of a file it no longer has any business in. Planting `let leak_default = "anthropic";` at
 # 1291 was silently suppressed; the identical line at 1292 was reported. A line number is a fact about
 # a file's current shape, and every edit above it invalidates one without touching it. The source text
@@ -158,7 +158,7 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 ALLOWLIST="responses|crates/busbar-core/src/admin/|
 responses|crates/busbar-mcp/src/|
 responses|crates/busbar-a2a/src/|
-anthropic|crates/busbar-substrate/src/config/providers.rs|DEFAULT_PROTOCOL
+anthropic|crates/busbar-substrate-values/src/config/providers.rs|DEFAULT_PROTOCOL
 mcp|crates/busbar-core/src/config/mod.rs|mcp: McpEndpointSection
 mcp|crates/busbar-core/src/config/mod.rs|deploy.mcp.0"
 

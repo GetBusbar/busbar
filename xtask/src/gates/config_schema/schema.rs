@@ -98,11 +98,15 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     let a2a = plane_dir(cx, "crates", "a2a", "config.rs")?;
     Ok(vec![
         format!("{CORE}/config"),
-        // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
+        // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN out of `busbar-core` in the
         // 1.6.0 config-seam migration; the loaders and resolvers that consume them stayed in
         // `busbar-core`, which re-exports every moved item at its historical `config::` path.
-        // Tracked as a DIRECTORY so a future file split under it is automatically covered.
-        "crates/busbar-substrate/src/config".to_string(),
+        // Under the substrate's retirement the grammar sits in the PURE half that survives,
+        // `busbar-substrate-values`, and `busbar-substrate` re-exports the whole module at its own
+        // historical path — so this is the same directory of the same shapes under a new crate, and
+        // the snapshot it produces is byte-identical. Tracked as a DIRECTORY so a future file split
+        // under it is automatically covered.
+        "crates/busbar-substrate-values/src/config".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.

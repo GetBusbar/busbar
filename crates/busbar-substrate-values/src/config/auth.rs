@@ -19,11 +19,11 @@ use busbar_api::SecretRef;
 ///
 /// ```yaml
 /// identity-providers:
-///   admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+///   ops-console:  { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
 ///   corp-ad:      { module: ad, settings: { server: "ldaps://corp" }, max_admin_scope: read-only }
 /// auth:
 ///   chain:      [keys, corp-ad]     # ← bare NAMES
-///   admin_auth: [admin-tokens, corp-ad]
+///   admin_auth: [ops-console, corp-ad]
 ///   role_bindings: { corp-ad: { platform: { admin_scope: full } } }
 /// ```
 ///
@@ -117,7 +117,8 @@ pub struct AuthChainEntry {
 }
 
 impl AuthChainEntry {
-    /// A bare, definition-less built-in entry (`chain: [keys]` / `admin_auth: [admin-tokens]`).
+    /// A bare, definition-less built-in entry: `chain:` naming [`KEYS_MODULE`], or `admin_auth:`
+    /// naming [`ADMIN_TOKENS_MODULE`], with no block under `modules:` to define it.
     pub fn bare(module: impl Into<String>) -> Self {
         let module = module.into();
         Self {
@@ -431,7 +432,8 @@ impl AuthCfg {
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
-/// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
+/// The built-in operator admin-token module name: the one word `auth.admin_auth:` may carry
+/// without a matching `modules:` block.
 pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no

@@ -1198,13 +1198,6 @@ drain = "nothing to drain while the crate is a plugin of its kind; the row exist
 
 [[edge]]
 from = "substrate"
-to = "auth"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
-why = "crates of kind substrate naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the auth name from the substrate crate: a substrate reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
 to = "codec"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
 why = "crates of kind substrate naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1219,13 +1212,6 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "substrate"
-to = "hooks"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
-why = "crates of kind substrate naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the hooks name from the substrate crate: a substrate reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind substrate naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1237,13 +1223,6 @@ to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
 why = "crates of kind substrate naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the plane name from the substrate crate: a substrate reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "substrate"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind substrate naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the substrate crate: a substrate reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "substrate"
@@ -1483,7 +1462,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "store"
-count = "6"
+count = "4"
 
 [[cell]]
 crate = "busbar"
@@ -1773,12 +1752,12 @@ count = "337"
 [[cell]]
 crate = "busbar-core"
 kind = "store"
-count = "104"
+count = "98"
 
 [[cell]]
 crate = "busbar-core"
 kind = "substrate"
-count = "1"
+count = "4"
 
 [[cell]]
 crate = "busbar-core"
@@ -2493,52 +2472,37 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "api"
-count = "134"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "auth"
-count = "3"
+count = "127"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "control"
-count = "352"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "hooks"
-count = "2"
+count = "217"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "298"
+count = "266"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "770"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "plugin-tooling"
-count = "1"
+count = "756"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "secret"
-count = "35"
+count = "13"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "store"
-count = "5"
+count = "3"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "substrate"
-count = "26"
+count = "34"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2548,12 +2512,12 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1140"
+count = "1099"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "api"
-count = "31"
+count = "40"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2563,22 +2527,22 @@ count = "1"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "control"
-count = "121"
+count = "253"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "134"
+count = "164"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "162"
+count = "176"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "secret"
-count = "5"
+count = "27"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2588,7 +2552,7 @@ count = "4"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "transport"
-count = "367"
+count = "406"
 
 [[cell]]
 crate = "busbar-timing"
@@ -5634,12 +5598,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "90"
+count = "62"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "252"
+count = "280"
 
 [[cell]]
 crate = "busbar-transport-sse"

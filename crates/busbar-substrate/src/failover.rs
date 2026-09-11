@@ -130,22 +130,13 @@
 use crate::audit::vocab;
 use crate::store::Unavailable;
 
-// ── The FAILOVER BUDGET numeric defaults/bounds. Plain scalars with no config grammar attached
-//    (the serialized `FailoverCfg` shape stays in core, schema-frozen). They live HERE in the neutral
-//    substrate so a plane crate names the per-request failover budget without reaching into
-//    `busbar-core`; core's `config` re-exports each at its historical `crate::config::*` path (so
-//    `appbuild`/`config_validate`/`test_support` call sites are untouched), and the `serde` default
-//    fns (`default_failover_timeout`/`default_max_hops`) read the re-export.
-/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
-pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
-/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
-/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
-/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
-/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
-/// monotonic-clock `Instant` math.
-pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
-/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
-pub const DEFAULT_FAILOVER_CAP: usize = 3;
+// THE PURE VALUE HALF OF THIS MODULE lives in `busbar-substrate-values` (see that crate's
+// `failover` module): the four scalars/enums the CONFIG GRAMMAR names. They are re-exported here at
+// their historical `busbar_substrate::failover::` path, so every caller -- this module included --
+// is spelled exactly as before.
+pub use busbar_substrate_values::failover::{
+    Repeatable, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
+};
 
 /// ONE CANDIDATE: somewhere a request can be sent, on any plane.
 ///
@@ -184,17 +175,6 @@ pub enum Stage {
     /// A previous candidate was dispatched to and the call failed. Moving on is a RETRY of work an
     /// upstream may already have done.
     AfterDispatch,
-}
-
-/// MAY THIS OPERATION BE PERFORMED TWICE? A property of the operation the caller named, declared by
-/// the operator who vouched for it — never inferred, and never a property of the transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repeatable {
-    /// The DEFAULT for everything an operator has not spoken about. A second execution may have a
-    /// second effect, so an [`Stage::AfterDispatch`] hop is refused.
-    No,
-    /// The operator declared this operation safe to perform twice (a read, a search, a query).
-    Yes,
 }
 
 /// WHY NO FURTHER CANDIDATE MAY BE SELECTED.

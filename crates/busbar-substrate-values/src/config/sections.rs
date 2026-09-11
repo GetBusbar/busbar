@@ -71,7 +71,7 @@ pub struct SecurityCfg {
 }
 
 /// The compiled-in store name (`store.module: memory`) - the only store that is not a plugin.
-pub const GOVERNANCE_STORE_MEMORY: &str = "memory";
+pub const GOVERNANCE_MEMORY_STORE: &str = "memory";
 
 /// The top-level `store:` block: the durable store as `{ module, settings }` - the same
 /// module/settings shape as every other plugin instance. `settings` is the store module's OWN
@@ -107,7 +107,7 @@ impl Default for StoreCfg {
 }
 
 pub fn default_governance_store() -> String {
-    GOVERNANCE_STORE_MEMORY.to_string()
+    GOVERNANCE_MEMORY_STORE.to_string()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
@@ -377,7 +377,7 @@ pub struct ExportDefCfg {
     /// `request-log-file` | `otlp` (see [`EXPORT_MODULES`]). An unknown module is a boot error.
     pub module: String,
     /// `streams:` — WHAT this sink subscribes to, as tokens of the frozen
-    /// `busbar_plugin_loader::ExportStream` vocabulary. Each stream carries DOCUMENTED
+    /// [`ExportStream`] vocabulary. Each stream carries DOCUMENTED
     /// DEFAULT FIELDS. Absent ⇒ the streams the instance's `module:` itself carries (which is what
     /// every pre-projection config means), never "nothing".
     ///

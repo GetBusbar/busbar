@@ -228,7 +228,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // the first and the classifier would report the swap as a break nobody made.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_collision_fixture.rs",
+        "crates/busbar-substrate-values/src/config/zz_collision_fixture.rs",
         "#[derive(serde::Deserialize)]\npub struct DeployCfg {\n    pub other: String,\n}\n",
     );
     report.push(prove_rows_red(
@@ -243,7 +243,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A LIFTED KEY WITH NO CARRIER. The lift list must not be usable to hold a deleted field open.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_lift_fixture.rs",
+        "crates/busbar-substrate-values/src/config/zz_lift_fixture.rs",
         "pub(crate) const LIFTED_EXTRA_KEYS: &[&str] = &[\"zz_no_such_key\"];\n",
     );
     report.push(prove_rows_red(
@@ -258,7 +258,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // AN UNSUPPORTED `rename_all` would fingerprint wire keys the parser does not accept.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_rename_fixture.rs",
+        "crates/busbar-substrate-values/src/config/zz_rename_fixture.rs",
         "#[derive(serde::Deserialize)]\n#[serde(rename_all = \"Klingon\")]\npub struct ZzRenameFx {\n    pub max_tokens: u32,\n}\n",
     );
     report.push(prove_rows_red(

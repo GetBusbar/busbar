@@ -420,7 +420,7 @@ fn list_plugins_command() -> i32 {
                 .store
                 .as_ref()
                 .map(|g| g.module.clone())
-                .unwrap_or_else(|| config::GOVERNANCE_STORE_MEMORY.to_string());
+                .unwrap_or_else(|| config::GOVERNANCE_MEMORY_STORE.to_string());
             (l.deploy.plugins, store)
         }
         Err(e) => {
@@ -430,7 +430,7 @@ fn list_plugins_command() -> i32 {
             );
             (
                 config::PluginsCfg::default(),
-                config::GOVERNANCE_STORE_MEMORY.to_string(),
+                config::GOVERNANCE_MEMORY_STORE.to_string(),
             )
         }
     };

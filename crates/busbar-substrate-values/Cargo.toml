@@ -37,6 +37,15 @@ serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 # The AWS EventStream framing codec CRC32s each prelude/message.
 crc32fast = { workspace = true }
+# The config value grammar's own two leaves, arriving with it. `serde_yaml` (the maintained
+# `serde_yaml_ng` fork the whole tree names) is the format the node's config document is written in,
+# and the grammar's untyped escape hatches are `serde_yaml::Value`; `indexmap` is the ORDER-PRESERVING
+# map the named sections deserialize into, because a config document's declaration order is part of
+# what the operator wrote. Both are pure parse/collection leaves -- neither opens a socket, a file, a
+# process or the environment -- so both satisfy this manifest's rule.
+serde_yaml = { workspace = true }
+indexmap = { workspace = true }
+
 # The SSE frame terminator scan jumps between candidate CR/LF bytes rather than stepping every
 # position; a pure byte scanner, opens nothing.
 memchr = { workspace = true }

@@ -200,10 +200,10 @@ pub enum PoolPolicy {
 }
 
 impl PoolPolicy {
-    /// The ranking-registry name for this strategy (`plugins::hooks::ranking::native_policy`).
+    /// The ranking-registry name for this strategy, as the ranking registry spells it.
     /// `weighted` returns `None` — it IS the zero-cost inline-SWRR default and constructs no policy
     /// object. Engine-level `STRATEGY_*` consts (not the ranking plugin's constants) so this
-    /// compiles when the `hooks-ranking` plugin is removed; the plugin matches the same names.
+    /// compiles when the ranking plugin is removed; that plugin matches the same names.
     pub fn native_name(&self) -> Option<&'static str> {
         match self {
             PoolPolicy::Weighted => None,

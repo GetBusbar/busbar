@@ -183,11 +183,42 @@ pub mod metrics;
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
 // each from its old `busbar_core::governance::…` path.
 pub mod governance;
-// ABI-purity CONFIG-ENUMS: the neutral LLM-runtime config VALUE enums (`PolicyOnError` /
-// `ProviderAuth`) a plane names via the ABI. Fieldless serde enums moved DOWN with their derives +
-// `#[serde(...)]` attrs VERBATIM (byte-identical wire form); core re-exports each from its historical
-// `busbar_core::config::` path so the frozen config grammar + every deserialization are unchanged.
-pub mod config;
+// THE CONFIG VALUE GRAMMAR -- the `auth`/`groups`/`hooks`/`limits`/`pools`/`providers`/`sections`
+// shapes and the two ABI-purity enums (`PolicyOnError`/`ProviderAuth`). It is a PURE value family:
+// serde shapes over `busbar-api`/`busbar-plugin` leaves that open nothing, so under the substrate's
+// retirement it belongs to the half that SURVIVES. It lives in `busbar-substrate-values` and is
+// re-exported here at its historical `busbar_substrate::config::` path -- every reader, core's
+// re-exports included, is spelled exactly as before and no wire form moves a byte.
+pub mod config {
+    //! The config value grammar, at its historical path. Every shape lives in
+    //! `busbar_substrate_values::config` — see this module's siblings there — and is re-exported
+    //! here module for module, so `busbar_substrate::config::<anything>` resolves exactly as it did
+    //! and no reader, in or out of this crate, changes a spelling.
+    pub use busbar_substrate_values::config::{
+        auth, groups, hooks, providers, sections, PolicyOnError, ProviderAuth,
+    };
+
+    pub mod limits {
+        //! `limits` is the ONE module that does not re-export whole: the resolved-limits grammar is
+        //! in the values crate with its siblings, but the TEST LOCK that serializes the
+        //! process-wide install against every other installer is a `tokio::sync::Mutex` — the
+        //! holders await socket I/O across their whole critical section — and the values crate's
+        //! manifest forbids `tokio` by rule, because a plane's closure is scanned whole. So the
+        //! lock stays in the crate that may name an async runtime, and sits at the path it has
+        //! always sat at.
+        pub use busbar_substrate_values::config::limits::*;
+
+        /// The process-wide install lock. See [`install_limits`] for why it exists; it is here
+        /// rather than beside the rest of the grammar only because it is a `tokio` mutex.
+        #[cfg(any(test, feature = "test-support"))]
+        pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    }
+
+    pub mod pools {
+        //! Re-exported whole from `busbar_substrate_values::config::pools`.
+        pub use busbar_substrate_values::config::pools::*;
+    }
+}
 
 // THE NEUTRAL hook value/wire layer (1.6.0 hooks seam): the plain-data resolved-policy carriers
 // (`ResolvedPolicy`/`FallbackHook`) and the outbound hook-request `wire` projection, relocated off

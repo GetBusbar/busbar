@@ -1667,7 +1667,7 @@ impl PluginsCfg {
 // settings }` shapes). Moved to `busbar_substrate::config::sections`; re-exported at their
 // historical `config::` path.
 pub use busbar_substrate::config::sections::{
-    default_governance_store, SecretModuleCfg, StoreCfg, GOVERNANCE_STORE_MEMORY,
+    default_governance_store, SecretModuleCfg, StoreCfg, GOVERNANCE_MEMORY_STORE,
 };
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain

@@ -1311,3 +1311,74 @@ because = "the first gating figure of a sub-row that was not gating before: the 
 key = "rules.legacy-reach.prefixes.busbar_a2a.figure"
 by = 2
 because = "the first gating figure of a sub-row that was not gating before: the root names two distinct busbar_a2a:: symbols (DIAGNOSTICS, PLANE_DECL) and nothing counted them until this commit"
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE CONFIG VALUE GRAMMAR'S MOVE TO THE SURVIVING HALF OF THE SUBSTRATE.
+#
+# Eight rows, one manoeuvre. `crates/busbar-substrate/src/config/` — the `auth`/`groups`/`hooks`/
+# `limits`/`pools`/`providers`/`sections` shapes plus the two LLM-runtime selectors — is a PURE
+# serde value family over `busbar-api`/`busbar-plugin` leaves. Under the substrate's retirement the
+# pure half is the half that SURVIVES (`busbar-substrate-values`), and the frozen half takes nothing
+# new, so the grammar is MOVED there by identity (`git mv`, byte-for-byte, no wire form touched) and
+# re-exported at its historical `busbar_substrate::config::` path so no reader changes a spelling.
+# Every rise below is that move's OTHER END: the same text, scored against the crate it now sits in.
+# The falls are declared by measurement in the same commit — busbar-substrate api 134 -> 127,
+# control 352 -> 217, dialect 90 -> 62, legacy 298 -> 266, plane 770 -> 756, secret 35 -> 13,
+# store 5 -> 3, transport 1140 -> 1099 — and three cells plus three edge classes go to ZERO and are
+# STRUCK (busbar-substrate × auth / × hooks / × plugin-tooling; substrate -> auth / -> hooks /
+# -> plugin-tooling), so the manoeuvre is net-negative for the ratchet as well as for the crate.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.api.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x api falls 134 -> 127 in this same diff while busbar-substrate-values x api rises 31 -> 40. The hits are the grammar's own `busbar_api::ScopeRef` / `busbar_api::SecretRef` signatures in auth.rs, hooks.rs and pools.rs -- the SAME text, scored against the crate it now sits in. Nothing new is named: the two crates are one kind, the dependency edge busbar-substrate-values -> busbar-api already exists and is unchanged, and busbar-substrate re-exports the whole module so every reader's spelling is byte-identical."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.control.count"
+file = "qa/kind-isolation.toml"
+by = 132
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x control falls 352 -> 217 in this same diff while busbar-substrate-values x control rises 121 -> 253. The weight is config/auth.rs (107) -- the identity-provider / admin-auth chain grammar, whose field and variant names are the control vocabulary an operator writes -- with config/sections.rs (14), config/hooks.rs (12) and config/groups.rs (2) behind it. The SAME text, scored against the crate it now sits in; no new coupling and no new edge."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 28
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x dialect falls 90 -> 62 in this same diff while busbar-substrate-values x dialect rises 252 -> 280. The hits are config/providers.rs (18) and its siblings: the per-provider block names the vendor dialects an operator may configure, which is what that file is FOR. The SAME text, scored against the crate it now sits in."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 30
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x legacy falls 298 -> 266 in this same diff while busbar-substrate-values x legacy rises 134 -> 164. The weight is config/limits.rs (13) and the prose in the other six files that names busbar_core's historical re-export paths -- the SAME sentences, scored against the crate they now sit in. The root's own reach into the retiring crates is unmoved: legacy-reach stays at 91 total and 48 for busbar_substrate, because busbar-substrate re-exports the module at its historical path."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x plane falls 770 -> 756 in this same diff while busbar-substrate-values x plane rises 162 -> 176. The hits are the per-plane sections a config document declares (sections.rs, limits.rs, groups.rs) naming the plane vocabulary they are the grammar for. The SAME text, scored against the crate it now sits in."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.secret.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x secret falls 35 -> 13 in this same diff while busbar-substrate-values x secret rises 5 -> 27. The hits are config/auth.rs (10), config/sections.rs (8), config/providers.rs (3) and config/limits.rs (1): every `{ env: ... }` / SecretRef-shaped field an operator may write, which is the grammar's whole reason for naming the secret vocabulary. The SAME text, scored against the crate it now sits in."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.transport.count"
+file = "qa/kind-isolation.toml"
+by = 39
+because = """A MOVE BY IDENTITY, re-pinned on both sides in the commit that makes it. The config value grammar leaves crates/busbar-substrate/src/config/ and arrives at crates/busbar-substrate-values/src/config/ unchanged, so busbar-substrate x transport falls 1140 -> 1099 in this same diff while busbar-substrate-values x transport rises 367 -> 406. The hits are the endpoint/listener/timeout shapes in sections.rs, limits.rs and providers.rs naming the transport vocabulary an operator configures. The SAME text, scored against the crate it now sits in."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = """THE COST OF THE MOVE, STATED. busbar-substrate x substrate rises 26 -> 34 because busbar-substrate now NAMES the crate it handed the grammar to: the re-export module in lib.rs that puts every moved item back at `busbar_substrate::config::` (seven module re-exports plus the one `limits` item that could not travel -- LIMITS_TEST_LOCK is a tokio mutex and the values crate forbids tokio by manifest rule), and `pub use busbar_substrate_values::failover::{...}` in failover.rs. Eight lines, and they are the price of the module leaving: without them the historical spelling would break for every reader and the move would be a rename instead of a move. The crate's every OTHER cell falls in this same commit (api 134 -> 127, control 352 -> 217, dialect 90 -> 62, legacy 298 -> 266, plane 770 -> 756, secret 35 -> 13, store 5 -> 3, transport 1140 -> 1099) and three of its cells plus three edge classes go to zero and are struck, so the crate is 3,547 production lines and 690 matrix hits lighter for these four."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """A MOVE BY IDENTITY, the reader's end of it. busbar-core x substrate rises 1 -> 4 because ONE busbar-core test pins a doc comment by READING THE FILE IT LIVES IN -- the `phase:` field doc on HookCfg, which no runtime assertion can reach -- and that file moved from crates/busbar-substrate/src/config/hooks.rs to crates/busbar-substrate-values/src/config/hooks.rs in this same commit. The three hits are the path in the `concat!` and the two sentences of the comment above it that say where the doc now lives and why. No type, no item and no dependency edge changes: busbar-core names the grammar through `busbar_substrate::config::`, exactly as it did, and the re-export makes that spelling byte-identical. A test that pins a doc comment has to name the file the doc is in; that is the whole mechanism."""

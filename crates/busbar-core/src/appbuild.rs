@@ -1099,7 +1099,7 @@ pub fn build_app_from_config(
         let mcp_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
         let a2a_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> = if g.module
-            == crate::config::GOVERNANCE_STORE_MEMORY
+            == crate::config::GOVERNANCE_MEMORY_STORE
         {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
@@ -1189,7 +1189,7 @@ pub fn build_app_from_config(
                 // `all_keys()` failure is non-fatal — treat as 0 keys (the enforcement gate is
                 // unaffected; we only lose the advisory). Inertness is now recomputed from CHAIN
                 // SHAPE (is `keys` in the running chain?), not the admin token.
-                let store_is_durable = g.module != crate::config::GOVERNANCE_STORE_MEMORY;
+                let store_is_durable = g.module != crate::config::GOVERNANCE_MEMORY_STORE;
                 let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
                 let keys_in_chain = auth_mw.keys_in_chain;
                 if let Some(banner) =

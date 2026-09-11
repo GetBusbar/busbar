@@ -2631,7 +2631,7 @@ advanced:
         DEFAULT_USAGE_FLUSH_INTERVAL_MS
     );
     // StoreCfg's own module default is the compiled-in memory store.
-    assert_eq!(StoreCfg::default().module, GOVERNANCE_STORE_MEMORY);
+    assert_eq!(StoreCfg::default().module, GOVERNANCE_MEMORY_STORE);
 }
 
 // ── resolve(): hook-registry synthesis + admin_auth projection ───────────────────────────────────
@@ -3382,15 +3382,16 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
 /// The pre-fix file contains the contradicting sentence this test rejects.
 #[test]
 fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
-    // `HookCfg` (and its `phase:` field doc this test pins) moved to
-    // `busbar_substrate::config::hooks` — busbar-core re-exports it at the historical
-    // `config::HookCfg` path, but the doc comment this test greps for now lives in the substrate
-    // source file, not here.
+    // `HookCfg` (and its `phase:` field doc this test pins) moved out of busbar-core in the
+    // config-seam migration and now sits in the PURE half of the substrate,
+    // `busbar_substrate_values::config::hooks`. busbar-core still re-exports it at the historical
+    // `config::HookCfg` path (through `busbar_substrate::config::hooks`, which re-exports it in
+    // turn), but the doc comment this test greps for lives in the values crate's source file.
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-substrate/src/config/hooks.rs"
+        "/../busbar-substrate-values/src/config/hooks.rs"
     ))
-    .expect("busbar-substrate's config/hooks.rs is readable");
+    .expect("busbar-substrate-values' config/hooks.rs is readable");
     assert!(
         !src.contains("falls back to `at` (or `request` when that is also"),
         "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \

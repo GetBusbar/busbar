@@ -27,6 +27,18 @@
 // `busbar_substrate::diag_warn!` resolve exactly as before.
 pub mod diagnostics;
 
+// THE CONFIG VALUE GRAMMAR the node deserializes: the `auth`/`groups`/`hooks`/`limits`/`pools`/
+// `providers`/`sections` shapes and the two LLM-runtime selectors (`PolicyOnError`/`ProviderAuth`).
+// Pure serde over `busbar-api`/`busbar-plugin` leaves -- it opens nothing -- which is why it is on
+// this side of the split rather than beside the egress engine. `busbar-substrate` re-exports the
+// whole module, so `busbar_substrate::config::...` resolves unchanged.
+pub mod config;
+
+// THE FAILOVER VALUES THE CONFIG GRAMMAR NAMES: the budget defaults/bounds and the repeat-safety
+// property. The walk itself stays in `busbar-substrate` (it reaches the audit vocabulary and the
+// store) and re-exports these four at their historical path.
+pub mod failover;
+
 // The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
 // seam, the base64/media-type helper, the AWS EventStream framing codec, the source-scoped
 // lossless-extras namespace, and the hand-rolled SigV4 signer.

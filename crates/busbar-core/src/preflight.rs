@@ -71,8 +71,8 @@ pub fn plugins_preflight(
 ) -> Result<busbar_plugin_loader::PluginRegistry, String> {
     let store_ref = store_cfg
         .map(|g| g.module.as_str())
-        .unwrap_or(config::GOVERNANCE_STORE_MEMORY);
-    let store_is_plugin = store_ref != config::GOVERNANCE_STORE_MEMORY;
+        .unwrap_or(config::GOVERNANCE_MEMORY_STORE);
+    let store_is_plugin = store_ref != config::GOVERNANCE_MEMORY_STORE;
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth

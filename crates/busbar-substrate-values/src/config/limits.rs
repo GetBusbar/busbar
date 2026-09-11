@@ -562,24 +562,12 @@ static INSTALLED: std::sync::RwLock<Option<LimitsResolved>> = std::sync::RwLock:
 pub fn installed() -> Option<LimitsResolved> {
     INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
-
-/// TEST-ONLY. Serializes every test in a binary that MUTATES the process-global slot above
-/// (busbar-core's own `InstallGuard` tests and its TLS body-bound tests, and a plane crate's
-/// ingress body-cap tests, which install a non-default `LimitsResolved` to make themselves fast).
-/// Cargo runs those tests concurrently in ONE process, and an install is a whole-struct swap behind
-/// a shared lock, so without this a sibling test's install lands mid-assertion in another and both
-/// are flaky in a way that depends on machine core count. Lives beside the static rather than in
-/// any one test module because the hazard is the static, not the file — and now beside it across
-/// crates, so a plane's installs and the engine's serialize against EACH OTHER rather than only
-/// among themselves.
-///
-/// A `tokio::sync::Mutex`, not a `std` one, for two reasons: the TLS holders await socket I/O for
-/// their entire critical section (holding a `std` guard across an await is clippy's
-/// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
-/// cascade into every other test that wants the lock. Synchronous tests take it with
-/// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
-#[cfg(any(test, feature = "test-support"))]
-pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// THE PROCESS-WIDE INSTALL LOCK IS NOT HERE. It is a `tokio::sync::Mutex` — its holders await
+// socket I/O for their whole critical section, so a `std` guard would be clippy's
+// `await_holding_lock` under `-D warnings` — and this crate's manifest forbids `tokio` by rule,
+// because a plane's whole transitive closure is scanned and one workspace `cargo metadata` unifies
+// features. So `LIMITS_TEST_LOCK` lives in `busbar-substrate`, at the same
+// `busbar_substrate::config::limits::` path it has always had.
 
 /// Install (or RE-install) the resolved limits process-wide, unconditionally and with no rollback.
 ///
