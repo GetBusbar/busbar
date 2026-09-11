@@ -157,7 +157,7 @@ step_markers! {
 // stays with the kernel.
 pub use busbar_contract::{
     ArrivalRecord, AuditFacts, Challenge, Frame, LaneId, MeterClassId, OpClassId, PrincipalId,
-    RoutePlan, ScopeFacts, UnitKey,
+    RoutePlan, ScopeFacts, TierId, UnitKey,
 };
 
 /// What passing the authenticate step carries forward.
@@ -171,8 +171,24 @@ pub use busbar_contract::{
 /// when the proof arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Authenticated {
-    /// Established: this is who is calling.
-    Principal(PrincipalId),
+    /// Established: this is who is calling, and which tier they are on.
+    Principal {
+        /// The stable identity handle every surface attributes to.
+        id: PrincipalId,
+        /// THE TIER THE CALLER IS ON, as the key that authenticated them is configured.
+        ///
+        /// Sealed HERE and nowhere else, because a tier is a fact about who is calling and this is
+        /// the step that decides that. Every later step reads this one value off the unit's record:
+        /// a step that resolved it again would be doing a second lookup of the same binding on a
+        /// different code path, and two lookups of one binding is how a unit is admitted against
+        /// one group and billed against another.
+        ///
+        /// `None` is a caller on no tier — the anonymous principal, a module that asserts none, and
+        /// every key in a deployment that configures none. It is not a default tier and it is not
+        /// an error: it prices at the next scope out, which is exactly what the whole tree did
+        /// before this field existed.
+        tier: Option<TierId>,
+    },
     /// Not yet: deliver this and ask again.
     Challenge(Challenge),
 }
@@ -182,7 +198,16 @@ impl Authenticated {
     #[must_use]
     pub fn principal(&self) -> Option<&PrincipalId> {
         match self {
-            Self::Principal(p) => Some(p),
+            Self::Principal { id, .. } => Some(id),
+            Self::Challenge(_) => None,
+        }
+    }
+
+    /// The tier the step sealed, where it settled on a principal that is on one.
+    #[must_use]
+    pub fn tier(&self) -> Option<&TierId> {
+        match self {
+            Self::Principal { tier, .. } => tier.as_ref(),
             Self::Challenge(_) => None,
         }
     }

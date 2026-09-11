@@ -36,7 +36,7 @@ fn the_keys_arm_names_the_resolved_key_and_the_live_read_names_it_too() {
         .into_result(&seal)
         .expect("the plane's authenticate step never refuses");
 
-    let Authenticated::Principal(p) = stepped else {
+    let Authenticated::Principal { id: p, .. } = stepped else {
         panic!("this plane opens no handshake unit, so the challenge arm is unreachable")
     };
     assert_eq!(p.as_str(), live);
@@ -55,7 +55,7 @@ fn the_open_arm_names_the_same_anonymous_actor_the_live_attribution_names() {
         .into_result(&seal)
         .expect("the plane's authenticate step never refuses");
 
-    let Authenticated::Principal(p) = stepped else {
+    let Authenticated::Principal { id: p, .. } = stepped else {
         panic!("this plane opens no handshake unit, so the challenge arm is unreachable")
     };
     assert_eq!(p.as_str(), live);

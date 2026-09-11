@@ -86,7 +86,7 @@ pub use hold::{
 pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
     Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,
-    RoutePlan, ScopeFacts, Step, StepName, UnitKey, Verify,
+    RoutePlan, ScopeFacts, Step, StepName, TierId, UnitKey, Verify,
 };
 pub use token::{
     AdminToken, AdmitToken, DurabilityToken, EgressAuthToken, ExitToken, KernelSeal, LedgerToken,

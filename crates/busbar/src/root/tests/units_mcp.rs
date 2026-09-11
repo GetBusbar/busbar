@@ -357,6 +357,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             (credential == "tok" && expected_aud == Some("mcp")).then(|| KeyFacts {
                 id: "key-mcp-1".to_string(),
                 name: "an approved key".to_string(),
+                tier: None,
             })
         }
 
@@ -386,7 +387,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
     let decision = authenticate_bound(&auth, &arriving, &bindings, &UnitToken::mint(&seal));
 
     match decision.into_result(&seal) {
-        Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-mcp-1"),
+        Ok(Authenticated::Principal { id, .. }) => assert_eq!(id.as_str(), "key-mcp-1"),
         other => panic!("the bound seams did not reach the arm: {other:?}"),
     }
 }

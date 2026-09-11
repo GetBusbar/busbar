@@ -223,38 +223,52 @@ busbar-voice = ["busbar-voice-codec"]
 # across a step boundary is a row that has stopped describing the loop.
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 from = 5595
-to = 5631
-because = """CHAIN FORM: 5595 is P3's tip, not this branch's base — a stacked line declares its own delta and the rows beneath it declared theirs. +36, all of it one shape: the kernel's settlement evidence stops carrying ONE quantity against ONE class and carries what a unit spent PER DIMENSION THE PLANE DECLARED. A dimension is not a kernel word — `MeterClassDecl` is plane data and the declarations are not one line each, four on the model plane, seven-plus on the streaming plane, two on the tool plane, one on the agent plane, none on the control plane — so a kernel that settled one number was a kernel deciding what a plane declares, and it is the join that threw three of the model plane's four numbers away before anything could price them. `settle_amount` becomes `settle_lines` and answers with one line per key; the seven rows are neither reordered nor rewritten, and the two that post what a DESTINATION reported now post all of it. +34 in `teller.rs` and +2 in `recovery.rs`, which is the same shape seen twice; `record.rs` does NOT move, because the completion was already on it — P4 put it there and nothing until now could read more than one number of it."""
+to = 5644
+because = """CHAIN FORM: 5595 is P3's tip, not this branch's base — a stacked line declares its own delta and the rows beneath it declared theirs. +36, all of it one shape: the kernel's settlement evidence stops carrying ONE quantity against ONE class and carries what a unit spent PER DIMENSION THE PLANE DECLARED. A dimension is not a kernel word — `MeterClassDecl` is plane data and the declarations are not one line each, four on the model plane, seven-plus on the streaming plane, two on the tool plane, one on the agent plane, none on the control plane — so a kernel that settled one number was a kernel deciding what a plane declares, and it is the join that threw three of the model plane's four numbers away before anything could price them. `settle_amount` becomes `settle_lines` and answers with one line per key; the seven rows are neither reordered nor rewritten, and the two that post what a DESTINATION reported now post all of it. +34 in `teller.rs` and +2 in `recovery.rs`, which is the same shape seen twice; `record.rs` does NOT move, because the completion was already on it — P4 put it there and nothing until now could read more than one number of it.
+
+CHAIN FORM AGAIN, off P5's tip 5631: +13 for the TIER. The kernel's per-unit record gains one write-once cell and one accessor, and the loop seals the cell from the authenticate step's own answer at the instant that step settles an identity. It is 13 lines and not one because the seal has to say WHY it is the loop's and not a leg's: the tariff scopes tier over pool over plane over default and the tier is the PRINCIPAL'S — a key's configured group — so it is established where the principal is and read everywhere the money is decided, and five legs each resolving a caller's group for themselves is five chances for one unit to be admitted against one group and billed against another. The kernel does not price it, names no tariff and cannot read what it is worth; it carries it, which is the whole of its part. +4 in `teller.rs` and +9 in `record.rs`."""
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.record.ceiling"]
 from = 157
-to = 170
-because = """CHAIN FORM off P4's tip 157. The same 13 lines seen per file: the head's cell, its accessor and its prose, beside the two facts Verify seals and the routed body's hold that are already there. It is the record and not the fee leg because a head is something a unit HAS rather than something a plane can be asked for twice — a second reading of one answer is how a unit ends up with two heads and the fee decision reads whichever ran last — so it is write-once and it answers whether the caller is the one that wrote it."""
+to = 179
+because = """CHAIN FORM off P4's tip 157. The same 13 lines seen per file: the head's cell, its accessor and its prose, beside the two facts Verify seals and the routed body's hold that are already there. It is the record and not the fee leg because a head is something a unit HAS rather than something a plane can be asked for twice — a second reading of one answer is how a unit ends up with two heads and the fee decision reads whichever ran last — so it is write-once and it answers whether the caller is the one that wrote it.
+
+CHAIN FORM AGAIN, off P5's tip 170: +9. The tier the caller is on, as a write-once cell beside the two facts Verify seals and the answer's head: `seal_tier` under the same trust token (a tier a later step could write would be a tier the fee site reads whichever of two writers ran last) and `tier()`, which every step from Verify onward reads and no step may answer for itself. `Option<TierId>` inside the cell and not `TierId`, because a caller on NO tier is a real answer and not a missing one — the anonymous principal, a module that asserts no group, and every key in a deployment that configures none — and sealing it is what makes "nobody wrote a tier" and "the tier is nothing" one reading."""
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 from = 607
-to = 643
-because = """+36. The settlement table answers with LINES, one per dimension the plane declared, and `Evidence` carries the completion the record has held since P4 instead of one located quantity against one class. The rows are re-stated, not rewritten: the same seven, in the same order, with the two that post a reported figure posting all of it. What the 36 buys is three small functions the table is now readable as — the kernel's own floor as one line against the class its floor is counted in, the destination's report as one line per declared key, and the sum the ledger settles one amount from — plus the prose that says why a table returning a total would be a table that had already decided a four-dimension plane is worth one number. The field rename that comes with it is the other half of the finding: `class` was documented as "which class the settled amount is reported against", which is what made one class look like enough for everybody, and it is now `accrued_class` and names only what the kernel's own FLOOR is counted in."""
+to = 647
+because = """+36. The settlement table answers with LINES, one per dimension the plane declared, and `Evidence` carries the completion the record has held since P4 instead of one located quantity against one class. The rows are re-stated, not rewritten: the same seven, in the same order, with the two that post a reported figure posting all of it. What the 36 buys is three small functions the table is now readable as — the kernel's own floor as one line against the class its floor is counted in, the destination's report as one line per declared key, and the sum the ledger settles one amount from — plus the prose that says why a table returning a total would be a table that had already decided a four-dimension plane is worth one number. The field rename that comes with it is the other half of the finding: `class` was documented as "which class the settled amount is reported against", which is what made one class look like enough for everybody, and it is now `accrued_class` and names only what the kernel's own FLOOR is counted in.
+
+CHAIN FORM AGAIN, off P5's tip 643: +4. The Authenticate arm destructures the step's answer into the identity and the tier and seals the second onto the unit before Verify runs, so there is exactly ONE value every later step reads. One line of code and three of the reason it is here rather than in a leg."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3541
-to = 3550
-because = """CHAIN FORM off P4's tip 3541. +9, all in `busbar-contract`: `StatusLeg`, the response head as ONE value — where the transport reports its class, what it reported there, what the plane made of the ending, whether the answer reached the client, whether it came off a degraded path, and the upstream's own refusal where one was relayed as-is. `busbar-caps` does not move. It is the contract and not caps because every field of it is already contract vocabulary (`StatusAt`, `StatusClass`, `FinishClass`, `WireStatus`) and because a PLANE fills it: the two planes whose answer document IS their response say so by answering `None` for the transport leg, which is the same thing their legs used to say as a hand-written literal. It carries no amount and names no price, so `plane-no-money` stays green by construction."""
+to = 3577
+because = """CHAIN FORM off P4's tip 3541. +9, all in `busbar-contract`: `StatusLeg`, the response head as ONE value — where the transport reports its class, what it reported there, what the plane made of the ending, whether the answer reached the client, whether it came off a degraded path, and the upstream's own refusal where one was relayed as-is. `busbar-caps` does not move. It is the contract and not caps because every field of it is already contract vocabulary (`StatusAt`, `StatusClass`, `FinishClass`, `WireStatus`) and because a PLANE fills it: the two planes whose answer document IS their response say so by answering `None` for the transport leg, which is the same thing their legs used to say as a hand-written literal. It carries no amount and names no price, so `plane-no-money` stays green by construction.
+
+CHAIN FORM AGAIN, off P5's tip 3550: +27, and all of it is the tier. `busbar-contract` gains `TierId` — which tier a principal is on, a `String` newtype beside `PrincipalId` for the same reason `PrincipalId` is one: a tier's name comes from a deployment's own configuration and is minted at boot, so the `declare_id!` `&'static str` shape cannot hold it. `busbar-caps` gains the shape of the answer the Authenticate step hands forward: `Authenticated::Principal` stops being a bare id and becomes `{ id, tier }`, with an accessor for each. It is the caps vocabulary and not a unit's because the only value that step handed forward was the id, so a tier a leg carried alongside would be a second channel out of one step and the kernel could not seal it. It carries no amount and names no price: a tier is who is calling, and what a tier COSTS is the tariff's, four steps later, at the one site that prices."""
 
 [gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
 from = 14624
-to = 14776
-because = """+152, all in `busbar-unit-egress`, and all of it one change: the walk hands the RELAY back instead of running it. `deliver` used to loop on the answer's frames inside the attempt, so the walk could not return until the last frame had gone past — which made the kernel's hold over the routed body a hold over a body that was already drained, and is the gap P4 handed back as owed with the reason attached (the pump has no home here, because this crate has no runtime and must not grow one). It still has none: `BodyPump` is an ordinary future over the same ports the walk itself awaits, a clock that is a port and a stream the transport handed over, and the ROOT drives it on the runtime the frames are already arriving on. The 152 are that value and its drain, the `Routed` the walk now answers with, the `Relayed` the drain produces — how many frames went past, what the PLANE made of the ending, and what the answer carried per declared dimension, three readings of one instant kept together because they are one instant — and the prose for each. `Delivered` gets SMALLER: three fields that were hollow for the length of an upstream call come off it and become one option, because a caller that reads a frame count of zero off an answer whose body has not started arriving has read a lie and there is no spelling of zero that says "not yet"."""
+to = 14787
+because = """+152, all in `busbar-unit-egress`, and all of it one change: the walk hands the RELAY back instead of running it. `deliver` used to loop on the answer's frames inside the attempt, so the walk could not return until the last frame had gone past — which made the kernel's hold over the routed body a hold over a body that was already drained, and is the gap P4 handed back as owed with the reason attached (the pump has no home here, because this crate has no runtime and must not grow one). It still has none: `BodyPump` is an ordinary future over the same ports the walk itself awaits, a clock that is a port and a stream the transport handed over, and the ROOT drives it on the runtime the frames are already arriving on. The 152 are that value and its drain, the `Routed` the walk now answers with, the `Relayed` the drain produces — how many frames went past, what the PLANE made of the ending, and what the answer carried per declared dimension, three readings of one instant kept together because they are one instant — and the prose for each. `Delivered` gets SMALLER: three fields that were hollow for the length of an upstream call come off it and become one option, because a caller that reads a frame count of zero off an answer whose body has not started arriving has read a lie and there is no spelling of zero that says "not yet".
+
+CHAIN FORM AGAIN, off P5's tip 14776: +11, all in `busbar-unit-auth`. `ResolvedKey` and `Principal` each gain the key's configured group, and the unit's own answer fills the caps field from it. The unit CARRIES the tier and never reads it: it does not know what a tier costs and must not. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23769
-to = 23957
-because = """CHAIN FORM off P3's tip 23769. +188 = the kernel's 36 and the unit crates' 152; `caps_contract` does not move, because this landing reads faces P3 and P4 already landed and reading one costs it nothing. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
+to = 24008
+because = """CHAIN FORM off P3's tip 23769. +188 = the kernel's 36 and the unit crates' 152; `caps_contract` does not move, because this landing reads faces P3 and P4 already landed and reading one costs it nothing. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`.
+
+CHAIN FORM AGAIN, off P5's tip 23957: +51 = the kernel's 13, caps/contract's 27 and the unit crates' 11. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3539
-to = 3548
-because = """CHAIN FORM off P4's tip 3539. The plugin-visible surface of the pair, measured by `scripts/loc-surface.py` at this tip: `busbar-caps` 1212 unchanged, `busbar-contract` 2327 -> 2336. The 9 lines are `StatusLeg` — the response head, as data a plane fills and the kernel reads. This is inside section 1.1's 3.6k, which P4 amended and which does not move again here; what section 1.1 DOES gain in this same commit is the head, named beside the body in the Teller loop's parenthetical, because the per-unit record now carries both."""
+to = 3575
+because = """CHAIN FORM off P4's tip 3539. The plugin-visible surface of the pair, measured by `scripts/loc-surface.py` at this tip: `busbar-caps` 1212 unchanged, `busbar-contract` 2327 -> 2336. The 9 lines are `StatusLeg` — the response head, as data a plane fills and the kernel reads. This is inside section 1.1's 3.6k, which P4 amended and which does not move again here; what section 1.1 DOES gain in this same commit is the head, named beside the body in the Teller loop's parenthetical, because the per-unit record now carries both.
+
+CHAIN FORM AGAIN, off P5's tip 3548. The plugin-visible surface of the pair at this tip, measured by `scripts/loc-surface.py`: +27 for `TierId` in the contract and the `{ id, tier }` shape of `Authenticated::Principal` in caps. This is inside section 1.1's 3.6k, which is amended in this same commit: the Teller loop's parenthetical now names the tier beside the body and the head, because the per-unit record carries all three."""
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.recovery.ceiling"]
 from = 177
@@ -273,11 +287,19 @@ from = 51
 to = 52
 because = """`busbar-unit-egress` x `unit`, +1. The walk answers with `Routed` — the answer's head and the relay it left behind it — and the unit's own crate name appears once more where that type is re-exported for the root to name."""
 
+[gate.ceiling_raises."cell.276.count"]
+file = "qa/kind-isolation.toml"
+from = 6
+to = 10
+because = """`busbar-unit-auth` x `caps`, +4, and it is the first time this crate has named more of the capability vocabulary than the four types its one step's signature is written in. The authenticate step's answer stops being a bare principal id and becomes the identity AND the tier the caller is on, so the unit names `TierId` once where it fills that field off the key's own binding, and three times in the cell that states what a key in a group resolves to. The unit still reads nothing it carries: it does not know what a tier costs, holds no card and names no tariff. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path — and two lookups of one binding is how a unit is admitted against one group and billed against another."""
+
 [gate.ceiling_raises."cell.83.count"]
 file = "qa/kind-isolation.toml"
 from = 67
-to = 72
-because = """CHAIN FORM off P3's tip 67. `busbar-kernel` x `caps`, +5, all in the cells. The settlement evidence carries what a unit spent per dimension the plane declared, so the cell that states it names this kind's `Completion` and `CompletedUnits` — one import line — and three rows in the existing batteries that used to set one located quantity build one dimension instead. The library does not move: `teller.rs` names the same import list it already had, one name wider."""
+to = 75
+because = """CHAIN FORM off P3's tip 67. `busbar-kernel` x `caps`, +5, all in the cells. The settlement evidence carries what a unit spent per dimension the plane declared, so the cell that states it names this kind's `Completion` and `CompletedUnits` — one import line — and three rows in the existing batteries that used to set one located quantity build one dimension instead. The library does not move: `teller.rs` names the same import list it already had, one name wider.
+
+CHAIN FORM AGAIN, off P5's tip 72: +3. `busbar-kernel` x `caps`, all in the cells and the fixture. The loop seals the TIER the authenticate step settled, so the battery's fixture names this kind's `TierId` where it answers with one and the cell that states the tier reaches every step names it twice more. The library does not move: `record.rs` widens an import list it already had by one name and `teller.rs` widens none."""
 
 [gate.ceiling_raises."cell.288.count"]
 file = "qa/kind-isolation.toml"
@@ -316,7 +338,7 @@ to = 944
 because = """CHAIN FORM off P3's tip 941. `busbar` x `transport`, +3, in the cell that derives the model plane's 103 recorded money cells through the kernel's own fee decision. It builds the head the served leg records from each cell's own recorded status, and the head's FIRST source is the transport's reading of it — so the cell names the transport's status class exactly where the leg it is proving names it."""
 
 [gate.surface_ceilings]
-contract_caps = 3548
+contract_caps = 3575
 grammar = 388
 contract_transport = 845
 
@@ -534,15 +556,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5631
+kernel_ceiling = 5644
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3550
+caps_contract_ceiling = 3577
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14776
+unit_total_ceiling = 14787
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23957
+union_ceiling = 24008
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -551,14 +573,14 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 643
+ceiling = 647
 
 # The loop's memory and the loop's record, pinned on their own row. section 1.1 names them inside the
 # Teller loop's 1.5k; the two are pinned separately here so a line added to either has to say which.
 [rules.loc-ceilings.kernel_files.record]
 label = "per-unit record"
 patterns = ["record.rs"]
-ceiling = 170
+ceiling = 179
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

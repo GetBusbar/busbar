@@ -97,6 +97,13 @@ pub struct TestUnits {
     pub admitted_door: AtomicBool,
     /// Answer the authenticate step with a challenge instead of an identity.
     pub challenge: bool,
+    /// The tier the authenticate step seals on its identity. `None` is a caller on no tier, which
+    /// is every case that predates the seal.
+    pub tier: Option<busbar_caps::TierId>,
+    /// What each step READ off the unit's record when it ran — the step's name and the tier the
+    /// record answered with. One entry per step that looked, so a cell can assert that the answer
+    /// is the same one at every step rather than that it exists at one of them.
+    pub tiers_seen: Mutex<Vec<(StepName, Option<String>)>>,
     /// The lanes the verified set carried when it reached the approve step.
     pub approved_lanes: Mutex<Vec<busbar_caps::LaneId>>,
     /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
@@ -116,6 +123,8 @@ impl Default for TestUnits {
             evidence: Evidence::default(),
             spend: 0,
             challenge: false,
+            tier: None,
+            tiers_seen: Mutex::new(Vec::new()),
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
@@ -170,12 +179,29 @@ impl TestUnits {
     }
 
     /// The destination set as the approve step received it — what the verify step actually sealed.
+    /// What every step that looked read off the unit's record, in the order they ran.
+    pub fn tiers_seen(&self) -> Vec<(StepName, Option<String>)> {
+        self.tiers_seen.lock().unwrap().clone()
+    }
+
     pub fn approved_lanes(&self) -> Vec<busbar_caps::LaneId> {
         self.approved_lanes.lock().unwrap().clone()
     }
 
     fn note(&self, step: StepName) {
         self.calls.lock().unwrap().push(step);
+    }
+
+    /// READ THE TIER OFF THE UNIT, as a leg does, and keep what the record answered.
+    ///
+    /// One expression, called from every step that is lent the record, because the claim the tier
+    /// carries is "every leg reads the SAME field" and a fixture that read it two ways could not
+    /// tell that claim from its opposite.
+    fn saw_tier(&self, step: StepName, ctx: &UnitRecord<'_>) {
+        self.tiers_seen
+            .lock()
+            .unwrap()
+            .push((step, ctx.tier().map(|t| t.as_str().to_string())));
     }
 
     fn refusal(&self, step: StepName) -> Option<Refusal> {
@@ -416,7 +442,10 @@ impl Units for TestUnits {
                 rounds_left: 2,
             })
         } else {
-            busbar_caps::Authenticated::Principal(principal())
+            busbar_caps::Authenticated::Principal {
+                id: principal(),
+                tier: self.tier.clone(),
+            }
         };
         step!(self, token, Authenticate, StepName::Authenticate, facts)
     }
@@ -425,10 +454,11 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Verify>,
         trust: &busbar_caps::TrustToken,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
         self.note(StepName::Verify);
+        self.saw_tier(StepName::Verify, ctx);
         match self.refusal(StepName::Verify) {
             Some(refusal) => Decision::refuse(token, refusal),
             // The trust token the loop lends this step is what seals a destination, so the fixture
@@ -457,6 +487,7 @@ impl Units for TestUnits {
             .lock()
             .unwrap()
             .extend(ctx.verified().iter().map(|d| *d.lane()));
+        self.saw_tier(StepName::Approve, ctx);
         step!(
             self,
             token,
@@ -470,11 +501,12 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
         leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
+        self.saw_tier(StepName::Admit, ctx);
         match self.refusal(StepName::Admit) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => {
@@ -514,10 +546,11 @@ impl Units for TestUnits {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
         self.note(StepName::Route);
+        self.saw_tier(StepName::Route, ctx);
         meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
             Some(refusal) => Decision::refuse(token, refusal),
@@ -529,10 +562,11 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Meter>,
         usage_token: &UsageToken,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         self.note(StepName::Meter);
+        self.saw_tier(StepName::Meter, ctx);
         match self.refusal(StepName::Meter) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => Decision::proceed(token, usage(usage_token, self.spend)),
@@ -542,10 +576,11 @@ impl Units for TestUnits {
     fn audit(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
         self.note(StepName::Audit);
+        self.saw_tier(StepName::Audit, ctx);
         self.admitted_door.store(true, Ordering::Release);
         Decision::proceed(token, audit_facts())
     }

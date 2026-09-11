@@ -1764,7 +1764,7 @@ kind = "caps"
 # — one import line — and the three rows in the existing batteries that used to set one located
 # quantity now build one dimension instead. The library does not move: `teller.rs` names the same
 # import list it already had, one name wider.
-count = "72"
+count = "75"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -2729,7 +2729,11 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-auth"
 kind = "caps"
-count = "6"
+# 6 -> 10: FOUR. The authenticate step hands the loop the tier the caller is on beside the id, so
+# the unit names this kind's `TierId` once where it fills the field and three times in the cell that
+# states which tier a key in a group resolves to. The unit carries the tier and never reads it: what
+# a tier COSTS is the tariff's, and this crate holds no card.
+count = "10"
 
 [[cell]]
 crate = "busbar-unit-auth"

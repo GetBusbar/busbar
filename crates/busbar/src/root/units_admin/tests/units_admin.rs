@@ -824,6 +824,7 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
         (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
             id: "key-admin-1".to_string(),
             name: "the operator credential these cells present".to_string(),
+            tier: None,
         })
     }
 

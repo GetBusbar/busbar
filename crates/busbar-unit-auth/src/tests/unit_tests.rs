@@ -366,6 +366,7 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
             Some(crate::chain::ResolvedKey {
                 id: "vk_live".to_string(),
                 name: "live".to_string(),
+                tier: None,
             })
         }
     }
@@ -402,4 +403,100 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
             .reason(),
         ReasonCode::Unauthenticated
     );
+}
+
+/// **THE TIER IS SEALED BY THE STEP THAT SETTLED THE IDENTITY**, off the key's own binding.
+///
+/// The tariff scopes tier over pool over plane over default, and the tier is the PRINCIPAL'S — a
+/// key's configured group. The only place that is known without looking the binding up a second
+/// time is the step that just looked it up, so this is where it is stated, and what the step hands
+/// forward carries it beside the id rather than instead of it.
+///
+/// Three answers, because three is what a deployment has: a key bound to a group is on that group's
+/// tier; a key bound to none is on no tier at all, which is not a default tier and prices at
+/// whatever the next scope out says; and the open front door, which authenticated nobody, resolved
+/// no key and therefore has no group to read one off.
+///
+/// Mutate `principal_from_key` to drop `key.tier`, or the unit's own fill to seal `None`, and the
+/// first case goes red while the other two stay green — which is what says this cell measures the
+/// tier travelling and not the tier being absent.
+#[test]
+fn the_tier_the_key_is_bound_to_is_what_the_step_hands_forward() {
+    struct Bound(Option<&'static str>);
+    impl crate::chain::KeyVerifier for Bound {
+        fn verify_token(
+            &self,
+            _token: &str,
+            _now: u64,
+            _expected_aud: Option<&str>,
+        ) -> Option<crate::chain::ResolvedKey> {
+            Some(crate::chain::ResolvedKey {
+                id: "vk_tiered".to_string(),
+                name: "a key in a group".to_string(),
+                tier: self.0.map(str::to_string),
+            })
+        }
+    }
+
+    // A key bound to `gold` identifies as itself AND as gold.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let established = auth
+        .resolve(
+            &request(),
+            None,
+            Some(&Bound(Some("gold"))),
+            None,
+            None,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("a resolved key is an identity");
+    assert_eq!(
+        established
+            .principal()
+            .map(busbar_caps::PrincipalId::as_str),
+        Some("vk_tiered")
+    );
+    assert_eq!(
+        established.tier().map(busbar_caps::TierId::as_str),
+        Some("gold"),
+        "the tier the key is bound to is the tier the step seals"
+    );
+
+    // A key bound to no group is on no tier. Absent, not a default.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let untiered = auth
+        .resolve(&request(), None, Some(&Bound(None)), None, None, &token)
+        .into_result(&seal)
+        .expect("a resolved key is an identity");
+    assert_eq!(
+        untiered.principal().map(busbar_caps::PrincipalId::as_str),
+        Some("vk_tiered")
+    );
+    assert_eq!(untiered.tier(), None, "a key in no group is on no tier");
+
+    // The open front door authenticated nobody, so there is no binding to read a group off.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), false));
+    let open = auth
+        .resolve(
+            &AuthRequest {
+                candidate: None,
+                ..request()
+            },
+            None,
+            None,
+            None,
+            None,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the open front door admits");
+    assert_eq!(
+        open.principal().map(busbar_caps::PrincipalId::as_str),
+        Some(ANONYMOUS)
+    );
+    assert_eq!(open.tier(), None, "anonymous traffic is on no tier");
 }

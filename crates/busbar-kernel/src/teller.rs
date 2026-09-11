@@ -843,11 +843,21 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // on to verify.
         .and_then(|authenticated| match authenticated {
             Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
-            Authenticated::Principal(principal) => {
+            Authenticated::Principal {
+                id: principal,
+                tier,
+            } => {
                 // The trust token is minted ONCE and outlives the call it was lent to, by exactly
                 // one line: the step seals its destinations with it, and the next line seals THOSE
                 // destinations onto the unit under the same token. Nothing else holds it.
                 let trust = TrustToken::mint(seal);
+                // THE TIER, ONTO THE UNIT, BEFORE ANYTHING ELSE RUNS. The authenticate step settled
+                // who is calling, and which tier they are on is the second half of that one answer;
+                // sealing it here is what makes it ONE value that every later step — Verify,
+                // Approve, Admit, Route, Meter, Audit — reads rather than five legs each resolving
+                // it again. The kernel does not read it, cannot price it, and names no tariff: it
+                // carries it, which is the whole of its part.
+                record.seal_tier(&trust, tier);
                 units
                     .verify(&UnitToken::<Verify>::mint(seal), &trust, record, &principal)
                     .into_result(seal)

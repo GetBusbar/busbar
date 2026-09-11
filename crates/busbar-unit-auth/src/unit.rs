@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
+use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, TierId, UnitToken};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
@@ -129,14 +129,25 @@ impl Auth {
             } if Principal::id_is_reserved(&principal.id) => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            ChainVerdict::Identified { principal, .. } => {
-                Decision::proceed(token, Authenticated::Principal((&principal).into()))
-            }
+            ChainVerdict::Identified { principal, .. } => Decision::proceed(
+                token,
+                Authenticated::Principal {
+                    id: (&principal).into(),
+                    tier: principal.tier.as_deref().map(TierId::new),
+                },
+            ),
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
+            // The open front door admits with the anonymous principal: no bucket, and NO TIER.
+            // A door that authenticated nobody has resolved no key and therefore no group, so
+            // there is nothing here a tier could be read off; anonymous traffic prices at whatever
+            // the next scope out says, which is what it did before this field existed.
             ChainVerdict::Open => Decision::proceed(
                 token,
-                Authenticated::Principal((&Principal::anonymous()).into()),
+                Authenticated::Principal {
+                    id: (&Principal::anonymous()).into(),
+                    tier: None,
+                },
             ),
             ChainVerdict::Denied => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))

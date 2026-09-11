@@ -140,6 +140,7 @@ fn test_keys_arm_runs_after_every_module_and_identifies() {
     let verifier = OneKey {
         token: "vk-token",
         aud: None,
+        tier: None,
     };
     let c = chain(
         vec![entry(
@@ -168,6 +169,7 @@ fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let verifier = OneKey {
         token: "vk-token",
         aud: Some("https://mcp.example/"),
+        tier: None,
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
@@ -192,6 +194,7 @@ fn test_governance_rejects_empty_token_even_if_a_verifier_exists() {
     let verifier = OneKey {
         token: "",
         aud: None,
+        tier: None,
     };
     let c = chain(Vec::new(), true);
     assert_eq!(
@@ -216,6 +219,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     let verifier = OneKey {
         token: "vk-token",
         aud: None,
+        tier: None,
     };
     let c = chain(Vec::new(), true);
     for _ in 0..3 {
@@ -241,6 +245,7 @@ fn test_pending_pass_is_committed_when_the_keys_arm_identifies() {
     let verifier = OneKey {
         token: "vk-token",
         aud: None,
+        tier: None,
     };
     let passer = Canned::cacheable("passer", AuthOutcome::Pass);
     let calls = passer.calls.clone();
@@ -363,6 +368,7 @@ impl crate::chain::KeyVerifier for OrderRecordingVerifier {
         Some(ResolvedKey {
             id: "vk_order".to_string(),
             name: "order-pin".to_string(),
+            tier: None,
         })
     }
 }

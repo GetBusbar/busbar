@@ -45,17 +45,28 @@ use std::sync::Arc;
 
 /// The facts the chain reads out of a verified key.
 ///
-/// Two strings, because two strings are what the unit's own `ResolvedKey` carries and what the
-/// principal it builds is made of. The key's policy — its group, its pools, its labels — is the
-/// governance state's business and is deliberately not in this shape: a value carried through here
-/// would be a value the authenticate step could act on, and the authenticate step decides who is
-/// calling and nothing else.
+/// Two strings and a tier, because that is what the unit's own `ResolvedKey` carries and what the
+/// principal it builds is made of. The key's ENFORCEMENT policy — its pools, its limits, its
+/// labels — is still the governance state's business and is deliberately not in this shape: a
+/// value carried through here would be a value the authenticate step could act on, and the
+/// authenticate step decides who is calling and nothing else.
+///
+/// THE GROUP IS NOT AN EXCEPTION TO THAT RULE, it is the rule applied. A key binds to at most one
+/// group and a key with no group is authed and untiered, so the group IS part of who is calling —
+/// it is the same binding row the id came out of, read in the same lookup, and the authenticate
+/// step still acts on none of it. What acts on it is the tariff, four steps later, at the one site
+/// that prices. Resolving it there instead would mean looking the same binding up a second time on
+/// a different code path, and two lookups of one binding is how a unit is admitted against one
+/// group and billed against another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyFacts {
     /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// The key's configured group — the TIER the principal it resolves to is on. `None` for a key
+    /// bound to no group, which is every key in a deployment that configures none.
+    pub tier: Option<String>,
 }
 
 /// The port the root reaches a node's virtual-key directory through.
@@ -112,6 +123,7 @@ impl KeyVerifier for DirectoryArm {
             .map(|facts| ResolvedKey {
                 id: facts.id,
                 name: facts.name,
+                tier: facts.tier,
             })
     }
 }
@@ -221,6 +233,10 @@ impl VirtualKeyDirectory for GovernanceDirectory {
             .map(|key| KeyFacts {
                 id: key.id.clone(),
                 name: key.name.clone(),
+                // THE TIER, off the binding the verifier just resolved. The group is a field of the
+                // key row itself, so this is the same read the id and the label are — not a second
+                // lookup, and not a second opinion about which group a key is in.
+                tier: key.group.clone(),
             })
     }
 

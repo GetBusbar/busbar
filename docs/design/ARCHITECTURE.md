@@ -74,7 +74,11 @@ them). Each axis is blind to the other two; only the kernel composes them.
   true rather than vacuous** — and the ANSWER'S HEAD beside it: the status class the transport
   reported, where it reported it, and what the plane made of the ending, written once by the step
   that saw the answer and read by the fee decision at the exit, which is what makes the kernel's
-  dispute arm reachable at all. The settlement the exit reads that record into answers with one
+  dispute arm reachable at all; and the TIER the caller is on, sealed by the authenticate step off
+  the key's own binding and read-only from Verify onward, because the tariff scopes tier over pool
+  over plane over default and a tier is a fact about who is calling rather than a policy — five legs
+  each resolving a caller's group for themselves is five chances for one unit to be admitted against
+  one group and billed against another. The settlement the exit reads that record into answers with one
   line PER DIMENSION THE PLANE DECLARED and never one quantity against one class: a dimension is
   plane data — the model plane declares four classes, the streaming plane seven, the tool plane
   two, the agent plane one, the control plane none — so a kernel that settled one number was a

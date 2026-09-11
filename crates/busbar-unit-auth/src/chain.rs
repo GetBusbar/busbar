@@ -44,6 +44,13 @@ pub struct ResolvedKey {
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// The key's configured group — the TIER the principal is on, as the tariff scopes on it.
+    ///
+    /// Carried and never read here: this unit does not know what a tier costs and must not. What
+    /// it knows is that a tier is a property of the KEY, so the step that resolved the key is the
+    /// only step that can state it without looking the binding up a second time. `None` is a key
+    /// bound to no group, which is every key in a deployment that configures none.
+    pub tier: Option<String>,
 }
 
 /// The built-in signed-key verifier, as the chain reaches it.
@@ -92,7 +99,12 @@ pub enum ChainVerdict {
         /// Who is calling.
         principal: Principal,
         /// The enforced key, when an engine arm resolved one.
-        resolved: Option<ResolvedKey>,
+        ///
+        /// BOXED, and it is the key's own size that says why: the key carries the subject id, the
+        /// operator's label and the group the binding is in, and this variant already carries a
+        /// whole principal beside it. A three-arm verdict whose other two arms are a bare word does
+        /// not pay for the largest one by value on every return.
+        resolved: Option<Box<ResolvedKey>>,
     },
     /// Admitted anonymously — the open front door.
     Open,
@@ -315,7 +327,7 @@ fn keys_arm_verdict(
         Some(key) => ChainVerdict::Identified {
             module: KEYS_MODULE.to_string(),
             principal: principal_from_key(&key),
-            resolved: Some(key),
+            resolved: Some(Box::new(key)),
         },
         None => ChainVerdict::Denied,
     }
@@ -329,5 +341,6 @@ fn principal_from_key(key: &ResolvedKey) -> Principal {
         name: Some(key.name.clone()),
         roles: Vec::new(),
         ttl_secs: None,
+        tier: key.tier.clone(),
     }
 }

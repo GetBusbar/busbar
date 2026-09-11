@@ -83,6 +83,8 @@ pub(crate) fn entry(provider: &str, module: Box<dyn AuthModule>) -> ChainEntry {
 pub(crate) struct OneKey {
     pub(crate) token: &'static str,
     pub(crate) aud: Option<&'static str>,
+    /// The group the one key is bound to — the tier the principal it resolves to is on.
+    pub(crate) tier: Option<String>,
 }
 
 impl crate::chain::KeyVerifier for OneKey {
@@ -98,6 +100,7 @@ impl crate::chain::KeyVerifier for OneKey {
         Some(ResolvedKey {
             id: "vk_one".to_string(),
             name: "the one key".to_string(),
+            tier: self.tier.clone(),
         })
     }
 }

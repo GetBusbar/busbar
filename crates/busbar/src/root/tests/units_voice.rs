@@ -295,6 +295,7 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                tier: None,
             })
         }
 
@@ -1512,6 +1513,7 @@ fn a_paid_turns_record_names_its_principal() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                tier: None,
             })
         }
 
@@ -2172,6 +2174,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
             (expected_aud == Some(minted_for)).then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                tier: None,
             })
         }
 
@@ -2217,7 +2220,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
     // Minted for this plane: admitted, carrying the key's own id, which is what the audit row
     // and the settlement are attributed to.
     match answer(Some("voice-tok")) {
-        Ok(Authenticated::Principal(who)) => assert_eq!(who.as_str(), "key-voice-1"),
+        Ok(Authenticated::Principal { id: who, .. }) => assert_eq!(who.as_str(), "key-voice-1"),
         other => panic!("a key minted for this plane opens the session: {other:?}"),
     }
 
