@@ -40,6 +40,8 @@
 //! stage that recorded a sample, in loop order, on stderr. The composition root calls it at the end
 //! of a profiling run.
 
+pub use busbar_contract::unit::Step as LoopStep;
+
 use busbar_contract::unit::Step;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -155,7 +157,10 @@ impl Bucket {
             return;
         }
         let j = next_rand() % self.seen;
-        if let Some(slot) = usize::try_from(j).ok().and_then(|j| self.samples.get_mut(j)) {
+        if let Some(slot) = usize::try_from(j)
+            .ok()
+            .and_then(|j| self.samples.get_mut(j))
+        {
             *slot = n;
         }
     }
@@ -282,4 +287,15 @@ pub fn dump() {
             pct(0.99),
         );
     }
+}
+
+/// Time one STEP of the loop over `f`, and hand back what the step answered.
+///
+/// The form the loop taps with: a step is a call, so the timer is a wrapper around the call rather
+/// than a guard somebody has to remember to scope correctly. Costs one relaxed atomic load and an
+/// inlined call when the profiler is off.
+#[inline]
+pub fn on_step<T>(s: Step, f: impl FnOnce() -> T) -> T {
+    let _t = step(s);
+    f()
 }

@@ -65,6 +65,7 @@ use busbar_caps::{
     VerifiedDestination, Verify,
 };
 
+use crate::profile::{self, LoopStep};
 use crate::registry::Generation;
 use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_FLIGHT};
 
@@ -708,28 +709,35 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
-    let opened = units
-        .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
-        .into_result(seal)
-        .and_then(|_| {
+    let opened = profile::on_step(LoopStep::Arrival, || {
+        units
+            .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
+            .into_result(seal)
+    })
+    .and_then(|_| {
+        profile::on_step(LoopStep::Decode, || {
             units
                 .decode(&UnitToken::<Decode>::mint(seal), ctx)
                 .into_result(seal)
         })
-        .and_then(|_| {
-            run.canary.draft_accepted();
+    })
+    .and_then(|_| {
+        run.canary.draft_accepted();
+        profile::on_step(LoopStep::Authenticate, || {
             units
                 .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)
         })
-        // A challenge is not a decision about this unit: it is a request for one more round before
-        // one can be made. The kernel delivers it and asks again, and the round itself is a
-        // handshake unit — it reaches no destination, is scoped against nothing and opens no
-        // reservation, which is exactly the zero-hold admission. Only an established identity walks
-        // on to verify.
-        .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
-            Authenticated::Principal(principal) => units
+    })
+    // A challenge is not a decision about this unit: it is a request for one more round before
+    // one can be made. The kernel delivers it and asks again, and the round itself is a
+    // handshake unit — it reaches no destination, is scoped against nothing and opens no
+    // reservation, which is exactly the zero-hold admission. Only an established identity walks
+    // on to verify.
+    .and_then(|authenticated| match authenticated {
+        Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+        Authenticated::Principal(principal) => profile::on_step(LoopStep::Verify, || {
+            units
                 .verify(
                     &UnitToken::<Verify>::mint(seal),
                     &TrustToken::mint(seal),
@@ -737,49 +745,54 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     &principal,
                 )
                 .into_result(seal)
-                .map(|destinations| (principal, destinations))
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
-                            .approve(
-                                &UnitToken::<Approve>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                            )
-                            .into_result(seal)
-                            .map(|_| (principal, destinations))
-                    },
-                )
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        // The slip the door names its capped groups on, for the length of the one
-                        // call. It lives here rather than on the unit's context because it is not
-                        // something the unit IS: it is what the door said, read once, on the next
-                        // line, by the draw.
-                        let groups = GroupLeaseSlip::new();
-                        let admitted = units
-                            .admit(
-                                &UnitToken::<Admit>::mint(seal),
-                                &AdmitToken::<Admit>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                                &groups,
-                            )
-                            .into_result(seal);
-                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
-                        // said yes, so from here until this unit's end the node is running it, and
-                        // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and a unit that never reached this step, a challenge round, is
-                        // never here to draw one.
-                        if admitted.is_ok() {
-                            draw_lease(ctx, &run, &groups);
-                        }
-                        admitted
-                    },
-                ),
-        });
+        })
+        .map(|destinations| (principal, destinations))
+        .and_then(
+            |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                profile::on_step(LoopStep::Approve, || {
+                    units
+                        .approve(
+                            &UnitToken::<Approve>::mint(seal),
+                            ctx,
+                            &principal,
+                            &destinations,
+                        )
+                        .into_result(seal)
+                })
+                .map(|_| (principal, destinations))
+            },
+        )
+        .and_then(
+            |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                // The slip the door names its capped groups on, for the length of the one
+                // call. It lives here rather than on the unit's context because it is not
+                // something the unit IS: it is what the door said, read once, on the next
+                // line, by the draw.
+                let groups = GroupLeaseSlip::new();
+                let admitted = profile::on_step(LoopStep::Admit, || {
+                    units
+                        .admit(
+                            &UnitToken::<Admit>::mint(seal),
+                            &AdmitToken::<Admit>::mint(seal),
+                            ctx,
+                            &principal,
+                            &destinations,
+                            &groups,
+                        )
+                        .into_result(seal)
+                });
+                // THE LEASE, drawn on the one answer that entitles a unit to it. The door
+                // said yes, so from here until this unit's end the node is running it, and
+                // the lease is what says so. A refusal draws nothing — there is no slot to
+                // count — and a unit that never reached this step, a challenge round, is
+                // never here to draw one.
+                if admitted.is_ok() {
+                    draw_lease(ctx, &run, &groups);
+                }
+                admitted
+            },
+        ),
+    });
 
     match opened {
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
@@ -790,12 +803,16 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = units
-                .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
-                .into_result(seal);
-            let _bytes = units
-                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                .into_result(seal);
+            let _sealed = profile::on_step(LoopStep::Audit, || {
+                units
+                    .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+                    .into_result(seal)
+            });
+            let _bytes = profile::on_step(LoopStep::Encode, || {
+                units
+                    .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                    .into_result(seal)
+            });
             exit(kernel, units, ctx, run, outcome, false)
         }
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
@@ -1010,12 +1027,16 @@ fn terminal<U: Units>(
     settling: Settling,
 ) -> Ended {
     let seal = &kernel.seal;
-    let _sealed = units
-        .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
-        .into_result(seal);
-    let _bytes = units
-        .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-        .into_result(seal);
+    let _sealed = profile::on_step(LoopStep::Audit, || {
+        units
+            .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+            .into_result(seal)
+    });
+    let _bytes = profile::on_step(LoopStep::Encode, || {
+        units
+            .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+            .into_result(seal)
+    });
     match settling {
         Settling::Exit(reached_admitted) => {
             exit(kernel, units, ctx, run, outcome, reached_admitted)
@@ -1070,21 +1091,31 @@ async fn under_hold<U: Units, R: RouteAwait>(
 ) -> Outcome {
     let seal = &kernel.seal;
     let token = UnitToken::<Route>::mint(seal);
-    match route.route_leg(&token, ctx, meter).await.into_result(seal) {
+    // ROUTE spans the whole step; the WAIT spans only the loop's one await, so the two rows read as
+    // "the step cost this much, of which this much was the transport thinking". The wait guard is
+    // dropped first (reverse declaration order), so it is always contained in the route row.
+    let routed = {
+        let _route = profile::step(LoopStep::Route);
+        let leg = route.route_leg(&token, ctx, meter);
+        let _wait = profile::wait();
+        leg.await
+    };
+    match routed.into_result(seal) {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
         }
         Ok(_) => {
             let provisional = Outcome::Completed;
-            match units
-                .meter(
-                    &UnitToken::<Meter>::mint(seal),
-                    &UsageToken::mint(seal),
-                    ctx,
-                    &provisional,
-                )
-                .into_result(seal)
-            {
+            match profile::on_step(LoopStep::Meter, || {
+                units
+                    .meter(
+                        &UnitToken::<Meter>::mint(seal),
+                        &UsageToken::mint(seal),
+                        ctx,
+                        &provisional,
+                    )
+                    .into_result(seal)
+            }) {
                 Ok(_) => Outcome::Completed,
                 Err(refusal) => {
                     Outcome::Failed(refusal.step().unwrap_or(StepName::Meter), refusal.reason())
