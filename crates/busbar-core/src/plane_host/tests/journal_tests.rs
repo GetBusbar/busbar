@@ -181,6 +181,7 @@ fn journal_read_returns_ok_and_writes_bytes() {
 // ── THE DURABLE SEAM — register + append_scoped + verify/read/restore over a real store ────────
 
 use crate::audit::journal::NeutralBody;
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plugin::hot::{JournalStreamDesc, ReframeOut, RestoredHdr, VerifyChainHdr};
 use std::sync::Arc;
 
@@ -263,7 +264,7 @@ extern "C-unwind" fn neutral_reframe(
 /// plane-record verbs generically by `(kind, parent)` — exactly what a durable backend does.
 struct GenericPlaneStore {
     inner: busbar_store_memory::MemoryStore,
-    rows: Mutex<Vec<busbar_api::PlaneRecord>>,
+    rows: Mutex<Vec<PlaneRecord>>,
 }
 
 impl GenericPlaneStore {
@@ -273,29 +274,29 @@ impl GenericPlaneStore {
             rows: Mutex::new(Vec::new()),
         }
     }
-    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_api::PlaneRecord>> {
+    fn rows(&self) -> std::sync::MutexGuard<'_, Vec<PlaneRecord>> {
         self.rows.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
 impl busbar_api::Store for GenericPlaneStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, id: &str) -> StoreResult<Option<busbar_api::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> StoreResult<Vec<busbar_api::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> StoreResult<busbar_api::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
@@ -303,41 +304,41 @@ impl busbar_api::Store for GenericPlaneStore {
         bucket_id: &str,
         window_start: u64,
         ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+    ) -> StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ─────────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.rows().push(record.clone());
         Ok(())
     }
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.rows().push(record.clone());
         Ok(())
     }
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
         Ok(self
             .rows()
             .iter()
             .filter(|r| r.kind == kind)
             .filter(|r| match selector {
-                busbar_api::PlaneSelector::All => true,
-                busbar_api::PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                PlaneSelector::All => true,
+                PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
             })
             .map(|r| r.body.clone())
             .collect())
     }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
         let mut parents: Vec<String> = self
             .rows()
             .iter()
@@ -348,18 +349,18 @@ impl busbar_api::Store for GenericPlaneStore {
         parents.dedup();
         Ok(parents)
     }
-    /// RETENTION, in the shipped backend's own predicate (see `busbar_store_memory`): a row goes
-    /// when it is of this kind and its `ts` is older than the cutoff — except for kind `task`,
-    /// where only a TERMINAL row may go. A durable backend reads the typed sidecar and never
-    /// decodes the body, which is exactly why the envelope's `ts` is the only age these rows have.
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+    /// RETENTION, in the shipped backend's own predicate: a row goes when it is of this kind and
+    /// its `ts` is older than the cutoff — except for kind `task`, where only a TERMINAL row may
+    /// go. A durable backend reads the typed sidecar and never decodes the body, which is exactly
+    /// why the envelope's `ts` is the only age these rows have.
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
         let mut rows = self.rows();
         let was = rows.len();
         rows.retain(|r| {
             if r.kind != kind || r.ts >= before {
                 return true;
             }
-            kind == "task" && r.disposition != busbar_api::PlaneDisposition::Terminal
+            kind == "task" && r.disposition != PlaneDisposition::Terminal
         });
         Ok((was - rows.len()) as u64)
     }
