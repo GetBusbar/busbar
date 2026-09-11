@@ -173,6 +173,14 @@ impl SpentTokenLedger {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
+    /// Whether the durable ledger is attached — the observable this registry's boot step is judged
+    /// by, so a cell can ask "is every core-owned durable registry attached" without reaching the
+    /// private handle.
+    #[cfg(test)]
+    pub(crate) fn is_durable(&self) -> bool {
+        self.sink().is_some()
+    }
+
     fn sink(&self) -> Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>> {
         self.sink
             .lock()

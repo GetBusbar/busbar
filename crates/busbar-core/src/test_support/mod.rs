@@ -1955,14 +1955,13 @@ impl TestApp {
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
-        // Mirror main's durable-MCP-trust boot block: attach the plane sinks BEFORE the app is handed
-        // to a caller. The MCP-specific demotion REPLAY that follows sink-attach in production is
-        // registered by the MCP test-kit as a `post_build` hook (it names `mcp::demotion`), run below.
+        // Mirror main's boot block through the SAME step production runs: the composition root's
+        // `attach_core_durable_sinks` gives every core-owned durable registry the one narrowed store,
+        // BEFORE the app is handed to a caller. Not a second copy of that wiring here — a copy is how
+        // a harness keeps proving a durability property production stopped having.
         if let Some(durable) = mcp_durable_store {
-            // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
-            app.spent_token_ledger.set_sink(plane_store.clone());
-            app.demotion_record.set_sink(plane_store);
+            crate::boot::attach_core_durable_sinks(&app, Some(&plane_store));
         }
         // Run each plane test-kit's POST-BUILD hooks against the finished App (e.g. the MCP plane's
         // durable-demotion replay), the doorway for steps that name plane types without core doing so.

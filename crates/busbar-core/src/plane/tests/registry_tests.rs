@@ -1018,3 +1018,142 @@ fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// THE KIND-NEUTRAL BOOT STEPS. A step is served ONCE, for every plane, keyed by what the plane
+// DECLARED — its section, its key — and never by a plane's NAME. A step spelled after one plane is
+// a step that can serve exactly one plane: the second plane needing it has to grow a twin, and the
+// neutral crate that carries the seam has learned a plugin's name to do it. These two cells drive a
+// SECOND plane through each step, which is the only way to tell a neutral step from a named one.
+// ---------------------------------------------------------------------------------------------
+
+/// **A PLANE'S SLOT COMES FROM ITS OWN DECLARED SECTION, NEVER FROM ITS NAME.**
+///
+/// Two endpoint planes — one busbar ships and one core has never heard of — two declared sections,
+/// two lowered resources, ONE step. Each plane is handed the resource filed under the section IT
+/// declared and not the other's, which is a property a step that reads one named section into one
+/// named field cannot have at all: the shipped plane would be served and the second plane would get
+/// nothing, however correctly it declared itself.
+///
+/// RED, watched: give the step back the shape it replaced — one section read into a `BuildCtx` field
+/// spelled after one plane, cloned by that plane's own `build` — and the second plane's assertion
+/// fails with `a plane declaring `widgets` must be handed the resource filed under `widgets``,
+/// because a named step has no way to serve a plane it was not spelled after.
+#[test]
+fn a_planes_slot_is_keyed_by_its_declared_section_not_by_its_name() {
+    // THE SHIPPED PLANE THAT DECLARES AN ENDPOINT, found by the FACE it declares rather than by
+    // its name — the same question the step under test asks. A cell that reached for one plane by
+    // name to prove a step is not keyed by name would be arguing with itself.
+    let shipped_decl: &'static PlaneDecl = builtin_plane_decls()
+        .iter()
+        .copied()
+        .find(|d| d.lower_endpoint.is_some())
+        .expect("this build ships a plane that lowers an endpoint through its own face");
+    // WHAT the resource is does not matter to the step and must not: the composition root hands
+    // back the ONE opaque `Arc` the plane's own face filed, and only the plane downcasts it. Two
+    // distinguishable markers are exactly enough to say which plane got which.
+    let shipped: std::sync::Arc<dyn Any + Send + Sync> =
+        std::sync::Arc::new("the shipped plane's lowered endpoint".to_string());
+    let unheard_of: std::sync::Arc<dyn Any + Send + Sync> =
+        std::sync::Arc::new("the widget plane's lowered endpoint".to_string());
+    let declared: std::collections::HashMap<&'static str, std::sync::Arc<dyn Any + Send + Sync>> =
+        std::collections::HashMap::from([
+            (shipped_decl.config_section, shipped.clone()),
+            (WIDGET_PLANE.config_section, unheard_of.clone()),
+        ]);
+
+    let unit = ();
+    let ctx = crate::plane::registry::BuildCtx {
+        agent_defs: &unit,
+        public_url: None,
+        prior: None,
+    };
+
+    let slots =
+        crate::plane::registry::build_plane_slots(&[shipped_decl, &WIDGET_PLANE], &ctx, &declared);
+
+    let got = slots
+        .get(shipped_decl.key)
+        .expect("a shipped plane declaring a section with a resource filed under it has a slot");
+    assert!(
+        std::sync::Arc::ptr_eq(got, &shipped),
+        "the shipped plane must be handed the ONE resource filed under the section IT declared — \
+         not a second construction, and not the other plane's"
+    );
+    let got = slots
+        .get(WIDGET_PLANE.key)
+        .expect("a plane declaring `widgets` must be handed the resource filed under `widgets`");
+    assert!(
+        std::sync::Arc::ptr_eq(got, &unheard_of),
+        "a plane core has never heard of must be handed the ONE resource filed under the section IT \
+         declared — the step is keyed by the DECLARATION, so it serves a second plane on the same \
+         terms as the first"
+    );
+
+    // AND NOT BY COINCIDENCE: a plane whose declared section carries no resource, and that declares
+    // no `build` of its own, gets no slot — so the step is reading the declaration rather than
+    // handing every plane whatever it has.
+    let slots = crate::plane::registry::build_plane_slots(
+        &[shipped_decl, &WIDGET_PLANE],
+        &ctx,
+        &std::collections::HashMap::from([(WIDGET_PLANE.config_section, unheard_of)]),
+    );
+    assert!(
+        slots.contains_key(WIDGET_PLANE.key) && !slots.contains_key(shipped_decl.key),
+        "a plane whose declared section carries nothing, and that declares no `build`, has no slot"
+    );
+}
+
+/// **THE CORE-OWNED DURABLE REGISTRIES ARE ATTACHED BY THE ROOT, NOT BY A PLANE.**
+///
+/// The spent-approval ledger and the demotion record are core's own: core reads them, core writes
+/// them, and whether they are durable is a property of the DEPLOYMENT having a durable home, not of
+/// which plugins this build compiled in. So the step that attaches them runs at the composition
+/// root, once, before any hook — and this cell proves the fold is not what did it by running the
+/// hydrate fold over a plane core has never heard of, which declares no hydrate hook at all, and
+/// finding both registries attached either side of it.
+///
+/// RED, watched: put the attachment back inside one plane's hydrate hook behind a boot-seam method
+/// spelled after that plane and this fails on the first assertion — the step's only caller is then
+/// the plane it was named after, so a deployment with a durable home attaches nothing until that
+/// particular plugin is compiled in and configured.
+#[test]
+fn the_core_owned_durable_registries_are_attached_without_any_plane_hook() {
+    let ephemeral = crate::test_support::TestApp::new().build();
+    assert!(
+        !ephemeral.spent_token_ledger.is_durable() && !ephemeral.demotion_record.is_durable(),
+        "fixture control: a deployment with no durable home attaches nothing"
+    );
+    // AND THAT IS A NO-OP, NOT A REFUSAL: with no durable home configured these records are
+    // ephemeral BY DESIGN, exactly as the audit ring is.
+    crate::boot::attach_core_durable_sinks(&ephemeral, None);
+    assert!(
+        !ephemeral.spent_token_ledger.is_durable() && !ephemeral.demotion_record.is_durable(),
+        "no durable home => nothing attached, and nothing refused"
+    );
+
+    let (_home, cfg) = crate::test_support::plugin_store::durable_cfg("core-owned-sinks");
+    let app = crate::test_support::TestApp::new()
+        .mcp_durable_store(crate::test_support::plugin_store::open_plugin(&cfg))
+        .build();
+    assert!(
+        app.spent_token_ledger.is_durable(),
+        "the spent-approval ledger is core-owned: a deployment with a durable home has it attached \
+         by the root's own step, whatever planes this build carries"
+    );
+    assert!(
+        app.demotion_record.is_durable(),
+        "the demotion record is core-owned: a deployment with a durable home has it attached by the \
+         root's own step, whatever planes this build carries"
+    );
+
+    // AND THE PLANE FOLD IS NOT WHAT DID IT, nor does it undo it: fold a plane core has never heard
+    // of, which declares no hydrate hook, and both stay attached.
+    let ctx = crate::plane::registry::BootCtx::stub();
+    crate::boot::run_hydrate_hooks(&[&WIDGET_PLANE], &ctx)
+        .expect("a plane declaring no hydrate hook refuses nothing");
+    assert!(
+        app.spent_token_ledger.is_durable() && app.demotion_record.is_durable(),
+        "the root's step, not a plane's hook, is what attached them"
+    );
+}

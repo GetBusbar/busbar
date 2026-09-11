@@ -1380,35 +1380,18 @@ pub fn build_app_from_config(
     );
 
     // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
-    // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
-    // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
-    // lives ONLY in this map now — the typed `App::mcp` / `App::a2a` fields were deleted in the D4
-    // step — and every reader downcasts the SAME `Arc` out of the slot rather than building a second
-    // one that could disagree. The MCP plane's object is already validated
-    // (`McpResource::from_cfg` ran at `RootCfg` construction), so its `build` fn is a wrap, not a
-    // second parse; the A2A plane's object is lowered here for the first time, exactly where
-    // `A2aPlane::from_config` used to be called directly — it is still lowered ONCE, now through the
-    // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
-    // admission facts and the registry the re-verification job sweeps).
+    // THIS config generation, built ONCE through the one kind-neutral step
+    // (`plane::registry::build_plane_slots`) and type-erased into `Arc<dyn Any + Send + Sync>`.
+    // Built here, ahead of the `App` literal below. Each plane's object lives ONLY in this map, and
+    // every reader downcasts the SAME `Arc` out of the slot rather than building a second one that
+    // could disagree — a plane whose object its own face already validated at config resolution is
+    // handed that one `Arc` by its DECLARED section, and a plane that lowers its object does so
+    // once, in its own `build`.
     let mut plane_slots: std::collections::BTreeMap<
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         let ctx = crate::plane::registry::BuildCtx {
-            // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
-            // plane's `build` fn — so the `BuildCtx` seam carries an opaque slot and names no
-            // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and
-            // `crate::mcp::resource` downcasts back out inside the plane, so the "one lowering, one
-            // Arc" invariant holds — the plane's own module is the only reader, through the slot.
-            // The endpoint resource is ALREADY validated and erased as `Option<Arc<dyn Any>>` by
-            // config resolution, read here through the neutral SECTION-KEYED accessor (the `tools:`
-            // plane owns the endpoint door) — so the slot is a CLONE of that one opaque `Arc`, not a
-            // re-erasure, and names no plane resource type. `None` when the block is absent or the
-            // owning plane is compiled out (resolve produced no resource then).
-            mcp_slot: cfg
-                .endpoint_resources
-                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
-                .cloned(),
             // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
             // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
             agent_defs: cfg.agent_defs.as_any(),
@@ -1419,10 +1402,16 @@ pub fn build_app_from_config(
             // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
             prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
         };
-        crate::plane::registry::plane_decls()
-            .iter()
-            .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
-            .collect()
+        // ONE kind-neutral step, for EVERY plane: a plane's slot is what its own `build` returns, or
+        // — for a plane whose runtime object IS the endpoint resource its own `parse_endpoint` /
+        // `lower_endpoint` face already validated and erased at config resolution — the entry that
+        // face filed under the plane's OWN declared `config_section`. Nothing here names a plane,
+        // and nothing carries one plane's slot in a field spelled after it.
+        crate::plane::registry::build_plane_slots(
+            crate::plane::registry::plane_decls(),
+            &ctx,
+            &cfg.endpoint_resources,
+        )
     };
 
     // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT

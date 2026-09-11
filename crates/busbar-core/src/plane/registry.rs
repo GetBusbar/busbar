@@ -141,20 +141,6 @@ impl PlaneBootCtx for BootCtx {
         self.store.is_some()
     }
 
-    /// ATTACH THE MCP PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
-    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. Named HERE, core
-    /// side, so `crate::mcp::mcp_hydrate` attaches them without its own code naming an `App` field:
-    /// the sink fields (`spent_token_ledger`, `demotion_record`) are core-owned and the store is the
-    /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
-    /// (hydrate phase) and a configured store are present — byte-identical to the old inline
-    /// `app.spent_token_ledger.set_sink(store.clone()); app.demotion_record.set_sink(store)`.
-    fn attach_mcp_durable_sinks(&self) {
-        if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
-            app.spent_token_ledger.set_sink(store.clone());
-            app.demotion_record.set_sink(store.clone());
-        }
-    }
-
     /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
     /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
     /// `crate::mcp::mcp_hydrate` registers the stream without its own code naming
@@ -653,6 +639,48 @@ pub(crate) fn build_dispatch(
         }
     }
     Ok(dispatch)
+}
+
+/// THE PLANE SLOT MAP — every registered plane's app-state runtime object for ONE config
+/// generation, built ONCE by the composition root through ONE kind-neutral step, keyed by the
+/// plane's OWN declaration and NEVER by a plane's name.
+///
+/// A plane's slot has exactly two neutral sources and the order between them is the whole rule:
+///
+/// 1. **The plane's own [`PlaneDecl::build`]**, handed the [`BuildCtx`] — a plane that LOWERS its
+///    runtime object from config sections (the registry-shaped planes) constructs it here.
+/// 2. **The endpoint resource the plane DECLARED**, looked up by that plane's own
+///    [`PlaneDecl::config_section`] in the section-keyed `endpoint_resources` map config resolution
+///    filled through each plane's `parse_endpoint`/`lower_endpoint` face. A plane whose runtime
+///    object IS its validated endpoint resource declares no `build` at all: the root hands it the
+///    ONE opaque `Arc` its own face produced, so the object is neither constructed twice nor
+///    re-erased, and this function names no plane to do it.
+///
+/// This replaces the per-plane field the seam used to carry (one plane's slot, spelled by that
+/// plane's name, threaded through `BuildCtx` for that plane alone). A field named after one plane is
+/// a step that can serve exactly one plane: a second endpoint plane would have had to add a second
+/// field and a second thread of it. Keyed by `config_section` off the declaration, the SAME step
+/// serves every plane that ever declares an endpoint, including one core has never heard of.
+///
+/// Split from `appbuild` and taking its inputs by argument for the reason [`build_dispatch`] and
+/// `crate::boot::run_hydrate_hooks` are: the by-declaration keying is then drivable over INJECTED
+/// decls — two planes, two sections, two resources — without the process plane `OnceLock`.
+pub(crate) fn build_plane_slots(
+    decls: &[&'static PlaneDecl],
+    ctx: &BuildCtx<'_>,
+    endpoint_resources: &std::collections::HashMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+) -> std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    decls
+        .iter()
+        .filter_map(|decl| {
+            (decl.build)(ctx)
+                .or_else(|| endpoint_resources.get(decl.config_section).cloned())
+                .map(|obj| (decl.key, obj))
+        })
+        .collect()
 }
 
 #[cfg(test)]

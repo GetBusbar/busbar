@@ -127,7 +127,6 @@ impl PlaneBootCtx for FakeBootCtx {
     fn restore_call_log(&self) -> Result<RestoredSummary, String> {
         Ok(RestoredSummary::default())
     }
-    fn attach_mcp_durable_sinks(&self) {}
     fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {
         self.store.clone()
     }
@@ -147,7 +146,6 @@ impl PlaneBootCtx for FakeBootCtx {
 fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
     let unit = ();
     let ctx = BuildCtx {
-        mcp_slot: None,
         agent_defs: &unit,
         public_url,
         prior: None,

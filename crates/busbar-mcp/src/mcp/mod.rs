@@ -151,12 +151,13 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
                 .expect("the mcp plane's dispatch slot is an McpResource");
             Some(r.admission())
         },
-        // THE MCP SLOT: the validated resource is already built by config resolution
-        // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
-        // composition root into the neutral `BuildCtx::mcp_slot`, so `build` here is a CLONE of that
-        // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
-        // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
-        build: |ctx| ctx.mcp_slot.clone(),
+        // NO `build` OF ITS OWN. This plane's runtime object IS the endpoint resource its own
+        // `parse_endpoint`/`lower_endpoint` face below already validated and type-erased at config
+        // resolution, filed under this declaration's `config_section`. The composition root's one
+        // kind-neutral slot step hands that ONE opaque `Arc` back by the declared section — not a
+        // second construction and not a re-erasure — so no seam field, and no step, is spelled
+        // after this plane. `None` exactly when the section is absent.
+        build: |_| None,
         // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
         // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
         routes: Some(mcp_routes),
@@ -600,9 +601,9 @@ pub(crate) fn mcp_hydrate(
     // AND across a fleet (two nodes share the signing key, so they share the seal, and without a shared
     // ledger one approval was redeemable once per node — on a money-moving tool that is the defect the
     // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
-    // Attach both write-through sinks through the core-side BootCtx convenience, so this hook names no
-    // `App` sink field: the ledger/record and the store are all core-owned and stay core-side.
-    ctx.attach_mcp_durable_sinks();
+    // BOTH SINKS ARE CORE-OWNED and are attached by the composition root's own boot step, once per
+    // deployment and for every core-owned durable registry at once — this hook neither names them
+    // nor asks for them, so there is no step on the boot seam spelled after this plane.
     // The demotion boot-replay reads the durable rows and the bound-snapshot runtime off a host minted
     // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
     // hydration reads exactly the generation it is restoring into.

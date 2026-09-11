@@ -54,8 +54,36 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .governance
         .as_ref()
         .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store()));
+    // THE CORE-OWNED DURABLE REGISTRIES' WRITE-THROUGH SINKS, attached ONCE, here, BEFORE any hook
+    // runs — the same one narrowed handle, given to every durable registry core itself owns. These
+    // registries are core's, not any plane's: the spent-approval ledger is an ADMISSION record (an
+    // approval redeemed once, across a restart and across a fleet) and the demotion record is a
+    // QUARANTINE record, and both are read and written by core-owned code. Attaching them from a
+    // plane's hydrate hook — through a boot-seam method spelled after that plane — made a core-owned
+    // durability property conditional on one plugin being compiled in, and made the neutral boot seam
+    // carry a step only one plane could ever call. Attached before the fold rather than inside it so
+    // the sink is in place for the first durable write of the boot, whichever hook makes it.
+    attach_core_durable_sinks(app, plane_store.as_ref());
     let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(crate::plane::registry::plane_decls(), &ctx)
+}
+
+/// ATTACH THE CORE-OWNED DURABLE REGISTRIES to the deployment's plane-narrowed store. A no-op when
+/// governance configured no durable home (`None`) — these records are then ephemeral BY DESIGN,
+/// exactly as the audit ring is.
+///
+/// Split from [`hydrate_all`] and taking the store by argument for the reason [`run_hydrate_hooks`]
+/// is: the "every core-owned durable registry gets the one handle, whatever planes this build has"
+/// property is then drivable without the process plane `OnceLock` and without a plane hook.
+pub(crate) fn attach_core_durable_sinks(
+    app: &Arc<crate::state::App>,
+    home: Option<&Arc<dyn crate::plane::store::PlaneStore>>,
+) {
+    let Some(home) = home else {
+        return;
+    };
+    app.spent_token_ledger.set_sink(home.clone());
+    app.demotion_record.set_sink(home.clone());
 }
 
 /// THE HYDRATE FOLD. Split from [`hydrate_all`] and taking its decl list by argument for the reason
