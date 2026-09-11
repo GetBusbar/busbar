@@ -353,3 +353,108 @@ fn a_tampered_row_is_reported_and_the_chain_still_resumes() {
         "the chain resumes from the broken tail rather than stopping the evidence"
     );
 }
+
+// ── THE PRE-CLEAVE FLAT CALL ROWS, carried here from the second tripwire ────────────────────────
+//
+// A second, independent replay of these same two digests lived beside the host-vtable journal seam
+// the engine used to register a chain with, and it held the call chain in a DIFFERENT persisted
+// form: the FLAT row that seam wrote before the cleave, with every field of the record beside the
+// chain's own and the join key `request_id` on it. That seam is deleted, so the flat bytes are
+// carried here VERBATIM rather than dying with it.
+//
+// They are not a duplicate of the envelopes above. Those carry an opaque length-prefixed `content`;
+// these are the only bytes left in the tree that say WHICH seven scalars `f1e8c2ec…` and
+// `721c7045…` were sealed over, and which chain scope they were written under. The test below is
+// the join: the plane's own suffix builder, over the flat row's scalars, reproduces the neutral
+// envelope BYTE-FOR-BYTE, and the reframed rows restore through the same leg to the tail the flat
+// row itself carries. DO NOT REGENERATE either form.
+const CALL_1_FLAT: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
+const CALL_2_FLAT: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
+
+/// The flat row's fields, named one-for-one as they are on disk. `request_id` is the join key the
+/// digest was never sealed over, so it is not declared; `principal` IS declared, because it is the
+/// chain scope these rows were written under and the test reads it from the bytes rather than
+/// restating it.
+#[derive(serde::Deserialize)]
+struct FlatCallRow {
+    principal: String,
+    seq: u64,
+    ts: u64,
+    server: String,
+    tool: String,
+    outcome: String,
+    reason: String,
+    tool_digest: String,
+    pin_generation: u64,
+    prev_hash: String,
+    hash: String,
+}
+
+/// The neutral envelope, spelled in the order the leg writes it so a re-encode is byte-comparable
+/// against the frozen literal rather than merely field-equal.
+#[derive(serde::Serialize)]
+struct NeutralEnvelope<'a> {
+    seq: u64,
+    prev_hash: &'a str,
+    hash: &'a str,
+    content: Vec<u8>,
+}
+
+/// THE CARRIED TRIPWIRE: the pre-cleave flat rows and the neutral envelopes are ONE chain.
+///
+/// Re-framing the flat row's seven scalars through the plane's own suffix builder reproduces the
+/// frozen envelopes byte-for-byte — which is the whole claim the deleted seam's reframe made — and
+/// the re-framed rows restore through the very same leg to the tail the flat tail row carries. A
+/// change to either form, or to the suffix's field order, breaks this before a deployed store
+/// reports TAMPERED.
+#[test]
+fn the_pre_cleave_flat_call_rows_reframe_to_the_neutral_envelopes_and_the_same_tail() {
+    let rows: Vec<FlatCallRow> = [CALL_1_FLAT, CALL_2_FLAT]
+        .iter()
+        .map(|raw| serde_json::from_slice(raw).expect("a frozen flat row decodes"))
+        .collect();
+    let reframed: Vec<Vec<u8>> = rows
+        .iter()
+        .map(|row| {
+            serde_json::to_vec(&NeutralEnvelope {
+                seq: row.seq,
+                prev_hash: &row.prev_hash,
+                hash: &row.hash,
+                content: call_record::call_suffix(
+                    row.ts,
+                    &row.server,
+                    &row.tool,
+                    &row.outcome,
+                    &row.reason,
+                    &row.tool_digest,
+                    row.pin_generation,
+                ),
+            })
+            .expect("the envelope encodes")
+        })
+        .collect();
+
+    assert_eq!(
+        reframed[0], MCP_1,
+        "the flat genesis row no longer reframes to the envelope the leg reads"
+    );
+    assert_eq!(
+        reframed[1], MCP_2,
+        "the flat tail row no longer reframes to the envelope the leg reads"
+    );
+
+    let scope = rows[1].principal.clone();
+    let store = FrozenStore::with("call", &scope, &[&reframed[0], &reframed[1]]);
+    let restored = call_leg(store).restore().expect("the store reads");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the reframed pre-cleave chain reported TAMPERED: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, 2);
+    assert_eq!(
+        restored.rows.last().expect("a tail").hash,
+        rows[1].hash,
+        "the flat rows seal the tail their own bytes carry"
+    );
+}

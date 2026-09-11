@@ -44,7 +44,6 @@ pub mod guard;
 // the A2A plane and the engine name the neutral `busbar_substrate::plane_host::spki` directly.
 pub(crate) use busbar_substrate::plane_host::{identity, trust_anchor};
 pub(crate) mod identity_admit;
-pub mod journal;
 pub mod pipe;
 pub mod scope;
 pub mod trust;

@@ -82,16 +82,20 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
         pipe_read: Some(super::pipe::pipe_read),
         pipe_write: Some(super::pipe::pipe_write),
-        // ── The DURABLE journal seam (minor-9): each slot wired over the store-backed
-        //    `audit::journal::Journal<PlaneJournalRecord>` in `super::journal`. ───────────────────────
-        journal_register: Some(super::journal::journal_register),
-        journal_append_scoped: Some(super::journal::journal_append_scoped),
-        journal_read_scoped: Some(super::journal::journal_read_scoped),
-        journal_restore: Some(super::journal::journal_restore),
-        journal_seed: Some(super::journal::journal_seed),
-        journal_forget: Some(super::journal::journal_forget),
-        journal_compact: Some(super::journal::journal_compact),
-        journal_verify_scoped: Some(super::journal::journal_verify_scoped),
+        // ── The DURABLE journal seam (minor-9): UNWIRED. Every record this host lands is a
+        //    kernel-held record leg of the composition root's, which holds its own chain position
+        //    and reaches the published store protocol directly; nothing registers a stream here any
+        //    more, so the eight slots are absent rather than answering over a registry no plane
+        //    fills. A plane that calls one gets the ABI's "this host does not serve it" answer,
+        //    which is the honest one. ──────────────────────────────────────────────────────────────
+        journal_register: None,
+        journal_append_scoped: None,
+        journal_read_scoped: None,
+        journal_restore: None,
+        journal_seed: None,
+        journal_forget: None,
+        journal_compact: None,
+        journal_verify_scoped: None,
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`

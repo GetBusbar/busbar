@@ -1551,7 +1551,13 @@ file = "qa/kind-isolation.toml"
 # altogether (`calllog.rs`, its battery, and the frozen-bytes golden whose engine went with them), so
 # four of the thirty-two names the face measured are no longer in this tree to be counted. A `by` is
 # what the face measured against the tree it lands in, and this is that number now.
-by = 28
+#
+# 28 -> 22: and the HOST-VTABLE JOURNAL SEAM's deletion took three more reader occurrences with it —
+# `plane_host/journal.rs`'s import of the face, `audit/journal.rs`'s import of it, and the import in
+# that generic journal's own battery. Those three files are gone (the two chained streams left in
+# this tree are landed by the composition root's record leg, which reads the face itself), so three
+# occurrences — six hits, one per needle — are no longer in this tree to be counted.
+by = 22
 because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
 
 # THE RECORD MOVE (line 4 of gate/CORE-HOMES-design.md). `busbar-core/src/admin/audit.rs` held a
@@ -1570,7 +1576,11 @@ because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence str
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 10
+# 10 -> 6: the two paths in `plane_host/tests/journal_tests.rs` are no longer in this tree. That
+# battery was the host-vtable journal seam's, the seam is deleted, and a `by` is what the face
+# measured against the tree that carries it — so the two occurrences it priced (four hits, one per
+# needle) come off rather than being left as slack the cell could drift back into.
+by = 6
 because = "MOVE by identity onto busbar_unit_audit::legacy::entry: core's duplicate admin audit record and ring are deleted (admin/audit.rs 325 -> 71) and the five spellings that replace them are the mount and its readers — Cargo.toml's openapi-schema forward to busbar-unit-audit/openapi-schema so the moved record keeps its schema impl in lock-step (+1), admin/audit.rs's two remaining seam lines naming AuditLog/Clock/DurableSeam and MAX_AUDIT_ENTRIES (+1), admin/v1/contract/schema.rs's AuditPageView items (+1) and two paths in plane_host/tests/journal_tests.rs (+2); each occurrence is counted by both the hyphen and the underscore needle, so five occurrences are ten hits"
 
 [[gate.ceiling_raises]]
@@ -1600,3 +1610,23 @@ because = "the same single moved line as the unit_total_ceiling raise, counted t
 key = "rules.loc-ceilings.kernel_ceiling"
 by = 1
 because = "the same single moved line: busbar-unit-audit/src/legacy/entry.rs is in the kernel's call-graph name-match set, so a derive attribute on the record that crate owns spends kernel budget. It is one line of SCHEMA WIRING, not one line of kernel — nothing the Teller loop executes changed, and the line it replaces was deleted from busbar-core in the same commit"
+
+# THE CARRIED TRIPWIRE. The host-vtable journal seam held a SECOND, independent replay of the two
+# frozen call-chain digests, and it held the call chain in a form nothing else in the tree does: the
+# FLAT row that seam persisted before the cleave, every field of the record beside the chain's own.
+# The composition root's own golden holds the same two digests but in the NEUTRAL envelope, whose
+# `content` is opaque — so the flat bytes are the only ones left that say which seven scalars
+# `f1e8c2ec...` and `721c7045...` were sealed over. Deleting the seam without carrying them would
+# have retired a proof rather than a mechanism, so they are carried VERBATIM into the root's golden
+# in the same commit, with the join that makes them one chain: the plane's own suffix builder over
+# the flat row's scalars reproduces the frozen envelope BYTE-FOR-BYTE, and the reframed rows restore
+# through the same leg to the tail the flat row itself carries.
+#
+# The rise is the two assertion lines that name the frozen envelopes being compared against. The
+# carried bytes, the flat row's own field names, the scope and the tail are all read out of the
+# bytes rather than restated, which is why this costs two and not twelve.
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "ROOT COMPOSITION of a carried tripwire: the frozen pre-cleave FLAT call rows are moved verbatim out of the deleted host-vtable journal battery into the composition root's record-leg golden, where the code that produces those digests now lives, and joined to the neutral envelopes already frozen there by two assert lines naming them. The root is the one kind entitled to name a plane's record beside the kernel's leg and the store it lands on; busbar-core falls 74306 -> 72894 production lines in the same commit and five busbar-core cells are re-pinned DOWN with it"

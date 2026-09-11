@@ -388,6 +388,73 @@ fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero()
 
 // ══ THE THREE REAL DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════
 
+// The three goldens below mint their record through a PRE-FRAMED SUFFIX record — the prelude framed
+// in the stream's own framing, then the plane's opaque content appended RAW. That is the shape every
+// record the composition root lands carries (`busbar::root::records`'s legged record), and it is
+// declared here rather than imported because a test in this crate may not name the root. It is four
+// fields and one `digest_fields`: the point of the seam is that a record costs exactly this much.
+
+/// A record over an opaque pre-framed content suffix, carrying its stream's framing per instance.
+#[derive(Clone)]
+struct SuffixRec {
+    scope: String,
+    seq: u64,
+    prev_hash: String,
+    hash: String,
+    content: Vec<u8>,
+    framing: Framing,
+}
+
+struct SuffixInput {
+    content: Vec<u8>,
+    framing: Framing,
+}
+
+impl ChainedRecord for SuffixRec {
+    type Input = SuffixInput;
+    const LABELS: &'static ChainLabels = &ChainLabels {
+        chain: "the suffix test chain",
+        scope: "scope",
+    };
+    // Unused for framing: `digest_fields` frames the prelude in the RECORD's own `framing` and then
+    // appends the suffix RAW, so this const governs no byte.
+    const FRAMING: Framing = Framing::LengthPrefixed;
+    fn scope_of(&self) -> &str {
+        &self.scope
+    }
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+    fn prev_hash(&self) -> &str {
+        &self.prev_hash
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn link(scope: &str, seq: u64, prev_hash: String, input: SuffixInput) -> Self {
+        SuffixRec {
+            scope: scope.to_string(),
+            seq,
+            prev_hash,
+            hash: String::new(),
+            content: input.content,
+            framing: input.framing,
+        }
+    }
+    fn set_hash(&mut self, hash: String) {
+        self.hash = hash;
+    }
+    fn digest_fields(&self, d: &mut Digest) {
+        d.raw(&frame_prelude(
+            self.framing,
+            &self.prev_hash,
+            Some(&self.scope),
+            self.seq,
+        ));
+        d.raw(&self.content);
+    }
+}
+
 /// The MCP per-call digest is byte-for-byte what the engine computed before the unification:
 /// length-prefixed, in this field order. Minted through the NEUTRAL journal seam — a genesis
 /// `PlaneJournalRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
@@ -420,15 +487,14 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
     lp(&mut content, reason.as_bytes());
     lp(&mut content, tool_digest.as_bytes());
     lp(&mut content, &pin_generation.to_be_bytes());
-    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
-        principal.to_string(),
+    let rec = SuffixRec {
+        scope: principal.to_string(),
         seq,
-        prev_hash.clone(),
-        String::new(),
+        prev_hash: prev_hash.clone(),
+        hash: String::new(),
         content,
-        Framing::LengthPrefixed,
-        true,
-    );
+        framing: Framing::LengthPrefixed,
+    };
 
     let mut buf: Vec<u8> = Vec::new();
     lp(&mut buf, prev_hash.as_bytes());
@@ -449,8 +515,8 @@ fn the_mcp_call_digest_is_unchanged_by_the_unification() {
 }
 
 /// The A2A task provenance digest is byte-for-byte what `a2a/provenance.rs` computed before the
-/// unification, and byte-for-byte the formula `busbar_a2a::TaskEventRow` publishes. Minted through the
-/// NEUTRAL journal seam over the plane's pre-framed `task_event_suffix` content (PipeSeparated), which
+/// unification, and byte-for-byte the formula `busbar_a2a::TaskEventRow` publishes. Minted over a
+/// pre-framed-suffix record carrying the plane's `task_event_suffix` content (PipeSeparated), which
 /// is the exact shape production persists, and required to agree with the legacy canonical string.
 #[test]
 fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
@@ -466,15 +532,14 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     // The plane's PipeSeparated content suffix (leading `|`), as `taskstore::task_event_suffix` builds
     // it: `|ts|kind|context_id|principal|agent_id|state`.
     let content = format!("|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}").into_bytes();
-    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
-        task_id.to_string(),
+    let rec = SuffixRec {
+        scope: task_id.to_string(),
         seq,
-        prev_hash.clone(),
-        String::new(),
+        prev_hash: prev_hash.clone(),
+        hash: String::new(),
         content,
-        Framing::PipeSeparated,
-        true,
-    );
+        framing: Framing::PipeSeparated,
+    };
     let canonical = format!(
         "{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}"
     );

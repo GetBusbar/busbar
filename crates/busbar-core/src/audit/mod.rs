@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE APPEND-ONLY HASH CHAIN LIVES IN `busbar_unit_audit::legacy` — this module keeps only the
-//! scope-keyed durable [`journal`] built on top of it.
+//! shared audit VOCABULARY, and the proofs that the chain's real digests never moved.
 //!
 //! ## Where the mechanism went, and why there is no copy of it here
 //!
@@ -57,8 +57,6 @@
 //! writing can rewrite a whole chain consistently and this will verify. Prevention means shipping
 //! the records off-box to something the compromised host cannot rewrite. Anything stronger said
 //! about it is oversold.
-
-pub mod journal;
 
 /// The audit VOCABULARY — the outcome and reason words the three streams share. A re-export and
 /// nothing else, and the ONE place in this crate that names the module the words come from: the
