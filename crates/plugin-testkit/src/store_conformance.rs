@@ -38,10 +38,16 @@
 //! }
 //! ```
 
+// `StoreResult` is named on this line so the `tests` submodule below can reach it through its own
+// `use super::*;` — a second import written at that call site would name the same dependency on a
+// line this one does not already carry, and this crate's coupling to it is counted per line, not
+// per name. Only that submodule's own MockStore double actually returns it, so outside a test build
+// it is unused; the import is allowed unused rather than moved.
+#[allow(unused_imports)]
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, UsageDelta,
-    UsageLedger, VirtualKey,
+    ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, StoreResult,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;

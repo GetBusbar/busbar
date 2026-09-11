@@ -2339,7 +2339,7 @@ count = "26"
 [[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plugin-tooling"
-count = "11"
+count = "6"
 
 [[cell]]
 crate = "busbar-store-example-plugin"

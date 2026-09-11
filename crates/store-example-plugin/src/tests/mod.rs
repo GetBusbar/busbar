@@ -13,6 +13,11 @@
 //! older — by setting the envelope's `disposition`/`ts` SIDECAR columns explicitly.
 
 use super::*;
+// Named once, here, rather than at each of this module's seven call sites below: the shared
+// cross-backend suite is one dependency however many of its rulings this plugin drives, and
+// spelling the crate path out at every call site would count the same coupling once per test
+// instead of once per import.
+use busbar_plugin_testkit::store_conformance;
 
 /// Mutation-testing hardening, added after a `cargo-mutants` run on this crate surfaced gaps this
 /// module's ABI-round-trip coverage didn't pin. Kept in its own file rather than folded in here.
@@ -351,13 +356,13 @@ fn s_get(s: &FileStore, id: &str) -> Option<Vec<u8>> {
 /// held to the same ruling as every other backend.
 #[test]
 fn conformance_plane_purge_honours_the_cutoff() {
-    busbar_plugin_testkit::store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
+    store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
 }
 
 /// The task table's retention rule is terminality AND age, not age alone.
 #[test]
 fn conformance_plane_purge_task_keeps_active_rows() {
-    busbar_plugin_testkit::store_conformance::assert_plane_purge_task_keeps_active_rows(
+    store_conformance::assert_plane_purge_task_keeps_active_rows(
         &store(),
         "cf",
     );
@@ -661,7 +666,7 @@ fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
 /// `put_key` must not clear a tombstone — the shared ruling, answered by this crate's own backend.
 #[test]
 fn conformance_ram_put_key_does_not_resurrect_a_tombstone() {
-    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
+    store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
         &RamStore::new(),
         "ram",
     );
@@ -670,7 +675,7 @@ fn conformance_ram_put_key_does_not_resurrect_a_tombstone() {
 /// `delete_key` on an id that was never written is an ERROR, not a silent success.
 #[test]
 fn conformance_ram_delete_key_unknown_id_is_an_error() {
-    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(
+    store_conformance::assert_delete_key_unknown_id_is_an_error(
         &RamStore::new(),
         "ram",
     );
@@ -682,7 +687,7 @@ fn conformance_ram_delete_key_unknown_id_is_an_error() {
 #[test]
 fn ram_delete_key_tombstones_the_row_and_drops_its_usage_ledger() {
     let s = RamStore::new();
-    let key = busbar_plugin_testkit::store_conformance::live_key("ram_cascade");
+    let key = store_conformance::live_key("ram_cascade");
     s.put_key(&key).expect("put a live key");
     s.put_usage("ram_cascade", 0, &UsageLedger::default())
         .expect("write the ledger");
@@ -795,7 +800,7 @@ fn conformance_file_key_spend_and_metering_survive_a_reopen() {
             FileStore::open(at.clone()).expect("open a FileStore handle at the durable_path"),
         )
     };
-    busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen(
+    store_conformance::assert_key_spend_and_metering_survive_a_reopen(
         &open, "file",
     );
 
@@ -828,7 +833,7 @@ fn conformance_file_usage_survives_reopen_atomically() {
             FileStore::open(at.clone()).expect("open a FileStore handle at the durable_path"),
         )
     };
-    busbar_plugin_testkit::store_conformance::assert_usage_survives_reopen_atomically(
+    store_conformance::assert_usage_survives_reopen_atomically(
         &open, "file",
     );
 
