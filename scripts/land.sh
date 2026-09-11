@@ -602,12 +602,94 @@ EOF
       ;;
   esac
 }
+# ── THE ORACLE'S KEY IS NOT COMPLETE WITHOUT ITS FAMILIES (audit 29, NOTE-68) ─────────────────────
+# The key above is (leg, base, owing file set). For the batteries that is the whole of what the leg
+# IS: a battery takes no argument, it either runs over the tree or it does not. THE ORACLE TAKES AN
+# ARGUMENT. `--families` is a regex over cell ids and it is what the leg actually measures, so two
+# runs on the same files at the same base over different families are two different proofs.
+#
+# WITHOUT THE FAMILIES IN THE KEY, a member pre-proved over a NARROWER expression hands the union a
+# green oracle leg that never once ran the family the union owes — and the union prints GREEN having
+# compared no cell of it to the golden. That is the signal-destroying shape this engine exists to
+# refuse, arrived at by an optimisation rather than by a bug, which is the worse way to arrive at it.
+#
+# SO COVERAGE IS A SUPERSET TEST, OVER ALTERNATION BRANCHES. land_batch_range builds the union as
+# `(f1)|(f2)|…`, one wrapped branch per applied member, so the top-level branches ARE the members'
+# own `--families` values and set containment over them is exact. This is deliberately NOT a general
+# regex-subset decision — that is undecidable — it is containment of the set this engine itself
+# constructs, and a branch that does not match one of the union's textually is simply not inherited.
+# The failure direction is the safe one: an unrecognised shape runs the leg.
+land_families_branches() { # $1 = an alternation of family expressions; prints each top-level branch
+  local e="$1" i=0 n depth=0 inbr=0 c cur=""
+  [ -n "$e" ] || return 0
+  n=${#e}
+  while [ "$i" -lt "$n" ]; do
+    c="${e:$i:1}"
+    if [ "$c" = '\' ]; then
+      # AN ESCAPED CHARACTER IS NEVER STRUCTURE. `a\|b` is one branch matching a literal pipe.
+      cur="$cur$c${e:$((i+1)):1}"; i=$((i + 2)); continue
+    fi
+    if [ "$inbr" = 1 ]; then
+      cur="$cur$c"; [ "$c" = ']' ] && inbr=0
+    else
+      case "$c" in
+        # A BRACKET EXPRESSION IS OPAQUE, and this is the case a naive `tr | \n` gets wrong: every
+        # family regex in this tree ends `[|]`, the bracketed literal pipe that separates a cell
+        # id's family from its case. Splitting there would make one family into two nonsense ones.
+        '[') inbr=1; cur="$cur$c" ;;
+        '(') depth=$((depth + 1)); cur="$cur$c" ;;
+        ')') depth=$((depth - 1)); cur="$cur$c" ;;
+        '|') if [ "$depth" -le 0 ]; then land_families_strip "$cur"; cur=""; else cur="$cur$c"; fi ;;
+        *) cur="$cur$c" ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  land_families_strip "$cur"
+}
+# ONE LAYER OF THE WRAPPING THE UNION BUILDER ADDED, and only when it wraps the WHOLE branch: the
+# union writes `(f1)`, a single-line pre-proof's union writes `(f1)` too, and both must normalise to
+# the member's own `--families` value or nothing would ever match. `(a)|(b)` as a single branch is
+# not wrapped by one pair and keeps its parens.
+land_families_strip() { # $1 = one branch; prints it with one full outer paren layer removed
+  local b="$1" inner i n depth c
+  b="${b#"${b%%[![:space:]]*}"}"; b="${b%"${b##*[![:space:]]}"}"
+  [ -n "$b" ] || return 0
+  case "$b" in '('*')') ;; *) printf '%s\n' "$b"; return 0 ;; esac
+  inner="${b#(}"; inner="${inner%)}"
+  # …only if that opening paren's partner really is the final character.
+  depth=0; i=0; n=${#inner}
+  while [ "$i" -lt "$n" ]; do
+    c="${inner:$i:1}"
+    case "$c" in '\') i=$((i + 1)) ;; '(') depth=$((depth + 1)) ;; ')') depth=$((depth - 1)) ;; esac
+    [ "$depth" -lt 0 ] && { printf '%s\n' "$b"; return 0; }
+    i=$((i + 1))
+  done
+  printf '%s\n' "$inner"
+}
+land_families_covers() { # $1 = the member's families, $2 = the union's; 0 when the member proved at least the union's
+  local mine want b
+  want="$(land_families_branches "$2" | grep -v '^$' | sort -u)"
+  # A UNION THAT OWES NO FAMILY IS COVERED BY ANYTHING — there is nothing to have run.
+  [ -n "$want" ] || return 0
+  mine="$(land_families_branches "$1" | grep -v '^$' | sort -u)"
+  [ -n "$mine" ] || return 1
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    printf '%s\n' "$mine" | grep -qxF -- "$b" || return 1
+  done <<EOF
+$want
+EOF
+  return 0
+}
+
 # THE SENTENCE A GREEN LEG LEAVES BEHIND, so the next union can read it out of the pre-proof's log.
 # It carries the BASE, which is the whole of "at the same tip": a pre-proof's base is the tip it was
 # taken on and a union's base is the tip it is landing onto, and a row whose base is a different sha
 # is evidence about a different tree.
-land_leg_green() { # $1 = leg, $2 = the base this run judged against
-  echo "land.sh: LEG GREEN: $1 base $2"
+land_leg_green() { # $1 = leg, $2 = the base this run judged against, $3 = the leg's SCOPE (the oracle's families)
+  if [ -n "${3:-}" ]; then echo "land.sh: LEG GREEN: $1 base $2 families $3"
+  else echo "land.sh: LEG GREEN: $1 base $2"; fi
 }
 # AND THE READER. Prints the pre-proof log a leg may be inherited from, or nothing at all.
 #
@@ -615,8 +697,8 @@ land_leg_green() { # $1 = leg, $2 = the base this run judged against
 # pre-proof was GREEN at this tip, `<log path>TAB<space-separated files the member touched>`. This
 # script recomputes the member's owing set from those files with the SAME function the union uses —
 # it does not take the member's word for what it owed.
-land_preproof_inherits() { # $1 = leg, $2 = the union's owing set (newline-separated), $3 = index, $4 = base sha
-  local leg="$1" want="$2" idx="${3:-${LAND_PREPROOF_INDEX:-}}" base="${4:-}" lg files mine
+land_preproof_inherits() { # $1 = leg, $2 = the union's owing set (newline-separated), $3 = index, $4 = base sha, $5 = the union's leg SCOPE (oracle: its families)
+  local leg="$1" want="$2" idx="${3:-${LAND_PREPROOF_INDEX:-}}" base="${4:-}" scope="${5:-}" lg files mine mscope
   [ "${LAND_NO_INHERIT:-0}" = 1 ] && return 0
   [ -n "$leg" ] && [ -n "$base" ] || return 0
   # AN EMPTY OWING SET IS NEVER INHERITED — it is not owed at all, and the caller's own
@@ -631,7 +713,18 @@ land_preproof_inherits() { # $1 = leg, $2 = the union's owing set (newline-separ
     # THE LOG MUST SAY IT RAN THE LEG GREEN, AT THIS BASE. A pre-proof that SKIPPED the leg (because
     # the member did not owe it either) proves nothing about it, and is exactly the log that would
     # otherwise launder a skip into a proof.
-    grep -qxF -- "land.sh: LEG GREEN: $leg base $base" "$lg" 2>/dev/null || continue
+    #
+    # …AND FOR THE ORACLE, OVER AT LEAST THE FAMILIES THE UNION OWES (NOTE-68, see
+    # land_families_covers). A log that names no families at all is a log from before the families
+    # joined the key; it says nothing about what was measured and is not inherited from.
+    case "$leg" in
+      oracle)
+        mscope="$(sed -n "s|^land\.sh: LEG GREEN: oracle base $base families ||p" "$lg" 2>/dev/null | head -n1)"
+        [ -n "$mscope" ] || continue
+        land_families_covers "$mscope" "$scope" || continue ;;
+      *)
+        grep -qxF -- "land.sh: LEG GREEN: $leg base $base" "$lg" 2>/dev/null || continue ;;
+    esac
     mine="$(land_leg_owing_set "$leg" "$(printf '%s\n' $files)" | grep -v '^$' | sort -u)"
     [ "$mine" = "$want" ] || continue
     printf '%s\n' "$lg"
@@ -1772,12 +1865,15 @@ EOF
       # RUNNING system, so its owing set is every touched path a build can reach (see
       # LAND_ORACLE_BLIND_RE): a union whose only code change came from one member is, at this
       # base, the tree that member already recorded. A union with two code members owes it in full.
-      local oinh; oinh="$(land_preproof_inherits oracle "$(land_leg_owing_set oracle "$touched")" "${LAND_PREPROOF_INDEX:-}" "$base")"
+      # …AND OVER AT LEAST THE FAMILIES THIS UNION OWES (NOTE-68). The files are half the key and the
+      # families are the other half: a member that proved a NARROWER expression measured a different
+      # thing, and inheriting from it would print GREEN over a family no box ever recorded.
+      local oinh; oinh="$(land_preproof_inherits oracle "$(land_leg_owing_set oracle "$touched")" "${LAND_PREPROOF_INDEX:-}" "$base" "$families")"
       if [ -n "$oinh" ]; then
         land_inherit_record "oracle families ($families)" "$oinh"
       else
         prove_oracle "$families" || return 1
-        land_leg_green oracle "$base"
+        land_leg_green oracle "$base" "$families"
       fi ;;
     esac
   done
@@ -2557,21 +2653,23 @@ land_selftest() {
   # THE INHERITANCE, driven over a planted index and planted member logs.
   local pidx="$root/preproofs.tsv" plog1="$root/pp-1.log" plog2="$root/pp-2.log"
   printf 'land.sh: LEG GREEN: battery:construction base BASE0\n' >"$plog1"
-  printf 'land.sh: LEG GREEN: oracle base BASE0\n' >"$plog2"
+  # …and the oracle's sentence carries the families it proved (NOTE-68, below): without them there
+  # is nothing in the log to compare the union's families against, and it is not inherited from.
+  printf 'land.sh: LEG GREEN: oracle base BASE0 families (a)|(b)\n' >"$plog2"
   printf '%s\tqa/construction.toml\n%s\tcrates/busbar-core/src/a.rs\n' "$plog1" "$plog2" >"$pidx"
   _t2() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
   _t2 "a member that proved this leg on the SAME files is inherited" "$plog1" \
       "$(land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" BASE0)"
   _t2 "  ...and the oracle the same way"        "$plog2" \
-      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx" BASE0)"
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx" BASE0 '(a)')"
   _t2 "a DIFFERENT owing file set is not inherited" "" \
       "$(land_preproof_inherits battery:construction "$(printf 'qa/construction.toml\nqa/segments.toml\n')" "$pidx" BASE0)"
   # A MEMBER WHOSE OWN SET IS A SUPERSET IS NOT THE SAME MEASUREMENT. It proved the leg over files
   # this union does not owe it over, which is a different question with a different answer.
   printf '%s\tcrates/busbar-core/src/a.rs crates/busbar-core/src/b.rs\n' "$plog2" >"$pidx.super"
-  printf 'land.sh: LEG GREEN: oracle base BASE0\n' >"$plog2"
+  printf 'land.sh: LEG GREEN: oracle base BASE0 families (a)|(b)\n' >"$plog2"
   _t2 "  ...nor is a member's set that is merely a SUPERSET" "" \
-      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx.super" BASE0)"
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx.super" BASE0 '(a)')"
   _t2 "a DIFFERENT base is not inherited"       "" \
       "$(land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" OTHERBASE)"
   printf 'land.sh: the battery was skipped\n' >"$plog1"
@@ -2602,6 +2700,71 @@ land_selftest() {
   # A LEG THAT RUNS GREEN SAYS SO IN THE WORDS THE NEXT UNION READS.
   _t2 "a green battery leaves the sentence a union inherits by" 2 "$(grep -c 'land_leg_green battery:' "$LAND_SRC")"
   _stgrep "  ...and so does a green oracle"     "$LAND_SRC" 'land_leg_green oracle'
+
+  # ── NOTE-68: THE ORACLE'S KEY IS NOT COMPLETE WITHOUT THE FAMILIES ────────────────────────────
+  # The key above is (leg, base, owing file set). For the batteries that is the whole of what the
+  # leg is: a battery has no argument, it either runs over the tree or it does not. THE ORACLE HAS
+  # AN ARGUMENT. `--families` is a regex over cell ids, and it is what the leg actually measures;
+  # two runs on the same files at the same base over DIFFERENT families are two different proofs.
+  #
+  # So a member pre-proved with a NARROWER families expression could hand the union a green oracle
+  # leg that never once ran the family the union owes — the union would print GREEN having compared
+  # no cell of it to the golden, which is the signal-destroying shape this whole engine exists to
+  # refuse. The families expression joins the key, and coverage is a SUPERSET test: a leg is
+  # inherited only when the member proved it over at least what the union owes.
+  #
+  # THE COMPARISON IS OVER ALTERNATION BRANCHES, not over the string. land_batch_range builds the
+  # union as `(f1)|(f2)|…`, one wrapped branch per member, so the top-level branches ARE the members'
+  # own --families values and set containment over them is exact. It is not a general regex-subset
+  # decision, which is undecidable; it is the containment of the set this engine actually builds.
+  echo "land.sh selftest: the oracle leg's key carries its FAMILIES too (NOTE-68)"
+  _brz() { # $1 = name, $2 = expected branches (| separated), $3 = expr
+    local got; got="$(land_families_branches "$3" | tr '\n' '|')"; got="${got%|}"
+    if [ "$got" = "$2" ]; then printf '  ok   %-46s\n' "$1"
+    else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$got"; fails=$((fails + 1)); fi
+  }
+  _brz "a union of two members is two branches"  'a|b'    '(a)|(b)'
+  _brz "  ...and one member is one"              'a'      '(a)'
+  _brz "a bare expression is a branch"           'a'      'a'
+  # THE CASE THAT A NAIVE SPLIT ON `|` GETS WRONG: every family regex in this tree ends `[|]`, the
+  # bracketed literal pipe that separates a cell id's family from its case.
+  _brz "a pipe inside a bracket does not split"  '^(documented)[|]' '^(documented)[|]'
+  _brz "  ...nor do two of them, wrapped"        '^(documented)[|]|^(billing)[|]' \
+       '(^(documented)[|])|(^(billing)[|])'
+  _brz "  ...nor a pipe inside nested parens"    '^(a|b)[|]' '(^(a|b)[|])'
+  _brz "an escaped pipe does not split either"   'a\|b'   'a\|b'
+  _brz "empty is no branches"                    ''       ''
+  _t2 "a member that proved MORE covers the union" 0 \
+      "$(land_families_covers '(a)|(b)' '(a)'; echo $?)"
+  # THE BUG NOTE-68 NAMES, ASKED DIRECTLY.
+  _t2 "a member that proved LESS does NOT"      1 \
+      "$(land_families_covers '(a)' '(a)|(b)'; echo $?)"
+  _t2 "the same families cover"                 0 "$(land_families_covers '(a)|(b)' '(b)|(a)'; echo $?)"
+  _t2 "a union that owes no family is covered"  0 "$(land_families_covers '(a)' ''; echo $?)"
+  _t2 "a member that proved none covers nothing" 1 "$(land_families_covers '' '(a)'; echo $?)"
+  _t2 "a DIFFERENT family is not a narrower one, and is still refused" 1 \
+      "$(land_families_covers '(c)' '(a)'; echo $?)"
+  # AND THROUGH THE READER, over a planted index.
+  local flog="$root/pp-fam.log"
+  printf 'land.sh: LEG GREEN: oracle base BASE0 families (a)|(b)\n' >"$flog"
+  printf '%s\tcrates/busbar-core/src/a.rs\n' "$flog" >"$root/fam-idx.tsv"
+  _t2 "a member proved over a SUPERSET is inherited" "$flog" \
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$root/fam-idx.tsv" BASE0 '(a)')"
+  _t2 "a member proved over a NARROWER set is not" "" \
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$root/fam-idx.tsv" BASE0 '(a)|(b)|(c)')"
+  printf 'land.sh: LEG GREEN: oracle base BASE0\n' >"$flog"
+  _t2 "a log from before the families joined the key is not inherited" "" \
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$root/fam-idx.tsv" BASE0 '(a)')"
+  _stgrep "the oracle's green sentence carries its families" "$LAND_SRC" 'LEG GREEN: .*base .* families'
+  _t2 "the oracle arm passes the union's families as the scope" 1 \
+      "$(grep -c 'land_preproof_inherits oracle .* "\$families"' "$LAND_SRC")"
+  # THE OTHER PARAMETERISED LEG. `--tests` is the test leg's argument, and the test leg is FLOOR:
+  # it is not inheritable at all, so it needs no key. This case is what goes red if it ever becomes
+  # inheritable without one.
+  _t2 "the tests leg is not inheritable, so it needs no key" 0 \
+      "$(sed -n '/^    tests|clippy|workspace-clippy)/,/^    gate)/p' "$LAND_SRC" | grep -c 'land_preproof_inherits')"
+  _t2 "  ...and only three legs ask to be inherited at all" 3 \
+      "$(grep -c '^ *local [cko]inh; [cko]inh="\$(land_preproof_inherits' "$LAND_SRC")"
 
   # THE LOCKFILE READER, over real-shaped lockfiles. A grep for `xtask` anywhere in the diff would
   # fire on every crate that merely DEPENDS on nothing of the sort; the RESOLVED CLOSURE is the unit.
