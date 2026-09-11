@@ -1308,3 +1308,69 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--validate` NEVER OPENS AN UPSTREAM SOCKET, and a configured duplex leg does not change that.
+///
+/// The claim is the one R2's guard makes answerable. Validating a deployment is a CI step and a
+/// pre-reload step: it reads configuration, resolves secrets and checks every plugin manifest, and
+/// it is allowed to touch nothing else. A `streams.upstreams:` row names a provider this node would
+/// dial when it SERVES, and the guard that decides whether that socket may be opened — the network
+/// judge and the endpoint's breaker cell — lives on the composition that serves. `--validate`
+/// composes none of it.
+///
+/// Proven by a listener rather than by an exit code alone: the row points at a real port this test
+/// owns, and the assertion is that NOTHING connected to it. An exit code says the command was happy;
+/// a connection count says the command was quiet. A breaker cell tripped or fresh cannot change a
+/// figure that is zero because nothing on the path ever ran.
+#[test]
+fn validate_opens_no_upstream_socket_for_a_configured_duplex_leg() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("the OS lends a port");
+    let port = listener.local_addr().expect("the port has a number").port();
+    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&connections);
+    listener
+        .set_nonblocking(true)
+        .expect("a non-blocking listener so the accept loop can end");
+    let accepting = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+            if counted.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+        }
+    });
+
+    let dir = fixture_dir("validate-dials-nothing");
+    write_configs(
+        &dir,
+        &format!(
+            r#"public_url: "https://gw.example.com"
+streams:
+  upstreams:
+    - dialect: openai-realtime
+      host: "127.0.0.1:{port}"
+      lane: voice-realtime
+"#
+        ),
+    );
+    let (code, _out, err) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "a configured duplex leg validates green: {err}");
+
+    // Give the accept loop a moment to notice a connection that should not exist, then read.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert_eq!(
+        connections.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "`--validate` composed no egress and opened no socket to the configured upstream"
+    );
+    drop(accepting);
+}

@@ -533,6 +533,17 @@ impl RecordingUnits {
     }
 }
 
+/// The outbound posture a cell dialling a port the OS lent it runs under.
+///
+/// `allow_private` and nothing else: cloud-metadata addresses stay refused whatever a caller says,
+/// which is the guard rather than the policy, and this cell is not about either.
+fn loopback_policy() -> busbar_unit_trust::net::GuardPolicy {
+    busbar_unit_trust::net::GuardPolicy {
+        allow_private: true,
+        ..busbar_unit_trust::net::GuardPolicy::default()
+    }
+}
+
 /// WHAT ONE DIAL WAS HANDED TO PRESENT, as the recorder keeps it: the dialect's declared place,
 /// rendered, and the resolved value. `None` is a dial handed nothing to present.
 ///
@@ -1893,6 +1904,11 @@ async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
+        // A LOOPBACK-ADMITTING POSTURE, because the address this cell dials is a port the OS lent
+        // it. The guard's fail-closed default refuses loopback by design — which is celled in
+        // `root::tests::egress_guard` — and a battery that drove the real socket under the default
+        // would be proving the guard's refusal a second time instead of the thing it is about.
+        crate::root::egress_guard::EgressGuard::new(loopback_policy()),
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );
@@ -2055,6 +2071,11 @@ async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() 
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
+        // A LOOPBACK-ADMITTING POSTURE, because the address this cell dials is a port the OS lent
+        // it. The guard's fail-closed default refuses loopback by design — which is celled in
+        // `root::tests::egress_guard` — and a battery that drove the real socket under the default
+        // would be proving the guard's refusal a second time instead of the thing it is about.
+        crate::root::egress_guard::EgressGuard::new(loopback_policy()),
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );

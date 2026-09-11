@@ -94,22 +94,29 @@
 //! named those types directly would pull an async runtime, a WebSocket client and a substrate host
 //! into the one file whose whole job is to be a table of bindings. So the binding is by seam: the
 //! traits below are what the root needs said about the I/O half, the I/O half is what says it, and
-//! the root holds implementors behind `dyn`. Four seams, each with the item on the other side named:
+//! the root holds implementors behind `dyn`. Three seams, each with the item on the other side named:
 //!
-//! 1. [`ProviderDial`] — `busbar_voice::topology::dial_provider`, which selects the WebSocket
-//!    transport, lets the substrate resolve-pin-guard the target, folds the outcome into the breaker
-//!    cell, and hands back the message stream/sink pair the pump consumes.
-//! 2. [`SessionPump`] — `busbar_voice::runtime::{SessionCore, VoiceSession, UplinkForwarder,
+//! 1. [`SessionPump`] — `busbar_voice::runtime::{SessionCore, VoiceSession, UplinkForwarder,
 //!    Outbound}`, the per-frame loop over a byte duplex.
-//! 3. [`SessionLease`] — `busbar_voice::runtime::{MeteringPort, MeteringLease, LeaseState,
+//! 2. [`SessionLease`] — `busbar_voice::runtime::{MeteringPort, MeteringLease, LeaseState,
 //!    LeaseCloseGuard}`, the reserve-then-settle object the hold is driven through.
-//! 4. [`Carrier`] — `busbar_voice::topology::telephony` and `busbar_voice::runtime::carrier`, the
+//! 3. [`Carrier`] — `busbar_voice::topology::telephony` and `busbar_voice::runtime::carrier`, the
 //!    inbound telephony leg.
 //!
+//! **THERE IS NO DIAL SEAM, and there is not one on purpose.** A fourth seam stood here — a
+//! SYNCHRONOUS `ProviderDial` probe, asked at Route, which ran a breaker admission and a network
+//! judge and answered `()`. It existed because the unit loop is synchronous and could not dial, so
+//! the only thing it could do about a leg was PRE-JUDGE one somebody else would open. Two guards for
+//! one socket is one guard too many: the probe could admit a target the real dial then refused, trip
+//! a cell for a socket nobody opened, and — the shape that matters — pass while the dial that
+//! actually happens went unguarded, because the dial is not on this path at all. The guard now lives
+//! exactly once, on the path that opens the socket ([`crate::root::egress_guard::EgressGuard`],
+//! run by [`crate::root::registry::WsLegEgress`] before any byte leaves), and Route proceeds.
+//!
 //! Every one is a trait declared here and implemented there. The default implementor, [`Detached`],
-//! refuses each of the four honestly rather than pretending: a node whose I/O half was never
-//! installed cannot dial, cannot pump and cannot lease, and saying so at the seam is better than
-//! discovering it as a socket that never opened.
+//! refuses each of the three honestly rather than pretending: a node whose I/O half was never
+//! installed cannot pump and cannot lease, and saying so at the seam is better than discovering it
+//! as a frame that never moved.
 //!
 //! ## What is deliberately not here
 //!
@@ -139,7 +146,6 @@ use busbar_plane_streams::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, BucketChain, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
-use busbar_unit_trust::net::GuardPolicy;
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
@@ -331,17 +337,39 @@ pub fn configured_upstreams(
 /// THE CONFIG KEY A CREDENTIAL REFUSAL NAMES, so an operator greps for what they wrote.
 const UPSTREAM_MODEL: &str = "streams.upstreams[].model:";
 
-/// ONE CONFIGURED LEG'S RESOLVED CREDENTIAL: the interned host it is presented at, where the leg's
-/// DIALECT declared it goes, and the resolved secret.
+/// ONE CONFIGURED LEG, AS THE COMPOSITION SETTLED IT: the interned host it is reached at, the
+/// ADDRESS a socket is opened to, and the credential it presents when it gets there.
 ///
-/// Keyed by HOST rather than by row index or by dialect, because the host is what the sealed
-/// destination carries: unit zero seals an address, the thing that dials reads one, and a table
-/// keyed by anything else would need a second lookup to say which row an address came from.
-pub type LegCredentials = Vec<(
-    &'static str,
-    busbar_contract::transport::session::CredentialAt,
-    String,
-)>;
+/// Keyed by HOST, because the host is what the row is written with and what every later question
+/// about the row is asked in terms of. Unit zero seals the ADDRESS, and the two are different
+/// strings for a reason that took a probe's deletion to expose — see [`LegBinding::dial_url`].
+#[derive(Debug)]
+pub struct LegBinding {
+    /// The row's host, interned once by the composition that read the row.
+    pub host: &'static str,
+    /// THE ADDRESS A SOCKET IS OPENED TO — the row's host as a DIALABLE URL, `wss://<host>`.
+    ///
+    /// It is not the same string as [`LegBinding::host`], and the difference is load-bearing. A
+    /// sealed upstream destination carries an address the WIRE reads, and this wire's reader
+    /// (`split_ws_url`) requires a `ws://`/`wss://` URL: a bare authority is
+    /// `AddressRefused` before a socket. Unit zero used to seal the bare host while the only thing
+    /// that ever built the URL was the synchronous probe beside it — so the seal was never dialled
+    /// and the mismatch could not show. With the probe gone the seal IS what gets dialled, and it
+    /// has to be dialable.
+    ///
+    /// `wss://` unconditionally, which is the same string the probe built and not a new decision: a
+    /// duplex provider leg carries a deployment's credential at the upgrade, and a composition that
+    /// let a row downgrade its own transport would be the root deciding a security question the
+    /// trust unit owns. Leaked ONCE per row at the bind, which runs once per process — the same
+    /// fixed registration-time term the interned host is.
+    pub dial_url: &'static str,
+    /// Where the leg's DIALECT declared its credential goes and the resolved secret, or `None` for a
+    /// dialect that declared it presents none.
+    pub credential: Option<(busbar_contract::transport::session::CredentialAt, String)>,
+}
+
+/// The configured legs, in the order the operator wrote them.
+pub type LegBindings = Vec<LegBinding>;
 
 /// WHY A CONFIGURED ROW'S CREDENTIAL DID NOT RESOLVE — every arm a boot refusal, for
 /// [`UpstreamRefusal`]'s own reason: a declared leg this node cannot authenticate is a claimed URL
@@ -447,13 +475,17 @@ fn origin_authority(base_url: &str) -> &str {
 /// # Errors
 ///
 /// See [`CredentialRefusal`]: every one is a boot refusal.
-pub fn resolve_leg_credentials<'a>(
+pub fn resolve_leg_bindings<'a>(
     written: &[busbar_voice::config::UpstreamRow],
     rows: &[Upstream],
     catalog: impl Fn(&str) -> Option<(&'a str, &'a str)>,
-) -> Result<LegCredentials, CredentialRefusal> {
-    let mut out = LegCredentials::new();
+) -> Result<LegBindings, CredentialRefusal> {
+    let mut out = LegBindings::new();
     for (row, composed) in written.iter().zip(rows.iter()) {
+        // THE ADDRESS, BUILT ONCE PER ROW. Every row gets one, including a row whose dialect
+        // presents no credential: what makes a leg dialable is not what it presents when it
+        // arrives.
+        let dial_url: &'static str = Box::leak(format!("wss://{}", composed.host).into_boxed_str());
         let Some(model) = row.model.as_deref() else {
             // A ROW WITH NO ADDRESS. Refused only where the absence would dial unauthenticated —
             // see [`CredentialRefusal::NoModel`]; otherwise it is the complete row for a dialect
@@ -464,6 +496,11 @@ pub fn resolve_leg_credentials<'a>(
                     dialect: composed.dialect.name,
                 });
             }
+            out.push(LegBinding {
+                host: composed.host,
+                dial_url,
+                credential: None,
+            });
             continue;
         };
         let Some((base_url, api_key)) = catalog(model) else {
@@ -487,9 +524,14 @@ pub fn resolve_leg_credentials<'a>(
                 origin: authority.to_string(),
             });
         }
-        if let Some(at) = composed.dialect.credential_at {
-            out.push((composed.host, at, api_key.to_string()));
-        }
+        out.push(LegBinding {
+            host: composed.host,
+            dial_url,
+            credential: composed
+                .dialect
+                .credential_at
+                .map(|at| (at, api_key.to_string())),
+        });
     }
     Ok(out)
 }
@@ -498,71 +540,7 @@ pub fn resolve_leg_credentials<'a>(
 // The seams to the I/O half
 // ---------------------------------------------------------------------------------------------
 
-/// Where a dial is going and how far the guard will let it.
-#[derive(Debug, Clone)]
-pub struct DialTarget {
-    /// The endpoint's own name, as the breaker cell keys it and a refusal names it.
-    pub pool: String,
-    /// Which member of that cell. Zero for a degenerate one.
-    pub lane: usize,
-    /// The absolute target.
-    pub url: String,
-    /// The outbound trust posture. A public provider endpoint takes the fail-closed default, and the
-    /// guard never opens a socket to a target it did not pin.
-    pub policy: GuardPolicy,
-}
-
-/// Why a governed dial did not open a socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DialRefusal {
-    /// The endpoint's breaker cell was open. Fast-fail, in microseconds, rather than waiting out a
-    /// dial timeout against a target already known to be down.
-    BreakerOpen,
-    /// The network guard refused the target — an internal address, a cloud metadata host, a scheme
-    /// the posture forbids, or a name that resolved to one of those.
-    GuardRefused,
-    /// The socket did not open: connect, TLS or handshake.
-    Unreachable,
-    /// Nothing on this node can dial, because no I/O half was installed.
-    Detached,
-}
-
-impl DialRefusal {
-    /// The reason a refused unit ends under.
-    #[must_use]
-    pub fn reason(self) -> ReasonCode {
-        match self {
-            // The node declining to try, which is its own reason and not a network failure: a cell
-            // that fast-failed in microseconds and a socket that timed out are different evidence.
-            DialRefusal::BreakerOpen => ReasonCode::BreakerOpen,
-            // A guard refusal is about WHERE the request wanted to go. Nothing survived the walk to
-            // a target the guard would open, which is exactly the no-destination answer -- and not a
-            // scope denial, because the principal's scope was never the question.
-            DialRefusal::GuardRefused => ReasonCode::NoDestination,
-            DialRefusal::Unreachable | DialRefusal::Detached => ReasonCode::DestinationUnreachable,
-        }
-    }
-}
-
-/// **Seam 1 — the provider dial.** The egress leg of a session: one outbound duplex socket, opened
-/// through the network guard, with the breaker beneath it.
-///
-/// Satisfied by `busbar_voice::topology::dial_provider`. That function selects the WebSocket
-/// transport, resolves the axis to the neutral duplex wire, lets the substrate resolve-then-pin-then
-/// -guard the target, probes the breaker cell before any socket and folds the outcome back into it.
-/// None of that belongs in a composition root, and none of it is re-stated here: the root says what
-/// it wants dialed and reads whether it opened.
-pub trait ProviderDial: Send + Sync {
-    /// Open the leg, or say why not.
-    ///
-    /// # Errors
-    ///
-    /// The breaker cell was open, the guard refused the target, the socket did not open, or no I/O
-    /// half is installed.
-    fn dial(&self, target: &DialTarget) -> Result<(), DialRefusal>;
-}
-
-/// **Seam 2 — the session pump.** The per-frame loop over a byte duplex, once both legs are open.
+/// **Seam 1 — the session pump.** The per-frame loop over a byte duplex, once both legs are open.
 ///
 /// Satisfied by `busbar_voice::runtime::{SessionCore, VoiceSession, UplinkForwarder, Outbound}`. The
 /// root's interest in it is one bit wide: whether the session is still pumping. What a frame *is* is
@@ -584,7 +562,7 @@ pub trait SessionPump: Send + Sync {
     fn is_pumping(&self, session: u64) -> bool;
 }
 
-/// **Seam 3 — the metering lease.** Reserve at open, settle per turn, close once.
+/// **Seam 2 — the metering lease.** Reserve at open, settle per turn, close once.
 ///
 /// Satisfied by `busbar_voice::runtime::{MeteringPort, MeteringLease, LeaseState, LeaseCloseGuard}`.
 /// This is not a second ledger: the reservation it drives IS the unit's hold, the settlements it
@@ -610,7 +588,7 @@ pub trait SessionLease: Send + Sync {
     fn close(&self, session: u64);
 }
 
-/// **Seam 4 — the telephony carrier.** The inbound leg that is not a WebSocket the client opened.
+/// **Seam 3 — the telephony carrier.** The inbound leg that is not a WebSocket the client opened.
 ///
 /// Satisfied by `busbar_voice::topology::telephony` and `busbar_voice::runtime::carrier`. The claim
 /// that would route bytes to it is not declared today — the transport it named has no crate — so
@@ -622,19 +600,14 @@ pub trait Carrier: Send + Sync {
     fn available(&self) -> bool;
 }
 
-/// The four seams, unimplemented, refusing honestly.
+/// The three seams, unimplemented, refusing honestly.
 ///
 /// A node built with no I/O half is a real configuration — it is what every test in this file runs
-/// against, and what a `--validate` run is — and the difference between "detached" and "broken" is
-/// worth being able to say. Each answer below is the safe end of a choice that had an unsafe end.
+/// against, and it is what a `--validate` run composes, which is the whole of why validating a
+/// deployment never opens a socket. The difference between "detached" and "broken" is worth being
+/// able to say. Each answer below is the safe end of a choice that had an unsafe end.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Detached;
-
-impl ProviderDial for Detached {
-    fn dial(&self, _target: &DialTarget) -> Result<(), DialRefusal> {
-        Err(DialRefusal::Detached)
-    }
-}
 
 impl SessionPump for Detached {
     fn is_pumping(&self, _session: u64) -> bool {
@@ -667,9 +640,11 @@ impl Carrier for Detached {
 }
 
 /// The I/O half, as the root holds it.
+///
+/// THREE FIELDS AND NOT FOUR. The egress leg is not one of them: a leg is dialled between frames, by
+/// the composition, through the one guarded port that opens the socket — never by a unit inside the
+/// synchronous loop. See this module's header for what stood here and why it went.
 pub struct VoiceIo {
-    /// The egress leg.
-    pub dial: Box<dyn ProviderDial>,
     /// The per-frame loop.
     pub pump: Box<dyn SessionPump>,
     /// The reserve-then-settle object the hold is driven through.
@@ -681,7 +656,6 @@ pub struct VoiceIo {
 impl Default for VoiceIo {
     fn default() -> Self {
         VoiceIo {
-            dial: Box::new(Detached),
             pump: Box::new(Detached),
             lease: Box::new(Detached),
             carrier: Box::new(Detached),
@@ -1024,14 +998,14 @@ pub struct VoiceNode {
     /// each later unit; dropped when the session closes.
     sessions: Mutex<HashMap<u64, SessionBinding>>,
     /// THE CONFIGURED LEGS' RESOLVED CREDENTIALS, bound once after the generation that resolves them
-    /// has been built — see [`resolve_leg_credentials`] for why this cannot be a constructor
+    /// has been built — see [`resolve_leg_bindings`] for why this cannot be a constructor
     /// argument beside the rows it belongs with.
     ///
     /// Set-once and never swapped: a node whose live sessions were opened against one credential
     /// and whose next dial used another would be two deployments on one session table. Unbound is
     /// the honest posture for a node nothing has bound — every leg dials with nothing added, which
     /// is exactly what a deployment that configured no row gets.
-    leg_credentials: std::sync::OnceLock<LegCredentials>,
+    leg_bindings: std::sync::OnceLock<LegBindings>,
 }
 
 /// What unit zero settled for one session: read by every unit after it, decided by none of them.
@@ -1121,7 +1095,7 @@ impl VoiceNode {
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
             sessions: Mutex::new(HashMap::new()),
-            leg_credentials: std::sync::OnceLock::new(),
+            leg_bindings: std::sync::OnceLock::new(),
         }
     }
 
@@ -1140,8 +1114,23 @@ impl VoiceNode {
     /// The same shape the LLM leg's book is bound in and for the same reason: the node is composed
     /// where its rows are decided and the thing it is bound to is decided one build later. A second
     /// call is a no-op rather than a swap of what this node's live sessions already sealed against.
-    pub fn bind_leg_credentials(&self, credentials: LegCredentials) {
-        let _ = self.leg_credentials.set(credentials);
+    pub fn bind_leg_bindings(&self, bindings: LegBindings) {
+        let _ = self.leg_bindings.set(bindings);
+    }
+
+    /// THE ADDRESS A SOCKET IS OPENED TO for one configured host — see [`LegBinding::dial_url`].
+    ///
+    /// `None` for a host nothing was bound for and for a node whose legs were never bound. Unit
+    /// zero seals the row's own host then, which is what it sealed before this table existed: an
+    /// unbound node is a node no composition finished, and it settles what it always settled rather
+    /// than inventing an address.
+    #[must_use]
+    fn leg_dial_url(&self, host: &str) -> Option<&'static str> {
+        self.leg_bindings
+            .get()?
+            .iter()
+            .find(|binding| binding.host == host)
+            .map(|binding| binding.dial_url)
     }
 
     /// THE CREDENTIAL ONE CONFIGURED HOST'S LEG PRESENTS, as its dialect declared it goes.
@@ -1154,11 +1143,11 @@ impl VoiceNode {
         &self,
         host: &str,
     ) -> Option<(busbar_contract::transport::session::CredentialAt, String)> {
-        self.leg_credentials
+        self.leg_bindings
             .get()?
             .iter()
-            .find(|(h, _, _)| *h == host)
-            .map(|(_, at, secret)| (*at, secret.clone()))
+            .find(|binding| binding.host == host)
+            .and_then(|binding| binding.credential.clone())
     }
 
     /// Unit zero's settlement for a session, written once.
@@ -1485,8 +1474,6 @@ pub struct VoiceUnit<'n> {
     pub epoch: u64,
     /// What the route step spent, read back by the settlement table.
     accrued: AtomicU64,
-    /// Whether the dial opened.
-    dialed: Mutex<Option<Result<(), DialRefusal>>>,
     /// How the audit step classified this unit's ending, once it sealed one.
     ///
     /// The record is sealed before the exit path settles, and the ending it sealed is one of the
@@ -1547,7 +1534,6 @@ impl<'n> VoiceUnit<'n> {
             now_ms: 0,
             epoch,
             accrued: AtomicU64::new(0),
-            dialed: Mutex::new(None),
             sealed_finish: Mutex::new(None),
             principal: Mutex::new(None),
         }
@@ -1637,12 +1623,6 @@ impl<'n> VoiceUnit<'n> {
         })
     }
 
-    /// Whether the dial was attempted and what it answered.
-    #[must_use]
-    pub fn dial_outcome(&self) -> Option<Result<(), DialRefusal>> {
-        *self.dialed.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// The upstream this unit's session dials, given the dialect it arrived on.
     fn upstream(&self) -> Option<&'static Upstream> {
         if self.dialect.duplex_upstream {
@@ -1651,20 +1631,6 @@ impl<'n> VoiceUnit<'n> {
             }
         }
         self.node.plane.upstreams().first()
-    }
-
-    /// The dial target for this unit's upstream.
-    fn target(&self) -> Option<DialTarget> {
-        let upstream = self.upstream()?;
-        Some(DialTarget {
-            pool: upstream.lane.as_str().to_string(),
-            lane: 0,
-            url: format!("wss://{}", upstream.host),
-            // The fail-closed posture, unconditionally. A public provider endpoint is exactly the
-            // shape the default exists for, and a root that widened it per dial would be a root
-            // deciding a security question the trust unit owns.
-            policy: GuardPolicy::default(),
-        })
     }
 
     /// What the door is asked to reserve.
@@ -1785,10 +1751,13 @@ impl<'n> VoiceUnit<'n> {
     /// itself emitted, and its answer to the first is that the session's leg is there.
     fn upstream_leg(&self) -> (bool, bool) {
         if self.shape.is_handshake() {
-            (
-                self.target().is_some(),
-                matches!(self.dial_outcome(), Some(Ok(()))),
-            )
+            // SELECTED is whether this session has an upstream to go to at all — the same question
+            // the sealed destination answers. RELAYED is `false`, and it is false by the SHAPE OF
+            // THE LOOP rather than by a reading: a handshake unit emits no relayed byte, and the
+            // leg it sealed is dialled strictly AFTER this unit has ended (the dial runs between
+            // frames, before the next read). Nothing has opened when this figure is taken, so the
+            // honest answer is the one the probe used to arrive at by always failing.
+            (self.upstream().is_some(), false)
         } else {
             (true, self.answered())
         }
@@ -1918,7 +1887,13 @@ impl Units for VoiceUnit<'_> {
                         trust,
                         DestinationFacts::Upstream {
                             transport,
-                            address: UpstreamAddress::socket(upstream.host),
+                            // THE DIALABLE ADDRESS, not the bare host: this is the string the wire
+                            // opens a socket to, and a bare authority is refused before one exists.
+                            address: UpstreamAddress::socket(
+                                self.node
+                                    .leg_dial_url(upstream.host)
+                                    .unwrap_or(upstream.host),
+                            ),
                             lane: upstream.lane,
                         },
                         transport,
@@ -2093,17 +2068,20 @@ impl Units for VoiceUnit<'_> {
             return Decision::proceed(token, RoutePlan::default());
         }
 
-        let Some(target) = self.target() else {
+        if self.upstream().is_none() {
             // No upstream configured. The plane says so honestly rather than fabricating a host,
-            // and the answer here is the same: nowhere to go.
+            // and the answer here is the same: nowhere to go. This is the ONLY refusal left on this
+            // arm, and it is not a judgement about a dial — it is the absence of anywhere to dial.
             return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
-        };
-        let outcome = self.node.io.dial.dial(&target);
-        *self.dialed.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
-        match outcome {
-            Ok(()) => Decision::proceed(token, RoutePlan::default()),
-            Err(refusal) => Decision::refuse(token, Refusal::new(refusal.reason())),
         }
+        // AND A CONFIGURED ROW PROCEEDS. The step used to run a synchronous probe here and refuse
+        // on its answer, which meant a deployment that had configured its upstream correctly was
+        // refused at Route on every session — the probe's default implementor is `Detached`, and
+        // `Detached` refuses. Nothing here judges a dial now: the leg is sealed, the composition
+        // opens it between frames, and the ONE guard that decides whether that socket may be opened
+        // runs there, where the socket is. A refusal from it ends the session at the pump, which is
+        // the honest place for a dial's answer to arrive.
+        Decision::proceed(token, RoutePlan::default())
     }
 
     fn meter(
@@ -2206,7 +2184,12 @@ impl Units for VoiceUnit<'_> {
             // "no error" billed every one of them in full.
             terminal_error: matches!(finish, Some(busbar_contract::FinishClass::Error)),
             recovered: false,
-            dispatched: matches!(self.dial_outcome(), Some(Ok(()))),
+            // NOTHING THIS UNIT DISPATCHED, and for the reason `upstream_leg` states: the leg a
+            // handshake seals is opened after the unit has ended, by the composition, between
+            // frames. A unit cannot have dispatched a socket that by construction does not exist
+            // yet, and a row that claimed otherwise would be charging a dispatch fee for a dial
+            // this unit never made.
+            dispatched: false,
             checkpointed: 0,
             variance: None,
             lane_mismatch: None,

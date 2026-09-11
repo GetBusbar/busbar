@@ -97,14 +97,6 @@ fn every_declared_class_carries_a_figure() {
     );
 }
 
-/// A dial that opens, so a cell can reach the stations past route without an I/O half.
-struct OpenDial;
-impl ProviderDial for OpenDial {
-    fn dial(&self, _target: &DialTarget) -> Result<(), DialRefusal> {
-        Ok(())
-    }
-}
-
 /// A lease that can be taken and never runs dry.
 struct OpenLease;
 impl SessionLease for OpenLease {
@@ -115,6 +107,14 @@ impl SessionLease for OpenLease {
         true
     }
     fn close(&self, _session: u64) {}
+}
+
+/// A node over a PLANE the caller chose, so a cell can drive the one answer that depends on
+/// whether anything is configured at all.
+fn node_over(plane: VoicePlane, io: VoiceIo) -> VoiceNode {
+    let mut built = node(io);
+    built.plane = plane;
+    built
 }
 
 fn node(io: VoiceIo) -> VoiceNode {
@@ -191,7 +191,6 @@ fn node_on_plane(
 
 fn serviceable() -> VoiceIo {
     VoiceIo {
-        dial: Box::new(OpenDial),
         lease: Box::new(OpenLease),
         ..VoiceIo::default()
     }
@@ -259,7 +258,15 @@ fn unit_zero_runs_every_station_and_settles_exactly_once() {
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
     let ended = run(&kernel, &unit);
     assert!(matches!(ended, Ended::Settled { .. }));
-    assert_eq!(unit.dial_outcome(), Some(Ok(())));
+    // AND THE LEG IS SEALED, which is what unit zero's route leg is FOR now that nothing on it
+    // pre-judges a dial. The station used to be read through a synchronous probe's answer; the
+    // observable that replaced it is the settlement itself — a destination the composition can
+    // dial, parked for the thing that can await.
+    assert!(
+        node.bound(7)
+            .is_some_and(|binding| binding.destination.is_some()),
+        "unit zero settled the session's leg, which is the whole of what its route step does"
+    );
 }
 
 /// A CREDENTIAL THE NODE'S OWN DOOR DOES NOT ACCEPT ENDS THE SESSION AT THE AUTHENTICATE STEP,
@@ -347,13 +354,9 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
         };
         let outcome = end.outcome();
         if matches!(outcome, Outcome::Refused(_, _)) {
-            // Read while the node is still alive: a unit refused at the door must not have
-            // dialed, and the dial is the first thing a half-opened session would show.
-            assert_eq!(
-                unit.dial_outcome(),
-                None,
-                "a session refused at authenticate never reaches the provider"
-            );
+            // A refused unit completes nothing, so the driver parks no leg and the composition
+            // dials nothing. That is celled where the parking happens rather than read back
+            // through a probe seam that no longer exists.
         }
         outcome
     };
@@ -469,7 +472,19 @@ fn the_handshake_draws_no_request_slot_and_posts_nothing() {
         panic!("the exit path settles a handshake like anything else");
     };
     assert_eq!(requests, 0, "a handshake reaches no upstream candidate");
-    assert_eq!(fee, 1, "the session's one flat fee is drawn where it opens");
+    // NO FLAT FEE AT THE OPEN, and this is the production figure rather than a new one. The fee is
+    // eligible only on `client_open_or_one_shot && selected_upstream && relayed_first_response_frame`
+    // (`busbar_kernel::teller::fee_count`), and the third of those has always been FALSE on every
+    // shipped composition: the probe that used to answer it is `Detached` in every node `main`
+    // builds, and `Detached` refuses. What changed is the reason, not the number — a handshake unit
+    // relays no frame, and the leg it seals is opened strictly after it has ended.
+    //
+    // WHERE THE ONCE-PER-SESSION FEE IS DRAWN once a leg really does open is the money question the
+    // commit that opens one has to answer; nothing on this node opens one yet.
+    assert_eq!(
+        fee, 0,
+        "no frame has been relayed when the opening unit ends"
+    );
     assert!(matches!(end.outcome(), Outcome::Completed));
     assert_eq!(
         end.into_posted().expect("the report fits").settled(),
@@ -499,39 +514,64 @@ fn a_detached_node_refuses_the_session_at_the_door() {
          reason - not reported as an over-budget principal, and not any other refusal in the \
          vocabulary"
     );
-    assert_eq!(
-        unit.dial_outcome(),
-        None,
-        "a unit refused at the door never reaches the dial"
-    );
+    // NOTHING IS ASSERTED ABOUT A DIAL HERE ANY MORE, and the absence is the point. A synchronous
+    // probe used to stand on the route step and this cell read its answer back to prove the
+    // refusal came first. The dial is no longer on this path at all: a unit refused at the door
+    // completes nothing, so the driver parks no leg, so the composition dials nothing — which is
+    // celled where the parking happens (`root::tests::session_driver`) rather than restated here
+    // through a seam that exists only to be asked.
 }
 
-/// A guard-refused or breaker-open dial ends the opening unit rather than half-opening a session.
-/// The dial is the handshake's route leg, so its refusal is the unit's ending, and the session
-/// the unit would have created does not exist.
+/// ROUTE NO LONGER REFUSES ON A CONFIGURED ROW.
+///
+/// This is the observable R2 exists for. A synchronous `ProviderDial` probe stood on this step and
+/// the step refused on its answer — and the probe's default implementor is `Detached`, which
+/// refuses. So a deployment that had configured its upstream CORRECTLY was refused at Route on
+/// every single session, `Failed(Route, DestinationUnreachable)`, from a node that booted clean.
+/// The guard that decides whether a socket may be opened now runs where the socket is opened, and
+/// this step settles the leg and proceeds.
+///
+/// The assertion is the loop's answer and not the step's, for the reason the cell that stood here
+/// gave: past the door an ending is a failure rather than a refusal, and what a reader wants to
+/// know is which of the two this unit got.
 #[test]
-fn a_refused_dial_ends_the_opening_unit() {
-    struct Guarded;
-    impl ProviderDial for Guarded {
-        fn dial(&self, _target: &DialTarget) -> Result<(), DialRefusal> {
-            Err(DialRefusal::GuardRefused)
-        }
-    }
+fn a_configured_row_is_no_longer_refused_at_route() {
     let kernel = Kernel::new();
-    let node = node(VoiceIo {
-        dial: Box::new(Guarded),
-        lease: Box::new(OpenLease),
-        ..VoiceIo::default()
-    });
+    let node = node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
     let Ended::Settled { end, .. } = run(&kernel, &unit) else {
         panic!("the exit settles it");
     };
-    // **Past the door it is a failure, not a refusal, and the difference is the money.** A unit
-    // stopped before admission was never charged and ends `Refused`; this one was admitted, so
-    // whatever it spent is real and the ending has to say the unit ran and did not get there.
-    // The loop draws that line itself — the step's decision was a refusal either way — which is
-    // why this cell asserts the loop's answer rather than the step's.
+    assert!(
+        !matches!(
+            end.outcome(),
+            Outcome::Failed(busbar_caps::StepName::Route, _)
+        ),
+        "a session whose row IS configured must not fail at Route — nothing on this step judges a \
+         dial any more, got {:?}",
+        end.outcome()
+    );
+    assert!(
+        node.bound(7)
+            .is_some_and(|binding| binding.destination.is_some()),
+        "and what the step did instead is settle the leg the composition will open"
+    );
+}
+
+/// AND A SESSION WITH NO CONFIGURED ROW IS STILL REFUSED, which is the other half and is not a
+/// judgement about a dial at all: it is the absence of anywhere to dial.
+///
+/// The distinction is the whole of why one refusal stayed on this step while the other went. A
+/// plane with no upstream configured answers "where does this go" with nothing, and a step that
+/// proceeded on that would park a leg with no address for the composition to open.
+#[test]
+fn a_session_with_no_configured_upstream_is_refused_at_route() {
+    let kernel = Kernel::new();
+    let node = node_over(VoicePlane::EMPTY, serviceable());
+    let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+    let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+        panic!("the exit settles it");
+    };
     assert!(
         matches!(
             end.outcome(),
@@ -540,7 +580,6 @@ fn a_refused_dial_ends_the_opening_unit() {
         "got {:?}",
         end.outcome()
     );
-    assert_eq!(unit.dial_outcome(), Some(Err(DialRefusal::GuardRefused)));
 }
 
 /// A turn is the governed transaction, and what it reports is what it settles against. The two
@@ -660,33 +699,140 @@ fn the_arrival_chain_records_both_composed_layers() {
 /// Both composed provider endpoints are reachable by their own dialect, and neither is reachable
 /// by the other's. A session that arrived speaking one wire dialing the other's endpoint would be
 /// a session speaking to a server that cannot parse it.
+///
+/// Read off the SEALED DESTINATION rather than off a probe's target, because the seal is what the
+/// composition dials. The two used to be different strings — the probe built `wss://<host>` and the
+/// seal carried the bare host — and only the probe's string was ever a URL, so nothing noticed that
+/// the address a mount would dial was not one this wire can read.
 #[test]
 fn each_dialect_dials_its_own_composed_endpoint() {
+    let kernel = Kernel::new();
     let node = node(serviceable());
-    let realtime = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 0);
+    // THE LEGS, BOUND, because the dialable address is what the composition bound and not something
+    // a unit derives: an unbound node seals the row's own host, which is what it sealed before this
+    // table existed.
+    node.bind_leg_bindings(vec![
+        crate::root::units_voice::LegBinding {
+            host: "api.openai.com",
+            dial_url: "wss://api.openai.com",
+            credential: None,
+        },
+        crate::root::units_voice::LegBinding {
+            host: "generativelanguage.googleapis.com",
+            dial_url: "wss://generativelanguage.googleapis.com",
+            credential: None,
+        },
+    ]);
     assert_eq!(
-        realtime.target().map(|t| t.url),
+        sealed_authority(
+            &kernel,
+            &node,
+            7,
+            &busbar_plane_streams_openai::OPENAI_REALTIME
+        ),
         Some("wss://api.openai.com".to_string())
     );
-    let live = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0)
-        .on_dialect(&busbar_plane_streams_gemini::GEMINI_LIVE);
     assert_eq!(
-        live.target().map(|t| t.url),
+        sealed_authority(&kernel, &node, 8, &busbar_plane_streams_gemini::GEMINI_LIVE),
         Some("wss://generativelanguage.googleapis.com".to_string())
     );
 }
 
+/// The address one session's units sealed, as the wire would read it.
+fn sealed_authority(
+    kernel: &Kernel,
+    node: &VoiceNode,
+    session: u64,
+    dialect: &'static busbar_plane_streams::dialect::Dialect,
+) -> Option<String> {
+    let unit =
+        VoiceUnit::new(node, UnitShape::SessionOpen, session, 1_700_000_000).on_dialect(dialect);
+    let _ = run(kernel, &unit);
+    let binding = node.bound(session)?;
+    let dest = binding.destination?;
+    match dest.facts() {
+        busbar_contract::dest::DestinationFacts::Upstream { address, .. } => {
+            address.authority().map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 /// The dial posture is the fail-closed one, and it is not a per-dial choice. A root that widened
 /// it for one endpoint would be a root deciding a question the trust unit owns.
+///
+/// ASKED OF THE GUARD, because the guard is what holds the posture now. It used to be a field on a
+/// synchronous probe's target, rebuilt per unit; it is one value on the one thing in front of the
+/// one socket.
+#[cfg(feature = "root-duplex-serve")]
 #[test]
 fn every_dial_takes_the_fail_closed_guard_posture() {
-    let node = node(serviceable());
-    let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 0);
-    let target = unit.target().expect("an endpoint is configured");
-    assert_eq!(target.policy, GuardPolicy::default());
+    let policy = busbar_unit_trust::net::GuardPolicy::default();
     assert!(
-        !target.policy.plaintext_admissible(),
+        !policy.plaintext_admissible(),
         "the default posture does not admit plaintext"
+    );
+    // And the guard a composition builds with no argument is built with exactly that posture.
+    let rendered = format!("{:?}", crate::root::egress_guard::EgressGuard::default());
+    assert!(
+        rendered.contains(&format!("{policy:?}")),
+        "the composed guard carries the fail-closed posture, got: {rendered}"
+    );
+}
+
+/// A TRIPPED CELL ON THIS PLANE'S OWN LANE REFUSES ITS DIAL BEFORE A SOCKET.
+///
+/// The voice leg's own evidence that its egress dial is breaker-guarded, driven over the lane a
+/// configured `streams.upstreams:` row is charged on and the address unit zero seals for it. The
+/// guard itself is plane-neutral and celled from both ends in `root::tests::egress_guard`; what this
+/// cell says is that THIS leg's dial goes through it — which is the claim the capability register
+/// records for `breaker-fastfail x voice-client`, and which stopped being true of the unit loop the
+/// moment the synchronous probe was deleted from it.
+///
+/// The refusal is `Refused` and not `AddressRefused`, and the distinction is the whole of "fast
+/// fail": nothing is wrong with the address, and this node is declining to spend a dial timeout
+/// finding out what it already knows.
+#[cfg(feature = "root-duplex-serve")]
+#[tokio::test]
+async fn a_tripped_cell_on_this_planes_lane_refuses_its_dial() {
+    use busbar_unit_breaker::{Breaker, DestinationId};
+
+    const LANE: &str = "voice-realtime";
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let dest = busbar_contract::dest::VerifiedDestination::seal(
+        &kernel.transport_key_token(),
+        busbar_contract::dest::DestinationFacts::Upstream {
+            transport: "ws",
+            // The dialable address a configured row seals — `wss://<host>`, which is what the
+            // composition opens a socket to.
+            address: busbar_contract::dest::UpstreamAddress::socket("wss://api.openai.com"),
+            lane: busbar_contract::LaneId::new(LANE),
+        },
+        "ws",
+        None,
+    );
+    let guard = crate::root::egress_guard::EgressGuard::default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let route: busbar_caps::UnitToken<busbar_caps::Route> =
+        busbar_caps::UnitToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+    let cfg = busbar_unit_breaker::cfg::BreakerCfg::default();
+    for _ in 0..8 {
+        guard.breaker().observe(
+            LANE,
+            DestinationId::new(0),
+            busbar_unit_breaker::Outcome::Transient { retry_after: None },
+            &cfg,
+            now,
+            &route,
+        );
+    }
+    let refused = guard.admit(&dest).await;
+    assert!(
+        matches!(refused, Err(busbar_contract::TransportError::Refused)),
+        "this plane's dial is refused on its own lane's tripped cell, before a socket, got \
+         {refused:?}"
     );
 }
 
@@ -768,7 +914,6 @@ fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
         fn close(&self, _session: u64) {}
     }
     let node = priced_node(VoiceIo {
-        dial: Box::new(OpenDial),
         lease: Box::new(DryLease),
         ..VoiceIo::default()
     });
@@ -864,21 +1009,16 @@ fn a_refused_units_record_carries_the_refusal_and_its_step() {
     assert_eq!(done.outcome.step, None);
 }
 
-/// The four seams refuse rather than pretend. A node whose I/O half was never installed cannot
-/// dial, cannot pump, cannot lease and has no carrier; saying so at the seam is what keeps
-/// "detached" from being reported as "broken", and keeps neither from being reported as "fine".
+/// The three seams refuse rather than pretend. A node whose I/O half was never installed cannot
+/// pump, cannot lease and has no carrier; saying so at the seam is what keeps "detached" from being
+/// reported as "broken", and keeps neither from being reported as "fine".
+///
+/// THERE IS NO FOURTH. The dial seam that stood here was a synchronous probe on a loop that cannot
+/// dial; the guard in front of the socket that IS opened lives beside the thing that opens it
+/// (`root::egress_guard`), and this value has no opinion about egress at all.
 #[test]
 fn the_detached_seams_refuse_honestly() {
     let io = VoiceIo::default();
-    assert_eq!(
-        io.dial.dial(&DialTarget {
-            pool: "voice".into(),
-            lane: 0,
-            url: "wss://example.invalid".into(),
-            policy: GuardPolicy::default(),
-        }),
-        Err(DialRefusal::Detached)
-    );
     assert!(!io.pump.is_pumping(7));
     assert!(io.lease.reserve(7, 1).is_err());
     assert!(!io.lease.settle(7, 1));
@@ -1182,7 +1322,7 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     // deployment that configured none composes the same table a deployment that configured ten
     // does. The rows themselves are asserted in `booted` below.
     // The node comes back beside the port now, because the credentials this node's legs present
-    // are bound onto it one build later (see `resolve_leg_credentials`). This cell is about the
+    // are bound onto it one build later (see `resolve_leg_bindings`). This cell is about the
     // TABLE, so the node is dropped here — what it carries is the same either way.
     let (_node, calls) = crate::compose_voice_governed_calls(&[]);
     let ports: [(
@@ -1349,7 +1489,6 @@ fn unit_zero_reserves_nothing_itself_and_takes_the_sessions_opening_reservation(
         }
     }
     let node = priced_node(VoiceIo {
-        dial: Box::new(OpenDial),
         lease: Box::new(Shared(std::sync::Arc::clone(&seen))),
         ..VoiceIo::default()
     });
@@ -1455,7 +1594,6 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
 fn a_three_turn_session_pays_one_flat_fee() {
     let kernel = Kernel::new();
     let node = priced_node(VoiceIo {
-        dial: Box::new(OpenDial),
         lease: Box::new(OpenLease),
         ..VoiceIo::default()
     });
@@ -1467,8 +1605,13 @@ fn a_three_turn_session_pays_one_flat_fee() {
     else {
         panic!("the exit path settles the open");
     };
-    assert_eq!(opening_fee, 1, "the session's one flat fee, at the open");
+    assert_eq!(
+        opening_fee, 0,
+        "no frame has been relayed when the opening unit ends — the production figure, unchanged"
+    );
 
+    // AND NO TURN DRAWS ONE EITHER, which is the half of the claim that is unchanged: the fee is
+    // the OPEN's, never a turn's, however many turns the conversation runs to.
     let mut turn_fees = 0;
     for _ in 0..3 {
         let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
@@ -1485,9 +1628,17 @@ fn a_three_turn_session_pays_one_flat_fee() {
         turn_fees += fee;
     }
     assert_eq!(
+        turn_fees, 0,
+        "no turn draws a flat fee, however many turns rode the session — the fee is the OPEN's, \
+         which is the half of this claim that never depended on a dial"
+    );
+    assert_eq!(
         opening_fee + turn_fees,
-        1,
-        "one session, one flat fee, however many turns rode it"
+        0,
+        "and the session's total is what a shipped composition has always posted: the fee is \
+         eligible only once a first response frame has been relayed, and no unit on this node has \
+         relayed one. The commit that opens a leg is the one that has to say where the \
+         once-per-session fee is drawn"
     );
 
     // And the reservation side says the same. The turn's estimate reserves no fee; the session's
@@ -2757,7 +2908,7 @@ mod booted {
     /// THE ROWS THE CREDENTIAL CELLS BELOW RESOLVE AGAINST, and the catalog they resolve through.
     ///
     /// A closure rather than a fixture type: what the composition root hands
-    /// `resolve_leg_credentials` is one question — "what origin and credential serve this model" —
+    /// `resolve_leg_bindings` is one question — "what origin and credential serve this model" —
     /// asked of the generation the app build produced, and a cell that built a second catalog type
     /// to ask it would be proving something about that type instead.
     fn catalog(model: &str) -> Option<(&'static str, &'static str)> {
@@ -2783,16 +2934,32 @@ mod booted {
         let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
             .expect("both rows name registered, dialable dialects");
 
-        let resolved = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+        let resolved = crate::root::units_voice::resolve_leg_bindings(&written, &rows, catalog)
             .expect("both rows address a declared model at their own host");
 
         assert_eq!(
             resolved.len(),
-            1,
-            "one entry, for the one dialect of the two that DECLARES where its credential goes"
+            2,
+            "one binding per configured row: what makes a leg dialable is not what it presents \
+             when it arrives, so every row gets an address"
         );
-        let (host, at, secret) = &resolved[0];
-        assert_eq!(*host, "live.example.invalid");
+        assert!(
+            resolved[0].credential.is_none(),
+            "and the openai row's dialect DECLARES that it presents none, which is an answer \
+             rather than a gap: a resolver that fabricated one would be inventing a presentation \
+             its own dialect said it does not use"
+        );
+        assert_eq!(resolved[0].dial_url, "wss://realtime.example.invalid");
+        let binding = &resolved[1];
+        assert_eq!(binding.host, "live.example.invalid");
+        assert_eq!(
+            binding.dial_url, "wss://live.example.invalid",
+            "and the address a socket is opened to is a URL this wire can read, not a bare host"
+        );
+        let (at, secret) = binding
+            .credential
+            .as_ref()
+            .expect("this row's dialect declares where its credential goes");
         assert_eq!(
             *at,
             busbar_contract::transport::session::CredentialAt::Query("key"),
@@ -2829,7 +2996,7 @@ mod booted {
         let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
             .expect("the row names a registered, dialable dialect");
 
-        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+        let refusal = crate::root::units_voice::resolve_leg_bindings(&written, &rows, catalog)
             .expect_err("a row that dials one authority on another's credential refuses boot");
 
         let said = refusal.to_string();
@@ -2867,7 +3034,7 @@ mod booted {
         let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
             .expect("the row names a registered, dialable dialect");
 
-        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+        let refusal = crate::root::units_voice::resolve_leg_bindings(&written, &rows, catalog)
             .expect_err("a row addressing a model this deployment never declared refuses boot");
         assert!(
             refusal.to_string().contains("no-such-model"),
@@ -2896,7 +3063,7 @@ mod booted {
         let mut interner = busbar_contract::Registration::new();
         let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
             .expect("the row names a registered, dialable dialect");
-        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+        let refusal = crate::root::units_voice::resolve_leg_bindings(&written, &rows, catalog)
             .expect_err("a leg that would dial unauthenticated refuses boot");
         assert!(
             refusal
@@ -2927,10 +3094,15 @@ mod booted {
         let mut interner = busbar_contract::Registration::new();
         let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
             .expect("the row names a registered, dialable dialect");
-        let resolved = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+        let resolved = crate::root::units_voice::resolve_leg_bindings(&written, &rows, catalog)
             .expect("a dialect that declares no presentation needs no catalog entry");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "the row is still a configured leg with an address"
+        );
         assert!(
-            resolved.is_empty(),
+            resolved[0].credential.is_none(),
             "and it contributes no credential, which is what its own dialect declared"
         );
     }

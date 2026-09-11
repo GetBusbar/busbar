@@ -78,6 +78,11 @@ pub mod registry;
 // other — an acceptor with nothing to serve, or a driver nothing serves through. It reaches into no
 // plane's anything either: what it is handed is a declared row and a unit set, and it could not say
 // whose they are.
+// THE ONE GUARD IN FRONT OF AN EGRESS DIAL, under the same neutral switch as the leg it guards: the
+// network judge and the breaker cell every plane's outbound duplex socket is opened past. It names
+// no plane and no wire — what it is handed is a sealed destination.
+#[cfg(feature = "root-duplex-serve")]
+pub mod egress_guard;
 // WHERE A RELAYED SESSION'S LEG IS DIALLED, under the SAME neutral switch and for the same reason.
 // The driver is synchronous and cannot dial; this is the half that can, and it names no plane and no
 // wire — what it is handed is a driver, a session handle and something that can open a leg.

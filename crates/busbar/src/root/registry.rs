@@ -602,10 +602,15 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
 
 /// THE ROOT'S DIALLER, over the one `ws` wire the boot seal registered.
 ///
-/// Four fields and every one of them the composition's own decision, spelled once here rather than
+/// Five fields and every one of them the composition's own decision, spelled once here rather than
 /// re-decided per session. What is NOT here is the leg's credential: it is a fact of the ROW a
 /// session's units sealed against, not of the surface the session arrived on, so it rides in with
 /// the address (see [`crate::root::leg_dial::LegDialer::dial`]) and this port keeps no secret.
+///
+/// THE GUARD IS ONE OF THE FIVE, and it is a field rather than a call some caller remembers to make.
+/// This port is the one place a duplex plane's egress socket is opened, so it is the one place the
+/// network judge and the breaker cell can be put where nothing can route around them. A guard that
+/// lived in the composition beside this port would be a guard a second composition could omit.
 ///
 /// * `wire` — the seal's instance, never a fresh one (see this module's header);
 /// * `keys` — the dial-side key handle the deployment provisioned, which is a slot and a
@@ -619,6 +624,9 @@ pub struct WsLegEgress<U: crate::root::session_driver::SessionUnits + ?Sized + S
     wire: std::sync::Arc<WsTransport>,
     keys: busbar_contract::TransportKeyHandle,
     driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+    /// THE ONE GUARD IN FRONT OF THIS SOCKET: the network judge and the endpoint's breaker cell.
+    /// See [`crate::root::egress_guard`] for why it is here and not on the unit loop.
+    guard: crate::root::egress_guard::EgressGuard,
     media: &'static str,
     depth: usize,
 }
@@ -632,6 +640,7 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> std
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsLegEgress")
             .field("keys", &self.keys)
+            .field("guard", &self.guard)
             .field("media", &self.media)
             .field("depth", &self.depth)
             .finish_non_exhaustive()
@@ -650,6 +659,7 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
         wire: std::sync::Arc<WsTransport>,
         keys: busbar_contract::TransportKeyHandle,
         driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+        guard: crate::root::egress_guard::EgressGuard,
         media: &'static str,
         depth: usize,
     ) -> Self {
@@ -657,9 +667,17 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
             wire,
             keys,
             driver,
+            guard,
             media,
             depth,
         }
+    }
+
+    /// The guard in front of this port's socket, so a composition can pre-state a cell and a cell
+    /// can read one back.
+    #[must_use]
+    pub fn guard(&self) -> &crate::root::egress_guard::EgressGuard {
+        &self.guard
     }
 }
 
@@ -684,6 +702,12 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static>
         >,
     > {
         Box::pin(async move {
+            // THE GUARD, BEFORE ANYTHING. The network judge answers whether this node may reach the
+            // address at all — the wire's own dial says in as many words that the guard belongs in
+            // front of it rather than inside it — and the endpoint's breaker cell answers whether
+            // it is worth trying. Held for the length of the dial: dropping it releases a recovery
+            // probe this admission won, on every path out including the cancelled one.
+            let _admitted = self.guard.admit(dest).await?;
             // THE DIAL ITSELF IS THE WIRE'S, and everything about WHERE the leg goes was settled
             // before this call: the destination arrives sealed and already narrowed by the trust
             // unit's resolve-then-pin guard, and the `wss://`-over-cleartext refusal is the dial's

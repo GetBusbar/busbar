@@ -857,7 +857,7 @@
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/units_voice.rs::a_refused_dial_ends_the_opening_unit"
+        "test": "crates/busbar/src/root/tests/units_voice.rs::a_tripped_cell_on_this_planes_lane_refuses_its_dial"
       }
     },
     {

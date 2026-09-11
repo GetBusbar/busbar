@@ -1365,7 +1365,7 @@ async fn run(data_workers: usize) {
         .unwrap_or_default();
     // THE ROWS, COMPOSED ONCE AND HELD BY THE CALLER, because two readers need them and they must
     // be the same list: the node is built over them here, and the credential bind below walks them
-    // beside the written rows they came from (`resolve_leg_credentials`), which is what lets a
+    // beside the written rows they came from (`resolve_leg_bindings`), which is what lets a
     // refusal name the operator's own spelling and the composed row's interned host at once.
     #[cfg(feature = "root-voice")]
     let voice_rows = composed_upstreams(&voice_upstreams);
@@ -1496,10 +1496,10 @@ async fn run(data_workers: usize) {
     // dialect or an un-internable host does: a leg this node cannot authenticate is a claimed URL it
     // would serve as silence.
     #[cfg(feature = "root-voice")]
-    match root::units_voice::resolve_leg_credentials(&voice_upstreams, voice_rows, |model| {
+    match root::units_voice::resolve_leg_bindings(&voice_upstreams, voice_rows, |model| {
         app.model_upstream(model)
     }) {
-        Ok(credentials) => voice_node.bind_leg_credentials(credentials),
+        Ok(bindings) => voice_node.bind_leg_bindings(bindings),
         Err(refusal) => {
             eprintln!("busbar: the composition root did not compose: {refusal}");
             std::process::exit(2);

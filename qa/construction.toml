@@ -1762,3 +1762,54 @@ key = "cell.busbar-voice.plane.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar-voice x plane (busbar-voice, plane): the same `model:` declaration, counted under the plane kind the section belongs to. `streams:` is this plane's own config grammar and the key is a plane-level statement about where a configured leg draws its origin and credential from — the row carries no credential field and gains none, which is the sentence the two lines state (843 -> 845)"
+
+# ── declared raises: R2 — THE ONE GUARD IN FRONT OF AN EGRESS DIAL. A synchronous `ProviderDial`
+# probe stood on the unit loop's Route step and guarded a socket that loop does not open; the socket
+# that IS opened is the composition's, dialled between frames, and it went through no guard at all.
+# The probe, `DialTarget` and `DialRefusal` are deleted and the guard lands once, plane-neutral, on
+# the port that opens the socket: `busbar_unit_trust::net`'s judge and `busbar_unit_breaker`'s
+# admission, in `root::egress_guard`. Every rise below is the COMPOSITION ROOT composing a CORE
+# CAPABILITY ON A UNIT onto the one path every plane's egress dial takes, plus the cells that drive
+# it from both ends. Each expires when the base carries the number.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 48
+because = "busbar x unit (busbar, unit): the guard IS two units, and the root is the one place a unit may be composed. `busbar_unit_breaker`'s admission (`BreakerUnit::try_admit` / `release_probe`, the token-free pair published for exactly this position) and `busbar_unit_trust::net`'s judge (`judge_host_name` / `pin_answer` / `GuardPolicy`) are named by the guard module, by the port that holds it, and by the battery that drives a tripped cell and a single-flight recovery probe through it. A root that re-implemented either rather than naming it would be a second opinion about which addresses this node may reach and which endpoints are down (1,171 -> 1,219)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = "busbar x transport (busbar, transport): the guard answers in the WIRE's vocabulary because its answer is the dial's — `TransportError::AddressRefused` for a target this node may not reach and `TransportError::Refused` for this node declining to try — and it reads the same address shape the wire reads (`ws://`/`wss://`, authority, port) so a composition that sealed an address this wire cannot open is told at the guard rather than at a handshake. The port that holds it grows the field and its `Debug` row (1,104 -> 1,117)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "busbar x plane (busbar, plane): the sealed destination a guard judges is a plane's own settlement, so the guard and its cells read `DestinationFacts::Upstream` and seal one the way unit zero seals one. The units file moves with it: the deleted probe took its refusal vocabulary out and the route step's arm is rewritten to settle the leg and proceed, which is the observable R2 exists for (1,970 -> 1,985)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = "busbar x dialect (busbar, dialect): the same composition counted under the kind a dialect's row belongs to, and the cells that read a sealed address back per dialect. The address a session's units seal is now the DIALABLE url rather than the bare host — the two were different strings and only the deleted probe ever built the url, so nothing had ever dialled the seal — and the cell that used to read the probe's target reads the settlement instead, per dialect, which is what the composition opens (749 -> 762)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar x caps (busbar, caps): the breaker unit's trip/cooldown/recovery fold is TOKEN-BOUND (`Breaker::observe` takes a `&UnitToken<Route>`), so the battery that trips a cell has to mint one through the kernel seal exactly as the unit's own battery does. Minting it in the cell rather than in the guard is the point being kept: the guard runs outside the loop, where no step token exists or may be invented (328 -> 334)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar x kernel (busbar, kernel): a destination is the one thing a composition may not mint for itself, so the guard's battery seals its fixtures through the kernel's own token (`busbar_kernel::teller::Kernel::transport_key_token`) rather than building a `VerifiedDestination` some other way. Two hits, both in the battery, both the seal (178 -> 181)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar x contract-transport (busbar, contract-transport): the guard's refusal is a `busbar_contract::TransportError`, which is the transport-facing contract's own closed failure vocabulary, and the cells assert against the same two arms. A guard with a refusal type of its own would oblige the port to translate one answer into another on the one path that must not grow a second reading (88 -> 91)"
