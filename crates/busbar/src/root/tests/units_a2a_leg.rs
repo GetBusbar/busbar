@@ -227,25 +227,12 @@ fn the_boot_refusal_quotes_the_source_table() {
 //   THE TWO RESTATED CONSTANTS ARE PINNED AGAINST THEIR ONE SOURCE
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// **The pool this plane admits and meters against is the codec's own section name.**
+/// **The pool this plane admits and meters against is pinned on the TOOLING side.**
 ///
-/// A copy that is checked is not a second opinion. The legacy receiving path admits and meters every
-/// A2A unit against `busbar_a2a_codec::CONFIG_SECTION`, and a root that admitted against a different
-/// string would be opening a second set of buckets for one plane's traffic — with both halves
-/// looking healthy, because an empty bucket reconciles.
-#[test]
-fn the_plane_pool_is_the_codec_crates_own_section_name() {
-    let codec = include_str!("../../../../busbar-a2a-codec/src/lib.rs");
-    let declared = codec
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("pub const CONFIG_SECTION: &str = "))
-        .and_then(|rest| rest.split('"').nth(1))
-        .expect("the codec crate declares its config section as a string literal");
-    assert_eq!(
-        PLANE_POOL, declared,
-        "the root's restated pool name and the codec's own section name are one string"
-    );
-}
+/// The cell that pins the root's restated pool name to the codec kind's own declared section name
+/// is `xtask/tests/a2a_plane_pool.rs`, not this file: a cell that must name both halves lives where
+/// both may be named, and a root that named a codec crate in source — or read its file at build
+/// time — is a crate reaching another crate with no edge to score.
 
 /// **The breaker keyspace prefix is the substrate's own.**
 ///

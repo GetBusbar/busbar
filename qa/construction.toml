@@ -1382,3 +1382,28 @@ key = "cell.busbar-core.substrate.count"
 file = "qa/kind-isolation.toml"
 by = 3
 because = """A MOVE BY IDENTITY, the reader's end of it. busbar-core x substrate rises 1 -> 4 because ONE busbar-core test pins a doc comment by READING THE FILE IT LIVES IN -- the `phase:` field doc on HookCfg, which no runtime assertion can reach -- and that file moved from crates/busbar-substrate/src/config/hooks.rs to crates/busbar-substrate-values/src/config/hooks.rs in this same commit. The three hits are the path in the `concat!` and the two sentences of the comment above it that say where the doc now lives and why. No type, no item and no dependency edge changes: busbar-core names the grammar through `busbar_substrate::config::`, exactly as it did, and the re-export makes that spelling byte-identical. A test that pins a doc comment has to name the file the doc is in; that is the whole mechanism."""
+
+# ── ROW 8: the owned A2A leg, and the eight cells its composition moves ─────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = """THE ROOT COMPOSING WHAT IT MOUNTS, and the MOVE form by identity, in one row: `crates/busbar/src/root/units_a2a_leg.rs` is an OWNED A2A leg assembled at boot, with all twenty-three of its kernel bindings sourced from the leg the retiring plugin used to assemble, plus the two shared composition modules the mount reads through (`root/registrations.rs`, the trust unit's two views over a plane's registered peers written ONCE for both mounts, and the `root/mod.rs` declarations). A composition root names the kinds it wires BY CONSTRUCTION -- that is what composition is -- and this landing moves a leg INTO the root rather than growing a new coupling: no dependency edge is added in any table (`kind-isolation:deps`, `:test-deps` and `:build-inputs` are green), no cell row is minted, and the root's naming of the RETIRING crates does not grow with it, because the node's store handle is aliased once (`registrations::NodeStore`) instead of respelled at every site that holds it. This row is `[[cell]] busbar x caps`: the leg's own kernel bindings, tokens and origins."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = """THE ROOT COMPOSING WHAT IT MOUNTS, and the MOVE form by identity, in one row: `crates/busbar/src/root/units_a2a_leg.rs` is an OWNED A2A leg assembled at boot, with all twenty-three of its kernel bindings sourced from the leg the retiring plugin used to assemble, plus the two shared composition modules the mount reads through (`root/registrations.rs`, the trust unit's two views over a plane's registered peers written ONCE for both mounts, and the `root/mod.rs` declarations). A composition root names the kinds it wires BY CONSTRUCTION -- that is what composition is -- and this landing moves a leg INTO the root rather than growing a new coupling: no dependency edge is added in any table (`kind-isolation:deps`, `:test-deps` and `:build-inputs` are green), no cell row is minted, and the root's naming of the RETIRING crates does not grow with it, because the node's store handle is aliased once (`registrations::NodeStore`) instead of respelled at every site that holds it. This row is `[[cell]] busbar x contract-transport`: the arrival the leg is handed, stated by construction where the mount is built."""
+
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """THE ROOT COMPOSING WHAT IT MOUNTS, and the MOVE form by identity, in one row: `crates/busbar/src/root/units_a2a_leg.rs` is an OWNED A2A leg assembled at boot, with all twenty-three of its kernel bindings sourced from the leg the retiring plugin used to assemble, plus the two shared composition modules the mount reads through (`root/registrations.rs`, the trust unit's two views over a plane's registered peers written ONCE for both mounts, and the `root/mod.rs` declarations). A composition root names the kinds it wires BY CONSTRUCTION -- that is what composition is -- and this landing moves a leg INTO the root rather than growing a new coupling: no dependency edge is added in any table (`kind-isolation:deps`, `:test-deps` and `:build-inputs` are green), no cell row is minted, and the root's naming of the RETIRING crates does not grow with it, because the node's store handle is aliased once (`registrations::NodeStore`) instead of respelled at every site that holds it. This row is `[[cell]] busbar x kernel`: the teller loop the leg hands its units to."""
+
+
+
+

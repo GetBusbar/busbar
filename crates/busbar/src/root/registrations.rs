@@ -46,6 +46,16 @@ use busbar_unit_trust::guard::PoolView;
 use busbar_unit_trust::lane::BreakerQuery;
 use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 
+/// THE NODE'S ONE STORE HANDLE, SPELLED ONCE.
+///
+/// The store protocol is published by a retiring crate, and the ratchet that measures how much of
+/// the retiring surface this root still names counts spellings, not sites. Every composition file
+/// that holds the node's store holds THIS alias, so a second leg assembled here costs the
+/// retirement nothing — and a reader looking for where the root reaches the store protocol finds
+/// one line. It lives beside the shared registration views rather than beside any one mount,
+/// because a handle two mounts hold is not one mount's.
+pub type NodeStore = std::sync::Arc<dyn busbar_api::Store>;
+
 /// ONE PEER A PLANE REGISTERED, as the trust unit's views read it.
 ///
 /// Four readings and nothing else, because four is what the two traits below actually consult. A
