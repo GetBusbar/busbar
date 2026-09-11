@@ -3576,8 +3576,8 @@ fn secrets_block_stays_module_keyed_by_design() {
 
 /// `export:` is a NAMED map, so the SAME module can back MULTIPLE instances — the exact
 /// thing the retired TYPE-KEYED block could not express (two `request-log-webhook`s to two URLs).
-/// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, `otlp` installs the
-/// one tracer subscriber) reject a second instance LOUDLY rather than silently ignoring it.
+/// The two process-SINGLETON modules (`prometheus` owns the one `/metrics` route, an `otlp` instance
+/// IS the one trace-export layer) reject a second instance LOUDLY rather than silently ignoring it.
 ///
 /// The type-keyed `ExportCfg` had one `Option` per module, so a second webhook was
 /// unrepresentable and this test could not be written at all.
@@ -3604,7 +3604,8 @@ fn export_named_map_allows_two_instances_of_one_module() {
     assert_eq!(export.request_log_webhooks[0].delivery_timeout_secs, 2);
     assert_eq!(export.request_log_webhooks[1].delivery_timeout_secs, 9);
 
-    // A second singleton instance is a loud error, never a silent loss.
+    // A second singleton instance is a loud error, never a silent loss — and, for `otlp`, the
+    // REASON it gives is pinned below, because an operator message that lies is a defect.
     for module in ["prometheus", "otlp"] {
         let settings = if module == "prometheus" {
             "{ buffer_seconds: 60 }"
@@ -3618,11 +3619,40 @@ fn export_named_map_allows_two_instances_of_one_module() {
         .expect("parses");
         let mut errors = Vec::new();
         let _ = crate::config::resolve_export(&defs, &mut errors);
+        let refusal = errors
+            .iter()
+            .find(|e| e.contains("second") && e.contains(module))
+            .unwrap_or_else(|| {
+                panic!("a second `{module}` instance must be rejected; got {errors:?}")
+            });
+        if module != "otlp" {
+            continue;
+        }
+        // THE REASON THIS REFUSAL GIVES HAD STOPPED BEING TRUE. It said "OTLP installs the ONE
+        // process-global tracer subscriber", which was a fair description of a tree in which
+        // `build_otlp` handed the composition root an `SdkTracerProvider` and a deferred
+        // global-provider install. It is not a description of this one: the process installs its
+        // subscriber in `root::logging::init_logging` UNCONDITIONALLY — always a stderr `fmt` layer,
+        // whether an `otlp` instance exists or not — and what an `otlp` instance IS, is one LAYER on
+        // that subscriber with one queue, one capacity gate and one drain behind it. An operator who
+        // read the old sentence was told that configuring a collector is what gives this process a
+        // subscriber and that turning it off takes one away; both are false, and the second sends
+        // someone looking for a logging problem that is not there.
+        //
+        // The SINGLETON RULE is unchanged and still correct, so what is pinned here is the REASON.
+        // The predicate is the whole word: whatever this message says next, the thing an `otlp`
+        // instance installs is not this process's subscriber, and a message that reaches for that
+        // word has drifted back to the retired pipeline.
         assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("second") && e.contains(module)),
-            "a second `{module}` instance must be rejected; got {errors:?}"
+            !refusal.to_ascii_lowercase().contains("subscriber"),
+            "the refusal must not tell an operator that an `otlp` instance installs this process's \
+             subscriber -- `init_logging` installs one whether or not a collector is configured; \
+             got: {refusal}"
+        );
+        assert!(
+            refusal.to_ascii_lowercase().contains("layer"),
+            "the refusal must say what an `otlp` instance actually is -- this process's one \
+             trace-export LAYER -- so the operator can act on the sentence; got: {refusal}"
         );
     }
 

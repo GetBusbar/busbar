@@ -1707,8 +1707,10 @@ fn default_per_request_fee() -> i64 {
 ///
 /// Note the asymmetry, which is deliberate and load-bearing: the two LOG sinks are `Vec`s (multiple
 /// named instances are the whole point of the named map), while `prometheus` and `otlp` are at most
-/// ONE each — `prometheus` owns the single well-known `/metrics` route and `otlp` installs the one
-/// process-global tracer subscriber, so a second instance could not do anything except silently lose.
+/// ONE each — `prometheus` owns the single well-known `/metrics` route, and an `otlp` instance IS
+/// this process's one trace-export layer (one queue, one capacity gate, one drain behind it), so a
+/// second instance could not do anything except silently lose. The SUBSCRIBER is not OTLP's and
+/// never was: the composition root installs one whether or not a collector is configured.
 /// A second instance of either is therefore a loud boot error, never a silent no-op.
 ///
 /// Each sink's settings carry that instance's resolved [`busbar_plugin::cold::export::projection::Projection`] —
@@ -1984,8 +1986,9 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                 if let Some(owner) = otlp_owner {
                     errors.push(format!(
                         "export.{name}: a second `module: otlp` instance (already defined as \
-                         '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
-                         second instance could only be silently ignored — keep a single instance."
+                         '{owner}'). An `otlp` instance IS this process's one trace-export layer, \
+                         with one queue and one capacity gate behind it; a second could only be \
+                         silently ignored — keep a single instance."
                     ));
                     continue;
                 }
