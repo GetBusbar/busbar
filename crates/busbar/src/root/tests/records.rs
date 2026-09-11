@@ -36,7 +36,7 @@ use std::sync::Arc;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plane_admin::records as audit_record;
 use busbar_plane_mcp::records as call_record;
-use busbar_unit_audit::legacy::Framing;
+use busbar_unit_audit::legacy::{Chain, Framing};
 
 use super::{DeclaredSchemas, RecordLeg};
 
@@ -266,7 +266,7 @@ fn an_append_after_a_restore_continues_the_persisted_chain() {
     let store = FrozenStore::with("audit", AD_SCOPE, &[AD_1, AD_2]);
     let leg = audit_leg(store);
     leg.restore().expect("the store reads");
-    assert_eq!(leg.next_seq(AD_SCOPE), 3);
+    assert_eq!(leg.next_seq(AD_SCOPE).expect("the store reads"), 3);
 
     let suffix = audit_record::audit_suffix(
         1_700_000_120,
@@ -348,7 +348,7 @@ fn a_tampered_row_is_reported_and_the_chain_still_resumes() {
     assert_eq!(restored.chain_breaks.len(), 1, "the edit is detected");
     assert_eq!(restored.records, 2, "and the rows are still restored");
     assert_eq!(
-        leg.next_seq(AD_SCOPE),
+        leg.next_seq(AD_SCOPE).expect("the store reads"),
         3,
         "the chain resumes from the broken tail rather than stopping the evidence"
     );
@@ -456,5 +456,88 @@ fn the_pre_cleave_flat_call_rows_reframe_to_the_neutral_envelopes_and_the_same_t
         restored.rows.last().expect("a tail").hash,
         rows[1].hash,
         "the flat rows seal the tail their own bytes carry"
+    );
+}
+
+// ── THE PER-SCOPE POSITION BOUND ────────────────────────────────────────────────────────────────
+//
+// A leg holds one chain position per scope, and a scope is a PRINCIPAL — a thing the outside world
+// mints. An unbounded map keyed by it is a remote allocation primitive, so the audit unit declares
+// the bound on the position itself and every leg reads that one number. These two tests are the
+// two halves of the claim: the map stops growing, and stopping it never forks a chain.
+
+/// One suffix per call, distinct per sequence so no two records of a scope are byte-identical.
+fn a_call_suffix(ts: u64) -> Vec<u8> {
+    call_record::call_suffix(ts, "srv", "srv_tool", "dispatched", "", "abc123", 7)
+}
+
+/// THE BOUND BITES. One more distinct scope than the audit unit's declared maximum is appended
+/// under, and the map holds exactly the maximum afterwards rather than one entry per scope ever
+/// seen.
+#[test]
+fn the_position_map_stops_at_the_audit_units_declared_scope_bound() {
+    let bound = Chain::<super::LeggedRecord>::MAX_TRACKED_SCOPES;
+    let leg = call_leg(Arc::new(FrozenStore::default()));
+    for i in 0..=bound {
+        leg.append(
+            &format!("vk_{i}"),
+            call_record::OP_APPEND,
+            1,
+            &a_call_suffix(1),
+        )
+        .expect("the leg is admitted and the store keeps it");
+    }
+    assert_eq!(
+        leg.tracked_scopes(),
+        bound,
+        "the position map grew one entry per principal ever seen"
+    );
+}
+
+/// AND EVICTION NEVER FORKS. The first scope appended under is evicted by the bound; its NEXT
+/// append must take the sequence after its persisted tail and link to that tail's hash — resumed
+/// from the store — rather than opening a second chain at sequence one under a scope that already
+/// has one.
+#[test]
+fn an_evicted_scopes_next_append_resumes_from_the_store_rather_than_forking_at_one() {
+    let bound = Chain::<super::LeggedRecord>::MAX_TRACKED_SCOPES;
+    let leg = call_leg(Arc::new(FrozenStore::default()));
+    let evicted = "vk_0";
+
+    let first = leg
+        .append(evicted, call_record::OP_APPEND, 1, &a_call_suffix(1))
+        .expect("the leg is admitted and the store keeps it");
+    assert_eq!(first.seq, 1);
+
+    // `bound` further DISTINCT scopes: one more than the map may hold, so the first is gone.
+    for i in 1..=bound {
+        leg.append(
+            &format!("vk_{i}"),
+            call_record::OP_APPEND,
+            1,
+            &a_call_suffix(1),
+        )
+        .expect("the leg is admitted and the store keeps it");
+    }
+    assert_eq!(leg.tracked_scopes(), bound);
+
+    let next = leg
+        .append(evicted, call_record::OP_APPEND, 2, &a_call_suffix(2))
+        .expect("the leg is admitted and the store keeps it");
+    assert_eq!(
+        next.seq, 2,
+        "an evicted scope opened a SECOND chain at sequence one beside the one it already has"
+    );
+    assert_eq!(
+        next.prev_hash, first.hash,
+        "an evicted scope's next record did not link to its persisted tail"
+    );
+
+    // And the whole chain, read back off the store, verifies end to end.
+    let restored = leg.restore().expect("the store reads");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the resumed chain does not verify: {:?}",
+        restored.chain_breaks
     );
 }

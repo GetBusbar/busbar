@@ -75,6 +75,10 @@ busbar-api = { path = "../api" }
 # fact of every deployment that has written one of these streams.
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The record leg's position cache is BOUNDED and least-recently-used: an insertion-ordered map is
+# what makes "the front is the least recently used" a fact of the container rather than a second
+# structure kept in step with it by hand. See `busbar_unit_audit::legacy::Chain::MAX_TRACKED_SCOPES`.
+indexmap = { workspace = true }
 # The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
 # root owns and holds in `ProductionUnits`.
 busbar-unit-admission = { path = "../busbar-unit-admission" }

@@ -519,10 +519,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14948
+unit_total_ceiling = 14949
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23841
+union_ceiling = 23842
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1630,3 +1630,35 @@ key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "ROOT COMPOSITION of a carried tripwire: the frozen pre-cleave FLAT call rows are moved verbatim out of the deleted host-vtable journal battery into the composition root's record-leg golden, where the code that produces those digests now lives, and joined to the neutral envelopes already frozen there by two assert lines naming them. The root is the one kind entitled to name a plane's record beside the kernel's leg and the store it lands on; busbar-core falls 74306 -> 72894 production lines in the same commit and five busbar-core cells are re-pinned DOWN with it"
+
+# THE PER-SCOPE POSITION BOUND, declared once on the thing it bounds. A leg holds one chain position
+# per scope, a scope is a PRINCIPAL, and a map keyed by a principal with no bound on it is a remote
+# allocation primitive — the caller mints the key. Two streams had noticed this independently and
+# each had written its OWN 16,384 into its own file: the per-call log's, which went with
+# `busbar-core/src/calllog.rs` in the line before this one, and the model-request log's, which is
+# still in `busbar-core/src/proxy/reqlog.rs` and goes with that file. A bound that lives on one
+# stream is a bound the next stream forgets, which is exactly what happened when the per-call log's
+# deletion left the composition root's record leg — the thing that now serves BOTH chained streams
+# — holding an unbounded map.
+#
+# So it is declared ONE place: on `busbar_unit_audit::legacy::Chain`, the position type itself, with
+# the contract that makes eviction safe written on it — a cache miss resumes from the store's last
+# row, never from zero, because a holder that answered a miss with a fresh chain would open a SECOND
+# chain at sequence one under a scope that already has one. Both legs read that one number; neither
+# spells a number of its own; nothing plane-specific enters the unit.
+#
+# ONE SURFACE LINE — `pub const MAX_TRACKED_SCOPES: usize = 16_384;`. The doc comment that carries
+# the eviction contract is not counted by the surface measure. It moves two ceilings and not three:
+# `busbar-unit-audit/src/legacy/chain.rs` is NOT in the kernel's call-graph name-match set (its
+# sibling `entry.rs` is), so the kernel ceiling is unmoved at 5382 and only the unit sum and the
+# union that includes it rise. Measured by deleting the line and re-running the gate: unit-total
+# 14949 -> 14948, union 23842 -> 23841.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "the per-scope position bound declared on busbar_unit_audit::legacy::Chain::MAX_TRACKED_SCOPES, the one type every holder of a chain position holds: one const line carrying the bound and the resumed-from-store eviction contract that makes dropping a position safe, read by both of the composition root's record legs and spelled by neither. It replaces the per-stream 16,384 that was deleted with busbar-core/src/calllog.rs in the commit before this one; busbar-core grows no line and the root's leg stops growing one entry per principal ever seen"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "the same single const line as the unit_total_ceiling raise, counted once here because this union sums the unit half: busbar_unit_audit::legacy::Chain::MAX_TRACKED_SCOPES. The kernel half does not move — chain.rs is not in the kernel's call-graph name-match set — so this is the unit rise carried through and nothing else, against the 1412 busbar-core production lines the same branch deletes"

@@ -380,6 +380,7 @@ dependencies = [
  "hex",
  "http-body",
  "http-body-util",
+ "indexmap",
  "metrics",
  "rcgen",
  "reqwest 0.12.28",

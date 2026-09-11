@@ -289,6 +289,36 @@ impl<R> PartialEq for Chain<R> {
 impl<R> Eq for Chain<R> {}
 
 impl<R: ChainedRecord> Chain<R> {
+    /// THE PER-SCOPE POSITION BOUND: how many of these positions a holder may keep in memory at
+    /// once, for EVERY stream, without exception.
+    ///
+    /// A position is tiny — a tail hash and a sequence — and that is exactly why a map of them grows
+    /// unnoticed. One entry per DISTINCT SCOPE ever seen is one entry per distinct principal, and a
+    /// principal is a thing the outside world mints: an unbounded map keyed by it is a remote
+    /// allocation primitive, and it is remote whether the stream logging under it is a mutation
+    /// log, a per-call log or a stream nobody has written yet. So the bound is declared ONCE, here, on
+    /// the position itself, and every holder of a map of these reads it. A number that lived on one
+    /// stream's descriptor would be a number the next stream forgets.
+    ///
+    /// ## WHAT HAPPENS TO AN EVICTED SCOPE, which is the whole reason the bound is safe
+    ///
+    /// Eviction must never be able to FORK a chain. A holder that drops a position and then
+    /// answered its next append from [`Chain::new`] would open a SECOND chain at sequence one under
+    /// a scope that already has one — two chains that each verify and together describe nothing,
+    /// which is strictly worse than no chain at all.
+    ///
+    /// So the contract on every holder of a bounded map of these is: A CACHE MISS RESUMES FROM THE
+    /// STORE'S LAST ROW, never from zero. The position is a CACHE of something durable, and
+    /// [`Chain::from_persisted_unverified`] is the one way back in — the same call a boot restore
+    /// makes, for one scope instead of all of them. A miss and an eviction are indistinguishable to
+    /// the holder, and they must be: resuming from the store answers both, and it is also what
+    /// makes a scope this process has never appended under safe to admit.
+    ///
+    /// Sixteen thousand three hundred and eighty-four, which is what the retiring per-call log and
+    /// the retiring model-request log each chose independently before either was bounded by a number
+    /// anything else could read.
+    pub const MAX_TRACKED_SCOPES: usize = 16_384;
+
     /// A chain with nothing in it. The first record gets sequence one and an empty previous hash.
     pub fn new() -> Self {
         Chain {

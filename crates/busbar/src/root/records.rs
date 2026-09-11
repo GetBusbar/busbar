@@ -39,8 +39,9 @@
 //! function that recognises the older row and returns the same four parts. A stream with no such
 //! history supplies `None` and the neutral envelope is the only shape it ever sees.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use indexmap::IndexMap;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
 use busbar_contract::ids::RecordSchemaId;
@@ -287,7 +288,13 @@ pub struct RecordLeg {
     /// One chain position per scope. A `Mutex` and not a lock-free map because the position IS the
     /// serialisation point: two appends that read the same tail would seal two records at the same
     /// sequence and fork the chain.
-    positions: Mutex<HashMap<String, Chain<LeggedRecord>>>,
+    ///
+    /// BOUNDED at [`Chain::MAX_TRACKED_SCOPES`], the audit unit's one declared per-scope bound, and
+    /// least-recently-used: an [`IndexMap`] so insertion order doubles as recency order — an
+    /// appended scope moves to the back, and once the map is over the bound the FRONT is dropped. A
+    /// scope is a principal, and a map keyed by a principal with no bound on it is a remote
+    /// allocation primitive. What makes the eviction safe is [`RecordLeg::resume`], not the map.
+    positions: Mutex<IndexMap<String, Chain<LeggedRecord>>>,
 }
 
 impl std::fmt::Debug for RecordLeg {
@@ -322,16 +329,50 @@ impl RecordLeg {
             framing,
             digests_scope,
             legacy,
-            positions: Mutex::new(HashMap::new()),
+            positions: Mutex::new(IndexMap::new()),
         }
     }
 
     /// The sequence the next record appended to `scope` will carry.
-    #[must_use]
-    pub fn next_seq(&self, scope: &str) -> u64 {
-        self.lock()
-            .get(scope)
-            .map_or(1, busbar_unit_audit::legacy::Chain::next_seq)
+    ///
+    /// A scope the position cache does not hold is RESUMED FROM THE STORE rather than answered as
+    /// one, for the same reason [`RecordLeg::append`] resumes: the cache is bounded, a miss and an
+    /// eviction are indistinguishable, and answering one is how a chain forks.
+    ///
+    /// # Errors
+    ///
+    /// The store refused the read of a scope the cache was not holding.
+    pub fn next_seq(&self, scope: &str) -> Result<u64, LegError> {
+        if let Some(held) = self.lock().get(scope) {
+            return Ok(held.next_seq());
+        }
+        Ok(self.resume(scope)?.next_seq())
+    }
+
+    /// REFILL one scope's position from the store's last row.
+    ///
+    /// The position is a CACHE of something durable, and this is the one way back into it: the same
+    /// read a boot restore makes, for one scope instead of all of them. A scope that has nothing on
+    /// the store comes back as a fresh chain, which is the right answer for a principal appending
+    /// for the first time and the same answer the cache used to give — the difference is that a
+    /// scope which DOES have rows now gets them, instead of a second chain at sequence one.
+    ///
+    /// Unverified on purpose, exactly as `restore` is: a chain that does not verify has already
+    /// been reported by the restore that read it, and refusing to position on a broken tail would
+    /// turn a detected tamper into a total stop on further evidence.
+    fn resume(&self, scope: &str) -> Result<Chain<LeggedRecord>, LegError> {
+        let bodies = self
+            .store
+            .list_plane_records(
+                self.schema.as_str(),
+                &PlaneSelector::Parent(scope.to_string()),
+            )
+            .map_err(|e| LegError::Store(e.0))?;
+        let records: Vec<LeggedRecord> = bodies
+            .iter()
+            .filter_map(|body| self.decode_record(scope, body))
+            .collect();
+        Ok(Chain::from_persisted_unverified(&records))
     }
 
     /// APPEND one record: seal it at the chain's position, offer it to the kernel as a leg, and
@@ -356,7 +397,16 @@ impl RecordLeg {
         // Sealed on a CLONE of the position. The chain advances on the clone; the clone is only
         // written back once the store has the record, which is what makes a failed write leave a
         // contiguous chain rather than a hole.
-        let mut chain = positions.get(scope).cloned().unwrap_or_default();
+        //
+        // A MISS RESUMES FROM THE STORE, and the resume happens UNDER THIS LOCK. The lock is the
+        // chain's serialisation point, so releasing it between reading the tail and sealing against
+        // it would let two appends under the same resumed scope seal at the same sequence — the
+        // fork the position exists to prevent, reintroduced by the refill that was meant to prevent
+        // it. It costs one store read per cache miss, which is once per evicted scope's return.
+        let mut chain = match positions.get(scope) {
+            Some(held) => held.clone(),
+            None => self.resume(scope)?,
+        };
         let record = chain.append(
             scope,
             LeggedInput {
@@ -386,7 +436,24 @@ impl RecordLeg {
             prev_hash: record.prev_hash,
             hash: record.hash,
         };
-        positions.insert(scope.to_string(), chain);
+        // TOUCH TO THE BACK, then evict from the front while over the bound. The position written
+        // back is the advanced clone, and it is written back only now, after the store took the
+        // record.
+        match positions.get_index_of(scope) {
+            Some(idx) => {
+                if let Some((_, held)) = positions.get_index_mut(idx) {
+                    *held = chain;
+                }
+                let back = positions.len() - 1;
+                positions.move_index(idx, back);
+            }
+            None => {
+                positions.insert(scope.to_string(), chain);
+            }
+        }
+        while positions.len() > Chain::<LeggedRecord>::MAX_TRACKED_SCOPES {
+            positions.shift_remove_index(0);
+        }
         Ok(appended)
     }
 
@@ -464,6 +531,12 @@ impl RecordLeg {
                 content: r.content.clone(),
             }));
             positions.insert(scope.clone(), Chain::from_persisted_unverified(&records));
+            // A boot restore reads whatever the store holds, and what the store holds is not
+            // bounded by this process. The same bound applies: what does not fit is dropped here
+            // and resumed from the store on its scope's next append.
+            while positions.len() > Chain::<LeggedRecord>::MAX_TRACKED_SCOPES {
+                positions.shift_remove_index(0);
+            }
         }
         Ok(out)
     }
@@ -512,9 +585,17 @@ impl RecordLeg {
         })
     }
 
+    /// How many chain positions this leg is holding right now. Test-only, and it is the ONE way the
+    /// bound is observable: the bound is a claim about memory, and a claim about memory that nothing
+    /// can read is a comment.
+    #[cfg(test)]
+    fn tracked_scopes(&self) -> usize {
+        self.lock().len()
+    }
+
     /// Poison-recovering: the critical section holds a position and nothing that can be left half
     /// written, so a panic elsewhere must not take the whole stream's evidence with it.
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Chain<LeggedRecord>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, IndexMap<String, Chain<LeggedRecord>>> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
