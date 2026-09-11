@@ -18,6 +18,7 @@
 //! Every body below is bytes this tree has on disk, cited to the file it was taken from, so the
 //! shapes are the ones the planes actually decode rather than shapes chosen to fit the arena.
 
+use busbar_contract::bounded::MAX_KEYS;
 use busbar_kernel::arena::{span_slab, Arena, ArenaBuf};
 
 /// One recorded request shape, and the pointers a plane declares over it.
@@ -195,4 +196,73 @@ fn the_arena_refuses_past_the_declared_ceiling() {
         .expect_err("nothing fits after the whole arena is spent");
     assert_eq!(refused.wanted, 8);
     assert_eq!(refused.remaining, 0);
+}
+
+// ── the two cells that came here with the arena ─────────────────────────────────────────────────
+//
+// They were `busbar-contract`'s, and they could not stay. Both resolve a span table, and
+// `spans::resolve` takes a `&dyn Arena` — a trait the contract DECLARES and, by the layering it is
+// built on, can never implement or reach an implementation of: every implementor is above it.
+// For as long as that was unfaced, each of these cells carried its own leaking double, and what
+// they proved was that the resolver fills a table, not that it fills one inside the ceiling the
+// contract declares. Here they run against the production 4 KiB, so the ceiling is part of the
+// claim.
+
+/// A pointer the body does not carry is ABSENT from the table, not present and empty.
+///
+/// The two are different facts and the loop settles them differently: "the client sent nothing"
+/// and "the client sent something empty" are not the same request. A table that carried a row for
+/// every declared pointer would make them indistinguishable to every reader downstream.
+#[test]
+fn only_the_declared_pointers_the_body_carries_reach_the_table() {
+    let body = br#"{"model":"gpt-4o"}"#;
+    let mut buf = ArenaBuf::new();
+    let mut slab = span_slab();
+    let arena = buf.lease(&mut slab[..]);
+    let table = busbar_contract::spans::resolve(body, &["/model", "/stream"], &arena)
+        .expect("the arena has room");
+
+    assert_eq!(table.len(), 1, "one of the two pointers resolved");
+    assert_eq!(table[0].0, "/model");
+    assert_eq!(table[0].1.of(body), br#""gpt-4o""#);
+    assert!(
+        !table.iter().any(|(name, _)| *name == "/stream"),
+        "a pointer the body does not carry has no row at all"
+    );
+}
+
+/// The table stops at the same ceiling the fact map does.
+///
+/// A plane that declared more places than the kernel can hold facts about is describing a body no
+/// unit could be settled against, so the extra pointers are not considered rather than silently
+/// overrunning a fixed table.
+#[test]
+fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
+    let declared = MAX_KEYS + 2;
+    let mut body = String::from("{");
+    let mut pointers: Vec<&'static str> = Vec::new();
+    for i in 0..declared {
+        if i > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!("\"k{i}\":{i}"));
+        pointers.push(Box::leak(format!("/k{i}").into_boxed_str()));
+    }
+    body.push('}');
+
+    // Every one of them resolves, so nothing but the ceiling can shorten the table.
+    for pointer in &pointers {
+        assert!(matches!(
+            busbar_contract::spans::resolve_pointer(body.as_bytes(), pointer),
+            busbar_contract::spans::Resolved::Found(_)
+        ));
+    }
+
+    let mut buf = ArenaBuf::new();
+    let mut slab = span_slab();
+    let arena = buf.lease(&mut slab[..]);
+    let table = busbar_contract::spans::resolve(body.as_bytes(), &pointers, &arena)
+        .expect("the arena has room");
+    assert_eq!(table.len(), MAX_KEYS);
+    assert_eq!(table[MAX_KEYS - 1].0, pointers[MAX_KEYS - 1]);
 }
