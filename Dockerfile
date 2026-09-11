@@ -57,7 +57,7 @@
 #     getbusbar/busbar
 #
 # Run (a durable SQLite governance store — the four keys, the volume, the tarball; see
-# docs/deployment.md's "busbar in Docker, with a plugin" recipe for the whole thing):
+# docs/getting-started.md’s "busbar in Docker, with a plugin" recipe for the whole thing):
 #   docker run -d -p 8080:8080 \
 #     -e BUSBAR_ADMIN_TOKEN \
 #     -v busbar-plugins:/etc/busbar/plugins:ro \   # the signed tarball lives here
