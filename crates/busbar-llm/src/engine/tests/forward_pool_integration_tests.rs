@@ -166,9 +166,6 @@ async fn capture_latency_metrics() {
         pct_dur(0.90),
         pct_dur(0.99)
     );
-    // When `BUSBAR_PROFILE` is set, emit the per-stage breakdown accumulated across the run (the
-    // `BUSBAR_PROFILE stage=...` lines). No-op otherwise.
-    busbar_substrate::profile::dump();
     server.shutdown().await;
 }
 

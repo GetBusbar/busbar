@@ -342,13 +342,13 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
 
     // THE ONE SHELL AROUND THE ENGINE, CALLED RATHER THAN COPIED. The correlation-id stamp, the
     // `forward` span, the completion shape captured before the parsed body moves into the dispatch
-    // core, the `WrapSetup` profiler stage and the response-stage taps fired on the head are ONE
-    // step — and a step is served once, by the function that owns it. This step used to be written
-    // out a second time here, beside the original, so that the Route step could call the dispatch
-    // core directly; the two copies then drifted in exactly the place nothing on the wire records
-    // (the copy never timed `WrapSetup`, so the shipped leg reported zero samples for a stage the
-    // plane's own shell timed). Calling it is what makes the two legs the same shell instead of two
-    // that agree today.
+    // core and the response-stage taps fired on the head are ONE step — and a step is served once,
+    // by the function that owns it. This step used to be written out a second time here, beside the
+    // original, so that the Route step could call the dispatch core directly; the two copies then
+    // drifted in exactly the place nothing on the wire records — the copy dropped one of the
+    // shell's duties, and no oracle cell could see it, because what it dropped was not a byte
+    // either party reads. Calling it is what makes the two legs the same shell instead of two that
+    // agree today.
     let resp = crate::engine::forward_with_pool_parsed(
         host,
         rt,

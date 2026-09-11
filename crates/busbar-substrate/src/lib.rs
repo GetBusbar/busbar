@@ -42,13 +42,6 @@ pub use busbar_substrate_values::diagnostics;
 pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
 pub mod net_guard;
 // A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
-// relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of
-// reaching back into `busbar_core::profile`. Pure std (atomics/Mutex/Instant), no `App`/`Store`
-// reach, and — like the metrics registry — its accumulator buckets live SINGLE-COMPILED here so a
-// dual-compiled plane test binary shares one profiler rather than splitting the sample set across
-// two core instances. Core re-exports it from `busbar_core::profile` so its own call sites (the
-// `auth`/`ingress` stage spans) are unchanged.
-pub mod profile;
 // A′ (ABI-purity P4): the neutral hot-path OBSERVABILITY floor a plane names via the ABI. Only the
 // pure `HOTPATH_LEVEL` compile-time const lives here (the OTLP/stderr two-filter split's DEBUG
 // floor); the App/webhook/net_guard-facing remainder of observability stays in busbar-core. Core

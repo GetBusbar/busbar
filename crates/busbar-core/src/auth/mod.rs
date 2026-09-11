@@ -1349,9 +1349,6 @@ pub(crate) async fn auth_middleware(
     next: Next,
 ) -> Result<Response, Response> {
     // Clone the path so no immutable borrow of `req` is held while we later mutate its extensions.
-    // Stage timer for the middleware's OWN work; taken (recording) before every `next.run` below so
-    // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
-    let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
 
     // CORE HTTP ROUTES: every first-party route declared its admission bar at the moment it was
@@ -1371,7 +1368,6 @@ pub(crate) async fn auth_middleware(
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
         match auth {
             busbar_plugin_loader::RouteAuth::None => {
-                drop(_mw.take());
                 return Ok(next.run(req).await);
             }
             busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
@@ -1387,7 +1383,6 @@ pub(crate) async fn auth_middleware(
     if let Some(auth) = app.plugin_routes.declared_auth(&path, req.method()) {
         match auth {
             busbar_plugin_loader::RouteAuth::None => {
-                drop(_mw.take());
                 return Ok(next.run(req).await);
             }
             busbar_plugin_loader::RouteAuth::Admin => declared_admin = true,
@@ -1557,7 +1552,6 @@ pub(crate) async fn auth_middleware(
         // through to the governance resolution below and is fully governed.
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
-        drop(_mw.take());
         return Ok(next.run(req).await);
     }
 
@@ -1760,7 +1754,6 @@ pub(crate) async fn auth_middleware(
         }
     }
 
-    drop(_mw.take());
     Ok(next.run(req).await)
 }
 

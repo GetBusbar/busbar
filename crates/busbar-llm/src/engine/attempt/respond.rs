@@ -26,7 +26,6 @@ pub(super) fn deliver<'a>(
     upstream_started: std::time::Instant,
 ) -> impl std::future::Future<Output = Response> + 'a {
     let (host, rt, i, pool) = (hop.host, hop.rt, hop.lane, hop.pool_cell);
-    let _rec = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RecordSuccess);
     // The success feeds the per-lane `ok` counter and the breaker's success window on the ROUTING
     // POOL cell (a HalfOpen lane served here recovers that cell to Closed and clears its probe).
     host.lane_store().record_success_in(pool, i);
@@ -52,15 +51,12 @@ pub(super) fn deliver<'a>(
         lane: i,
         armed: budget_spent,
     };
-    drop(_rec);
     async move {
-        let _resp = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RespBuild);
         // THE REPORT-BACK CELL for this delivery. Handed to whichever tap ends this response — the
         // buffered translate below, or the streaming body wrapper further down — and RIDDEN BACK on
         // the response itself, so the steps that ran before the tap existed can read what it saw
         // without the plane growing a second carry between them.
         let tap = TapCell::new();
-        let _rb_pre = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbPre);
 
         let ct = r.headers().get(CONTENT_TYPE).cloned();
         // The upstream's primary relayed id (bedrock `x-amzn-RequestId`, anthropic `request-id`),
@@ -164,9 +160,6 @@ pub(super) fn deliver<'a>(
             .flatten();
         // The stream wrapper owns the refund decision from here (via `budget_spent`).
         budget_guard.disarm();
-        drop(_rb_pre);
-        let _rb_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbBody);
-        let _rb_new = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbNew);
         let upstream_stream = {
             use http_body_util::BodyExt;
             r.into_body().into_data_stream()
@@ -190,11 +183,6 @@ pub(super) fn deliver<'a>(
             tap.clone(),
         );
         let axum_body = guarded_body.into_body();
-        drop(_rb_new);
-        let _rb_finish =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbFinish);
-        let _rbf_build =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBuild);
         let mut rb = Response::builder().status(status);
         // Cross-protocol streaming reframes the body to the client's format, so the CT must be the
         // ingress client's; same-protocol keeps the upstream CT verbatim.
@@ -215,9 +203,6 @@ pub(super) fn deliver<'a>(
                 }
             }
         }
-        drop(_rbf_build);
-        let _rbf_attach =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfAttach);
         rb = maybe_attach_response_request_id(
             rb,
             hop.ingress_protocol,
@@ -225,8 +210,6 @@ pub(super) fn deliver<'a>(
         );
         // Which routing policy chose this target (a no-op on the default path / when none did).
         rb = maybe_attach_route_policy(rb, hop.chosen_policy_name, &hop.lane_row().model);
-        drop(_rbf_attach);
-        let _rbf_body = busbar_substrate::profile::start(busbar_substrate::profile::Stage::RbfBody);
         let mut resp = rb
             .body(axum_body)
             .unwrap_or_else(|_| status.into_response());

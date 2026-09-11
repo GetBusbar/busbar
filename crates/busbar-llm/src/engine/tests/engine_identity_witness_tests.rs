@@ -92,17 +92,16 @@ fn engine_never_branches_on_operation_identity() {
 ///
 /// `forward_with_pool_parsed` is the shell that wraps the dispatch core
 /// (`forward_with_pool_parsed_inner`): it stamps the per-request correlation id, opens the `forward`
-/// span, captures the completion shape before the parsed body moves into the core, times the
-/// `WrapSetup` profiler stage, and fires the response-stage taps once the head is known. Every one
-/// of those is a STEP, and a step is served once.
+/// span, captures the completion shape before the parsed body moves into the core, and fires the
+/// response-stage taps once the head is known. Every one of those is a STEP, and a step is served
+/// once.
 ///
 /// When this plane was switched onto the composition root, the Route step re-implemented that
 /// shell beside the original and called the dispatch core directly — the same span, the same
 /// `next_request_id`, the same completion-shape capture, the same `fire_stage_taps` projection,
-/// written twice. Two copies of one step is exactly the shape that drifts, and it already had:
-/// the copy omitted `profile::Stage::WrapSetup`, so the SHIPPED leg (the composition-root feature, default on)
-/// reported zero samples for a stage the legacy leg timed, and no oracle cell could see it because
-/// the profiler is not on the wire.
+/// written twice. Two copies of one step is exactly the shape that drifts, and it already had: the
+/// copy silently dropped one of the shell's duties, and no oracle cell could see it, because what
+/// it dropped was not a byte either party reads.
 ///
 /// The invariant that makes that class of drift impossible: the dispatch core has exactly ONE
 /// caller, and it is the shell. Anything else reaching past the shell is a second shell growing
@@ -135,7 +134,8 @@ fn the_dispatch_core_has_exactly_one_caller() {
         callers.len(),
         1,
         "the dispatch core must have exactly ONE caller — the shell that stamps the request id, \
-         times WrapSetup and fires the response taps. Found {}: {:?}. A second caller is a second \
+         captures the completion shape and fires the response taps. Found {}: {:?}. A second \
+         caller is a second \
          shell, and the two drift in exactly the fields no wire byte records.",
         callers.len(),
         callers

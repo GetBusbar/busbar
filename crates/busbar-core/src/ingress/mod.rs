@@ -594,8 +594,6 @@ fn finish_inner(
     refund_on_non_2xx: bool,
     terminal: crate::proxy::reqlog::Terminal,
 ) -> Response {
-    // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
-    let _fin = crate::profile::start(crate::profile::Stage::Finish);
     // Classified by the ONE function every plane's finish classifies with
     // (`telemetry::outcome_of`), so a 503 means the same thing on every `sum by (outcome)`.
     let outcome = crate::telemetry::outcome_of(resp.status().as_u16());

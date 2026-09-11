@@ -1020,10 +1020,10 @@ fn main() {
     // BUSBAR_PROFILE set → periodically dump the per-stage breakdown to stderr (every 20 s), so a
     // live benchmark run reports stage timings without the in-process test driver. Measurement-only
     // opt-in, absent from any production deployment; zero cost when the env is unset.
-    if busbar_substrate::profile::enabled() {
+    if busbar_kernel::profile::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
-            busbar_substrate::profile::dump();
+            busbar_kernel::profile::dump();
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the

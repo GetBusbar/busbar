@@ -197,7 +197,6 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-        let _wrap = busbar_substrate::profile::start(busbar_substrate::profile::Stage::WrapSetup);
         let request_id = host.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -235,7 +234,6 @@ pub(crate) fn forward_with_pool_parsed<'a>(
                 request_id,
             ))
         };
-        drop(_wrap);
         let resp = forward_with_pool_parsed_inner(
             host,
             rt,
@@ -329,10 +327,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // nothing forwarded (byte-identical egress).
     client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
 ) -> Response {
-    // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
-    // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
-    // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep = busbar_substrate::profile::start(busbar_substrate::profile::Stage::Prepare);
     // App-retype WEDGE 3: the failover loop's telemetry emits (upstream-attempt/failure, failover) and
     // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
     // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
@@ -1148,7 +1142,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // the retained `body` bytes. (This used to be a `first_hop_v = v` rebind for the name alone —
     // dropped because the extra binding cost the coroutine a second 80-byte `Option<LazyBody>` slot
     // held across every await of the attempt loop; wave-8a future-shrink.)
-    drop(_prep);
     for attempt_no in 0..=max_cap {
         // Check deadline first (propagated across hops)
         if request_ctx.expired(now()) {
@@ -1160,7 +1153,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         }
 
-        let _pick = busbar_substrate::profile::start(busbar_substrate::profile::Stage::LanePick);
         // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
         // synchronously by `pick_among` before any await), `None` for a Closed-ready no-op admit that
         // won none. The `probe_guard` built right below turns this into a RAII release that covers the
@@ -1212,13 +1204,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .await;
             }
         };
-        // LANE_PICK ends here (a lane + permit are in hand).
-        drop(_pick);
-        // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt — exclude, routing
-        // taps (light path: none), metric-pool label, upstream-attempt telemetry.
-        let _asetup =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
-
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
 
@@ -1260,7 +1245,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
 
         let egress_name = EngineTables::new(rt).lanes()[i].protocol;
-        drop(_asetup);
         // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
         // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
         // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
