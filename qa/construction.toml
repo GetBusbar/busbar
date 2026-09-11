@@ -120,6 +120,23 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
+# The store-face reopen-atomicity ruling (`Store::add_usage`, `assert_usage_survives_reopen_atomically`)
+# is stated once at the shared conformance suite and driven from every backend's own test module,
+# which is two more cross-kind tokens than the two cells below carried before it landed. Neither cell
+# names a new coupling to a kind that was not already crossed here; both were already at their prior
+# ceiling exactly.
+[gate.ceiling_raises."cell.193.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 11
+because = "busbar-plugin-testkit × api: the reopen-atomicity ruling names `StoreResult`, `UsageDelta` and `ModelTokensDelta` alongside the surface it already imported from busbar-api, 1 more cross-kind token than the suite carried before the ruling landed"
+
+[gate.ceiling_raises."cell.206.count"]
+file = "qa/kind-isolation.toml"
+from = 11
+to = 12
+because = "busbar-store-example-plugin × plugin-tooling: the plugin's own test module now drives the split-flush reopen sequence against its FileStore, 1 more cross-kind token than the plugin carried before the ruling's backend-side proof landed"
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

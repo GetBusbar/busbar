@@ -2274,7 +2274,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin-testkit"
 kind = "api"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
@@ -2339,7 +2339,7 @@ count = "26"
 [[cell]]
 crate = "busbar-store-example-plugin"
 kind = "plugin-tooling"
-count = "11"
+count = "12"
 
 [[cell]]
 crate = "busbar-store-example-plugin"
