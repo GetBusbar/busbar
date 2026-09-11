@@ -37,7 +37,12 @@ W="$RAW/expired-oob-work"; mkdir -p "$W/plugins"
 for p in "$LP" "$AP" "$MP"; do
   assert_port_free "$p" || oracle_harness_give_up "port $p busy"
 done
-command -v sqlite3 >/dev/null 2>&1 || oracle_named_gap "sqlite3 not installed"
+# NOT A NAMED GAP, AND THE RULE IS WHY. A gap is an entitlement the CELL holds, declared in
+# cells.json as `needs_fixture: "<ENV VAR>"`; no cell in that file drives this script at all (it is
+# the one driver under scripts/ with no cell naming it today), so there is nothing to declare one.
+# Undeclared, a box without sqlite3 is the harness unable to run what it was asked to run — which is
+# a failure to report, not a cell to quietly stop owing.
+command -v sqlite3 >/dev/null 2>&1 || oracle_harness_give_up "sqlite3 not installed"
 
 tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || oracle_harness_give_up "plugin fetch failed"
 cp "$tarball" "$W/plugins/"

@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "e0355b0ead2d624eb4de18f34aac10cef9d5db11bff74f54b0c4677e73fc786d",
+  "harness_rev": "a3f17d6b5278072a5c3862eeccc22ee247416ca9f5fdbf13eb22cf28702da966",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -79,6 +79,11 @@
         "from": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "to": "e0355b0ead2d624eb4de18f34aac10cef9d5db11bff74f54b0c4677e73fc786d",
         "why": "2026-09-10 documentation-only: every script driver under scripts/ is a harness_rev file, and each now gives up through lib.sh's oracle_harness_give_up (harness_error marked, exit 70) or oracle_named_gap instead of fabricating a `{status:-1, error:\"port N busy\"}` capture and exiting 0 \u2014 a give-up the recorder filed SKIP, which took the cell out of the owed set entirely (AUDIT NOTE-36); no cell re-recorded and no cell's bytes changed"
+      },
+      {
+        "from": "e0355b0ead2d624eb4de18f34aac10cef9d5db11bff74f54b0c4677e73fc786d",
+        "to": "a3f17d6b5278072a5c3862eeccc22ee247416ca9f5fdbf13eb22cf28702da966",
+        "why": "2026-09-10 documentation-only: the drivers under scripts/ are harness_rev files, and a named gap is now an entitlement the CELL holds \u2014 lib.sh's oracle_named_gap refuses a gap no cells.json `needs_fixture` declares, and refuses one claimed while the fixture is present; key-expired-out-of-band.sh's sqlite3 guard becomes a harness give-up because no cell declares it (the auditor's widening of AUDIT NOTE-36); no cell re-recorded and no cell's bytes changed"
       }
     ]
   },

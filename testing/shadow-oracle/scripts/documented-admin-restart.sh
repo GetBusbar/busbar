@@ -136,6 +136,86 @@ PY
   then st_ok "no driver records a give-up: every harness failure exits non-zero"
   else st_fail "drivers above write a give-up capture and exit 0 — those cells can be recorded vacuously"; fi
 
+  echo "(c) a named gap is an entitlement the CELL holds, not one a driver may take"
+  # THE ONE NOTCH WIDER (the auditor's ruling on NOTE-36's residual): a capture carrying
+  # `effects.error` is FAIL unless the cell is DECLARED a named gap in busbar's own cells.json —
+  # `needs_fixture: "<ENV VAR>"`, the same field the recorder itself skips a cell on. The pin's SKIP
+  # semantics are not re-judged anywhere; what is judged is whether the driver was ENTITLED to ask
+  # for one. Driven against the real cells.json, through the real helper, in a scratch driver.
+  st_gapdrv() {  # st_gapdrv <raw-dir> <why> <var> [env assignments...] -> rc, capture on disk
+    local raw="$1" why="$2" var="$3"; shift 3
+    mkdir -p "$raw"
+    RAW="$raw" env "$@" bash -c '
+      source "'"$repo"'/testing/fleet-fixtures/lib.sh"
+      oracle_named_gap "$1" "$2"' _ "$why" "$var" >"$raw/log" 2>&1
+  }
+  # DECLARED, AND THE FIXTURE IS ABSENT — the real store-persist case, the only shape entitled to it.
+  st_gapdrv "$st_tmp/gap-ok" "BUSBAR_TEST_MYSQL_URL is unset: no live backend" "BUSBAR_TEST_MYSQL_URL" \
+    BUSBAR_TEST_MYSQL_URL=
+  st_rc_ok=$?
+  if [ "$st_rc_ok" -eq 0 ] \
+     && [ "$(jq -r 'has("effects") and (.effects | has("named_gap"))' "$st_tmp/gap-ok/captured.json" 2>/dev/null)" = true ] \
+     && [ "$(jq -r 'has("effects") and (.effects | has("harness_error"))' "$st_tmp/gap-ok/captured.json" 2>/dev/null)" = false ]; then
+    st_ok "a gap cells.json declares, with its fixture absent, is a gap"
+  else
+    st_fail "the one declared gap in the tree was refused — the rule has eaten the case it exists to allow"
+  fi
+  # UNDECLARED — a variable no cell asks for. This is a driver exempting itself.
+  st_gapdrv "$st_tmp/gap-undeclared" "a reason nobody wrote down" "BUSBAR_NO_CELL_ASKS_FOR_THIS"
+  st_rc_un=$?
+  if [ "$st_rc_un" -ne 0 ] \
+     && [ "$(jq -r 'has("effects") and (.effects | has("harness_error"))' "$st_tmp/gap-undeclared/captured.json" 2>/dev/null)" = true ]; then
+    st_ok "an UNDECLARED gap is refused (exited ${st_rc_un}, harness_error marked)"
+  else
+    st_fail "an undeclared gap was taken at the driver's word: any driver can now leave the owed set by calling its trouble a gap"
+  fi
+  # DECLARED BUT THE FIXTURE IS PRESENT — the cell was recordable and the driver gave up anyway.
+  st_gapdrv "$st_tmp/gap-present" "BUSBAR_TEST_MYSQL_URL is unset: no live backend" "BUSBAR_TEST_MYSQL_URL" \
+    BUSBAR_TEST_MYSQL_URL=mysql://127.0.0.1/oracle
+  st_rc_pr=$?
+  if [ "$st_rc_pr" -ne 0 ] \
+     && [ "$(jq -r 'has("effects") and (.effects | has("harness_error"))' "$st_tmp/gap-present/captured.json" 2>/dev/null)" = true ]; then
+    st_ok "a gap claimed while its fixture IS present is refused"
+  else
+    st_fail "a cell stopped being owed on a box that had the fixture to record it"
+  fi
+  # AND THE CENSUS, MACHINE-CHECKED: every oracle_named_gap call site in scripts/ names a variable
+  # some cell declares. The list of entitled cells is cells.json's, so it cannot drift from a
+  # comment here: today it is exactly the three plugins.store-persist|store-{mysql,postgres,valkey}.
+  if python3 - "${repo}/testing/shadow-oracle/scripts" "${repo}/testing/shadow-oracle/cells.json" <<'PY'
+import json, pathlib, re, sys
+
+# `needs_fixture` is a BOOLEAN on most cells ("this cell needs the fixture tree") and a STRING on the
+# three that name the environment variable carrying a live backend's URL. Only the string form
+# declares a gap, because only it says WHICH fixture's absence excuses the cell.
+declared = {c["needs_fixture"] for c in json.load(open(sys.argv[2], encoding="utf-8"))["cells"]
+            if isinstance(c.get("needs_fixture"), str)}
+bad = []
+for path in sorted(pathlib.Path(sys.argv[1]).glob("*.sh")):
+    lines = path.read_text().splitlines()
+    # A DRIVER'S `--selftest` BLOCK IS NOT A RECORDING PATH. It builds scratch drivers and reads its
+    # own source, so scanning it finds call sites no recording can ever take — and this very check,
+    # quoted inside one, would otherwise report itself.
+    skip_from = next((i for i, l in enumerate(lines, 1)
+                      if l.startswith('if [ "${1:-}" = "--selftest" ]')), None)
+    skip_to = len(lines)
+    if skip_from:
+        skip_to = next((i for i, l in enumerate(lines, 1) if i > skip_from and l == "fi"), len(lines))
+    for i, line in enumerate(lines, 1):
+        if skip_from and skip_from <= i <= skip_to:
+            continue
+        if line.lstrip().startswith("#") or "oracle_named_gap" not in line:
+            continue
+        if not re.search(r'oracle_named_gap\s+".*?"\s+"\$\{?(\w+)', line):
+            bad.append(f"{path.name}:{i}: a named gap claimed with no declaring variable")
+for b in bad:
+    print("    " + b)
+print("    cells.json entitles: " + (", ".join(sorted(declared)) or "NOTHING"))
+sys.exit(1 if (bad or not declared) else 0)
+PY
+  then st_ok "every named-gap call site names a variable, and cells.json declares some"
+  else st_fail "a named gap above is claimed with no declaring variable at all"; fi
+
   [ "$st_bad" -eq 0 ] || { echo "documented-admin-restart.sh --selftest: RED"; exit 1; }
   echo "documented-admin-restart.sh --selftest: green"
   exit 0

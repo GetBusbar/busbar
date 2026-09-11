@@ -81,8 +81,24 @@ not_pass="$(awk -F'\t' 'NF && $2!="PASS"{printf " %s(%s)", $1, $2}' "$src/ledger
 # before it becomes the reference every later candidate is measured against. Zero of the 915 cells
 # in the committed golden carry any of these markers: a recording that answers busbar's questions
 # has no `error` in its effects and no -1 status.
-bad_cells="$(python3 - "$src/cells" <<'PY'
+#
+# ONE NOTCH WIDER, AND THE NOTCH IS WHERE THE EXEMPTION LIVES. `effects.error` is a refusal UNLESS
+# the cell is DECLARED a named gap in busbar's own cells.json — `needs_fixture: "<ENV VAR>"`, the
+# string form, which says WHICH fixture's absence excuses it. The pinned tool's SKIP semantics are
+# not re-judged by any of this and never can be from here: what is judged is whether the cell was
+# ENTITLED to the exemption it is carrying. Even a declared gap is refused as a MERGE INPUT, and for
+# a different reason — a gap is a SKIP row with no cell file at all, so a gap that arrives as a cell
+# is an artifact that recorded something while claiming it could not.
+bad_cells="$(python3 - "$src/cells" "$data/cells.json" <<'PY'
 import json, pathlib, sys
+
+cells = json.load(open(sys.argv[2], encoding="utf-8"))["cells"]
+# id -> the fixture variable whose absence excuses it. `needs_fixture` is a boolean on most cells
+# ("this cell needs the fixture tree") and a string only on the ones that may be gaps.
+entitled = {c["id"]: c["needs_fixture"] for c in cells
+            if isinstance(c.get("needs_fixture"), str)}
+# the cell FILE name is the id with every `|` written `__`, the spelling record.sh writes
+by_file = {i.replace("|", "__") + ".json": v for i, v in entitled.items()}
 
 bad = []
 for path in sorted(pathlib.Path(sys.argv[1]).glob("*.json")):
@@ -96,8 +112,16 @@ for path in sorted(pathlib.Path(sys.argv[1]).glob("*.json")):
              if isinstance(effects, dict) and k in effects]
     if cell.get("status") == -1:
         marks.append("status: -1")
-    if marks:
-        bad.append(f"{path.name}: {', '.join(marks)}")
+    if not marks:
+        continue
+    declared = by_file.get(path.name)
+    if declared and "harness_error" not in marks:
+        bad.append(f"{path.name}: {', '.join(marks)} — cells.json DOES declare this cell a named gap "
+                   f"(needs_fixture = {declared!r}), and a named gap is a SKIP row with NO cell "
+                   f"file: this artifact recorded a cell while carrying the claim it could not")
+    else:
+        bad.append(f"{path.name}: {', '.join(marks)} — no cell in cells.json declares this cell a "
+                   f"named gap, so this capture is the harness giving up")
 print("\n".join(bad))
 PY
 )"

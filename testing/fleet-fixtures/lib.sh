@@ -184,10 +184,12 @@ oracle_clear_control() {  # oracle_clear_control <control-file> <mock-port>
 #                           exits NON-ZERO, which it refuses the cell for again. Two independent
 #                           signals for one fact, because the whole defect was a single signal the
 #                           recorder happened to read as something else.
-#   oracle_named_gap        this HOST cannot host this cell (no live backend URL, no sqlite3). That
-#                           is not a failure and never was: it stays the -1 SKIP the recorder reads
-#                           as UNSUPPORTED, and it exits 0 — but it must be SAID, in its own word,
-#                           so that a give-up can never be mistaken for one by accident.
+#   oracle_named_gap        this HOST cannot host this cell, AND busbar's own cell list says so:
+#                           the cell declares `needs_fixture: "<ENV VAR>"` and that variable is
+#                           unset here. That is not a failure and never was: it stays the -1 SKIP
+#                           the recorder reads as UNSUPPORTED, and it exits 0 — but the entitlement
+#                           is the CELL'S, checked against cells.json on the way through, so a
+#                           driver cannot exempt itself by naming its own trouble a gap.
 #
 # 70 (EX_SOFTWARE) rather than 1: a driver's own `fail 1` means "busbar exited 1", and the two must
 # not read alike in a log.
@@ -200,10 +202,50 @@ oracle_harness_give_up() {  # oracle_harness_give_up <why> [effects-json]
   exit 70
 }
 
-oracle_named_gap() {  # oracle_named_gap <why> — this host cannot host the cell; not a failure
-  local why="$1"
-  jq -n --arg err "$why" '{status:-1, headers:{}, body:"", effects:{error:$err, named_gap:$err}}' >"${RAW:?}/captured.json"
-  printf 'named gap: %s\n' "$why" >&2
+# A NAMED GAP IS A CLAIM, AND A CLAIM THE PRODUCT DID NOT MAKE IS A FAILURE. `oracle_named_gap`
+# writes a capture that the recorder reads as UNSUPPORTED and files SKIP, which takes the cell out
+# of the owed set: never compared, never in diverging.txt. That is the right answer when the BOX
+# cannot host the cell — and it is exactly the answer a broken driver would like to give about
+# itself. So the entitlement is not the driver's to assert. It is DECLARED IN cells.json, by the
+# cell, as `needs_fixture: "<ENV VAR>"` — the same field the recorder itself skips a cell on, so the
+# two halves cannot disagree about which cells may be gaps. Two conditions, both checked here:
+#
+#   * SOME CELL DECLARES IT. A driver naming a variable no cell in busbar's own cell list asks for
+#     is claiming an exemption nobody wrote down, which is the whole shape this rule exists to
+#     refuse. Undeclared -> it is a harness failure, marked and non-zero, like any other.
+#   * AND THE VARIABLE IS ACTUALLY UNSET. A gap claimed while the fixture IS present is a driver
+#     giving up on a cell it was equipped to record — the cell would silently stop being owed on a
+#     box that could have answered it.
+#
+# The cell list is read where the oracle keeps it ($BUSBAR_ORACLE_DATA, else the tree's own copy),
+# never from a path beside this file, so a driver cannot be pointed at a friendlier cell list.
+oracle_cells_json() {  # the product's own cell list, whatever root this recording is rooted at
+  local d="${BUSBAR_ORACLE_DATA:-}"
+  [ -n "$d" ] || d="$(cd "$(dirname "${BASH_SOURCE[0]}")/../shadow-oracle" 2>/dev/null && pwd)"
+  printf '%s/cells.json' "$d"
+}
+
+oracle_gap_is_declared() {  # oracle_gap_is_declared <ENV VAR> — rc 0 when a cell asks for it
+  local var="${1-}" cells; cells="$(oracle_cells_json)"
+  [ -n "$var" ] && [ -f "$cells" ] || return 1
+  python3 - "$cells" "$var" <<'PY'
+import json, sys
+cells = json.load(open(sys.argv[1], encoding="utf-8")).get("cells", [])
+sys.exit(0 if any(c.get("needs_fixture") == sys.argv[2] for c in cells) else 1)
+PY
+}
+
+oracle_named_gap() {  # oracle_named_gap <why> <ENV VAR the cell declares as needs_fixture>
+  local why="$1" var="${2-}" cells; cells="$(oracle_cells_json)"
+  if ! oracle_gap_is_declared "$var"; then
+    oracle_harness_give_up "claimed a named gap (${why}) on \`${var:-<no variable named>}\`, which no cell in ${cells} declares as needs_fixture. A gap is an entitlement the CELL holds, not one a driver may take: undeclared, this is the harness giving up"
+  fi
+  if [ -n "${!var:-}" ]; then
+    oracle_harness_give_up "claimed a named gap (${why}) while \`${var}\` IS set: the fixture this cell needs is present, so the cell was recordable and giving up on it would take it out of the owed set on a box that could have answered it"
+  fi
+  jq -n --arg err "$why" --arg var "$var" \
+    '{status:-1, headers:{}, body:"", effects:{error:$err, named_gap:$err, named_gap_fixture:$var}}' >"${RAW:?}/captured.json"
+  printf 'named gap: %s (declared by cells.json as needs_fixture %s)\n' "$why" "$var" >&2
   exit 0
 }
 

@@ -49,9 +49,12 @@ if [ -z "$SETTINGS" ] && [ -n "$URL_VAR" ]; then
   url="${!URL_VAR:-}"
   # record.sh gates these cells on the same var, so an unset one should never reach here. If it
   # does (a direct call), refuse as a NAMED GAP -- this host has no backend to record against, which
-  # is not the harness breaking -- rather than booting on `{}` and
-  # recording whatever a store with no backend answers as the 1.5.5 contract.
-  [ -n "$url" ] || oracle_named_gap "$URL_VAR is unset: no live backend for $PLUGIN"
+  # is not the harness breaking -- rather than booting on `{}` and recording whatever a store with
+  # no backend answers as the 1.5.5 contract. The variable is passed to the helper because the
+  # ENTITLEMENT is the cell's: `plugins.store-persist|<name>` declares `needs_fixture: "$URL_VAR"`
+  # in cells.json, and lib.sh refuses the gap if no cell does (and refuses it again if the fixture
+  # is in fact present here).
+  [ -n "$url" ] || oracle_named_gap "$URL_VAR is unset: no live backend for $PLUGIN" "$URL_VAR"
   SETTINGS="{ url: \"${url}\" }"
 fi
 [ -n "$SETTINGS" ] || case "$alias_" in sqlite) SETTINGS="{ db_path: \"${W}/governance.db\" }" ;; *) SETTINGS="{}" ;; esac
