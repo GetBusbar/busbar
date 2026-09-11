@@ -27,9 +27,6 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
-// The host side of the metering-lease seam (minor-19): the real `cost_reserve`/`cost_settle` shims
-// backed by a host-owned `CostHold` lease registry. The vtable's two cost slots forward into it.
-pub mod cost_host;
 mod creds;
 pub mod dispatch;
 pub mod egress;
@@ -544,7 +541,7 @@ impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
         // live carrier settles many increments against it), so the reserve needs no `HostCtx`; the cap is
         // the caller's TRUE grant ceiling in nanodollars. A refuse-all cap returns `None` (the plane fails
         // closed and never opens the session).
-        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos)
+        vtable::reserve_lease(estimate_nanos, fee_nanos, cap_nanos)
             .map(busbar_substrate::plane_host::CostLeaseId)
     }
 
@@ -556,16 +553,16 @@ impl busbar_substrate::plane_host::MeteringHost for EngineHostImpl {
         // Accrue the exact already-priced increment against the SAME `CostHold` the reserve opened and
         // read exhaustion off the real cap. `None` (unknown / closed lease) surfaces so the plane fails
         // closed, exactly as an exhaustion would.
-        cost_host::settle_lease(lease.0, exact_nanos)
+        vtable::settle_lease(lease.0, exact_nanos)
             .map(|exhausted| busbar_substrate::plane_host::SettleOutcome { exhausted })
     }
 
     fn cost_settled(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
-        cost_host::settled_of(lease.0)
+        vtable::settled_of(lease.0)
     }
 
     fn cost_close(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
-        cost_host::close_lease(lease.0)
+        vtable::close_lease(lease.0)
     }
 
     fn price_usage(&self, model: &str, usage: &busbar_substrate::billing::Usage) -> Option<u128> {

@@ -33,42 +33,13 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-/// Exact money in **nanodollars** (1e-9 USD), the same integer unit the engine's per-token pricing
-/// already settles in (the cost unit's card, read through `cost::CostModel`). Integer so accounting is lossless — a
-/// caller's `0.0078345` USD is exactly `7_834_500` nanodollars, with no float drift on the way to
-/// the ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
-pub struct CostAmount(pub u128);
-
-impl CostAmount {
-    /// The zero amount.
-    pub const ZERO: CostAmount = CostAmount(0);
-
-    /// Nanodollars as a raw integer.
-    #[inline]
-    pub fn nanodollars(self) -> u128 {
-        self.0
-    }
-}
-
-impl std::ops::Add for CostAmount {
-    type Output = CostAmount;
-    #[inline]
-    fn add(self, rhs: CostAmount) -> CostAmount {
-        // Saturating, matching the fail-closed money-path discipline (`finalize` uses
-        // saturating_sub, `derive_spend_cents` saturating_add). A hostile/buggy plugin
-        // breakdown or a long run of partial settles must NOT wrap the accumulator to ~0
-        // (silent under-settlement in release, debug panic) — it caps at the ceiling instead.
-        CostAmount(self.0.saturating_add(rhs.0))
-    }
-}
-
-impl std::iter::Sum for CostAmount {
-    fn sum<I: Iterator<Item = CostAmount>>(iter: I) -> CostAmount {
-        // Saturating fold — see the `Add` impl above; a summed sequence cannot wrap to under-charge.
-        iter.fold(CostAmount(0), |acc, c| acc + c)
-    }
-}
+/// THE MONEY THIS FILE NO LONGER OWNS. `CostAmount`, `CostHold` and `Settlement` are the metering
+/// lease — the nanodollar scalar, the reserve/settle/cap/refund arithmetic and its outcome — and
+/// they are `busbar_unit_cost::lease`'s, the crate that owns the card and every other integer the
+/// invoice is derived from. There is ONE copy and it is there; these names are re-exported at their
+/// historical paths so the in-core readers of `crate::plane::cost::{CostAmount, …}` (the itemized
+/// breakdown below, the governance charge fold, the host-side lease shim) are unchanged.
+pub use busbar_unit_cost::lease::{CostAmount, CostHold, Settlement};
 
 /// One labeled line of a [`CostBreakdown`].
 ///
@@ -279,127 +250,6 @@ pub struct Magnitude {
     pub amount: u64,
     /// The caller's declared cap on `amount`, if any (a request asking for more is refused up front).
     pub caller_cap: Option<u64>,
-}
-
-/// The outcome of finalizing a [`CostHold`]: the exact amount to ledger, and the refund owed back to
-/// the budget cell the reserve was taken from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Settlement {
-    /// The true charge — the sum of the plugin's exact [`CostBreakdown`] settlements. This is what the
-    /// ledger records; it is NEVER a core estimate.
-    pub ledgered_total: CostAmount,
-    /// `reserved − settled`, saturating at zero: the unspent reserve to return to the budget cell. Zero
-    /// when the exact charge met or exceeded the (coarse) reserve.
-    pub refund: CostAmount,
-}
-
-/// A cost reserve held across a request or a live streaming session: reserve a coarse over-estimate
-/// at admit for a hard budget-cell debit, settle the EXACT charge as it becomes known, answer "is the
-/// caller's budget dry?" mid-stream so a live session can HARD-STOP, and reconcile the refund at the
-/// end.
-///
-/// # Who prices (core prices nothing)
-///
-/// Every amount this lease takes and returns is already **money** — [`CostAmount`], u128 nanodollars.
-/// Turning a coarse work magnitude (audio seconds, tokens, …) into nanodollars is PRICING, and core
-/// prices nothing and interprets no unit (see the module intro and [`Magnitude`]). So the caller — the
-/// PLANE, or a substrate pricing seam it delegates to — converts its own unit projection to
-/// nanodollars BEFORE calling [`Self::reserve`] / [`Self::settle_partial`]. This lease never sees a
-/// unit count; it is money-denominated end to end. [`Magnitude`] is a SEPARATE, unit-space
-/// pre-admission cap check and has no part in these money amounts.
-///
-/// # Exhaustion (the mid-stream hard-stop)
-///
-/// A live session must be able to HARD-STOP the instant the caller's budget is dry — not wait for
-/// [`Self::finalize`]. The hard ceiling is the caller's money `cap` (third argument to
-/// [`Self::reserve`]), held SEPARATELY from the coarse admission `reserved`: [`Self::is_exhausted`]
-/// fires exactly at `settled ≥ cap`, so a coarse *over-estimated* `reserved` does NOT push the stop
-/// late. The dry signal is therefore NOT `settled ≥ reserved`. An UNCAPPED lease (`cap == None`) is
-/// never exhausted; a zero cap (`Some(CostAmount::ZERO)`, refuse-all) is exhausted from the outset and
-/// is representable DISTINCTLY from "no cap".
-///
-/// # Ledger boundary
-///
-/// This type owns the correctness of the *amounts* — the reserve total, the exact settled sum, the
-/// once-only flat fee, the cap headroom, and the refund — but NOT the ledger: the caller applies
-/// `reserved` to its budget cell at [`CostHold::reserve`] and the [`Settlement`] at
-/// [`CostHold::finalize`]. Pinning the hold to a `(bucket, window)` so the refund lands where it was
-/// reserved is the caller's key choice; this value carries no clock and no cell.
-///
-/// **Accuracy invariant:** the ledgered charge is the sum of the exact `settle_partial`s, never the
-/// coarse reserve. **No double-count:** the flat per-request fee is folded into `reserved` once and
-/// never re-added on settle. **Exhaustion invariant:** the dry signal is `settled ≥ cap`, measured
-/// against the true budget ceiling, independent of the coarse `reserved`.
-#[derive(Debug)]
-pub struct CostHold {
-    reserved: CostAmount,
-    settled: CostAmount,
-    cap: Option<CostAmount>,
-}
-
-impl CostHold {
-    /// Open a hold reserving a coarse `estimate` plus the once-only flat per-request `fee` (the caller
-    /// debits `reserved()` from the budget cell now; the unspent part comes back at [`Self::finalize`]),
-    /// with a hard money `cap` the exact `settled` charge may not exceed before the session is dry.
-    ///
-    /// `cap` is the caller's TRUE budget ceiling in nanodollars, NOT the coarse `estimate`: `None`
-    /// leaves the lease uncapped (never exhausts); `Some(CostAmount::ZERO)` is a refuse-all cap,
-    /// distinct from `None`. All three amounts are money — the plane priced them (see the type doc).
-    pub fn reserve(estimate: CostAmount, fee: CostAmount, cap: Option<CostAmount>) -> CostHold {
-        CostHold {
-            reserved: estimate + fee,
-            settled: CostAmount::ZERO,
-            cap,
-        }
-    }
-
-    /// The amount debited from the budget cell at admit (coarse estimate + flat fee).
-    pub fn reserved(&self) -> CostAmount {
-        self.reserved
-    }
-
-    /// The exact charge settled so far — the running sum of the [`Self::settle_partial`] totals, which
-    /// is what will be ledgered (never the coarse reserve).
-    pub fn settled(&self) -> CostAmount {
-        self.settled
-    }
-
-    /// The remaining budget headroom before exhaustion: `cap − settled`, saturating at zero. `None`
-    /// for an uncapped lease (no finite ceiling); `Some(CostAmount::ZERO)` exactly when exhausted.
-    pub fn remaining(&self) -> Option<CostAmount> {
-        self.cap
-            .map(|c| CostAmount(c.0.saturating_sub(self.settled.0)))
-    }
-
-    /// Whether the caller's budget is dry: the exact `settled` charge has met or passed the money
-    /// `cap`. A live session reads this after each [`Self::settle_partial`] to hard-stop mid-stream.
-    /// Always `false` for an uncapped lease; `true` from the outset for a `Some(CostAmount::ZERO)` cap.
-    ///
-    /// Answered against the TRUE ceiling (`cap`), NOT against the coarse `reserved` — so an
-    /// over-estimated reserve cannot make the stop fire late.
-    pub fn is_exhausted(&self) -> bool {
-        matches!(self.cap, Some(cap) if self.settled >= cap)
-    }
-
-    /// Record an EXACT increment the plane computed and PRICED — a streamed turn's cost as a money
-    /// `exact_total` scalar. Repeatable; the running sum is the true charge. Core does not derive it
-    /// and does NOT parse a breakdown on this hot path: the itemized [`CostBreakdown`] is audit-only
-    /// and travels a SEPARATE tap, so the per-frame settle a high-rate carrier drives accrues in O(1)
-    /// from the scalar total (the plane extracts [`CostBreakdown::total`] before calling).
-    pub fn settle_partial(&mut self, exact_total: CostAmount) {
-        self.settled = self.settled + exact_total;
-    }
-
-    /// Reconcile: the exact total to ledger, and the refund (`reserved − settled`, saturating). An
-    /// over-settle (exact charge above the coarse reserve — the estimate was low) ledgers the true
-    /// amount and refunds zero, never a negative.
-    pub fn finalize(self) -> Settlement {
-        let refund = CostAmount(self.reserved.0.saturating_sub(self.settled.0));
-        Settlement {
-            ledgered_total: self.settled,
-            refund,
-        }
-    }
 }
 
 #[cfg(test)]

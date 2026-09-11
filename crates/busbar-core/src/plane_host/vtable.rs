@@ -21,12 +21,14 @@
 use super::{recover, trust, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, GovRefusal,
-    MeterOutcome, MetricSample, StatusClass, Usage,
+    AuthQuery, AuthResolved, CostLeaseId, CostSettleOut, Decision, EgressDesc, EgressId,
+    EgressOpen, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass, Usage,
 };
 use busbar_plugin::AbiPreamble;
+use busbar_unit_cost::lease::{CostAmount, LeaseBook};
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Mutex;
 
 /// Build the host's [`PlaneHostVtable`]: the FROZEN preamble + sized/versioned header, then every
 /// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives here
@@ -120,13 +122,13 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    set whatever the plane); no plane feature gates it. ───────────────────────────────────────
         gate_decide: Some(super::dispatch::gate_decide),
         // ── WIRED `cost_reserve`/`cost_settle` (minor-19, the METERING-LEASE seam) → the host-owned
-        //    reserve-then-settle `CostHold` lease registry in `super::cost_host`: open a lease over
+        //    reserve-then-settle `CostHold` lease registry in this module: open a lease over
         //    ALREADY-PRICED nanodollars (widened host-side to the internal u128 `CostAmount`), settle
         //    EXACT increments against it, and read back exhaustion so a high-rate carrier plane can
         //    hard-close a live session mid-stream. Always wired (the host owns the lease state whatever
         //    the plane); no plane feature gates it. ─────────────────────────────────────────────────────
-        cost_reserve: Some(super::cost_host::cost_reserve),
-        cost_settle: Some(super::cost_host::cost_settle),
+        cost_reserve: Some(cost_reserve),
+        cost_settle: Some(cost_settle),
     }
 }
 
@@ -435,3 +437,171 @@ extern "C-unwind" fn auth_resolve(
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE METERING-LEASE SEAM (minor-19) — `cost_reserve` / `cost_settle`, and the ONE host-owned book
+// of open leases the FFI slots and the neutral `MeteringHost` seam both write to.
+//
+// A high-rate carrier (a live voice/stream session a plane cannot price after the fact) opens a
+// reserve-then-settle lease, settles EXACT already-priced increments against it as it consumes, and
+// reads back exhaustion so it can hard-close the carrier mid-stream. The (sensitive) budget/ceiling
+// state stays HERE behind an opaque `CostLeaseId`; only the `u64` handle crosses the seam.
+//
+// WHAT IS HERE AND WHY. The ARITHMETIC is `busbar_unit_cost::lease` — the nanodollar scalar, the
+// reserve/settle/cap/refund rules and the book of open leases, in the crate that owns the card and
+// every other integer an invoice is derived from. What is here is the part a money crate must not
+// hold: the process-wide `Mutex` the book is reachable through, and the `extern "C-unwind"` shims
+// with their POD out-params and their fail-closed `catch_unwind`.
+//
+// A compiled-in plane's lease and a dlopen plane's lease are therefore ONE ledger: both mint from
+// the same book, both accrue against the same cap — so exhaustion reflects the real grant ceiling
+// the reserve was opened with, not a plane-private counter.
+//
+// ## Money widening (the u64 ↔ u128 boundary)
+//
+// The frozen ABI slot signatures take `u64` nanodollars — a per-lease amount fits `u64` (a ~$18.4B
+// ceiling, far above any single session) and NO `u128` crosses the hot seam. The shims widen each
+// amount to `CostAmount` (u128 nanodollars) as they build / settle the hold, so the internal
+// accounting stays lossless. The neutral seam is not the frozen FFI and narrows nothing: it is
+// u128 end to end.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The process-wide book of OPEN metering leases. A lease outlives a single host call (a live
+/// carrier settles many increments against it), so the book is process-global rather than
+/// per-dispatch; the hold behind each id carries the reserve/settled/cap state the plane never sees.
+static LEASES: Mutex<LeaseBook> = Mutex::new(LeaseBook::new());
+
+/// Run `f` over the one book, recovering a poisoned lock rather than panicking: a settle that
+/// panicked mid-call must not take every later carrier's metering down with it.
+fn with_leases<R>(f: impl FnOnce(&mut LeaseBook) -> R) -> R {
+    f(&mut LEASES.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+/// NEUTRAL-SEAM `cost_reserve`: open a host-owned reserve-then-settle lease over u128 nanodollars
+/// and return its raw lease id, or `None` on a REFUSE-ALL cap denied at the door. Shares the one
+/// book with the FFI slot, so a static-plane lease is indistinguishable from a dlopen-plane lease.
+pub(crate) fn reserve_lease(
+    estimate_nanos: u128,
+    flat_fee_nanos: u128,
+    cap_nanos: Option<u128>,
+) -> Option<u64> {
+    with_leases(|book| {
+        book.open(
+            CostAmount(estimate_nanos),
+            CostAmount(flat_fee_nanos),
+            cap_nanos.map(CostAmount),
+        )
+    })
+}
+
+/// NEUTRAL-SEAM `cost_settle`: accrue one EXACT u128 increment against the open lease `id` and
+/// report exhaustion, or `None` when `id` names no open lease. The lease stays open.
+pub(crate) fn settle_lease(id: u64, exact_nanos: u128) -> Option<bool> {
+    with_leases(|book| book.settle(id, CostAmount(exact_nanos)))
+}
+
+/// The exact nanodollars SETTLED so far against `id` (the audit tap), or `None` for an unknown lease.
+pub(crate) fn settled_of(id: u64) -> Option<u128> {
+    with_leases(|book| Some(book.settled_of(id)?.nanodollars()))
+}
+
+/// CLOSE and forget the lease `id`, returning its ledgered total (the exact settled sum), or `None`
+/// for an unknown / already-closed lease. Idempotent by construction — the book's own double-refund
+/// guard — so a finished carrier's lease does not leak and a second close refunds nothing.
+pub(crate) fn close_lease(id: u64) -> Option<u128> {
+    let settlement = with_leases(|book| book.close(id))?;
+    // APPLY the refund (`reserved − settled`) back to the budget cell the reserve debited. The
+    // host-owned book is self-contained today (no external grant cell is threaded through it), so
+    // the unspent reserve is RECONCILED here rather than silently discarded: the moment a real
+    // budget cell is wired, credit `settlement.refund` to it at THIS point. Computing it (not
+    // dropping the field) keeps the refund honest and testable — see the `close_lease` refund test.
+    let _refund = settlement.refund;
+    Some(settlement.ledgered_total.nanodollars())
+}
+
+/// WIRED `cost_reserve` → open a host-owned reserve-then-settle lease over ALREADY-PRICED
+/// nanodollars and register it under a freshly minted [`CostLeaseId`].
+///
+/// The `u64` amounts widen to [`CostAmount`]: `reserve_nanos` is the coarse over-estimate,
+/// `flat_fee_nanos` the once-per-lease session fee (`0` = none), and the cap is the TRUE budget
+/// ceiling exhaustion is judged against — `cap_present == false` leaves the lease UNCAPPED (never
+/// exhausts); `cap_present == true` with `cap_nanos == 0` is a REFUSE-ALL cap, denied at the door by
+/// the book itself. On `Ok` the minted [`CostLeaseId`] is written into `out`; a refuse-all cap
+/// returns [`StatusClass::Refused`] (`out` untouched ⇒ the plane reads [`CostLeaseId::NONE`] and
+/// fails closed); a caught panic returns [`StatusClass::Fault`] (`out` untouched).
+extern "C-unwind" fn cost_reserve(
+    host: HostCtx,
+    reserve_nanos: u64,
+    flat_fee_nanos: u64,
+    cap_nanos: u64,
+    cap_present: bool,
+    out: *mut MaybeUninit<CostLeaseId>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`). The book is process-global, so the state is
+        // recovered (validating the live `HostCtx`) and discarded, like `clock_now`.
+        let _state: &HostState = unsafe { recover(host) };
+
+        // `cap_present == false` ⇒ uncapped (never exhausts); otherwise the widened money ceiling.
+        // A refuse-all cap (present, zero) is denied by the book's own door check, and a lease that
+        // can never settle a nonzero increment is not worth opening: `out` is left untouched (the
+        // plane reads `NONE`).
+        let cap = cap_present.then(|| u128::from(cap_nanos));
+        match reserve_lease(u128::from(reserve_nanos), u128::from(flat_fee_nanos), cap) {
+            Some(id) => {
+                // SAFETY: `out` is a writable, aligned `MaybeUninit<CostLeaseId>` for the call (or
+                // null, which `write_out` tolerates); published ONLY on the Ok path.
+                unsafe { busbar_plugin::write_out(out, CostLeaseId(id)) };
+                StatusClass::Ok
+            }
+            None => StatusClass::Refused,
+        }
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
+}
+
+/// WIRED `cost_settle` → accrue ONE exact already-priced increment against an open lease and read back
+/// whether its budget is now exhausted.
+///
+/// The host accrues ONLY the scalar `settle_nanos` (widened to [`CostAmount`]) toward the cap; the
+/// optional itemized `breakdown` bytes are an AUDIT TAP the host never parses on this hot path
+/// (`breakdown_len == 0` ⇒ none). On `Ok` a [`CostSettleOut`] carrying the post-settle exhaustion
+/// flag is written into `out`; an unknown / already-closed lease returns [`StatusClass::Refused`]
+/// (`out` untouched); a caught panic returns [`StatusClass::Fault`] (`out` untouched) — on either the
+/// plane fails closed and hard-closes the carrier.
+extern "C-unwind" fn cost_settle(
+    host: HostCtx,
+    lease: CostLeaseId,
+    settle_nanos: u64,
+    _breakdown_ptr: *const u8,
+    _breakdown_len: usize,
+    out: *mut MaybeUninit<CostSettleOut>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`).
+        let _state: &HostState = unsafe { recover(host) };
+
+        // The `breakdown` bytes are an OPAQUE audit tap the host never parses; only the scalar accrues.
+        // An unknown / already-closed lease (including the `NONE` sentinel) fails closed.
+        match settle_lease(lease.0, u128::from(settle_nanos)) {
+            Some(exhausted) => {
+                let settle_out = CostSettleOut {
+                    size: core::mem::size_of::<CostSettleOut>() as u32,
+                    version: busbar_plugin::hot::POD_VERSION,
+                    exhausted: u8::from(exhausted),
+                    _reserved: 0,
+                };
+                // SAFETY: `out` is a writable, aligned `MaybeUninit<CostSettleOut>` for the call (or
+                // null, tolerated); published ONLY on the Ok path (init-only-on-Ok).
+                unsafe { busbar_plugin::write_out(out, settle_out) };
+                StatusClass::Ok
+            }
+            None => StatusClass::Refused, // unknown/closed lease → out-param left untouched.
+        }
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
+}
+
+#[cfg(test)]
+#[path = "tests/cost_host_tests.rs"]
+mod cost_host_tests;

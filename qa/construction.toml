@@ -519,10 +519,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14949
+unit_total_ceiling = 15074
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23842
+union_ceiling = 23967
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1064,8 +1064,13 @@ allowed_vocabulary = [
   "unpriced_message", "unpriced_classes", "Unpriced", "unpriced",
   "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
 ]
-# The cost crate and the cost host modules, named as module paths rather than as words.
-forbidden_module_paths = ["busbar_unit_cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
+# The cost crate and the cost host modules, named as module paths rather than as words. The third
+# entry was `busbar_core::plane_host::cost_host` while the metering lease had a module of its own in
+# the retiring engine; the lease is `busbar_unit_cost::lease` now and the host side of it is
+# `pub(crate)`, unreachable from any plane by construction. It is respelled rather than dropped: a
+# forbidden path that names nothing forbids nothing, and the reach it was written against still has
+# a spelling.
+forbidden_module_paths = ["busbar_unit_cost::", "busbar_core::cost::", "busbar_unit_cost::lease"]
 # A manifest dependency is the same reach spelled where no source scan would see it.
 forbidden_deps = ["busbar-unit-cost", "busbar-unit-ledger"]
 max_hits = 0
@@ -1662,3 +1667,36 @@ because = "the per-scope position bound declared on busbar_unit_audit::legacy::C
 key = "rules.loc-ceilings.union_ceiling"
 by = 1
 because = "the same single const line as the unit_total_ceiling raise, counted once here because this union sums the unit half: busbar_unit_audit::legacy::Chain::MAX_TRACKED_SCOPES. The kernel half does not move — chain.rs is not in the kernel's call-graph name-match set — so this is the unit rise carried through and nothing else, against the 1412 busbar-core production lines the same branch deletes"
+
+# MOVE busbar_unit_cost::lease (keep-plane-host-breaker-cost). THE METERING LEASE, in the crate that
+# owns money. The nanodollar scalar, the reserve/settle/cap/refund arithmetic and the book of open
+# leases lived in the retiring engine — half in its plane cost module (`CostAmount`, `Settlement`,
+# `CostHold`) and half in the host-vtable file that wrapped them in a process-global registry. Every
+# one of those is an integer rule an invoice is derived from, and the crate whose whole charter is
+# "a pure function over integers, re-derivable by hand" did not hold one of them.
+#
+# The MOVE takes the arithmetic and the book; it does NOT take the process-global `Mutex` or the two
+# `extern "C-unwind"` shims, because a money crate holds no lock and names no ABI. `LeaseBook` is
+# therefore a VALUE with a `const fn new()`, and the host declares the one book it shares as a
+# static over it. What stayed is the seam; what moved is every rule the seam was applying.
+#
+# Measured: busbar-unit-cost 1008 -> 1130 surface lines. No other busbar-unit-* crate moves, and
+# neither busbar-caps, busbar-contract nor busbar-kernel does, so the unit sum and the union that
+# carries it rise by the same number and by nothing else: unit-total 14949 -> 15074, union
+# 23842 -> 23967. busbar-core production falls 72894 -> 72691 in the same commit (-203), and core
+# lines are in neither union.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 125
+because = "MOVE busbar_unit_cost::lease -- the metering lease, moved into the crate that owns money: CostAmount (the u128 nanodollar scalar, its saturating Add and Sum), Settlement (ledgered total + refund), CostHold (the coarse reserve, the exact settled sum, the cap headroom, the mid-stream exhaustion signal and the refund reconciliation) and LeaseBook (the book of open leases: the never-zero minted id, the refuse-all door, the lease that stays open across settles, and the remove-before-finalize double-refund guard). Source file crates/busbar-core/src/plane_host/cost_host.rs, 220 lines, is DELETED in the same commit, and crates/busbar-core/src/plane/cost.rs gives up the three money types and re-points at the face; busbar-core production falls 72894 -> 72691, -203, against +125 here. The process-global Mutex and the two extern \"C-unwind\" shims did NOT move -- a money crate holds no lock and names no ABI -- so LeaseBook is a value with a const fn new() and the host declares the one shared book as a static over it"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 125
+because = "the same MOVE as the unit_total_ceiling raise, busbar_unit_cost::lease: +125 surface lines in busbar-unit-cost and nothing in busbar-caps, busbar-contract or busbar-kernel, so this union rises by exactly the unit rise and by nothing else. The 203 busbar-core production lines the same commit deletes are in neither union"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "MOVE busbar_unit_cost::lease: SIX spellings of the cost unit, each counted twice (the crate name and its kind remainder). TWO in crates/busbar-core/src/plane/cost.rs -- the paragraph that records where the three money types went, and the one re-export line that points every historical caller of crate::plane::cost::{CostAmount, CostHold, Settlement} at them. TWO in crates/busbar-core/src/plane_host/vtable.rs -- the import the metering-lease seam reads the book through, and the section header that says the arithmetic is not here. TWO in crates/busbar-core/src/plane_host/tests/cost_host_tests.rs -- the header naming where the arithmetic these cells used to restate is now proven, and the one cell that defers the refund and over-settle claims to it rather than keeping a second copy of a money rule. The edge is the drain named by [[transitional]] busbar-core -> busbar-unit-*, already recorded as a [[dep]] row at count 1: this landing adds no edge, only spellings, and they go with busbar-core"

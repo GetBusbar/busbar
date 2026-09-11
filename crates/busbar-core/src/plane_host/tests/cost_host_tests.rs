@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/plane_host/cost_host.rs` — the host side of the metering-lease
-//! seam. Each drives the real `extern "C-unwind"` shim over a live `HostState` recovered through the
-//! same `with_dispatch_scope` path a plane's host call takes.
+//! Tests for the METERING-LEASE seam of `crates/busbar-core/src/plane_host/vtable.rs`. Each drives
+//! the real `extern "C-unwind"` shim over a live `HostState` recovered through the same
+//! `with_dispatch_scope` path a plane's host call takes.
+//!
+//! The ARITHMETIC these cells used to restate — the reserve fold, the refund, the exhaustion rule,
+//! the double-refund guard — is `busbar_unit_cost::lease`'s and is proven in that crate's own
+//! `lease_tests`. What is left here is what only this seam can be asked: that the shims widen,
+//! publish and fail closed correctly, and that the FFI and neutral halves reach ONE book.
 
 use super::*;
 use crate::plane_host::{with_dispatch_scope, PlaneHostVtable};
@@ -206,26 +211,10 @@ fn close_lease_applies_the_refund_of_the_unspent_reserve() {
         Some(700),
         "close ledgers the EXACT settled sum, not the coarse reserve"
     );
-    // The refund is `reserved − settled`, saturating at zero — asserted on the underlying `CostHold`
-    // (the same `finalize()` `close_lease` drives), so the reconciled refund is exact and testable.
-    let refunded = CostHold::reserve(CostAmount(1_000), CostAmount(200), Some(CostAmount(10_000)));
-    let mut refunded = refunded;
-    refunded.settle_partial(CostAmount(700));
-    assert_eq!(
-        refunded.finalize().refund,
-        CostAmount(500),
-        "refund = reserved(1200) − settled(700) = 500"
-    );
-    // An OVER-settle (exact charge above the coarse reserve) refunds ZERO, never a negative.
-    let mut over = CostHold::reserve(CostAmount(100), CostAmount(0), Some(CostAmount(10_000)));
-    over.settle_partial(CostAmount(400));
-    let s = over.finalize();
-    assert_eq!(s.ledgered_total, CostAmount(400), "ledgers the true charge");
-    assert_eq!(
-        s.refund,
-        CostAmount(0),
-        "an over-settle refunds zero, never negative"
-    );
+    // That the refund itself is `reserved − settled` saturating at zero, and that an over-settle
+    // refunds nothing rather than a negative, are the LEASE's claims and are proven where the
+    // arithmetic lives (`busbar_unit_cost::lease::lease_tests`); restating them here would be a
+    // second copy of a money rule that must have exactly one.
     // A second close is a harmless None (the removal is the double-refund guard).
     assert_eq!(close_lease(id), None, "no double refund on a second close");
 }
@@ -242,22 +231,24 @@ fn neutral_refuse_all_denies_and_uncapped_never_exhausts() {
 }
 
 #[test]
-fn neutral_and_ffi_seams_share_one_lease_registry() {
-    // Open a lease through the NEUTRAL seam, then settle it through the FFI `settle` shim: the two seams
-    // key off the SAME `LEASES`/`NEXT_ID`, so the FFI settle moves the ledger the neutral reserve opened.
+fn neutral_and_ffi_seams_share_one_lease_book() {
+    // Open a lease through the NEUTRAL seam, then settle it through the REAL FFI `cost_settle` slot:
+    // the two seams reach the SAME book, so the FFI settle moves the ledger the neutral reserve
+    // opened and the neutral audit tap reads the FFI settle back.
     let id = reserve_lease(0, 0, Some(1_000)).expect("opens");
-    assert_eq!(
-        settle(id, 600),
-        Some(false),
-        "FFI settle sees the neutral lease"
-    );
-    assert_eq!(settled_of(id), Some(600), "neutral tap sees the FFI settle");
-    assert_eq!(
-        settle(id, 500),
-        Some(true),
-        "1100 ≥ 1000 → exhausted, one ledger"
-    );
-    let _ = close_lease(id);
+    with_host(|host, vt| {
+        assert!(
+            !settle_ok(host, CostLeaseId(id), 600),
+            "600 < 1_000 → the FFI settle sees the neutral lease and it is not yet dry"
+        );
+        assert_eq!(settled_of(id), Some(600), "neutral tap sees the FFI settle");
+        assert!(
+            settle_ok(host, CostLeaseId(id), 500),
+            "1100 ≥ 1000 → exhausted, one book"
+        );
+        let _ = vt;
+    });
+    assert_eq!(close_lease(id), Some(1_100), "one ledger, not two");
 }
 
 #[test]

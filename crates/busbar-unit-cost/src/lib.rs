@@ -64,6 +64,7 @@
 
 mod currency;
 mod history;
+pub mod lease;
 mod model;
 mod posting;
 mod project;
@@ -71,6 +72,7 @@ mod rate;
 
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
+pub use lease::{CostAmount, CostHold, LeaseBook, Settlement};
 pub use model::{
     CostModel, GroupBucket, GroupRuntime, GroupSpec, GroupTable, LimitMetric, LimitSpec, ScopeSpec,
     GROUP_BUCKET_PREFIX,
