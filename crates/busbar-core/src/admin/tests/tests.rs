@@ -11394,6 +11394,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
                 enabled: true,
                 limits: vec![],
                 child_default: None,
+                tier_bp: None,
             },
         )
         .base_hook(

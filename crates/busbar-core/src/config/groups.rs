@@ -41,7 +41,8 @@ use std::collections::BTreeMap;
 pub use busbar_api::ScopeRef;
 
 pub use busbar_substrate::config::groups::{
-    ChildDefault, GroupCfg, LimitCfg, LimitMetric, LimitWindow, OnExhaust,
+    ChildDefault, GroupCfg, LimitCfg, LimitMetric, LimitWindow, OnExhaust, MAX_TIER_BP,
+    STANDARD_TIER_BP,
 };
 
 /// Validate the whole `groups:` tree: parents exist, acyclic, and every `pool:`
@@ -86,6 +87,21 @@ pub(crate) fn validate_groups(
                          exists; exhausted traffic needs a real pool to land on"
                     ));
                 }
+            }
+        }
+        // THE TIER, in basis points of the standard price, and the two ways an operator can mean
+        // something other than what they wrote. A figure above a hundred times the card is far more
+        // likely a percent written where basis points were asked for than a deployment that charges
+        // one group a hundredfold, and it is refused at the door rather than discovered on an
+        // invoice. Zero is NOT refused: a group that prices at nothing is a real posture — an
+        // internal or trial tier — and the node still books its quantities, which is exactly what a
+        // free tier has to do to stay auditable.
+        if let Some(bp) = group.tier_bp {
+            if bp > MAX_TIER_BP {
+                errors.push(format!(
+                    "groups.{name} has `tier_bp: {bp}`, which is {}x the standard price. The tier                      is in BASIS POINTS of the card, so {STANDARD_TIER_BP} is full price and 5000                      is half; the largest accepted is {MAX_TIER_BP}. If you meant a percentage,                      multiply it by 100",
+                    bp / STANDARD_TIER_BP
+                ));
             }
         }
         if let Some(parent) = &group.parent {

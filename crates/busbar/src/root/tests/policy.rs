@@ -264,6 +264,7 @@ fn configured(name: &str, limits: Vec<LimitCfg>) -> (String, GroupCfg) {
             enabled: true,
             limits,
             child_default: None,
+            tier_bp: None,
         },
     )
 }
@@ -338,6 +339,7 @@ fn a_parent_resolves_to_its_position_in_the_table() {
         enabled: true,
         limits: vec![limit(LimitMetric::Concurrent, 3, None)],
         child_default: None,
+        tier_bp: None,
     };
     let groups = BTreeMap::from([
         ("aaa".to_string(), child),

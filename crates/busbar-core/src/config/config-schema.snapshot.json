@@ -653,6 +653,10 @@
         "parent": {
           "optional": true,
           "type": "String"
+        },
+        "tier_bp": {
+          "optional": true,
+          "type": "u32"
         }
       },
       "kind": "struct",

@@ -1329,7 +1329,14 @@ kind = "caps"
 # once more: the mark a contradicted posting carries is a caps type and always was, and a cell that
 # asserted the count without the mark would pass over the half of the answer that puts a
 # disagreement on the disputes report.
-count = "327"
+#
+# 309 -> 313: FOUR. `tier_at`, the root's one site that turns the sealed `busbar_caps::TierId` into
+# a price, names the type once at its own signature (`kernel.rs:348`); its own cell names it twice
+# more, resolving a gold-bound key and a no-tier one against the same table
+# (`tests/kernel.rs:528,542`); and the journal-row cell that proves a tier-scoped settlement records
+# `tier` on the chain imports the caps vocabulary its fixture already needed once more, inline at the
+# test that needed it (`tests/durability.rs`). Four call sites, one caps name.
+count = "331"
 
 [[cell]]
 crate = "busbar"
@@ -1434,7 +1441,16 @@ count = "954"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1199"
+# 1169 -> 1241: SEVENTY-TWO, all one name doubled. `busbar_unit_cost::TieredAt` — the tier the
+# authenticate step sealed, resolved once at the root's own site — is now the type every settlement
+# and every one of its four plane siblings takes by reference, so `tier_at`'s own home
+# (`kernel.rs`), the four `settle` signatures and their call sites (`units_llm.rs`, `units_a2a.rs`,
+# `units_mcp.rs`, `units_voice.rs`), the journal-row cell that proves the scope survives onto the
+# chain (`durability.rs`), and the fixtures that drive all of the above each name the type once at
+# the line that needs it. The isolation scanner counts the crate's long name and its short
+# hyphenated form as two separate hits on the same line, which is why the true count of NEW call
+# sites — thirty-six — books here as double.
+count = "1271"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1804,7 +1820,10 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "293"
+# 301 -> 302: ONE. `tier_of` reads the caller's group off the same `busbar_api::PlaneRequestCtx`
+# `principal_id` beside it already reads the id from — one binding, two fields of it, and the new
+# reader names the same api type its sibling already names.
+count = "294"
 
 [[cell]]
 crate = "busbar-llm"

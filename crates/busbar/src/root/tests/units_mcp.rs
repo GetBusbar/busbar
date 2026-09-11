@@ -1275,6 +1275,7 @@ fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
                 downgrade_to: None,
             }],
             child_default: None,
+            tier_bp: None,
         },
     )]);
     let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
@@ -1398,6 +1399,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
             mono: mono.tick(),
         },
         &DurabilityToken::mint(&seal),
+        &busbar_unit_cost::TieredAt::STANDARD,
         posted,
         &crate::root::kernel::TariffScope::node(),
     )
@@ -1468,6 +1470,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             &who,
             at,
             &DurabilityToken::mint(&seal),
+            &busbar_unit_cost::TieredAt::STANDARD,
             posted,
             &crate::root::kernel::TariffScope::node(),
         )
@@ -1530,6 +1533,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
             mono: Mono::new().tick(),
         },
         &DurabilityToken::mint(&seal),
+        &busbar_unit_cost::TieredAt::STANDARD,
         posted,
         &crate::root::kernel::TariffScope::node(),
     )

@@ -139,7 +139,18 @@ pub(crate) fn priced_in(
     currency: CurrencyCode,
 ) -> Result<Priced, Unpriceable> {
     let history = History::opening(card.clone(), 0);
-    let posting = Posting::from_usage(lane, usage, 0, fee_count, tier_bp, 0, 0);
+    let posting = Posting::from_usage(
+        lane,
+        usage,
+        0,
+        fee_count,
+        &crate::TieredAt {
+            bp: tier_bp,
+            tier: None,
+        },
+        0,
+        0,
+    );
     price(&history.current(), &posting, currency)
 }
 
@@ -150,7 +161,7 @@ pub(crate) fn posting_at(lane: &str, arrived_ms: u64, lines: &[(&'static str, u6
         &usage(lines),
         0,
         0,
-        crate::STANDARD_TIER_BP,
+        &crate::TieredAt::STANDARD,
         arrived_ms,
         arrived_ms,
     )

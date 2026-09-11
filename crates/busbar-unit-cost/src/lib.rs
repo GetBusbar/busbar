@@ -78,7 +78,8 @@ pub use model::{
 };
 pub use posting::{
     apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced, PricedLine,
-    Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
+    Quantity, TieredAt, Unpriceable, FEE_CLASS, STANDARD_TIER_BP, TIER_SCOPE_DEFAULT,
+    TIER_SCOPE_TIER,
 };
 pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in,

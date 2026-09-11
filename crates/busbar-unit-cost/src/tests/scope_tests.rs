@@ -42,6 +42,7 @@ fn one_visit(scope: TariffScope) -> Posting {
         entry_count: 1,
         transaction_count: 0,
         tier_bp: STANDARD_TIER_BP,
+        tier_scope: None,
         arrived_ms: 1_000,
         arrived_mono: 1,
         scope,

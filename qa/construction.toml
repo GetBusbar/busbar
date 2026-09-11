@@ -275,7 +275,47 @@ because = """CHAIN FORM off P4's tip 3539. The plugin-visible surface of the pai
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.recovery.ceiling"
 by = 2
+
 because = """+2, and it is the same shape seen in the recovery sweep: the settlement table answers with lines, so the sweep carries them and adds them up rather than building a single line of its own out of a class and an amount. It still forces the estimate mark on every line and still reports against the kernel's own class, because a recovered unit never saw a destination report anything — what changed is that it no longer re-assembles the settlement it was just handed."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 13
+because = """CHAIN FORM AGAIN, off P5's tip 5631: +13 for the TIER. The kernel's per-unit record gains one write-once cell and one accessor, and the loop seals the cell from the authenticate step's own answer at the instant that step settles an identity. It is 13 lines and not one because the seal has to say WHY it is the loop's and not a leg's: the tariff scopes tier over pool over plane over default and the tier is the PRINCIPAL'S — a key's configured group — so it is established where the principal is and read everywhere the money is decided, and five legs each resolving a caller's group for themselves is five chances for one unit to be admitted against one group and billed against another. The kernel does not price it, names no tariff and cannot read what it is worth; it carries it, which is the whole of its part. +4 in `teller.rs` and +9 in `record.rs`."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.record.ceiling"
+by = 9
+because = """CHAIN FORM AGAIN, off P5's tip 170: +9. The tier the caller is on, as a write-once cell beside the two facts Verify seals and the answer's head: `seal_tier` under the same trust token (a tier a later step could write would be a tier the fee site reads whichever of two writers ran last) and `tier()`, which every step from Verify onward reads and no step may answer for itself. `Option<TierId>` inside the cell and not `TierId`, because a caller on NO tier is a real answer and not a missing one — the anonymous principal, a module that asserts no group, and every key in a deployment that configures none — and sealing it is what makes "nobody wrote a tier" and "the tier is nothing" one reading."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 4
+because = """CHAIN FORM AGAIN, off P5's tip 643: +4. The Authenticate arm destructures the step's answer into the identity and the tier and seals the second onto the unit before Verify runs, so there is exactly ONE value every later step reads. One line of code and three of the reason it is here rather than in a leg."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 27
+because = """CHAIN FORM AGAIN, off P5's tip 3550: +27, and all of it is the tier. `busbar-contract` gains `TierId` — which tier a principal is on, a `String` newtype beside `PrincipalId` for the same reason `PrincipalId` is one: a tier's name comes from a deployment's own configuration and is minted at boot, so the `declare_id!` `&'static str` shape cannot hold it. `busbar-caps` gains the shape of the answer the Authenticate step hands forward: `Authenticated::Principal` stops being a bare id and becomes `{ id, tier }`, with an accessor for each. It is the caps vocabulary and not a unit's because the only value that step handed forward was the id, so a tier a leg carried alongside would be a second channel out of one step and the kernel could not seal it. It carries no amount and names no price: a tier is who is calling, and what a tier COSTS is the tariff's, four steps later, at the one site that prices."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 42
+because = """CHAIN FORM AGAIN, off P5's tip 14776: +11, all in `busbar-unit-auth`. `ResolvedKey` and `Principal` each gain the key's configured group, and the unit's own answer fills the caps field from it. The unit CARRIES the tier and never reads it: it does not know what a tier costs and must not. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path.
+
+CHAIN FORM AGAIN, off 50dd22e2c's tip 14787: +31, all in `busbar-unit-cost`. `TieredAt` — the multiplier a posting resolved at AND the scope it was resolved at, together, so a reader of a booked line cannot mistake a half-price tier for the standard price of a halved card — replaces the bare `tier_bp: u32` `Posting::from_usage` took, and `Posting` itself gains the `tier_scope` field the journal row carries the word on. This crate does not resolve a tier to a price; that is the root's one site. What it holds is the SHAPE the resolution travels in, so every caller of `from_usage` states which scope it resolved at rather than a figure with no account of where it came from."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 82
+because = """CHAIN FORM AGAIN, off P5's tip 23957: +51 = the kernel's 13, caps/contract's 27 and the unit crates' 11. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`.
+
+CHAIN FORM AGAIN, off 50dd22e2c's tip 24008: +31, all `busbar-unit-cost`'s and already counted once above in `unit-total`; the kernel figure and caps/contract do not move for this raise."""
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 27
+because = """CHAIN FORM AGAIN, off P5's tip 3548. The plugin-visible surface of the pair at this tip, measured by `scripts/loc-surface.py`: +27 for `TierId` in the contract and the `{ id, tier }` shape of `Authenticated::Principal` in caps. This is inside section 1.1's 3.6k, which is amended in this same commit: the Teller loop's parenthetical now names the tier beside the body and the head, because the per-unit record carries all three."""
 [[gate.ceiling_raises]]
 key = "cell.busbar.kernel.count"
 file = "qa/kind-isolation.toml"
@@ -287,10 +327,23 @@ file = "qa/kind-isolation.toml"
 by = 1
 because = """`busbar-unit-egress` x `unit`, +1. The walk answers with `Routed` — the answer's head and the relay it left behind it — and the unit's own crate name appears once more where that type is re-exported for the root to name."""
 [[gate.ceiling_raises]]
+key = "cell.busbar-unit-auth.caps.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = """`busbar-unit-auth` x `caps`, +4, and it is the first time this crate has named more of the capability vocabulary than the four types its one step's signature is written in. The authenticate step's answer stops being a bare principal id and becomes the identity AND the tier the caller is on, so the unit names `TierId` once where it fills that field off the key's own binding, and three times in the cell that states what a key in a group resolves to. The unit still reads nothing it carries: it does not know what a tier costs, holds no card and names no tariff. What it knows is that a tier is a property of the KEY, so the step that resolved the key is the only step that can state it without looking the same binding up a second time on a different code path — and two lookups of one binding is how a unit is admitted against one group and billed against another."""
+
+[[gate.ceiling_raises]]
 key = "cell.busbar-kernel.caps.count"
 file = "qa/kind-isolation.toml"
 by = 5
 because = """CHAIN FORM off P3's tip 67. `busbar-kernel` x `caps`, +5, all in the cells. The settlement evidence carries what a unit spent per dimension the plane declared, so the cell that states it names this kind's `Completion` and `CompletedUnits` — one import line — and three rows in the existing batteries that used to set one located quantity build one dimension instead. The library does not move: `teller.rs` names the same import list it already had, one name wider."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-kernel.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """CHAIN FORM AGAIN, off P5's tip 72: +3. `busbar-kernel` x `caps`, all in the cells and the fixture. The loop seals the TIER the authenticate step settled, so the battery's fixture names this kind's `TierId` where it answers with one and the cell that states the tier reaches every step names it twice more. The library does not move: `record.rs` widens an import list it already had by one name and `teller.rs` widens none."""
+
 [[gate.ceiling_raises]]
 key = "cell.busbar-unit-egress.caps.count"
 file = "qa/kind-isolation.toml"
@@ -1000,10 +1053,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3805
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15204
+unit_total_ceiling = 15235
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24707
+union_ceiling = 24738
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

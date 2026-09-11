@@ -260,7 +260,13 @@ impl GroupTable {
                     lease_id: spec.lease_id,
                     enabled: spec.enabled,
                     concurrent_cap,
-                    tier_bp: STANDARD_TIER_BP,
+                    // THE GROUP'S OWN TIER, as the deployment configured it, off the same relay the
+                    // limits came through. A group that declares none is at the standard
+                    // multiplier — one times the price — which is what every group in this tree was
+                    // hardwired to before this key had a source. The door sizes its hold through
+                    // this and the fee site prices through the root's table built from the same
+                    // block, so the two are one reading of one configuration.
+                    tier_bp: spec.tier_bp.unwrap_or(STANDARD_TIER_BP),
                     buckets,
                     parent: spec
                         .parent

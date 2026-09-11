@@ -77,6 +77,7 @@ pub(crate) fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitSp
             parent: parent.map(str::to_string),
             enabled,
             limits,
+            tier_bp: None,
         },
         tier_bp: STANDARD_TIER_BP,
     }

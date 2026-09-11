@@ -1867,6 +1867,9 @@ impl VoiceUnit<'_> {
     pub fn settle(
         &self,
         principal: &PrincipalId,
+        // WHAT THE CALLER'S TIER PRICES AT, resolved at the composition root's one site. Same
+        // field, same source, on every leg.
+        tiered: &busbar_unit_cost::TieredAt,
         posted: busbar_caps::Posted,
         token: &busbar_caps::DurabilityToken,
     ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1889,6 +1892,9 @@ impl VoiceUnit<'_> {
             step: busbar_caps::StepName::Meter,
             stamp: crate::root::durability::PostingStamp {
                 rate_card_version: 0,
+                // THE SCOPE THIS UNIT'S TIER WAS RESOLVED AT, on the row, from the one site that
+                // resolved it. Same field, same source, on every leg.
+                tier_scope: tiered.scope(),
                 wall: self.epoch,
                 mono: self.node.tick(),
             },
