@@ -29,6 +29,11 @@
 //!   word `anonymous` on every surface.
 //! - **Revocation.** Gates NEW units only. A unit already in flight runs to its end.
 //! - **Open admin.** With no admin chain configured, an absent principal is granted full scope.
+//! - **The credential mint registry.** The plaintext end of a resolved credential, held here and
+//!   never handed out: the resolve step mints a destination-bound, expiry-stamped opaque ref
+//!   ([`creds::mint`]) and the outbound open resolves it back to the secret ([`creds::resolve`]),
+//!   so nothing outside this unit ever holds the bytes. A mismatched destination is refused and an
+//!   expired ref is dropped, and a mint-time sweep is what bounds the map.
 //!
 //! ## The two things the kernel supplies
 //!
@@ -48,6 +53,7 @@ pub mod cache;
 pub mod carrier;
 pub mod chain;
 pub mod challenge;
+pub mod creds;
 pub mod detect;
 pub mod exchange;
 pub mod module;
@@ -59,6 +65,7 @@ pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
 pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
 pub use chain::{AuthChain, ChainEntry, ChainVerdict};
 pub use challenge::{Challenge, ChallengeBounds};
+pub use creds::{mint, resolve};
 pub use detect::{protocol_id, Rung, LADDER};
 pub use exchange::{BrowserAction, AUTH_TOKEN_PATH};
 pub use module::{AuthModule, AuthOutcome};

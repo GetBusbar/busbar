@@ -32,6 +32,10 @@ busbar-api = { path = "../api" }
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
 busbar-unit-audit = { path = "../busbar-unit-audit" }
+# The credential mint registry: the plaintext end of a resolved credential is held by the auth unit
+# and nothing here holds a second copy of it. Part of the drain named by the
+# `[[transitional]] busbar-core -> busbar-unit-*` row; the edge dies with busbar-core.
+busbar-unit-auth = { path = "../busbar-unit-auth" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 # THE CHAIN WALK, read rather than restated. The retiring engine's cost model carried its own copy of
 # the resolved group topology AND its own walk over it; the topology is the cost unit's (`GroupTable`)

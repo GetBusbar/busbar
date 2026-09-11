@@ -1679,7 +1679,7 @@ count = "2114"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "65"
+count = "81"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3739,6 +3739,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
 why     = "busbar-core names busbar-unit-admission: declared normal in the shipped graph, 1 declaration(s) at this commit. THE CHAIN WALK, read rather than restated. The legacy engine carried its own resolved group topology AND its own walk over it; the topology is the cost unit's GroupTable and the walk is this crate's ChainWalk, yielding a BucketChain. Two walks over one money topology that must agree exactly is how a deployment comes to be admitted against one set of ledger cells and billed against another. The engine now walks each group's chain ONCE, at boot, through this crate, and a request READS the result through a cursor that borrows (busbar-core cost::BucketView) — so the edge costs the admission path no allocation at all; cost_tests::chain_read_is_a_borrow_not_a_build pins that by address rather than by equality. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "the edge dies with busbar-core: the readers of `cost::Chain`/`cost::BucketView` (governance/state.rs admit/charge/refund/accrue/headroom, admin/v1/service.rs, plane_host) move onto busbar_unit_admission's own decision, and cost.rs goes with them. `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-auth"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
+why     = "busbar-core names busbar-unit-auth: declared normal in the shipped graph, 1 declaration(s) at this commit. THE CREDENTIAL MINT REGISTRY, held once. The host-vtable's resolve step mints a destination-bound, expiry-stamped opaque ref and the outbound open resolves it back to the plaintext; the plaintext is the auth unit's to hold, and core's 172-line copy of that registry is deleted rather than kept beside it. A second registry is a second answer to which host a secret may be injected into, and the two cannot be held to one binding. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the two readers are the host-vtable resolve slot and the host-vtable outbound open, both of which retire with the vtable, and the unit face they call is already kind-neutral. `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-core"

@@ -519,10 +519,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14949
+unit_total_ceiling = 15026
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23842
+union_ceiling = 23919
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1559,6 +1559,37 @@ file = "qa/kind-isolation.toml"
 # occurrences — six hits, one per needle — are no longer in this tree to be counted.
 by = 22
 because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
+
+# ── THE CREDENTIAL MINT REGISTRY (J-8's plane_host residue table: `creds.rs` -> busbar-unit-auth).
+# `busbar-core/src/plane_host/creds.rs` held the PLAINTEXT end of a resolved credential: the mint
+# map keyed by the opaque `resolved_ref`, the destination binding that decides which host a secret
+# may be injected into, the expiry that drops a stale ref, and the amortized mint-time sweep that is
+# the only thing bounding the map. None of it is host-vtable code — there is no POD in the file, no
+# `extern "C-unwind"` and no unsafe block — it is the auth step's own fact about a credential it
+# owns end to end, sitting in the legacy crate because that is where the seam was first wired.
+#
+# THE FILE IS DELETED, NOT COPIED. The 172 lines leave busbar-core in the same commit the unit gains
+# them, the 164-line battery moves with them (it is the only battery over this registry in the tree,
+# so nothing is duplicated and nothing dies), and the two host-vtable call sites — the resolve slot
+# in `plane_host/govern.rs` and the outbound open in `plane_host/egress.rs` — now call the unit's
+# face. Mutating `busbar_unit_auth::creds::resolve` reddens core's own
+# `plane_host::tests::wired_auth_resolve_writes_pod_only_on_ok`, which is the served path answering
+# through the unit rather than beside it.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 77
+because = "MOVE by identity: FACE busbar_unit_auth::creds::{mint, resolve} is busbar-core/src/plane_host/creds.rs's own registry, moved whole — the destination-bound, expiry-stamped mint, the drop-on-expiry resolve, the non-destructive destination-mismatch refusal and the amortized doubling sweep that bounds the map. Nothing is written anew: the unit holds the plaintext it was always the owner of, and busbar-core deletes the file in the same commit (production lines 72894 -> 72721). 77 unit lines against 173 legacy ones"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 77
+because = "the same moved registry as the unit_total_ceiling raise, carried through: busbar-unit-auth/src/creds.rs is not in the kernel's call-graph name-match set, so it spends unit budget once and the union rises by exactly the unit rise and nothing else. The lines it replaces come out of busbar-core, which this union does not carry"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = "FACE busbar_unit_auth::creds: the host-vtable's two credential sites name the unit that now holds the plaintext — the resolve slot in plane_host/govern.rs (the mint call and the header sentence that says where the plaintext lives) and the outbound open in plane_host/egress.rs (the resolve call and two doc references to it) — plus the manifest row that declares the edge and the one path in plane_host/tests/mod_tests.rs that proves the served path answers through the unit. Nine occurrences, scored 16 by the matrix's two scanners, against the 173 busbar-core production lines the same commit deletes: a second credential registry is a second answer to which host a secret may be injected into, and the two could not be held to one binding"
 
 # THE RECORD MOVE (line 4 of gate/CORE-HOMES-design.md). `busbar-core/src/admin/audit.rs` held a
 # SECOND definition of the admin audit record — the eight wire fields, their `ChainedRecord` impl,

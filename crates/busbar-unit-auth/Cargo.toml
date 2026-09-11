@@ -27,6 +27,10 @@ busbar-contract = { path = "../busbar-contract" }
 # WHY note above and `cache::CredentialDigest`'s doc.
 sha2 = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+# NOT a kind edge and not a seam: the wipe-on-drop wrapper the credential mint registry holds its
+# plaintext in. A secret this unit owns end to end must leave no copy in freed heap, and that is a
+# property of the container type rather than something a caller could be asked to remember.
+zeroize = { workspace = true }
 
 [features]
 # A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the

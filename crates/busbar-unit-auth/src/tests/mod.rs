@@ -6,6 +6,7 @@
 mod cache_tests;
 mod carrier_tests;
 mod chain_tests;
+mod creds_tests;
 mod detect_tests;
 mod exchange_tests;
 mod unit_tests;

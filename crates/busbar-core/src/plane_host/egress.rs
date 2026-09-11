@@ -436,7 +436,7 @@ enum CredInjection {
 
 /// INJECT the resolved credential into `spec.headers`, host-side, for a hop to `destination`. The plane
 /// named the credential by an opaque `credential_ref` and its PLACEMENT (header name + auth-scheme
-/// prefix) as neutral data; the host resolves the ref to the plaintext it OWNS (see [`super::creds`])
+/// prefix) as neutral data; the host resolves the ref to the plaintext it OWNS (see [`busbar_unit_auth::creds`])
 /// — ONLY when the ref is bound to `destination` (FFI-F5) — and appends `{header_name}: {scheme}{secret}`.
 /// The plaintext is read HERE and never crosses back to the plane.
 ///
@@ -468,7 +468,7 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> C
         _ => String::new(),
     };
     let now = busbar_substrate::store::now_ms() / 1_000;
-    let Some(secret) = super::creds::resolve(d.credential_ref, now, destination) else {
+    let Some(secret) = busbar_unit_auth::creds::resolve(d.credential_ref, now, destination) else {
         // unknown / expired / DESTINATION-MISMATCH ref → refuse the hop (fail-closed by denial).
         return CredInjection::Refused;
     };
@@ -650,7 +650,7 @@ fn open_http(
 
     // Build the outbound request from the neutral DATA tail (verb / packed headers / body), then
     // INJECT the credential the plane named by ref — the host resolves the ref to the plaintext it
-    // owns (see `super::creds`) and places it under the plane-supplied header/scheme, so the secret
+    // owns (see `busbar_unit_auth::creds`) and places it under the plane-supplied header/scheme, so the secret
     // is read HERE, never off a plane POD. The sized-struct guard means a sender that predates the
     // tail leaves these null → a bodyless GET with no injected credential (the pre-enrichment shape).
     let mut spec = build_req_spec(d);

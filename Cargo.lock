@@ -533,6 +533,7 @@ dependencies = [
  "busbar-timing",
  "busbar-unit-admission",
  "busbar-unit-audit",
+ "busbar-unit-auth",
  "busbar-unit-cost",
  "bytes",
  "crc32fast",
@@ -1139,6 +1140,7 @@ dependencies = [
  "busbar-contract",
  "hex",
  "sha2 0.11.0",
+ "zeroize",
 ]
 
 [[package]]

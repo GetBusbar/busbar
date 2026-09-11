@@ -328,14 +328,14 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
     let expires_unix = now.saturating_add(DEFAULT_AUTH_TTL_SECS);
     // MINT a fresh, short-lived, host-owned credential reference (the CLUSTER-3 (d) decision: a NEW
     // per-hop `resolved_ref`, DISTINCT from the input `credential_ref`; the host owns its expiry). The
-    // resolved PLAINTEXT stays host-side in `super::creds` — the plane gets back only the opaque ref,
+    // resolved PLAINTEXT stays host-side in `busbar_unit_auth::creds` — the plane gets back only the ref,
     // which it carries to `egress_open` where the host reads the secret back and injects it. Phase 2:
     // the real host credential store resolves `(credential_ref, audience)` to the provider secret; the
     // host-derived placeholder here keeps the plaintext off the plane while that lookup is wired.
     let secret = format!("hostcred:{}:{}", query.credential_ref, audience).into_bytes();
     // FFI-F5: BIND the mint to the destination the plane named (`audience`), so `egress_open` injects
     // this secret ONLY on a hop to that destination — never a plane-chosen attacker host.
-    let resolved_ref = super::creds::mint(secret, audience, expires_unix, now);
+    let resolved_ref = busbar_unit_auth::creds::mint(secret, audience, expires_unix, now);
     Some(AuthResolved {
         size: core::mem::size_of::<AuthResolved>() as u32,
         version: POD_VERSION,

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/plane_host/creds.rs`.
+//! Tests for the credential mint registry (`crate::creds`), ported verbatim from the host-vtable
+//! file they were written against.
 
-use super::*;
+use crate::creds::{contains_for_test, mint, reset_for_test, resolve};
 use std::sync::{Mutex, MutexGuard};
 
 /// The registry and `NEXT_REF` are process-global, so `cargo test`'s parallel runner would let these
@@ -13,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 /// would drop another test's still-live-at-its-own-clock mint, so a concurrent `resolve` sees `None`
 /// — the exact intermittent `left == right` / `right: Some(..)` flake. Each test holds this guard for
 /// its whole body (serialising them) and calls [`reset_for_test`] at entry, so every body runs
-/// against a clean, private global. This is test-only isolation; production `creds.rs` is untouched.
+/// against a clean, private global. This is test-only isolation; the production registry is untouched.
 static TEST_GUARD: Mutex<()> = Mutex::new(());
 
 /// Serialise this test against the others and hand it a freshly reset global registry.
@@ -71,7 +72,7 @@ fn distinct_mints_get_distinct_refs() {
     assert_eq!(resolve(b, 0, DEST), Some(b"b".to_vec()));
 }
 
-/// FFI-F5 (credential confused deputy): a mint is BOUND to the destination the `auth_resolve` caller
+/// THE CREDENTIAL CONFUSED DEPUTY: a mint is BOUND to the destination the `auth_resolve` caller
 /// named, and `resolve` hands back the plaintext ONLY for that destination. A ref paired with a
 /// DIFFERENT host resolves to `None` — the secret never travels to a host it was not minted for — and
 /// the mismatch is NON-destructive: the ref still resolves for its bound destination afterwards.
@@ -98,7 +99,7 @@ fn a_credential_is_bound_to_its_destination_and_a_mismatch_is_refused() {
     );
 }
 
-/// FFI-F6 (secret zeroization): the round-trip is unchanged with the stored plaintext wrapped in
+/// SECRET ZEROIZATION: the round-trip is unchanged with the stored plaintext wrapped in
 /// `Zeroizing` — mint, resolve for the bound destination, and the plaintext comes back byte-identical.
 /// The wipe-on-drop is a property of the `Zeroizing<Vec<u8>>` field type; this pins that wrapping it
 /// did not change the observable resolve behaviour.
@@ -111,8 +112,8 @@ fn a_zeroizing_backed_mint_still_round_trips() {
 
 #[test]
 fn an_unexpired_ref_resolves_repeatedly_until_expiry() {
-    // NOT one-shot, deliberately: `AuthResolved` hands the plane `expires_unix` (validity-until-
-    // expiry), and a plane failover legitimately re-opens an egress carrying the same still-live
+    // NOT one-shot, deliberately: the resolve step hands its caller `expires_unix` (validity-until-
+    // expiry), and a failover legitimately re-opens an egress carrying the same still-live
     // ref. A one-shot resolve would make that second open inject NOTHING — an unauthenticated
     // request going out silently — rather than failing closed.
     let _guard = isolated();
@@ -132,7 +133,7 @@ fn an_unexpired_ref_resolves_repeatedly_until_expiry() {
 #[test]
 fn a_never_resolved_expired_mint_is_swept_by_a_later_mint() {
     // THE UNBOUNDED-GROWTH REGRESSION PIN: a ref that is minted and never carried into
-    // `egress_open` must not live past its expiry just because nothing ever looked it up again.
+    // an outbound open must not live past its expiry just because nothing ever looked it up again.
     // Mint one expired entry, then enough further mints to cross any plausible amortization
     // watermark. This body runs isolated (guard + reset), so it owns the global registry outright:
     // the sweep may only REMOVE entries expired at this test's clock, never touch the one live mint.
