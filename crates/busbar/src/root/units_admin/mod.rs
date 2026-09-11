@@ -2012,8 +2012,13 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
         // under any schedule — the eligibility gate answers zero before a knob is consulted — and
         // it still resolves one, because "admin is free" is a fact about what this plane does and
         // not a licence for one leg to skip the deployment's own tariff.
+        // NO POOL AND NO TIER: this plane routes to nothing and admits through no chain, and a
+        // scope key invented for it would be a name no operator could have written in `pools:`.
+        // Both resolve to the next scope out, which is the plane's own cell.
         tariff: crate::root::kernel::tariff_cell(
             <AdminPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            None,
+            None,
         ),
         ..Default::default()
     }

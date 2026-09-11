@@ -441,6 +441,20 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar_unit_cost::FeeSchedule in the recompute cells' card construction: the card's constructor takes a schedule where it took a scalar, and a cell that built the card another way would be proving something about a card the node never builds."
 
+# ── THE POOL AND THE TIER REACH THE SCHEDULE ─────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the five composition legs each pass the scope its unit was admitted for to `tariff_cell` instead of the plane key alone: the pool the unit was ROUTED to, which for two of them is a value the leg already held and for the other three is a `None` with the reason written where a reader will find it. A face read of the same shape as the two the schedule already makes, and a sixth plane answers it without this file changing."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "`busbar_core::config::tariff::TariffCfg` in the cell that proves a pool and a tier select a cell the plane scope does not. The grammar lives in the retiring engine today, and a cell that transcribed the resolution order instead of driving the real one would be a proof about the transcription. It goes with the section when the section moves."
+
 # ── THE TARIFF'S CELLS: one knob, one count, every plane ─────────────────────────────────────────
 #
 # The knobs are proven ONCE and driven over the plane DECLARATIONS, never once per plane: a cell per

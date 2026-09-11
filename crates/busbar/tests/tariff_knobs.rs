@@ -11,7 +11,7 @@
 //!
 //! # What is driven, and from where
 //!
-//! [`DECLARED`] is the five shipped planes as the composition root sees them: the registry key each
+//! [`all_planes`] is the five shipped planes as the composition root sees them: the registry key each
 //! declares, where each says its status is reported, and whether each declares its local work
 //! chargeable. Nothing here is written out by hand — every field is read through
 //! [`busbar_contract::plane::PlaneMeta`] off the plane's own `meta.rs`, so a sixth plane joins this
@@ -309,4 +309,73 @@ fn no_schedule_and_no_shape_tells_the_five_planes_apart() {
         5,
         "the shipped planes; a sixth joins by existing"
     );
+}
+
+/// **THE POOL AND THE TIER REACH THE SCHEDULE, AND THEY SELECT A DIFFERENT CELL.**
+///
+/// The scopes are worth nothing if the site that resolves them is only ever handed a plane key: a
+/// pool scope nothing passes a pool to is a schedule an operator wrote that will never be selected,
+/// which is the same defect as a scope naming a pool nobody defined — and it is invisible, because
+/// the lookup misses into the default and the default is a perfectly good answer.
+///
+/// RED BEFORE GREEN: driven through the real grammar with the real resolution order, so a resolver
+/// that dropped either argument would answer the plane's cell at every row below and every
+/// `assert_ne!` would collapse. Written as differences for that reason.
+#[test]
+fn a_pool_and_a_tier_select_a_cell_the_plane_scope_does_not() {
+    let planes = all_planes();
+    let plane = planes.first().expect("a shipped plane").key;
+    let section: busbar_core::config::tariff::TariffCfg = serde_yaml::from_str(&format!(
+        r#"
+default:
+  dispute_policy: entry_plus_units
+plane:
+  {plane}:
+    dispute_policy: full
+pool:
+  pool-a:
+    dispute_policy: entry_only
+tier:
+  gold:
+    entry_fee: {{ enabled: true }}
+"#
+    ))
+    .expect("the fragment is the grammar under test");
+
+    let cell = |pool: Option<&str>, tier: Option<&str>| {
+        let r = section.cell(plane, pool, tier);
+        (
+            r.entry_enabled,
+            r.disputed_charges_transaction,
+            r.disputed_charges_units,
+        )
+    };
+
+    // The plane's own scope, reached with neither a pool nor a tier: what a leg that knows neither
+    // gets, and what every one of the rows below has to differ from to prove it was consulted.
+    let plane_only = cell(None, None);
+    assert_eq!(plane_only, (false, true, true));
+
+    // THE POOL BEATS THE PLANE.
+    let pooled = cell(Some("pool-a"), None);
+    assert_ne!(
+        pooled, plane_only,
+        "a pool scope that changes nothing is a pool argument nothing carries"
+    );
+    assert_eq!(pooled, (false, false, false));
+
+    // A POOL NO SCOPE NAMES FALLS THROUGH, which is what makes a miss a lookup and not a branch.
+    assert_eq!(
+        cell(Some("a-pool-the-section-does-not-name"), None),
+        plane_only
+    );
+
+    // THE TIER BEATS THE POOL, field by field: it names the door and inherits the pool's dispute
+    // rule rather than resetting it to the type's default.
+    let tiered = cell(Some("pool-a"), Some("gold"));
+    assert_ne!(
+        tiered, pooled,
+        "a tier scope that changes nothing is a tier argument nothing carries"
+    );
+    assert_eq!(tiered, (true, false, false));
 }

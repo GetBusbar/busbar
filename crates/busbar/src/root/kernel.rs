@@ -318,8 +318,12 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 pub static ROOT_TARIFF: LazyLock<RootTariff> = LazyLock::new(RootTariff::default);
 
 /// What answers "what is this plane's cell" — a plane's registry key in, a schedule out.
-pub type TariffResolver =
-    Box<dyn Fn(&str) -> busbar_kernel::teller::TariffCell + Send + Sync + 'static>;
+pub type TariffResolver = Box<
+    dyn Fn(&str, Option<&str>, Option<&str>) -> busbar_kernel::teller::TariffCell
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// The holder: one resolver, swapped whole.
 #[derive(Default)]
@@ -344,16 +348,32 @@ impl RootTariff {
     }
 }
 
-/// **THE SCHEDULE ONE PLANE'S UNITS ARE CHARGED UNDER.**
+/// **THE SCHEDULE ONE UNIT IS CHARGED UNDER**, by the scope it was admitted for.
 ///
-/// Read by every leg, through the plane's own declared registry key and through nothing else. There
-/// is no branch here on which plane it is: the key is a lookup, the lookup misses into the default,
-/// and every plugin of a kind is charged identically to every other of that kind because there is
-/// nowhere in this path for them to differ.
+/// Three keys and no branch: the plane's own declared registry key, the pool it was routed to and
+/// the tier it was admitted under. Each is a LOOKUP, each misses into the next scope out, and every
+/// plugin of a kind is charged identically to every other of that kind because there is nowhere in
+/// this path for them to differ.
+///
+/// **THE POOL AND THE TIER ARE FACTS ABOUT THE UNIT, NOT ABOUT THE KEY.** They are passed in by the
+/// leg rather than read off `KeyFacts`, and `KeyFacts` does not carry them, because a key is a
+/// PRINCIPAL: its id, its grants, its expiry. Which pool a unit reached is decided by ROUTING, after
+/// the key was verified and possibly differently for two requests presented with the same key; which
+/// tier it was admitted under is a property of the CHAIN it was admitted through, which the ledger's
+/// own archive already says in as many words beside the sealed history. Putting either on the key
+/// would make a per-request fact look like a per-principal one, and the first request that was
+/// routed away from its requested pool would be billed under a schedule it never ran on.
+///
+/// `None` is not a scope that matched nothing — it is a leg that does not know, and it resolves to
+/// the next scope out, which is exactly what an unnamed pool would have done.
 #[must_use]
-pub fn tariff_cell(plane: &str) -> busbar_kernel::teller::TariffCell {
+pub fn tariff_cell(
+    plane: &str,
+    pool: Option<&str>,
+    tier: Option<&str>,
+) -> busbar_kernel::teller::TariffCell {
     match ROOT_TARIFF.resolver.load().as_ref() {
-        Some(resolve) => resolve(plane),
+        Some(resolve) => resolve(plane, pool, tier),
         None => busbar_kernel::teller::TariffCell::default(),
     }
 }

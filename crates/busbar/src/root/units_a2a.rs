@@ -985,7 +985,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         // says none cannot both be true of one unit.
         let fee_count = busbar_kernel::teller::charge(
             &fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
-            &crate::root::kernel::tariff_cell(<A2aPlane as busbar_contract::plane::PlaneMeta>::KEY),
+            &crate::root::kernel::tariff_cell(
+                <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                Some(self.bindings.pool),
+                None,
+            ),
         )
         .transaction;
         AuditInputs {
@@ -1498,6 +1502,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
             tariff: crate::root::kernel::tariff_cell(
                 <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                Some(self.bindings.pool),
+                None,
             ),
         }
     }

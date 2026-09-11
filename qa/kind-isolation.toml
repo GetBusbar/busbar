@@ -1349,12 +1349,12 @@ count = "176"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "94"
+count = "95"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1889"
+count = "1891"
 
 [[cell]]
 crate = "busbar"

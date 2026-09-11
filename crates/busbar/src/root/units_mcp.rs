@@ -1344,6 +1344,7 @@ pub struct Ended<'a> {
 /// document, and the call-shaped line is a flat count rather than what the amount is denominated in.
 #[must_use]
 pub fn evidence(ended: &Ended<'_>) -> Evidence {
+    let pool = ended.resource.as_ref().map(|r| pool_key(r.name));
     Evidence {
         located: ended.metered,
         accrued_floor: ended.request_bytes,
@@ -1366,8 +1367,13 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
             ended.metered.is_some(),
             ended.finish,
         ),
+        // THE POOL IS THE SERVER THIS UNIT WAS ROUTED TO, keyed the way the breaker and the pool
+        // table key it — the same string a grant is checked against, so a pool scope names what an
+        // operator already writes elsewhere in the file.
         tariff: crate::root::kernel::tariff_cell(
             <McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            pool.as_deref(),
+            None,
         ),
     }
 }
@@ -1476,6 +1482,7 @@ pub fn audit_inputs(
     origin: busbar_caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
+    let pool = ended.resource.as_ref().map(|r| pool_key(r.name));
     let fee_count = busbar_kernel::teller::charge(
         &fee_evidence(
             ended.shape,
@@ -1483,7 +1490,11 @@ pub fn audit_inputs(
             ended.metered.is_some(),
             ended.finish,
         ),
-        &crate::root::kernel::tariff_cell(<McpPlane as busbar_contract::plane::PlaneMeta>::KEY),
+        &crate::root::kernel::tariff_cell(
+            <McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            pool.as_deref(),
+            None,
+        ),
     )
     .transaction;
     AuditInputs {
