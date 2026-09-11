@@ -1641,3 +1641,33 @@ key = "cell.busbar-voice.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "busbar-voice x dialect (busbar-voice, dialect): the SAME one hit, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction. It is the upstream row's own field name, which is the word an operator writes in the file and therefore the one the grammar must spell; renaming it to keep this number still would rename a configuration key (717 -> 718)"
+
+# ── declared raises: THE PROJECTOR'S CONSUMER SEAM. `SessionPlane::{session_params,
+# adopt_session_params}` take `&mut PlaneSessionState`, and the only one for a client half is the one
+# the session driver put on the slot — so the face was closed on the plane's side and open on the
+# root's, and a mount that could not reach it dropped a deployment's configured session gate and its
+# rewrite tap in silence. These are the two SYNC accessors that close it, with the composition's two
+# async hops between them. Each entry expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "busbar x transport (busbar, transport): the two accessors and their battery spelled THROUGH THE CONTRACT'S transport module rather than through any wire's crate, which is the choice the generic acceptor, the session driver and the egress port all already made. `SessionHandle`, `SessionOpen`, `SessionDriver` and the transport fact keys are the face a composition hands a session across, and naming them through `busbar_contract::transport::` is what keeps a wire's own type off a seam the composition is supposed to be able to swap. The accessors themselves name no wire at all: what they touch is the plane's half of the session state, under the session's own lock (1090 -> 1100)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x contract-transport (busbar, contract-transport): four hits, the session-handle and session-open vocabulary the projector battery opens a session with before it reads the projection back. A cell that could not open a session could not assert anything about what a gate would be handed for one, and opening it through the same contract seam the driver's own battery uses is what keeps there being one spelling of `a session this driver minted` rather than a second one written for this file (72 -> 76)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x plane (busbar, plane): four hits, all of them the projector battery saying WHOSE open is being projected. The cells drive the real plane's own projector through the generic driver — the driver's own battery drives a plane that declares nothing gateable, which proves the skip arm and nothing about a render — so the vocabulary is `the plane that implements the projection`, carried through `node.plane` and the plane's declared surface. Nothing in the accessors names a plane: they reach `dyn SessionPlane`, which is the row the driver already holds (1920 -> 1924)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar x dialect (busbar, dialect): the SAME projector battery, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction rather than for two different reasons. The three hits are the binding the battery opens its session on, which is the one the real plane declares for the dialect whose posture the projection renders; a cell that opened on a different binding would be projecting a session this plane does not serve (705 -> 708)"

@@ -1948,3 +1948,37 @@ async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() 
          is opened — and this port inherits that refusal rather than owning a second copy of it"
     );
 }
+
+/// A PLANE THAT DECLARES NOTHING GATEABLE AT AN OPEN SKIPS BOTH OPERATOR HOPS, and neither the
+/// driver nor the composition writes anything for it.
+///
+/// The neutral half of the projector seam, proven where the plane is nobody's. `None` from the
+/// projector is the WHOLE of "this plane has nothing gateable at open" — the contract says so — and
+/// a composition that read it as "the projection failed" would start refusing opens for every plane
+/// that never had a gate. The adopt hop is asked too, and answers `true`: the session was there and
+/// the plane was handed the bytes, and a plane that projects nothing has nothing to take back.
+#[test]
+fn a_plane_with_nothing_gateable_projects_nothing_and_the_open_is_unchanged() {
+    let node = Node::new();
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    assert!(
+        driver.session_params(session).is_none(),
+        "this plane declares nothing gateable, which is an answer and not a failure"
+    );
+    // The hop still RUNS against the session's own state — what the plane does with it is the
+    // plane's — and the open is exactly the open it was.
+    assert!(driver.adopt_session_params(session, b"anything at all"));
+    assert!(driver.session_params(session).is_none());
+    assert_eq!(driver.open_sessions(), 1);
+
+    driver.close(session, CLIENT_WENT);
+    assert!(
+        driver.session_params(session).is_none(),
+        "a closed session is a state nobody holds, and it projects nothing"
+    );
+    assert!(!driver.adopt_session_params(session, b"{}"));
+}

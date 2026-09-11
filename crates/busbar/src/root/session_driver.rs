@@ -511,6 +511,27 @@ struct Open {
     client: Option<Box<dyn EgressLease>>,
 }
 
+/// WHAT A DEPLOYMENT'S OPERATOR HOPS ARE HANDED FOR ONE SESSION OPEN, owned.
+///
+/// [`busbar_contract::plane::SessionParams`] with its payload copied out, and the copy is the whole
+/// reason this type exists: the contract's value borrows out of the plane's half of the session
+/// state, that borrow lives under the session's own lock, and the hops a composition runs between
+/// [`SessionLoopDriver::session_params`] and [`SessionLoopDriver::adopt_session_params`] are awaits.
+/// A caller that carried the borrow across one would hold the lock every frame of the session needs.
+///
+/// The two names are the contract's verbatim and the payload is opaque: what a hook sees is what it
+/// saw before any of this existed, which is what keeps a deployment's configured gates matching the
+/// same arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredSessionParams {
+    /// The container a deployment files this plane's session hooks under.
+    pub container: &'static str,
+    /// The method name a hook sees for the open.
+    pub operation: &'static str,
+    /// The payload, serialized by the plane itself, byte for byte as a hook receives it.
+    pub declared: Vec<u8>,
+}
+
 /// The session, as the plane is allowed to see it.
 struct SlotSession<'a> {
     id: SessionId,
@@ -929,6 +950,93 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
             dest: leg.dest,
             op: leg.op,
         });
+        true
+    }
+
+    /// WHAT AN OPERATOR GATE OR A REWRITE TAP WOULD SEE FOR THIS SESSION'S OPEN, or `None` where
+    /// the plane declares nothing gateable there.
+    ///
+    /// THE FIRST OF THE PROJECTOR'S TWO HOPS, and the reason there are two rather than one.
+    /// [`SessionPlane::session_params`] takes `&mut PlaneSessionState`, and the only one for a
+    /// client half is the one this driver put on the slot at the upgrade — so the face was closed on
+    /// the plane's side and open on the root's, and a mount that could not reach it dropped the
+    /// deployment's configured gate and its tap in silence. The two hops a composition runs between
+    /// these calls ARE ASYNC and `drive` is synchronous by design, which fixes the shape: two SYNC
+    /// accessors with the await in the middle, in the arrival file.
+    ///
+    /// OWNED, AND THAT IS FORCED RATHER THAN CHOSEN. The contract's projection borrows the payload
+    /// out of the plane's own half of the session state, and that borrow lives under this session's
+    /// lock; a caller that held it across an await would hold the lock every frame of the session
+    /// needs. So the bytes are copied out, once, at the one place a hook hop happens — which is the
+    /// open, and never a frame.
+    ///
+    /// It is still the SAME BYTES on both hops: the plane renders its payload once and holds it, so
+    /// a tap is judging what the gate saw rather than a second render of it.
+    ///
+    /// `None` for a session this driver never minted, one it has already closed, and one whose
+    /// plane declares nothing gateable. All three mean the same thing to the caller — there is no
+    /// projection to run a hop over — and on none of them has anything been written.
+    #[must_use]
+    pub fn session_params(&self, session: SessionHandle) -> Option<DeclaredSessionParams> {
+        let slot = self.slot(session)?;
+        let mut guard = slot.lock().ok()?;
+        let Open {
+            facts,
+            transport,
+            chain,
+            state,
+            upstream,
+            ..
+        } = &mut *guard;
+        let upstreams = usize::from(upstream.is_some());
+        let mut space = ArenaSpace::new();
+        let arena = UnitArena::new(&mut space);
+        let labels = Labels::new();
+        let clock = self.clock();
+        let view_transport = SlotTransport {
+            key: transport,
+            chain,
+            facts,
+        };
+        let view_session = SlotSession {
+            id: SessionId(session.0),
+            facts,
+            bound: true,
+            upstreams,
+        };
+        let ctx = Ctx::new(
+            clock,
+            self.config,
+            Some(&view_session),
+            &view_transport,
+            &labels,
+            &arena,
+        );
+        let rendered = self.plane.session_params(state, &ctx)?;
+        Some(DeclaredSessionParams {
+            container: rendered.container,
+            operation: rendered.operation,
+            declared: rendered.declared.to_vec(),
+        })
+    }
+
+    /// TAKE BACK THE PAYLOAD A REWRITE TAP COMMITTED, in place of the one the projector rendered.
+    ///
+    /// The second of the two hops. `true` says the session was still here and the plane was handed
+    /// the bytes; WHAT THE PLANE MAKES OF THEM IS THE PLANE'S OWN ANSWER and this driver does not
+    /// second-guess it — the contract's rule is that a payload the plane cannot read is not adopted
+    /// and the locked one stands, which is a decision only the plane can make about its own shape.
+    ///
+    /// `false` for a session that has gone, which is not an error: the accept task that runs the
+    /// two hops is awaiting between them, and the session it opened may have ended under it.
+    pub fn adopt_session_params(&self, session: SessionHandle, declared: &[u8]) -> bool {
+        let Some(slot) = self.slot(session) else {
+            return false;
+        };
+        let Ok(mut guard) = slot.lock() else {
+            return false;
+        };
+        self.plane.adopt_session_params(&mut guard.state, declared);
         true
     }
 

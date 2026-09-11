@@ -2755,3 +2755,180 @@ mod booted {
         assert!(upstream_rows(&section).is_empty());
     }
 }
+
+/// THE PROJECTOR'S TWO HOPS, ACROSS THE AWAIT — the driver's consumer seam for the operator gate
+/// and the rewrite tap, driven over the plane that implements the projector for real.
+///
+/// `SessionPlane::{session_params, adopt_session_params}` take `&mut PlaneSessionState`, and the
+/// only one for a client half is the one the driver put on the slot. Until these accessors existed
+/// the face was closed on the plane's side and open on the root's: a mount had no way to reach a
+/// session's declared parameters at all, so it dropped the operator gate and the operator tap
+/// silently — which is worse than not mounting.
+///
+/// Both hops are SYNC and the await goes BETWEEN them, which is the only shape available: the two
+/// hook hops are async and `drive` is synchronous by design, so the projection is rendered OWNED,
+/// the composition awaits its gate and its tap, and what a tap committed comes back through the
+/// second call.
+#[cfg(feature = "root-duplex-serve")]
+mod projected {
+    use super::*;
+    use crate::root::session_driver::SessionLoopDriver;
+    use busbar_contract::transport::facts as tfacts;
+    use busbar_contract::transport::session::{SessionDriver, SessionOpen};
+    use busbar_contract::transport::surface::Bar;
+    use busbar_contract::unit::ConfigView;
+    use busbar_plane_streams::surface::{BINDING_OPENAI_REALTIME, SURFACE};
+
+    /// A deployment that configured nothing this plane reads, which is every cell in this module:
+    /// what a gate is handed is the plane's own posture, and a configured key would be a second
+    /// reason the bytes are what they are.
+    struct NoConfig;
+
+    impl ConfigView for NoConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// WHAT A GATE WOULD SEE, AND WHAT A TAP COMMITS, over one open session.
+    ///
+    /// Three things and the third is the one that matters. The projection carries the container and
+    /// the method a deployment files its hooks under, so a configured gate keeps matching the same
+    /// arguments it matched before. It carries the payload as OPAQUE BYTES, which is what makes it
+    /// a projection rather than a re-expression. And a committed rewrite STANDS: the second read
+    /// answers with what the tap wrote, not with what the first render produced, because a tap whose
+    /// commit was thrown away is a tap that ran for nothing.
+    #[test]
+    fn the_projector_renders_a_session_open_and_takes_back_what_a_tap_committed() {
+        let node = std::sync::Arc::new(node(serviceable()));
+        let units = ComposedUnits::new(std::sync::Arc::clone(&node));
+        let kernel = Kernel::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let driver =
+            SessionLoopDriver::new(&kernel, &units, &node.plane, &NoConfig, &gauge, &canary);
+
+        let facts = [
+            (tfacts::PATH, "/v1/realtime"),
+            (tfacts::CREDENTIAL, "token"),
+        ];
+        let session = driver
+            .open(
+                SessionOpen {
+                    facts: &facts,
+                    transport: "ws",
+                    chain: &["tcp", "http", "ws"],
+                    binding: BINDING_OPENAI_REALTIME,
+                    bar: Bar::Credential,
+                },
+                &SURFACE,
+            )
+            .expect("unit zero completes on a serviceable node with an open door");
+
+        // HOP ONE, SYNC: what a gate is handed.
+        let rendered = driver
+            .session_params(session)
+            .expect("this plane declares a gateable open");
+        assert_eq!(rendered.container, "streams");
+        assert!(
+            !rendered.declared.is_empty(),
+            "the payload crosses as bytes the plane serialized, not as a shape this file knows"
+        );
+        // OWNED, which is the whole reason the accessor exists: the borrow lives under the
+        // session's own lock and an await cannot hold it.
+        let first = rendered.declared.clone();
+        // Rendering twice answers the same bytes, so the TAP hop sees what the GATE hop saw.
+        assert_eq!(
+            driver.session_params(session).map(|p| p.declared),
+            Some(first.clone()),
+            "the projection is rendered once and held; two hops over one open must not disagree"
+        );
+
+        // ── the await goes here, in a composition. ──
+        // HOP TWO, SYNC: what a tap committed, taken back.
+        let committed = br#"{"voice":"marin"}"#;
+        assert!(
+            driver.adopt_session_params(session, committed),
+            "an open session takes a rewrite back"
+        );
+        assert_eq!(
+            driver.session_params(session).map(|p| p.declared),
+            Some(committed.to_vec()),
+            "the committed rewrite stands in place of the posture the projection rendered"
+        );
+        assert_ne!(first, committed.to_vec());
+    }
+
+    /// A PAYLOAD THE PLANE CANNOT READ IS NOT ADOPTED, and the locked one stands.
+    ///
+    /// The contract's own rule for the second hop, driven through the driver rather than asserted
+    /// on the plane alone: a tap that commits something no dialect can open on would otherwise
+    /// replace a locked posture with a session nothing can serve.
+    #[test]
+    fn a_rewrite_the_plane_cannot_read_leaves_the_locked_posture_standing() {
+        let node = std::sync::Arc::new(node(serviceable()));
+        let units = ComposedUnits::new(std::sync::Arc::clone(&node));
+        let kernel = Kernel::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let driver =
+            SessionLoopDriver::new(&kernel, &units, &node.plane, &NoConfig, &gauge, &canary);
+
+        let facts = [
+            (tfacts::PATH, "/v1/realtime"),
+            (tfacts::CREDENTIAL, "token"),
+        ];
+        let session = driver
+            .open(
+                SessionOpen {
+                    facts: &facts,
+                    transport: "ws",
+                    chain: &["tcp", "http", "ws"],
+                    binding: BINDING_OPENAI_REALTIME,
+                    bar: Bar::Credential,
+                },
+                &SURFACE,
+            )
+            .expect("unit zero completes");
+
+        let locked = driver
+            .session_params(session)
+            .expect("this plane declares a gateable open")
+            .declared;
+        // The call still ANSWERS true — the session was there and the hop ran; what the plane makes
+        // of the bytes is the plane's own answer, and the accessor does not second-guess it.
+        assert!(driver.adopt_session_params(session, b"not this plane's shape"));
+        assert_eq!(
+            driver.session_params(session).map(|p| p.declared),
+            Some(locked),
+            "the locked posture stands"
+        );
+    }
+
+    /// A SESSION THIS DRIVER NEVER MINTED, OR HAS CLOSED, ANSWERS NOTHING AND ADOPTS NOTHING.
+    ///
+    /// The same answer for both, and it should be: a projection for a session that is over is a
+    /// projection of a state nobody holds, and a rewrite committed onto one is a write with no
+    /// reader. `false` rather than a panic, because the composition that asks is on an accept task
+    /// whose session may have ended under it between the two hops.
+    #[test]
+    fn a_session_that_is_over_projects_nothing_and_adopts_nothing() {
+        let node = std::sync::Arc::new(node(serviceable()));
+        let units = ComposedUnits::new(std::sync::Arc::clone(&node));
+        let kernel = Kernel::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let driver =
+            SessionLoopDriver::new(&kernel, &units, &node.plane, &NoConfig, &gauge, &canary);
+
+        let never = busbar_contract::transport::session::SessionHandle(4242);
+        assert!(driver.session_params(never).is_none());
+        assert!(!driver.adopt_session_params(never, b"{}"));
+    }
+}
