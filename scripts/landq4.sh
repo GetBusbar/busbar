@@ -53,6 +53,13 @@ INBOX="${LANDQ_INBOX:-$W/target/gate/land-queue.inbox.txt}"
 FRONT="${LANDQ_PREPROVE_FRONT:-$W/target/gate/preprove-front.txt}"
 # THE ORACLE ROWS THAT ARE RED AT THE TIP ITSELF, keyed by the tip, one row per cell id.
 BASERED="${LANDQ_BASE_RED:-$W/target/gate/oracle-base-red.txt}"
+# THE FAULT LEDGER (see lq_fault_record). One row per CLASS — how many times in a row this class of
+# infrastructure failure has stopped a batch, and when it last did — and a ring of the last faults
+# with their text. Both are read by the status file and by the backoff.
+FAULTS="${LANDQ_FAULTS:-$W/target/gate/landq4.faults.txt}"
+FAULTRING="${LANDQ_FAULT_RING:-$W/target/gate/landq4.faultring.txt}"
+# HOW MANY OF THE LAST FAULTS THE STATUS FILE CARRIES.
+FAULT_RING_KEEP="${LANDQ_FAULT_RING_KEEP:-5}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
@@ -707,16 +714,22 @@ lq_qstamp() { # prints a stamp of the queue file as it is right now
   printf '%s:%s\n' "$m" "$(cksum <"$Q" 2>/dev/null || echo 0)"
 }
 lq_qlock() { # $1 = seconds to wait (default 30); 0 when this shell holds the queue lock
-  local wait="${1:-30}" i=0 owner
+  local wait="${1:-30}" i=0 owner ostart
   while ! mkdir "$QLOCK" 2>/dev/null; do
     owner="$(cat "$QLOCK/pid" 2>/dev/null || true)"
-    if [ -n "$owner" ] && [ "$owner" != "$$" ] && ! kill -0 "$owner" 2>/dev/null; then
-      rm -rf "$QLOCK"           # the holder is dead; a corpse does not hold a queue
+    ostart="$(cat "$QLOCK/start" 2>/dev/null || true)"
+    # A CORPSE DOES NOT HOLD A QUEUE — and neither does a process that merely inherited the number
+    # (see lq_lock_stale). Both are `lock-stale`, and the queue is taken back rather than waited on
+    # until somebody notices.
+    if [ -n "$owner" ] && [ "$owner" != "$$" ] && lq_lock_stale "$owner" "$ostart"; then
+      lq_fault_record lock-stale "$QLOCK held by pid $owner, which is dead or is no longer the process that took it" >/dev/null
+      rm -rf "$QLOCK"
     fi
     i=$((i + 1)); [ "$i" -lt "$wait" ] || return 1
     sleep 1
   done
   printf '%s\n' "$$" >"$QLOCK/pid"
+  lq_pid_start "$$" >"$QLOCK/start"
   return 0
 }
 lq_qunlock() { rm -rf "$QLOCK"; }
@@ -1343,6 +1356,165 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE FAULT TAXONOMY — AN INFRASTRUCTURE FAILURE IS NEVER A HALT AND NEVER A RED
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED on the running engine's log, 09-09 to 09-11: fifteen HALTs. Five of them were
+# `land.sh --batch left 0 of N per-line outcomes (rc 2|126)` — a box that stopped answering, an scp
+# that closed, the base push failing — and one was `no prepared, reachable on-demand box among the
+# 0` during a fleet resize. Not one of them was a fact about the tree. Each cost the queue every
+# minute between the fault and the moment an integrator noticed, restarted the runner by hand and
+# re-typed a twelve-variable env line.
+#
+# THE RULE. Every failure whose cause is the INFRASTRUCTURE — a box, the transport, the fleet
+# table, the lock, the harness — is a CLASS. A class produces the verdict `NONE:<class>`, which is
+# the engine's existing word for "nothing was learned about this line": the line stays LIVE, the
+# batch is requeued exactly as it was popped, and the loop is taken again after a backoff of
+# 1, 2, 4, 8 then 15 minutes (doubling, capped), counted per class and reset the moment a batch
+# comes back with outcomes in it. Nothing is parked, nothing is marked red, nothing needs a human.
+#
+# HALT SURVIVES FOR TWO FACTS ABOUT THE TREE, and they are the only two: a head line that will not
+# apply twice in a row (`head-conflict-twice`), and a tree that has moved under the runner
+# (`tree-moved` — which does not exit even now: it refuses the batch and retries, because a tree
+# that moved is usually a stray process the census is about to kill, and a runner that exits loses
+# more than it protects. It is a class here so that it is COUNTED and PAGED rather than silent.)
+#
+# THE CLASSES, and the sentence each is read from:
+#   box-unreachable  ssh/scp/rsync closed, the poller's "unreachable for N polls", rc 75 from
+#                    land-remote, and the default for a batch that came back with no outcomes at
+#                    all: whatever else the log says, nothing was learned about the lines.
+#   base-push-failed the integration base could not be pushed to the box (land-remote rdie).
+#   box-stopped      the box is STOPPED, not broken — FLEET-2's cost posture puts an idle box to
+#                    sleep after fifteen minutes, and SSM then answers `TargetNotConnected` for it.
+#                    The disposition is NOT NONE:box and a shrug: the engine ASKS ci-fleet-power to
+#                    start what the next attempt needs, and then retries on the backoff.
+#   probe-empty      "no prepared, reachable on-demand box among the N" — after FLEET-2's re-ask of
+#                    an all-silent round there is still nobody home. The fleet is resizing; wait.
+#   spot-reclaimed   AWS took the instance back mid-proof ("Service initiated").
+#   lock-stale       a lock file whose holder is dead, or whose recorded start time is not the
+#                    start time of the process now wearing that pid (see lq_lock_acquire).
+#   harness          the existing NONE:harness — a driver that could not do its job.
+#   census-empty     the census saw nothing at all, not even this runner: the census is broken.
+#   tree-moved       HEAD is not the last landed tip, or something tracked is modified.
+# A STOPPED BOX IS NOT AN UNREACHABLE ONE, and the difference is the whole of FLEET-2's posture:
+# an idle box is STOPPED after fifteen minutes to stop paying for it, and SSM answers
+# `TargetNotConnected` for a stopped instance while EC2 answers `IncorrectInstanceState` for an
+# order sent to one. Scored as box-unreachable these would back off and wait for a box that is
+# never going to answer by itself; scored as box-stopped they make the engine START one.
+LQ_BOX_STOPPED_RE='TargetNotConnected|InvalidInstanceId|IncorrectInstanceState|the fleet is all asleep|no running box|box\(es\) are stopped'
+LQ_PROBE_EMPTY_RE='no prepared, reachable on-demand box among the'
+LQ_BASE_PUSH_RE='could not push the integration base|could not push [^ ]+ to |remote rejected|failed to push some refs'
+LQ_SPOT_RE='Service initiated|instance-action|spot (instance|interruption)|marked for (termination|retirement)'
+LQ_UNREACH_RE='Connection closed by|Connection closed$|ssh: connect to host|ssh_exchange_identification|^scp: |scp: Connection|rsync: |Connection timed out|Connection refused|Broken pipe|No route to host|Host key verification failed|unreachable for [0-9]+ polls|the box vanished mid-proof|Permission denied \(publickey'
+
+# WHICH CLASS THIS LOG IS, IF IT IS ONE AT ALL. Prints nothing when the failure is not the
+# infrastructure's — a line that was really judged and really went red must still go red.
+lq_fault_class() { # $1 = rc, $2 = log (optional); prints the class, or nothing
+  local rc="${1:-}" lg="${2:-}"
+  if [ -n "$lg" ] && [ -f "$lg" ]; then
+    grep -qE "$LQ_BOX_STOPPED_RE"  "$lg" 2>/dev/null && { printf 'box-stopped\n'; return 0; }
+    grep -qE "$LQ_PROBE_EMPTY_RE" "$lg" 2>/dev/null && { printf 'probe-empty\n'; return 0; }
+    grep -qE "$LQ_BASE_PUSH_RE"   "$lg" 2>/dev/null && { printf 'base-push-failed\n'; return 0; }
+    grep -qE "$LQ_SPOT_RE"        "$lg" 2>/dev/null && { printf 'spot-reclaimed\n'; return 0; }
+    grep -qE "$LQ_HARNESS_RE"     "$lg" 2>/dev/null && { printf 'harness\n'; return 0; }
+    grep -qE "$LQ_UNREACH_RE"     "$lg" 2>/dev/null && { printf 'box-unreachable\n'; return 0; }
+  fi
+  [ "$rc" = 75 ] && { printf 'box-unreachable\n'; return 0; }
+  return 0
+}
+# A BATCH THAT CAME BACK WITH NO PER-LINE OUTCOMES always has a class, and box-unreachable is the
+# floor: land.sh writes one outcome row per landing line before it writes anything else about the
+# verdict, so an empty result file means the proof never reported — which is a statement about the
+# transport and never about the picks.
+lq_batch_fault_class() { # $1 = rc, $2 = log (optional); always prints a class
+  local c; c="$(lq_fault_class "${1:-}" "${2:-}")"
+  [ -n "$c" ] || c=box-unreachable
+  printf '%s\n' "$c"
+}
+# THE BACKOFF: 1, 2, 4, 8, 15 minutes and 15 from then on. The first retry is quick because most of
+# these faults are a single box and the next loop simply picks another one; the cap is the owner's,
+# and it is a cap and not a give-up — the engine never stops asking.
+LQ_BACKOFF_CAP="${LANDQ_BACKOFF_CAP_SECS:-900}"
+lq_backoff_secs() { # $1 = how many times in a row this class has fired (1-based)
+  local n="${1:-1}" s=60
+  case "$n" in ''|*[!0-9]*) n=1 ;; esac
+  [ "$n" -ge 1 ] || n=1
+  while [ "$n" -gt 1 ]; do
+    s=$((s * 2)); n=$((n - 1))
+    [ "$s" -ge "$LQ_BACKOFF_CAP" ] && break
+  done
+  [ "$s" -gt "$LQ_BACKOFF_CAP" ] && s="$LQ_BACKOFF_CAP"
+  printf '%s\n' "$s"
+}
+lq_fault_count() { # $1 = class, $2 = ledger (default $FAULTS); prints how many times in a row
+  local c="$1" f="${2:-$FAULTS}"
+  [ -f "$f" ] || { printf '0\n'; return 0; }
+  LQ_AWK_C="$c" awk -F"$TAB" '$1 == ENVIRON["LQ_AWK_C"] { n = $2 } END { print (n == "" ? 0 : n) }' "$f"
+}
+# RECORDED, COUNTED AND RUNG. Temp+mv, because the status renderer reads this file and a half-written
+# ledger is a status line that lies. Prints the NEW consecutive count, which is what the backoff wants.
+lq_fault_record() { # $1 = class, $2 = text, $3 = ledger (default $FAULTS), $4 = ring (default $FAULTRING)
+  local c="$1" text="${2:-}" f="${3:-$FAULTS}" r="${4:-$FAULTRING}" n
+  n="$(lq_fault_count "$c" "$f")"; n=$((n + 1))
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  { [ -f "$f" ] && LQ_AWK_C="$c" awk -F"$TAB" '$1 != ENVIRON["LQ_AWK_C"]' "$f"
+    printf '%s\t%s\t%s\t%s\n' "$c" "$n" "$(date +%s)" "$text"; } >"$f.tmp" && mv "$f.tmp" "$f"
+  { [ -f "$r" ] && tail -n "$((FAULT_RING_KEEP - 1))" "$r"
+    printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$c" "$text"; } >"$r.tmp" && mv "$r.tmp" "$r"
+  printf '%s\n' "$n"
+}
+# CLEARED BY A BATCH THAT CAME BACK. The backoff is about a run of faults, not about a total: one
+# batch with outcomes in it is proof that the transport works, and the next fault starts at a minute
+# again. With no class named, every class is cleared.
+lq_fault_clear() { # $1 = class (default: all), $2 = ledger (default $FAULTS)
+  local c="${1:-}" f="${2:-$FAULTS}"
+  [ -f "$f" ] || return 0
+  if [ -z "$c" ]; then : >"$f.tmp" && mv "$f.tmp" "$f"; return 0; fi
+  LQ_AWK_C="$c" awk -F"$TAB" '$1 != ENVIRON["LQ_AWK_C"]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  return 0
+}
+# THE ONE THING A FAULT IS ALLOWED TO DO TO A LINE: say that nothing was learned about it.
+lq_fault_verdict() { # $1 = class
+  printf 'NONE:%s\n' "$1"
+}
+# THE TWO CLASSES THE ENGINE CAN FIX BY ITSELF. A stopped fleet and an empty probe round are both
+# "there is no box awake", and the engine owns the switch: ci-fleet-power.sh --ensure-slots starts
+# exactly as many boxes as the slots it is short of, at BUSBAR_PROVE_PER_BOX slots each, and never
+# more. Best-effort by construction — no power script staged, or no credentials, and the backoff
+# alone carries the retry, exactly as it did before.
+lq_fault_wake() { # $1 = slots the next attempt needs (default 1), $2 = tree (default $W)
+  local want="${1:-1}" tree="${2:-$W}" pw="${2:-$W}/target/gate/ci-fleet-power.sh"
+  [ -x "$pw" ] || { lq_log "fleet: no staged power script at $pw; the backoff alone carries this retry"; return 1; }
+  lq_log "fleet: asking for $want proof slot(s) to be awake before the next attempt"
+  bash "$pw" --ensure-slots "$want" >>"$L" 2>&1 \
+    || lq_log "fleet: --ensure-slots $want did not report success; the backoff still carries the retry"
+  return 0
+}
+
+# A PROCESS'S START TIME, as a string that is stable for the life of that process and different for
+# the next process to wear its pid. `ps -o lstart=` says it on both BSD and procps.
+lq_pid_start() { # $1 = pid; prints the start time, or nothing
+  local p="${1:-}"
+  case "$p" in ''|*[!0-9]*) return 0 ;; esac
+  ps -o lstart= -p "$p" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
+}
+# IS THIS LOCK A CORPSE? Two ways, and the second is the one that cost a night: the pid is dead, OR
+# the pid is alive and is SOMEBODY ELSE — the recorded start time is not the start time of the
+# process now wearing that number. A laptop recycles pids in hours and a rebooted box recycles them
+# in seconds, and a lock held by an unrelated process stops the queue forever with no error at all.
+# A lock file written by an older engine carries no start time; then the pid's liveness is all there
+# is to go on and the lock is respected exactly as it was.
+lq_lock_stale() { # $1 = the pid in the lock, $2 = the start time recorded beside it; 0 = stale, take it
+  local pid="${1:-}" rec="${2:-}" now
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 0
+  [ -n "$rec" ] || return 1
+  now="$(lq_pid_start "$pid")"
+  [ -n "$now" ] || return 1
+  [ "$rec" = "$now" ] && return 1
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE PREDICTED TIP — WHAT THE TREE WILL BE WHEN THE BATCH THAT IS PROVING RIGHT NOW LANDS
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # Every tip move DROPS the pre-prove ledger (every row is keyed by the tip it was taken on), so the
@@ -1484,14 +1656,26 @@ lq_stage_engine() { # $1 = tree (default $W)
 # something that has already happened by the time the line reaches the head of the queue.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 LOCK="${LANDQ_LOCK:-$HOME/.busbar-landq4.lock}"
+# THE LOCK CARRIES THE HOLDER'S START TIME, and that is what makes "is it alive?" a question worth
+# asking (see lq_lock_stale). `kill -0` alone answers about a NUMBER, not about a process: the third
+# line of this file is the holder's start time as `ps` said it, and a pid whose process started at a
+# different moment is a recycled number, not a runner. Such a lock is STALE and is taken, with the
+# fault recorded as `lock-stale` so the status file says it happened.
 lq_lock_acquire() { # $1 = my pid; 0 = held by me now, 1 = a live runner holds it (its pid on stdout)
-  local me="$1" pid
+  local me="$1" pid rec
   if [ -f "$LOCK" ]; then
     pid="$(head -n1 "$LOCK" 2>/dev/null | tr -d '[:space:]')"
     case "$pid" in ''|*[!0-9]*) pid="" ;; esac
-    if [ -n "$pid" ] && [ "$pid" != "$me" ] && kill -0 "$pid" 2>/dev/null; then printf '%s\n' "$pid"; return 1; fi
+    rec="$(sed -n 3p "$LOCK" 2>/dev/null)"
+    if [ -n "$pid" ] && [ "$pid" != "$me" ]; then
+      if lq_lock_stale "$pid" "$rec"; then
+        lq_fault_record lock-stale "$LOCK held by pid $pid, which is dead or is no longer the process that took it" >/dev/null
+      else
+        printf '%s\n' "$pid"; return 1
+      fi
+    fi
   fi
-  printf '%s\n%s\n' "$me" "$W" >"$LOCK"
+  printf '%s\n%s\n%s\n' "$me" "$W" "$(lq_pid_start "$me")" >"$LOCK"
   export LANDQ_RUNNER_PID="$me"
   return 0
 }
@@ -2687,7 +2871,7 @@ lq_selftest() {
   kill "$cwdpid" 2>/dev/null; wait "$cwdpid" 2>/dev/null
 
   _t "the main flow takes the census before the sweep and the pop" 1 "$(grep -c '^  census="\$(lq_census \$\$ "\$W")"' "$0")"
-  _t "  ...and refuses on an empty one"        1 "$(grep -c '^    lq_log "=== census: EMPTY' "$0")"
+  _t "  ...and refuses on an empty one"        1 "$(grep -c '^    fn="\$(lq_fault_record census-empty ' "$0")"
 
   echo "landq4 selftest: the tree must be settled (HEAD is the last landed tip, nothing modified)"
   local tipf="$root/tip.txt"
@@ -4103,6 +4287,102 @@ lq_selftest() {
           -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
 
+  # ── THE FAULT TAXONOMY (F2) ───────────────────────────────────────────────────────────────────
+  # Every class is driven from the SENTENCE the transport really wrote, taken from the running
+  # engine's log, and each case was RED before the taxonomy existed: the engine had no class at all
+  # and the batch site exited 1.
+  echo "landq4 selftest: an infrastructure fault is a class, a backoff and a NONE — never a HALT"
+  local savedF="${FAULTS:-}" savedR="${FAULTRING:-}"
+  FAULTS="$root/faults.txt"; FAULTRING="$root/faultring.txt"; : >"$FAULTS"; : >"$FAULTRING"
+  local fdir="$root/faultlogs"; mkdir -p "$fdir"
+  printf 'land-remote: no prepared, reachable on-demand box among the 0 in %s/.busbar-fleet\n' "$HOME" >"$fdir/probe.log"
+  printf 'land-remote: could not push the integration base 4197eb098 to i-071084387d22ed544\n' >"$fdir/basepush.log"
+  printf '[remote 21:44:08] the instance was stopped: Service initiated\n' >"$fdir/spot.log"
+  printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence (documented)\n' >"$fdir/harn.log"
+  printf 'scp: Connection closed\n' >"$fdir/scp.log"
+  printf 'ssh: connect to host i-0b0e1585e8567d01a port 22: Connection timed out\n' >"$fdir/ssh.log"
+  printf 'land-remote: i-07af07dd77dfea9d9 unreachable for 10 polls — no verdict\n' >"$fdir/poll.log"
+  printf 'rsync: connection unexpectedly closed\n' >"$fdir/rsync.log"
+  printf 'gate kind-isolation: FAIL cell.178.count 19 -> 27\n' >"$fdir/realred.log"
+  _t "probe-empty is its own class"            "probe-empty"      "$(lq_fault_class 2 "$fdir/probe.log")"
+  # A STOPPED BOX IS NOT AN UNREACHABLE ONE (FLEET-2's cost posture): it is started and retried.
+  printf 'An error occurred (TargetNotConnected) when calling the StartSession operation
+' >"$fdir/stopped.log"
+  printf 'ci-fleet-power: 0 running box(es) are stopped; the sweep must start what it needs
+' >"$fdir/asleep.log"
+  _t "a stopped box is its own class"          "box-stopped"      "$(lq_fault_class 2 "$fdir/stopped.log")"
+  _t "  ...and so is a fleet that is all asleep" "box-stopped"    "$(lq_fault_class 2 "$fdir/asleep.log")"
+  _t "  ...it outranks box-unreachable"        "box-stopped"      "$(printf 'ssh: connect to host i-a port 22: Connection refused\nAn error occurred (TargetNotConnected)\n' >"$fdir/both.log"; lq_fault_class 2 "$fdir/both.log")"
+  _t "  ...and the engine starts a box for it" 1 "$(grep -c 'box-stopped|probe-empty) lq_fault_wake 1' "$LQ_SRC")"
+  _t "  ...with no staged power script it still retries" 1 \
+     "$(LANDQ_LOG="$root/wake.log" L="$root/wake.log" lq_fault_wake 1 "$root/nosuchtree" >/dev/null 2>&1; echo $?)"
+  _t "the base push failing is its own class"  "base-push-failed" "$(lq_fault_class 2 "$fdir/basepush.log")"
+  _t "a reclaimed spot instance is its own class" "spot-reclaimed" "$(lq_fault_class 2 "$fdir/spot.log")"
+  _t "the harness give-up keeps its class"     "harness"          "$(lq_fault_class 1 "$fdir/harn.log")"
+  _t "an scp that closed is box-unreachable"   "box-unreachable"  "$(lq_fault_class 2 "$fdir/scp.log")"
+  _t "  ...as is an ssh that never connected"  "box-unreachable"  "$(lq_fault_class 2 "$fdir/ssh.log")"
+  _t "  ...and a poller that gave up"          "box-unreachable"  "$(lq_fault_class 2 "$fdir/poll.log")"
+  _t "  ...and an rsync that closed"           "box-unreachable"  "$(lq_fault_class 2 "$fdir/rsync.log")"
+  _t "  ...and rc 75 with no log at all"       "box-unreachable"  "$(lq_fault_class 75 "")"
+  # A REAL RED IS NOT A FAULT, and this is the case the whole taxonomy has to get right: a line that
+  # was judged and went red must still go red, or the engine has stopped judging.
+  _t "a gate that really failed is NO class"   ""                 "$(lq_fault_class 1 "$fdir/realred.log")"
+  _t "  ...and rc 1 with no log is no class either" ""            "$(lq_fault_class 1 "")"
+  # …but a BATCH with no outcomes always has one: nothing was learned, whatever the log says.
+  _t "a batch with no outcomes is a fault even so" "box-unreachable" "$(lq_batch_fault_class 1 "$fdir/realred.log")"
+  _t "  ...and keeps the more precise class when there is one" "probe-empty" \
+     "$(lq_batch_fault_class 2 "$fdir/probe.log")"
+  # THE BACKOFF: 1, 2, 4, 8, 15 and 15 from then on.
+  _t "the first fault waits a minute"          60   "$(lq_backoff_secs 1)"
+  _t "  ...the second two"                     120  "$(lq_backoff_secs 2)"
+  _t "  ...the third four"                     240  "$(lq_backoff_secs 3)"
+  _t "  ...the fourth eight"                   480  "$(lq_backoff_secs 4)"
+  _t "  ...and it caps at fifteen"             900  "$(lq_backoff_secs 5)"
+  _t "  ...and stays there"                    900  "$(lq_backoff_secs 40)"
+  _t "  ...a count of nothing is the first"    60   "$(lq_backoff_secs "")"
+  # THE COUNTER IS PER CLASS, and one class firing does not back another one off.
+  _t "an unseen class has not fired"           0 "$(lq_fault_count box-unreachable)"
+  _t "the first record counts one"             1 "$(lq_fault_record box-unreachable "scp: Connection closed")"
+  _t "  ...the second two"                     2 "$(lq_fault_record box-unreachable "scp: Connection closed")"
+  _t "  ...and another class is still at one"  1 "$(lq_fault_record probe-empty "no prepared, reachable on-demand box among the 0")"
+  _t "  ...the ledger has one row per class"   2 "$(grep -c . "$FAULTS")"
+  _t "  ...and the count is readable"          2 "$(lq_fault_count box-unreachable)"
+  _t "clearing one class leaves the other"     0 "$(lq_fault_clear box-unreachable; lq_fault_count box-unreachable)"
+  _t "  ...which is untouched"                 1 "$(lq_fault_count probe-empty)"
+  _t "a batch that came back clears them all"  0 "$(lq_fault_clear; grep -c . "$FAULTS" 2>/dev/null; true)"
+  # THE RING keeps the last few faults with their text, for the status file to render.
+  _t "the ring keeps the last five"            5 "$(for i in 1 2 3 4 5 6 7; do lq_fault_record box-unreachable "fault $i" >/dev/null; done; grep -c . "$FAULTRING")"
+  _t "  ...and the newest is last"             1 "$(tail -n1 "$FAULTRING" | grep -c 'fault 7')"
+  _t "  ...with its class beside it"           1 "$(tail -n1 "$FAULTRING" | grep -c 'box-unreachable')"
+  # THE VERDICT IS THE ENGINE'S EXISTING WORD FOR "NOTHING WAS LEARNED".
+  _t "a class becomes a NONE verdict"          "NONE:probe-empty" "$(lq_fault_verdict probe-empty)"
+  # A STALE LOCK. A dead pid, and — the one that cost a night — a LIVE pid that is somebody else.
+  _t "a dead pid's lock is stale"              0 "$(lq_lock_stale 999999 "Thu Sep 11 00:00:00 2026"; echo $?)"
+  _t "this shell's own lock is NOT stale"      1 "$(lq_lock_stale $$ "$(lq_pid_start $$)"; echo $?)"
+  _t "  ...but the same pid with another start time IS" 0 \
+     "$(lq_lock_stale $$ "Thu Jan  1 00:00:00 1970"; echo $?)"
+  _t "  ...and an old lock with no start time is respected" 1 "$(lq_lock_stale $$ ""; echo $?)"
+  _t "a pid that is not a number is stale"     0 "$(lq_lock_stale "" ""; echo $?)"
+  # THE SITE ITSELF: the batch-outcome mismatch no longer exits, and HALT is left to the ONE tree
+  # fact. Counted on the implementation with the selftest cut out of it.
+  _t "no-result no longer HALTs"               0 "$(grep -c 'HALT: land.sh --batch left' "$LQ_SRC")"
+  _t "  ...it requeues, backs off and continues" 1 \
+     "$(grep -c 'sleep "\$fwait"; continue' "$LQ_SRC")"
+  _t "  ...naming the class in the ledger"     1 "$(grep -c 'lq_fault_verdict "\$fcls") no-result' "$LQ_SRC")"
+  _t "  ...and the requeue still happens first" 1 \
+     "$( [ "$(grep -n 'cat "\$batch.requeue" "\$Q"' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n 'fn="\$(lq_fault_record "\$fcls"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "exactly ONE HALT is left in the engine"  1 "$(grep -c '=== HALT:' "$LQ_SRC")"
+  _t "  ...and it is head-conflict-twice"      1 "$(grep -c 'HALT head-conflict-twice' "$LQ_SRC")"
+  _t "  ...and it is the only exit 1 there is" 1 "$(grep -c '^      exit 1$' "$LQ_SRC")"
+  _t "a batch with outcomes clears the counters" 1 "$(grep -c '^  lq_fault_clear$' "$LQ_SRC")"
+  _t "the census's empty answer is a counted class" 1 "$(grep -c 'lq_fault_record census-empty' "$LQ_SRC")"
+  _t "  ...and so is a tree that moved"        1 "$(grep -c 'lq_fault_record tree-moved' "$LQ_SRC")"
+  _t "the host lock records the holder's start time" 1 \
+     "$(grep -cF 'lq_pid_start "$me")" >"$LOCK"' "$LQ_SRC")"
+  _t "  ...and the queue lock does too"        1 "$(grep -c 'lq_pid_start "\$\$" >"\$QLOCK/start"' "$LQ_SRC")"
+  FAULTS="$savedF"; FAULTRING="$savedR"
+
   # ── NO SCRATCH UNDER /tmp (owner rule, 2026-09-11) ────────────────────────────────────────────
   # The pattern is built from a variable so that this assertion is not itself the thing it counts.
   echo "landq4 selftest: no scratch under the wiped directories"
@@ -4174,14 +4454,22 @@ while true; do
   TIPF="$W/target/gate/landq4.tip"
   census="$(lq_census $$ "$W")"; census_rc=$?
   printf '%s\n' "$census" | while IFS= read -r s; do [ -n "$s" ] && lq_log "census: $s"; done
+  # A REFUSED BATCH IS A FAULT WITH A NAME (see THE FAULT TAXONOMY), not a silent minute. Neither
+  # of these exits — a runner that gives up on a broken census or a moved tree loses more than it
+  # protects, and the census is usually about to kill the stray that moved the tree — but both are
+  # now COUNTED, backed off and carried in the status file, so a tree that stays moved pages rather
+  # than idling forever with a line in a log nobody is tailing.
   if [ "$census_rc" != 0 ]; then
-    lq_log "=== census: EMPTY — not even this runner's own chain is visible; the census is broken, batch REFUSED"
-    sleep 60; continue
+    lq_log "=== $(lq_fault_verdict census-empty): the census saw nothing at all, not even this runner's own chain; batch REFUSED, nothing popped"
+    fn="$(lq_fault_record census-empty "the census returned no process at all")"
+    sleep "$(lq_backoff_secs "$fn")"; continue
   fi
   if ! lq_tree_settled "$W" "$TIPF"; then
-    lq_log "=== census: batch REFUSED — HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF") or the tree is modified; nothing popped"
-    sleep 60; continue
+    lq_log "=== $(lq_fault_verdict tree-moved): HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF") or the tree is modified; batch REFUSED, nothing popped"
+    fn="$(lq_fault_record tree-moved "HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip, or the tree is modified")"
+    sleep "$(lq_backoff_secs "$fn")"; continue
   fi
+  lq_fault_clear census-empty; lq_fault_clear tree-moved
   batch="$W/target/gate/landq4-batch.$$.txt"; keep="$W/target/gate/landq4-keep.$$.txt"
   # ONE WRITER OF THE QUEUE (see lq_qlock). Taken here and dropped the moment the rewrite is taken
   # or refused; the pre-prove sweep below runs INSIDE it only because the pop that follows must read
@@ -4300,11 +4588,29 @@ while true; do
        /^[[:space:]]*(#|$)/ { next }
        { print (($0 in m) ? m[$0] : $0) }' "$batch" >"$batch.requeue"
     cat "$batch.requeue" "$Q" >"$Q.tmp" && mv "$Q.tmp" "$Q"; rm -f "$batch.requeue"; lq_qunlock
-    lq_log "=== HALT: land.sh --batch left ${got:-0} of ${want:-0} per-line outcomes (rc $rc); lines requeued unchanged"
-    echo "HALT no-result $(date +%FT%T)" >>"$D"
+    # NOT A HALT (see THE FAULT TAXONOMY). A batch that came back with no per-line outcomes learned
+    # NOTHING about its lines: land.sh writes one outcome row per landing line before it writes
+    # anything else, so an empty result file is a statement about the transport and never about the
+    # picks. The lines are back on the queue unchanged and LIVE, the class is read out of the
+    # batch's own log, and the loop is taken again after the class's backoff — 1, 2, 4, 8, 15
+    # minutes — with the counter in the status file. Five of the fifteen HALTs measured 09-09..09-11
+    # were exactly this, each costing every minute until a human restarted the runner by hand.
+    fcls="$(lq_batch_fault_class "$rc" "$batch.log")"
+    fmsg="land.sh --batch left ${got:-0} of ${want:-0} per-line outcomes (rc $rc)"
+    fn="$(lq_fault_record "$fcls" "$fmsg")"
+    fwait="$(lq_backoff_secs "$fn")"
+    # A FLEET THAT IS ASLEEP IS FIXED, NOT WAITED FOR (see lq_fault_wake).
+    case "$fcls" in box-stopped|probe-empty) lq_fault_wake 1 "$W" ;; esac
+    lq_log "=== $(lq_fault_verdict "$fcls"): $fmsg; ${want:-0} line(s) requeued unchanged and still LIVE — nothing parked, nothing red"
+    lq_log "=== backoff: this is fault $fn of class $fcls in a row; the batch is re-taken in $((fwait / 60)) min"
+    echo "$(lq_fault_verdict "$fcls") no-result $(date +%FT%T)" >>"$D"
     git -C "$W" cherry-pick --abort 2>/dev/null
-    rm -f "$batch" "$batch.chain"; exit 1
+    rm -f "$batch" "$batch.chain"
+    sleep "$fwait"; continue
   fi
+  # THE BATCH CAME BACK WITH OUTCOMES IN IT, so the transport works and every class's run of faults
+  # is over: the next one starts at a minute again.
+  lq_fault_clear
 
   red="$W/target/gate/landq4-red.$$.txt"; : >"$red"
   head_conflict=0; first=1; ngreen=0; nred=0; nheld=0
