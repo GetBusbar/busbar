@@ -1514,6 +1514,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy — ${{ matrix.name }}
         run: cargo clippy --workspace --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+      - name: Plugin cdylibs the suites dlopen
+        # MEASURED, not precautionary. `cargo test -p busbar-core` alone fails eleven tests with
+        # "the busbar-store-example-plugin cdylib is not built at target/debug/…", and
+        # `cargo test -p busbar-llm` one more on the hook-test plugin: those batteries cross the REAL
+        # plugin C ABI on purpose and REFUSE to skip when the artifact is missing. The `check` job
+        # never sees it because `cargo build --workspace` has already produced every cdylib by the
+        # time its tests run. A per-package test run has to say so itself. ~30 s, and the alternative
+        # -- a second `cargo build --workspace` per row -- is a full codegen for the same artifacts.
+        run: |
+          cargo build --locked \
+            -p busbar-store-example-plugin \
+            -p busbar-hook-test-plugin \
+            -p busbar-auth-static-plugin \
+            -p busbar-secret-example-plugin \
+            -p busbar-export-example-plugin
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.

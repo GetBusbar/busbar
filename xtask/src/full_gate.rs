@@ -145,6 +145,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate construction --posture",
     "cargo xtask gate design-bindings --selftest",
     "cargo xtask gate design-bindings",
+    "cargo build --locked -p busbar-store-example-plugin -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-secret-example-plugin -p busbar-export-example-plugin",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",
