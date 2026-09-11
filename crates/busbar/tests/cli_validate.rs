@@ -371,7 +371,8 @@ fn validate_fails_on_alias_conflict_naming_both() {
 }
 
 /// `--list-plugins` prints a manifest-only inventory with the correct status per row — and exits 0
-/// even over untrusted + invalid artifacts (nothing is loaded from listing).
+/// even over untrusted + invalid artifacts (nothing is loaded from listing). The store-selected row
+/// says `VERIFIED (not loaded; ...)`, NOT `LOADS`: no dlopen happened, so no load may be claimed.
 #[test]
 fn list_plugins_reports_statuses_without_loading() {
     let dir = fixture_dir("list");
@@ -389,8 +390,12 @@ fn list_plugins_reports_statuses_without_loading() {
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "list-plugins is informational: {stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
-        "the selected store row: {stdout}"
+        stdout.contains("VERIFIED (not loaded; store.module: sqlite)"),
+        "the selected store row names what was actually checked: {stdout}"
+    );
+    assert!(
+        !stdout.contains("LOADS"),
+        "a bare --list-plugins loads nothing, so it may not print a load verdict: {stdout}"
     );
     assert!(stdout.contains("busbar-store-sqlite"), "{stdout}");
     assert!(stdout.contains("acme-store-dynamo"), "{stdout}");
@@ -407,7 +412,7 @@ fn list_plugins_reports_statuses_without_loading() {
 ///   1. NAME-only match (alias deliberately different from store_ref) still selects.
 ///   2. An UNTRUSTED row whose name matches store_ref does NOT select (status != "ready").
 ///   3. `plugins.enabled: false` suppresses selection even when name/status both match, and
-///      reports the "inert" status instead of "LOADS".
+///      reports the "inert" status instead of the selected-row verdict.
 #[test]
 fn list_plugins_selected_row_requires_every_conjunct() {
     // (1) name-only match.
@@ -429,7 +434,7 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("LOADS (store.module: sqlite)"),
+        stdout.contains("VERIFIED (not loaded; store.module: sqlite)"),
         "a NAME match alone (alias differs) must still select: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -447,7 +452,7 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        !stdout.contains("LOADS"),
+        !stdout.contains("VERIFIED (not loaded"),
         "a name/alias match with a non-\"ready\" status must NOT select: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -465,7 +470,7 @@ fn list_plugins_selected_row_requires_every_conjunct() {
     let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        !stdout.contains("LOADS"),
+        !stdout.contains("VERIFIED (not loaded"),
         "plugins.enabled: false must suppress selection even on an otherwise-matching row: {stdout}"
     );
     assert!(

@@ -648,7 +648,89 @@ pub struct InventoryEntry {
     /// `third-party (allowed)` / `unsigned` / `unknown-publisher` / `tampered` / `INVALID`.
     pub signature: String,
     /// The status column: `ready` / `SKIPPED: <reason>` / `REJECTED: <reason>` / `INVALID: <reason>`.
+    ///
+    /// `ready` IS NOT "it loads". It is the end of the manifest/signature/ABI window and nothing
+    /// more: this row's tarball decoded, its manifest parsed, its signature verified against the
+    /// trust policy, and its declared `abi_version` is one this binary speaks. Whether the library
+    /// inside it can actually be mapped into THIS process is a question only a `dlopen` answers,
+    /// and inventory never asks it. [`InventoryEntry::probe_load`] is how you ask.
     pub status: String,
+    /// The VERIFIED library bytes, kept only for [`probe_load`](InventoryEntry::probe_load).
+    /// `None` for every row that never reached `ready` — there is nothing verified to load.
+    ///
+    /// PRIVATE, and it must stay private. These are the bytes a `dlopen` would map; handing them
+    /// out through a `pub` field would make "the bytes inventory verified" and "the bytes something
+    /// else loaded" two different values that only happen to agree today.
+    pub(crate) lib_bytes: Option<Vec<u8>>,
+}
+
+/// Debug WITHOUT the library bytes. Derived, `lib_bytes` would print a megabyte of hex into every
+/// assertion message that names a row — so the field is reported as a LENGTH, which is the only
+/// thing about it a reader of a failure ever wants ("did this row carry bytes at all?").
+impl std::fmt::Debug for InventoryEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InventoryEntry")
+            .field("file", &self.file)
+            .field("manifest", &self.manifest.as_ref().map(|m| &m.name))
+            .field("signature", &self.signature)
+            .field("status", &self.status)
+            .field("lib_bytes", &self.lib_bytes.as_ref().map(|b| b.len()))
+            .finish()
+    }
+}
+
+/// What an ACTUAL `dlopen` of an inventory row said — see [`InventoryEntry::probe_load`].
+///
+/// THE POINT OF THIS TYPE IS THAT ITS `Loads` VARIANT CANNOT BE PRODUCED WITHOUT A REAL LOAD.
+/// `--list-plugins` used to print `LOADS` off `status == "ready"`, i.e. off a signature check, and
+/// the published 1.5.5 image printed exactly that for a tarball the very next boot could not map
+/// (its busbar is a static-pie musl binary, whose libc's `dlopen` is a stub that always refuses;
+/// every published first-party plugin is a glibc cdylib). An operator's pre-flight said yes and the
+/// product then said no. A verdict that names a load must come from one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeVerdict {
+    /// The verified bytes were staged and `dlopen`ed IN THIS PROCESS, then unloaded again.
+    Loads,
+    /// No load was attempted: this row never got past the manifest/signature/ABI window, so there
+    /// are no verified bytes to map. Says "not asked", never "no".
+    NotVerified,
+    /// The `dlopen` was attempted and REFUSED, carrying the loader's own words for why.
+    CannotLoad(String),
+}
+
+impl InventoryEntry {
+    /// ACTUALLY LOAD THIS ROW'S LIBRARY, in this process, and say what happened.
+    ///
+    /// Stages the verified bytes exactly as the engine's own load path does (memfd on Linux, the
+    /// private `0700` staging directory otherwise), `dlopen`s them, and immediately unloads. No
+    /// plugin `open`/`configure` verb is called and no config is passed: the question is "can this
+    /// image be mapped here", which is the question every kind of plugin — store, hook, auth,
+    /// secret, export, login — asks in identical terms, so one probe answers for all six.
+    ///
+    /// MAPPING AN IMAGE RUNS ITS `.init_array`, which is plugin code. That is why this is not what
+    /// a bare `--list-plugins` does: listing a directory must never run what is in it. Only a row
+    /// the trust policy already accepted (`status == "ready"`) is ever probed, and only when a
+    /// caller asked for a probe out loud.
+    pub fn probe_load(&self) -> ProbeVerdict {
+        let Some(bytes) = self.lib_bytes.as_deref() else {
+            return ProbeVerdict::NotVerified;
+        };
+        let display = self
+            .manifest
+            .as_ref()
+            .map(|m| m.name.as_str())
+            .unwrap_or(&self.file);
+        match crate::stage::load_library_from_bytes(bytes, display) {
+            Ok((lib, staged)) => {
+                // Unload on the plugin worker, then release the staging resource — the same order
+                // the engine uses, so a probe leaves the process exactly as it found it.
+                crate::dlclose_on_worker(lib);
+                drop(staged);
+                ProbeVerdict::Loads
+            }
+            Err(e) => ProbeVerdict::CannotLoad(e),
+        }
+    }
 }
 
 /// Build the manifest-only inventory of `dir` under `policy`. Never errors, never loads: every
@@ -663,6 +745,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 manifest: None,
                 signature: "-".into(),
                 status: format!("INVALID: {e}"),
+                lib_bytes: None,
             }]
         }
     };
@@ -687,6 +770,9 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     manifest: Some(p.manifest.clone()),
                     signature,
                     status: "ready".to_string(),
+                    // The ONLY row that carries bytes: `ready` is precisely "the trust policy
+                    // accepted these", and a probe may map nothing the policy refused.
+                    lib_bytes: Some(p.lib_bytes.clone()),
                 });
                 loadable.push(p);
             }
@@ -717,6 +803,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     manifest: Some(s.manifest),
                     signature,
                     status,
+                    lib_bytes: None,
                 });
             }
             FileOutcome::Invalid { file, reason } => rows.push(InventoryEntry {
@@ -724,6 +811,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 manifest: None,
                 signature: "INVALID".to_string(),
                 status: format!("INVALID: {reason}"),
+                lib_bytes: None,
             }),
         }
     }
@@ -735,6 +823,10 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
         for row in rows.iter_mut() {
             if conflict.files.contains(&row.file) {
                 row.status = format!("CONFLICT: {}", conflict.message);
+                // A conflicted row is one the engine REFUSES to load, so it must not be probeable:
+                // dropping the bytes here makes `probe_load` say `NotVerified` rather than
+                // cheerfully mapping a library the boot would never accept.
+                row.lib_bytes = None;
             }
         }
     }

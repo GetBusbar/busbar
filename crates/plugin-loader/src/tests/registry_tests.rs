@@ -939,3 +939,111 @@ fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── `ready` IS NOT `LOADS`: THE PROBE ────────────────────────────────────────────────────────────
+//
+// `--list-plugins` printed `LOADS (store.module: sqlite)` off `status == "ready"`, and `ready` is
+// the end of the manifest/signature/ABI window — not a load. The published 1.5.5 image printed
+// exactly that line for a tarball whose very next boot said `dlopen failed`, and it was not the
+// image's missing /tmp: the same binary, on a full glibc host with a real /tmp and an absolute
+// plugins.dir and every NEEDED library resolvable, still said `dlopen failed`, because it is a
+// static-pie musl ELF with no PT_INTERP whose libc `dlopen` is a stub. An operator surface that
+// answers a question it never asked is a defect regardless of which answer it happens to give.
+//
+// So the verdict that names a load now comes from one. These three tests pin the whole triangle:
+// a verified row that CANNOT load, a verified row that CAN, and a row that is never asked.
+
+/// A row can be `ready` AND unloadable AT THE SAME TIME, and that is the exact shape of the lie.
+/// Its manifest parses, its signature verifies first-party, its `abi_version` is one this binary
+/// speaks — every conjunct `LOADS` used to be printed off — and the bytes inside it are not an
+/// object file at all, so the `dlopen` refuses. `probe_load` is the only thing here that can tell
+/// the two apart, and it must say `CannotLoad` carrying the loader's own words.
+#[test]
+fn a_ready_row_whose_bytes_are_not_a_library_probes_cannot_load() {
+    let release = key(1);
+    let dir = tmpdir("probe-not-a-library");
+    let m = manifest("busbar-store-fake", "fake", "busbar");
+    let m = sign(&release, m, b"this is not an ELF");
+    write_tarball(&dir, "fake.tar.gz", &m, b"this is not an ELF");
+
+    let rows = inventory(&dir, &policy(&release));
+    assert_eq!(rows.len(), 1, "one tarball, one row: {rows:?}");
+    assert_eq!(
+        rows[0].status, "ready",
+        "the trust/ABI window is fully satisfied — which is precisely why `ready` may not be \
+         reported as a load"
+    );
+    match rows[0].probe_load() {
+        ProbeVerdict::CannotLoad(e) => assert!(
+            !e.is_empty(),
+            "the refusal must carry the loader's own reason, not a bare `no`"
+        ),
+        other => panic!(
+            "a `ready` row whose bytes are not a library must probe CannotLoad, got {other:?}"
+        ),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE PROBE CAN SAY YES, AND IT SAYS IT FOR A HOOK — not a store. `probe_load` maps an image and
+/// nothing else, so a store plugin and a hook plugin are loaded by identical means; proving the
+/// positive over the HOOK cdylib is what keeps "every plugin kind loads the same way" from being a
+/// claim about the store path with the other five assumed. A probe that could only ever answer
+/// `CannotLoad` would pass the sibling test above while being useless, so this is the other half.
+#[test]
+fn a_real_cdylib_probes_loads_for_a_hook_just_as_for_a_store() {
+    let Some(cdylib) = crate::hook::tests::hook_plugin_path() else {
+        eprintln!("skip: hook test plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let bytes = std::fs::read(&cdylib).expect("read the hook test plugin cdylib");
+    let release = key(1);
+    let dir = tmpdir("probe-real-cdylib");
+    let mut m = manifest("busbar-hook-test-plugin", "test-hook", "busbar");
+    m.kind = "hook".into();
+    m.abi_version = busbar_plugin::cold::hook::HOOK_ABI_VERSION;
+    let m = sign(&release, m, &bytes);
+    write_tarball(&dir, "hook.tar.gz", &m, &bytes);
+
+    let rows = inventory(&dir, &policy(&release));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].status, "ready", "{rows:?}");
+    assert_eq!(
+        rows[0].probe_load(),
+        ProbeVerdict::Loads,
+        "a real cdylib, staged and dlopen'd in this process, must probe Loads"
+    );
+    // TWICE. The probe unloads what it mapped and releases its staging; a second probe that failed
+    // would mean the first left the process changed, which is the one thing a pre-flight may not do.
+    assert_eq!(
+        rows[0].probe_load(),
+        ProbeVerdict::Loads,
+        "probing is repeatable: the first probe must leave the process as it found it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A ROW THE TRUST POLICY REFUSED IS NEVER PROBED, and the verdict for it is `NotVerified` — "not
+/// asked" — never `CannotLoad`. Mapping an image runs its `.init_array`, so probing an artifact
+/// trust already rejected would run exactly the code the rejection existed to keep out, and a
+/// pre-flight that executes untrusted plugin code is a worse defect than the one being fixed here.
+#[test]
+fn an_untrusted_row_is_never_probed_and_says_not_asked() {
+    let release = key(1);
+    let stranger = key(9);
+    let dir = tmpdir("probe-untrusted");
+    let m = manifest("busbar-store-stranger", "stranger", "busbar");
+    // Signed by a key the policy does not know: `publisher: busbar` cannot verify against it.
+    let m = sign(&stranger, m, b"stranger lib");
+    write_tarball(&dir, "stranger.tar.gz", &m, b"stranger lib");
+
+    let rows = inventory(&dir, &policy(&release));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_ne!(rows[0].status, "ready", "trust refused it: {rows:?}");
+    assert_eq!(
+        rows[0].probe_load(),
+        ProbeVerdict::NotVerified,
+        "an artifact trust refused carries no bytes to map, so the probe is not asked"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

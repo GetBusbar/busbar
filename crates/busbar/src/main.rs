@@ -181,7 +181,9 @@ fn handle_cli_flags() -> Option<i32> {
         Some("--mcp-stdio") => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
-        Some("--list-plugins") => Some(list_plugins_command()),
+        Some("--list-plugins") => {
+            Some(list_plugins_command(probe_load_requested(std::env::args())))
+        }
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
             println!(
@@ -200,9 +202,17 @@ USAGE:
                         (structure, signature/trust, conflicts, abi, version floors) and exit
                         (0 = valid, 1 = errors); no server, no network, no state, no dlopen —
                         safe in CI and before a reload; a clean --validate means boot succeeds
-    busbar --list-plugins
-                        manifest-only inventory of the plugins dir (name/alias/kind/version,
-                        signature verdict, load status + exact reason); never loads plugin code
+    busbar --list-plugins [--probe-load]
+                        inventory of the plugins dir (name/alias/kind/version, signature verdict,
+                        status + exact reason). By DEFAULT nothing is loaded, so a verified row
+                        reads `VERIFIED (not loaded)` — the signature/ABI window is all that was
+                        checked and the status says so. `--probe-load` additionally `dlopen`s each
+                        verified row in this process and unloads it again, and only THEN may a row
+                        read `LOADS`; one that cannot reads `CANNOT LOAD: <reason>`. Use it as the
+                        pre-flight before a deploy: it is the only form that answers 'will a plugin
+                        load HERE' (in this container, on this libc) rather than 'is this tarball
+                        signed'. Mapping an image runs its init code, which is why it is opt-in and
+                        why a row trust refused is never probed.
     busbar --migrate-config <old-config.yaml>
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
@@ -399,11 +409,34 @@ fn validate_config_command() -> i32 {
     0
 }
 
-/// `--list-plugins`: MANIFEST-ONLY inventory of every plugin tarball in `plugins.dir` — name,
-/// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
-/// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
-/// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
-fn list_plugins_command() -> i32 {
+/// Whether `--probe-load` appears anywhere in the arg list. A scanner (like [`safe_mode_requested`])
+/// rather than a positional read: it is a MODIFIER on `--list-plugins`, not a mode of its own, so it
+/// is looked for rather than parsed at a position — and taking the iterator as a parameter makes it
+/// unit-testable against a synthetic arg list.
+fn probe_load_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == "--probe-load")
+}
+
+/// `--list-plugins`: inventory of every plugin tarball in `plugins.dir` — name, alias, kind,
+/// version, signature verdict, and status (including the exact skip/invalid reason and which one
+/// `store.module` selects). Exit 0 (informational; `--validate` is the gate).
+///
+/// ── WHY A VERIFIED ROW DOES NOT SAY `LOADS` ─────────────────────────────────────────────────────
+/// It used to. The status was `LOADS (store.module: <ref>)` for any row that was `ready` and that
+/// `store.module` named — and `ready` is the end of the MANIFEST/SIGNATURE/ABI window, not a load.
+/// The published 1.5.5 container printed that line for the sqlite tarball and then refused to boot
+/// on `dlopen failed`, so the operator's pre-flight said yes and the product said no. Nor was that
+/// the container's fault: the SAME binary on a full glibc host, with a real `/tmp`, an absolute
+/// `plugins.dir` and every `NEEDED` library resolvable, still said `dlopen failed` — it is a
+/// static-pie musl ELF with no `PT_INTERP`, and musl's static `dlopen` is a stub that always
+/// refuses. Nothing short of an actual `dlopen` could have caught that, and the surface that was
+/// asked was the one surface that never tried.
+///
+/// So the default verdict is now `VERIFIED (not loaded; store.module: <ref>)`, which is exactly
+/// what was checked, and `LOADS` is reserved for `--probe-load`: a real map + unmap of the library
+/// in THIS process. `probe` is the caller's word — the flag — because mapping an image runs its
+/// `.init_array`, and listing a directory must never run what is in it.
+fn list_plugins_command(probe: bool) -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
@@ -476,12 +509,37 @@ fn list_plugins_command() -> i32 {
         let selected = plugins_cfg.enabled
             && row.status == "ready"
             && (name == store_ref || alias == store_ref);
-        let status = if selected {
-            format!("LOADS (store.module: {store_ref})")
-        } else if !plugins_cfg.enabled && row.status == "ready" {
-            "ready (inert: plugins.enabled is false)".to_string()
+        // THE ONLY PLACE A LOAD VERDICT COMES FROM. `probe` is the flag; the verdict is the
+        // loader's, produced by a real dlopen, and it is computed for EVERY verified row rather
+        // than only the store-selected one — "does a plugin load in this image" is a question
+        // about the image, and a hook plugin answers it exactly as a store plugin does.
+        let probed = if probe && plugins_cfg.enabled {
+            Some(row.probe_load())
         } else {
-            row.status.clone()
+            None
+        };
+        let store_suffix = if selected {
+            format!(" (store.module: {store_ref})")
+        } else {
+            String::new()
+        };
+        let status = match probed {
+            Some(busbar_plugin_loader::ProbeVerdict::Loads) => format!("LOADS{store_suffix}"),
+            // The refusal is printed IN FULL, because the reason is the whole value: `dlopen
+            // failed` and `cannot create private plugin staging dir /tmp/...: No such file or
+            // directory` are two different operator actions, and a truncated verdict makes them
+            // one.
+            Some(busbar_plugin_loader::ProbeVerdict::CannotLoad(e)) => {
+                format!("CANNOT LOAD: {e}")
+            }
+            // Probed, but this row never reached the trust/ABI window — its own status already
+            // says why, so repeating "not verified" here would bury it.
+            Some(busbar_plugin_loader::ProbeVerdict::NotVerified) => row.status.clone(),
+            None if selected => format!("VERIFIED (not loaded; store.module: {store_ref})"),
+            None if !plugins_cfg.enabled && row.status == "ready" => {
+                "ready (inert: plugins.enabled is false)".to_string()
+            }
+            None => row.status.clone(),
         };
         println!(
             "{:<34} {:<24} {:<12} {:<6} {:<9} {:<24} {status}",

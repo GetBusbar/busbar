@@ -61,7 +61,7 @@ pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
-    LoadablePlugin, PluginRegistry, SkippedPlugin,
+    LoadablePlugin, PluginRegistry, ProbeVerdict, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
 

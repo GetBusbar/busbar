@@ -327,4 +327,7 @@ mod hook_panic_status_tests;
 
 #[cfg(test)]
 #[path = "tests/hook_tests.rs"]
-mod tests;
+// `pub(crate)` so registry's probe tests can reuse `hook_plugin_path()` — the ONE place that knows
+// where the hook cdylib lands under both a workspace build and a scoped `-p` build. A second copy
+// of that search would be a second thing to get wrong.
+pub(crate) mod tests;
