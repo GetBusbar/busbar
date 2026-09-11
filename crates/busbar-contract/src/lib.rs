@@ -12,6 +12,7 @@
 
 pub mod bounded;
 pub mod dest;
+pub mod error;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -34,6 +35,10 @@ pub use dest::{
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };
+pub use error::{
+    envelope_of, Advisory, Catalog, CatalogEntry, CatalogFault, ErrorClass, Param, ParamValue,
+    Params, PluginError, Template, MAX_CATALOG_CODES, MAX_CATALOG_LOCALES, MAX_ERROR_PARAMS,
+};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,
@@ -48,8 +53,7 @@ pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
     CredentialFacts, CredentialLocator, EgressAuthScheme, EnvelopeFields, Export, ExportItem, Head,
     Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts,
-    RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue, SignFailed, Signer, SliceGrant,
-    Store, StoreError,
+    RecordBytes, Seat, Secret, SecretRef, SecretValue, SignFailed, Signer, SliceGrant, Store,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
