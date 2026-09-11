@@ -22,9 +22,10 @@
 //! here and there cannot be one: what differs between two planes is DATA the node was handed when
 //! the plane was mounted, and a plane this node did not mount resolves to nothing rather than to a
 //! default. That is what makes adding a plane a mounting rather than an edit, and it is why the
-//! same call serves a2a: a2a's twenty-three fields and mcp's eighteen share exactly the nine below
+//! same call serves a2a: a2a's twenty-three fields and mcp's eighteen share exactly the ten below
 //! — `auth`, `auth_bindings`, `door`, `pricer`, `records`, `meter_policy`, `scope_policy`,
-//! `durability`, `origin` — under the same names, resolved at the same moment, from the same node.
+//! `durability`, `origin`, `breaker` — under the same names, resolved at the same moment, from the
+//! same node.
 //!
 //! ## What is NOT here, and why each absence is a decision
 //!
@@ -38,11 +39,13 @@
 //! card's, and the card has one reader.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use busbar_unit_admission::{Door, InMemoryCells, Pricer};
 use busbar_unit_auth::Auth;
+use busbar_unit_breaker::DestinationId;
 
+use crate::root::adapters::{LaneMap, PlaneBreakerView, RootBreakerUnit};
 use crate::root::store::PlaneRecords;
 
 /// ONE PLANE'S DECLARATION, as a node holds it after mounting that plane.
@@ -56,6 +59,25 @@ pub struct MountedPlane {
     pub records: PlaneRecords,
     /// What the scope unit reads at approve for this plane's classes.
     pub scope_policy: crate::root::policy::ScopePolicy,
+    /// HOW MANY POOL MEMBERS this plane registered, in the plane's own table order.
+    ///
+    /// A COUNT and not a list of identities, because a plane does not get to say what a pool member
+    /// is CALLED: the destination identity is node-local and the node mints it, so two planes that
+    /// each registered a first member cannot both be talking about destination zero. What the plane
+    /// declares is how many lanes it has and the order they are in, which is exactly what its own
+    /// lane index means.
+    pub lanes: usize,
+}
+
+/// One plane as the NODE holds it: what the plane declared, plus the readiness view the node built
+/// over its lane table.
+///
+/// The view is built HERE, at the mounting, and is not a field of [`MountedPlane`] — a plane that
+/// could hand in a breaker view would be a plane that could bring its own breaker, and then "one
+/// breaker for every plane" would be a convention instead of a shape.
+struct Mounted {
+    plane: MountedPlane,
+    breaker: PlaneBreakerView,
 }
 
 /// THE NODE: the units every plane's leg is answered by, plus one entry per plane it mounted.
@@ -79,8 +101,14 @@ pub struct Node {
     pub durability: Mutex<crate::root::durability::Durability>,
     /// The sealed origin an audit record is written under.
     pub origin: busbar_caps::Origin,
+    /// THE NODE'S ONE BREAKER. Every plane's lanes are cells in this unit and nowhere else, which
+    /// is what makes a destination that went down go down for the node rather than for one plane.
+    breaker: Arc<RootBreakerUnit>,
+    /// The next node-local destination identity to hand out. Minted by the node, never by a plane,
+    /// so two planes' lane tables cannot name the same breaker cell.
+    next_destination: u64,
     /// One entry per mounted plane, keyed the way the registry keys it.
-    planes: BTreeMap<&'static str, MountedPlane>,
+    planes: BTreeMap<&'static str, Mounted>,
 }
 
 impl Node {
@@ -91,7 +119,16 @@ impl Node {
     /// declares and the later one is the one the operator meant.
     #[must_use]
     pub fn mounting(mut self, plane_key: &'static str, plane: MountedPlane) -> Self {
-        self.planes.insert(plane_key, plane);
+        // The node mints this plane's destination identities, one per declared lane, in the plane's
+        // own table order. A re-mount mints a fresh run rather than reusing the last one's: a
+        // replaced declaration is a different table, and a lane that inherited a tripped cell it
+        // never earned would be a node suppressing a member the operator has just declared.
+        let destinations: Vec<DestinationId> = (0..plane.lanes)
+            .map(|i| DestinationId::new(self.next_destination + i as u64))
+            .collect();
+        self.next_destination += plane.lanes as u64;
+        let breaker = PlaneBreakerView::new(Arc::clone(&self.breaker), LaneMap::new(destinations));
+        self.planes.insert(plane_key, Mounted { plane, breaker });
         self
     }
 
@@ -101,6 +138,10 @@ impl Node {
     /// impossible to build a node and forget one. Nothing here is expensive and nothing here is
     /// work: the chain is already resolved, the cells are already hydrated, the book is already
     /// open.
+    // One argument per decision configuration made, which is the shape that makes it impossible to
+    // build a node and forget one. Grouping them into a struct would only move the same ten
+    // decisions behind a second name that could itself be built incomplete.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn over(
         auth: Auth,
@@ -110,6 +151,7 @@ impl Node {
         meter_policy: crate::root::policy::MeterPolicyHandle,
         durability: Mutex<crate::root::durability::Durability>,
         origin: busbar_caps::Origin,
+        breaker: Arc<RootBreakerUnit>,
     ) -> Self {
         Node {
             auth,
@@ -119,6 +161,8 @@ impl Node {
             meter_policy,
             durability,
             origin,
+            breaker,
+            next_destination: 0,
             planes: BTreeMap::new(),
         }
     }
@@ -130,7 +174,7 @@ impl Node {
     }
 }
 
-/// THE BOOT-RESOLVED HALF of one plane's leg bindings — the nine every plane's leg has.
+/// THE BOOT-RESOLVED HALF of one plane's leg bindings — the ten every plane's leg has.
 ///
 /// Borrowed, every one of them, and borrowed from the node: what a leg is driven over is the node's
 /// instance and never a copy of it. A field here that was owned would be a plane holding its own
@@ -154,21 +198,29 @@ pub struct LegBindings<'r> {
     pub durability: &'r Mutex<crate::root::durability::Durability>,
     /// The sealed origin the audit record is written under.
     pub origin: busbar_caps::Origin,
+    /// THE BREAKER, as the verify step reads it: the node's one unit, over THIS PLANE's lane table.
+    ///
+    /// Borrowed like the other eight. The view is the node's, not the leg's, so the readiness the
+    /// seal is judged by and the readiness the walk filters by are the same unit's answer about the
+    /// same cell at the same moment.
+    pub breaker: &'r PlaneBreakerView,
 }
 
 /// **THE ONE RESOLVER.** Everything one plane's leg is bound to that boot can resolve.
 ///
-/// Seven of the nine come off the node and are the SAME value for every plane on it; two come off
-/// the plane's own declaration and are that plane's. The lookup is the whole of the difference
-/// between two planes, which is what "every plane is identical" means when it is written down
-/// rather than asserted.
+/// Seven of the ten come off the node and are the SAME value for every plane on it; three come off
+/// the plane's own declaration and are that plane's — its record legs, its scope policy, and the
+/// readiness view over the lane table it registered, which is the node's ONE breaker unit keyed by
+/// this plane's own lanes. The lookup is the whole of the difference between two planes, which is
+/// what "every plane is identical" means when it is written down rather than asserted.
 ///
 /// `None` is a plane this node did not mount. It is an absence and not an empty binding, because a
 /// leg driven over a default door is a leg that admits and charges against something the operator
 /// never configured — and it would look like it worked.
 #[must_use]
 pub fn resolve_bindings<'r>(plane_key: &str, node: &'r Node) -> Option<LegBindings<'r>> {
-    let plane = node.planes.get(plane_key)?;
+    let mounted = node.planes.get(plane_key)?;
+    let plane = &mounted.plane;
     Some(LegBindings {
         auth: &node.auth,
         auth_bindings: &node.auth_bindings,
@@ -179,6 +231,7 @@ pub fn resolve_bindings<'r>(plane_key: &str, node: &'r Node) -> Option<LegBindin
         scope_policy: &plane.scope_policy,
         durability: &node.durability,
         origin: node.origin,
+        breaker: &mounted.breaker,
     })
 }
 

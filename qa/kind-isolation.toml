@@ -1335,7 +1335,7 @@ count = "25"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "caps"
-count = "317"
+count = "318"
 
 [[cell]]
 crate = "busbar"
@@ -1406,7 +1406,7 @@ count = "97"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "1998"
+count = "2000"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
@@ -1441,7 +1441,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "947"
+count = "949"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1456,7 +1456,7 @@ count = "947"
 # cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "unit"
-count = "1213"
+count = "1229"
 
 [[cell]]
 crate = "busbar-a2a"

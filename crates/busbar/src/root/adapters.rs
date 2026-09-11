@@ -163,14 +163,19 @@ pub fn root_diagnostics() -> DiagnosticsSink {
 /// never do is decide anything: a disposition is the breaker unit's data and a route is the egress
 /// unit's walk, and an adapter that split the difference would be a third opinion nobody asked for.
 pub struct BreakerAdapter {
-    unit: RootBreakerUnit,
+    unit: Arc<RootBreakerUnit>,
     policy: BreakerPolicy,
 }
 
 impl BreakerAdapter {
     /// Bind the egress port to a breaker unit, under a declared per-pool policy.
+    ///
+    /// The unit arrives SHARED because there is one of it and more than one seam onto it: the
+    /// egress unit's port is this adapter, and the verify step's readiness view is
+    /// [`PlaneBreakerView`]. Two units would be two opinions about which lanes are down, and the
+    /// walk and the seal would disagree about a destination nothing happened to.
     #[must_use]
-    pub fn new(unit: RootBreakerUnit, policy: BreakerPolicy) -> Self {
+    pub fn new(unit: Arc<RootBreakerUnit>, policy: BreakerPolicy) -> Self {
         BreakerAdapter { unit, policy }
     }
 
@@ -180,7 +185,16 @@ impl BreakerAdapter {
     /// configuration to make here.
     #[must_use]
     pub fn with_diagnostics(diagnostics: DiagnosticsSink, policy: BreakerPolicy) -> Self {
-        BreakerAdapter::new(BreakerUnit::with_diagnostics(diagnostics), policy)
+        BreakerAdapter::new(Arc::new(BreakerUnit::with_diagnostics(diagnostics)), policy)
+    }
+
+    /// A second handle on THE SAME unit, for the other seam onto it.
+    ///
+    /// Handed out rather than constructed, so a caller that wants a readiness view cannot obtain
+    /// one over a breaker this adapter is not recording into.
+    #[must_use]
+    pub fn shared_unit(&self) -> Arc<RootBreakerUnit> {
+        Arc::clone(&self.unit)
     }
 
     /// The breaker unit behind the port, for the boot-time hydration the root does before serving.
@@ -425,6 +439,86 @@ impl LaneMap {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.destinations.is_empty()
+    }
+}
+
+/// **THE PRODUCTION READINESS VIEW** the verify step is judged through: the trust unit's
+/// `BreakerView`, answered by the node's ONE breaker unit through one pool's [`LaneMap`].
+///
+/// The trust unit knows a pool member by its INDEX in the pool's table, because its pre-walk filter
+/// runs before any candidate has an identity; the breaker unit knows one by its destination. This
+/// is that seam standing up: the lane index goes in, the destination comes out of the map the root
+/// holds, and the answer is the breaker's own.
+///
+/// There is nothing plane-shaped here and there must not be. Every plane mounts a lane table and
+/// gets this same view over the same unit — a view that knew which plane it was serving would be a
+/// second breaker growing inside the first one.
+///
+/// A LANE THE TABLE DOES NOT HAVE IS NOT READY. Answering `true` for an index off the end would let
+/// a request through on the strength of a lane nobody registered, and answering with somebody
+/// else's destination would seal a hop to the wrong upstream and look like it worked.
+pub struct PlaneBreakerView {
+    unit: Arc<RootBreakerUnit>,
+    lanes: LaneMap,
+}
+
+impl PlaneBreakerView {
+    /// Bind one pool's lane table to the node's breaker unit.
+    #[must_use]
+    pub fn new(unit: Arc<RootBreakerUnit>, lanes: LaneMap) -> Self {
+        PlaneBreakerView { unit, lanes }
+    }
+
+    /// The lane table this view answers over.
+    #[must_use]
+    pub fn lanes(&self) -> &LaneMap {
+        &self.lanes
+    }
+}
+
+impl busbar_unit_trust::lane::BreakerView for PlaneBreakerView {
+    /// The side-effect-free peek, and it is side-effect-free because the UNIT'S read is: no token
+    /// is taken because none is held (the verify step is not the route step), no cell is created,
+    /// and the single-flight recovery probe is left for the admission that is entitled to it.
+    fn ready(&self, pool: &str, lane: usize, now: u64) -> bool {
+        match self.lanes.destination(lane) {
+            Some(destination) => matches!(
+                self.unit.state_peek(pool, destination, now),
+                busbar_unit_breaker::LaneState::Ready
+            ),
+            None => false,
+        }
+    }
+
+    /// The one admission, on the same unit and the same cell the egress port admits through.
+    ///
+    /// `contract:` THE PROBE EPOCH DOES NOT CROSS THIS TRAIT. A won half-open probe is a HELD
+    /// resource and the trust unit's seam answers `()`, so a caller that drove an admission through
+    /// here and then never dispatched would have no epoch to release with. The root therefore does
+    /// not admit through this view: the route step admits through the egress port's own
+    /// `Breaker::try_admit` on this same unit, which hands the epoch back and releases it. This
+    /// body exists because the trait has the method, it forwards to the one unit rather than
+    /// keeping an answer of its own, and it is the reason there is no second state table to drift.
+    fn try_admit(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+    ) -> Result<(), busbar_unit_trust::lane::Unavailable> {
+        use busbar_unit_trust::lane::Unavailable as LaneUnavailable;
+        let Some(destination) = self.lanes.destination(lane) else {
+            return Err(LaneUnavailable::Dead);
+        };
+        match self.unit.try_admit(pool, destination, now) {
+            Ok(_) => Ok(()),
+            Err(busbar_unit_breaker::LaneState::BudgetExhausted) => {
+                Err(LaneUnavailable::BudgetExhausted)
+            }
+            // Suppressed and ProbeInFlight are both "the breaker is holding this lane": the trust
+            // unit's taxonomy has one word for the two, and the deadline the unit carried is not
+            // one this seam can spell.
+            Err(_) => Err(LaneUnavailable::BreakerOpen),
+        }
     }
 }
 

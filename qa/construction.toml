@@ -1851,3 +1851,38 @@ because = "FACE busbar_unit_breaker::BreakerUnit::state_peek, the token-free sid
 key = "rules.loc-ceilings.union_ceiling"
 by = 15
 because = "the same FACE as the unit_total_ceiling raise, busbar_unit_breaker::BreakerUnit::state_peek: +15 surface lines in busbar-unit-breaker and nothing in busbar-caps, busbar-contract or busbar-kernel, so this union rises by exactly the unit rise and by nothing else. busbar-unit-breaker/src/lib.rs is name-matched into the kernel's call graph, so the same 15 lines are counted here a second time and the kernel's own ceiling does not move"
+
+# THE PRODUCTION READINESS VIEW at the verify step: `crates/busbar/src/root/adapters.rs`'s
+# `PlaneBreakerView`, the node's ONE breaker unit answered through one plane's `LaneMap`, filled
+# into `views.breaker` by `resolve_bindings` for every plane that mounts a lane table. Before this
+# the only implementations of the trust unit's `BreakerView` in the whole tree were test stubs — the
+# seal was judged by a hand-written opinion about health, and the shipped node had no way to reach
+# the breaker at the step that decides what may be sealed. The four cells below are the root
+# composing what it mounts: the breaker unit and the trust unit's view trait in one file (which is
+# the seam the root exists to hold), the plane's registration table the lanes are counted off, the
+# transport spellings the two-registration fixture carries, and the caps vocabulary the seal cell
+# mints its tokens through. The fixture is written ONCE and the pre-existing stub cell was re-pointed
+# onto it, which is why busbar x transport rises by 2 rather than by the 16 a second copy cost.
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = "THE ONE BREAKER, reached at the one step that had no way to reach it: `busbar_unit_breaker::{BreakerUnit, DestinationId, LaneState}` and `busbar_unit_trust::lane::{BreakerView, Unavailable}` named together in the composition root's adapter, plus the node's shared handle on that unit in the bindings resolver and the cells that trip a lane on it. Two units would be two opinions about which lanes are down, so the adapter takes the unit SHARED and the egress port and this view are two seams onto one instance rather than two breakers."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE LANE TABLE AS THE PLANE'S OWN DECLARATION: a mounted plane declares how many pool members it registered, in its table's order, and the node mints the destination identity for each one. The plane's registration type is named where the count is read off it and where the cells build a two-registration deployment. The plane never names a destination and cannot: the identity is node-local, so two planes that each registered a first member are not both talking about the same breaker cell."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the two-registration fixture the lane-position cells are written against: one table of registered servers on one wire, and the two upstream hops that name them, written once and shared by the stub cell that pins the MAPPING and the two production cells that pin the ANSWER. A cell that declared its own pair could have them in the other order and still pass while the position mapping it exists to hold had quietly reversed."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the capability vocabulary the seal cell drives the verify step through: the kernel seal that mints the step's own tokens, which is the only way to obtain the trust token a sealed destination is sealed with. A cell that reached the sealed set without one would be proving a step that cannot run, because sealing a destination is not something a caller can do unaided."
