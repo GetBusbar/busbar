@@ -577,6 +577,7 @@ fn ceiling_ratchet_cases<'a>(
 
     r.append(declared_raise_cases(gate, cx, base, &based, &text, cfg));
     r.append(kind_row_identity_cases(gate, cx, base, &based, &text));
+    r.append(minted_ceiling_cases(gate, cx, base, &based, &text));
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
@@ -757,8 +758,12 @@ fn ceiling_ratchet_cases<'a>(
 /// * a delta below it leaves the remainder undeclared and red;
 /// * an entry the BASE already carries is a warning, never red — its face landed, and the strike
 ///   cannot ride in the same batch as the face;
-/// * an entry the base does NOT carry, naming a ceiling that did not rise, is stale and red;
-/// * the retired `from`/`to` shape is refused by name, and the refusal prints the array shape;
+/// * an entry the base does NOT carry, naming a ceiling that did not rise, has EXPIRED — a
+///   warning, never a red, because a drain landing beneath a stack is what makes one;
+/// * an expired entry shelters nothing: a real rise beside one is still judged on its own;
+/// * the retired `from`/`to` header is READ as a delta and warned about, and the two shapes mix
+///   in one tree and sum against one rise;
+/// * the array shape written with `from`/`to` is neither shape and stays refused by name;
 /// * `--write` strikes exactly the carried entries and leaves the live one.
 fn declared_raise_cases<'a>(
     gate: &'a dyn Gate,
@@ -853,16 +858,40 @@ fn declared_raise_cases<'a>(
         plant(carried.clone(), carried.clone()),
         &["1 declared raise(s) already carried by the base", "--write"],
     ));
+    // EXPIRY, THE OTHER HALF. An entry naming a ceiling that did not rise used to be RED on the
+    // reading that it is a deleted face's leftover. Measured against the live queue that reading is
+    // wrong far more often than it is right — 53 entries across 23 lines name a key that FELL
+    // beneath them when a core-drain landed — and the red was never load-bearing, because the
+    // entries sum EXACTLY and a leftover riding under a later rise is over-declared by its own
+    // arithmetic. So it is a warning, and `--write` strikes it.
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "a declared raise naming a ceiling that did not rise has EXPIRED, and is a warning",
+        ceilings::ROW_ROSE,
+        plant(text.to_string(), carried.clone()),
+        &["EXPIRED", "not a rise at the base", "--write"],
+    ));
+    // AND IT IS STILL AN EXACT SUM. An entry that has expired excuses nothing, so a SECOND entry
+    // on a key that did rise still has to cover that rise on its own.
     r.push(prove_rows_red(
         cx,
         gate,
-        "a declared raise the base does not carry, naming a ceiling that did not rise, is stale",
+        "an expired entry shelters nothing: a rise beside one is still judged on its own entries",
         &[ceilings::ROW_ROSE],
-        plant(text.to_string(), carried),
-        &[
-            "not a rise at the base",
-            "the face it was declared for is gone",
-        ],
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}{}{}",
+                entry(
+                    "rules.loc-ceilings.union_ceiling",
+                    RISE,
+                    "a face that is gone"
+                ),
+                entry(&dotted, 10, "virtual-key")
+            ),
+        ),
+        &["cover only 10", "remaining 5 is undeclared"],
     ));
     // THE TRANSITION. The retired header is READ as the delta it always was, and warned about —
     // a queue of lines cut against the reader that took only that shape has to be able to land.
@@ -1151,16 +1180,145 @@ fn kind_row_identity_cases<'a>(
              because = \"{because}\"\n"
         )),
     ));
-    r.push(prove_rows_red(
+    // AN ORDINAL KEY IS RESOLVED AGAINST THE BASE'S ROW ORDER, WHICH IS THE ORDER ITS AUTHOR
+    // COUNTED IN. This tree has STRUCK a `[[cell]]` above the one the declaration names, so slot
+    // `{ordinal}` here holds a different cell entirely — and the entry still lands on the cell it
+    // was written for, because the base is what it is resolved against. That is the whole of why
+    // the transition can accept the 204 ordinal-keyed declarations the queue is holding.
+    r.push(prove_row_pass_naming(
         cx,
         gate,
-        "a declared raise keyed by ORDINAL is refused, whatever it happens to line up with",
-        &[ceilings::ROW_ROSE],
+        "an ordinal-keyed declared raise is resolved against the BASE's row order, not this tree's",
+        ceilings::ROW_ROSE,
         plant(&format!(
             "\n[[gate.ceiling_raises]]\nkey = \"cell.{ordinal}.count\"\nfile = \"{file}\"\n\
              by = 1\nbecause = \"{because}\"\n"
         )),
-        &["keyed by ORDINAL", "renumbers every later row"],
+        &[
+            "keyed by ORDINAL, resolved",
+            &format!("`{identity}`"),
+            &format!("{file} {identity}: {} -> {count}", count - 1),
+        ],
+    ));
+    // AND AN ORDINAL THE BASE HAS NO ROW FOR RESOLVES TO NOTHING, so it is refused rather than
+    // guessed at: a declaration pointing past the end of the file names no ceiling at all.
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "an ordinal key the base carries no row at is refused, never guessed at",
+        &[ceilings::ROW_ROSE],
+        plant(&format!(
+            "\n[[gate.ceiling_raises]]\nkey = \"cell.{}.count\"\nfile = \"{file}\"\n\
+             by = 1\nbecause = \"{because}\"\n",
+            cell_count(&kinds) + 500
+        )),
+        &["keyed by ORDINAL", "no `[[cell]]` at that position"],
+    ));
+    r
+}
+
+/// THE MINTED-ROW DOOR: a ceiling the base does not carry has to be ADMITTED, at a figure.
+///
+/// The hole, measured: `ceiling-rose` walked the BASE's keys, so a `[[cell]]` row born on a branch
+/// was never compared to anything at any size, and two landings grew one in the open —
+/// `busbar × dialect` 651 -> 653 and `busbar × export` 39 -> 63 -> 64, both hand-edited up, both
+/// naming the hole in their own commit messages because no instrument could see them.
+///
+/// The plant is the same shape as the identity family's: the BASE's ledger has the row REMOVED
+/// entirely, so the tree's copy carries a key with no `before`.
+fn minted_ceiling_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+    ceilings_text: &str,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let file = ceilings::KIND_CEILINGS;
+    let Ok(kinds) = cx.read(file) else {
+        r.note_infra_failure(format!(
+            "{file} could not be read, so the minted-ceiling door is unproven here rather than              passing"
+        ));
+        return r;
+    };
+    // The row minted is the first `[[cell]]` with a count above 1, so that a figure BELOW its own
+    // can be admitted and the rise above that admission is a real number.
+    let minted = (0..cell_count(&kinds)).find_map(|n| match cell_identity(&kinds, n) {
+        Some((k, kd, c)) if c > 1 => Some((n, k, kd, c)),
+        _ => None,
+    });
+    let (Some((ordinal, krate, kind, count)), Some(_)) = (minted, strike_cell(&kinds, 0)) else {
+        r.note_infra_failure(format!(
+            "{file} carries no `[[cell]]` with a count above one, so the minted-ceiling door is              unproven here rather than passing"
+        ));
+        return r;
+    };
+    let Some(without) = strike_cell(&kinds, ordinal) else {
+        r.note_infra_failure(format!(
+            "the `[[cell]]` at {ordinal} in {file} could not be struck, so the minted-ceiling door              is unproven here rather than passing"
+        ));
+        return r;
+    };
+    let identity = format!("cell.{krate}.{kind}.count");
+    // `admission` is written into the TREE's ledger; the BASE's has neither the row nor the mint.
+    let plant = |admission: &str, declaration: &str| -> Overlay {
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{file}"), without.clone());
+        ov.set(file, format!("{kinds}{admission}"));
+        ov.set(CEILINGS, format!("{ceilings_text}{declaration}"));
+        ov
+    };
+    let mint = |ceiling: Option<i64>| -> String {
+        let c = ceiling
+            .map(|n| format!("ceiling = \"{n}\"\n"))
+            .unwrap_or_default();
+        format!("\n[[minted]]\ncrate = \"{krate}\"\ncommit = \"planted\"\ncells = \"1\"\n{c}")
+    };
+    let because = "planted by the self-test: the row this declares is minted on this branch and                    the figure above its admission is the part nothing could see before, which is                    exactly what this declaration is for";
+
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a ceiling the base does not carry, admitted by no `[[minted]]` row, is refused",
+        &[ceilings::ROW_ROSE],
+        plant("", ""),
+        &["MINTED on this branch", "admits it", &identity],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[minted]]` row that carries no `ceiling` admits the row's existence and not its size",
+        &[ceilings::ROW_ROSE],
+        plant(&mint(None), ""),
+        &["carries no `ceiling`", "born at any size"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a minted ceiling at or under what its `[[minted]]` row admits is the first measurement",
+        &[ceilings::ROW_ROSE],
+        plant(&mint(Some(count)), ""),
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a minted ceiling ABOVE what its `[[minted]]` row admits is a rise, and undeclared",
+        &[ceilings::ROW_ROSE],
+        plant(&mint(Some(count - 1)), ""),
+        &[&format!("{identity}: {} -> {count}", count - 1), "MINTED"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a minted ceiling above its admission is green once the difference is declared",
+        &[ceilings::ROW_ROSE],
+        plant(
+            &mint(Some(count - 1)),
+            &format!(
+                "\n[[gate.ceiling_raises]]\nkey = \"{identity}\"\nfile = \"{file}\"\nby = 1\n\
+                 because = \"{because}\"\n"
+            ),
+        ),
     ));
     r
 }

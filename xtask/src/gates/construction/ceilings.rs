@@ -408,89 +408,82 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     };
     let short = &base[..8.min(base.len())];
     let declared = raises(cx, &base);
+    let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
     let mut risen: Vec<String> = declared.refused.clone();
     let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
+    let mut expired: Vec<String> = Vec::new();
     // Every LIVE entry whose ceiling rose is judged, one way or the other, by the loop below; what
     // is left afterwards is an entry describing a rise that did not happen.
     let mut judged: BTreeSet<usize> = BTreeSet::new();
 
-    for file in [CEILINGS, KIND_CEILINGS] {
-        let now = match cx.read(file) {
-            Ok(t) => t,
-            Err(e) => {
-                unreadable.push(format!("{file} on this tree: {e}"));
-                continue;
-            }
-        };
-        let was = match cx.git_show(&base, file) {
-            Ok(t) => t,
-            // A file the base did not carry is a file this branch ADDED; every number in it is new
-            // and none of them rose.
-            Err(_) => continue,
-        };
-        let (now, was) = match (ints_of(&now), ints_of(&was)) {
-            (Ok(a), Ok(b)) => (a, b),
-            (a, b) => {
-                for (which, r) in [("this tree", a), ("the base", b)] {
-                    if let Err(e) = r {
-                        unreadable.push(format!("{file} at {which}: {e}"));
-                    }
-                }
-                continue;
-            }
-        };
-        for (path, before) in &was {
-            let Some(after) = now.get(path) else { continue };
-            if after <= before {
-                continue;
-            }
-            let rise = after - before;
-            let key = format!("{file}:{path}");
-            let live: Vec<(usize, &Raise)> = declared
-                .live
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| r.key == key)
-                .collect();
-            judged.extend(live.iter().map(|(i, _)| *i));
-            let sum: i64 = live.iter().map(|(_, r)| r.by).sum();
-            let entries = live
-                .iter()
-                .map(|(_, r)| r.line())
-                .collect::<Vec<_>>()
-                .join(", ");
-            if live.is_empty() {
-                risen.push(format!("{file} {path}: {before} -> {after}"));
-            } else if sum == rise {
-                allowed.push(format!("{file} {path}: {before} -> {after} ({entries})"));
-            } else if sum > rise {
-                // OVER-DECLARED. A raise declares exactly what its face measured; a `by` above the
-                // rise is room the face did not spend, which is slack with a reason attached.
-                risen.push(format!(
-                    "{file} {path}: {before} -> {after} rose by {rise}, but its declared raises \
-                     sum to {sum} ({entries}) — over-declared. A `by` is the lines the face \
-                     MEASURED, not room for it: lower it to what this tree actually rose by"
-                ));
-            } else {
-                risen.push(format!(
-                    "{file} {path}: {before} -> {after} rose by {rise}, and its declared raises \
-                     cover only {sum} ({entries}); the remaining {} is undeclared",
-                    rise - sum
-                ));
-            }
+    let (rose, unread, unadmitted) = rose(cx, &base, &mints);
+    unreadable.extend(unread);
+    risen.extend(unadmitted);
+    for (key, (before, after, minted)) in &rose {
+        let (file, path) = key.split_once(':').unwrap_or(("", key.as_str()));
+        let rise = after - before;
+        let live: Vec<(usize, &Raise)> = declared
+            .live
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| &r.key == key)
+            .collect();
+        judged.extend(live.iter().map(|(i, _)| *i));
+        let sum: i64 = live.iter().map(|(_, r)| r.by).sum();
+        let entries = live
+            .iter()
+            .map(|(_, r)| r.line())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if live.is_empty() && *minted {
+            risen.push(format!(
+                "{file} {path}: {before} -> {after}. This ceiling is not at the base {short} — \
+                 this branch MINTED it, and a key with no `before` is the one raise this row could \
+                 not see until it was given one. Its `before` is {before}; the {rise} above that \
+                 is undeclared"
+            ));
+        } else if live.is_empty() {
+            risen.push(format!("{file} {path}: {before} -> {after}"));
+        } else if sum == rise {
+            allowed.push(format!("{file} {path}: {before} -> {after} ({entries})"));
+        } else if sum > rise {
+            // OVER-DECLARED. A raise declares exactly what its face measured; a `by` above the
+            // rise is room the face did not spend, which is slack with a reason attached.
+            risen.push(format!(
+                "{file} {path}: {before} -> {after} rose by {rise}, but its declared raises sum \
+                 to {sum} ({entries}) — over-declared. A `by` is the lines the face MEASURED, not \
+                 room for it: lower it to what this tree actually rose by"
+            ));
+        } else {
+            risen.push(format!(
+                "{file} {path}: {before} -> {after} rose by {rise}, and its declared raises cover \
+                 only {sum} ({entries}); the remaining {} is undeclared",
+                rise - sum
+            ));
         }
     }
-    // A LIVE DECLARATION THAT DESCRIBES NO RISE ON THIS BRANCH IS A WAIVER THAT OUTLIVED WHAT IT
-    // EXCUSED — the base does not carry it, and the ceiling it names did not move. Somebody deleted
-    // the face and left the entry, or the key is misspelt.
+    // A LIVE DECLARATION THAT DESCRIBES NO RISE ON THIS BRANCH HAS EXPIRED, and expiry is a WARNING.
+    //
+    // IT USED TO BE RED, on the reading that such an entry is a deleted face's leftover. Measured
+    // against the live queue that reading is wrong far more often than it is right: 53 entries
+    // across 23 lines name a key whose figure at the branch head is at or BELOW the tip's, because
+    // the core-drain lines drained `busbar-core × plane` and `busbar-core × control` underneath a
+    // stack that was measured on a higher base. Every one of those declarations was honest when it
+    // was written and describes no rise by the time it lands, and reddening them punishes a line
+    // for a drain that landed beneath it.
+    //
+    // AND THE RED WAS NEVER LOAD-BEARING. The thing it guarded against — a leftover sheltering the
+    // next raise of the same ceiling — cannot happen, because the entries SUM and the sum must
+    // equal the rise EXACTLY: a leftover riding under a later rise makes the sum over-declared,
+    // which is its own red, by name. So an entry that excuses nothing is reported as expired,
+    // beside the entries the base already carries, and `--write` strikes it.
     for (i, r) in declared.live.iter().enumerate() {
         if !judged.contains(&i) {
-            risen.push(format!(
-                "{}: a declared raise of +{} that is not a rise at the base {short}. The base does \
-                 not carry this entry and the ceiling it names did not move on this branch: either \
-                 the face it was declared for is gone — strike the entry — or the key names no \
-                 ceiling that rose ({})",
+            expired.push(format!(
+                "{} +{} ({}): a declared raise that is not a rise at the base {short} — either its \
+                 face landed, or the ceiling it names FELL beneath this branch. It excuses nothing \
+                 and sums with nothing",
                 r.key,
                 r.by,
                 r.because_short()
@@ -531,7 +524,17 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             declared.warned.join("; ")
         )
     };
-    let carried = format!("{carried}{warned}");
+    let spent = if expired.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; WARN {} declared raise(s) EXPIRED — they describe no rise at the base and \
+             `cargo xtask gate construction --write` strikes them: {}",
+            expired.len(),
+            expired.join("; ")
+        )
+    };
+    let carried = format!("{carried}{warned}{spent}");
     let detail = if ok && allowed.is_empty() {
         format!(
             "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base \
@@ -573,6 +576,69 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
     )]
 }
 
+/// EVERY CEILING THAT ROSE ON THIS BRANCH: `<file>:<path>` -> (`before`, `after`, minted).
+///
+/// Extracted from [`ceiling_rose`] because `--write` needs the same answer: an entry naming a key
+/// that is NOT in this map has expired, and a strike derived from a second reading of the same
+/// comparison is a strike that can disagree with the row that reported it.
+///
+/// Also answered: the files that could not be compared, and the keys the base does not carry that
+/// no `[[minted]]` row admits (see [`minted_before`]).
+#[allow(clippy::type_complexity)]
+fn rose(
+    cx: &Ctx,
+    base: &str,
+    mints: &Mints,
+) -> (BTreeMap<String, (i64, i64, bool)>, Vec<String>, Vec<String>) {
+    let (mut out, mut unreadable, mut unadmitted) = (BTreeMap::new(), Vec::new(), Vec::new());
+    for file in [CEILINGS, KIND_CEILINGS] {
+        let now = match cx.read(file) {
+            Ok(t) => t,
+            Err(e) => {
+                unreadable.push(format!("{file} on this tree: {e}"));
+                continue;
+            }
+        };
+        let was = match cx.git_show(base, file) {
+            Ok(t) => t,
+            // A file the base did not carry is a file this branch ADDED; every number in it is new
+            // and none of them rose.
+            Err(_) => continue,
+        };
+        let (now, was) = match (ints_of(&now), ints_of(&was)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (a, b) => {
+                for (which, r) in [("this tree", a), ("the base", b)] {
+                    if let Err(e) = r {
+                        unreadable.push(format!("{file} at {which}: {e}"));
+                    }
+                }
+                continue;
+            }
+        };
+        for (path, after) in &now {
+            // A KEY THE BASE DOES NOT CARRY IS A CEILING MINTED ON THIS BRANCH, and until now this
+            // comparison walked the BASE's keys and never saw one. See [`minted_before`]: its
+            // `before` is what a `[[minted]]` / `[[minted_kind]]` row admits it at, or nothing.
+            let minted = !was.contains_key(path);
+            let before = match was.get(path) {
+                Some(b) => *b,
+                None => match minted_before(mints, file, path) {
+                    Ok(b) => b,
+                    Err(why) => {
+                        unadmitted.push(format!("{file} {path} = {after}: {why}"));
+                        continue;
+                    }
+                },
+            };
+            if *after > before {
+                out.insert(format!("{file}:{path}"), (before, *after, minted));
+            }
+        }
+    }
+    (out, unreadable, unadmitted)
+}
+
 const ROSE_TITLE: &str = "no ceiling in a qa ceilings file is higher than it is at the base";
 
 /// A declaration shorter than this is a shrug, not a reason.
@@ -607,6 +673,10 @@ pub struct Raise {
     /// entry is READ (as the delta `to - from`) and warned about, and `--write` migrates it into
     /// the array shape. `None` is the array shape, which is the shape everything ends up in.
     pub pair: Option<String>,
+    /// THE ORDINAL KEY THIS ENTRY WAS WRITTEN WITH, when [`Ordinals`] resolved one into `key`.
+    /// `--write` rewrites the entry with the identity, which is what stops a slot from being
+    /// re-targeted by the next strike.
+    pub written_key: Option<String>,
 }
 
 impl Raise {
@@ -688,16 +758,77 @@ pub fn raises(cx: &Ctx, base: &str) -> Declared {
     let Ok(text) = cx.read(CEILINGS) else {
         return Declared::default();
     };
-    let (entries, refused, warned) = raises_in(&text);
+    // THE ORDINAL MAP IS READ FROM THE BASE, never from this tree. An ordinal names a POSITION,
+    // and the only position a declaration written on this branch can have meant is the one the
+    // base's file had when the author counted it — this branch is free to strike a row above it.
+    let ords = Ordinals::at(cx, base);
+    let (entries, refused, warned) = raises_in_at(&text, &ords);
     let at_base = cx
         .git_show(base, CEILINGS)
         .ok()
-        .map(|t| raises_in(&t).0)
+        .map(|t| raises_in_at(&t, &ords).0)
         .unwrap_or_default();
     let mut out = partition(entries, at_base);
     out.refused = refused;
     out.warned = warned;
     out
+}
+
+/// ROW ORDINALS AS THEY STOOD AT THE BASE: `<file>` -> `<table>.<n>` -> `<table>.<identity>`.
+///
+/// A declaration keyed `cell.193.count` names slot 193 of an array of tables, and slot 193 is
+/// whichever crate happens to be sitting there. T0-E refused such a key outright, and that is the
+/// right end state — but 204 of the 295 declarations waiting in the queue are written that way,
+/// and refusing them is refusing two thirds of the transition it is the point of this reader to
+/// carry. So an ordinal key is RESOLVED, against the base's row order, into the identity it named
+/// when it was written, and warned about; the cutoff commit named in [`raises_in`] closes this arm
+/// with the other one.
+///
+/// RESOLVED AGAINST THE BASE AND NOWHERE ELSE. Resolving against this tree would let a branch that
+/// strikes a row silently re-target a declaration at its neighbour, which is the whole defect the
+/// refusal was written for.
+#[derive(Debug, Clone, Default)]
+pub struct Ordinals {
+    by_file: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Ordinals {
+    /// The row order of both ceilings files at `base`.
+    pub fn at(cx: &Ctx, base: &str) -> Self {
+        let mut by_file = BTreeMap::new();
+        for file in [CEILINGS, KIND_CEILINGS] {
+            if let Ok(text) = cx.git_show(base, file) {
+                by_file.insert(file.to_string(), Self::of(&text));
+            }
+        }
+        Self { by_file }
+    }
+
+    /// One file's `<table>.<n>` -> `<table>.<identity>` map.
+    fn of(text: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let Ok(doc) = crate::toml_doc::parse_str(text) else {
+            return out;
+        };
+        for (name, _) in IDENTITIES {
+            for (i, t) in doc.array_of_tables(name).into_iter().enumerate() {
+                let at = format!("{name}.{i}");
+                if let Some(id) = identity_of(&at, t) {
+                    out.insert(at, id);
+                }
+            }
+        }
+        out
+    }
+
+    /// `cell.193.count` in `file`, as the identity it named at the base — or `None` when the base
+    /// has no such row, which is a declaration pointing at a slot that never existed.
+    fn resolve(&self, file: &str, key: &str) -> Option<String> {
+        let (name, rest) = key.split_once('.')?;
+        let (ord, tail) = rest.split_once('.')?;
+        let id = self.by_file.get(file)?.get(&format!("{name}.{ord}"))?;
+        Some(format!("{id}.{tail}"))
+    }
 }
 
 /// This tree's entries split into the ones the base already carries and the ones it does not.
@@ -739,6 +870,13 @@ fn partition(entries: Vec<Raise>, mut at_base: Vec<Raise>) -> Declared {
 /// cut on **2026-09-18**, deletes [`read_pair`]'s acceptance arm and restores the refusal below it.
 /// Until then a from/to entry is a warning; after it, a refusal, and nothing else changes.
 pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
+    raises_in_at(text, &Ordinals::default())
+}
+
+/// [`raises_in`], with the base's row order so an ORDINAL key can be resolved into the identity it
+/// named. Without one (the unit tests, and any reader with no base) an ordinal key is refused, as
+/// it was before the transition opened.
+pub fn raises_in_at(text: &str, ords: &Ordinals) -> (Vec<Raise>, Vec<String>, Vec<String>) {
     let mut out = Vec::new();
     let mut refused = Vec::new();
     let mut warned = Vec::new();
@@ -752,9 +890,9 @@ pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
         };
         let head = rest.split('.').next().unwrap_or(rest);
         if head.is_empty() || !head.chars().all(|c| c.is_ascii_digit()) {
-            match read_pair(rest, t) {
-                Ok((r, warning)) => {
-                    warned.push(warning);
+            match read_pair(rest, t, ords) {
+                Ok((r, mut warnings)) => {
+                    warned.append(&mut warnings);
                     out.push(r);
                 }
                 Err(why) => refused.push(why),
@@ -778,8 +916,11 @@ pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
             ));
             continue;
         };
-        match judged(&at, key, by, t, ordinal, None) {
-            Ok(r) => out.push(r),
+        match judged(&at, key, by, t, ordinal, None, ords) {
+            Ok((r, mut w)) => {
+                warned.append(&mut w);
+                out.push(r);
+            }
             Err(why) => refused.push(why),
         }
     }
@@ -790,26 +931,41 @@ pub fn raises_in(text: &str) -> (Vec<Raise>, Vec<String>, Vec<String>) {
 ///
 /// A header with neither `from` nor `to` is not that shape at all and is refused as the shapeless
 /// thing it is; a `to` at or below its `from` is a FALL, which needs no declaration of any kind.
-fn read_pair(key: &str, t: &crate::toml_doc::Table) -> Result<(Raise, String), String> {
+fn read_pair(
+    key: &str,
+    t: &crate::toml_doc::Table,
+    ords: &Ordinals,
+) -> Result<(Raise, Vec<String>), String> {
     let at = format!("[{RAISES}.\"{key}\"]");
     let (Some(from), Some(to)) = (t.int_of("from"), t.int_of("to")) else {
         return Err(format!(
             "{at}: a declared raise names a `key` and a `by`, and this one does not:\n{RAISE_SHAPE}"
         ));
     };
-    let r = judged(&at, key, to - from, t, 0, Some(key.to_string()))?;
-    let warning = format!(
-        "{at} {from} -> {to}: the retired `from`/`to` header, read as the delta +{} it always \
-         was. It cannot sum with a second face's declaration and it does not expire on its own, \
-         so `cargo xtask gate construction --write` MIGRATES it into the shape that does:\n\
-         {RAISE_SHAPE}",
-        r.by
+    // THE PAIR IS READ AS THE DELTA IT ALWAYS WAS, `to - from`, WITHOUT ASKING WHAT `from` IS.
+    //
+    // THE CHAIN FORM depends on exactly that. Four queued lines (P3, P4, P5 and the K14 rows) write
+    // `from = <the predecessor's tip>` rather than the landing base's figure, so a reader that
+    // checked `from == before` — which the retired one did, exactly — reds every chained entry
+    // whose predecessor has not landed yet. As deltas they simply SUM, which is what the array
+    // shape was introduced to make possible and what this reader gets for free by ignoring `from`.
+    let (r, mut warnings) = judged(&at, key, to - from, t, 0, Some(key.to_string()), ords)?;
+    warnings.insert(
+        0,
+        format!(
+            "{at} {from} -> {to}: the retired `from`/`to` header, read as the delta +{} it always \
+             was. It cannot sum with a second face's declaration and it does not expire on its \
+             own, so `cargo xtask gate construction --write` MIGRATES it into the shape that \
+             does:\n{RAISE_SHAPE}",
+            r.by
+        ),
     );
-    Ok((r, warning))
+    Ok((r, warnings))
 }
 
 /// THE RULES A DECLARATION HAS TO MEET, whichever shape it is written in: a delta that raises, a
 /// reason long enough to be one, and a key that names a row rather than a slot.
+#[allow(clippy::too_many_arguments)]
 fn judged(
     at: &str,
     key: &str,
@@ -817,7 +973,8 @@ fn judged(
     t: &crate::toml_doc::Table,
     ordinal: usize,
     pair: Option<String>,
-) -> Result<Raise, String> {
+    ords: &Ordinals,
+) -> Result<(Raise, Vec<String>), String> {
     if by <= 0 {
         return Err(format!(
             "{at} ({key}): `by = {by}` is not a raise. A ceiling that goes DOWN is re-pinned by \
@@ -833,26 +990,50 @@ fn judged(
             because.chars().count()
         ));
     }
-    // AN ORDINAL KEY IS REFUSED OUTRIGHT, whatever it happens to line up with. A declaration
-    // is a transaction about ONE ceiling, and `cell.178.count` does not name a ceiling — it
-    // names a slot, which the next `[[cell]]` struck above it hands to a different crate.
-    if let Some((name, fields)) = ordinal_form(key) {
-        return Err(format!(
-            "{at} ({key}): a declared raise keyed by ORDINAL. Striking one `[[{name}]]` renumbers \
-             every later row, so this entry re-targets whichever row slides into that position. \
-             Key it by identity: `{name}.<{}>.count`",
-            fields.join(">.<")
-        ));
-    }
     let file = t.str_of("file").unwrap_or(CEILINGS);
-    Ok(Raise {
-        key: format!("{file}:{key}"),
-        by,
-        because,
-        commit: t.str_of("commit").map(str::to_string),
-        ordinal,
-        pair,
-    })
+    // AN ORDINAL KEY NAMES A SLOT AND NOT A CEILING — `cell.178.count` is whichever crate sits at
+    // position 178, and the next `[[cell]]` struck above it hands that slot to a different one. It
+    // is RESOLVED against the base's row order while the transition is open (see [`Ordinals`]) and
+    // warned about, because two thirds of the declarations waiting in the queue are written that
+    // way; with no base to resolve against, it is refused, as it will be again after the cutoff.
+    let mut warnings = Vec::new();
+    let mut written_key = None;
+    let key = match ordinal_form(key) {
+        None => key.to_string(),
+        Some((name, fields)) => match ords.resolve(file, key) {
+            Some(id) => {
+                warnings.push(format!(
+                    "{at} ({key}): a declared raise keyed by ORDINAL, resolved against the base's \
+                     row order to `{id}`. Striking one `[[{name}]]` renumbers every later row, so \
+                     a slot is not a ceiling: `cargo xtask gate construction --write` migrates \
+                     this entry and writes the identity key"
+                ));
+                written_key = Some(key.to_string());
+                id
+            }
+            None => {
+                return Err(format!(
+                    "{at} ({key}): a declared raise keyed by ORDINAL, and the base carries no \
+                     `[[{name}]]` at that position to resolve it against. Striking one \
+                     `[[{name}]]` renumbers every later row, so this entry re-targets whichever \
+                     row slides into that position. Key it by identity: `{name}.<{}>.count`",
+                    fields.join(">.<")
+                ))
+            }
+        },
+    };
+    Ok((
+        Raise {
+            key: format!("{file}:{key}"),
+            by,
+            because,
+            commit: t.str_of("commit").map(str::to_string),
+            ordinal,
+            pair,
+            written_key,
+        },
+        warnings,
+    ))
 }
 
 /// THE ENTRIES `--write` STRIKES: every declared raise the base already carries. See [`raises`].
@@ -881,8 +1062,22 @@ pub fn strike_pair(text: &str, key: &str) -> Option<String> {
 /// open. The entry says the same thing afterwards: same key, same delta (`to - from`), same
 /// reason, so [`Raise::identity`] is unchanged and the base still carries it when its face lands.
 pub fn migrate_pair(text: &str, r: &Raise) -> Option<String> {
-    let key = r.pair.as_deref()?;
-    let file = r.key.split_once(':').map(|(f, _)| f).unwrap_or(CEILINGS);
+    let header = r.pair.as_deref()?;
+    splice(text, &format!("[{RAISES}.\"{header}\"]"), 1, &block_of(r))
+}
+
+/// The `ordinal`th array entry rewritten with the IDENTITY key this reader resolved its ordinal to.
+/// Same entry, same delta, same reason — `--write` is where a declaration keyed by a slot stops
+/// being one, so that the next `[[cell]]` struck above it cannot re-target it.
+pub fn rekey(text: &str, r: &Raise) -> Option<String> {
+    r.written_key.as_ref()?;
+    splice(text, &format!("[[{RAISES}]]"), r.ordinal, &block_of(r))
+}
+
+/// One entry in the shape this file keeps: the array row, identity-keyed, with `file` written only
+/// when it is not the default.
+fn block_of(r: &Raise) -> String {
+    let (file, key) = r.key.split_once(':').unwrap_or((CEILINGS, r.key.as_str()));
     let mut block = format!("[[{RAISES}]]\nkey = \"{key}\"\n");
     if file != CEILINGS {
         block.push_str(&format!("file = \"{file}\"\n"));
@@ -891,7 +1086,7 @@ pub fn migrate_pair(text: &str, r: &Raise) -> Option<String> {
     if let Some(c) = &r.commit {
         block.push_str(&format!("commit = \"{c}\"\n"));
     }
-    splice(text, &format!("[{RAISES}.\"{key}\"]"), 1, &block)
+    block
 }
 
 /// The `nth` block (counting from 1) whose header line is exactly `header`, replaced by `with`.
@@ -931,35 +1126,58 @@ fn splice(text: &str, header: &str, nth: usize, with: &str) -> Option<String> {
 pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String> {
     let base = base_ref(cx)?;
     let declared = raises(cx, &base);
-    let expired = declared.carried;
+    let mints = mints_in(&cx.read(KIND_CEILINGS).unwrap_or_default());
+    let (rose, _, _) = rose(cx, &base, &mints);
+    // WHAT `--write` STRIKES: every entry the base already carries (its face landed), and every
+    // live entry naming a ceiling that did not rise (it has EXPIRED — see [`ceiling_rose`]'s
+    // expiry arm, where the same comparison reports it as a warning rather than a red).
+    let mut expired = declared.carried;
+    let (spent, live): (Vec<Raise>, Vec<Raise>) = declared
+        .live
+        .into_iter()
+        .partition(|r| !rose.contains_key(&r.key));
+    expired.extend(spent);
+    // AND WHAT IT REWRITES: every live entry still in the retired header, and every live entry
+    // whose key was an ORDINAL this reader resolved. Both keep their key, delta and reason; what
+    // changes is the spelling, which is the whole of the transition.
+    let migrated: Vec<Raise> = live
+        .into_iter()
+        .filter(|r| r.pair.is_some() || r.written_key.is_some())
+        .collect();
     let mut out = cx.read(CEILINGS)?;
-    // Highest ordinal first, so each strike leaves the ordinals below it where they were. A
-    // retired-header entry has no ordinal and is found by its key, so the two orders do not
-    // interfere — but the array strikes are still done first, before any migration adds one.
-    let mut order: Vec<&Raise> = expired.iter().collect();
-    order.sort_by_key(|r| std::cmp::Reverse(r.ordinal));
-    for r in order {
-        out = match &r.pair {
-            None => strike(&out, r.ordinal).ok_or_else(|| {
+    // THE ARRAY EDITS GO HIGHEST ORDINAL FIRST, because each one changes the positions above it
+    // and none of them changes a position below. The retired-header entries have no position and
+    // are found by their key, so they are done afterwards, together.
+    let mut arrays: Vec<&Raise> = expired
+        .iter()
+        .chain(migrated.iter())
+        .filter(|r| r.pair.is_none())
+        .collect();
+    arrays.sort_by_key(|r| std::cmp::Reverse(r.ordinal));
+    for r in arrays {
+        let strike_it = expired.iter().any(|e| std::ptr::eq(e, r));
+        out = if strike_it {
+            strike(&out, r.ordinal).ok_or_else(|| {
                 format!(
                     "{CEILINGS} has no [[{RAISES}]] #{} to strike (declared raise {})",
                     r.ordinal, r.key
                 )
-            })?,
-            Some(key) => strike_pair(&out, key).ok_or_else(|| {
-                format!("{CEILINGS} has no [{RAISES}.\"{key}\"] header to strike")
-            })?,
+            })?
+        } else {
+            rekey(&out, r).ok_or_else(|| {
+                format!(
+                    "{CEILINGS} has no [[{RAISES}]] #{} to re-key (declared raise {})",
+                    r.ordinal, r.key
+                )
+            })?
         };
     }
-    // AND THE LIVE RETIRED-SHAPE ENTRIES ARE MIGRATED, never struck: their face has not landed, so
-    // the declaration is still doing its job and only its spelling is wrong. Migrating preserves
-    // the identity exactly (key, delta, reason), so the entry expires later on the same terms.
-    let migrated: Vec<Raise> = declared
-        .live
-        .into_iter()
-        .filter(|r| r.pair.is_some())
-        .collect();
-    for r in &migrated {
+    for r in expired.iter().filter(|r| r.pair.is_some()) {
+        let key = r.pair.as_deref().unwrap_or("");
+        out = strike_pair(&out, key)
+            .ok_or_else(|| format!("{CEILINGS} has no [{RAISES}.\"{key}\"] header to strike"))?;
+    }
+    for r in migrated.iter().filter(|r| r.pair.is_some()) {
         out = migrate_pair(&out, r).ok_or_else(|| {
             format!(
                 "{CEILINGS} has no [{RAISES}.\"{}\"] header to migrate",
@@ -969,6 +1187,11 @@ pub fn struck_text(cx: &Ctx) -> Result<(String, Vec<Raise>, Vec<Raise>), String>
     }
     Ok((out, expired, migrated))
 }
+
+/// THE TABLES WHOSE INTEGERS ARE NOT CEILINGS. See [`ints_of`]: `[[minted]] cells`,
+/// `[[minted_kind]] cells`/`edges` and both rows' `ceiling` are numbers ABOUT the ceilings, and a
+/// comparison that read them as ceilings would refuse the very admission it was asked to honour.
+const NOT_CEILINGS: &[&str] = &["minted", "minted_kind"];
 
 /// THE ARRAY-OF-TABLES ROWS WHOSE NAME IS THEIR IDENTITY, and the fields that spell it.
 ///
@@ -1028,6 +1251,130 @@ fn ordinal_form(key: &str) -> Option<&'static (&'static str, &'static [&'static 
     IDENTITIES.iter().find(|(n, _)| *n == name)
 }
 
+/// WHAT A `[[minted]]` / `[[minted_kind]]` ROW ADMITS A CEILING AT.
+///
+/// THE HOLE THIS CLOSES, measured. [`ceiling_rose`] used to walk the BASE's keys, so a key the base
+/// does not carry was never compared to anything, at any size. A `[[cell]]` row minted on a branch
+/// could therefore be born at any figure and grow without limit for the rest of that branch, and
+/// two landings did exactly that in the open: `cell.busbar.dialect.count` 651 -> 653 and
+/// `cell.busbar.export.count` 39 -> 63 -> 64, both hand-edited UP, both naming the hole in their
+/// own commit messages because no instrument could see them. `kind-isolation`'s mint door admits
+/// the row's EXISTENCE; nothing admitted its FIGURE.
+///
+/// SO THE DOOR CARRIES A CEILING. A `[[minted]]` row already says which crate, at which commit and
+/// how many cells; it now also says `ceiling` — THE HIGHEST FIGURE ANY ROW IT ADMITS MAY CARRY.
+/// That figure is the minted key's `before`, and everything above it is an ordinary rise judged by
+/// the ordinary `[[gate.ceiling_raises]]` sum. `[[minted_kind]]` carries the same field for the
+/// column it opens. One number per admission, on the row that already exists, checked against the
+/// same tree the rest of this module is checked against.
+///
+/// A ROW OF THE LEDGER MUST BE COVERED. `qa/kind-isolation.toml`'s rows are the coupling matrix,
+/// and a cell of it born at 651 with no admission is a 651-hit coupling nobody voted for; there is
+/// no honest `0 -> 651` declaration to write, which is exactly why the bulk admission exists. So a
+/// minted ledger key with no covering row — or with one that carries no `ceiling` — is RED, and
+/// the message names the row that would admit it.
+///
+/// A NEW CEILING IN `qa/construction.toml` IS DIFFERENT and is left to the ordinary mechanism: that
+/// file is the owner's rule table, a new rule arrives with its own figure, and the figure is small
+/// enough to declare outright. Its `before` is 0, so the whole of it is a declared raise — which is
+/// what "the FIRST gating figure of a row that was not gating before" has always meant here.
+fn minted_before(mints: &Mints, file: &str, path: &str) -> Result<i64, String> {
+    if file != KIND_CEILINGS {
+        return Ok(0);
+    }
+    let (table, rest) = path.split_once('.').unwrap_or((path, ""));
+    let names: Vec<&str> = rest.split('.').collect();
+    // Which crate(s) and which kind the key is about, read off the identity label [`IDENTITIES`]
+    // builds. A key this reader cannot name is a key it cannot admit, and it says so.
+    let (crates, kind): (Vec<&str>, Option<&str>) = match (table, names.as_slice()) {
+        ("cell", [krate, kind, ..]) => (vec![*krate], Some(*kind)),
+        ("face", [krate, ..]) => (vec![*krate], None),
+        ("dep", [from, to, ..]) => (vec![*from, *to], None),
+        _ => (vec![], None),
+    };
+    // THE CRATE'S OWN ADMISSION TAKES THE ROW FIRST, then the column's — the same order
+    // `kind-isolation`'s own mint door reads them in, so the two doors never disagree about which
+    // row admitted what.
+    for name in &crates {
+        if let Some(m) = mints.crates.get(*name) {
+            return m.ceiling.ok_or_else(|| {
+                format!(
+                    "a ceiling MINTED on this branch under `[[minted]] crate = \"{name}\"`, which \
+                     carries no `ceiling`. A row admits the EXISTENCE of a ledger row; the figure \
+                     it is born at is the other half, and without it a minted cell may be born at \
+                     any size. Add `ceiling = \"<the highest figure any row this admits carries>\"`"
+                )
+            });
+        }
+    }
+    if let Some(k) = kind {
+        if let Some(m) = mints.kinds.get(k) {
+            return m.ceiling.ok_or_else(|| {
+                format!(
+                    "a ceiling MINTED on this branch under `[[minted_kind]] kind = \"{k}\"`, which \
+                     carries no `ceiling`. A column admission opens every cell of a kind at once, \
+                     so the figure those cells are born at is the whole of what it costs. Add \
+                     `ceiling = \"<the highest figure any cell of this column carries>\"`"
+                )
+            });
+        }
+    }
+    Err(format!(
+        "a ceiling MINTED on this branch — {KIND_CEILINGS} at the base carries no such key — and no \
+         `[[minted]]` or `[[minted_kind]]` row of {KIND_CEILINGS} admits it. A row that did not \
+         exist is a 0 -> N raise wearing the clothes of a first measurement, and this file's rows \
+         are the coupling matrix itself: there is no honest `0 -> N` declaration to write for one. \
+         Admit it with the row that admits its crate (or its kind's column), carrying the `ceiling` \
+         it is born at"
+    ))
+}
+
+/// One `[[minted]]` or `[[minted_kind]]` row, as THIS module needs it: the ceiling it admits at.
+/// `kind-isolation` reads the same rows for everything else about them; what is read here is the
+/// one field that says how high the rows it admits may be.
+#[derive(Debug, Clone, Default)]
+pub struct Mint {
+    pub ceiling: Option<i64>,
+}
+
+/// The admissions of one ledger text, by crate and by kind.
+#[derive(Debug, Clone, Default)]
+pub struct Mints {
+    pub crates: BTreeMap<String, Mint>,
+    pub kinds: BTreeMap<String, Mint>,
+}
+
+/// The `[[minted]]` and `[[minted_kind]]` rows of one ledger text.
+///
+/// Read here with the document reader rather than through `kind-isolation`'s line parser, because
+/// this row is about the CEILINGS and must be readable from the ceilings module without either gate
+/// depending on the other. The figure is taken as an integer OR as a quoted one, for the reason
+/// [`ints_of`] gives: every count in that file is written `"122"`, and a reader that takes only
+/// bare integers reads this file as carrying no numbers at all.
+pub fn mints_in(text: &str) -> Mints {
+    let mut out = Mints::default();
+    let Ok(doc) = crate::toml_doc::parse_str(text) else {
+        return out;
+    };
+    let read = |t: &crate::toml_doc::Table| Mint {
+        ceiling: t.int_of("ceiling").or_else(|| {
+            t.str_of("ceiling")
+                .and_then(|s| s.trim().parse::<i64>().ok())
+        }),
+    };
+    for t in doc.array_of_tables("minted") {
+        if let Some(k) = t.str_of("crate") {
+            out.crates.insert(k.to_string(), read(t));
+        }
+    }
+    for t in doc.array_of_tables("minted_kind") {
+        if let Some(k) = t.str_of("kind") {
+            out.kinds.insert(k.to_string(), read(t));
+        }
+    }
+    out
+}
+
 /// Every integer in a TOML document, by dotted path — WHETHER IT IS WRITTEN AS A TOML INTEGER OR
 /// AS A QUOTED STRING. The reader this crate has refuses a document it does not understand, which
 /// is the behaviour wanted here too: a ceilings file that cannot be parsed is a comparison that
@@ -1055,6 +1402,17 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     let raises = format!("{RAISES}.");
     for (path, table) in doc.tables() {
         if path == RAISES || path.starts_with(raises.as_str()) {
+            continue;
+        }
+        // AND NEITHER ARE THE ADMISSIONS. `[[minted]]` and `[[minted_kind]]` carry `cells`,
+        // `edges` and — since the minted-ceiling door — `ceiling`, and every one of those is a
+        // number ABOUT ceilings rather than a ceiling. Read as ceilings they are keys the base
+        // never carried, which is precisely what the door refuses: the door would red its own
+        // admission, measured, the first time one was written.
+        if NOT_CEILINGS
+            .iter()
+            .any(|t| path == *t || path.starts_with(&format!("{t}.")))
+        {
             continue;
         }
         let label = identity_of(path, table).unwrap_or_else(|| path.to_string());
@@ -1344,18 +1702,117 @@ mod tests {
         assert!(refused[2].contains("names a `key` and a `by`"));
     }
 
-    /// An ORDINAL key is refused at the reader, so no arm of `ceiling-rose` ever sees it as live.
+    /// AN ORDINAL KEY IS RESOLVED AGAINST THE BASE'S ROW ORDER while the transition is open, and
+    /// refused when there is no base to resolve it against. 204 of the 295 declarations waiting in
+    /// the queue are keyed `cell.<n>.count`; refusing them refuses two thirds of the transition.
     #[test]
-    fn an_ordinal_key_is_refused_at_the_reader() {
+    fn an_ordinal_key_is_resolved_against_the_bases_row_order() {
         let text = format!(
-            "{DOC}\n[[gate.ceiling_raises]]\nkey = \"cell.178.count\"\n\
+            "{DOC}\n[[gate.ceiling_raises]]\nkey = \"cell.1.count\"\n\
              file = \"qa/kind-isolation.toml\"\nby = 1\nbecause = \"{BECAUSE}\"\n"
         );
+        // With no base, the key names a slot and nothing can say which row that was.
         let (raises, refused, _) = raises_in(&text);
         assert!(raises.is_empty());
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(refused[0].contains("keyed by ORDINAL"));
         assert!(refused[0].contains("`cell.<crate>.<kind>.count`"));
+
+        // With one, it is the row that stood there — the SECOND, because the labels are the
+        // document reader's own zero-based positions.
+        let ords = Ordinals {
+            by_file: [(
+                KIND_CEILINGS.to_string(),
+                Ordinals::of(
+                    "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"120\"\n\n\
+                     [[cell]]\ncrate = \"busbar-core\"\nkind = \"plane\"\ncount = \"3067\"\n",
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let (raises, refused, warned) = raises_in_at(&text, &ords);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(raises.len(), 1, "{raises:?}");
+        assert_eq!(
+            raises[0].key,
+            "qa/kind-isolation.toml:cell.busbar-core.plane.count"
+        );
+        assert_eq!(raises[0].written_key.as_deref(), Some("cell.1.count"));
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("keyed by ORDINAL, resolved"));
+        // And `--write` writes the identity, never the slot it was handed.
+        let out = rekey(&text, &raises[0]).expect("the entry is there");
+        assert!(out.contains("cell.busbar-core.plane.count"), "{out}");
+        assert!(!out.contains("cell.1.count"), "{out}");
+    }
+
+    /// THE CHAIN FORM. P3, P4, P5 and the K14 rows write `from = <the predecessor's tip>` rather
+    /// than the landing base's figure — sound only if every predecessor has landed, which is what
+    /// their holds buy. Read as DELTAS the chain needs no such reasoning: the entries simply sum.
+    #[test]
+    fn a_chain_of_retired_headers_sums_to_the_whole_rise() {
+        let text = format!(
+            "{DOC}\n[gate.ceiling_raises.\"rules.x.n\"]\nfrom = 5595\nto = 5631\n\
+             because = \"{BECAUSE}\"\n"
+        );
+        let (raises, refused, _) = raises_in(&text);
+        assert!(refused.is_empty(), "{refused:?}");
+        // 5595 is the predecessor's tip and is never compared against anything: the entry is +36.
+        assert_eq!(raises[0].by, 36);
+    }
+
+    /// THE ENTRIES THE QUEUE IS ACTUALLY HOLDING, replayed verbatim. PROBE-1 (queue line 165),
+    /// P1 (491) and S1b (562) carry NO hold at all: they can pop at any moment, they were written
+    /// against the reader that took only the retired header, and a parser that reds them is a
+    /// parser that breaks three live lines the hour it lands.
+    #[test]
+    fn the_three_unheld_lines_entries_are_read() {
+        let pair = |key: &str, from: i64, to: i64| {
+            format!(
+                "\n[gate.ceiling_raises.\"{key}\"]\nfrom = {from}\nto = {to}\n\
+                 because = \"{BECAUSE}\"\n"
+            )
+        };
+        for (line, entries, want) in [
+            (
+                "PROBE-1",
+                format!(
+                    "{}{}",
+                    pair("gate.surface_ceilings.contract_caps", 3478, 3483),
+                    pair("rules.loc-ceilings.union_ceiling", 23465, 23470)
+                ),
+                vec![5, 5],
+            ),
+            (
+                "S1b",
+                format!(
+                    "{}{}{}",
+                    pair("gate.surface_ceilings.contract_caps", 3478, 3543),
+                    pair("rules.loc-ceilings.caps_contract_ceiling", 3480, 3545),
+                    pair("rules.loc-ceilings.union_ceiling", 23465, 23477)
+                ),
+                vec![65, 65, 12],
+            ),
+            (
+                "P1",
+                format!(
+                    "{}{}",
+                    pair("gate.surface_ceilings.contract_caps", 3478, 3603),
+                    pair("rules.loc-ceilings.caps_contract_ceiling", 3480, 3605)
+                ),
+                vec![125, 125],
+            ),
+        ] {
+            let (raises, refused, warned) = raises_in(&format!("{DOC}{entries}"));
+            assert!(refused.is_empty(), "{line}: {refused:?}");
+            assert_eq!(warned.len(), want.len(), "{line}: {warned:?}");
+            let mut got: Vec<i64> = raises.iter().map(|r| r.by).collect();
+            let mut want = want;
+            got.sort_unstable();
+            want.sort_unstable();
+            assert_eq!(got, want, "{line}");
+        }
     }
 
     /// SELF-EXPIRY IS "THE BASE CARRIES THE ENTRY". The partition is a multiset match on the
@@ -1370,6 +1827,7 @@ mod tests {
             commit: None,
             ordinal: ord,
             pair: None,
+            written_key: None,
         };
         let b = Raise { by: 5, ..a(3) };
         let now = vec![a(1), a(2), b.clone()];
@@ -1418,6 +1876,41 @@ mod tests {
         );
         assert!(strike(&text, 3).is_none());
         assert!(strike(&text, 0).is_none());
+    }
+
+    /// AND NEITHER ARE THE ADMISSIONS. A `[[minted]]` row carries `cells` and `ceiling`, and a
+    /// `[[minted_kind]]` row `cells`, `edges` and `ceiling` — numbers ABOUT ceilings. Read as
+    /// ceilings they are keys the base never carried, so the minted door would refuse the very
+    /// admission it was written to honour. Measured: the first self-test case to write one reported
+    /// `minted.0.ceiling = 120` and `minted.0.cells = 1` as two undeclared minted rises.
+    #[test]
+    fn a_minted_rows_own_numbers_are_not_ceilings() {
+        let text = format!(
+            "{DOC}\n[[minted]]\ncrate = \"busbar-export-file\"\ncommit = \"planted\"\n\
+             cells = \"4\"\nceiling = \"39\"\n\n\
+             [[minted_kind]]\nkind = \"dialect\"\ncommit = \"planted\"\ncells = \"26\"\n\
+             edges = \"15\"\nceiling = \"651\"\n"
+        );
+        let ints = ints_of(&text).expect("the fixture parses");
+        assert!(
+            ints.keys().all(|k| !k.starts_with("minted")),
+            "the admissions are read as ceilings: {ints:?}"
+        );
+        // The real ceilings beside them are still read.
+        assert_eq!(ints.get("gate.surface_ceilings.grammar"), Some(&500));
+        // And the door still reads the admission itself.
+        let mints = mints_in(&text);
+        assert_eq!(
+            mints
+                .crates
+                .get("busbar-export-file")
+                .and_then(|m| m.ceiling),
+            Some(39)
+        );
+        assert_eq!(
+            mints.kinds.get("dialect").and_then(|m| m.ceiling),
+            Some(651)
+        );
     }
 
     /// THE DECLARATIONS ARE NOT CEILINGS. `[[gate.ceiling_raises]]` rows carry an integer, `by`,
