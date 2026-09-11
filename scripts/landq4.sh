@@ -2765,6 +2765,28 @@ lq_selftest() {
   _t "a GREEN outcome still outranks a give-up"  GREEN "$(lq_preproof_verdict 1 "$root/plharn.log" "$root/pl5.batch.result")"
   _t "a vanished box outranks it (nothing ran)"  "NONE:box" "$(lq_preproof_verdict 75 "$root/plharn.log")"
   _t "the sweep re-queues a NONE:harness line to the front" 1 "$(grep -c 'NONE:harness)  lq_front_add "\$text"' "$0")"
+  # ── A RECORDING THAT IS ABSENT IS NOT A RECORDING THAT DIFFERS ────────────────────────────────
+  # MEASURED 2026-09-10: a batch union went RED on `requested cell 'admin.ops|…' was recorded by no
+  # shard` — an oracle SHARD THAT NEVER RAN — and this engine scored it as the LINE's red and
+  # parked the line. Nothing was compared with the golden for that cell, so there was no difference
+  # to have found: the proof did not fail, it did not finish. land.sh says so in the same sentence
+  # it uses for a driver that gives up (its land_harness_red), and the verdict follows it.
+  printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence: requested cell %s was recorded by no shard\n' "'admin.ops|x'" >"$root/plshard.log"
+  printf 'land.sh:       no verdict on the picks — the recording is ABSENT, not different; re-run the line elsewhere\n' >>"$root/plshard.log"
+  printf "land.sh: RED — requested cell 'admin.ops|x' was recorded by no shard\n" >>"$root/plshard.log"
+  _t "a cell recorded by no shard is NONE:harness" "NONE:harness" "$(lq_preproof_verdict 1 "$root/plshard.log")"
+  _t "  ...so the line goes to the FRONT, not to a park" "NONE:harness" \
+     "$(lq_preproof_verdict 1 "$root/plshard.log" "" tipS)"
+  printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence: oracle shard 1 produced no exit status: it never reported\n' >"$root/plshard2.log"
+  printf 'land.sh:       no verdict on the picks — the recording is ABSENT, not different; re-run the line elsewhere\n' >>"$root/plshard2.log"
+  _t "a shard that produced no report is NONE:harness too" "NONE:harness" "$(lq_preproof_verdict 1 "$root/plshard2.log")"
+  # AND THE FALSE POSITIVE THE RULE MUST NOT HAVE: a cell that WAS recorded and DID differ.
+  printf "land.sh: RED — oracle families: ^(admin[.]ops)[|] (see /t/out.report)\n" >"$root/plshard3.log"
+  _t "an ordinary oracle divergence is still RED"  RED "$(lq_preproof_verdict 1 "$root/plshard3.log")"
+  # …and a chained rung reads the same rule, through the same predicate.
+  printf 'RED%sDEEP\n' "$TAB" >"$root/plshard.result"
+  _t "a chained rung reads it too"             "NONE:harness" \
+     "$(lq_chain_preproof_verdict 1 "$root/plshard.log" "$root/plshard.result" DEEP tipS)"
 
   # ── THE ORACLE ROWS THAT ARE RED AT THE TIP ITSELF ───────────────────────────────────────────
   # Measured 2026-09-10: line 12 (a base probe) and line 8 were parked RED on

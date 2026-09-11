@@ -1014,15 +1014,59 @@ land_oracle_red() { # $1 = the red sentence, $2 = recording prefix, $3 = K; alwa
   return 1
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A RECORDING THAT IS ABSENT IS NOT A RECORDING THAT DIFFERS
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED 2026-09-10: a batch union went RED on `requested cell 'admin.ops|…' was recorded by no
+# shard` — an oracle SHARD THAT NEVER RAN — and the queue engine scored that as the LINE's red and
+# parked it. It is not a verdict on the line's picks by any reading available: no candidate was
+# recorded for that cell, so nothing was ever compared with the golden, so there is no difference
+# to have found. The proof did not fail; it did not finish.
+#
+# THAT IS THE SAME CLASS OF FAULT AS A DRIVER THAT GIVES UP, and this engine already has a sentence
+# for it (land_oracle_red / T0-D10's contract). These reds now say it too, in the same words, which
+# is what makes landq4.sh's lq_preproof_verdict score them NONE:harness — no colour on the line, and
+# the line re-queued to the front of the next sweep rather than parked against a red it did not earn.
+#
+# WHAT IS NOT ABSENCE, and the cases in --selftest pin both halves: a shard that RAN and exited
+# non-zero, and a cell recorded TWICE by two shards. Those are measurements, they are about this
+# tree, and they stay ordinary reds. Absence is only ever: no exit status, no recording, no ledger.
+land_harness_red() { # $1 = the evidence, $2 = the red sentence; always rc 1
+  echo "land.sh: RED — oracle: a HARNESS failure, not a divergence: $1" >&2
+  echo "land.sh:       no verdict on the picks — the recording is ABSENT, not different; re-run the line elsewhere" >&2
+  echo "$2" >&2
+  return 1
+}
+land_shard_absent() { # $1 = recording prefix, $2 = K; prints the evidence, rc 0 when some shard produced no report
+  local pre="$1" k="${2:-1}" i=0 rc
+  while [ "$i" -lt "$k" ]; do
+    rc="$(tr -d '[:space:]' <"$pre$i.rc" 2>/dev/null || true)"
+    if [ -z "$rc" ]; then
+      printf 'oracle shard %s produced no exit status: it never reported\n' "$i"; return 0; fi
+    if [ ! -d "$pre$i" ] || [ -z "$(ls -A "$pre$i" 2>/dev/null)" ]; then
+      printf 'oracle shard %s left no recording in %s\n' "$i" "$pre$i"; return 0; fi
+    if [ ! -f "$pre$i/ledger.tsv" ]; then
+      printf 'oracle shard %s wrote no ledger: what it recorded is unmeasurable\n' "$i"; return 0; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 land_shards_collect() {
   local pre="$1" k="$2" i=0 bad=0
   while [ "$i" -lt "$k" ]; do
     local d="$pre$i" rc
     rc="$(cat "$d.rc" 2>/dev/null || echo missing)"
-    if [ "$rc" != "0" ]; then
+    if [ "$rc" = "missing" ] || [ ! -d "$d" ] || [ -z "$(ls -A "$d" 2>/dev/null)" ]; then
+      # ABSENCE, not difference (see land_harness_red). A shard whose exit status never came back,
+      # or that left nothing behind, measured nothing — and a measurement that did not happen is
+      # the harness's fault, never the picks'.
+      land_harness_red "$(land_shard_absent "$pre" "$k" || echo "oracle shard $i produced no report")" \
+                       "land.sh: RED — oracle shard $i produced no report (see $d.log)" >&2 || true
+      bad=1
+    elif [ "$rc" != "0" ]; then
+      # …and a shard that RAN and failed is a measurement about this tree. Ordinary red.
       echo "land.sh: RED — oracle shard $i exited '$rc' (see $d.log)" >&2; bad=1
-    elif [ ! -d "$d" ] || [ -z "$(ls -A "$d" 2>/dev/null)" ]; then
-      echo "land.sh: RED — oracle shard $i left no recording in $d" >&2; bad=1
     fi
     i=$((i + 1))
   done
@@ -1038,7 +1082,8 @@ land_ledger_assert() {
   : >"$tmp"
   while [ "$i" -lt "$k" ]; do
     [ -f "$pre$i/ledger.tsv" ] || {
-      echo "land.sh: RED — oracle shard $i wrote no ledger; what it recorded is unmeasurable" >&2
+      land_harness_red "oracle shard $i wrote no ledger: what it recorded is unmeasurable" \
+                       "land.sh: RED — oracle shard $i wrote no ledger; what it recorded is unmeasurable" >&2 || true
       rm -f "$tmp"; return 1; }
     cut -f1 "$pre$i/ledger.tsv" >>"$tmp"
     i=$((i + 1))
@@ -1057,7 +1102,11 @@ land_ledger_assert() {
     [ -n "$id" ] || continue
     if [[ "$id" =~ $filter ]]; then
       printf '%s\n' "$recorded" | grep -qxF -- "$id" || {
-        echo "land.sh: RED — requested cell '$id' was recorded by no shard" >&2; miss=$((miss + 1)); }
+        # A CELL NOBODY RECORDED IS A CELL NOBODY COMPARED. There is no candidate for it, so there
+        # is no difference from the golden to have found; the recording is absent, not different.
+        land_harness_red "requested cell '$id' was recorded by no shard" \
+                         "land.sh: RED — requested cell '$id' was recorded by no shard" >&2 || true
+        miss=$((miss + 1)); }
     fi
     [ "$miss" -lt 3 ] || break
   done <<EOF
@@ -3150,9 +3199,58 @@ EOF
     _st "a shard with no ledger -> RED"         1 land_ledger_assert "$f3" "$root/led" 2
     : >"$root/led1/ledger.tsv"; : >"$root/led0/ledger.tsv"
     _st "empty ledgers (zero rows) -> RED"      1 land_ledger_assert "$f3" "$root/led" 2
+
+    # ── A RECORDING THAT IS ABSENT IS NOT A RECORDING THAT DIFFERS (case Q) ────────────────────
+    # MEASURED 2026-09-10: a batch union went RED on `requested cell 'admin.ops|…' was recorded by
+    # no shard` — an oracle SHARD THAT NEVER RAN — and the queue scored that as the LINE's red and
+    # parked it. It is not a verdict on the line's picks by any reading: no candidate was recorded
+    # for that cell, so nothing was compared to the golden, so there is no difference to have
+    # found. An absent measurement is the harness's failure, and it is the same class of fault as
+    # a driver that gives up — which this engine already knows how to say.
+    # …re-planted: the case above emptied both ledgers on purpose.
+    printf '%s\tPASS\tt\td\n' "$l1" >"$root/led1/ledger.tsv"
+    printf '%s\tPASS\tt\td\n' "$b1" >"$root/led0/ledger.tsv"
+    _st "a requested cell in no ledger is a HARNESS red" 1 land_ledger_assert "$f3" "$root/led" 2
+    _stgrep "  ...in the words the queue engine reads" "$ST_OUT" 'RED — oracle: a HARNESS failure, not a divergence'
+    _stgrep "  ...naming the cell that went unrecorded" "$ST_OUT" 'recorded by no shard'
+    _stgrep "  ...and saying it proves nothing about the picks" "$ST_OUT" 'no verdict on the picks'
+    # A DUPLICATE is NOT absence: two shards recorded the same cell, which is a real fault in the
+    # partition and a real red about this tree.
+    printf '%s\tPASS\tt\td\n%s\tPASS\tt\td\n' "$l1" "$b1" >"$root/led1/ledger.tsv"
+    printf '%s\tPASS\tt\td\n%s\tPASS\tt\td\n' "$b1" "$b2" >"$root/led0/ledger.tsv"
+    _st "a cell recorded TWICE is still an ordinary red" 1 land_ledger_assert "$f3" "$root/led" 2
+    _stno "  ...with no harness sentence"       "$ST_OUT" 'HARNESS failure'
   else
     printf '  SKIP %-46s (no cells.json in this tree)\n' "ledger union"
   fi
+  # ── A SHARD THAT PRODUCED NO REPORT AT ALL ─────────────────────────────────────────────────────
+  echo "land.sh selftest: a shard that produced no report is the HARNESS, not a divergence (case Q)"
+  rm -rf "$root/nr0" "$root/nr1"; mkdir -p "$root/nr0" "$root/nr1"
+  printf '0\n' >"$root/nr0.rc"; printf '0\n' >"$root/nr1.rc"
+  printf 'x\n' >"$root/nr0/captured.json"; printf 'x\n' >"$root/nr1/captured.json"
+  printf 'c\tPASS\tt\td\n' >"$root/nr0/ledger.tsv"; printf 'd\tPASS\tt\td\n' >"$root/nr1/ledger.tsv"
+  _st "every shard reported: no absence"        1 land_shard_absent "$root/nr" 2
+  rm -f "$root/nr1.rc"
+  _st "a shard with no exit status IS absence"  0 land_shard_absent "$root/nr" 2
+  _stgrep "  ...and the evidence names the shard" "$ST_OUT" 'shard 1'
+  printf '0\n' >"$root/nr1.rc"; rm -rf "$root/nr1"; mkdir -p "$root/nr1"
+  _st "a shard with an EMPTY recording IS absence" 0 land_shard_absent "$root/nr" 2
+  printf 'x\n' >"$root/nr1/captured.json"
+  _st "a shard with no ledger IS absence"       0 land_shard_absent "$root/nr" 2
+  printf 'd\tPASS\tt\td\n' >"$root/nr1/ledger.tsv"
+  _st "  ...and with one, it is not"            1 land_shard_absent "$root/nr" 2
+  # A SHARD THAT RAN AND FAILED IS A RED ABOUT THE TREE, NOT ABOUT THE HARNESS.
+  printf '1\n' >"$root/nr1.rc"
+  _st "a shard that ran and exited non-zero is not absence" 1 land_shard_absent "$root/nr" 2
+  _st "  ...and collecting it is still RED"     1 land_shards_collect "$root/nr" 2
+  _stno "  ...with no harness sentence"         "$ST_OUT" 'HARNESS failure'
+  rm -f "$root/nr1.rc"
+  _st "collecting a shard that never reported is a HARNESS red" 1 land_shards_collect "$root/nr" 2
+  _stgrep "  ...in the words the queue engine reads" "$ST_OUT" 'RED — oracle: a HARNESS failure, not a divergence'
+  _t2 "the absence reds all go through one sentence" 3 \
+      "$(grep -c 'land_harness_red ' "$LAND_SRC")"
+  _t2 "  ...and none of them echoes a red of its own" 0 \
+      "$(sed -n '/^land_ledger_assert() {/,/^}$/p' "$LAND_SRC" | grep -c 'echo "land.sh: RED — requested cell')"
 
   # ── THE BATCH ENGINE, on a real repository ─────────────────────────────────────────────────────
   # Real commits, real cherry-picks, a real conflict, real resets. Only the PROOF is scripted, and
