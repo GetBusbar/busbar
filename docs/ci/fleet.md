@@ -139,15 +139,21 @@ in arithmetic rather than seconds so that a slow or contended box does not turn 
 | 3 | kind-isolation | 284, 286, 286 | 211 577, 215 408, 197 905 | 310 000 | INSIDE (64–69%) |
 | 3 | construction | 695, 699, 700 | 62 827, 104 255, 83 959 | 50 000 | **OVER (126–209%) — RED** |
 | 3 | **set** | **986** | | | **over budget** |
+| 4 | kind-isolation | 318–324 | 196 574 – 228 437 | 310 000 | INSIDE (63–74%) |
+| 4 | construction | 679–684 | 79 273 – 98 513 | 50 000 | **OVER (159–197%) — RED** |
+| 4 | **set** | **1005** | | | **over budget** |
+
+Throughput is real and it is not the point: N=4 does four battery sets in 1005 s where N=1 does one
+in 188 s — 2.9× the work per box-second. All four are red.
 
 **The ceiling is N = 1** for a battery set that contains `construction`, on a 32-vCPU box. Not
 because anything hangs — every wall figure is inside the 1800 s ceiling with room to spare — but
-because `construction` spends 14% to 109% more than its budget the moment it shares the box, and a
+because `construction` spends 14% to 97% more than its budget the moment it shares the box, and a
 battery over its budget is a **RED landing**. The harness says so in its own words: at N=2 it
 re-took the battery at `--jobs 1` and reported *"EVERY finding above went away at `--jobs 1` over 36
 case(s)"*. The red is the budget, not the gate.
 
-`kind-isolation` alone holds at N ≥ 3 (64–69% of budget at N=3), so the ceiling is a property of
+`kind-isolation` alone holds all the way to N = 4 (63–74% of budget), so the ceiling is a property of
 **`construction`**, and specifically of its planting: 44–45 s of the run is one plant on one thread,
 and the work-unit ruler under-corrects for a co-tenant on that shape.
 
