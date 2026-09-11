@@ -1505,7 +1505,7 @@ pub fn build_app_from_config(
         }),
     };
 
-    let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+    let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
     // Compose the LLM runtime slot through the fallback plane's OWN `build_runtime` fn-pointer, exactly
     // as the MCP runtime is composed above — passing the neutral carrier erased to `&dyn Any` and the
     // prior generation's snapshot through the neutral `PlaneSlots` seam (for the warm-client /
@@ -1523,7 +1523,7 @@ pub fn build_app_from_config(
                 &llm_build_input as &dyn std::any::Any,
                 prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
             );
-            plane_slots.insert(llm_runtime_key, slot);
+            plane_slots.insert(fallback_runtime_key, slot);
         }
     }
 
@@ -1604,7 +1604,7 @@ pub fn build_app_from_config(
         // above into `plane_slots` under this interned key through the LLM plane's `build_runtime`
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
-        llm_runtime_key,
+        fallback_runtime_key,
         store,
         // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a

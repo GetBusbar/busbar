@@ -1002,7 +1002,7 @@ impl TestApp {
     /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
     /// `pub` governance accessor.
     pub fn card_issuer(&self) -> Option<busbar_substrate::plane::registry::CardIssuer> {
-        self.governance.as_ref().and_then(|g| g.a2a_card_issuer())
+        self.governance.as_ref().and_then(|g| g.card_issuer())
     }
 
     /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
@@ -1620,7 +1620,7 @@ impl TestApp {
         // degrades to the FIRST registered plane's key when no plane flags itself fallback (the plane
         // suites' dependency-copy of core, which registers only MCP/A2A) — inserting there would key the
         // LLM runtime under a sibling's `runtime_slot_key` and clobber that sibling's own runtime slot.
-        let llm_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+        let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
@@ -1727,7 +1727,7 @@ impl TestApp {
                 .and_then(|d| d.build_runtime)
             {
                 let slot = f(&build_input as &dyn std::any::Any, None);
-                plane_slots.insert(llm_runtime_key, slot);
+                plane_slots.insert(fallback_runtime_key, slot);
             }
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
@@ -1827,7 +1827,7 @@ impl TestApp {
             // THE LLM DATA-PLANE RUNTIME'S SLOT KEY (R3/R4 sub-phase B) — the bundle itself was composed
             // above into `plane_slots` under this interned key; the snapshot names only the key, and
             // `App::llm_runtime` downcasts the slot on the money path.
-            llm_runtime_key,
+            fallback_runtime_key,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),

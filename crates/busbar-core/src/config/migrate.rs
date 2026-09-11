@@ -398,7 +398,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // 1.6.0 verify-on-call: the per-MCP-server `refresh_ttl:` (a background sweep cadence, default 6h)
     // becomes `verify_ttl:` (max verification staleness on the `tools/call` path, default 5s). A pure
     // key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
-    migrate_mcp_verify_ttl(&mut root, &mut changes, &mut warnings);
+    migrate_verify_ttl(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -453,11 +453,7 @@ pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
 /// for up to that long before the call re-verifies. So every rename carries a loud warning naming the
 /// server and the value, telling the operator to reconsider it (a few seconds is the new default;
 /// `0` is strict-live).
-fn migrate_mcp_verify_ttl(
-    root: &mut Mapping,
-    changes: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
+fn migrate_verify_ttl(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     let Some(Value::Mapping(tools)) = root.get_mut(Value::from("tools")) else {
         return;
     };

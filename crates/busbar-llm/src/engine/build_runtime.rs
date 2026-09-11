@@ -344,7 +344,7 @@ pub(crate) fn viewer(
     slot: &(dyn std::any::Any + Send + Sync),
 ) -> &dyn busbar_substrate::plane_host::EngineTablesView {
     // Core resolves the viewer fn-pointer off the LIVE fallback-plane decl but reads the slot off the
-    // App snapshot's own baked `llm_runtime_key`. In production the registry is set once at boot, so the
+    // App snapshot's own baked `fallback_runtime_key`. In production the registry is set once at boot, so the
     // slot the App carries is always THIS plane's `NativeRuntime` and the downcast hits. In a MULTI-TEST
     // binary, though, `register_test_plane` mutates the registry across tests, so a non-LLM App (e.g. an
     // MCP-only fixture) scraping `/metrics` can meet this plane's viewer over a slot that is not a

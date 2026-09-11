@@ -123,14 +123,15 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
     // leaves core; a start hook receives only the `kid` and the base64 SPKI it publishes for callers
     // to pin busbar by. `None` when this deployment mints no card-issuer key.
     // The card-issuer key exists only to feed the A2A `start` hook (the sole consumer of the SPKI a
-    // caller pins busbar by). `a2a_card_issuer` derives it through the A2A plane's `card_signer` seam
-    // and reduces it to its PUBLIC halves core-side; with the A2A plane compiled out no plane derives
-    // one and it is `None` — no plane's `start` hook reads it — so no `#[cfg]` is needed here.
+    // caller pins busbar by). `card_issuer` derives it through the owning plane's `card_signer` seam
+    // (read off its declaration, never a hardcoded plane) and reduces it to its PUBLIC halves
+    // core-side; with no plane declaring one it is `None` — no plane's `start` hook reads it — so no
+    // `#[cfg]` is needed here.
     let card_issuer = app_handle
         .load()
         .governance
         .as_ref()
-        .and_then(|g| g.a2a_card_issuer());
+        .and_then(|g| g.card_issuer());
     let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
     run_start_hooks(crate::plane::registry::plane_decls(), &ctx)
 }

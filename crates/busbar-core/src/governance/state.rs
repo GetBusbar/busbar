@@ -395,7 +395,7 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub(crate) fn a2a_card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
+    pub(crate) fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
         let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;

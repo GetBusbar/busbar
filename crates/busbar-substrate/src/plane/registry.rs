@@ -340,7 +340,7 @@ pub struct PlaneDecl {
     /// card key: `GovState::card_sign` reads it off this decl, derives the subkey from the core token
     /// signer (`TokenSigner::sign_with_card_subkey`) and signs HOST-side, so no signing material ever
     /// reaches the plane (invariant (a)). `None` for every plane that does not sign cards, so
-    /// `GovState::a2a_card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
+    /// `GovState::card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
     /// `governance/state.rs` names no `crate::a2a` type.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub card_signing_domain: Option<&'static str>,
@@ -348,7 +348,7 @@ pub struct PlaneDecl {
     /// THE `kid` PREFIX this plane stamps on its card signatures, prepended to the token signer's own
     /// `kid` so a caller can SEE that the card key is not the token key. A `&'static str` constant for
     /// the same reason [`Self::card_signing_domain`] is: the host builds the published issuer `kid`
-    /// (`GovState::a2a_card_issuer`) from this and the token `kid` without naming the plane. `None` for
+    /// (`GovState::card_issuer`) from this and the token `kid` without naming the plane. `None` for
     /// a plane that signs no cards.
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub card_kid_prefix: Option<&'static str>,

@@ -118,7 +118,7 @@ pub struct App {
     /// `runtime_slot_key` call. An ABSENT slot — the featureless binary boots with no LLM plane, so
     /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
     /// flat field encoded), never a panic. Neutral: names no dialect.
-    pub(crate) llm_runtime_key: &'static str,
+    pub(crate) fallback_runtime_key: &'static str,
     pub store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
@@ -567,7 +567,7 @@ impl App {
         // fallback plane decl's `viewer` fn-pointer (the plane downcasts its OWN runtime inside). An
         // absent slot — the featureless zero-plane boot, or a decl with no viewer — yields the
         // substrate-resident EMPTY_VIEW (zero pools/models).
-        let key = self.llm_runtime_key;
+        let key = self.fallback_runtime_key;
         match (
             crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
                 .and_then(|d| d.viewer),
@@ -638,8 +638,8 @@ impl App {
     /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
     /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
     /// on every `engine_tables()`/`llm_runtime()` call — the hot-path allocation the alloc gate pins.
-    pub fn llm_runtime_key(&self) -> &'static str {
-        self.llm_runtime_key
+    pub fn fallback_runtime_key(&self) -> &'static str {
+        self.fallback_runtime_key
     }
 
     /// The per-container submission-gate map for the plane identified by the opaque registry
