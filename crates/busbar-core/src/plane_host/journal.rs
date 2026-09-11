@@ -464,17 +464,12 @@ fn register_stream(
         let Some(framing) = map_framing(d.framing) else {
             return StatusClass::Unsupported;
         };
-        // The stream DECLARES its own RAM bound (minor-21). `0` is the host default: UNBOUNDED, which
-        // a durable TABLE whose working set is bounded by its own row lifecycle wants, and which is
-        // what every descriptor written against the older minor carried in this slot. A stream keyed
-        // on an unbounded scope space names its own cap here — the tuning constant belongs to whoever
-        // knows how many scopes are worth a resident position, which is never the host.
-        let cap = if d.max_scopes == 0 {
-            usize::MAX
-        } else {
-            d.max_scopes as usize
-        };
-        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(cap));
+        // UNBOUNDED. Every stream this seam still registers is a durable TABLE whose working set is
+        // bounded by its own row lifecycle, so none of them wants eviction — and the ONE stream that
+        // ever declared a bound of its own, keyed on an unbounded scope space, is gone: the per-call
+        // record is landed by the composition root's kernel-held record leg, which holds its
+        // positions itself. The descriptor field that carried that bound went back to padding with it.
+        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(usize::MAX));
         if let Some(gov) = state.app.governance.as_ref() {
             journal.set_sink(PlaneStoreView::narrow(gov.store()));
         }

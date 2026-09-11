@@ -224,7 +224,7 @@ fn compute_layout() -> String {
             framing,
             digests_scope,
             kind_id,
-            max_scopes,
+            _reserved,
             kind_ptr,
             kind_len
         ]

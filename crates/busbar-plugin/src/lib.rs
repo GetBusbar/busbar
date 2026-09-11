@@ -72,12 +72,7 @@ pub const ABI_MAJOR: u32 = 1;
 ///
 /// 19→20 (1.6.0 M1): the append-only `hot::Usage` keyed-unit tail (`units_ptr`/`units_len`), paired
 /// with `POD_VERSION` 2→3. `check_preamble` still accepts an older minor (append-only compatibility).
-///
-/// 20→21 (1.6.0): `hot::JournalStreamDesc._reserved` becomes `max_scopes: u32` — the LRU bound on a
-/// registered stream's RAM position cache, `0` = the host default. Weaker than an append: every
-/// offset and the struct size are UNCHANGED, and a minor-20 peer wrote `0` there, which decodes to
-/// the host default it already received. `POD_VERSION` is unmoved for the same reason.
-pub const ABI_MINOR: u32 = 21;
+pub const ABI_MINOR: u32 = 20;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

@@ -1551,10 +1551,9 @@ pub struct JournalQuery {
 
 /// A DURABLE journal-stream registration descriptor (minor-9): the plane names a stream's neutral
 /// `kind` bytes (e.g. `task_event` — OPAQUE to the host), the prelude `framing`, whether the scope
-/// participates in the digest, the RAM bound on its position cache, and a host-assigned `kind_id` it
-/// will address every later scoped op by. The host learns the `kind` as DATA at register time and
-/// NAMES no plane type; the `kind_id` is the cheap integer handle the hot append/read/restore path
-/// keys on.
+/// participates in the digest, and a host-assigned `kind_id` it will address every later scoped op by.
+/// The host learns the `kind` as DATA at register time and NAMES no plane type; the `kind_id` is the
+/// cheap integer handle the hot append/read/restore path keys on.
 ///
 /// # Safety / discipline
 /// `kind_ptr`/`kind_len` MUST describe a live, initialized byte range for the register call.
@@ -1572,18 +1571,8 @@ pub struct JournalStreamDesc {
     pub digests_scope: u8,
     /// The host-assigned integer handle the scoped ops address this stream by.
     pub kind_id: u32,
-    /// The LRU bound on how many SCOPE POSITIONS the host caches in RAM for this stream, or `0` for
-    /// the host default (UNBOUNDED — a durable TABLE whose working set is bounded by its own row
-    /// lifecycle opts out of eviction by leaving this zero). A stream keyed on an unbounded scope
-    /// space — one position per principal — declares its OWN bound here, because how many of its
-    /// scopes are worth a resident position is the stream's business and not the host's. The map is
-    /// a CACHE of the store's per-scope tail, never the system of record: an evicted position is
-    /// resumed from the store on that scope's next write, so a bound costs a read, never a fork.
-    ///
-    /// Occupies the `u32` this descriptor previously reserved for alignment before the borrowed
-    /// range, so every offset and the struct size are UNCHANGED (minor-21). A peer built against
-    /// minor-20 wrote `0` into it, which is exactly the host default it already got.
-    pub max_scopes: u32,
+    /// Preamble/alignment padding before the borrowed range.
+    pub _reserved: u32,
     /// Borrowed opaque neutral-kind bytes (e.g. `task_event`; NOT owned; the host stores them verbatim).
     pub kind_ptr: *const u8,
     /// Length of the borrowed kind range.
