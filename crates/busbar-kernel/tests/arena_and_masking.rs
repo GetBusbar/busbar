@@ -6,7 +6,9 @@
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
-use busbar_kernel::arena::{Arena, CredentialSlab, ARENA_BYTES, CURSOR_CAP_BYTES, FILL_BYTE};
+use busbar_kernel::arena::{
+    span_slab, Arena, ArenaBuf, CredentialSlab, ARENA_BYTES, CURSOR_CAP_BYTES, FILL_BYTE,
+};
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
 use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
 
@@ -213,58 +215,46 @@ fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
 
 #[test]
 fn the_arena_is_four_kibibytes_and_is_reset_per_frame() {
-    let mut arena = Arena::new();
+    let mut buf = ArenaBuf::new();
+    let mut slab = span_slab();
+    let arena = buf.lease(&mut slab[..]);
     assert_eq!(arena.remaining(), ARENA_BYTES);
-    let span = arena.push(b"a frame's worth of bytes").expect("room");
-    assert_eq!(arena.read(span), b"a frame's worth of bytes");
+    let bytes = arena
+        .alloc_bytes(b"a frame's worth of bytes")
+        .expect("room");
+    assert_eq!(bytes.as_slice(), b"a frame's worth of bytes");
     assert_eq!(arena.used(), 24);
+    drop(arena);
 
     // On the relay path the arena is reset per frame, so a session that relays all day uses the
-    // same four kibibytes it used at its first frame.
+    // same four kibibytes it used at its first frame. The reset IS the re-lease: it takes the
+    // buffer back mutably, so every byte the frame before lent is over before the next one starts.
     for _ in 0..1_000 {
-        arena.reset();
-        arena.push(b"another frame").expect("room, every time");
+        let mut slab = span_slab();
+        let arena = buf.lease(&mut slab[..]);
+        arena
+            .alloc_bytes(b"another frame")
+            .expect("room, every time");
+        assert_eq!(arena.used(), 13);
     }
-    assert_eq!(arena.used(), 13);
-    assert_eq!(arena.resets(), 1_000);
+    assert_eq!(buf.resets(), 1_001);
+    assert_eq!(
+        buf.high_water(),
+        24,
+        "the first frame was the widest, and nothing grew after it"
+    );
 }
 
 #[test]
 fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
-    let mut arena = Arena::new();
-    let full = arena.take(ARENA_BYTES).expect("all of it");
-    assert_eq!(full.len(), ARENA_BYTES);
-    let refused = arena.push(b"one more byte").expect_err("nothing left");
+    let mut buf = ArenaBuf::new();
+    let mut slab = span_slab();
+    let arena = buf.lease(&mut slab[..]);
+    let whole = vec![0u8; ARENA_BYTES];
+    arena.alloc_bytes(&whole).expect("all of it");
+    let refused = arena
+        .alloc_bytes(b"one more byte")
+        .expect_err("nothing left");
     assert_eq!(refused.remaining, 0);
-    assert_eq!(refused.reason(), busbar_caps::ReasonCode::ArenaBudget);
-}
-
-/// A span the arena hands out holds nothing of the frame before it.
-///
-/// `take` promised zeroed space and `reset` moved the cursor without clearing a byte, so a unit
-/// that took a span and then wrote LESS into it than it asked for could read the tail of the
-/// previous frame straight back out — one connection's bytes surfacing inside another's buffer.
-/// The promise is now kept where it is made.
-#[test]
-fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
-    let mut arena = Arena::new();
-    let secret = b"authorization: Bearer swordfish";
-    let first = arena.push(secret).expect("the arena has room");
-    assert_eq!(arena.read(first), secret);
-
-    // The frame ends and the next one begins.
-    arena.reset();
-    let span = arena.take(secret.len()).expect("the arena has room");
-    assert!(
-        arena.read(span).iter().all(|byte| *byte == 0),
-        "the span still held the last frame"
-    );
-
-    // And a unit that writes less than it asked for exposes no tail.
-    arena.write(span, b"ok").expect("within the span");
-    assert_eq!(&arena.read(span)[..2], b"ok");
-    assert!(
-        arena.read(span)[2..].iter().all(|byte| *byte == 0),
-        "the tail of the span leaked the last frame"
-    );
+    assert_eq!(refused.wanted, 13);
 }

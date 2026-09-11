@@ -17,8 +17,16 @@
 //! sees a credential" is a property of the bytes rather than a rule planes are asked to follow.
 
 use busbar_caps::ReasonCode;
+use busbar_contract::bounded::MAX_KEYS;
 
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
+
+/// The arena's own vocabulary, named here rather than restated.
+///
+/// The trait, its refusal and its byte handle are the contract's, for the same reason the size
+/// below is: a caller that reaches the arena through this module gets the ABI's own types, so
+/// there is no kernel-shaped near-copy of any of them for a plugin's answer to be measured against.
+pub use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes};
 
 /// The per-unit arena, pinned by the design at 4 KiB.
 ///
@@ -38,131 +46,216 @@ pub use busbar_contract::MAX_CURSOR_BYTES as CURSOR_CAP_BYTES;
 /// downstream.
 pub const FILL_BYTE: u8 = b'*';
 
-/// The arena said no: the unit asked for more scratch space than it has left.
+/// THE KERNEL'S SECOND BUMP BUFFER IS GONE, and what is below is what replaced it.
 ///
-/// Carried rather than panicked, because the loop turns it into `Failed(step, ArenaBudget)` and
-/// posts, and a unit that cannot post is worse than one that cannot encode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ArenaFull {
-    /// How many bytes were asked for.
-    pub requested: usize,
-    /// How many were left.
-    pub remaining: usize,
-}
-
-impl ArenaFull {
-    /// The reason the loop ends the unit with.
-    pub fn reason(self) -> ReasonCode {
-        ReasonCode::ArenaBudget
-    }
-}
-
-impl std::fmt::Display for ArenaFull {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "arena exhausted: {} bytes wanted, {} left",
-            self.requested, self.remaining
-        )
-    }
-}
-
-impl std::error::Error for ArenaFull {}
-
-/// One unit's 4 KiB of scratch space: a fixed buffer and a bump cursor.
+/// There were two 4 KiB arenas in this tree and neither was production. One was the contract's
+/// `Arena` trait — the ONE resource handle a plugin is given — with sixteen implementors, every
+/// one a test double that handed out `Box::leak`ed bytes. The other was this module's own `Arena`:
+/// a fixed buffer, a bump cursor, a `Span`-shaped `take`/`push`/`read`/`write` API and its own
+/// `ArenaFull` refusal, 116 lines that implemented nothing of the contract and were called by
+/// nothing outside this crate's own test. It carried the claim — "a session that relays for an
+/// hour uses the same 4 KiB it used at its first frame" — that no arena in the tree could keep.
 ///
-/// There is no free. There is only [`Arena::reset`], and the loop calls it at exactly two moments:
-/// after each relayed frame on an open unit, and at the end of the unit otherwise.
+/// [`ArenaBuf`] and [`UnitArena`] are the one arena, and they implement the contract's trait. The
+/// zeroing the old `take` did on the way out is met by construction instead: there is no
+/// take-a-span-and-write-into-it-later call on the contract's arena, so an allocation is handed
+/// back exactly the bytes copied into it and a short write cannot expose the tail of the frame
+/// before. `busbar-kernel/tests/arena_reuse.rs` is the measurement.
+///
+/// The bytes one unit's arena runs over: 4 KiB, allocated once, given back to itself per frame.
+///
+/// The arena is a BORROW of this rather than a value that owns its own bytes, and the reason is in
+/// [`Arena`]'s own signature: the two allocators take `&self` and hand back slices that live as
+/// long as that borrow, so the bytes they lend must come from memory somebody else owns for at
+/// least as long. Every implementor written against this trait before this one handed out
+/// `Box::leak`ed bytes — a fresh allocation on every call and a unit that never gives its scratch
+/// space back — because a value that owns its buffer cannot lend it out through a shared reference
+/// without reaching for unsafe, and this crate forbids that.
+///
+/// Resetting is re-leasing. [`lease`] takes `&mut self`, so the previous lease and every byte it
+/// lent are provably over before the next one starts, and the cursor goes back to zero over the
+/// SAME bytes. That is what makes "a session that relays for an hour uses the same 4 KiB it used
+/// at its first frame" a borrow rule the compiler carries rather than a promise a reader is asked
+/// to take on trust.
+///
+/// [`lease`]: ArenaBuf::lease
 #[derive(Debug)]
-pub struct Arena {
-    buf: [u8; ARENA_BYTES],
-    used: usize,
-    /// How many times the arena has been reset — the number a test uses to prove per-frame reset.
-    resets: u64,
+pub struct ArenaBuf {
+    bytes: Box<[u8; ARENA_BYTES]>,
+    leases: u64,
+    high_water: usize,
 }
 
-impl Default for Arena {
+impl Default for ArenaBuf {
     fn default() -> Self {
-        Arena::new()
+        Self::new()
     }
 }
 
-impl Arena {
-    /// A fresh, empty arena. No heap: the buffer is the value.
+impl ArenaBuf {
+    /// A fresh buffer. One allocation, made where the unit is set up and never on the frame path.
+    #[must_use]
     pub fn new() -> Self {
-        Arena {
-            buf: [0u8; ARENA_BYTES],
-            used: 0,
-            resets: 0,
+        Self {
+            bytes: Box::new([0u8; ARENA_BYTES]),
+            leases: 0,
+            high_water: 0,
         }
     }
 
-    /// How many bytes are in use.
-    pub fn used(&self) -> usize {
-        self.used
-    }
-
-    /// How many bytes are left.
-    pub fn remaining(&self) -> usize {
-        ARENA_BYTES - self.used
-    }
-
-    /// How many times this arena has been reset.
-    pub fn resets(&self) -> u64 {
-        self.resets
-    }
-
-    /// Give the arena back to itself. Nothing is freed; the cursor moves to the start, and the
-    /// bytes the next frame is handed are cleared as it takes them.
-    pub fn reset(&mut self) {
-        self.used = 0;
-        self.resets = self.resets.saturating_add(1);
-    }
-
-    /// Take `len` bytes of zeroed space, and say where they are.
+    /// Hand the whole buffer to one frame's arena, and count the reset.
     ///
-    /// The zeroing happens HERE, where the promise is made, and not at the reset that hands the
-    /// buffer back. `reset` only moves the cursor, so a span taken over ground a previous frame
-    /// used still held that frame's bytes; a unit that then wrote less into the span than it asked
-    /// for could read the remainder straight back out, which is one connection's bytes surfacing
-    /// inside another's buffer. Clearing on the way out costs one pass over the span a unit was
-    /// about to write anyway, and it is the only point both the reset path and a fresh arena go
-    /// through.
-    pub fn take(&mut self, len: usize) -> Result<Span, ArenaFull> {
-        if len > self.remaining() {
-            return Err(ArenaFull {
-                requested: len,
-                remaining: self.remaining(),
+    /// The span table is the caller's own and not a field here, for the one reason a byte buffer
+    /// is not enough: a resolved span table is `(&str, Span)` PAIRS, so a table stored on this
+    /// value would have to name the lease's lifetime in this type — which pins the buffer to its
+    /// first lease and makes the second one uncompilable. [`span_slab`] builds one.
+    pub fn lease<'u>(&'u mut self, spans: &'u mut [(&'u str, Span)]) -> UnitArena<'u> {
+        self.leases = self.leases.saturating_add(1);
+        let bytes: &'u mut [u8] = &mut self.bytes[..];
+        UnitArena {
+            cursor: std::sync::Mutex::new(Cursor {
+                bytes,
+                spans,
+                used: 0,
+                high_water: &mut self.high_water,
+            }),
+        }
+    }
+
+    /// How many times this buffer has been given back to itself.
+    ///
+    /// One per lease, and a lease is one frame. The number a proof uses to say the reset happened
+    /// as many times as frames went by.
+    #[must_use]
+    pub fn resets(&self) -> u64 {
+        self.leases
+    }
+
+    /// The most bytes any one lease of this buffer ever held at once.
+    ///
+    /// Across every lease, never cleared. A buffer whose high-water stops moving after the first
+    /// frame is a buffer that is being reused; one that climbs is one that is being re-allocated
+    /// under a different name.
+    #[must_use]
+    pub fn high_water(&self) -> usize {
+        self.high_water
+    }
+}
+
+/// A span table for one lease, of the width a fact map is bounded to.
+///
+/// Sized by [`MAX_KEYS`], because a resolved pointer table and a fact map are the same shape of
+/// thing — a plane's declared keys — and a second, differently-sized ceiling for the same
+/// declaration is two numbers that have to agree and nothing making them.
+#[must_use]
+pub fn span_slab<'u>() -> [(&'u str, Span); MAX_KEYS] {
+    [("", Span::new(0, 0)); MAX_KEYS]
+}
+
+/// The bump cursor over one lease of an [`ArenaBuf`].
+#[derive(Debug)]
+struct Cursor<'u> {
+    bytes: &'u mut [u8],
+    spans: &'u mut [(&'u str, Span)],
+    used: usize,
+    high_water: &'u mut usize,
+}
+
+impl<'u> Cursor<'u> {
+    /// Split `len` bytes off the front of what is left, or say how much was left.
+    fn take(&mut self, len: usize) -> Result<&'u mut [u8], ArenaBudget> {
+        let free = std::mem::take(&mut self.bytes);
+        if len > free.len() {
+            let remaining = free.len();
+            self.bytes = free;
+            return Err(ArenaBudget {
+                wanted: len,
+                remaining,
             });
         }
-        let span = Span::new(self.used, self.used + len);
-        self.buf[span.start..span.end].fill(0);
+        let (head, tail) = free.split_at_mut(len);
+        self.bytes = tail;
         self.used += len;
-        Ok(span)
+        if self.used > *self.high_water {
+            *self.high_water = self.used;
+        }
+        Ok(head)
+    }
+}
+
+/// The per-unit arena, as the one resource handle a plugin is given.
+///
+/// A bump cursor over one lease of an [`ArenaBuf`]. There is no free: the whole 4 KiB comes back
+/// at once when the lease ends, which is the frame boundary on a relayed unit and the unit's end
+/// otherwise.
+#[derive(Debug)]
+pub struct UnitArena<'u> {
+    cursor: std::sync::Mutex<Cursor<'u>>,
+}
+
+impl<'u> UnitArena<'u> {
+    /// How many bytes this lease has taken so far.
+    #[must_use]
+    pub fn used(&self) -> usize {
+        self.locked().used
     }
 
-    /// Copy `bytes` into the arena and say where they landed.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Span, ArenaFull> {
-        let span = self.take(bytes.len())?;
-        self.buf[span.start..span.end].copy_from_slice(bytes);
-        Ok(span)
+    fn locked(&self) -> std::sync::MutexGuard<'_, Cursor<'u>> {
+        // A cursor is `Copy` scalars and three borrows: nothing it does can unwind, so the only
+        // way past this is a panic somewhere else while the lock is held, and there is no
+        // somewhere else — every body below is straight-line and total.
+        self.cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl<'u> Arena for UnitArena<'u> {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+        let dst = self.locked().take(src.len())?;
+        dst.copy_from_slice(src);
+        Ok(ArenaBytes::new(dst))
     }
 
-    /// Read back what is at a span.
-    pub fn read(&self, span: Span) -> &[u8] {
-        &self.buf[span.start..span.end.min(ARENA_BYTES)]
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+        let dst = self.locked().take(src.len())?;
+        dst.copy_from_slice(src.as_bytes());
+        // Total: `dst` is the bytes of `src`, copied on the line above and read by nothing in
+        // between, so the only string this can be is the one that went in.
+        Ok(std::str::from_utf8(dst).unwrap_or(""))
     }
 
-    /// Write into a span the arena handed out.
-    pub fn write(&mut self, span: Span, bytes: &[u8]) -> Result<(), ArenaFull> {
-        if bytes.len() > span.len() {
-            return Err(ArenaFull {
-                requested: bytes.len(),
-                remaining: span.len(),
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        let mut cursor = self.locked();
+        let free = std::mem::take(&mut cursor.spans);
+        if src.len() > free.len() {
+            let remaining = free.len();
+            cursor.spans = free;
+            return Err(ArenaBudget {
+                wanted: src.len(),
+                remaining,
             });
         }
-        self.buf[span.start..span.start + bytes.len()].copy_from_slice(bytes);
-        Ok(())
+        let (head, tail) = free.split_at_mut(src.len());
+        cursor.spans = tail;
+        for (slot, (pointer, span)) in head.iter_mut().zip(src) {
+            // The KEY is copied in, and that is not an optimisation missed. A slot in this table
+            // is typed at the lease's lifetime; the pointer the caller hands over is borrowed at
+            // its own, which is shorter, so storing it would be storing a reference that outlives
+            // what it points at. A declared pointer is a handful of bytes and the table is bounded
+            // at MAX_KEYS of them.
+            let copied = cursor.take(pointer.len())?;
+            copied.copy_from_slice(pointer.as_bytes());
+            *slot = (std::str::from_utf8(copied).unwrap_or(""), *span);
+        }
+        Ok(head)
+    }
+
+    fn remaining(&self) -> usize {
+        self.locked().bytes.len()
     }
 }
 
