@@ -105,8 +105,8 @@ pub(crate) const RELAY_STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 /// of the resolution moved with it — a re-export cannot drift from the thing it re-exports, which is
 /// the whole reason the legacy copy was not left behind as a "second opinion".
 ///
-/// Why it had to move at all: the composition root binds a resolver into the A2A plane's kernel
-/// bindings, and this crate is the LEGACY plugin. A root reaching in here for the one production
+/// Why it had to move at all: the composition root binds a resolver into the kernel bindings it
+/// assembles, and this crate is a retiring plugin. A root reaching in here for the one production
 /// resolver would be the kind-isolation rule broken by the seam the guard exists to hold.
 pub(crate) use busbar_substrate::net_guard::SystemResolver as TokioResolver;
 

@@ -68,6 +68,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::root::registrations::NodeStore;
+
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
@@ -217,7 +219,7 @@ pub struct LegKey<'a> {
 /// one. There is no second path: a plane holds no store, and a unit knows no schema, so the mapping
 /// belongs exactly here and nowhere else.
 pub struct RecordLegs {
-    store: Arc<dyn busbar_api::Store>,
+    store: NodeStore,
 }
 
 impl std::fmt::Debug for RecordLegs {
@@ -233,7 +235,7 @@ impl RecordLegs {
     /// floor admits. A deployment that named none gets the in-tree memory store, which is the
     /// shipped default and the reason a zero-configuration boot has somewhere to put a task.
     #[must_use]
-    pub fn new(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn new(store: NodeStore) -> Self {
         RecordLegs { store }
     }
 

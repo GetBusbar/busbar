@@ -69,6 +69,7 @@ use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 use crate::root::durability::Durability;
 use crate::root::kernel::auth_bindings::AuthBindings;
 use crate::root::policy::{MeterPolicyHandle, ScopePolicy};
+use crate::root::registrations::NodeStore;
 use crate::root::registrations::{KindRules, Kinds, NetSeam, Pools};
 use crate::root::units_a2a::{A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs};
 
@@ -186,8 +187,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     // ── the request's own coordinates ────────────────────────────────────────────────────────────
     (
         "pool",
-        "legacy `crates/busbar-a2a/src/a2a/receive.rs::PLANE_POOL` = \
-              `busbar_a2a_codec::CONFIG_SECTION`",
+        "the receiving path's own `PLANE_POOL`, which is the A2A codec kind's \
+              declared config section",
     ),
     (
         "now",
@@ -220,14 +221,15 @@ pub const POOL_PREFIX_AGENT: &str = "agent:";
 
 /// The pool one unit of this plane is admitted and metered against.
 ///
-/// NOT a name this file chose. The legacy receiving path spells it once, as
-/// `const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;`, and every admission and every meter
-/// on that path names it.
+/// NOT a name this file chose. The receiving path spells it once, as its own `PLANE_POOL` bound to
+/// the codec kind's declared config section, and every admission and every meter on that path names
+/// it.
 ///
-/// **A seam to the codec crate, restated rather than depended on.** The root does not carry a Cargo
-/// edge to `busbar-a2a-codec` on this path — the MCP sibling states its own pool prefix the same way
-/// and for the same reason — so the value is written here and PINNED BY A TEST that reads that
-/// crate's own source. A copy that is checked is not a second opinion; a copy that is not is how one
+/// **A seam to the codec kind, restated rather than depended on.** A root does not carry a Cargo
+/// edge to a codec crate on this path — the MCP sibling states its own pool prefix the same way and
+/// for the same reason — so the value is written here and PINNED BY A TOOLING BATTERY that reads
+/// both halves' own source (`xtask/tests/a2a_plane_pool.rs`), which is where a cell that must name
+/// both halves lives. A copy that is checked is not a second opinion; a copy that is not is how one
 /// node ends up admitting against one pool and metering against another.
 pub const PLANE_POOL: &str = "agents";
 
@@ -380,7 +382,7 @@ pub struct A2aLegSources<'k> {
     /// What the card charges for a byte of this plane's priced document, in nano-units.
     pub bytes_nanos: Option<u64>,
     /// The node's one store, for this plane's durable records.
-    pub store: Option<Arc<dyn busbar_api::Store>>,
+    pub store: Option<NodeStore>,
     /// What the usage unit folds against.
     pub meter_policy: Option<MeterPolicyHandle>,
     /// What the scope unit reads at approve.
