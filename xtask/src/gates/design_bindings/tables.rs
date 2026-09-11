@@ -306,7 +306,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "detect_real_14x_top_level_and_on_exhausted_markers", "1.4.x markers detected"),
     ]),
     ("PB-51", &[
-        ("test", "otlp_level_floors_at_debug_and_never_trails_stderr", "the OTLP level floors at DEBUG independently"),
+        ("test", "trace_export_level_floors_at_debug_and_never_trails_stderr", "the OTLP trace-export level floors at DEBUG independently of the stderr level"),
     ]),
     ("PB-52", &[
         ("test", "worker_threads_from_env_parses_valid_rejects_invalid", "BUSBAR_WORKER_THREADS: 0 warns and is ignored"),
@@ -317,7 +317,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "validate_honors_deprecated_busbar_config_overlay_env_var", "the env fallback on the CLI path"),
     ]),
     ("PB-53", &[
-        ("test", "metrics_route_declared_only_when_configured", "/metrics is declared only with export.prometheus"),
+        ("test", "the_prometheus_sink_declares_the_well_known_scrape_path_only_when_configured", "/metrics is declared only with export.prometheus"),
+        ("test", "the_five_undescribed_counters_carry_no_help_and_the_described_ones_do", "the five counters with no describe_* render no # HELP line"),
     ]),
     ("PB-54", &[
         ("lint", "xtask/src/gates/tracing.rs", "every instrument span declares an explicit level"),

@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 100,
-  "unproven": 3,
+  "mapped": 102,
+  "unproven": 1,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 11,
    "lint": 5,
-   "oracle-cell": 57,
+   "oracle-cell": 58,
    "oracle-family": 5,
-   "test": 451
+   "test": 454
   }
  },
  "owner_decisions": {
@@ -2551,7 +2551,7 @@
    "surface": "`RUST_LOG`",
    "binding": "parsed as a bare `tracing::Level` only (no `EnvFilter`): `busbar=debug` falls back to INFO silently; the OTLP level floors at DEBUG independently",
    "inventory": "ops",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -2562,14 +2562,14 @@
     },
     {
      "kind": "test",
-     "ref": "otlp_level_floors_at_debug_and_never_trails_stderr",
-     "proves": "the OTLP level floors at DEBUG independently",
+     "ref": "trace_export_level_floors_at_debug_and_never_trails_stderr",
+     "proves": "the OTLP trace-export level floors at DEBUG independently of the stderr level",
      "source": "curated",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: test:otlp_level_floors_at_debug_and_never_trails_stderr"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:cli|env|RUST_LOG-crate-filter, test:trace_export_level_floors_at_debug_and_never_trails_stderr"
   },
   {
    "id": "PB-52",
@@ -2629,18 +2629,25 @@
    "surface": "metric absences and gates",
    "binding": "the five counters with no `describe_*` (no `# HELP`); the recorder installed only with `export.prometheus`; `busbar_billing_truncated_total` pre-registered `.absolute(0)`; the two retired names never reappear",
    "inventory": "ops",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "metrics_route_declared_only_when_configured",
+     "ref": "the_prometheus_sink_declares_the_well_known_scrape_path_only_when_configured",
      "proves": "/metrics is declared only with export.prometheus",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "the_five_undescribed_counters_carry_no_help_and_the_described_ones_do",
+     "proves": "the five counters with no describe_* render no # HELP line",
      "source": "curated",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN: nothing this binding cites compares anything today -- test:metrics_route_declared_only_when_configured"
+   "verdict": "PASS",
+   "verdict_detail": "test:the_prometheus_sink_declares_the_well_known_scrape_path_only_when_configured, test:the_five_undescribed_counters_carry_no_help_and_the_described_ones_do"
   },
   {
    "id": "PB-54",

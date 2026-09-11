@@ -1144,3 +1144,62 @@ fn only_gauges_are_expired() {
         "an idle histogram must survive, got:\n{after}"
     );
 }
+
+/// THE FIVE COUNTERS THAT CARRY NO `# HELP`, and the one that is pre-registered at zero.
+///
+/// `describe()` registers help text for every series it names, and five counters are deliberately
+/// absent from it — the parity claim is that 1.6.0's exposition says about them exactly what 1.5.5's
+/// said, which is nothing. An added `describe_*` is an ADDITIVE change to a scrape an operator's
+/// dashboards read, so it is a thing to notice rather than a thing to drift into.
+///
+/// Every one of the five is TOUCHED first: an untouched counter renders nothing at all, and a check
+/// that asserts "no HELP line" over a series the exporter never emitted has compared nothing. The
+/// described counter is asserted in the same breath, so a `describe()` that stopped registering
+/// anything at all cannot read as five silent successes.
+#[test]
+fn the_five_undescribed_counters_carry_no_help_and_the_described_ones_do() {
+    init();
+    // The `gate` label is this counter's only label, and the value is irrelevant: what is measured
+    // is what the exposition says ABOUT the series, not what it counts.
+    metrics::counter!(ADMISSION_DENIED_TOTAL, "gate" => "help_probe").increment(0);
+    for name in [
+        WEBHOOK_LOGS_DROPPED_TOTAL,
+        FILE_LOGS_DROPPED_TOTAL,
+        BILLING_TRUNCATED_TOTAL,
+        // The tap cap's counter is spelled where the cap is enforced, on the spine, and that
+        // spelling is private to it; the NAME is what the exposition carries and what is asserted.
+        "busbar_tap_notifications_dropped_total",
+    ] {
+        metrics::counter!(name).increment(0);
+    }
+    metrics::counter!(
+        REQUESTS_TOTAL,
+        "ingress_protocol" => "help_probe",
+        "pool" => "help_probe",
+        "outcome" => "help_probe"
+    )
+    .increment(0);
+
+    let out = render();
+    for name in [
+        WEBHOOK_LOGS_DROPPED_TOTAL,
+        FILE_LOGS_DROPPED_TOTAL,
+        ADMISSION_DENIED_TOTAL,
+        BILLING_TRUNCATED_TOTAL,
+        "busbar_tap_notifications_dropped_total",
+    ] {
+        assert!(
+            out.contains(&format!("{name}{{")) || out.contains(&format!("\n{name} ")),
+            "the series must be in the exposition for its HELP line's absence to mean anything; \
+             got:\n{out}"
+        );
+        assert!(
+            !out.contains(&format!("# HELP {name}")),
+            "{name} carries no describe_* and must render no HELP line; got:\n{out}"
+        );
+    }
+    assert!(
+        out.contains("# HELP busbar_requests_total"),
+        "the described counters still carry their help text; got:\n{out}"
+    );
+}
