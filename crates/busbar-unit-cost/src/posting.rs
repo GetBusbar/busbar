@@ -345,15 +345,19 @@ pub fn price_at_card(
     //
     // A currency the card names no schedule in charges NOTHING for the counts, and the lines say
     // so: a zero that was decided is written down, never left out.
-    let schedule = card.fee_schedule(currency);
-    let charged = schedule.map(|s| {
-        s.charge_minor(posting.entry_count, posting.transaction_count, &|class| {
-            posting
-                .quantities
-                .iter()
-                .find(|q| q.class == class)
-                .map_or(0, |q| q.amount)
-        })
+    let charged = card.fee_terms(currency).map(|terms| {
+        crate::schedule::charge_minor(
+            terms,
+            posting.entry_count,
+            posting.transaction_count,
+            &|class| {
+                posting
+                    .quantities
+                    .iter()
+                    .find(|q| q.class == class)
+                    .map_or(0, |q| q.amount)
+            },
+        )
     });
     let minor_to_nanos = |minor: i128| -> u128 {
         u128::try_from(minor.max(0))

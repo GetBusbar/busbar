@@ -30,6 +30,7 @@ busbar-api = { path = "../api" }
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
+busbar-contract = { path = "../busbar-contract" }
 busbar-substrate = { path = "../busbar-substrate" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 # THE CHAIN WALK, read rather than restated. The retiring engine's cost model carried its own copy of

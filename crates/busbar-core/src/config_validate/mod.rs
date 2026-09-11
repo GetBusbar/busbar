@@ -1629,11 +1629,11 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                         unit.dimension
                     ));
                 }
-                if unit.cents < 0 {
+                if unit.amount < 0 {
                     errors.push(format!(
                         "tariff.{scope}.transaction_fee.per_units[{}] is {} (must be >= 0); a \
                          negative rate would credit the caller for consuming",
-                        unit.dimension, unit.cents
+                        unit.dimension, unit.amount
                     ));
                 }
                 if !seen.insert(unit.dimension.as_str()) {

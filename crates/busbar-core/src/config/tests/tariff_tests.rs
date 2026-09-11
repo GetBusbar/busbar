@@ -226,20 +226,17 @@ fn an_unset_amount_inherits_the_previous_releases_own_fee() {
     let empty = TariffCfg::default();
     for fee in [0i64, 3, 250] {
         let a = empty.amounts("llm", None, None, fee);
-        assert_eq!(
-            a.entry_cents, fee,
-            "the door inherits the one configured fee"
-        );
-        assert_eq!(a.transaction_flat_cents, fee);
+        assert_eq!(a.entry, fee, "the door inherits the one configured fee");
+        assert_eq!(a.transaction, fee);
         assert!(
             a.per_units.is_empty(),
             "nothing prices a dimension but the card"
         );
-        assert_eq!(a.minimum_cents, 0);
-        assert_eq!(a.maximum_cents, None, "uncapped is not a cap of zero");
+        assert_eq!(a.minimum, 0);
+        assert_eq!(a.maximum, None, "uncapped is not a cap of zero");
         assert_eq!(
             a.rounding,
-            super::super::tariff::RoundingCfg::Bankers,
+            busbar_contract::tariff::Rounding::Bankers,
             "the teller's rule, declared"
         );
     }
@@ -277,27 +274,24 @@ tier:
     ));
     // the default scope answers what it names and inherits the fee for what it does not
     let d = section.amounts("a-plane-nothing-names", None, None, 250);
-    assert_eq!((d.transaction_flat_cents, d.entry_cents), (7, 250));
-    assert_eq!((d.minimum_cents, d.maximum_cents), (2, None));
+    assert_eq!((d.transaction, d.entry), (7, 250));
+    assert_eq!((d.minimum, d.maximum), (2, None));
 
     // the plane scope adds the door's amount and keeps the default's flat and minimum
     let p = section.amounts(scoped, None, None, 250);
-    assert_eq!((p.entry_cents, p.transaction_flat_cents), (11, 7));
-    assert_eq!(
-        p.minimum_cents, 2,
-        "an unset field inherits, it does not reset"
-    );
+    assert_eq!((p.entry, p.transaction), (11, 7));
+    assert_eq!(p.minimum, 2, "an unset field inherits, it does not reset");
 
     // the pool caps, and changes nothing else
     let pool = section.amounts(scoped, Some("pool-a"), None, 250);
-    assert_eq!(pool.maximum_cents, Some(40));
-    assert_eq!((pool.entry_cents, pool.transaction_flat_cents), (11, 7));
+    assert_eq!(pool.maximum, Some(40));
+    assert_eq!((pool.entry, pool.transaction), (11, 7));
 
     // the tier declares the rounding, and changes nothing else
     let t = section.amounts(scoped, Some("pool-a"), Some("gold"), 250);
-    assert_eq!(t.rounding, super::super::tariff::RoundingCfg::Up);
-    assert_eq!(t.maximum_cents, Some(40));
-    assert_eq!((t.entry_cents, t.transaction_flat_cents), (11, 7));
+    assert_eq!(t.rounding, busbar_contract::tariff::Rounding::Up);
+    assert_eq!(t.maximum, Some(40));
+    assert_eq!((t.entry, t.transaction), (11, 7));
 }
 
 /// **PER N UNITS OF A DIMENSION A PLANE DECLARED**, and the tariff names no dimension of its own.
@@ -317,7 +311,7 @@ default:
     let read: Vec<(&str, u64, i64)> = a
         .per_units
         .iter()
-        .map(|u| (u.dimension.as_str(), u.per, u.cents))
+        .map(|u| (u.dimension.as_str(), u.per, u.amount))
         .collect();
     assert_eq!(read, vec![("tool_calls", 1, 2), ("bytes", 1024, 1)]);
 }
@@ -387,6 +381,30 @@ fn an_unknown_key_is_refused_at_every_level_of_the_section() {
         assert!(
             serde_yaml::from_str::<TariffCfg>(fragment).is_err(),
             "the grammar accepted a key it does not name: {fragment}"
+        );
+    }
+}
+
+/// **THE SHIPPED DEFAULT CHARGES THE PREVIOUS RELEASE'S FIGURE, AT EVERY FIGURE.**
+///
+/// The compatibility claim, driven through the REAL resolver rather than restated: a deployment
+/// with no `tariff:` block resolves to terms that are the previous release's terms, whatever that
+/// deployment configured as its one fee. This is the cell the byte-identity argument in
+/// `crates/busbar/tests/tariff_default_is_1_5_5.rs` stands on — that file proves the two sets of
+/// terms charge the same CENTS over the whole evidence cube and over every recorded money cell, and
+/// this one proves the two sets of terms are the same terms.
+///
+/// RED ON A ONE-CHARACTER BREAK: replacing either amount's `unwrap_or(inherited_fee)` with
+/// `unwrap_or(0)` — the whole of the inheritance rule — fails this at the first non-zero figure.
+#[test]
+fn the_shipped_default_resolves_to_the_previous_releases_own_terms() {
+    use busbar_contract::tariff::FeeTerms;
+    for fee in [0i64, 1, 3, 250] {
+        assert_eq!(
+            TariffCfg::default().amounts("", None, None, fee),
+            FeeTerms::flat(fee),
+            "a node that configured no tariff is charged what it was charged before, at a fee of \
+             {fee}"
         );
     }
 }

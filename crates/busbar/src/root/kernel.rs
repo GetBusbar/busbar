@@ -355,17 +355,33 @@ impl RootTariff {
 /// plugin of a kind is charged identically to every other of that kind because there is nowhere in
 /// this path for them to differ.
 ///
-/// **THE POOL AND THE TIER ARE FACTS ABOUT THE UNIT, NOT ABOUT THE KEY.** They are passed in by the
-/// leg rather than read off `KeyFacts`, and `KeyFacts` does not carry them, because a key is a
-/// PRINCIPAL: its id, its grants, its expiry. Which pool a unit reached is decided by ROUTING, after
-/// the key was verified and possibly differently for two requests presented with the same key; which
-/// tier it was admitted under is a property of the CHAIN it was admitted through, which the ledger's
-/// own archive already says in as many words beside the sealed history. Putting either on the key
-/// would make a per-request fact look like a per-principal one, and the first request that was
-/// routed away from its requested pool would be billed under a schedule it never ran on.
+/// **THE POOL IS A FACT ABOUT THE UNIT, NOT ABOUT THE KEY.** It is passed in by the leg rather than
+/// read off `KeyFacts`, and `KeyFacts` must not carry it: a key is a PRINCIPAL — its id, its grants,
+/// its expiry — and which pool a unit reached is decided by ROUTING, after the key was verified and
+/// possibly differently for two requests presented with the same key. On the key it would make a
+/// per-request fact look like a per-principal one, and the first request routed away from the pool
+/// it asked for would be billed under a schedule it never ran on.
 ///
-/// `None` is not a scope that matched nothing — it is a leg that does not know, and it resolves to
-/// the next scope out, which is exactly what an unnamed pool would have done.
+/// **THE TIER IS A FACT THIS TREE HAS AND THIS SEAM CANNOT REACH, AND HERE IS EXACTLY WHICH ONE.**
+/// The tier scope is keyed by a GROUP name (config validation checks it against `groups:`), and the
+/// group that applies is the innermost one of the chain a unit was admitted through —
+/// `busbar_unit_admission::ChainGroup::name`, one tier per chain by the chain constructor's own
+/// refusal. That group is MINTED on the virtual key, as `group`, by the directory that issues it
+/// (`role_bindings.<module>.<role>.group` for a self-issued key, the issued record's own `group`
+/// for a minted one), and the single production reader of it is the cost model's chain resolution,
+/// which asks `chain_for(&key.id, key.group)`.
+///
+/// It does not reach this seam for a stated reason rather than an accidental one. `KeyFacts` — the
+/// contract face every leg reads a verified key through — deliberately omits it: *"Its group, pools
+/// and labels are the directory's business: a value carried through here would be a value a step
+/// could act on, and each step decides one thing."* So the only name a leg could reach the group by
+/// today is the retiring engine's own key record, and this branch may not add a reach into that
+/// engine. Two lines can pay it, and both are somebody's to sign rather than a slot's: the cost
+/// model leaving the retiring engine (so the root holds the `ChainCache` and asks it directly), or
+/// the group joining the contract's key face as a reviewed change to the rule quoted above.
+///
+/// `None` is therefore never "a scope that matched nothing". It is a leg that does not know, and it
+/// resolves to the next scope out, which is exactly what an unnamed pool or group would have done.
 #[must_use]
 pub fn tariff_cell(
     plane: &str,
@@ -425,7 +441,7 @@ pub(crate) fn default_fee(
 /// drift.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    schedule: &busbar_substrate::rate_apply::RawSchedule,
+    terms: &busbar_contract::tariff::FeeTerms,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,
 ) -> busbar_unit_cost::RateCard {
@@ -444,37 +460,11 @@ pub(crate) fn card_from_config<'r>(
             )
         })
     });
-    // The deployment's AMOUNTS, lifted the same way and for the same reason: the raw view's
-    // numbers copied across a crate boundary with nothing computed on the way. What they MEAN — a
-    // count times an amount, the floor, the cap, which way a fraction goes — is decided where the
-    // card lives, at the one pricing site, and this relay could not disagree with it because there
-    // is no arithmetic here to disagree with.
-    busbar_unit_cost::RateCard::from_config_in(
-        currency,
-        lanes,
-        busbar_unit_cost::FeeSchedule {
-            entry_minor: schedule.entry,
-            transaction_minor: schedule.transaction,
-            per_units: schedule
-                .per_units
-                .iter()
-                .map(|(class, per, minor)| busbar_unit_cost::PerUnitFee {
-                    class: class.clone(),
-                    per: *per,
-                    minor: *minor,
-                })
-                .collect(),
-            minimum_minor: schedule.minimum,
-            maximum_minor: schedule.maximum,
-            // The rule, as WHAT IT DOES to a remainder rather than as which rule it is — so the
-            // root learns no spelling from the retiring crate that it would have to unlearn.
-            rounding: match schedule.rounding_choice() {
-                (true, _) => busbar_unit_cost::Rounding::Up,
-                (_, true) => busbar_unit_cost::Rounding::Down,
-                (false, false) => busbar_unit_cost::Rounding::Bankers,
-            },
-        },
-    )
+    // THE TERMS CROSS UNTOUCHED. What a deployment agreed to charge is contract data, so there is
+    // nothing to lift and nothing here that could disagree with the pricing site about it: the card
+    // is handed the same record the engine resolved. What the figures MEAN — a count times an
+    // amount, the floor, the cap, which way a fraction goes — is decided where the card lives.
+    busbar_unit_cost::RateCard::from_config_in(currency, lanes, terms.clone())
 }
 
 /// The root, answering the engine's rate-apply seam.
@@ -495,7 +485,7 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
         ROOT_CARD.apply(
             card_from_config(
                 rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-                &rates.schedule,
+                &rates.terms,
                 rates.present,
                 node_currency(),
             ),

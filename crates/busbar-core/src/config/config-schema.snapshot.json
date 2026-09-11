@@ -1269,25 +1269,6 @@
       "kind": "struct",
       "transparent": false
     },
-    "PerUnitFeeCfg": {
-      "deny_unknown_fields": true,
-      "fields": {
-        "cents": {
-          "optional": false,
-          "type": "i64"
-        },
-        "dimension": {
-          "optional": false,
-          "type": "String"
-        },
-        "per": {
-          "optional": false,
-          "type": "u64"
-        }
-      },
-      "kind": "struct",
-      "transparent": false
-    },
     "PinMechanism": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1988,16 +1969,6 @@
       "kind": "struct",
       "transparent": false
     },
-    "RoundingCfg": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "bankers",
-        "down",
-        "up"
-      ]
-    },
     "RoutingCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2184,7 +2155,7 @@
         },
         "rounding": {
           "optional": true,
-          "type": "RoundingCfg"
+          "type": "Rounding"
         },
         "transaction_fee": {
           "optional": true,
@@ -2295,7 +2266,7 @@
         },
         "per_units": {
           "optional": true,
-          "type": "Vec<PerUnitFeeCfg>"
+          "type": "Vec<PerUnitTerm>"
         }
       },
       "kind": "struct",

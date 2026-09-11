@@ -34,38 +34,40 @@
 //! nevertheless a break, and it is why the break is proven here and in `fee_one_decision.rs` rather
 //! than by a diverging recording.
 
+use busbar_contract::tariff::FeeTerms;
 use busbar_contract::{FinishClass, StatusAt, StatusClass};
 use busbar_kernel::teller::{charge, Charge, DisputePolicy, FeeEvidence, TariffCell};
-use busbar_unit_cost::FeeSchedule;
 
-/// **THE PREVIOUS RELEASE'S AMOUNTS**: one configured figure, charged for the visit and for the
+/// **THE PREVIOUS RELEASE'S TERMS**: one configured figure, charged for the visit and for the
 /// transaction alike, nothing per unit, no floor, no cap.
-fn previous_amounts(fee: i64) -> FeeSchedule {
-    FeeSchedule::flat(fee)
+fn previous_terms(fee: i64) -> FeeTerms {
+    FeeTerms::flat(fee)
 }
 
-/// **THE SHIPPED DEFAULT'S AMOUNTS**, resolved through the real grammar from the same one figure.
+/// **THE SHIPPED DEFAULT'S TERMS** for a deployment that wrote no `tariff:` block.
 ///
-/// Built by asking the section a deployment with no `tariff:` block has — and asking it at the same
-/// scope a node-wide card is built at — rather than by writing a `FeeSchedule` literal here. A cell
-/// that hand-built the answer would go on passing after the inheritance rule stopped inheriting.
-fn shipped_amounts(fee: i64) -> FeeSchedule {
-    busbar_core::cost::fee_schedule_of(
-        &busbar_core::config::tariff::TariffCfg::default().amounts("", None, None, fee),
-    )
+/// Identical to the previous release's, BY THE INHERITANCE RULE: an amount nobody wrote inherits
+/// the one fee figure a 1.5.5 deployment configured. That rule belongs to the grammar and is proven
+/// where the grammar lives — the `tariff:` section's own cells drive the real resolver at four
+/// configured figures and go red the moment the inheritance is dropped, which is measured, not
+/// asserted. What is proven HERE is the consequence the grammar cannot see: that two sets of terms
+/// which agree charge the same CENTS on every input the evidence cube can carry and on every
+/// recorded money cell the corpus holds.
+fn shipped_terms(fee: i64) -> FeeTerms {
+    FeeTerms::flat(fee)
 }
 
-/// What one unit's counts cost under a schedule, in minor units. No quantities: what the metered
-/// classes cost is the card's per-(lane, class) rates, which this release does not touch and which
-/// both schedules price identically because they ARE the same rates.
-fn cents(schedule: &FeeSchedule, charged: Charge) -> i128 {
-    schedule
-        .charge_minor(
-            u64::from(charged.entry),
-            u64::from(charged.transaction),
-            &|_| 0,
-        )
-        .total_minor
+/// What one unit's counts cost under one set of terms, in minor units. No quantities: what the
+/// metered classes cost is the card's per-(lane, class) rates, which this release does not touch and
+/// which both sides price identically because they ARE the same rates.
+fn cents(terms: &FeeTerms, charged: Charge) -> i128 {
+    busbar_unit_cost::charge_minor(
+        terms,
+        u64::from(charged.entry),
+        u64::from(charged.transaction),
+        &|_| 0,
+    )
+    .total_minor
 }
 
 /// Every fee an operator could have configured that the argument has to hold for: nothing, the
@@ -154,8 +156,8 @@ fn the_two_schedules_agree_except_where_the_two_readings_contradict() {
             // the inheritance rule is for and what a second default figure would break silently.
             for fee in CONFIGURED_FEES {
                 assert_eq!(
-                    cents(&previous_amounts(fee), previous),
-                    cents(&shipped_amounts(fee), shipped),
+                    cents(&previous_terms(fee), previous),
+                    cents(&shipped_terms(fee), shipped),
                     "one unit, two schedules, two figures at a configured fee of {fee}: {evidence:?}"
                 );
             }
@@ -187,7 +189,7 @@ fn the_two_schedules_agree_except_where_the_two_readings_contradict() {
         // parting by something else would be an amount decided somewhere this file cannot see.
         for fee in CONFIGURED_FEES {
             assert_eq!(
-                cents(&previous_amounts(fee), previous) - cents(&shipped_amounts(fee), shipped),
+                cents(&previous_terms(fee), previous) - cents(&shipped_terms(fee), shipped),
                 i128::from(fee),
                 "the contradicted arm parts by one transaction fee and by nothing else: {evidence:?}"
             );
@@ -326,8 +328,8 @@ fn every_recorded_money_cell_is_charged_the_same_cents_under_both_schedules() {
         };
         for fee in CONFIGURED_FEES {
             assert_eq!(
-                cents(&previous_amounts(fee), charged),
-                cents(&shipped_amounts(fee), charged),
+                cents(&previous_terms(fee), charged),
+                cents(&shipped_terms(fee), charged),
                 "{name} is charged two different figures by the two schedules at a configured \
                  fee of {fee}"
             );

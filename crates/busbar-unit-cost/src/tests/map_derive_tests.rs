@@ -344,8 +344,7 @@ fn flat_fee_saturates_and_is_gated_by_the_flag() {
 fn negative_per_request_fee_clamps_to_zero() {
     let c = absent(-5);
     assert_eq!(
-        c.fee_schedule(CurrencyCode::USD)
-            .map_or(0, |s| s.transaction_minor),
+        c.fee_terms(CurrencyCode::USD).map_or(0, |t| t.transaction),
         0
     );
     assert_eq!(

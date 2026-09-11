@@ -1344,17 +1344,17 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "176"
+count = "182"
 
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "97"
+count = "94"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1891"
+count = "1895"
 
 [[cell]]
 crate = "busbar"
@@ -1384,7 +1384,7 @@ count = "949"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1207"
+count = "1199"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1679,7 +1679,7 @@ count = "2117"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "51"
+count = "39"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3629,6 +3629,16 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 3.1 — the contract re-exports the closed grammar and the transport face."
 why     = "busbar-contract names busbar-grammar: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-core names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the edge the tariff's amount half needed and the ONLY direction that edge may run: the fee terms a deployment writes are contract DATA, so the engine that parses them names the face rather than declaring a second shape of its own — which is what kept the frozen substrate at net -1 on that landing and the root's reach into the retiring crates unmoved. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class, and this is the direction the retirement RUNS — core's config surface is scheduled to become contract-level data (CORE-HOMES, the `config/` row). What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-core"

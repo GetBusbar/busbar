@@ -435,8 +435,8 @@ fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     // fee is the whole of what a request bills.
     assert_eq!(
         unit.card()
-            .fee_schedule(CurrencyCode::USD)
-            .map_or(0, |s| s.transaction_minor),
+            .fee_terms(CurrencyCode::USD)
+            .map_or(0, |t| t.transaction),
         fee.max(0),
         "the clamped fee diverged"
     );

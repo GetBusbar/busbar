@@ -223,8 +223,7 @@ fn a_negative_fee_can_never_credit_a_bucket() {
     let c = RateCard::absent(-5);
     let l = lines(&[]);
     assert_eq!(
-        c.fee_schedule(CurrencyCode::USD)
-            .map_or(0, |s| s.transaction_minor),
+        c.fee_terms(CurrencyCode::USD).map_or(0, |t| t.transaction),
         0
     );
     assert_eq!(

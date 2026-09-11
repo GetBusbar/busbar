@@ -88,7 +88,11 @@ pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT, RESERVED_CLASSES,
 };
-pub use schedule::{FeeSchedule, PerUnitFee, Rounding, ScheduleCharge, BOUND_CLASS, ENTRY_CLASS};
+// The fee TERMS are contract data: declared there, carried by the rate-apply seam, applied here.
+// Re-exported rather than redeclared, exactly as the group vocabulary above is, so a caller that
+// holds a card names one crate for the card AND for what it charges.
+pub use busbar_contract::tariff::{FeeTerms, PerUnitTerm, Rounding};
+pub use schedule::{charge_minor, ScheduleCharge, BOUND_CLASS, ENTRY_CLASS};
 
 /// Nano-units in one cent. A cent is a hundredth of one United States dollar, and a nano-unit is a
 /// billionth of one, so ten million nano-units make a cent.

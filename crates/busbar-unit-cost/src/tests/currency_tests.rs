@@ -85,7 +85,7 @@ fn a_cell_prices_in_each_currency_natively_with_no_cross_rate() {
     let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
     let mut card = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 2.0)], 3);
     card.set_rate(LaneClass::new("m", INPUT), jpy, 300.0);
-    card.set_schedule(jpy, crate::FeeSchedule::flat(7));
+    card.set_terms(jpy, busbar_contract::tariff::FeeTerms::flat(7));
 
     let report = usage(&[(INPUT, 1_000)]);
     let in_usd = priced_in(&card, "m", &report, 1, STANDARD_TIER_BP, CurrencyCode::USD)

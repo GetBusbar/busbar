@@ -216,8 +216,8 @@ fn minor_of_derived(
         // charging the visit's own fee here would be inventing a count. The entry fee reaches a
         // bucket through the postings, at the lookup, where the count is a fact.
         let fee = card
-            .fee_schedule(currency)
-            .map_or(0, |s| s.transaction_minor)
+            .fee_terms(currency)
+            .map_or(0, |t| t.transaction)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         minor = minor.saturating_add(fee);
     }
@@ -238,8 +238,8 @@ fn micros_of_derived(
         let micros_per_minor =
             i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
         let fee_micros = card
-            .fee_schedule(currency)
-            .map_or(0, |s| s.transaction_minor)
+            .fee_terms(currency)
+            .map_or(0, |t| t.transaction)
             .saturating_mul(micros_per_minor)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         micros.saturating_add(fee_micros)

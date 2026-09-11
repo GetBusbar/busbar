@@ -593,16 +593,16 @@ pub fn build_app_from_config(
     // a card is the NODE's, no registry key is ever empty, so the lookup misses into the default
     // scope — which is the only scope a node-wide card can be built from, and the reason an amount
     // written at any narrower one is refused at boot rather than silently unapplied.
-    let schedule = cfg
+    let terms = cfg
         .tariff
         .as_ref()
         .map(|t| t.amounts("", None, None, cfg.per_request_fee))
         .unwrap_or_else(|| {
             crate::config::tariff::TariffCfg::default().amounts("", None, None, cfg.per_request_fee)
         });
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts_with_schedule(
+    let cost = Arc::new(crate::cost::CostModel::resolve_parts_with_terms(
         cfg.rate_card.as_ref(),
-        crate::cost::fee_schedule_of(&schedule),
+        terms.clone(),
         &cfg.groups,
     ));
     // AND TELL WHOEVER ELSE PRICES AGAINST THESE FIGURES. The resolution above is what reprices the
@@ -619,28 +619,7 @@ pub fn build_app_from_config(
             .flat_map(|card| card.iter())
             .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
             .collect::<Vec<_>>(),
-        schedule: busbar_substrate::rate_apply::RawSchedule {
-            entry: schedule.entry_cents,
-            transaction: schedule.transaction_flat_cents,
-            per_units: schedule
-                .per_units
-                .iter()
-                .map(|u| (u.dimension.clone(), u.per, u.cents))
-                .collect(),
-            minimum: schedule.minimum_cents,
-            maximum: schedule.maximum_cents,
-            rounding: match schedule.rounding {
-                crate::config::tariff::RoundingCfg::Bankers => {
-                    busbar_substrate::rate_apply::RawRounding::Bankers
-                }
-                crate::config::tariff::RoundingCfg::Up => {
-                    busbar_substrate::rate_apply::RawRounding::Up
-                }
-                crate::config::tariff::RoundingCfg::Down => {
-                    busbar_substrate::rate_apply::RawRounding::Down
-                }
-            },
-        },
+        terms,
         present: cfg.rate_card.is_some(),
     });
 

@@ -92,10 +92,8 @@ fn lane_lookup_has_exactly_three_outcomes() {
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
     let c = RateCard::absent(-5);
-    let s = c
-        .fee_schedule(CurrencyCode::USD)
-        .expect("the card names USD");
-    assert_eq!((s.transaction_minor, s.entry_minor), (0, 0));
+    let t = c.fee_terms(CurrencyCode::USD).expect("the card names USD");
+    assert_eq!((t.transaction, t.entry), (0, 0));
 }
 
 /// The fee is charged in MINOR UNITS and lifted to nano-units once, at the pricing site — so every

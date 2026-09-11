@@ -261,7 +261,7 @@ fn on_a_deployment_with_no_rate_card_the_fee_line_is_what_gets_checked() {
     // No class prices at all. Every class line prices at zero, so the fee line is the whole amount
     // and the recompute is checking exactly it.
     let archive = SealedHistory::new(History::opening(
-        RateCard::absent_in(CurrencyCode::USD, busbar_unit_cost::FeeSchedule::flat(250)),
+        RateCard::absent_in(CurrencyCode::USD, busbar_unit_cost::FeeTerms::flat(250)),
         0,
     ));
     let mut line = correct_line(1);

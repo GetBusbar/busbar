@@ -9,25 +9,29 @@ use std::sync::Mutex;
 /// assertion about the figures rather than about the call not panicking.
 struct Recorder(Mutex<Vec<Seen>>);
 
-/// One apply, as the holder saw it: the lanes with their four tier rates, the whole fee schedule,
-/// the flag.
-type Seen = (Vec<(String, RawTierRates)>, RawSchedule, bool);
+/// One apply, as the holder saw it: the lanes with their four tier rates, the whole fee terms, the
+/// flag.
+type Seen = (
+    Vec<(String, RawTierRates)>,
+    busbar_contract::tariff::FeeTerms,
+    bool,
+);
 
 impl RateApply for Recorder {
     fn rates_applied(&self, rates: &RawRates<'_>) {
         self.0
             .lock()
             .unwrap()
-            .push((rates.lanes.to_vec(), rates.schedule.clone(), rates.present));
+            .push((rates.lanes.to_vec(), rates.terms.clone(), rates.present));
     }
 }
 
-/// A schedule with one figure on it, used on both sides of the comparison so that the assertion is
+/// Terms with one figure on them, used on both sides of the comparison so that the assertion is
 /// about what the seam CARRIED rather than about a literal written twice.
-fn eleven() -> RawSchedule {
-    RawSchedule {
+fn eleven() -> busbar_contract::tariff::FeeTerms {
+    busbar_contract::tariff::FeeTerms {
         transaction: 11,
-        ..RawSchedule::default()
+        ..busbar_contract::tariff::FeeTerms::default()
     }
 }
 
@@ -47,9 +51,9 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     );
     rates_applied(&RawRates {
         lanes: &[],
-        schedule: RawSchedule {
+        terms: busbar_contract::tariff::FeeTerms {
             transaction: 7,
-            ..RawSchedule::default()
+            ..busbar_contract::tariff::FeeTerms::default()
         },
         present: false,
     });
@@ -74,7 +78,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     rates_applied(&RawRates {
         lanes: &lanes,
-        schedule: eleven(),
+        terms: eleven(),
         present: true,
     });
 
@@ -91,7 +95,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     // all, and collapsing the two would turn one deployment's configuration into another's.
     rates_applied(&RawRates {
         lanes: &[],
-        schedule: eleven(),
+        terms: eleven(),
         present: true,
     });
     let seen = recorder.0.lock().unwrap().clone();

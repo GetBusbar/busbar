@@ -54,8 +54,8 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
 /// units and lifts them once, at the pricing site; a second lift living on the card would be a
 /// second place a fee becomes nano-units.
 fn fee_of(card: &busbar_unit_cost::RateCard) -> u128 {
-    card.fee_schedule(node_currency()).map_or(0, |sched| {
-        u128::from(sched.transaction_minor.unsigned_abs()) * node_currency().nanos_per_minor()
+    card.fee_terms(node_currency()).map_or(0, |terms| {
+        u128::from(terms.transaction.unsigned_abs()) * node_currency().nanos_per_minor()
     })
 }
 
@@ -186,10 +186,7 @@ fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
     holder.apply(
         super::card_from_config(
             std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
-            &busbar_substrate::rate_apply::RawSchedule {
-                transaction: 7,
-                ..busbar_substrate::rate_apply::RawSchedule::default()
-            },
+            &busbar_contract::tariff::FeeTerms::flat(7),
             true,
             node_currency(),
         ),
@@ -487,4 +484,65 @@ fn the_interner_leaks_a_repeated_key_once() {
         .expect("a repeated key is the same key");
     assert!(std::ptr::eq(first, second));
     assert_eq!(registration.len(), 1);
+}
+
+/// **THE HOLDER PASSES ALL THREE SCOPE KEYS THROUGH, AND THE SCHEDULE SITE READS ALL THREE.**
+///
+/// `tariff_cell` used to take a plane key and nothing else, so `tariff.pool` and `tariff.tier`
+/// resolved against `None` at every one of the eleven sites that ask — an operator could write a
+/// pool's cell, validate it against a pool that exists, boot cleanly and be charged the plane's.
+/// And it was INVISIBLE: the lookup misses into the next scope out and the next scope out is a
+/// perfectly good answer.
+///
+/// Driven through the REAL holder with a resolver that answers a different cell per scope key, so a
+/// holder that dropped an argument on the way through answers the same cell for every row below and
+/// every `assert_ne!` collapses. It is written HERE rather than against the `tariff:` grammar
+/// because what is under test is the ROOT's wiring — that the three keys reach the closure — and
+/// the grammar's own resolution order is proven where the grammar lives.
+#[test]
+fn the_schedule_holder_carries_the_plane_the_pool_and_the_tier() {
+    let holder = super::RootTariff::default();
+    // A resolver that ANSWERS WITH ITS ARGUMENTS: each key, when it is present, moves one field of
+    // the cell. Nothing here is a schedule anybody would configure; it is a probe for what arrived.
+    holder.install(Box::new(
+        |plane: &str, pool: Option<&str>, tier: Option<&str>| busbar_kernel::teller::TariffCell {
+            entry_fee_enabled: tier == Some("gold"),
+            dispute_policy: match (plane, pool) {
+                (_, Some("pool-a")) => busbar_kernel::teller::DisputePolicy::EntryOnly,
+                ("llm", _) => busbar_kernel::teller::DisputePolicy::Full,
+                _ => busbar_kernel::teller::DisputePolicy::EntryPlusUnits,
+            },
+        },
+    ));
+    let cell = |plane, pool, tier| match holder.resolver.load().as_ref() {
+        Some(resolve) => resolve(plane, pool, tier),
+        None => panic!("the holder was installed above"),
+    };
+
+    let plane_only = cell("llm", None, None);
+    assert_eq!(
+        plane_only.dispute_policy,
+        busbar_kernel::teller::DisputePolicy::Full
+    );
+    assert!(!plane_only.entry_fee_enabled);
+
+    let pooled = cell("llm", Some("pool-a"), None);
+    assert_ne!(
+        pooled, plane_only,
+        "a pool that changes nothing is a pool argument the holder dropped"
+    );
+    let tiered = cell("llm", Some("pool-a"), Some("gold"));
+    assert_ne!(
+        tiered, pooled,
+        "a tier that changes nothing is a tier argument the holder dropped"
+    );
+    assert!(tiered.entry_fee_enabled);
+
+    // AND A NODE THAT INSTALLED NOTHING ANSWERS THE SHIPPED DEFAULT, whatever it is asked.
+    assert_eq!(
+        super::tariff_cell("a-plane-nothing-registers", Some("p"), Some("t")),
+        busbar_kernel::teller::TariffCell::default(),
+        "the process holder is uninstalled in this test binary, and an uninstalled holder does \
+         not invent a schedule"
+    );
 }
