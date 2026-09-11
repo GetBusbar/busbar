@@ -84,8 +84,14 @@ W="$RAW/image-work"; mkdir -p "$W/plugins" "$W/data"
 chmod 0777 "$W/data"
 
 CN="busbar-oracle-image-$$"
-cleanup() { docker rm -f "$CN" "${CN}-tmp" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# THE CONTAINERS ARE REAPED *WITHIN* lib.sh's REAPER, NOT INSTEAD OF IT. `trap ... EXIT` REPLACES the
+# handler; lib.sh installs `_reap_fixtures` to kill every `track_pid`'d process, so a second EXIT
+# trap here silently disowned the mock upstream — which then held its port and turned the NEXT
+# recording of this cell into `UNSUPPORTED: port <mock> busy`, i.e. a named gap produced by the
+# previous run of the very cell it was gapping. Measured, twice, before it was believed. So the
+# reaper is wrapped rather than displaced: containers first, then everything lib.sh tracked.
+_reap_containers_then_fixtures() { docker rm -f "$CN" "${CN}-tmp" >/dev/null 2>&1 || true; _reap_fixtures; }
+trap _reap_containers_then_fixtures EXIT
 
 tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" \
   || unsupported "the published store-sqlite tarball could not be fetched"
