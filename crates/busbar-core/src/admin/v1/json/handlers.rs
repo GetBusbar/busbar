@@ -4869,6 +4869,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
     body!("/keys", "post", crate::admin::CreateKeyReq);
     body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
+    body_optional!("/keys/{id}/rotate", "post", crate::admin::RotateKeyReq);
 
     // The config-carrying bodies are declared by HAND, deliberately.
     //

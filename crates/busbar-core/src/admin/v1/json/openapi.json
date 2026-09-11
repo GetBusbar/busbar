@@ -688,6 +688,13 @@
               "null"
             ]
           },
+          "bound_audience": {
+            "description": "Same field as `KeyView.bound_audience`: OMITTED unless the mint named a `resource`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "created_at": {
             "format": "uint64",
             "minimum": 0,
@@ -1548,6 +1555,13 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "bound_audience": {
+            "description": "The RFC 8707 resource this key's current token is bound to (1.6.0 P2). OMITTED for an\nunbound key — never `null` — so a 1.5.5 (or any never-bound) key's view is byte-identical to\nbefore this field existed.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -2653,6 +2667,20 @@
         ],
         "type": "object"
       },
+      "RotateKeyReq": {
+        "additionalProperties": false,
+        "description": "`POST /keys/{id}/rotate` body (1.6.0 P2, OPTIONAL — an absent/empty body is the 1.5.5 rotate,\nbyte-identical). `#[serde(deny_unknown_fields, default)]` so an old empty-body caller still\ndeserializes to the all-default shape and a typo'd field fails loudly rather than being ignored.\n\n`resource` re-states the RFC 8707 audience the re-issued token should carry:\n- omitted, on a key whose current token is UNBOUND: the untouched 1.5.5 rotate.\n- omitted, or naming a DIFFERENT resource, on a key whose current token IS bound: REFUSED — a\n  rotation must never silently drop (or swap) the audience a plane door is checking for. Re-send\n  with the SAME `resource` to rotate a bound key at all.\n- naming the SAME resource the key is already bound to: the binding is preserved across rotation.\n- naming a resource on a currently UNBOUND key: validated against `PlaneDispatch::mintable_audiences`\n  exactly like a mint (see [`resolve_mintable_resource`]) and, if declared, newly binds the key.",
+        "properties": {
+          "resource": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "RotatedKeyView": {
         "description": "`POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of\n`token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every\nprior token now rejected) or `secret` (a legacy hashed-secret key) is present.",
         "properties": {
@@ -2662,6 +2690,13 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "bound_audience": {
+            "description": "Same field as `KeyView.bound_audience`: OMITTED for an unbound key, present (and preserved\nacross the rotation) for a bound one.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -8237,6 +8272,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateKeyReq"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "content": {
@@ -8247,6 +8292,16 @@
               }
             },
             "description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field"
           },
           "401": {
             "content": {

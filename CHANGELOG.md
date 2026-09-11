@@ -157,6 +157,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   verify rejects it, which is the confused-deputy defence working in both directions. Additive: a
   mint body that names no `resource` is the 1.5.5 mint, request and response bytes unchanged, and
   the key it produces reads back identically through every admin view.
+- **The bound audience is durable, and rotation and the token exchange both carry it now.** A key's
+  RFC 8707 `resource` binding is recorded on the key row itself (`VirtualKey.bound_audience`,
+  additive: omitted for every unbound key, so a 1.5.5 key's admin view is byte-identical) — durable
+  across a restart and shared by every node reading the same store, never a fact only the minting
+  process remembers. `POST /keys/{id}/rotate` took no body and always re-minted a plain token, so
+  rotating a key that was bound to a plane's door silently turned it into an unbound credential; it
+  now takes the same optional `resource` the mint does, reads the key's CURRENT audience off its own
+  row, and refuses (rather than silently dropping or swapping it) unless `resource` names exactly
+  that same audience. An unbound key with no `resource` rotates exactly as 1.5.5, byte for byte.
+  Separately, `POST /auth/token` (the self-serve exchange) can now mint a bound token directly: an
+  optional `resource`, checked against the same mounted-plane declarations the admin mint checks;
+  without it, the exchange is unchanged. Both refusals reuse an existing condition/status rather than
+  growing the frozen taxonomy.
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
   (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
   (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,

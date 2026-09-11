@@ -585,7 +585,9 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         ("post", "/api/v1/admin/plugins/reload"),
         ("post", "/api/v1/admin/signing-key/rotate"),
         ("post", "/api/v1/admin/keys/{id}/revoke"),
-        ("post", "/api/v1/admin/keys/{id}/rotate"),
+        // `POST /keys/{id}/rotate` is NO LONGER bodyless (1.6.0 P2): it takes the same OPTIONAL
+        // `resource` the mint does, via `RotateKeyReq`, so it is counted below with the other
+        // request-carrying operations instead of listed here.
         ("delete", "/api/v1/admin/groups/{name}"),
         ("delete", "/api/v1/admin/hooks/{name}"),
         ("delete", "/api/v1/admin/keys/{id}"),
@@ -665,11 +667,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 27,
-        "27 mutating operations take a body; a change here is a deliberate API change. 27 = 22 \
+        declared, 28,
+        "28 mutating operations take a body; a change here is a deliberate API change. 28 = 22 \
          + each plane section's PUT and PATCH-settings (both DELETEs are bodyless, above) + the \
          A2A plane's approve verb, whose body carries the fingerprint the \
-         operator is attesting they read"
+         operator is attesting they read + `POST /keys/{{id}}/rotate`'s new OPTIONAL `resource` \
+         (1.6.0 P2)"
     );
 }
 

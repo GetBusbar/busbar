@@ -639,6 +639,33 @@ pub(crate) struct RotatedCredential {
     pub(crate) exp: u64,
 }
 
+/// The three-way verdict of [`GovState::rotate_key`] (1.6.0 P2: the `resource` face). Split out of
+/// the old `Option<RotatedCredential>` so a REFUSED audience mismatch is its own outcome, distinct
+/// from "no such key" — the two 400-vs-404 shapes an admin caller must be able to tell apart.
+pub(crate) enum RotateOutcome {
+    /// No live (non-tombstoned) binding for this id.
+    NotFound,
+    /// The key's current token carries an audience and the request named no `resource` (or a
+    /// different one): refused before any mutation, so the key is left entirely untouched.
+    AudienceMismatch,
+    /// The rotation went ahead. Boxed: `clippy::large_enum_variant` (`RotatedCredential` carries a
+    /// whole `VirtualKey`), and the two zero-sized siblings should not pay for its size.
+    Rotated(Box<RotatedCredential>),
+}
+
+#[cfg(test)]
+impl RotateOutcome {
+    /// TEST-ONLY unwrap for the common "this rotate must succeed" shape, so call sites that only
+    /// ever expect [`RotateOutcome::Rotated`] don't each hand-roll the match.
+    pub(crate) fn expect_rotated(self, msg: &str) -> RotatedCredential {
+        match self {
+            RotateOutcome::Rotated(r) => *r,
+            RotateOutcome::NotFound => panic!("{msg}: got NotFound"),
+            RotateOutcome::AudienceMismatch => panic!("{msg}: got AudienceMismatch"),
+        }
+    }
+}
+
 // The mint-parameter struct (`NewKeySpec`) — pure auth data, no `App`/`Store` — moved to the neutral
 // substrate so a plane crate names it without reaching into busbar-core; re-exported here so every
 // `crate::governance::NewKeySpec` construction site is unchanged. `pub(crate)`: the canonical
@@ -686,10 +713,15 @@ pub(crate) async fn mint_self_offloaded(
     allowed_pools: Option<Vec<String>>,
     exp: u64,
     now: u64,
+    audience: Option<String>,
 ) -> StoreResult<(VirtualKey, String)> {
     tokio::task::spawn_blocking(move || match op {
-        SelfMintOp::Issue => gov.issue_self(&user_sub, allowed_pools, exp, now),
-        SelfMintOp::Refresh => gov.refresh_self(&user_sub, allowed_pools, exp, now),
+        SelfMintOp::Issue => {
+            gov.issue_self(&user_sub, allowed_pools, exp, now, audience.as_deref())
+        }
+        SelfMintOp::Refresh => {
+            gov.refresh_self(&user_sub, allowed_pools, exp, now, audience.as_deref())
+        }
     })
     .await
     .unwrap_or_else(|e| {

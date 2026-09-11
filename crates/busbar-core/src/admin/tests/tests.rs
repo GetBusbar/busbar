@@ -2414,6 +2414,207 @@ async fn test_admin_v1_key_rotate_and_pagination() {
     handle.abort();
 }
 
+/// ROTATE + `resource` (1.6.0 P2): a key minted bound to an audience a mounted plane declares
+/// rotates cleanly when the SAME resource is re-sent, is REFUSED when `resource` is omitted or
+/// names something else (never silently re-issued unbound), and a plain UNBOUND key rotates with
+/// no body at all — the untouched 1.5.5 shape, which `test_admin_v1_key_rotate_and_pagination`
+/// above already exercises byte-for-byte. RED AT THE BASE: against a binary without this face, the
+/// mint has no `resource` field (`deny_unknown_fields` 400s it) and rotate ignores any body, so
+/// none of the three new assertions below can pass.
+#[tokio::test]
+async fn test_admin_v1_rotate_preserves_or_refuses_the_bound_audience() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    const AUD: &str = "https://busbar.example.com/mcp";
+    let mut builder = TestApp::new().governance(gov.clone());
+    builder
+        .mount_plane(
+            "test-plane",
+            "/mcp",
+            busbar_substrate::plane::WIRE_HTTP_JSON,
+        )
+        .admit_plane(
+            "test-plane",
+            busbar_substrate::plane::PlaneAdmission {
+                audience: AUD.to_string(),
+                resource_metadata: format!("{AUD}/.well-known/oauth-protected-resource"),
+            },
+        );
+    let app = builder.build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let admin = |req: reqwest::RequestBuilder| {
+        req.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // Mint bound to the declared audience.
+    let created: serde_json::Value = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+        .body(serde_json::json!({"name": "bound", "resource": AUD}).to_string())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        created["token"].as_str().unwrap().starts_with("bbk_"),
+        "the mint succeeds bound to a declared audience: {created}"
+    );
+    assert_eq!(
+        created["bound_audience"], AUD,
+        "GetKeysId shows the bound audience once set: {created}"
+    );
+
+    // Rotate with NO body: a bound key omitting `resource` is REFUSED, never silently unbound.
+    let refused_no_resource =
+        admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(
+        refused_no_resource.status().as_u16(),
+        400,
+        "rotating a bound key with no `resource` must be refused"
+    );
+    let body: serde_json::Value = refused_no_resource.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    // Rotate naming a DIFFERENT resource: also refused (never swapped silently).
+    let refused_wrong = admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+        .body(serde_json::json!({"resource": format!("{AUD}-staging")}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused_wrong.status().as_u16(),
+        400,
+        "rotating a bound key to a DIFFERENT resource must be refused"
+    );
+
+    // Rotate naming the SAME resource: succeeds, and the re-minted token is still admissible on
+    // that plane's audience-checked verify (and NOT on the plain data plane).
+    let rotated: serde_json::Value =
+        admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+            .body(serde_json::json!({"resource": AUD}).to_string())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let new_token = rotated["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        rotated["bound_audience"], AUD,
+        "GetKeysId-shaped rotate response still shows the preserved audience: {rotated}"
+    );
+    let now = busbar_substrate::store::now();
+    assert!(
+        gov.verify_token(&new_token, now, Some(AUD)).is_some(),
+        "the rotated token still carries the preserved audience"
+    );
+    assert!(
+        gov.verify_token(&new_token, now, None).is_none(),
+        "a bound token must never verify on the plain data plane"
+    );
+
+    handle.abort();
+}
+
+/// THE DURABILITY CLAIM, MEASURED: a key's `bound_audience` is a property of the STORE ROW
+/// (`VirtualKey::bound_audience`), never of the process that minted it. Mint a bound key, THROW AWAY
+/// the `GovState` that minted it (and the whole app/router built over it) and build a BRAND NEW one
+/// from the SAME underlying store — the exact shape of a process restart or a second fleet node
+/// reading the same durable store — then rotate with NO `resource`. It must still be refused.
+///
+/// RED AT THE BASE (the in-process-map design this replaced): a record kept only in the minting
+/// `GovState`'s own memory is empty in a freshly-built one, so the fresh process would read the key
+/// as unbound and rotate would silently succeed — the exact security regression this face closes.
+#[tokio::test]
+async fn test_admin_v1_rotate_refusal_survives_a_fresh_govstate_over_the_same_store() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    const AUD: &str = "https://busbar.example.com/mcp";
+    let plane_admission = || busbar_substrate::plane::PlaneAdmission {
+        audience: AUD.to_string(),
+        resource_metadata: format!("{AUD}/.well-known/oauth-protected-resource"),
+    };
+
+    // NODE 1: mint the bound key, then DROP everything — the app, the router, the `GovState`.
+    let id = {
+        let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+        let mut builder = TestApp::new().governance(gov);
+        builder
+            .mount_plane(
+                "test-plane",
+                "/mcp",
+                busbar_substrate::plane::WIRE_HTTP_JSON,
+            )
+            .admit_plane("test-plane", plane_admission());
+        let app = builder.build();
+        let router = crate::build_router(app);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = reqwest::Client::new();
+        let created: serde_json::Value = client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(serde_json::json!({"name": "bound", "resource": AUD}).to_string())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        handle.abort();
+        // `gov`, `app`, `router` all drop here — nothing from node 1 survives but `store`.
+        id
+    };
+
+    // NODE 2: a BRAND NEW `GovState` over the SAME store — never minted or rotated this key itself,
+    // and carries no memory of node 1 at all.
+    let gov2 = gov_with_signer(store, Some("admintok".to_string()));
+    let mut builder2 = TestApp::new().governance(gov2);
+    builder2
+        .mount_plane(
+            "test-plane",
+            "/mcp",
+            busbar_substrate::plane::WIRE_HTTP_JSON,
+        )
+        .admit_plane("test-plane", plane_admission());
+    let app2 = builder2.build();
+    let router2 = crate::build_router(app2);
+    let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let handle2 = tokio::spawn(async move { axum::serve(listener2, router2).await.unwrap() });
+    let client2 = reqwest::Client::new();
+
+    // Rotate with NO `resource`, on node 2. Durable via the row, this MUST still be refused.
+    let refused = client2
+        .post(format!("http://{addr2}/api/v1/admin/keys/{id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status().as_u16(),
+        400,
+        "a fresh GovState over the same store must still refuse rotating a bound key with no \
+         `resource` — the audience is durable on the row, not a property of the process that minted \
+         it"
+    );
+
+    handle2.abort();
+}
+
 /// `rotate_key`'s idempotency cache sweeps stale entries by AGE (`now - t < IDEMPOTENCY_TTL_SECS`)
 /// before consulting it. A same-key replay taken immediately after the first call has age ~0, so it
 /// must survive the sweep and see the FIRST rotation's token again — not a fresh SECOND rotation. A

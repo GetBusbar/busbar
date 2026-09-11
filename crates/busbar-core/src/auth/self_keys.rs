@@ -45,10 +45,24 @@ pub(crate) struct IssuedKey {
 #[async_trait]
 pub(crate) trait SelfServeKeys: Send + Sync {
     /// Issue the ONE key for `principal` (idempotent: a re-login returns the same key, only the
-    /// token's `exp` refreshed). `ttl` is the token lifetime.
-    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String>;
-    /// ROTATE the key for `principal` (the "Refresh" action): the prior token stops verifying.
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String>;
+    /// token's `exp` refreshed). `ttl` is the token lifetime. `audience` is the RFC 8707 resource
+    /// (1.6.0 P2) the issued token should carry, or `None` for the plain data-plane token — the
+    /// caller (`POST /auth/token`) has already checked a `Some` value against
+    /// `PlaneDispatch::mintable_audiences`, so an implementation takes it as given.
+    async fn issue(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        audience: Option<&str>,
+    ) -> Result<IssuedKey, String>;
+    /// ROTATE the key for `principal` (the "Refresh" action): the prior token stops verifying. Same
+    /// `audience` contract as [`Self::issue`].
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        audience: Option<&str>,
+    ) -> Result<IssuedKey, String>;
 }
 
 /// AUTO-PROVISION the personal budget bucket a self-serve key charges through. Behind a trait so the
@@ -119,7 +133,12 @@ impl DeterministicEd25519Keys {
 
 #[async_trait]
 impl SelfServeKeys for DeterministicEd25519Keys {
-    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    async fn issue(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        audience: Option<&str>,
+    ) -> Result<IssuedKey, String> {
         let now = busbar_substrate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         // FIX: provision the personal budget bucket under the resolved team BEFORE minting, so the
@@ -137,6 +156,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
             self.allowed_pools.clone(),
             exp,
             now,
+            audience.map(str::to_string),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -148,7 +168,12 @@ impl SelfServeKeys for DeterministicEd25519Keys {
         })
     }
 
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        audience: Option<&str>,
+    ) -> Result<IssuedKey, String> {
         let now = busbar_substrate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         // Same provision-before-mint as `issue` (idempotent; the leaf already exists on a refresh).
@@ -164,6 +189,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
             self.allowed_pools.clone(),
             exp,
             now,
+            audience.map(str::to_string),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -255,6 +281,10 @@ pub(crate) enum ExchangeError {
     BadSubject,
     /// The mint itself failed (no signing key, store error) → 500.
     MintFailed(String),
+    /// The caller named an RFC 8707 `resource` (1.6.0 P2) no MOUNTED plane declares → 400. Refused
+    /// at the exchange rather than issuing a credential whose only property is that nothing accepts
+    /// it — the same reasoning `POST /keys`'s admin mint refuses an undeclared resource under.
+    UndeclaredResource,
 }
 
 /// Reject a principal id that cannot safely become a `user:<sub>` self-serve subject. A
@@ -386,11 +416,12 @@ pub(crate) async fn issue_key(
     principal: &Principal,
     ttl: Duration,
     refresh: bool,
+    audience: Option<&str>,
 ) -> Result<IssuedKey, ExchangeError> {
     let r = if refresh {
-        keys.refresh(principal, ttl).await
+        keys.refresh(principal, ttl, audience).await
     } else {
-        keys.issue(principal, ttl).await
+        keys.issue(principal, ttl, audience).await
     };
     r.map_err(ExchangeError::MintFailed)
 }

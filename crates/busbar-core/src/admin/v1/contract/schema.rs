@@ -44,6 +44,11 @@ pub(crate) struct KeyView {
     ///   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
     ///   `GET /keys` by default; visible there with `?include=tombstoned`.
     pub(crate) state: String,
+    /// The RFC 8707 resource this key's current token is bound to (1.6.0 P2). OMITTED for an
+    /// unbound key — never `null` — so a 1.5.5 (or any never-bound) key's view is byte-identical to
+    /// before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bound_audience: Option<String>,
 }
 
 /// `POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
@@ -75,6 +80,9 @@ pub(crate) struct CreatedKeyView {
     /// AWS SigV4 secret access key, shown once (present only with an AWS credential).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aws_secret_access_key: Option<String>,
+    /// Same field as `KeyView.bound_audience`: OMITTED unless the mint named a `resource`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bound_audience: Option<String>,
 }
 
 /// `POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
@@ -103,6 +111,10 @@ pub(crate) struct RotatedKeyView {
     /// The fresh bearer secret, shown EXACTLY once (legacy hashed-secret keys only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) secret: Option<String>,
+    /// Same field as `KeyView.bound_audience`: OMITTED for an unbound key, present (and preserved
+    /// across the rotation) for a bound one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bound_audience: Option<String>,
 }
 
 /// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in

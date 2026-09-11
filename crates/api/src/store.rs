@@ -153,6 +153,8 @@ mod virtual_key_wire {
         pub binding_mode: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub minted_by: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bound_audience: Option<String>,
     }
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
@@ -245,6 +247,7 @@ mod virtual_key_wire {
                 idp_subject: self.idp_subject.clone(),
                 binding_mode: self.binding_mode.clone(),
                 minted_by: self.minted_by.clone(),
+                bound_audience: self.bound_audience.clone(),
             }
             .serialize(s)
         }
@@ -271,6 +274,7 @@ mod virtual_key_wire {
                 idp_subject: w.idp_subject,
                 binding_mode: w.binding_mode,
                 minted_by: w.minted_by,
+                bound_audience: w.bound_audience,
             })
         }
     }
@@ -350,6 +354,18 @@ pub struct VirtualKey {
     /// accounting can count how many an app-admin has minted. `None` for self-minted personal tokens
     /// and pre-field keys. Provenance, NOT an automatic revocation trigger.
     pub minted_by: Option<String>,
+    /// The RFC 8707 resource this key's CURRENT token is bound to (1.6.0 P2), or `None` for a plain
+    /// data-plane key — the DURABLE twin of the value threaded into the signed token's `aud` claim
+    /// at mint/rotate/self-serve-issue time. `verify_token` never reads this field (the token's own
+    /// `aud` claim is what the verifier checks); it exists so a CHECK-BEFORE-MUTATE caller —
+    /// `GovState::rotate_key`, principally — has a durable, fleet-wide, restart-surviving answer to
+    /// "what is this key's current audience", rather than reconstructing it from nothing. Trailing
+    /// `Option` for backward-compatible deserialize: a pre-1.6.0-P2 row (or a store plugin built
+    /// before this field existed) reads `None`, which is exactly the correct answer for a key that
+    /// predates the audience-bound mint — unbound. Cleared on `delete_key`/`revoke` for the same
+    /// reason `enabled`/`generation_hash` are stamped there: a dead credential's binding metadata
+    /// should not linger and be read as live by a future caller of this field.
+    pub bound_audience: Option<String>,
 }
 
 impl VirtualKey {

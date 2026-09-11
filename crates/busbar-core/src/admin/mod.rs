@@ -645,7 +645,7 @@ fn key_meta(k: &VirtualKey) -> Value {
     // 1.5.0 keys are PURE AUTH bindings: id / name / allowed_pools / group / labels. Keys carry no
     // limits (all enforcement flows through the bound group). `allowed_pools` keeps the intent:
     // JSON `null` = all pools; `[]` = no pools.
-    json!({
+    let mut body = json!({
         "id": k.id,
         "name": k.name,
         "allowed_pools": k.allowed_scopes.as_ref().map(|list| {
@@ -655,7 +655,14 @@ fn key_meta(k: &VirtualKey) -> Value {
         "enabled": k.enabled,
         "created_at": k.created_at,
         "labels": k.labels,
-    })
+    });
+    // `bound_audience` (1.6.0 P2) is OMITTED, never `null`, when the key is unbound — so a 1.5.5-era
+    // (or any never-bound) key's view is byte-for-byte identical to before this field existed. Only
+    // an actually-bound key gains the property.
+    if let Some(aud) = &k.bound_audience {
+        body["bound_audience"] = json!(aud);
+    }
+    body
 }
 
 /// `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
@@ -870,6 +877,44 @@ fn check_key_cap(
     Ok(None)
 }
 
+/// Validate an optional RFC 8707 `resource` against what the MOUNTED planes declare
+/// (`PlaneDispatch::mintable_audiences`, folded in from each plane's own decl at build) — the ONE
+/// place a caller-named resource is checked against the plane declarations, shared by `create_key`'s
+/// mint and `rotate_key`'s (re)bind so the two verbs can never drift on the message or the condition.
+///
+/// `None` passes straight through (nothing named, nothing to check). `Some(resource)` outside the
+/// mintable set is REFUSED: issuing it would hand back a credential whose only property is that
+/// nothing accepts it, and an operator who mistyped their own canonical URI would learn it from a
+/// 401 on the plane hours later instead of from the mint that could have said so. The refusal reuses
+/// `Cond::MalformedBody` — a condition already declared for `POST /keys` — rather than a new variant,
+/// so the frozen error taxonomy does not grow a description for this.
+///
+/// Returns the `Response` boxed (`clippy::result_large_err`): the `Err` arm is cold (a refusal), so
+/// paying one allocation there to keep the common `Ok` path's `Result` small is the right trade.
+fn resolve_mintable_resource(
+    app: &crate::state::App,
+    who: KeyAudit<'_>,
+    resource: Option<&str>,
+) -> Result<Option<String>, Box<Response>> {
+    match resource {
+        None => Ok(None),
+        Some(resource) => {
+            if !app.planes.mintable_audiences().any(|a| a == resource) {
+                return Err(Box::new(key_err(
+                    who,
+                    &AdminError::Validation(
+                        "`resource` is not an audience this deployment serves; a key may only be \
+                         bound to a resource a mounted plane declares"
+                            .into(),
+                    ),
+                    Cond::MalformedBody,
+                )));
+            }
+            Ok(Some(resource.to_string()))
+        }
+    }
+}
+
 /// POST /api/v1/admin/keys — mint a virtual key. Returns the plaintext secret ONCE.
 pub(crate) async fn create_key(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
@@ -993,32 +1038,12 @@ pub(crate) async fn create_key(
         );
     }
     // THE RFC 8707 RESOURCE (optional): the plane door this token is being minted for. Checked
-    // against what the MOUNTED planes DECLARE — `PlaneDispatch::mintable_audiences`, folded in from
-    // each plane's own decl at build — so the set of mintable resources is exactly the set of doors
-    // this deployment serves and there is no literal here for either to drift from. A resource no
-    // plane declares is REFUSED: issuing it would hand back a credential whose only property is that
-    // nothing accepts it, and an operator who mistyped their own canonical URI would learn it from a
-    // 401 on the plane hours later instead of from the mint that could have said so.
-    //
-    // `Cond` reuses this endpoint's declared `MalformedBody` family rather than adding a variant:
-    // a new condition would rewrite the 400 description of a path the 1.5.5 document already
-    // names, and the openapi register accepts additions BESIDE a 1.5.5 path, never a change to one.
-    let audience = match req.resource.as_deref() {
-        None => None,
-        Some(resource) => {
-            if !app.planes.mintable_audiences().any(|a| a == resource) {
-                return key_err(
-                    who,
-                    &AdminError::Validation(
-                        "`resource` is not an audience this deployment serves; a key may only be \
-                         bound to a resource a mounted plane declares"
-                            .into(),
-                    ),
-                    Cond::MalformedBody,
-                );
-            }
-            Some(resource.to_string())
-        }
+    // against what the MOUNTED planes DECLARE via the shared `resolve_mintable_resource` (also
+    // `rotate_key`'s door) — see that fn's doc for why REFUSED beats issuing a credential nothing
+    // accepts.
+    let audience = match resolve_mintable_resource(&app, who, req.resource.as_deref()) {
+        Ok(a) => a,
+        Err(resp) => return *resp,
     };
 
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
@@ -1749,6 +1774,34 @@ pub(crate) async fn list_keys(
     }
 }
 
+/// `POST /keys/{id}/rotate` body (1.6.0 P2, OPTIONAL — an absent/empty body is the 1.5.5 rotate,
+/// byte-identical). `#[serde(deny_unknown_fields, default)]` so an old empty-body caller still
+/// deserializes to the all-default shape and a typo'd field fails loudly rather than being ignored.
+///
+/// `resource` re-states the RFC 8707 audience the re-issued token should carry:
+/// - omitted, on a key whose current token is UNBOUND: the untouched 1.5.5 rotate.
+/// - omitted, or naming a DIFFERENT resource, on a key whose current token IS bound: REFUSED — a
+///   rotation must never silently drop (or swap) the audience a plane door is checking for. Re-send
+///   with the SAME `resource` to rotate a bound key at all.
+/// - naming the SAME resource the key is already bound to: the binding is preserved across rotation.
+/// - naming a resource on a currently UNBOUND key: validated against `PlaneDispatch::mintable_audiences`
+///   exactly like a mint (see [`resolve_mintable_resource`]) and, if declared, newly binds the key.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct RotateKeyReq {
+    resource: Option<String>,
+}
+
+/// The `spawn_blocking` closure's own verdict for [`rotate_key`], carrying the pre-computed `state`
+/// string alongside a successful rotation (computed INSIDE the closure, where `gov` is in scope) so
+/// the `match` after the `.await` never needs to reach back into `gov`.
+enum RotateResult {
+    NotFound,
+    AudienceMismatch,
+    Rotated(&'static str, Box<crate::governance::RotatedCredential>),
+}
+
 /// POST /api/v1/admin/keys/{id}/rotate — re-issue an existing key's CREDENTIAL in place: the id (and
 /// with it budgets, rate windows, usage, audit attribution) is unchanged, the PREVIOUS credential
 /// stops authenticating immediately and fleet-wide, and the new one is returned exactly once,
@@ -1765,6 +1818,7 @@ pub(crate) async fn rotate_key(
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
+    body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1774,6 +1828,32 @@ pub(crate) async fn rotate_key(
         verb: "key.rotate",
         resource: &resource,
         actor: &actor,
+    };
+    // OPTIONAL BODY (1.6.0 P2, same empty-body-is-default shape `restart` uses): an absent/empty
+    // body is the 1.5.5 rotate untouched; a JSON body may additionally carry `resource`.
+    let req: RotateKeyReq = if body.is_empty() {
+        RotateKeyReq::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return key_err(
+                    who,
+                    &AdminError::Validation(format!("invalid body: {e}")),
+                    Cond::MalformedBody,
+                );
+            }
+        }
+    };
+    // THE RFC 8707 RESOURCE (optional, 1.6.0 P2). Validated against
+    // `PlaneDispatch::mintable_audiences` through the SAME `resolve_mintable_resource` `create_key`'s
+    // mint walks through, UNCONDITIONALLY whenever named — regardless of whether it happens to match
+    // the key's CURRENT audience. `GovState::rotate_key` alone decides match-preserves vs.
+    // mismatch-refuses (it is the one place that reads the row's durable `bound_audience`); this
+    // check only ever answers "is `resource` a door this deployment still serves".
+    let audience = match resolve_mintable_resource(&app, who, req.resource.as_deref()) {
+        Ok(a) => a,
+        Err(resp) => return *resp,
     };
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
@@ -1840,12 +1920,21 @@ pub(crate) async fn rotate_key(
         // than after the `.await` below — a rotated key can still be `disabled` or `revoked` (rotate
         // does not touch `enabled` or the denylist, only tombstoned keys refuse to rotate at all, see
         // `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed, not just `enabled`.
-        gov.rotate_key(&gid, exp)
-            .map(|opt| opt.map(|rotated| (key_state(&rotated.key, &gov), rotated)))
+        gov.rotate_key(&gid, exp, audience.as_deref())
+            .map(|outcome| match outcome {
+                crate::governance::RotateOutcome::NotFound => RotateResult::NotFound,
+                crate::governance::RotateOutcome::AudienceMismatch => {
+                    RotateResult::AudienceMismatch
+                }
+                crate::governance::RotateOutcome::Rotated(rotated) => {
+                    let state = key_state(&rotated.key, &gov);
+                    RotateResult::Rotated(state, rotated)
+                }
+            })
     })
     .await;
     match res {
-        Ok(Ok(Some((state, rotated)))) => {
+        Ok(Ok(RotateResult::Rotated(state, rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
             body["state"] = json!(state);
@@ -1867,14 +1956,29 @@ pub(crate) async fn rotate_key(
             }
             json_response(StatusCode::OK, body)
         }
-        // All three arms below are the transaction's OWN fail-closed outcomes, reached only after
+        // All arms below are the transaction's OWN fail-closed outcomes, reached only after
         // the `.await` completed normally (never on genuine cancellation) — safe to free the
         // reservation for a legitimate retry.
-        Ok(Ok(None)) => {
+        Ok(Ok(RotateResult::NotFound)) => {
             if let Some(r) = idem_reservation.as_mut() {
                 r.clear();
             }
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
+        }
+        Ok(Ok(RotateResult::AudienceMismatch)) => {
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
+            key_err(
+                who,
+                &AdminError::Validation(
+                    "`resource` must match this key's current bound audience; a bound key may \
+                     only be rotated with the SAME resource it already carries (omitting \
+                     `resource` is refused for a bound key, never for an unbound one)"
+                        .into(),
+                ),
+                Cond::MalformedBody,
+            )
         }
         Ok(Err(e)) => {
             if let Some(r) = idem_reservation.as_mut() {

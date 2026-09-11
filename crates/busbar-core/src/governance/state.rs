@@ -213,6 +213,9 @@ impl GovState {
                 let generation = generate_binding_generation().store()?;
                 key.generation_hash = binding_marker(&key.id, &generation);
                 key.enabled = false;
+                // A revoked credential's audience binding should not linger and be read as live —
+                // there is no live credential left for it to describe (1.6.0 P2).
+                key.bound_audience = None;
                 self.store.put_key(&key)?;
                 new_key = Some(Arc::new(key));
             }
@@ -257,11 +260,14 @@ impl GovState {
     /// FAIL-CLOSED: no signer configured is an error (a key with no token is useless).
     ///
     /// `audience` is the RFC 8707 resource the ISSUED TOKEN is bound to, or `None` for a plain
-    /// data-plane token. It is a property of the token and not of the binding: the binding row is
-    /// byte-identical either way, so a key minted for a plane's door reads back through every
-    /// admin view exactly as one minted for the data plane does. What differs is where the
-    /// credential verifies — a bound token opens only the door whose audience it names, and the
-    /// plain data-plane verify rejects it.
+    /// data-plane token. Recorded DURABLY on the binding row (`VirtualKey::bound_audience`, 1.6.0
+    /// P2) so `GovState::rotate_key` has a fleet-wide, restart-surviving answer to "what is this
+    /// key's current audience" — never reconstructed from the store row's absence of the field, and
+    /// never held only in this process's memory. It is still not consulted by `verify_token` (the
+    /// token's OWN `aud` claim is what the verifier checks): a key minted for a plane's door reads
+    /// back through every admin view exactly as one minted for the data plane does UNLESS that view
+    /// chooses to show `bound_audience` (see `key_meta`, which shows it only when set — a 1.5.5 mint
+    /// leaves it `None` and the view is byte-identical).
     pub fn mint_signed(
         &self,
         spec: NewKeySpec,
@@ -306,6 +312,7 @@ impl GovState {
             // APP token, `None` for a mint that named neither (byte-identical to before).
             minted_by: spec.minted_by,
             binding_mode: spec.binding_mode,
+            bound_audience: audience.map(str::to_string),
             ..Default::default()
         };
         self.store.put_key(&binding)?;
@@ -358,6 +365,7 @@ impl GovState {
             revision: 0,
             minted_by: spec.minted_by,
             binding_mode: spec.binding_mode,
+            bound_audience: audience.map(str::to_string),
             ..Default::default()
         };
         // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
@@ -569,6 +577,9 @@ impl GovState {
     ///
     /// Skipping is also the semantically honest move: an epoch whose binding was tombstoned had its
     /// tokens deliberately invalidated, and re-deriving that id would put them back in play.
+    #[allow(clippy::too_many_arguments)] // eight small, positional facts about ONE binding write;
+                                         // bundling them into a struct just for this private, single-caller-shape helper would cost more
+                                         // clarity than the lint saves (mirrors `config/mod.rs`'s identical call here).
     fn write_self_binding(
         &self,
         material: &SigningMaterial,
@@ -577,6 +588,7 @@ impl GovState {
         epoch: u64,
         exp: u64,
         now: u64,
+        audience: Option<&str>,
     ) -> StoreResult<(VirtualKey, String)> {
         let seed = material.signer.secret_bytes();
         let (id, epoch) = self.first_free_self_epoch(&seed, user_sub, epoch)?;
@@ -603,26 +615,31 @@ impl GovState {
             // preserving; they are pure attribution metadata.
             idp_subject: Some(user_sub.to_string()),
             binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
+            bound_audience: audience.map(str::to_string),
             ..Default::default()
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
         let token = material
             .signer
-            .mint(&id, exp, Some(&generation), None, None);
+            .mint(&id, exp, Some(&generation), audience, None);
         Ok((binding, token))
     }
 
     /// ISSUE the (single, idempotent) self-serve key for `user_sub`. If a binding already exists it
     /// is REUSED verbatim (same id + generation) and only a fresh-`exp` token is re-minted over it —
     /// so N logins produce exactly ONE binding row. Otherwise a fresh binding is minted at epoch 0.
-    /// `exp` is the token expiry (Unix secs); `now` the mint time.
+    /// `exp` is the token expiry (Unix secs); `now` the mint time. `audience` is the RFC 8707
+    /// resource (1.6.0 P2) the re-issued token should carry, recorded DURABLY on the row
+    /// (`VirtualKey::bound_audience`) alongside `allowed_scopes` — see [`GovState::mint_signed`]'s
+    /// doc for why the row, not an in-process record, is the source of truth.
     pub(crate) fn issue_self(
         &self,
         user_sub: &str,
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
+        audience: Option<&str>,
     ) -> StoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
@@ -642,10 +659,13 @@ impl GovState {
                         .map(busbar_api::ScopeRef::pool)
                         .collect::<Vec<_>>()
                 });
-                if new_scopes != existing.allowed_scopes {
+                let new_audience = audience.map(str::to_string);
+                if new_scopes != existing.allowed_scopes || new_audience != existing.bound_audience
+                {
                     // allowed_pools CHANGED since the binding was created (an admin narrowed or
-                    // widened the group) — update THE EXISTING ROW in place with the fresh pools,
-                    // keeping its id and generation, and re-issue a token over them.
+                    // widened the group), OR the caller is asking for a DIFFERENT audience than the
+                    // row currently carries — update THE EXISTING ROW in place, keeping its id and
+                    // generation, and re-issue a token over them.
                     //
                     // It used to re-DERIVE the id by parsing an epoch back out of
                     // `generation_hash`, on the reasoning that the same epoch yields the same
@@ -662,12 +682,13 @@ impl GovState {
                     // the row that already existed.
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
+                    updated.bound_audience = new_audience;
                     self.store.put_key(&updated)?;
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);
                     let token = material
                         .signer
-                        .mint(&updated.id, exp, generation, None, None);
+                        .mint(&updated.id, exp, generation, audience, None);
                     Ok((updated, token))
                 } else {
                     // Idempotent re-show: reuse the one binding, re-issue a fresh-exp token over the
@@ -675,11 +696,13 @@ impl GovState {
                     let generation = binding_generation(&existing.generation_hash);
                     let token = material
                         .signer
-                        .mint(&existing.id, exp, generation, None, None);
+                        .mint(&existing.id, exp, generation, audience, None);
                     Ok(((*existing).clone(), token))
                 }
             }
-            None => self.write_self_binding(&material, user_sub, allowed_pools, 0, exp, now),
+            None => {
+                self.write_self_binding(&material, user_sub, allowed_pools, 0, exp, now, audience)
+            }
         }
     }
 
@@ -693,6 +716,7 @@ impl GovState {
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
+        audience: Option<&str>,
     ) -> StoreResult<(VirtualKey, String)> {
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
@@ -713,8 +737,15 @@ impl GovState {
             }
             None => (0, None),
         };
-        let out =
-            self.write_self_binding(&material, user_sub, allowed_pools, new_epoch, exp, now)?;
+        let out = self.write_self_binding(
+            &material,
+            user_sub,
+            allowed_pools,
+            new_epoch,
+            exp,
+            now,
+            audience,
+        )?;
         if let Some(old) = old_id {
             if old != out.0.id {
                 // Tombstone the prior epoch's binding — its token now fails verify (disabled).
@@ -1414,15 +1445,33 @@ impl GovState {
     ///
     /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
     /// than a silent fallback to the legacy secret.
-    pub(crate) fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
+    ///
+    /// `resource` is the RFC 8707 audience the CALLER is asking the re-issued token to carry (1.6.0
+    /// P2) — `None` = "leave it as it is". Checked against the row's OWN durable
+    /// `VirtualKey::bound_audience` (never the store's own separate index, never in-process state —
+    /// the row IS the fleet-wide, restart-surviving record): a key currently bound to an audience is
+    /// refused ([`RotateOutcome::AudienceMismatch`]) unless `resource` names EXACTLY that same
+    /// audience, so a rotation can never silently re-issue a bound credential unbound (or bound to a
+    /// resource the caller did not ask for) — on THIS node, on a fresh process, or on any other node
+    /// reading the same durable store. An unbound key with no `resource` asked is untouched: this is
+    /// the 1.5.5 path, byte-for-byte. Validating a NEWLY asked-for `resource` against what a mounted
+    /// plane declares is the CALLER's job (the admin handler, which alone knows
+    /// `PlaneDispatch::mintable_audiences`) — this fn only ever compares against the audience already
+    /// recorded on the row, never against the plane declarations.
+    pub(crate) fn rotate_key(
+        &self,
+        id: &str,
+        exp: u64,
+        resource: Option<&str>,
+    ) -> StoreResult<RotateOutcome> {
         let Some(mut key) = self.store.get_key(id)? else {
-            return Ok(None);
+            return Ok(RotateOutcome::NotFound);
         };
         // TOMBSTONE (1.5.0): same reasoning as `update_key` — a tombstoned row must never look
         // rotatable. Without this a concurrent DELETE-then-ROTATE race would mint a fresh, live
         // credential for a key that was just revoked, resurrecting it in every way that matters.
         if key.deleted_at.is_some() {
-            return Ok(None);
+            return Ok(RotateOutcome::NotFound);
         }
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
@@ -1431,8 +1480,27 @@ impl GovState {
                     .to_string(),
             ));
         };
+        // THE AUDIENCE THIS RE-MINT CARRIES, read off the ROW — durable, never reconstructed.
+        // Resolved BEFORE any mutation, so a refusal here leaves the key entirely untouched (no
+        // generation bump, no store write) — a rejected rotate request must be a true no-op.
+        let audience: Option<String> = match (key.bound_audience.clone(), resource) {
+            // Unbound, and nothing asked: the untouched 1.5.5 path.
+            (None, None) => None,
+            // Currently bound, and the request names EXACTLY that resource: preserve the binding
+            // across the rotation.
+            (Some(current), Some(asked)) if current == asked => Some(current),
+            // Currently bound, and the request names NO resource or a DIFFERENT one: refused. The
+            // whole point of this face is that a rotation of a bound key must never silently drop
+            // (or swap) the audience — that is a plane door quietly losing its lock.
+            (Some(_), _) => return Ok(RotateOutcome::AudienceMismatch),
+            // Currently unbound, and the caller asks to bind it on this rotation: the caller (the
+            // admin handler) has already checked `asked` against `PlaneDispatch::mintable_audiences`
+            // before calling this fn, so it is taken as given here.
+            (None, Some(asked)) => Some(asked.to_string()),
+        };
         let generation = generate_binding_generation().store()?;
         key.generation_hash = binding_marker(&key.id, &generation);
+        key.bound_audience = audience.clone();
         self.store.put_key(&key)?;
         // Same durable-first honesty as `delete_key`: `put_key` has COMMITTED the new generation, so
         // the OLD credential is durably dead the moment this returns — a bare `self.refresh()?` here
@@ -1460,10 +1528,15 @@ impl GovState {
                  credential."
             )));
         }
-        let token = material
-            .signer
-            .mint(&key.id, exp, Some(&generation), None, None);
-        Ok(Some(RotatedCredential { key, token, exp }))
+        let token =
+            material
+                .signer
+                .mint(&key.id, exp, Some(&generation), audience.as_deref(), None);
+        Ok(RotateOutcome::Rotated(Box::new(RotatedCredential {
+            key,
+            token,
+            exp,
+        })))
     }
 
     /// Apply a partial update to an existing key. Keys are PURE AUTH, so the mutable surface

@@ -631,7 +631,7 @@ async fn issue_and_render(
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
     let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
     let issued =
-        match issue_key(&keys, principal, ttl, refresh).await {
+        match issue_key(&keys, principal, ttl, refresh, None).await {
             Ok(k) => k,
             Err(_) => return error_page(
                 StatusCode::BAD_GATEWAY,

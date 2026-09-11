@@ -288,6 +288,45 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar-core × control (busbar-core, control): the admin mint verb gains the optional RFC 8707 `resource` indicator and the refusal that holds it to what the mounted planes declare — two lines in `crates/busbar-core/src/admin/mod.rs`, the request field and the refusal it raises. This is the admin API's own kind naming the admin API's own nouns: a mint is a control-plane verb, and the whole of the face is that one verb learning the word the plane's own challenge already tells a refused client to send. It names no plane and no literal audience: the mintable set is read off `PlaneDispatch::mintable_audiences`, folded in from each plane's own decl at build, so the doors this deployment serves and the resources it will mint for cannot be two lists that drift. The refusal reuses a condition this endpoint already declares, so the frozen error taxonomy did not grow either (5,203 -> 5,205)"
 
+# ── declared raises: ROTATION AND THE TOKEN EXCHANGE LEARN THE SAME WORD, DURABLY (1.6.0 P2,
+# AUTH-2). AUTH-1 gave the MINT a `resource`; `rotate_key` still re-issued every credential with
+# `aud: None`, so a key minted for a plane door silently rotated into an unbound one, and
+# `POST /auth/token` had no way to ask for a bound token at all. Both verbs now take the same
+# optional `resource`, checked the same way against `PlaneDispatch::mintable_audiences` — reusing
+# `resolve_mintable_resource`'s validation for the admin surface and a sibling
+# `resolve_resource_audience` for the data-plane exchange, since the two map to different error
+# shapes (an admin `Cond` vs. an `ExchangeError` JSON body) but must never drift on WHICH resources
+# are mintable. The audience a bound key carries is recorded on the KEY ROW itself
+# (`VirtualKey::bound_audience`, additive, omitted unless set — see the api-crate ceiling note
+# below), never held only in a minting process's memory, so rotation's own refusal — a bound key's
+# re-issue must carry the SAME audience it already has, never none and never a different one — is
+# answered by reading that row, durable across a restart and shared by every node reading the same
+# store. Every entry below is that face — the two new admin-surface types (`RotateKeyReq`, the
+# `RotateResult`/`RotateOutcome` split), the shared validators, the self-serve mint threading
+# `audience` through `SelfServeKeys`/`issue_self`/`refresh_self`, the three admin key-view schemas
+# gaining the mirrored `bound_audience` property, and the tests that prove each red-at-base
+# assertion (including the durability cell: mint bound, drop the `GovState`, rebuild a fresh one
+# over the SAME store, rotate with no `resource` — still refused) — measured with
+# `cargo xtask gate kind-isolation --report` against this landing's own tip, and each expires when
+# the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.control.count"
+file = "qa/kind-isolation.toml"
+by = 29
+because = "busbar-core × control (busbar-core, control): rotate's own `resource` face (`RotateKeyReq`, the `RotateResult`/`RotateOutcome` verdict split, `resolve_mintable_resource`'s reuse, the taxonomy/openapi wiring, the `bound_audience` mirror on `KeyView`/`CreatedKeyView`/`RotatedKeyView`) and the token-exchange's sibling face (`ExchangeReq`, `resolve_resource_audience`, the `ExchangeError::UndeclaredResource` arm) plus the admin- and self-serve-layer tests (including the fresh-`GovState`-over-the-same-store durability cell) that drive each — all admin/auth control-plane vocabulary, none of it plane-specific (5,205 -> 5,234)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plane.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "busbar-core × plane (busbar-core, plane): both new verbs read the mounted plane set through `PlaneDispatch::mintable_audiences` rather than a literal — `rotate_key`'s pre-mint validation, `exchange()`'s, and the `mount_plane`/`admit_plane` admission fixtures the new admin, auth and durability tests use to prove a REAL mounted plane's audience, not a fixed string. Plane-kind nouns naming the plane dispatch table these doors both defer to, and only to (3,037 -> 3,047)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.transport.count"
+file = "qa/kind-isolation.toml"
+by = 13
+because = "busbar-core × transport (busbar-core, transport): the RFC 8707 resource strings the new rotate/exchange/durability cells construct and check against (`https://busbar.example.com/mcp` and its near-miss/staging siblings) — a resource indicator is a URL and reads as transport vocabulary by construction, exactly as AUTH-1's sibling row over the same word did in `busbar × transport`. First declared raise for this (crate, kind) pair (2,117 -> 2,130)"
+
 # ── declared raise: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
 # (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport

@@ -130,8 +130,8 @@ fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
 #[test]
 fn first_call_provisions_second_call_reuses_one_row() {
     let gov = gov();
-    let (b1, t1) = gov.issue_self("sam", None, 5000, 1000).unwrap();
-    let (b2, t2) = gov.issue_self("sam", None, 6000, 2000).unwrap();
+    let (b1, t1) = gov.issue_self("sam", None, 5000, 1000, None).unwrap();
+    let (b2, t2) = gov.issue_self("sam", None, 6000, 2000, None).unwrap();
     // ONE binding row for the principal, reused: same id, same group.
     assert_eq!(
         b1.id, b2.id,
@@ -145,6 +145,81 @@ fn first_call_provisions_second_call_reuses_one_row() {
     // Both tokens verify (the second just carries a fresher exp).
     assert!(gov.verify_token(&t1, 1000, None).is_some());
     assert!(gov.verify_token(&t2, 2000, None).is_some());
+}
+
+/// THE RFC 8707 `resource` reaches the self-serve mint (1.6.0 P2): `DeterministicEd25519Keys::issue`
+/// / `refresh` thread `audience` straight through to `GovState::issue_self` / `refresh_self`, exactly
+/// as `POST /keys`'s admin mint threads it to `mint_signed`. RED AT THE BASE: before this face,
+/// `issue`/`refresh` take no `audience` parameter at all, so this file does not compile against that
+/// binary.
+#[tokio::test]
+async fn issue_and_refresh_thread_the_audience_into_the_minted_token() {
+    let gov = gov();
+    const AUD: &str = "https://busbar.example.com/mcp";
+    let keys =
+        DeterministicEd25519Keys::new(gov.clone(), "team".into(), None, Arc::new(NoopProvisioner));
+    let p = principal("sam", &["eng"]);
+
+    // No `resource`: the untouched 1.5.5 shape — a plain token, admissible on the data plane.
+    let plain = keys
+        .issue(&p, Duration::from_secs(3600), None)
+        .await
+        .unwrap();
+    let now = busbar_substrate::store::now();
+    assert!(
+        gov.verify_token(plain.secret.expose_secret(), now, None)
+            .is_some(),
+        "no resource named -> a plain, unbound token"
+    );
+
+    // `resource` given: the REFRESHED token is bound, and stops being a plain-data-plane credential.
+    let bound = keys
+        .refresh(&p, Duration::from_secs(3600), Some(AUD))
+        .await
+        .unwrap();
+    assert!(
+        gov.verify_token(bound.secret.expose_secret(), now, Some(AUD))
+            .is_some(),
+        "the refreshed token verifies on the resource it was bound to"
+    );
+    assert!(
+        gov.verify_token(bound.secret.expose_secret(), now, None)
+            .is_none(),
+        "a bound token must never verify on the plain data plane"
+    );
+}
+
+/// THE DURABILITY CLAIM, at the `GovState` layer directly: the audience `issue_self` records lands
+/// on the STORE ROW (`VirtualKey::bound_audience`), so a freshly-constructed `GovState` reading the
+/// SAME store sees it — no in-process record is consulted or needed. RED against the in-process-map
+/// design this replaced: a fresh `GovState` there would have an empty map and read the key unbound.
+#[test]
+fn issue_self_bound_audience_is_read_back_by_a_fresh_govstate_over_the_same_store() {
+    let store: Arc<dyn crate::governance::Store> = Arc::new(MemoryStore::new());
+    const AUD: &str = "https://busbar.example.com/mcp";
+    let signer = || {
+        Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+            &SEED,
+            crate::governance::signing::DEFAULT_KID,
+        ))
+    };
+    let gov1 = GovState::new_with_signer(store.clone(), None, signer()).expect("gov1 constructs");
+    let (binding, _token) = gov1
+        .issue_self("sam", None, 5000, 1000, Some(AUD))
+        .expect("issue_self mints");
+    assert_eq!(binding.bound_audience.as_deref(), Some(AUD));
+    drop(gov1);
+
+    // A BRAND NEW GovState, never called issue_self/refresh_self itself, reading the SAME store.
+    let gov2 = GovState::new_with_signer(store, None, signer()).expect("gov2 constructs");
+    let row = gov2
+        .lookup_by_sub(&binding.id)
+        .expect("the row is visible to a fresh GovState over the same store");
+    assert_eq!(
+        row.bound_audience.as_deref(),
+        Some(AUD),
+        "the audience is durable on the row, not a property of the GovState that minted it"
+    );
 }
 
 /// THE 1.5.2 TOKEN-EXCHANGE FIX. A self-serve exchange must produce a USABLE key:
@@ -171,6 +246,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         &principal("sam", &["eng"]),
         Duration::from_secs(3600),
         false,
+        None,
     )
     .await
     .expect("first exchange issues a key");
@@ -214,6 +290,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         &principal("sam", &["eng"]),
         Duration::from_secs(3600),
         false,
+        None,
     )
     .await
     .expect("second exchange reuses");
@@ -230,7 +307,8 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
 fn cap_not_tripped_n_logins_one_row() {
     let gov = gov();
     for i in 0..25u64 {
-        gov.issue_self("sam", None, 100_000, 1000 + i).unwrap();
+        gov.issue_self("sam", None, 100_000, 1000 + i, None)
+            .unwrap();
     }
     assert_eq!(
         self_rows(&gov, "sam").len(),
@@ -242,13 +320,13 @@ fn cap_not_tripped_n_logins_one_row() {
 #[test]
 fn refresh_invalidates_old_token() {
     let gov = gov();
-    let (_b, old) = gov.issue_self("sam", None, 100_000, 1000).unwrap();
+    let (_b, old) = gov.issue_self("sam", None, 100_000, 1000, None).unwrap();
     assert!(
         gov.verify_token(&old, 1000, None).is_some(),
         "old token valid before refresh"
     );
 
-    let (_b2, fresh) = gov.refresh_self("sam", None, 100_000, 2000).unwrap();
+    let (_b2, fresh) = gov.refresh_self("sam", None, 100_000, 2000, None).unwrap();
     // Old token now fails (its binding was tombstoned / rotated away).
     assert!(
         gov.verify_token(&old, 2000, None).is_none(),
@@ -307,7 +385,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
     // The whole point of Model B: `issue_self` returns a STANDARD busbar token that the ordinary
     // verify path accepts — no verify-side change.
     let gov = gov();
-    let (binding, token) = gov.issue_self("sam", None, 5000, 1000).unwrap();
+    let (binding, token) = gov.issue_self("sam", None, 5000, 1000, None).unwrap();
     let resolved = gov
         .verify_token(&token, 1000, None)
         .expect("standard token verifies");
@@ -324,12 +402,12 @@ fn re_login_updates_allowed_pools_when_they_change() {
     use busbar_api::ScopeRef;
     let gov = gov();
     let (b1, _t1) = gov
-        .issue_self("sam", Some(vec!["poolA".into()]), 5000, 1000)
+        .issue_self("sam", Some(vec!["poolA".into()]), 5000, 1000, None)
         .unwrap();
     assert_eq!(b1.allowed_scopes, Some(vec![ScopeRef::pool("poolA")]));
     // Admin changed the group's pools; the dev logs in again (same sub).
     let (b2, _t2) = gov
-        .issue_self("sam", Some(vec!["poolB".into()]), 6000, 2000)
+        .issue_self("sam", Some(vec!["poolB".into()]), 6000, 2000, None)
         .unwrap();
     assert_eq!(
         b2.id, b1.id,
@@ -352,7 +430,7 @@ fn concurrent_issue_self_yields_one_binding() {
     for i in 0..8u64 {
         let g = gov.clone();
         handles.push(std::thread::spawn(move || {
-            g.issue_self("sam", Some(vec!["p".into()]), 5000, 1000 + i)
+            g.issue_self("sam", Some(vec!["p".into()]), 5000, 1000 + i, None)
                 .unwrap();
         }));
     }
@@ -570,7 +648,7 @@ async fn resolve_then_issue_via_real_seam() {
     let v = identified("oidc", principal("sam", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb, None).unwrap();
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
+    let issued = issue_key(&keys, p, Duration::from_secs(3600), false, None)
         .await
         .unwrap();
     assert!(issued.secret.expose_secret().starts_with("bbk_"));
@@ -595,7 +673,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let (p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a module-namespaced subject is legitimate + verified");
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
+    let issued = issue_key(&keys, p, Duration::from_secs(3600), false, None)
         .await
         .unwrap();
     assert_eq!(
@@ -618,7 +696,12 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
 struct FakeKeys;
 #[async_trait]
 impl SelfServeKeys for FakeKeys {
-    async fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
+    async fn issue(
+        &self,
+        principal: &Principal,
+        _ttl: Duration,
+        _audience: Option<&str>,
+    ) -> Result<IssuedKey, String> {
         Ok(IssuedKey {
             secret: busbar_api::Redacted::new(format!("fake-scheme-token:{}", principal.id)),
             key_id: "fake".into(),
@@ -626,8 +709,13 @@ impl SelfServeKeys for FakeKeys {
             exp: 9999,
         })
     }
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
-        self.issue(principal, ttl).await
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        audience: Option<&str>,
+    ) -> Result<IssuedKey, String> {
+        self.issue(principal, ttl, audience).await
     }
 }
 
@@ -636,12 +724,12 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
+    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false, None)
         .await
         .unwrap();
     assert_eq!(issued.secret.expose_secret(), "fake-scheme-token:sam");
     // Refresh path also rides the same trait object.
-    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
+    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true, None)
         .await
         .unwrap();
     assert_eq!(refreshed.secret.expose_secret(), "fake-scheme-token:sam");
@@ -656,7 +744,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
+    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false, None)
         .await
         .unwrap();
     let token = issued.secret.expose_secret().clone();
@@ -693,7 +781,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         resolve_exchange(&v, &rb, Some(true)).expect("self_mint=true admits the eligible identity");
     let keys =
         DeterministicEd25519Keys::new(gov_open.clone(), team, pools, Arc::new(NoopProvisioner));
-    issue_key(&keys, p, Duration::from_secs(3600), false)
+    issue_key(&keys, p, Duration::from_secs(3600), false, None)
         .await
         .expect("self_mint=true mints a key");
     assert_eq!(

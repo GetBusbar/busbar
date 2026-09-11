@@ -6,12 +6,20 @@
 //! A caller presents a VERIFIED IdP identity (an id_token / bearer the configured auth chain
 //! authenticates) and receives THEIR OWN busbar key, scoped to their budget. The identity is taken
 //! SOLELY from the chain's verdict ([`ChainVerdict::Identified`]'s `principal.id`) — the request
-//! body is never read, so a caller can never self-scope a key to another subject. The mint rides the
-//! scheme-agnostic [`super::self_keys::SelfServeKeys`] seam.
+//! body is NEVER read for identity, so a caller can never self-scope a key to another subject. The
+//! mint rides the scheme-agnostic [`super::self_keys::SelfServeKeys`] seam.
 //!
 //! This handler is mounted with an EXACT-MATCH middleware bypass (see `AUTH_TOKEN_PATH`): the auth
 //! middleware does not admit/deny it, because the handler runs the chain ITSELF to establish who the
 //! caller is (an unauthenticated caller gets a 401 from here, not from the middleware).
+//!
+//! THE RFC 8707 `resource` (1.6.0 P2): the ONE thing the body is read for, and only AFTER identity is
+//! already established from the chain — never used to establish who the caller is. `None`/absent/a
+//! body this endpoint cannot parse is the UNTOUCHED 1.5.5 exchange: a plain data-plane key,
+//! byte-identical. A well-formed `{"resource": "..."}` mints a token BOUND to that resource instead,
+//! provided a MOUNTED plane declares it (`PlaneDispatch::mintable_audiences`, the same check
+//! `POST /keys`'s admin mint runs) — otherwise the exchange is refused rather than handing back a
+//! credential nothing accepts.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +39,16 @@ use crate::diagnostics::{diag_error, TOKEN_EXCHANGE_MINT_FAILED};
 /// The exact path the exchange is mounted at. The auth middleware bypasses this path so the handler
 /// can run the chain itself; the GET browser flow is mounted at the same path.
 pub(crate) const AUTH_TOKEN_PATH: &str = "/auth/token";
+
+/// The headless exchange's OPTIONAL body: the RFC 8707 `resource` (1.6.0 P2). No
+/// `deny_unknown_fields` and no error on a body that fails to parse at all — see [`exchange`]'s doc:
+/// the body was never read before this field existed, so anything a 1.5.5 caller happened to send is
+/// still silently ignored, exactly as it always was. Only a body that DOES parse and DOES name
+/// `resource` changes behavior.
+#[derive(serde::Deserialize, Default)]
+struct ExchangeReq {
+    resource: Option<String>,
+}
 
 /// `POST /auth/token`: exchange a verified IdP identity for a self-serve busbar key.
 pub(crate) async fn exchange(
@@ -72,6 +90,27 @@ pub(crate) async fn exchange(
             Err(e) => return refusal(e),
         };
 
+    // THE RFC 8707 RESOURCE (optional, 1.6.0 P2) — read ONLY now, after identity is already
+    // established from the chain above, never used to establish it. Small, bounded read; a body
+    // this endpoint cannot parse (empty, not JSON, no `resource` key) is treated exactly as the
+    // pre-1.6.0 handler treated ANY body: silently ignored, so an existing caller's request is
+    // byte-identical in its effect. Only a body that DOES parse and DOES name `resource` changes
+    // anything from here on.
+    let bytes = axum::body::to_bytes(req.into_body(), 16 * 1024)
+        .await
+        .unwrap_or_default();
+    let resource: Option<String> = if bytes.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<ExchangeReq>(&bytes)
+            .unwrap_or_default()
+            .resource
+    };
+    let audience = match resolve_resource_audience(&app, resource.as_deref()) {
+        Ok(a) => a,
+        Err(e) => return refusal(e),
+    };
+
     let Some(gov) = app.governance.clone() else {
         return refusal(ExchangeError::MintFailed(
             "governance is disabled: cannot mint keys".to_string(),
@@ -82,7 +121,7 @@ pub(crate) async fn exchange(
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
     let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
-    match issue_key(&keys, principal, ttl, false).await {
+    match issue_key(&keys, principal, ttl, false, audience).await {
         Ok(issued) => {
             // SELF-CONTAINED response: include `base_url` (= the configured `public_url`, verbatim, no
             // `/v1`) so a headless/CI caller has everything to point a BYOK tool in ONE payload.
@@ -94,6 +133,28 @@ pub(crate) async fn exchange(
                 .into_response()
         }
         Err(e) => refusal(e),
+    }
+}
+
+/// Validate an optional RFC 8707 `resource` against what the MOUNTED planes declare
+/// (`PlaneDispatch::mintable_audiences`) — the exchange's own door onto the SAME check
+/// `resolve_mintable_resource` (`admin/mod.rs`) runs for the admin mint, kept separate because this
+/// one maps to [`ExchangeError`] (a JSON `{"error": …}` body) rather than the admin `Cond` taxonomy.
+///
+/// `None` passes straight through. `Some(resource)` outside the mintable set is
+/// [`ExchangeError::UndeclaredResource`] — refused rather than issuing a credential nothing accepts.
+fn resolve_resource_audience<'a>(
+    app: &crate::state::App,
+    resource: Option<&'a str>,
+) -> Result<Option<&'a str>, ExchangeError> {
+    match resource {
+        None => Ok(None),
+        Some(r) => {
+            if !app.planes.mintable_audiences().any(|a| a == r) {
+                return Err(ExchangeError::UndeclaredResource);
+            }
+            Ok(Some(r))
+        }
     }
 }
 
@@ -129,6 +190,11 @@ fn refusal(e: ExchangeError) -> Response {
             "no self-serve grant for this identity",
         ),
         ExchangeError::BadSubject => (StatusCode::FORBIDDEN, "identity is not a valid subject"),
+        ExchangeError::UndeclaredResource => (
+            StatusCode::BAD_REQUEST,
+            "`resource` is not an audience this deployment serves; a key may only be bound to a \
+             resource a mounted plane declares",
+        ),
         ExchangeError::MintFailed(ref detail) => {
             diag_error!(TOKEN_EXCHANGE_MINT_FAILED, error = %detail, "token-exchange mint failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "could not issue a key")
