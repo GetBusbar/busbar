@@ -93,6 +93,13 @@ pub struct Posting {
     pub arrived_ms: u64,
     /// The instant, as a monotonic clock reads it. ORDERS the record and cannot date it.
     pub arrived_mono: u64,
+    /// **THE SCOPE THIS POSTING'S AMOUNTS WERE RESOLVED AT** — default, plane, pool or tier, with
+    /// the key. Recorded because a bill must be re-derivable from what was written down: the counts
+    /// are here and the amounts are on the dated card, and without this field a card could only
+    /// ever carry one schedule, because a later reader had no way to say which of several a row was
+    /// charged under. A row that carries none is a row from the previous release and reads
+    /// [`busbar_contract::tariff::ScopeKind::Default`].
+    pub scope: busbar_contract::tariff::TariffScope,
     /// Whether the quantities behind this posting were the kernel's own floor rather than a figure
     /// the destination reported. The mark travels from the usage report onto the posting.
     pub estimated: bool,
@@ -128,9 +135,21 @@ impl Posting {
             tier_bp,
             arrived_ms,
             arrived_mono,
+            scope: busbar_contract::tariff::TariffScope::node(),
             estimated: usage.is_estimated(),
             cached: None,
         }
+    }
+
+    /// The same posting, charged at a named scope.
+    ///
+    /// A builder rather than a ninth constructor argument: the scope is a fact about which schedule
+    /// applied and every other field is a fact about what happened, and a caller that knows no
+    /// narrower scope writes nothing rather than spelling the node's out.
+    #[must_use]
+    pub fn at_scope(mut self, scope: busbar_contract::tariff::TariffScope) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// **THE FIGURE A READER MUST USE**: the lookup's, always.
@@ -345,7 +364,7 @@ pub fn price_at_card(
     //
     // A currency the card names no schedule in charges NOTHING for the counts, and the lines say
     // so: a zero that was decided is written down, never left out.
-    let charged = card.fee_terms(currency).map(|terms| {
+    let charged = card.fee_terms_at(currency, &posting.scope).map(|terms| {
         crate::schedule::charge_minor(
             terms,
             posting.entry_count,

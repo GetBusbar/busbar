@@ -2311,6 +2311,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
     durability
         .settle(
             &crate::root::durability::Settling {
+                scope: &crate::root::kernel::TariffScope::node(),
                 key: &key,
                 window: A_DAY,
                 durability: &token,

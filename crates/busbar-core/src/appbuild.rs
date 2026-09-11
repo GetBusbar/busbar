@@ -596,9 +596,9 @@ pub fn build_app_from_config(
     let terms = cfg
         .tariff
         .as_ref()
-        .map(|t| t.amounts("", None, None, cfg.per_request_fee))
+        .map(|t| t.card_amounts(cfg.per_request_fee))
         .unwrap_or_else(|| {
-            crate::config::tariff::TariffCfg::default().amounts("", None, None, cfg.per_request_fee)
+            crate::config::tariff::TariffCfg::default().card_amounts(cfg.per_request_fee)
         });
     let cost = Arc::new(crate::cost::CostModel::resolve_parts_with_terms(
         cfg.rate_card.as_ref(),

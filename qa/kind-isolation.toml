@@ -1344,7 +1344,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "182"
+count = "180"
 
 [[cell]]
 crate = "busbar"
@@ -1354,7 +1354,7 @@ count = "94"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1895"
+count = "1893"
 
 [[cell]]
 crate = "busbar"
@@ -1384,7 +1384,7 @@ count = "949"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1199"
+count = "1201"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -2799,7 +2799,7 @@ count = "17"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "unit"
-count = "22"
+count = "20"
 
 [[cell]]
 crate = "busbar-unit-scope"

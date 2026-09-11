@@ -1348,12 +1348,18 @@ async fn run(data_workers: usize) {
         let schedule = cfg.tariff.clone().unwrap_or_default();
         root::kernel::ROOT_TARIFF.install(Box::new(move |plane, pool, tier| {
             let resolved = schedule.cell(plane, pool, tier);
-            busbar_kernel::teller::TariffCell {
-                entry_fee_enabled: resolved.entry_enabled,
-                dispute_policy: busbar_kernel::teller::DisputePolicy::charging(
-                    resolved.disputed_charges_transaction,
-                    resolved.disputed_charges_units,
-                ),
+            root::kernel::UnitTariff {
+                cell: busbar_kernel::teller::TariffCell {
+                    entry_fee_enabled: resolved.entry_enabled,
+                    dispute_policy: busbar_kernel::teller::DisputePolicy::charging(
+                        resolved.disputed_charges_transaction,
+                        resolved.disputed_charges_units,
+                    ),
+                },
+                // THE SCOPE IS THE SECTION'S ANSWER TOO. It is read off the same section, in the
+                // same call, so a unit whose counts came from a pool's cell cannot have its
+                // amounts looked up under the node's.
+                scope: schedule.scope_of(plane, pool, tier),
             }
         }));
     }

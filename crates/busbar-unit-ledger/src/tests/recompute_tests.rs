@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{
-    Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard,
+    Author, CardEntryDraft, CurrencyCode, FeeTerms, History, HistorySeq, LaneClass, RateCard,
+    TariffScope,
 };
 
 use crate::recompute::{
@@ -85,6 +86,7 @@ fn amended_archive() -> SealedHistory {
 /// arbitration, not the multiply.
 fn correct_line(node_seq: u64) -> Posting {
     let mut line = Posting {
+        scope: TariffScope::node(),
         node: 1,
         node_seq,
         key: key("b"),
@@ -261,7 +263,7 @@ fn on_a_deployment_with_no_rate_card_the_fee_line_is_what_gets_checked() {
     // No class prices at all. Every class line prices at zero, so the fee line is the whole amount
     // and the recompute is checking exactly it.
     let archive = SealedHistory::new(History::opening(
-        RateCard::absent_in(CurrencyCode::USD, busbar_unit_cost::FeeTerms::flat(250)),
+        RateCard::absent_in(CurrencyCode::USD, FeeTerms::flat(250)),
         0,
     ));
     let mut line = correct_line(1);
@@ -562,4 +564,59 @@ fn a_mark_only_ever_moves_forward() {
     assert!(!watermark.is_behind(&behind));
     assert_eq!(watermark.to_string(), "1/9");
     assert_eq!(Watermark::start().to_string(), "nothing recomputed yet");
+}
+
+/// **A ROW BOOKED AT A POOL'S SCOPE RECOMPUTES AT THAT POOL'S SCHEDULE, OFF THE ROW ALONE.**
+///
+/// The recompute is the ledger's audit: it re-prices a booked line against the sealed history and
+/// reports where the cache and the lookup disagree. Once a scoped amount can be charged, a
+/// recompute that read the node's schedule for every row would DISAGREE with every correctly
+/// settled scoped line — and the direction of that disagreement is a node reporting its own books
+/// as wrong. So the scope travels onto the cost unit's posting with the quantities, and this cell
+/// is the proof: the same line, twice, differing in nothing but the scope its row recorded.
+///
+/// A `price_line` that dropped the scope answers the same figure for both and the `assert_ne!`
+/// collapses.
+#[test]
+fn a_line_booked_at_a_pool_scope_recomputes_at_that_pools_schedule() {
+    let mut scoped_card = opening_card();
+    scoped_card.set_scope_terms(
+        CurrencyCode::USD,
+        TariffScope::pool("busy"),
+        FeeTerms {
+            transaction: 250,
+            ..FeeTerms::default()
+        },
+    );
+    let mut tiers = BTreeMap::new();
+    tiers.insert(key("b"), DISCOUNT_TIER_BP);
+    let archive = SealedHistory {
+        history: History::opening(scoped_card, 0),
+        tiers,
+    };
+    let head = archive.head().expect("the fixture's archive has a head");
+    let view = archive.view_at(head).expect("and a snapshot at it");
+
+    let mut at_node = correct_line(1);
+    at_node.scope = TariffScope::node();
+    let mut at_pool = correct_line(1);
+    at_pool.scope = TariffScope::pool("busy");
+
+    let node_nanos = price_line(&at_node, &view, archive.tier_bp(&at_node.key))
+        .expect("the fixture prices")
+        .priced_nanos;
+    let pool_nanos = price_line(&at_pool, &view, archive.tier_bp(&at_pool.key))
+        .expect("the fixture prices")
+        .priced_nanos;
+    assert_ne!(
+        node_nanos, pool_nanos,
+        "a recompute that read one schedule for every row would report every scoped line as wrong"
+    );
+
+    // AND THE RECOMPUTE AGREES WITH ITS OWN SETTLEMENT. The cache is filled from the same lookup,
+    // so a line settled at the pool's schedule and re-read a year later is not a finding.
+    refresh(&mut at_pool, &archive);
+    let outcome = recheck(&at_pool, &archive);
+    assert!(outcome.agrees(), "unexpected findings: {outcome:?}");
+    assert!(outcome.cached_price_is_not_zero());
 }

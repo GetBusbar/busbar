@@ -186,7 +186,9 @@ fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
     holder.apply(
         super::card_from_config(
             std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
-            &busbar_contract::tariff::FeeTerms::flat(7),
+            &busbar_contract::tariff::ScopedFeeTerms::node(
+                busbar_contract::tariff::FeeTerms::flat(7),
+            ),
             true,
             node_currency(),
         ),
@@ -505,12 +507,22 @@ fn the_schedule_holder_carries_the_plane_the_pool_and_the_tier() {
     // A resolver that ANSWERS WITH ITS ARGUMENTS: each key, when it is present, moves one field of
     // the cell. Nothing here is a schedule anybody would configure; it is a probe for what arrived.
     holder.install(Box::new(
-        |plane: &str, pool: Option<&str>, tier: Option<&str>| busbar_kernel::teller::TariffCell {
-            entry_fee_enabled: tier == Some("gold"),
-            dispute_policy: match (plane, pool) {
-                (_, Some("pool-a")) => busbar_kernel::teller::DisputePolicy::EntryOnly,
-                ("llm", _) => busbar_kernel::teller::DisputePolicy::Full,
-                _ => busbar_kernel::teller::DisputePolicy::EntryPlusUnits,
+        |plane: &str, pool: Option<&str>, tier: Option<&str>| super::UnitTariff {
+            cell: busbar_kernel::teller::TariffCell {
+                entry_fee_enabled: tier == Some("gold"),
+                dispute_policy: match (plane, pool) {
+                    (_, Some("pool-a")) => busbar_kernel::teller::DisputePolicy::EntryOnly,
+                    ("llm", _) => busbar_kernel::teller::DisputePolicy::Full,
+                    _ => busbar_kernel::teller::DisputePolicy::EntryPlusUnits,
+                },
+            },
+            // THE SCOPE ANSWERS WITH ITS ARGUMENTS TOO, innermost first — so a holder that carried
+            // the counts through and dropped the scope answers one scope for every row and the
+            // assertions below collapse.
+            scope: match (pool, tier) {
+                (_, Some(t)) => busbar_contract::tariff::TariffScope::tier(t),
+                (Some(p), None) => busbar_contract::tariff::TariffScope::pool(p),
+                (None, None) => busbar_contract::tariff::TariffScope::plane(plane),
             },
         },
     ));
@@ -521,10 +533,15 @@ fn the_schedule_holder_carries_the_plane_the_pool_and_the_tier() {
 
     let plane_only = cell("llm", None, None);
     assert_eq!(
-        plane_only.dispute_policy,
+        plane_only.cell.dispute_policy,
         busbar_kernel::teller::DisputePolicy::Full
     );
-    assert!(!plane_only.entry_fee_enabled);
+    assert!(!plane_only.cell.entry_fee_enabled);
+    assert_eq!(
+        plane_only.scope,
+        busbar_contract::tariff::TariffScope::plane("llm"),
+        "the scope a posting records is the section's own answer, carried through the same holder"
+    );
 
     let pooled = cell("llm", Some("pool-a"), None);
     assert_ne!(
@@ -536,12 +553,17 @@ fn the_schedule_holder_carries_the_plane_the_pool_and_the_tier() {
         tiered, pooled,
         "a tier that changes nothing is a tier argument the holder dropped"
     );
-    assert!(tiered.entry_fee_enabled);
+    assert!(tiered.cell.entry_fee_enabled);
+    assert_eq!(
+        tiered.scope,
+        busbar_contract::tariff::TariffScope::tier("gold"),
+        "the innermost configured scope is the one the posting carries"
+    );
 
     // AND A NODE THAT INSTALLED NOTHING ANSWERS THE SHIPPED DEFAULT, whatever it is asked.
     assert_eq!(
-        super::tariff_cell("a-plane-nothing-registers", Some("p"), Some("t")),
-        busbar_kernel::teller::TariffCell::default(),
+        super::tariff_of("a-plane-nothing-registers", Some("p"), Some("t")),
+        super::UnitTariff::default(),
         "the process holder is uninstalled in this test binary, and an uninstalled holder does \
          not invent a schedule"
     );

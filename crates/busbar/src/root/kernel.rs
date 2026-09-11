@@ -317,13 +317,31 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// a unit that ran before anybody said otherwise should be charged under.
 pub static ROOT_TARIFF: LazyLock<RootTariff> = LazyLock::new(RootTariff::default);
 
-/// What answers "what is this plane's cell" — a plane's registry key in, a schedule out.
-pub type TariffResolver = Box<
-    dyn Fn(&str, Option<&str>, Option<&str>) -> busbar_kernel::teller::TariffCell
-        + Send
-        + Sync
-        + 'static,
->;
+/// **THE SCOPE A POSTING RECORDS**, re-exported beside the holder that answers it.
+///
+/// Re-exported rather than re-declared, and named through the crate that owns the CARD rather than
+/// through the contract directly, for the same reason the card's own terms are: a leg that holds a
+/// posting names one crate for the posting AND for the scope written on it.
+pub use busbar_unit_cost::TariffScope;
+
+/// **WHAT ONE UNIT IS CHARGED UNDER, AND WHERE THAT ANSWER CAME FROM.**
+///
+/// The counts, and the scope they were resolved at. One value because they are one answer: a
+/// posting that recorded a scope the cell was not resolved at would send a later reader to the
+/// wrong schedule, and two calls into the section could answer from two different scopes on a
+/// deployment whose configuration was swapped between them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitTariff {
+    /// The counts half: what the teller charges for.
+    pub cell: busbar_kernel::teller::TariffCell,
+    /// The scope the schedule was resolved at, recorded on the posting the amounts land on.
+    pub scope: TariffScope,
+}
+
+/// What answers "what is this unit's schedule" — the three scope keys in, the cell and the scope
+/// it resolved at out.
+pub type TariffResolver =
+    Box<dyn Fn(&str, Option<&str>, Option<&str>) -> UnitTariff + Send + Sync + 'static>;
 
 /// The holder: one resolver, swapped whole.
 #[derive(Default)]
@@ -388,9 +406,25 @@ pub fn tariff_cell(
     pool: Option<&str>,
     tier: Option<&str>,
 ) -> busbar_kernel::teller::TariffCell {
+    tariff_of(plane, pool, tier).cell
+}
+
+/// **THE SCOPE THIS UNIT'S AMOUNTS RESOLVE AT**, for the posting to record.
+///
+/// The same lookup as [`tariff_cell`], reading the same installed section: the counts and the scope
+/// are one answer and this is the half a posting carries. A node with no section installed answers
+/// the node's own scope, which is the only schedule such a node has.
+#[must_use]
+pub fn tariff_scope(plane: &str, pool: Option<&str>, tier: Option<&str>) -> TariffScope {
+    tariff_of(plane, pool, tier).scope
+}
+
+/// The whole answer: the counts and the scope, from the one installed resolver.
+#[must_use]
+pub fn tariff_of(plane: &str, pool: Option<&str>, tier: Option<&str>) -> UnitTariff {
     match ROOT_TARIFF.resolver.load().as_ref() {
         Some(resolve) => resolve(plane, pool, tier),
-        None => busbar_kernel::teller::TariffCell::default(),
+        None => UnitTariff::default(),
     }
 }
 
@@ -441,7 +475,7 @@ pub(crate) fn default_fee(
 /// drift.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    terms: &busbar_contract::tariff::FeeTerms,
+    terms: &busbar_contract::tariff::ScopedFeeTerms,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,
 ) -> busbar_unit_cost::RateCard {
@@ -464,7 +498,7 @@ pub(crate) fn card_from_config<'r>(
     // nothing to lift and nothing here that could disagree with the pricing site about it: the card
     // is handed the same record the engine resolved. What the figures MEAN — a count times an
     // amount, the floor, the cap, which way a fraction goes — is decided where the card lives.
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, terms.clone())
+    busbar_unit_cost::RateCard::from_config_scoped(currency, lanes, terms.clone())
 }
 
 /// The root, answering the engine's rate-apply seam.

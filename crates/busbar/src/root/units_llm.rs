@@ -427,6 +427,13 @@ impl LlmNode {
             arrived,
             &self.durability_token,
             posted,
+            // NO POOL ON THIS ARM, and it is a fact about the arm rather than a choice. The pool
+            // a unit was routed to is the WALK's, and the walk belongs to the unit; this is the
+            // node's exit hook, which holds the principal and the arrival and never saw one. What
+            // this arm settles is the kernel's own record that a unit ran and ended — the spend on
+            // this plane is the late arm's, and THAT arm resolves and records its own scope. `None`
+            // resolves to the next scope out, exactly as an unnamed pool always has.
+            &crate::root::kernel::tariff_scope(<LlmPlane as PlaneMeta>::KEY, None, None),
         );
     }
 
@@ -831,6 +838,7 @@ fn priced_posting(
     token: &busbar_caps::UsageToken,
     report: &LateReport,
     charged: busbar_kernel::teller::Charge,
+    scope: crate::root::kernel::TariffScope,
 ) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -867,7 +875,12 @@ fn priced_posting(
         busbar_unit_cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
-    );
+    )
+    // THE SCOPE THE SCHEDULE WAS RESOLVED AT, recorded with the counts. The amounts are the card's
+    // and the card carries one schedule per scope, so this is what tells the pricing site — now and
+    // at every later read — which of them this unit was charged under. Without it a scoped figure
+    // could be configured and validated and would never reach a bill.
+    .at_scope(scope);
     // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
@@ -896,8 +909,9 @@ fn priced_amount(
     token: &busbar_caps::UsageToken,
     report: &LateReport,
     charged: busbar_kernel::teller::Charge,
+    scope: crate::root::kernel::TariffScope,
 ) -> u64 {
-    let (_posting, priced) = priced_posting(history, arrived, token, report, charged);
+    let (_posting, priced) = priced_posting(history, arrived, token, report, charged, scope);
     priced
         .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -992,6 +1006,8 @@ impl LateAccrual {
         // finish the plane gives after the body. Where they contradict — a stream that died after a
         // good head — the kernel's one policy answers and marks the posting; the count is the count
         // the previous release billed either way.
+        let schedule = crate::root::kernel::tariff_of(<LlmPlane as PlaneMeta>::KEY, None, None);
+        let scope = schedule.scope.clone();
         let fee = busbar_kernel::teller::charge(
             &fee_facts(
                 walk.served_status(),
@@ -1003,9 +1019,16 @@ impl LateAccrual {
             // LATE arm, reached from a carried report after the walk is gone, and the pool a unit
             // was routed to is the walk's. `None` resolves to the next scope out, which is what an
             // unnamed pool has always done — see `tariff_cell`.
-            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY, None, None),
+            &schedule.cell,
         );
-        let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
+        let amount = priced_amount(
+            &history,
+            arrived,
+            &usage_token,
+            &report,
+            fee,
+            schedule.scope,
+        );
         if amount == 0 {
             return;
         }
@@ -1019,6 +1042,9 @@ impl LateAccrual {
             arrived,
             &durability_token,
             posted,
+            // The LATE arm's own scope, resolved once above with the same keys that decided the
+            // fee, so the row and the figure on it name one schedule.
+            &scope,
         );
     }
 }
@@ -1549,18 +1575,26 @@ impl Units for LlmUnit<'_> {
         // of one unit, so they are answered off one decision: the same `fee_evidence` the exit path
         // settles from. The step used to hand its own count in on the report and this closure used
         // to spend it, which is how a plane that could not see the origin came to decide money.
-        let fee = busbar_kernel::teller::charge(
-            &fee_evidence(&self.walk, ctx.origin),
-            &crate::root::kernel::tariff_cell(
-                <LlmPlane as PlaneMeta>::KEY,
-                Some(self.walk.effective_pool(&self.model()).as_str()),
-                None,
-            ),
+        let schedule = crate::root::kernel::tariff_of(
+            <LlmPlane as PlaneMeta>::KEY,
+            Some(self.walk.effective_pool(&self.model()).as_str()),
+            None,
         );
+        let fee =
+            busbar_kernel::teller::charge(&fee_evidence(&self.walk, ctx.origin), &schedule.cell);
         self.walk.meter(token, usage, &|report| {
             self.history
                 .as_ref()
-                .map(|history| priced_amount(history, self.arrived, usage, report, fee))
+                .map(|history| {
+                    priced_amount(
+                        history,
+                        self.arrived,
+                        usage,
+                        report,
+                        fee,
+                        schedule.scope.clone(),
+                    )
+                })
                 .unwrap_or(0)
         })
     }
@@ -1742,9 +1776,13 @@ pub fn settle(
     arrived: Arrived,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
+    scope: &crate::root::kernel::TariffScope,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
     let key = balance(principal);
     let at = crate::root::durability::Settling {
+        // **THE SCOPE THE AMOUNTS WERE RESOLVED AT, ON THE ROW.** Passed in rather than resolved
+        // here: the pool a unit was routed to is the walk's, and this arm does not hold the walk.
+        scope,
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,

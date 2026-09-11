@@ -5607,32 +5607,62 @@ fn the_tariff_refuses_a_fee_the_previous_releases_key_already_names() {
     assert!(crate::config_validate::validate(&cfg).is_ok());
 }
 
-/// **AN AMOUNT AT A SCOPE THE CARD CANNOT CARRY IS REFUSED RATHER THAN SILENTLY UNAPPLIED.**
+/// **AN AMOUNT AT A POOL'S SCOPE IS ACCEPTED, AND IT REACHES THE CARD THAT WILL APPLY IT.**
 ///
-/// The counts resolve at all four scopes; the amounts live on the node's dated card, and a posting
-/// records no scope to resolve one by. A schedule that would therefore never be applied is a
-/// refusal, in the same words and for the same reason a scope naming an undefined pool is.
+/// It used to be REFUSED, and honestly so: the amounts live on the node's dated card and a posting
+/// recorded no scope, so a per-pool figure was a number an operator believed was in force that
+/// nothing could ever charge. The posting now records the scope its amounts were resolved at and the
+/// card carries one whole schedule per scope, so the figure is applied — and this cell proves BOTH
+/// halves in one breath, because a configuration that validates and then never reaches the card is
+/// exactly the silence the old refusal existed to prevent.
+///
+/// The counts at the same scope are unaffected; they always resolved per unit.
 #[test]
-fn an_amount_at_a_pool_or_a_tier_scope_is_refused_and_the_counts_there_are_not() {
+fn an_amount_at_a_pool_scope_validates_and_reaches_the_card_for_that_pool() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.pools.insert(
         "pool-a".to_string(),
         serde_yaml::from_str("members: []\n").expect("an empty pool is a pool"),
     );
     cfg.tariff = Some(
-        serde_yaml::from_str("pool:\n  pool-a:\n    maximum_cents: 40\n")
-            .expect("the fragment is the grammar"),
+        serde_yaml::from_str(
+            "default:\n  entry_fee: { enabled: true, amount_cents: 2 }\npool:\n  pool-a:\n    \
+             entry_fee: { enabled: true, amount_cents: 40 }\n",
+        )
+        .expect("the fragment is the grammar"),
     );
-    let errors = crate::config_validate::validate(&cfg).expect_err("an amount nothing would apply");
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
     assert!(
-        errors.iter().any(|e| e.contains("maximum_cents")
-            && e.contains("tariff.pool.pool-a")
-            && e.contains("Move them to tariff.default")),
-        "{errors:?}"
+        !errors.iter().any(|e| e.contains("tariff.pool.pool-a")),
+        "a pool's own amount is a schedule something applies, so it is not refused: {errors:?}"
     );
 
-    // The COUNTS at the same scope are not refused: they are resolved per unit, at the moment the
-    // unit runs, which is a place the pool is known.
+    // AND IT IS ON THE CARD'S TERMS, AT THAT POOL'S SCOPE AND AT NO OTHER. A resolution that
+    // dropped the scope answers 2 everywhere and both assertions below collapse.
+    let tariff = cfg.tariff.as_ref().expect("set above");
+    let card = tariff.card_amounts(cfg.per_request_fee);
+    assert_eq!(
+        card.at(&busbar_contract::tariff::TariffScope::pool("pool-a"))
+            .entry,
+        40,
+        "a unit routed to pool-a is charged pool-a's own door fee"
+    );
+    assert_eq!(
+        card.at(&busbar_contract::tariff::TariffScope::pool("pool-b"))
+            .entry,
+        2,
+        "a unit routed anywhere else is charged the node's, not pool-a's"
+    );
+    assert_eq!(
+        card.node_terms().entry,
+        2,
+        "and the node's own schedule is untouched by the pool's"
+    );
+
+    // The COUNTS at the same scope are not refused either: they are resolved per unit, at the
+    // moment the unit runs, which is a place the pool is known.
     cfg.tariff = Some(
         serde_yaml::from_str("pool:\n  pool-a:\n    entry_fee: { enabled: true }\n")
             .expect("the fragment is the grammar"),

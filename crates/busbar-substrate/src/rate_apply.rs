@@ -27,8 +27,9 @@ use crate::billing::RawTierRates;
 pub struct RawRates<'r> {
     /// `(lane, its four raw micro-per-token tier rates)`, as configured.
     pub lanes: &'r [(String, RawTierRates)],
-    /// What the deployment's counts are worth, as contract data — see [`busbar_contract::tariff`].
-    pub terms: busbar_contract::tariff::FeeTerms,
+    /// What the deployment's counts are worth AT EVERY SCOPE IT SCOPED ONE, as contract data — see
+    /// [`busbar_contract::tariff`].
+    pub terms: busbar_contract::tariff::ScopedFeeTerms,
     /// Whether the deployment configured a rate card at all.
     pub present: bool,
 }

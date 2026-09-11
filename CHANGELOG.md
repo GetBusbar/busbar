@@ -160,13 +160,21 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   The amounts apply at the ONE pricing site: a posting now carries a visit count beside its
   transaction count, the rate card carries the schedule, and the figure a bill shows decomposes into
   the line that produced it — including the line a floor or a cap moved, which is never folded
-  silently into another. Amounts are accepted at `tariff.default` only and a narrower scope is
-  refused at boot: they live on the dated card so that spend stays re-derivable at read time, a card
-  is the node's, and a posting records no scope to resolve a per-pool schedule by. The counts go on
-  resolving at all four scopes, because a count is decided while the unit is running, where the pool
-  and the tier are known. What a deployment agreed to charge is carried as one record everywhere it
-  goes — `busbar_contract::tariff::FeeTerms` — so the engine that parses it, the seam that carries
-  it and the unit that applies it hold one shape between them rather than three.
+  silently into another. **An amount written at a narrower scope than the node's is now APPLIED**,
+  where it used to be refused at boot: a posting RECORDS the scope its amounts were resolved at — `default`, or
+  `pool:<name>` and its two siblings — the dated card carries one whole schedule per scope, and the
+  pricing site does one lookup by that scope. So a pool's own figures charge a unit routed to that
+  pool and no other, and an auditor holding the postings and the history re-derives the figure a year
+  later from the row and the card alone, with no configuration in front of them. What a deployment
+  agreed to charge is carried as one record everywhere it goes —
+  `busbar_contract::tariff::FeeTerms` — so the engine that parses it, the seam that carries it and
+  the unit that applies it hold one shape between them rather than three. The counts go on resolving
+  at all four scopes, because a count is decided while the unit is running, where the pool and the
+  tier are known.
+
+  The ledger row's encoding is ADDITIVE and nothing above it moves: the scope is appended to the
+  journal body, length-prefixed, last, so a row written by the previous release is byte-for-byte what
+  it was and reads back as `default` — the only schedule it could have been charged under.
 
 - **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
   "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,

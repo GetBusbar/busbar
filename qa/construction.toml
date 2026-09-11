@@ -419,8 +419,8 @@ because = "the same two: 60 on the caps/contract pair for the declaration and 11
 [[gate.ceiling_raises]]
 key = "cell.busbar.kernel.count"
 file = "qa/kind-isolation.toml"
-by = 11
-because = "busbar_kernel::teller::Charge carried WHOLE into the llm leg's pricing instead of `.transaction` being picked off at the call site — a visit and a transaction are two counts, the pricing site needs both, and handing one over and re-deriving the other is the plane deciding a count again — plus the root cell that drives the schedule holder through `TariffCell` and `DisputePolicy`. Measured 171 -> 182."
+by = 9
+because = "busbar_kernel::teller::Charge carried WHOLE into the llm leg's pricing instead of `.transaction` being picked off at the call site — a visit and a transaction are two counts, the pricing site needs both, and handing one over and re-deriving the other is the plane deciding a count again — plus the root cell that drives the schedule holder through `TariffCell` and `DisputePolicy`. Measured 171 -> 182, and 180 once the holder began answering with the scope beside the cell: the root cell names the holder's own answer where it used to name the kernel's type twice. The `by` is the 9 the face measures on THIS tree, not the 11 it measured on the one before it."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"
@@ -440,11 +440,12 @@ file = "qa/kind-isolation.toml"
 by = 5
 because = "the amounts half of the `tariff:` section, whose subject is per-scope billing and whose scope vocabulary is the plane's: the module says in its own words that a dimension exists exactly when a plane declared it and that the plane scope is keyed by the registry key. Doc text on the file that defines the grammar, not a new reach."
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-unit-ledger.unit.count"
-file = "qa/kind-isolation.toml"
-by = 2
-because = "`busbar_unit_cost::FeeTerms` in the recompute cells' card construction: the card's constructor takes a deployment's terms where it took a scalar, and a cell that built the card another way would be proving something about a card the node never builds."
+# STRUCK on this landing: `cell.busbar-unit-ledger.unit.count` is back at the base's own figure. The
+# recompute cells and the recompute itself now reach the card's terms and the posting's scope through
+# ONE import of the crate that owns the card rather than spelling it at every site, so the two names
+# the previous landing's raise paid for are no longer named twice. A raise that is not a rise is
+# struck rather than left standing: a declaration nobody can measure is how a ceiling stops meaning
+# anything. Measured 22 -> 20, which is the base.
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.caps.count"
@@ -452,13 +453,59 @@ file = "qa/kind-isolation.toml"
 by = 1
 because = "`busbar_caps::PostingFlags::NONE` on the `Charge` the identity cell builds from each recorded cell's own booked counts. A cell that left the mark off would be comparing a value the kernel never produces."
 
+# ── THE POSTING RECORDS THE SCOPE IT WAS CHARGED AT ─────────────────────────────────
+#
+# THE GAP THIS CLOSES, IN ONE SENTENCE. A deployment could write a pool's or a tier's own figures,
+# they validated, and NOTHING WOULD EVER CHARGE THEM -- so the previous landing refused them at boot
+# and named the reason: the amounts live on the node's dated card because spend is re-priced at read
+# time, a card is the node's, and a posting recorded its lane, its tier multiplier and its quantities
+# and NO SCOPE. The refusal was honest and it was a hole. What it was waiting for is one field.
+#
+# A BILL MUST BE RE-DERIVABLE FROM WHAT WAS WRITTEN DOWN. The posting now records the scope its
+# amounts were resolved at -- default, plane, pool or tier, with the key -- and the card carries one
+# WHOLE schedule per scope, so the pricing site does one lookup by that scope and an auditor holding
+# the postings and the history reaches the same figure a year later with no configuration in front of
+# them. ONE scope and not a chain: a row that recorded a chain would be recording the unit's ROUTING
+# rather than the schedule it was billed under, and what a scoped cell leaves unset it takes from the
+# node's own default and never from a third schedule the row does not name.
+#
+# THE ROW ENCODING IS ADDITIVE. The scope is appended to the journal body, length-prefixed, LAST:
+# every field the previous release wrote is byte-for-byte where it was, and a row that carries no
+# scope reads `default`, which is the only schedule such a row could have been charged under.
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 112
+because = "FACE busbar_contract::tariff::{ScopeKind, TariffScope, ScopedFeeTerms}: which of the four scopes a unit's amounts were resolved at, the key under it, the one spelling a ledger row carries it in, and a card's terms at every scope a deployment scoped one. It is declared beside `FeeTerms` for the same reason `FeeTerms` is declared there: the engine that PARSES a deployment's configuration, the seam that CARRIES the result, the card that APPLIES it and the ledger that BOOKS it may not name each other, and this value crosses all four. The encoding sits ON the declaration because a row's spelling and the type that means it are one thing -- two readers each carrying their own parse is how a row comes to be booked under one schedule and re-priced under another. Measured 3571 -> 3683."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 112
+because = "the same face, on the pair's own line count. There is no card, no currency, no count and no arithmetic in it: a scope, its encoding, and a lookup from a scope to the terms already resolved for it."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 121
+because = "the posting's own scope field and the card's per-scope terms, in the crate that owns the card, plus the ledger row that books it: `Posting::scope` and `Posting::at_scope`, `RateCard::{fee_terms_at, set_scope_terms, absent_scoped, from_config_scoped, from_micro_rates_scoped}`, and `busbar_unit_ledger::recompute::Posting::scope` threaded into the ONE lookup the ledger prices a line through. It cannot live anywhere else: a scope resolved at read time, outside the crate that holds the dated card, would be a second answer to what one unit was charged that no later reader could re-derive. Measured 15044 -> 15165."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 233
+because = "the same two and nothing else: 112 on the caps/contract pair for the declaration and 121 on the unit total for the field and the lookup. The kernel does not move on this landing -- the scope is an AMOUNTS fact and the amounts were never the teller's."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the composition root re-exports `busbar_unit_cost::TariffScope` beside the holder that answers it, so every leg and every cell that writes a scope onto a posting names the ROOT's own module and not the unit crate -- one spelling for the whole binary instead of one per site. Measured 1199 -> 1201, which is the re-export and the card constructor the relay now calls; the 33 sites that carry the scope cost nothing."
+
 # ── THE POOL AND THE TIER REACH THE SCHEDULE ─────────────────────────────────────────────────────
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
-by = 6
-because = "the five composition legs each pass the scope its unit was admitted for to `tariff_cell` instead of the plane key alone — the pool the unit was ROUTED to, which for three of them is a value the leg already held and for the other two is a `None` with the reason written where a reader will find it — plus the root cell that drives the holder over all three keys. A face read of the same shape as the two the schedule already makes, and a sixth plane answers it without this file changing. Measured 1889 -> 1895."
+by = 4
+because = "the five composition legs each pass the scope its unit was admitted for to `tariff_cell` instead of the plane key alone — the pool the unit was ROUTED to, which for three of them is a value the leg already held and for the other two is a `None` with the reason written where a reader will find it — plus the root cell that drives the holder over all three keys. A face read of the same shape as the two the schedule already makes, and a sixth plane answers it without this file changing. Measured 1889 -> 1895, and 1893 once each leg read its own plane's registry key off ONE declaration instead of spelling the plane type at every site that needs it. The `by` is the 4 the face measures on THIS tree."
 
 # ── THE TARIFF'S CELLS: one knob, one count, every plane ─────────────────────────────────────────
 #
@@ -515,7 +562,7 @@ because = "the boot validator's refusal for a tariff scope naming a pool, group 
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3571
+contract_caps = 3683
 grammar = 388
 contract_transport = 845
 
@@ -736,12 +783,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5433
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3573
+caps_contract_ceiling = 3685
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15044
+unit_total_ceiling = 15165
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24050
+union_ceiling = 24283
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

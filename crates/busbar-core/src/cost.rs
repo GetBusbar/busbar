@@ -127,7 +127,9 @@ impl CostModel {
     ) -> Self {
         Self::resolve_parts_with_terms(
             rate_card,
-            busbar_contract::tariff::FeeTerms::flat(per_request_fee),
+            busbar_contract::tariff::ScopedFeeTerms::node(busbar_contract::tariff::FeeTerms::flat(
+                per_request_fee,
+            )),
             groups_cfg,
         )
     }
@@ -140,7 +142,7 @@ impl CostModel {
     /// card constructor, and no second place that turns a configured amount into a price.
     pub fn resolve_parts_with_terms(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
-        terms: busbar_contract::tariff::FeeTerms,
+        terms: busbar_contract::tariff::ScopedFeeTerms,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
         // rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
@@ -148,7 +150,7 @@ impl CostModel {
         // The card's rows are the config's `_utok` micro-floats lifted through their neutral raw
         // view (`raw_tier_rates`), so this names no plane config grammar; the unit rounds once to
         // nano-units and clamps the fee, exactly as the private table did.
-        let card = RateCard::from_config_in(
+        let card = RateCard::from_config_scoped(
             CurrencyCode::USD,
             rate_card.map(|card| {
                 card.iter().map(|(model, r)| {

@@ -89,6 +89,14 @@ use busbar_unit_trust::{
 };
 use busbar_unit_usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
 
+/// **THIS PLANE'S OWN REGISTRY KEY**, read off its declaration once for the whole leg.
+///
+/// Every site that needs the key — the audience a token must carry, the claim, the schedule's
+/// own scope and the scope a posting records — reads THIS, so the leg names its declaration
+/// in ONE place, and a site that spelled a key of its own would have nothing to spell it
+/// beside.
+const PLANE_KEY: &str = <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY;
+
 /// The action an audited unit of this plane is recorded under.
 ///
 /// One literal, because the gating rig asserts on it byte for byte: a served `message/send` seals
@@ -817,7 +825,12 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         token: &busbar_caps::DurabilityToken,
     ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
         let key = Self::balance(principal);
+        // **THE SCOPE THE AMOUNTS WERE RESOLVED AT, ON THE ROW.** The same three keys this leg's own
+        // fee evidence resolves its cell from, so the schedule a unit was charged under and the
+        // schedule its journal row names are one answer rather than two.
+        let scope = crate::root::kernel::tariff_scope(PLANE_KEY, Some(self.bindings.pool), None);
         let at = crate::root::durability::Settling {
+            scope: &scope,
             key: &key,
             window: busbar_unit_admission::budget_window(
                 busbar_unit_admission::window::WINDOW_DAY,
@@ -985,11 +998,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         // says none cannot both be true of one unit.
         let fee_count = busbar_kernel::teller::charge(
             &fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
-            &crate::root::kernel::tariff_cell(
-                <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
-                Some(self.bindings.pool),
-                None,
-            ),
+            &crate::root::kernel::tariff_cell(PLANE_KEY, Some(self.bindings.pool), None),
         )
         .transaction;
         AuditInputs {
@@ -1500,11 +1509,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
             fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
-            tariff: crate::root::kernel::tariff_cell(
-                <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
-                Some(self.bindings.pool),
-                None,
-            ),
+            tariff: crate::root::kernel::tariff_cell(PLANE_KEY, Some(self.bindings.pool), None),
         }
     }
 }

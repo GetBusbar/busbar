@@ -59,7 +59,7 @@ use std::collections::BTreeMap;
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{
     price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
-    Quantity, Unpriceable,
+    Quantity, TariffScope, Unpriceable,
 };
 
 use crate::totals::TotalsKey;
@@ -214,6 +214,12 @@ pub struct Posting {
     pub cached: DerivedPrice,
     /// Whether the fee line applies.
     pub origin: PostingOrigin,
+    /// **THE SCOPE THE LINE'S AMOUNTS WERE RESOLVED AT.** Booked with the line and never rewritten,
+    /// so a recompute a year later reaches the same schedule the settlement did by reading the row
+    /// rather than a configuration that may since have changed. A row written before this field
+    /// existed carries the node's own scope, which is the only one it could have been charged
+    /// under.
+    pub scope: TariffScope,
 }
 
 impl Posting {
@@ -553,6 +559,10 @@ pub fn price_line(
         tier_bp,
         arrived_ms: posting.arrived_ms,
         arrived_mono: 0,
+        // THE SCOPE THE ROW RECORDED, not one re-resolved here. A recompute that asked the
+        // configuration which scope this line belongs to would be re-deciding a settled fact from
+        // facts that have moved since.
+        scope: posting.scope.clone(),
         estimated: false,
         cached: None,
     };

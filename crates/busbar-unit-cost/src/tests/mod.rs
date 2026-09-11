@@ -19,6 +19,7 @@ mod identity_tests;
 mod map_derive_tests;
 mod posting_tests;
 mod rate_tests;
+mod scope_tests;
 
 /// The four classes the older release priced, under the names it used for them.
 pub(crate) const INPUT: &str = "input";

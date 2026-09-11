@@ -170,6 +170,7 @@ fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
 fn posting() -> Posting {
     use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
     Posting {
+        scope: crate::root::kernel::TariffScope::node(),
         key: TotalsKey::new(
             BucketId::new("vk_a"),
             CapDimension::NanoUnits,
@@ -616,8 +617,15 @@ fn stamp() -> PostingStamp {
     }
 }
 
+/// The node's own scope, as a `'static` the borrowed field can point at. A posting records one
+/// scope and these cells are about the journal's shape rather than about a schedule, so they all
+/// record the one every unconfigured node's posting does.
+static NODE_SCOPE: std::sync::LazyLock<crate::root::kernel::TariffScope> =
+    std::sync::LazyLock::new(crate::root::kernel::TariffScope::node);
+
 fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling<'a> {
     Settling {
+        scope: &NODE_SCOPE,
         key,
         window: 86_400,
         durability,
@@ -917,4 +925,50 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
         through_posting.ledger.book().get(&key, 86_400)
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
+}
+
+/// **THE SCOPE IS APPENDED TO THE ROW, AND THE PREVIOUS RELEASE'S BYTES DO NOT MOVE.**
+///
+/// The journal is a financial record: a row written is never rewritten, and a reader holding a
+/// year of them must be able to read the ones written before a field existed. So the scope goes on
+/// the END, length-prefixed like every other text field, and everything above it is byte-for-byte
+/// what it was. A row from the previous release simply ends where it always ended, and reading no
+/// scope off it is reading `default` — the only schedule such a row could have been charged under.
+///
+/// The cell is written as a PREFIX comparison rather than as a literal byte string, because what
+/// must hold is that nothing MOVED: a change that renumbered a field above would leave a hand-
+/// written literal passing after somebody updated it, and would leave every row already on disk
+/// unreadable.
+#[test]
+fn the_scope_is_appended_to_the_journal_row_and_moves_no_field_above_it() {
+    let node = posting();
+    let mut pooled = posting();
+    pooled.scope = crate::root::kernel::TariffScope::pool("busy");
+
+    let node_body = node.body();
+    let pooled_body = pooled.body();
+
+    // The previous release's fields: everything up to the appended scope. `default` encodes as the
+    // eight-byte length prefix plus seven bytes, so the shared prefix is the whole row minus 15.
+    let shared = node_body.len() - (8 + "default".len());
+    assert_eq!(
+        node_body[..shared],
+        pooled_body[..shared],
+        "two rows that differ only in the scope must be identical in every field above it"
+    );
+    assert_eq!(
+        &node_body[shared..],
+        [&(b"default".len() as u64).to_le_bytes()[..], b"default"]
+            .concat()
+            .as_slice(),
+        "…and the appended field is the scope, length-prefixed, last"
+    );
+    assert!(
+        pooled_body.len() > node_body.len(),
+        "a longer scope name makes a longer row and disturbs nothing before it"
+    );
+    assert!(
+        pooled_body.ends_with(b"pool:busy"),
+        "the row carries the scope in the one spelling the type declares"
+    );
 }

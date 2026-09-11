@@ -1399,9 +1399,15 @@ pub fn settle(
     at: Clocks,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
+    scope: &crate::root::kernel::TariffScope,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
     let key = balance(principal);
     let settling = crate::root::durability::Settling {
+        // **THE SCOPE THE AMOUNTS WERE RESOLVED AT, ON THE ROW.** Passed in rather than resolved
+        // here, because the pool a unit reached is the caller's fact: this arm holds the clocks and
+        // the principal and never learned which server the unit was routed to, and resolving it
+        // here against `None` would write `default` onto a row whose amounts were a pool's.
+        scope,
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,

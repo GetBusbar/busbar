@@ -1451,6 +1451,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
         },
         &DurabilityToken::mint(&seal),
         posted,
+        &crate::root::kernel::TariffScope::node(),
     )
     .expect("the memory-buffered journal takes it");
     assert_eq!(settled.settlement.released, 600);
@@ -1520,6 +1521,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             at,
             &DurabilityToken::mint(&seal),
             posted,
+            &crate::root::kernel::TariffScope::node(),
         )
         .expect("the memory-buffered journal takes it");
         stamps.push((settled.posting.wall, settled.posting.mono));
@@ -1581,6 +1583,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         },
         &DurabilityToken::mint(&seal),
         posted,
+        &crate::root::kernel::TariffScope::node(),
     )
     .expect("the journal takes both records");
     assert_eq!(

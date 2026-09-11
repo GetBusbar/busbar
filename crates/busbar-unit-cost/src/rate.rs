@@ -184,7 +184,7 @@ impl CellPrices {
 pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,
-    terms: BTreeMap<CurrencyCode, busbar_contract::tariff::FeeTerms>,
+    terms: BTreeMap<CurrencyCode, busbar_contract::tariff::ScopedFeeTerms>,
     currencies: BTreeSet<CurrencyCode>,
 }
 
@@ -195,6 +195,17 @@ impl RateCard {
     /// because there is no card to be missing from — attribution only. The fee is in the given
     /// currency's minor units, and that currency is the one currency such a card names.
     pub fn absent_in(currency: CurrencyCode, terms: busbar_contract::tariff::FeeTerms) -> Self {
+        RateCard::absent_scoped(
+            currency,
+            busbar_contract::tariff::ScopedFeeTerms::node(terms),
+        )
+    }
+
+    /// [`RateCard::absent_in`] with the deployment's schedule at every scope it wrote one for.
+    pub fn absent_scoped(
+        currency: CurrencyCode,
+        terms: busbar_contract::tariff::ScopedFeeTerms,
+    ) -> Self {
         RateCard {
             present: false,
             prices: BTreeMap::new(),
@@ -221,6 +232,21 @@ impl RateCard {
         currency: CurrencyCode,
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         terms: busbar_contract::tariff::FeeTerms,
+    ) -> Self {
+        RateCard::from_micro_rates_scoped(
+            currency,
+            entries,
+            busbar_contract::tariff::ScopedFeeTerms::node(terms),
+        )
+    }
+
+    /// [`RateCard::from_micro_rates_in`] with the deployment's schedule at EVERY scope it wrote one
+    /// for, not only the node's. The one constructor; the spelling above is this with a card that
+    /// scopes nothing.
+    pub fn from_micro_rates_scoped(
+        currency: CurrencyCode,
+        entries: impl IntoIterator<Item = (LaneClass, f64)>,
+        terms: busbar_contract::tariff::ScopedFeeTerms,
     ) -> Self {
         let mut prices: BTreeMap<String, BTreeMap<String, CellPrices>> = BTreeMap::new();
         for (cell, micro) in entries {
@@ -295,8 +321,27 @@ impl RateCard {
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         terms: busbar_contract::tariff::FeeTerms,
     ) -> Self {
+        RateCard::from_config_scoped(
+            currency,
+            lanes,
+            busbar_contract::tariff::ScopedFeeTerms::node(terms),
+        )
+    }
+
+    /// **THE CARD A DEPLOYMENT CONFIGURED, AT EVERY SCOPE IT SCOPED ONE.** The one constructor the
+    /// composition path calls; the spelling above is this with a deployment that scoped no amounts.
+    ///
+    /// A scoped schedule is already WHOLE when it arrives — the inheritance happened where the
+    /// configuration was read — so nothing here resolves anything, and a posting recording a scope
+    /// this card does not carry is charged the node's schedule, exactly as an unnamed scope always
+    /// has been.
+    pub fn from_config_scoped<'a>(
+        currency: CurrencyCode,
+        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        terms: busbar_contract::tariff::ScopedFeeTerms,
+    ) -> Self {
         let Some(lanes) = lanes else {
-            return RateCard::absent_in(currency, terms);
+            return RateCard::absent_scoped(currency, terms);
         };
         let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
             tiers
@@ -304,7 +349,7 @@ impl RateCard {
                 .into_iter()
                 .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
         });
-        RateCard::from_micro_rates_in(currency, entries, terms)
+        RateCard::from_micro_rates_scoped(currency, entries, terms)
     }
 
     /// Add one currency's rate to one cell, and record the currency on the card.
@@ -325,7 +370,31 @@ impl RateCard {
     /// Set one currency's whole fee terms — the amounts half of the deployment's tariff.
     pub fn set_terms(&mut self, currency: CurrencyCode, terms: busbar_contract::tariff::FeeTerms) {
         self.currencies.insert(currency);
-        self.terms.insert(currency, terms);
+        self.terms.insert(
+            currency,
+            busbar_contract::tariff::ScopedFeeTerms::node(terms),
+        );
+    }
+
+    /// **SET ONE SCOPE'S OWN SCHEDULE**, beside the node's, in one currency.
+    ///
+    /// What a pool's or a tier's own figures resolve to, put on the card so a posting that recorded
+    /// that scope can be priced by it — at settlement and again at every later read, off the same
+    /// dated entry. A card with no schedule for a scope answers the node's, which is what a scope
+    /// nobody configured has always resolved to.
+    ///
+    /// A scope may be set only where the currency already has terms: the node's schedule is what
+    /// every scoped one inherits the unwritten half of, so there is no card on which a scoped
+    /// schedule exists and a node-wide one does not.
+    pub fn set_scope_terms(
+        &mut self,
+        currency: CurrencyCode,
+        scope: busbar_contract::tariff::TariffScope,
+        terms: busbar_contract::tariff::FeeTerms,
+    ) {
+        if let Some(existing) = self.terms.remove(&currency) {
+            self.terms.insert(currency, existing.with(scope, terms));
+        }
     }
 
     /// Whether a card is configured at all (token pricing active).
@@ -356,7 +425,22 @@ impl RateCard {
     /// free tariff for a currency nobody priced. Every amount on the returned schedule is in that
     /// currency's MINOR units; the lift to nano-units happens once, at the pricing site.
     pub fn fee_terms(&self, currency: CurrencyCode) -> Option<&busbar_contract::tariff::FeeTerms> {
-        self.terms.get(&currency)
+        self.terms.get(&currency).map(|t| t.node_terms())
+    }
+
+    /// **THE FEE TERMS ONE POSTING IS CHARGED UNDER**: this card's schedule at the scope the
+    /// posting recorded, and the node's where it recorded none or where this card scopes none.
+    ///
+    /// The one lookup the pricing site makes. It is a lookup and not a resolution: the inheritance
+    /// happened where the configuration was read, and what the card holds per scope is already
+    /// whole — so an auditor re-pricing the row a year later reaches the same figure by reading the
+    /// row's scope and this entry, with no configuration in front of them.
+    pub fn fee_terms_at(
+        &self,
+        currency: CurrencyCode,
+        scope: &busbar_contract::tariff::TariffScope,
+    ) -> Option<&busbar_contract::tariff::FeeTerms> {
+        self.terms.get(&currency).map(|t| t.at(scope))
     }
 
     /// Whether a request on this lane must be refused because a card is present and has no entry

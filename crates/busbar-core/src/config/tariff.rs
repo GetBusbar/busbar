@@ -53,7 +53,7 @@
 // THE FEE TERMS ARE CONTRACT DATA. What a deployment WRITES is this file's, what the figures ARE
 // is the contract's, and what they come to is the card's — three questions, three homes, and no
 // crate holding a second shape for one set of figures.
-use busbar_contract::tariff::{FeeTerms, PerUnitTerm, Rounding};
+use busbar_contract::tariff::{FeeTerms, PerUnitTerm, Rounding, ScopedFeeTerms, TariffScope};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -211,6 +211,28 @@ impl TariffCfg {
         }
     }
 
+    /// **WHICH SCOPE THIS UNIT'S AMOUNTS RESOLVE AT** — the innermost one this section actually
+    /// WROTE a cell for, and the node's own where it wrote none.
+    ///
+    /// Configured, not merely applicable: a deployment that scoped nothing for this unit's pool has
+    /// not scoped that pool, and a posting recording `pool:<name>` for it would name a schedule the
+    /// card carries nothing under and invite a reader to look for one. The order is [`Self::cell`]'s
+    /// order, read off the same maps, so the scope a posting records and the scope its amounts were
+    /// folded from are one answer rather than two.
+    #[must_use]
+    pub fn scope_of(&self, plane: &str, pool: Option<&str>, tier: Option<&str>) -> TariffScope {
+        if let Some(t) = tier.filter(|t| self.tier.contains_key(*t)) {
+            return TariffScope::tier(t);
+        }
+        if let Some(p) = pool.filter(|p| self.pool.contains_key(*p)) {
+            return TariffScope::pool(p);
+        }
+        if self.plane.contains_key(plane) {
+            return TariffScope::plane(plane);
+        }
+        TariffScope::node()
+    }
+
     /// The scopes that apply to one unit, MOST SPECIFIC FIRST. Stated once, here, so the counts
     /// half and the amounts half cannot resolve a unit against two different orders.
     fn scopes(&self, plane: &str, pool: Option<&str>, tier: Option<&str>) -> Vec<&TariffScopeCfg> {
@@ -258,12 +280,49 @@ impl TariffCfg {
                         .as_ref()
                         .and_then(|t| t.per_units.as_ref())
                 })
-                .map(Vec::<PerUnitTerm>::clone)
+                .cloned()
                 .unwrap_or_default(),
             minimum: scopes.iter().find_map(|s| s.minimum_cents).unwrap_or(0),
             maximum: scopes.iter().find_map(|s| s.maximum_cents),
             rounding: scopes.iter().find_map(|s| s.rounding).unwrap_or_default(),
         }
+    }
+
+    /// **THE WHOLE OF A DEPLOYMENT'S AMOUNTS, AT EVERY SCOPE IT WROTE ONE FOR** — what the dated
+    /// card carries, and the only shape in which a scoped amount can ever be applied.
+    ///
+    /// One entry per configured scope, each RESOLVED WHOLE by the same field-wise fold as
+    /// [`Self::amounts`], plus the node's own. A card that held unresolved cells would be a card
+    /// that had to re-walk a configuration to price a row, and the configuration is exactly the
+    /// thing that has moved by the time somebody re-prices.
+    ///
+    /// **A SCOPED SCHEDULE INHERITS THE NODE'S, AND NOTHING ELSE'S.** A posting records ONE scope —
+    /// the innermost that applied — so the chain a reader can re-walk from the row is that scope
+    /// and the default. Folding a pool's cell over a plane's as well would charge a unit under a
+    /// third schedule its own row does not name, and an auditor holding the postings and the
+    /// history could not re-derive the figure. What a scoped cell leaves unset it takes from
+    /// `tariff.default` and from the previous release's `per_request_fee:` behind it.
+    #[must_use]
+    pub fn card_amounts(&self, inherited_fee: i64) -> ScopedFeeTerms {
+        let mut out = ScopedFeeTerms::node(self.amounts("", None, None, inherited_fee));
+        for (label, name) in self.named_scopes() {
+            let (scope, terms) = match label {
+                "plane" => (
+                    TariffScope::plane(name),
+                    self.amounts(name, None, None, inherited_fee),
+                ),
+                "pool" => (
+                    TariffScope::pool(name),
+                    self.amounts("", Some(name), None, inherited_fee),
+                ),
+                _ => (
+                    TariffScope::tier(name),
+                    self.amounts("", None, Some(name), inherited_fee),
+                ),
+            };
+            out = out.with(scope, terms);
+        }
+        out
     }
 
     /// **WHERE ONE FEE IS NAMED TWICE.** Every scope of this section against the previous release's

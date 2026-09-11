@@ -141,6 +141,14 @@ use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
 
+/// **THIS PLANE'S OWN REGISTRY KEY**, read off its declaration once for the whole leg.
+///
+/// Every site that needs the key — the audience a token must carry, the claim, the schedule's
+/// own scope and the scope a posting records — reads THIS, so the leg names its declaration
+/// in ONE place, and a site that spelled a key of its own would have nothing to spell it
+/// beside.
+const PLANE_KEY: &str = <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY;
+
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
 /// The report is a bounded collection and the metering step's only failure arm is overrunning it.
@@ -1432,7 +1440,7 @@ impl Units for VoiceUnit<'_> {
             // The audience a signed token must carry to be accepted on this plane's ingress. The
             // plane's own name, so a token minted for another plane's audience is refused here and
             // not at the destination it was going to reach.
-            expected_aud: Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY),
+            expected_aud: Some(PLANE_KEY),
             in_handshake: self.shape.is_handshake(),
             now: self.epoch,
             // Revocation gates NEW units only. Unit 0 is new; a later frame of a session already
@@ -1522,7 +1530,7 @@ impl Units for VoiceUnit<'_> {
         // Everything else asks the policy, and silence is a refusal. The scope unit answers `None`
         // for a pair it was told nothing about, and reading `None` as a pass would be authorization
         // by omission — every operation class a deployment forgot to name would be open.
-        let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
+        let claim = ClaimKey::new(PLANE_KEY);
         let Some(needed) =
             busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
         else {
@@ -1787,13 +1795,12 @@ impl Units for VoiceUnit<'_> {
             upstream_candidate: !self.shape.is_handshake(),
             fee: self.fee(ctx, finish),
             tariff: crate::root::kernel::tariff_cell(
-                <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+                PLANE_KEY,
                 // NO POOL YET, and the reason is a fact about this leg rather than a choice: the
                 // pool a voice unit reaches is the upstream LANE, which the session's dial holds
                 // and which is not on the unit at the two moments the schedule is resolved. `None`
                 // resolves to the next scope out, exactly as an unnamed pool always has.
-                None,
-                None,
+                None, None,
             ),
         }
     }
@@ -1838,7 +1845,13 @@ impl VoiceUnit<'_> {
         token: &busbar_caps::DurabilityToken,
     ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
         let key = Self::balance(principal);
+        // **THE SCOPE THE AMOUNTS WERE RESOLVED AT, ON THE ROW.** The same three keys this leg's own
+        // fee evidence resolves its cell from — including the pool this leg cannot name, for the
+        // reason stated at those sites — so the schedule a unit was charged under and the schedule
+        // its journal row names are one answer rather than two.
+        let scope = crate::root::kernel::tariff_scope(PLANE_KEY, None, None);
         let at = crate::root::durability::Settling {
+            scope: &scope,
             key: &key,
             window: busbar_unit_admission::budget_window(
                 busbar_unit_admission::window::WINDOW_DAY,
@@ -1906,13 +1919,12 @@ impl VoiceUnit<'_> {
         let fee_count = busbar_kernel::teller::charge(
             &self.fee(ctx, Some(finish)),
             &crate::root::kernel::tariff_cell(
-                <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+                PLANE_KEY,
                 // NO POOL YET, and the reason is a fact about this leg rather than a choice: the
                 // pool a voice unit reaches is the upstream LANE, which the session's dial holds
                 // and which is not on the unit at the two moments the schedule is resolved. `None`
                 // resolves to the next scope out, exactly as an unnamed pool always has.
-                None,
-                None,
+                None, None,
             ),
         )
         .transaction;
@@ -2051,7 +2063,7 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::reco
 /// deployment decides is which principals hold which scope; what the classes need is structure.
 #[must_use]
 pub fn scope_policy() -> crate::root::policy::ScopePolicy {
-    let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
+    let claim = ClaimKey::new(PLANE_KEY);
     crate::root::policy::ScopePolicy::new()
         // The handshake's own class is declared for completeness, but the approve step answers it
         // before the policy is asked: a kernel-granted operation needs no policy entry at all.

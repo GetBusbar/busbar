@@ -103,7 +103,28 @@ them). Each axis is blind to the other two; only the kernel composes them.
   kernel's status in with "none", the two sources collapsed into one, and the arm that exists for a
   stream that dies after a good head was unreachable on every plane at once. A locator and never a
   value — a plane that reported the class as well as the place would be a plane deciding its own
-  fee. Two crates carry their own surface ceilings beside it, because
+  fee. The fourth is **`busbar_contract::tariff`** (`FeeTerms`, `PerUnitTerm`,
+  `Rounding`; 60 lines): what a deployment agreed to charge, as data — a record of figures in a
+  currency's minor units and the rule for a fraction of one. It is here because the engine that
+  PARSES a deployment's configuration, the seam that CARRIES the result and the unit that APPLIES it
+  may not name each other: a record in the retiring engine is a name three crates learn and then
+  unlearn, a record in the unit that prices makes the seam depend on the card's shape, and a record
+  in the substrate is a line the freeze refuses. It holds no count and no currency, and the one thing
+  it can DO is divide — because a rule that says which way a fraction goes and the function that
+  sends it there are one thing, and two readers each carrying their own division is how a request
+  comes to be judged at one figure and billed at another. The fifth is **the scope a posting was
+  charged at** (`ScopeKind`, `TariffScope`, `ScopedFeeTerms`; 112 lines): which of the four scopes a
+  unit's amounts were resolved at, the key under it, the ONE spelling a ledger row carries it in, and
+  a card's terms at every scope a deployment scoped one. A bill must be re-derivable from what was
+  written down and from nothing else — the counts are on the posting and the amounts are on the dated
+  card — and until a posting said WHICH schedule it was charged under, a card could only ever carry
+  one, because a later reader had no way to choose a second. So a per-pool or per-tier figure could
+  be configured, validated, and never charged, and the tree refused it at boot rather than apply it.
+  It is declared beside the terms it selects, for the reason the terms are declared there: this value
+  crosses the configuration engine, the rate-apply seam, the card and the ledger, and all four must
+  spell it the same way or a row is booked under one schedule and re-priced under another. ONE scope
+  and never a chain: a row that recorded a chain would record the unit's ROUTING rather than the
+  schedule it was billed under. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
@@ -137,7 +158,23 @@ them). Each axis is blind to the other two; only the kernel composes them.
   cost unit naming the admission unit is a Cargo library cycle, refused by name. The topology is the
   cost unit's, the walk is the door's, and a memo of the walk is the door's too. It is a MOVE: 105
   of the 138 lines are the retiring engine's own by identity, and `busbar-core/src/cost.rs` falls
-  471 -> 292 in the same transaction. 100 % (non-equivalent)
+  471 -> 292 in the same transaction. The third is **the amounts half of the tariff**
+  (`busbar_unit_cost::schedule`, and what it added to `posting.rs` and `rate.rs`; 111 measured
+  lines): the bounded charge over a deployment's declared terms — the visit, the transaction, each
+  dimension's quantity under the declared rounding, held to the floor and the cap — in the crate that
+  owns the dated card. There is nowhere else it could live: a price applied outside the crate that
+  holds the card is a second pricing policy, and it is that ONE site the `one-pricing-site` row
+  exists to keep at one. The fourth is **the scope a posting was charged at, on the posting**
+  (`Posting::scope` and `Posting::at_scope`; `RateCard::{fee_terms_at, set_scope_terms,
+  absent_scoped, from_config_scoped, from_micro_rates_scoped}`; the same field on
+  `busbar_unit_ledger::recompute::Posting`, threaded into the ONE lookup the ledger prices a line
+  through; 121 measured lines). The card holds one WHOLE schedule per scope and the pricing site does
+  ONE lookup by the scope the row recorded — never a resolution, because the inheritance happened
+  where the configuration was read and the configuration is exactly the thing that has moved by the
+  time somebody re-prices. The ledger row's encoding is ADDITIVE: the scope is appended to the
+  journal body, length-prefixed, last, so every field the previous release wrote is byte-for-byte
+  where it was and a row that carries no scope reads `default` — the only schedule such a row could
+  have been charged under. 100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
