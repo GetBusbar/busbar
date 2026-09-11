@@ -33,11 +33,12 @@
 #              the retiring crate whose codec half the dialects still reach. Every cell this branch
 #              wrote or moved is in one of those binaries.
 families = '^(voice|streams|boot|neutrality)([|.]|$)'
-tests = [
-  "busbar",
-  "busbar-voice",
-  "busbar-plane-streams",
-  "busbar-plane-streams-openai",
-  "busbar-plane-streams-gemini",
-  "busbar-plane-streams-twilio",
-]
+# ONE LINE, and it has to be: both readers of this file — .github/workflows/keep-proof.yml and
+# scripts/prove-remote.sh:67 — take the array with a single-line `sed`, so a pretty-printed
+# multi-line array is read as NO packages and the run silently widens to the whole workspace. That
+# is not a safe default here: it drags in `busbar-a2a`'s
+# `the_section_is_a_first_class_member_of_the_chassis`, which is RED at this branch's base
+# `0ba0134d9` (the `agent_defs` -> `plane_sections` drain left that cell behind) and which this
+# branch does not touch, and the run stops at the first red leg before the ORACLE leg — the one leg
+# that answers the only question this branch has to answer.
+tests = ["busbar", "busbar-voice", "busbar-plane-streams", "busbar-plane-streams-openai", "busbar-plane-streams-gemini", "busbar-plane-streams-twilio"]
