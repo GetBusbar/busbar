@@ -1905,3 +1905,9 @@ key = "rules.loc-ceilings.union_ceiling"
 file = "qa/construction.toml"
 by = 10
 because = "the same face on the union, NET of what naming it deleted: the card's own `CLASS_INPUT`/`CLASS_OUTPUT`/`CLASS_CACHE_READ`/`CLASS_CACHE_WRITE`/`RESERVED_CLASSES` and the admission unit's identical five are gone, so the twenty-two lines the contract gained cost the union ten. The ceiling rises by the ten this landing measured and NOT to the measurement. Measured 24284 -> 24294."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plane.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "the refusal for a plane-scoped amount no unit of that plane would pay. `TariffCfg::shadowed_plane_amounts` and the validator arm that reads it are a rule ABOUT the plane scope of the `tariff:` section — the collision is between `tariff.plane.<k>` and a narrower cell, and a refusal that could not say the word could not name which two cells collide or which edit resolves it. The counts half and the amounts half fold one order; the card carries one entry per configured scope; a plane amount beside a pool or tier cell is a schedule that shape cannot carry, and it was silently charging that plane's units everywhere except inside the scoped pool. The cells that drive it name the scope in the same breath."

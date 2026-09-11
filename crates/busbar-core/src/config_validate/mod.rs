@@ -1511,6 +1511,28 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
         }
 
+        // **AN AMOUNT NOTHING WOULD EVER CHARGE IS REFUSED, NOT DROPPED.** The counts half and the
+        // amounts half fold one order — tier, pool, plane, default — but the card carries one entry
+        // per configured SCOPE and a posting records the innermost that applied, so that the figure
+        // can be re-derived from the row and the dated history alone. A plane cell with amounts
+        // BESIDE a pool or tier cell breaks that: units of that plane inside the scoped pool record
+        // the pool, whose card entry is the pool over the default with no plane layer between, so
+        // the plane's amount is charged to every unit of that plane outside the pool and to none
+        // inside it. Two units on one plane priced by two schedules, one of which nobody wrote.
+        //
+        // There is no honest arm: folding the plane in prices a unit under a schedule its own row
+        // does not name, and dropping it is the silent under-charge this refusal replaces.
+        for (plane, inner) in tariff.shadowed_plane_amounts() {
+            errors.push(format!(
+                "tariff.{plane} sets an amount and tariff.{inner} is also configured: a unit of \
+                 that plane inside that scope is charged at tariff.{inner}, which inherits \
+                 tariff.default and NEVER tariff.{plane} — so the amount would be charged to that \
+                 plane's units everywhere except there, and nothing would say so. Move the amount \
+                 into tariff.{inner} (and into every other scope it should apply at), or move it to \
+                 tariff.default, or drop the narrower scope"
+            ));
+        }
+
         // ONE FEE, ONE NUMBER. `per_request_fee:` and `rate_card:` are the previous release's
         // spelling of the transaction fee and of what a unit of a dimension costs. A deployment
         // that also writes the tariff's own spelling for the same fee at the same scope has said
