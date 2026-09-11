@@ -40,7 +40,8 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, UsageLedger, VirtualKey,
+    ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, StoreResult,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -1129,3 +1130,129 @@ pub fn assert_key_spend_and_metering_survive_a_reopen(open: &dyn Fn() -> Arc<dyn
          rename away from being live again"
     );
 }
+
+/// The `(bucket_id, window_start)` window [`assert_usage_survives_reopen_atomically`] accumulates
+/// into. A DIFFERENT window from [`REOPEN_WINDOW`] so the two reopen checks can run against one
+/// shared database without either reading the other's accumulation.
+pub const ATOMIC_WINDOW: u64 = 1_700_086_400;
+/// The model the atomic-reopen check's completion flush attributes its tokens to.
+const ATOMIC_MODEL: &str = "conformance-model-atomic";
+
+/// The bucket [`assert_usage_survives_reopen_atomically`] accumulates into, under `ns`. A BUDGET
+/// bucket id, not a key id: the ledger is keyed by bucket, and this check never mints a key.
+pub fn atomic_bucket(ns: &str) -> String {
+    format!("{ns}_atomicledger")
+}
+
+/// The whole ledger [`assert_usage_survives_reopen_atomically`] demands back — the SUM of the two
+/// flushes it applies, in one record. Public so a backend can assert against it directly, or clean
+/// its own window before calling.
+pub fn atomic_ledger() -> UsageLedger {
+    UsageLedger {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![ModelTokens {
+            model: ATOMIC_MODEL.to_string(),
+            usage_units: [("input".to_string(), 11u64), ("output".to_string(), 7u64)]
+                .into_iter()
+                .collect(),
+        }],
+    }
+}
+
+/// **The usage ledger is ONE accounting record: a reopen returns EVERY field the flushes accrued,
+/// or the backend has lost money. Specifically — the bucket-level request counters must survive a
+/// flush that carried NO model breakdown.**
+///
+/// # The production sequence this replays, and why it is not the same as [`assert_key_spend_and_metering_survive_a_reopen`]
+///
+/// The engine charges a request at ADMISSION (`+1 request`, and the model is not known yet — the
+/// upstream has not answered) and accrues its tokens at COMPLETION. The write-behind flusher ticks
+/// on its own cadence (`advanced.usage_flush_interval_ms`, 100 ms by default), so a request whose
+/// response straddles a tick produces TWO [`UsageDelta`]s for one request:
+///
+///   1. `{ requests: +1, billable_requests: +1, models: [] }` — the admission flush. **No model.**
+///   2. `{ requests: 0,  billable_requests: 0,  models: [<the tokens>] }` — the completion flush.
+///
+/// A backend that keys its ledger rows by `(bucket, window, MODEL)` and hangs the bucket-level
+/// request counters off those rows has nowhere to put (1): the delta names no model, so the write
+/// is a no-op and the count is dropped. (2) then lands, carrying `requests: 0`. The reopened ledger
+/// reads back with the TOKENS intact and the REQUEST COUNT AT ZERO — spend survives, the cap does
+/// not — and a restarted node serves the key a whole fresh `requests` allowance.
+///
+/// That is not a hypothetical: it is the measured shape of a real first-party backend, and it is
+/// invisible to every check that writes one whole ledger at once. The sibling check
+/// ([`assert_key_spend_and_metering_survive_a_reopen`]) writes a complete [`UsageLedger`] through
+/// `put_usage` — requests and models together — so a model-keyed backend can hang the counters off
+/// the model row it is being handed and pass. Only the SPLIT sequence tells the two apart, which is
+/// why this check drives `add_usage` twice instead of `put_usage` once.
+///
+/// # What it asserts
+///
+/// The reopened [`UsageLedger`] equals [`atomic_ledger`] — the exact sum of the two flushes, field
+/// by field. ALL FIELDS OR NONE: a ledger that came back with tokens and no requests is the defect,
+/// and so is one that came back with requests and no tokens.
+///
+/// `open` has the same meaning as in [`assert_key_spend_and_metering_survive_a_reopen`]: called
+/// twice, first handle dropped in between. A RAM backend's opener (see [`shared_opener`]) hands
+/// back the same live store, so its green row proves READ-BACK, not durability.
+pub fn assert_usage_survives_reopen_atomically(open: &dyn Fn() -> Arc<dyn Store>, ns: &str) {
+    let bucket = atomic_bucket(ns);
+    let want = atomic_ledger();
+
+    // ── HANDLE ONE: the two flushes one straddling request produces. Then let the handle go. ───
+    {
+        let store = open();
+        // (1) THE ADMISSION FLUSH. `models` is EMPTY on purpose — this is the flush the engine
+        // emits when a tick lands between admission and the upstream's answer.
+        store
+            .add_usage(
+                &bucket,
+                ATOMIC_WINDOW,
+                &UsageDelta {
+                    requests: 1,
+                    billable_requests: 1,
+                    models: Vec::new(),
+                },
+            )
+            .expect("handle one: the admission flush (a requests delta with no model breakdown)");
+        // (2) THE COMPLETION FLUSH. The request was already counted by (1), so this delta moves
+        // only tokens — exactly as `flush_budgets` computes it from the acked baseline.
+        store
+            .add_usage(
+                &bucket,
+                ATOMIC_WINDOW,
+                &UsageDelta {
+                    requests: 0,
+                    billable_requests: 0,
+                    models: vec![ModelTokensDelta {
+                        model: ATOMIC_MODEL.to_string(),
+                        usage_units: [("input".to_string(), 11i64), ("output".to_string(), 7i64)]
+                            .into_iter()
+                            .collect(),
+                    }],
+                },
+            )
+            .expect(
+                "handle one: the completion flush (the tokens, with the request already counted)",
+            );
+    }
+
+    // ── HANDLE TWO: the reopen. ───────────────────────────────────────────────────────────────
+    let store = open();
+    let back = store
+        .get_usage(&bucket, ATOMIC_WINDOW)
+        .expect("handle two: get_usage must not error");
+    assert_eq!(
+        back, want,
+        "the usage ledger did not survive the reopen as ONE record. Both `add_usage` calls \
+         returned Ok. If `requests`/`billable_requests` came back 0 while the model tokens are \
+         intact, the backend hangs the bucket-level request counters off its per-MODEL rows and \
+         silently dropped the admission flush, which carried no model — so every restart hands a \
+         requests-capped key a fresh allowance while its spend is still counted. All fields or none"
+    );
+}
+
+#[cfg(test)]
+#[path = "tests/store_conformance_tests.rs"]
+mod tests;

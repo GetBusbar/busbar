@@ -1095,3 +1095,67 @@ fn budget_block_carries_downgrade_target() {
         other => panic!("the tighter budget's downgrade governs, got {other:?}"),
     }
 }
+
+/// THE SPLIT FLUSH: a request whose response straddles a flush tick is written to the store as TWO
+/// deltas — the admission one (`+1 request`, NO model: the upstream has not named one yet) and the
+/// completion one (the tokens, with the request already counted). A restart must read BOTH back out
+/// of the ONE accounting record, or the key's `requests` cap is re-granted while its spend survives.
+///
+/// The default cadence is 100 ms (`advanced.usage_flush_interval_ms`), so this is not an exotic
+/// interleaving — it is what happens to any request slower than the tick. Driven here at the
+/// governance seam (flush, flush, fresh `GovState`, hydrate) because that is where the engine
+/// decides what crosses the store boundary; the matching ruling on the OTHER side of that boundary
+/// is `busbar_plugin_testkit::store_conformance::assert_usage_survives_reopen_atomically`, which a
+/// shipped first-party backend fails by hanging the bucket-level counters off its per-model rows.
+#[test]
+fn a_flush_that_straddles_the_response_keeps_the_request_count_and_the_tokens() {
+    let store = Arc::new(MemoryStore::new());
+    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 10, Some(LimitWindow::Day))],
+        ),
+    )]);
+    let k = key("vk_straddle", Some("g"));
+    let now = 1_700_000_000;
+
+    // ADMISSION, then a tick BEFORE the upstream answers: the delta this flush writes names no
+    // model at all.
+    g.try_admit(&cm, &k, "", now).expect("admits");
+    assert!(
+        g.flush_budgets() >= 1,
+        "the admission flush must reach the store — it is the only carrier of the request count"
+    );
+    assert_eq!(
+        store
+            .get_usage("vk_straddle", 0)
+            .expect("get_usage")
+            .requests,
+        1,
+        "after the admission flush the durable record must already hold the request count, with \
+         no model breakdown to hang it off"
+    );
+
+    // COMPLETION, then the next tick: this delta carries the tokens and no new request.
+    g.record_usage(&cm, &k, "", "m", &toks(500, 0), now);
+    assert!(g.flush_budgets() >= 1, "the completion flush");
+
+    // THE RESTART.
+    let g2 = GovState::new(store, None).expect("memory store constructs");
+    g2.hydrate_budgets(&cm, now).expect("hydrate");
+    let u = g2
+        .derived_bucket_usage(&cm, "vk_straddle", super::WINDOW_TOTAL, true, now)
+        .expect("derived usage");
+    assert_eq!(
+        u.tokens, 500,
+        "the tokens the completion flush wrote did not survive the restart"
+    );
+    assert_eq!(
+        u.requests, 1,
+        "the tokens survived the restart and the REQUEST COUNT DID NOT — the restarted node serves \
+         this key a whole fresh `requests` allowance while still counting its spend"
+    );
+}

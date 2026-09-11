@@ -734,7 +734,9 @@ impl ModelTokensDelta {
 /// derives spend locally from its own rate card.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct UsageDelta {
-    /// Signed delta of the admission (never-refunded) request count.
+    /// Signed delta of the admission (never-refunded) request count. BUCKET-level, never
+    /// per-model: it is legal and routine for this to be non-zero while `models` is EMPTY (the
+    /// admission flush, emitted before the upstream names a model) — see [`Store::add_usage`].
     pub requests: i64,
     /// Signed delta of the billable (fee-base, refundable) request count.
     #[serde(default)]
@@ -1058,6 +1060,20 @@ pub trait Store: Send + Sync + 'static {
     /// durable record. This is the FLEET-HONEST flush primitive: N nodes each flushing their
     /// delta-since-last-flush sum to the true fleet total, where `put_usage`'s absolute overwrite
     /// would be last-writer-wins. Counters are floored at 0. No dollar delta crosses the wire.
+    ///
+    /// THE REQUEST COUNTERS ARE BUCKET-LEVEL, AND `models` MAY BE EMPTY. A backend MUST make
+    /// `requests`/`billable_requests` durable independently of the per-model rows. The engine
+    /// charges a request at ADMISSION — before the upstream has answered, so before any model is
+    /// known — and accrues its tokens at COMPLETION, while the write-behind flusher ticks on its
+    /// own cadence (`advanced.usage_flush_interval_ms`, 100 ms by default). A request whose
+    /// response straddles a tick therefore produces TWO deltas: `{requests: +1, models: []}` then
+    /// `{requests: 0, models: [<the tokens>]}`. A backend that hangs the counters off its
+    /// `(bucket, window, MODEL)` rows has nowhere to write the first one; it returns `Ok(())` and
+    /// drops the count, and the ledger reads back after a restart with the SPEND INTACT AND THE
+    /// REQUEST COUNT AT ZERO — every requests-capped key is handed a fresh allowance by a restart.
+    /// Measured on a shipped first-party backend, so it is a rule here rather than an observation:
+    /// the shared store-conformance suite's `assert_usage_survives_reopen_atomically` drives
+    /// exactly that two-flush sequence and is the row a backend has to be green on.
     ///
     /// DEFAULT: a read-modify-write fallback (get + apply + put) for stores without a native
     /// atomic add - correct for a single writer; a real shared backend overrides with an atomic

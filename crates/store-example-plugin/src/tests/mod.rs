@@ -804,6 +804,39 @@ fn conformance_file_key_spend_and_metering_survive_a_reopen() {
     let _ = std::fs::remove_file(super::lock_path_for(&path));
 }
 
+/// The usage ledger is ONE accounting record across a REAL reopen: the admission flush (a requests
+/// delta carrying no model) and the completion flush (the tokens, with the request already counted)
+/// must both be in the bytes the second `FileStore::open` reads back. See
+/// `assert_usage_survives_reopen_atomically` for why the split sequence is the only one that can
+/// tell a whole-record backend from one that hangs the request counters off its per-model rows.
+///
+/// A genuine second open, same as the check above, so this one is a DURABILITY proof and not a
+/// read-back one: the only possible source of the counters it reads is the file the first handle
+/// committed.
+#[test]
+fn conformance_file_usage_survives_reopen_atomically() {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-atomic-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let at = path.clone();
+    let open = move || -> std::sync::Arc<dyn Store> {
+        std::sync::Arc::new(
+            FileStore::open(at.clone()).expect("open a FileStore handle at the durable_path"),
+        )
+    };
+    busbar_plugin_testkit::store_conformance::assert_usage_survives_reopen_atomically(
+        &open, "file",
+    );
+
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
+
 /// `delete_key` on an id that names no row is an ERROR, answered by the DURABLE backend — the key
 /// verbs are no longer delegated, so `FileStore` has its own answer to get wrong. Written out here
 /// rather than wired to the shared cell of the same name, because this crate pays for every mention

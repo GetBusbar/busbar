@@ -140,3 +140,13 @@ fn key_spend_and_metering_survive_a_reopen() {
     let open = conf::shared_opener(std::sync::Arc::new(MemoryStore::new()));
     conf::assert_key_spend_and_metering_survive_a_reopen(&open, "confreopen");
 }
+
+/// The usage ledger is ONE accounting record: a reopen returns every field the flushes accrued or
+/// none. See [`conf::assert_usage_survives_reopen_atomically`] for the production sequence it
+/// replays (an admission flush carrying no model, then a completion flush carrying no requests) and
+/// for the same READ-BACK-not-durability caveat the sibling check above carries.
+#[test]
+fn usage_survives_reopen_atomically() {
+    let open = conf::shared_opener(std::sync::Arc::new(MemoryStore::new()));
+    conf::assert_usage_survives_reopen_atomically(&open, "confatomic");
+}
