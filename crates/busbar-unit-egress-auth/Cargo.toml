@@ -5,15 +5,21 @@
 # (it only carries bytes). That unit's whole job — decorate the request, substitute every
 # `SecretSlot` itself, and re-check the lane after decoration — is a pure function over data plus
 # one HMAC computation, so it stands alone with `busbar-caps` as its only in-tree dependency. `hmac`
-# / `sha2` / `hex` are the plain building blocks SigV4 is defined in terms of, already pinned in the
-# workspace table; nothing here reaches into a transport, a plane, or an HTTP framework.
+# / `sha2` / `hex` are the plain building blocks a request signature is defined in terms of, already
+# pinned in the workspace table; nothing here reaches into a transport, a plane, or an HTTP
+# framework.
+#
+# WHY IT NOW NAMES THE CONTRACT. It stopped holding its own list of schemes. Which presentation a
+# request takes is read off the `CredentialPresentation` the dialect declared, and that declaration
+# lives on the ABI — so the ABI is the one edge this crate gained, and a list of vendors is the
+# thing it lost in exchange.
 [package]
 name = "busbar-unit-egress-auth"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The egress-auth unit: decorate(cfg, &EgressBody, signer) -> AuthDecoration over bearer / api-key / SigV4, SecretSlot substitution, and the post-decoration lane cross-check."
+description = "The egress-auth unit: decorate(cfg, &EgressBody, signer) -> AuthDecoration over the declared presentation kinds, SecretSlot substitution, and the post-decoration lane cross-check."
 license = "Apache-2.0"
 
 [lib]
@@ -22,6 +28,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

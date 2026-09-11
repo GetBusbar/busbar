@@ -4,6 +4,33 @@
 use super::*;
 use busbar_caps::{KernelSeal, LaneId, TrustToken};
 
+/// A presentation that writes the credential behind a scheme word in the authorization header —
+/// the kind four of the shipped declarations carry. Composed HERE, as a declaration, because that
+/// is the only way this unit ever learns of one.
+const WORDED: CredentialPresentation = CredentialPresentation::Header {
+    name: "authorization",
+    prefix: Some("Bearer"),
+};
+
+/// A presentation that writes the credential into a named header verbatim.
+const fn verbatim(name: &'static str) -> CredentialPresentation {
+    CredentialPresentation::Header { name, prefix: None }
+}
+
+/// No signing parameters: every kind but the request signature ignores them entirely.
+const NO_SIGNING: SigningParams<'static> = SigningParams {
+    access_key_id: "",
+    region: "",
+    service: "",
+};
+
+/// The signing parameters of the published worked example this crate's signature is proven against.
+const WORKED_EXAMPLE: SigningParams<'static> = SigningParams {
+    access_key_id: "AKIDEXAMPLE",
+    region: "us-east-1",
+    service: "iam",
+};
+
 fn token() -> EgressAuthToken {
     EgressAuthToken::mint(&KernelSeal::acquire_for_kernel())
 }
@@ -12,12 +39,12 @@ fn trust_token() -> TrustToken {
     TrustToken::mint(&KernelSeal::acquire_for_kernel())
 }
 
-/// The destination the trust unit judged for the Bedrock lane: the sealed lane is what the
+/// The destination the trust unit judged for a signed lane: the sealed lane is what the
 /// envelope's host field must still carry after decoration.
 fn sealed_destination() -> VerifiedDestination {
     VerifiedDestination::seal(
         &trust_token(),
-        LaneId::new("bedrock.us-east-1.amazonaws.com"),
+        LaneId::new("upstream.signed-region.invalid"),
     )
 }
 
@@ -32,12 +59,12 @@ fn empty_body() -> EgressBody<'static> {
     }
 }
 
-/// Bearer: a valid key produces a decoration with exactly one slot naming the `authorization`
-/// header, and substitution writes `Bearer <key>` there.
+/// A WORDED header presentation: a valid key produces a decoration with exactly one slot naming
+/// the declared header, and substitution writes the declared word and the key there.
 #[test]
-fn bearer_scheme_declares_one_slot_and_substitutes_bearer_prefix() {
+fn a_worded_presentation_declares_one_slot_and_writes_the_declared_word() {
     let t = token();
-    let decoration = decorate(&t, &Scheme::Bearer, "sk-test-123", &empty_body());
+    let decoration = decorate(&t, &WORDED, &NO_SIGNING, "sk-test-123", &empty_body());
     match &decoration {
         AuthDecoration::Decorate {
             slots,
@@ -65,7 +92,7 @@ fn bearer_scheme_declares_one_slot_and_substitutes_bearer_prefix() {
 #[test]
 fn bearer_scheme_omits_header_for_control_byte_key() {
     let t = token();
-    let decoration = decorate(&t, &Scheme::Bearer, "sk-\r\ninjected", &empty_body());
+    let decoration = decorate(&t, &WORDED, &NO_SIGNING, "sk-\r\ninjected", &empty_body());
     match &decoration {
         AuthDecoration::Decorate { slots, .. } => assert!(slots.is_empty()),
         AuthDecoration::Handshake { .. } => panic!("must still be a Decorate, just an empty one"),
@@ -80,14 +107,15 @@ fn api_key_header_scheme_substitutes_raw_value() {
     let t = token();
     let decoration = decorate(
         &t,
-        &Scheme::ApiKeyHeader { header: "api-key" },
-        "azure-key-xyz",
+        &verbatim("api-key"),
+        &NO_SIGNING,
+        "tenant-key-xyz",
         &empty_body(),
     );
-    let envelope = substitute(&decoration, "azure-key-xyz", Vec::new());
+    let envelope = substitute(&decoration, "tenant-key-xyz", Vec::new());
     assert_eq!(
         envelope,
-        vec![("api-key".to_string(), "azure-key-xyz".to_string())]
+        vec![("api-key".to_string(), "tenant-key-xyz".to_string())]
     );
 }
 
@@ -101,15 +129,15 @@ fn api_key_header_scheme_substitutes_raw_value() {
 /// The decoration has to come back empty, exactly as the bearer arm's does, so the upstream answers
 /// 401 rather than receiving an injected envelope.
 #[test]
-fn a_custom_header_scheme_omits_the_header_for_a_key_with_crlf_in_it() {
+fn a_verbatim_presentation_omits_the_header_for_a_key_with_crlf_in_it() {
     let t = token();
     for (header, secret) in [
-        ("api-key", "azure-key-\r\nX-Forwarded-For: 10.0.0.1"),
-        ("x-goog-api-key", "gemini-key-\r\ninjected"),
+        ("api-key", "tenant-key-\r\nX-Forwarded-For: 10.0.0.1"),
+        ("x-goog-api-key", "vendor-key-\r\ninjected"),
         // A bare control byte, which is the other spelling of the same defect.
-        ("api-key", "azure-key-\u{0}-nul"),
+        ("api-key", "tenant-key-\u{0}-nul"),
     ] {
-        let decoration = decorate(&t, &Scheme::ApiKeyHeader { header }, secret, &empty_body());
+        let decoration = decorate(&t, &verbatim(header), &NO_SIGNING, secret, &empty_body());
         match &decoration {
             AuthDecoration::Decorate { slots, fields, .. } => {
                 assert!(
@@ -128,45 +156,45 @@ fn a_custom_header_scheme_omits_the_header_for_a_key_with_crlf_in_it() {
         );
     }
 
-    // The control: the same scheme and the same header name still work for an ordinary key, so the
-    // guard refuses the injection rather than the scheme.
+    // The control: the same presentation and the same header name still work for an ordinary key,
+    // so the guard refuses the injection rather than the presentation.
     let ok = decorate(
         &t,
-        &Scheme::ApiKeyHeader { header: "api-key" },
-        "azure-key-xyz",
+        &verbatim("api-key"),
+        &NO_SIGNING,
+        "tenant-key-xyz",
         &empty_body(),
     );
     assert_eq!(
-        substitute(&ok, "azure-key-xyz", Vec::new()),
-        vec![("api-key".to_string(), "azure-key-xyz".to_string())]
+        substitute(&ok, "tenant-key-xyz", Vec::new()),
+        vec![("api-key".to_string(), "tenant-key-xyz".to_string())]
     );
 }
 
-/// `x-goog-api-key` (Gemini): same raw-substitution scheme, different header name — proves the two
-/// custom-header schemes cannot cross-contaminate each other's header name.
+/// Two verbatim presentations, two header names — proves a presentation writes the header its own
+/// declaration names and cannot cross-contaminate another declaration's.
 #[test]
-fn x_goog_api_key_scheme_uses_its_own_header_name() {
+fn a_verbatim_presentation_uses_the_header_its_declaration_names() {
     let t = token();
     let decoration = decorate(
         &t,
-        &Scheme::ApiKeyHeader {
-            header: "x-goog-api-key",
-        },
-        "gemini-key",
+        &verbatim("x-goog-api-key"),
+        &NO_SIGNING,
+        "vendor-key",
         &empty_body(),
     );
-    let envelope = substitute(&decoration, "gemini-key", Vec::new());
+    let envelope = substitute(&decoration, "vendor-key", Vec::new());
     assert_eq!(
         envelope,
-        vec![("x-goog-api-key".to_string(), "gemini-key".to_string())]
+        vec![("x-goog-api-key".to_string(), "vendor-key".to_string())]
     );
 }
 
-/// SigV4: `decorate` computes a full `Authorization` header (no slot — the wire value is a
-/// signature, not the secret) whose SignedHeaders/Signature match the hand-computed values against
-/// AWS's published worked example, given the same inputs busbar's Bedrock lane would present.
+/// The request-signature presentation: `decorate` computes a full `authorization` header (no slot
+/// — the wire value is a signature, not the secret) whose SignedHeaders/Signature match the
+/// hand-computed values of the published worked example, given the example's own inputs.
 #[test]
-fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
+fn the_request_signature_matches_the_published_worked_example_end_to_end() {
     let t = token();
     let body = EgressBody {
         method: "GET",
@@ -178,11 +206,8 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     };
     let decoration = decorate(
         &t,
-        &Scheme::SigV4 {
-            access_key_id: "AKIDEXAMPLE",
-            region: "us-east-1",
-            service: "iam",
-        },
+        &CredentialPresentation::RequestSignature,
+        &WORKED_EXAMPLE,
         "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
         &body,
     );
@@ -192,9 +217,9 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
         slots,
     } = &decoration
     else {
-        panic!("SigV4 decorates in place");
+        panic!("a request signature decorates in place");
     };
-    assert!(body_signature, "SigV4 signs the request");
+    assert!(body_signature, "a request signature signs the request");
     assert!(slots.is_empty(), "the signature is not a secret slot");
     let auth = fields
         .iter()
@@ -265,20 +290,15 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     assert_eq!(field("x-amz-content-sha256"), payload_hash);
 }
 
-/// The two `x-amz-*` fields `decorate` adds are SET on the header set it signs, not appended to it.
+/// The two timestamp/digest fields `decorate` adds are SET on the header set it signs, not appended to it.
 ///
 /// Signing is re-run per attempt, and the envelope handed to a re-sign may already carry the fields
 /// a previous decoration wrote — a retried leg, a plane that timestamps its own request. Appending
 /// then signs the field twice while `substitute` writes it once, so the bytes on the wire are not
 /// the bytes that were signed and the upstream 403s every time.
 #[test]
-fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
+fn re_signing_an_already_decorated_envelope_signs_the_fields_once() {
     let t = token();
-    let scheme = Scheme::SigV4 {
-        access_key_id: "AKIDEXAMPLE",
-        region: "us-east-1",
-        service: "iam",
-    };
     let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     let host = ("host".to_string(), "iam.amazonaws.com".to_string());
 
@@ -298,11 +318,17 @@ fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
             .find(|(k, _)| k == "authorization")
             .map(|(_, v)| v.clone())
             .expect("authorization field present"),
-        AuthDecoration::Handshake { .. } => panic!("SigV4 decorates in place"),
+        AuthDecoration::Handshake { .. } => panic!("a request signature decorates in place"),
     };
 
     let clean = vec![host.clone()];
-    let first = decorate(&t, &scheme, secret, &body(&clean));
+    let first = decorate(
+        &t,
+        &CredentialPresentation::RequestSignature,
+        &WORKED_EXAMPLE,
+        secret,
+        &body(&clean),
+    );
 
     // The envelope a second decoration is handed: the one the first decoration produced, minus the
     // authorization header a re-encode would not carry forward.
@@ -310,7 +336,13 @@ fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
         .into_iter()
         .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization"))
         .collect();
-    let second = decorate(&t, &scheme, secret, &body(&already));
+    let second = decorate(
+        &t,
+        &CredentialPresentation::RequestSignature,
+        &WORKED_EXAMPLE,
+        secret,
+        &body(&already),
+    );
 
     assert!(
         authorization(&second).contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date,"),
@@ -325,7 +357,7 @@ fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
 }
 
 /// `continue_handshake` fails closed (a zero-budget handshake) for the placeholder shape: no
-/// shipped scheme reaches it, and a caller that does must not be handed an unbounded round.
+/// shipped presentation reaches it, and a caller that does must not be handed an unbounded round.
 #[test]
 fn continue_handshake_is_zero_budget_placeholder() {
     let t = token();
@@ -340,12 +372,12 @@ fn continue_handshake_is_zero_budget_placeholder() {
     );
 }
 
-/// `substitute` applies each slot exactly once: two different schemes never collide on the same
+/// `substitute` applies each slot exactly once: two different presentations never collide on the same
 /// envelope key, and re-substituting is idempotent (replaces, does not duplicate the header).
 #[test]
 fn substitute_applies_each_slot_exactly_once() {
     let t = token();
-    let decoration = decorate(&t, &Scheme::Bearer, "key-a", &empty_body());
+    let decoration = decorate(&t, &WORDED, &NO_SIGNING, "key-a", &empty_body());
     let once = substitute(&decoration, "key-a", Vec::new());
     assert_eq!(once.len(), 1);
     let twice = substitute(&decoration, "key-a", once.clone());
@@ -363,11 +395,11 @@ fn substitute_applies_each_slot_exactly_once() {
 #[test]
 fn substitute_touches_only_the_field_the_slot_names() {
     let t = token();
-    let decoration = decorate(&t, &Scheme::Bearer, "key-b", &empty_body());
+    let decoration = decorate(&t, &WORDED, &NO_SIGNING, "key-b", &empty_body());
     let before: Vec<(String, String)> = vec![
-        ("host".to_string(), "api.openai.com".to_string()),
+        ("host".to_string(), "api.upstream.invalid".to_string()),
         ("content-type".to_string(), "application/json".to_string()),
-        ("openai-beta".to_string(), "responses=v1".to_string()),
+        ("x-upstream-beta".to_string(), "surface=v1".to_string()),
     ];
     let after = substitute(&decoration, "key-b", before.clone());
 
@@ -396,12 +428,11 @@ fn lane_cross_check_catches_envelope_divergence_after_decoration() {
     use busbar_caps::{LaneId, TrustToken};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = TrustToken::mint(&seal);
-    let verified =
-        VerifiedDestination::seal(&trust, LaneId::new("bedrock.us-east-1.amazonaws.com"));
+    let verified = VerifiedDestination::seal(&trust, LaneId::new("upstream.signed-region.invalid"));
 
     let matching = vec![(
         "host".to_string(),
-        "bedrock.us-east-1.amazonaws.com".to_string(),
+        "upstream.signed-region.invalid".to_string(),
     )];
     assert!(lane_cross_check(&verified, "host", &matching).is_ok());
 
@@ -421,17 +452,17 @@ fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
     use busbar_caps::{LaneId, TrustToken};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = TrustToken::mint(&seal);
-    let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
+    let verified = VerifiedDestination::seal(&trust, LaneId::new("lane-as-sealed"));
 
     // The envelope carries a lane the trust unit did NOT seal.
-    let diverged = vec![("host".to_string(), "bedrock-eu-west-1".to_string())];
+    let diverged = vec![("host".to_string(), "lane-not-sealed".to_string())];
     assert_eq!(
         lane_cross_check(&verified, "host", &diverged),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
 
     // The envelope carrying the sealed lane is the one case that passes.
-    let matching = vec![("host".to_string(), "bedrock-us-east-1".to_string())];
+    let matching = vec![("host".to_string(), "lane-as-sealed".to_string())];
     assert!(lane_cross_check(&verified, "host", &matching).is_ok());
 
     // A missing field is a mismatch too — there is nothing to check the seal against.
@@ -460,7 +491,7 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     let two_spellings = vec![
         (
             "host".to_string(),
-            "bedrock.us-east-1.amazonaws.com".to_string(),
+            "upstream.signed-region.invalid".to_string(),
         ),
         ("Host".to_string(), "evil.example.com".to_string()),
     ];
@@ -471,8 +502,8 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
 
     // And a destination the trust unit sealed with no host of its own compares against the lane it
     // did seal, rather than against anything the caller holds.
-    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("bedrock-us-east-1"));
-    let named = vec![("lane".to_string(), "bedrock-us-east-1".to_string())];
+    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("lane-as-sealed"));
+    let named = vec![("lane".to_string(), "lane-as-sealed".to_string())];
     assert!(lane_cross_check(&lane_only, "lane", &named).is_ok());
     let renamed = vec![("lane".to_string(), "cheap-lane".to_string())];
     assert!(lane_cross_check(&lane_only, "lane", &renamed).is_err());
@@ -480,4 +511,81 @@ fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
     // A decoration that DROPPED the field fails closed: an envelope with no destination in it is
     // not one whose destination was checked.
     assert!(lane_cross_check(&verified, "host", &[]).is_err());
+}
+
+/// A signature carrying one presentation, as a dialect declares it.
+macro_rules! declares {
+    ($presentation:expr) => {
+        busbar_contract::kinds::CredentialSignature {
+            alt: busbar_contract::ids::SchemeAlt::new("alt"),
+            arrivals: &[],
+            presentation: $presentation,
+        }
+    };
+}
+
+/// THE GOLDEN TABLE: one row per presentation KIND, the declaration in and the wire bytes out.
+///
+/// Every row is the byte-for-byte result the hand-written scheme list produced before the
+/// declarations existed. The kinds are three because the contract declares three, not because this
+/// unit knows of three vendors — and no row names one.
+#[test]
+fn each_presentation_kind_writes_the_bytes_its_declaration_names() {
+    let t = token();
+    let worded = decorate(&t, &WORDED, &NO_SIGNING, "k", &empty_body());
+    assert_eq!(
+        substitute(&worded, "k", Vec::new()),
+        vec![("authorization".to_string(), "Bearer k".to_string())]
+    );
+
+    let plain = decorate(&t, &verbatim("x-api-key"), &NO_SIGNING, "k", &empty_body());
+    assert_eq!(
+        substitute(&plain, "k", Vec::new()),
+        vec![("x-api-key".to_string(), "k".to_string())]
+    );
+
+    let signed = decorate(
+        &t,
+        &CredentialPresentation::RequestSignature,
+        &WORKED_EXAMPLE,
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        &empty_body(),
+    );
+    let AuthDecoration::Decorate { fields, slots, .. } = &signed else {
+        panic!("a request signature decorates in place");
+    };
+    assert!(slots.is_empty(), "a signature is not the secret");
+    assert!(fields.iter().any(|(k, _)| k == "authorization"));
+
+    // The query kind is declared by the contract and served by nobody: it fails closed rather than
+    // guessing at a grammar no declaration in the tree exercises.
+    let queried = decorate(
+        &t,
+        &CredentialPresentation::Query { name: "key" },
+        &NO_SIGNING,
+        "k",
+        &empty_body(),
+    );
+    assert!(substitute(&queried, "k", Vec::new()).is_empty());
+}
+
+/// THE RED-FIRST CELL. A presentation is reachable only through the set of declarations this unit
+/// was composed with; a dialect the root did not mount contributes none, so the unit cannot present
+/// its credential at all. It is refused by the declaration's ABSENCE, never by a name.
+#[test]
+fn a_presentation_no_mounted_declaration_carries_is_unreachable() {
+    let without = [declares!(WORDED)];
+    assert!(
+        !presentations(&without).any(|p| matches!(p, CredentialPresentation::RequestSignature)),
+        "a signing dialect that was not mounted must not be presentable"
+    );
+
+    // Mount it and it is there, which is what proves the refusal above was the absence.
+    let with = [
+        declares!(WORDED),
+        declares!(CredentialPresentation::RequestSignature),
+    ];
+    assert!(presentations(&with).any(|p| matches!(p, CredentialPresentation::RequestSignature)));
+    assert_eq!(presentations(&with).count(), 2);
+    assert_eq!(presentations(&[]).count(), 0);
 }

@@ -4722,6 +4722,16 @@ drain   = "delete the busbar-contract-transport dependency from busbar-unit-egre
 
 [[dep]]
 from    = "busbar-unit-egress-auth"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-egress-auth names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The edge is what the crate gained when it stopped holding its own list of schemes — which presentation a request takes is read off the CredentialPresentation the dialect declared, and that declaration lives on the ABI. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress-auth"
 to      = "busbar-caps"
 half    = "shipped"
 count   = "1"
@@ -5533,11 +5543,6 @@ kind = "dialect"
 count = "3"
 
 [[cell]]
-crate = "busbar-unit-auth"
-kind = "dialect"
-count = "4"
-
-[[cell]]
 crate = "busbar-unit-breaker"
 kind = "dialect"
 count = "3"
@@ -5545,7 +5550,7 @@ count = "3"
 [[cell]]
 crate = "busbar-unit-egress-auth"
 kind = "dialect"
-count = "34"
+count = "5"
 
 [[cell]]
 crate = "busbar-unit-ledger"

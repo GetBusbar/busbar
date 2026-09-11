@@ -17,7 +17,9 @@
 //! client of that dialect still sends — which meant a request carrying only the newer one sized its
 //! hold off a key the client had not sent.
 
-use busbar_contract::grammar::{ArrivalLocation, Location};
+use busbar_contract::grammar::{ArrivalLocation, Location, SignedOver};
+use busbar_contract::ids::SchemeAlt;
+use busbar_contract::kinds::{CredentialArrival, CredentialPresentation, CredentialSignature};
 
 /// Where one dialect keeps what the loop asks about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,14 +47,33 @@ pub struct Dialect {
     pub cache_read_pointer: Option<&'static str>,
     /// Where the response reports the input quantity that was written to a cache.
     pub cache_write_pointer: Option<&'static str>,
-    /// The credential alternative this dialect's clients present.
-    pub scheme_alt: &'static str,
-    /// The egress-auth scheme that decorates a request to an upstream of this dialect.
-    pub egress_scheme: &'static str,
+    /// This dialect's credential SIGNATURE: where its clients carry a credential on the way in,
+    /// and how a request to one of its upstreams carries ours on the way out.
+    ///
+    /// The two units that act on a credential — the authenticate step and the egress-auth step —
+    /// read THIS, over the set of dialects the root mounted, and never a dialect's name. A dialect
+    /// that is not mounted declares nothing, and its credential shape is therefore unreadable by
+    /// absence rather than by a list.
+    pub credential: CredentialSignature,
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
 const MODEL: Location = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model"));
+
+/// The arrival every scheme-worded credential uses: the authorization header, behind its word.
+///
+/// The word is the WIRE spelling (`Bearer`), matched case-insensitively on the way in and written
+/// verbatim on the way out, so one declaration serves both directions.
+const AT_AUTHORIZATION_BEARER: &[CredentialArrival] = &[CredentialArrival {
+    at: ArrivalLocation::Header("authorization"),
+    prefix: Some("Bearer"),
+}];
+
+/// Presenting the credential behind the scheme word in the authorization header.
+const AS_AUTHORIZATION_BEARER: CredentialPresentation = CredentialPresentation::Header {
+    name: "authorization",
+    prefix: Some("Bearer"),
+};
 
 /// The path segment the two target-carrying dialects name the model in.
 ///
@@ -74,8 +95,16 @@ pub const DIALECTS: &[Dialect] = &[
         tokens_out_pointer: "/usage/output_tokens",
         cache_read_pointer: Some("/usage/cache_read_input_tokens"),
         cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
-        scheme_alt: "api-key",
-        egress_scheme: "bearer",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("api-key"),
+            // In on its own header, verbatim; out behind the scheme word. The two directions are
+            // different wire facts and this dialect is the reason they cannot be one field.
+            arrivals: &[CredentialArrival {
+                at: ArrivalLocation::Header("x-api-key"),
+                prefix: None,
+            }],
+            presentation: AS_AUTHORIZATION_BEARER,
+        },
     },
     Dialect {
         name: "openai",
@@ -90,8 +119,11 @@ pub const DIALECTS: &[Dialect] = &[
         cache_read_pointer: Some("/usage/prompt_tokens_details/cached_tokens"),
         // This dialect reports no separate written-to-cache quantity.
         cache_write_pointer: None,
-        scheme_alt: "bearer",
-        egress_scheme: "bearer",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("bearer"),
+            arrivals: AT_AUTHORIZATION_BEARER,
+            presentation: AS_AUTHORIZATION_BEARER,
+        },
     },
     Dialect {
         name: "gemini",
@@ -103,8 +135,14 @@ pub const DIALECTS: &[Dialect] = &[
         tokens_out_pointer: "/usageMetadata/candidatesTokenCount",
         cache_read_pointer: Some("/usageMetadata/cachedContentTokenCount"),
         cache_write_pointer: None,
-        scheme_alt: "api-key",
-        egress_scheme: "bearer",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("api-key"),
+            arrivals: &[CredentialArrival {
+                at: ArrivalLocation::Header("x-goog-api-key"),
+                prefix: None,
+            }],
+            presentation: AS_AUTHORIZATION_BEARER,
+        },
     },
     Dialect {
         name: "bedrock",
@@ -116,8 +154,19 @@ pub const DIALECTS: &[Dialect] = &[
         tokens_out_pointer: "/usage/outputTokens",
         cache_read_pointer: Some("/usage/cacheReadInputTokens"),
         cache_write_pointer: Some("/usage/cacheWriteInputTokens"),
-        scheme_alt: "request-signature",
-        egress_scheme: "request-signature",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("request-signature"),
+            // What arrives is a SIGNATURE over the request, not a credential to lift out of a
+            // header — which is why the token ladder must fall THROUGH an authorization header it
+            // cannot read as its own, rather than treating one as an absent credential.
+            arrivals: &[CredentialArrival {
+                at: ArrivalLocation::Signed {
+                    over: SignedOver::Both,
+                },
+                prefix: None,
+            }],
+            presentation: CredentialPresentation::RequestSignature,
+        },
     },
     Dialect {
         name: "responses",
@@ -128,8 +177,11 @@ pub const DIALECTS: &[Dialect] = &[
         tokens_out_pointer: "/usage/output_tokens",
         cache_read_pointer: Some("/usage/input_tokens_details/cached_tokens"),
         cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
-        scheme_alt: "bearer",
-        egress_scheme: "bearer",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("bearer"),
+            arrivals: AT_AUTHORIZATION_BEARER,
+            presentation: AS_AUTHORIZATION_BEARER,
+        },
     },
     Dialect {
         name: "cohere",
@@ -141,8 +193,11 @@ pub const DIALECTS: &[Dialect] = &[
         // This dialect reports no cache accounting at all.
         cache_read_pointer: None,
         cache_write_pointer: None,
-        scheme_alt: "bearer",
-        egress_scheme: "bearer",
+        credential: CredentialSignature {
+            alt: SchemeAlt::new("bearer"),
+            arrivals: AT_AUTHORIZATION_BEARER,
+            presentation: AS_AUTHORIZATION_BEARER,
+        },
     },
 ];
 

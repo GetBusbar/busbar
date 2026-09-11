@@ -46,8 +46,9 @@ pub use ids::{
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, EnvelopeFields, Export, ExportItem, Head,
-    Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts,
+    CredentialArrival, CredentialFacts, CredentialLocator, CredentialPresentation,
+    CredentialSignature, EgressAuthScheme, EnvelopeFields, Export, ExportItem, Head, Hook,
+    HookFacts, HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts,
     RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue, SignFailed, Signer, SliceGrant,
     Store, StoreError,
 };

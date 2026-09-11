@@ -68,13 +68,25 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,513** (was 3,478) **of plugin-visible
+  SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  (`--ceiling busbar-contract,busbar-caps=3513`), which the construction gate runs as
+  `surface-ceiling:contract+caps`. **The 35 lines the face spent** are
+  `busbar_contract::kinds::CredentialSignature` and its two parts — `CredentialArrival` (where a
+  credential arrives, and the scheme word its value must carry) and `CredentialPresentation` (how
+  an outbound request carries one: a header behind a word, a header verbatim, a query parameter, or
+  a request signature, plus the `kind()` an egress-auth plugin registers under). It is surface
+  because a **dialect** declares one: a dialect's credential signature is a wire fact, and a wire
+  fact belongs to whoever speaks that wire. Its purpose is the rule above it — *a unit names no
+  plane* — read through to its end: the authenticate step's carrier ladder and the egress-auth
+  step's scheme set were each a fixed list of vendors written into a unit, and both are now an
+  ITERATION over the declarations the root composed the unit with. A dialect the root did not mount
+  declares nothing, so its credential is refused by the declaration's **absence** rather than by a
+  name a unit checked against a list it was born knowing. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

@@ -11,7 +11,7 @@ use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
 use crate::grammar::ArrivalLocation;
-use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
+use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId};
 use crate::plugin::Plugin;
 use crate::unit::{Clock, ConfigView, Step, Unit};
 use crate::wire::{ArrivalRecord, Frame};
@@ -45,6 +45,87 @@ pub struct CredentialLocator {
     pub narrowing: Option<SchemeAlt>,
     /// Whether the credential is the session's cached one rather than one on this unit's bytes.
     pub from_session: bool,
+}
+
+// ── the credential signature: one declaration per dialect ────────────────────────────────────
+
+/// How one dialect's clients present a credential, and how a request to an upstream of that
+/// dialect presents ours: the dialect's credential SIGNATURE, declared once by the dialect itself.
+///
+/// This is the fact a unit used to have to know a dialect's NAME to act on. The authenticate
+/// step's carrier ladder was a fixed list of header names written into the unit; the egress-auth
+/// step's scheme set was a fixed list of variants written into the unit. Both are the same fact —
+/// WHERE the credential sits on the wire — and neither is a unit's to hold. A unit answers one
+/// step for every kind there is; a wire fact belongs to whoever speaks that wire.
+///
+/// So each dialect declares its own signature, the root composes the set of declarations for the
+/// dialects it actually mounts, and each unit ITERATES the set it is handed. A dialect the root
+/// did not mount contributes no declaration, so its credential is refused by the declaration's
+/// ABSENCE — not by a unit checking a name against a list it was born knowing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CredentialSignature {
+    /// The scheme alternative this signature satisfies, spelled as the claim grammar spells it.
+    pub alt: SchemeAlt,
+    /// Ingress: where a client of this dialect carries its credential, in the precedence the
+    /// detection ladder reads them.
+    pub arrivals: &'static [CredentialArrival],
+    /// Egress: how a request to an upstream of this dialect carries the credential.
+    pub presentation: CredentialPresentation,
+}
+
+/// One place a credential may arrive, and the scheme word (if any) its value must carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CredentialArrival {
+    /// Where the value is.
+    pub at: ArrivalLocation,
+    /// The scheme word the value must begin with, matched case-insensitively and separated from
+    /// the credential by one space. `None` means the whole value is the credential.
+    ///
+    /// A value present at this location that does NOT carry the declared prefix is not this
+    /// signature's credential, and the ladder continues past it: a request signature sitting in
+    /// the authorization header is not a bearer token, and must not end the search for one.
+    pub prefix: Option<&'static str>,
+}
+
+/// How a credential is written onto an outbound request.
+///
+/// The variants are PRESENTATION KINDS, not vendors: two dialects that present the same way
+/// declare the same kind, and no dialect is ever named here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialPresentation {
+    /// The credential goes in a named header, optionally behind a scheme word.
+    Header {
+        /// The header name, lowercase.
+        name: &'static str,
+        /// The scheme word written ahead of the credential, separated by one space.
+        prefix: Option<&'static str>,
+    },
+    /// The credential goes in a named query parameter, verbatim.
+    Query {
+        /// The parameter name.
+        name: &'static str,
+    },
+    /// What travels is a SIGNATURE over the canonical request rather than the credential itself:
+    /// the secret is the signing key and never leaves the process. A presentation kind, not a
+    /// vendor — anything that signs its request line declares this one.
+    RequestSignature,
+}
+
+impl CredentialPresentation {
+    /// The presentation KIND's registry name — the key an egress-auth scheme plugin registers
+    /// under, and the only word a unit ever compares. It names a SHAPE of credential carriage, so
+    /// two dialects that carry theirs the same way resolve to the same plugin and no dialect is
+    /// distinguishable from it.
+    #[must_use]
+    pub const fn kind(&self) -> SchemeKey {
+        SchemeKey::new(match self {
+            Self::Header {
+                prefix: Some(_), ..
+            } => "bearer",
+            Self::Header { prefix: None, .. } | Self::Query { .. } => "api-key",
+            Self::RequestSignature => "request-signature",
+        })
+    }
 }
 
 /// What an auth scheme establishes about a principal.

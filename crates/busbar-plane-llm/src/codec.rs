@@ -10,7 +10,7 @@ use busbar_contract::bounded::{
 };
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
-use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
+use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
 use busbar_contract::unit::{
@@ -588,7 +588,7 @@ impl Plane for LlmPlane {
         Ok(EgressBody {
             envelope,
             body: out,
-            auth: SchemeKey::new(egress.egress_scheme),
+            auth: egress.credential.presentation.kind(),
         })
     }
 
@@ -835,7 +835,7 @@ impl Plane for LlmPlane {
 
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         CredentialLocator {
-            narrowing: unit_dialect(u).map(|d| SchemeAlt::new(d.scheme_alt)),
+            narrowing: unit_dialect(u).map(|d| d.credential.alt),
             // Every one of the six dialects presents its credential on the request itself. None of
             // them authenticates once and rides a session.
             from_session: false,

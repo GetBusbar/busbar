@@ -126,7 +126,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3513
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +347,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3515
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14476
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23335
+union_ceiling = 23370
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1197,3 +1197,66 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── DECLARED RAISES ──────────────────────────────────────────────────────────────────────────────
+# Each entry names one edit, both numbers and its reason, and EXPIRES BY ITSELF: the moment its
+# commit lands the base carries the new number and an entry describing no rise is refused as stale.
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3513
+because = """FACE: busbar_contract::kinds::CredentialSignature -- the ONE declaration carrying a \
+dialect's credential signature, its ingress arrivals (CredentialArrival: where the value is, and \
+the scheme word it must carry) and its egress presentation (CredentialPresentation: a header \
+behind a word, a header verbatim, a query parameter, or a request signature), plus the kind() that \
+names the presentation KIND an egress-auth plugin registers under. It exists so no unit holds a \
+list of vendors: the authenticate step's carrier ladder and the egress-auth step's scheme set were \
+both a fixed list written into a unit, and both are the same wire fact, which belongs to whoever \
+speaks that wire. It is surface a plugin author reads -- a dialect crate declares one -- so it is \
+spent here and declared in ARCHITECTURE.md section 1.1 in the same commit. 35 lines."""
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3515
+because = """The same face as gate.surface_ceilings.contract_caps above, measured by the OTHER \
+rule that sums the same two crates: `loc-ceilings:caps-contract` counts production bodies where \
+`surface-ceiling:contract+caps` counts plugin-visible surface, so the two figures differ by two \
+lines and both have to move for one face. busbar-caps 1153 + busbar-contract 2362 = 3515 on this \
+tree against 3480 at the base; the delta is the same 35 lines, counted once here. The busbar-unit-* \
+union does NOT move for this face: the two units spent exactly what they gained, because what they \
+gained is an iteration over declarations and what they lost is the list of carriers and schemes \
+that iteration replaced."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23335
+to = 23370
+because = """The union of the three rows above, moved by the one face and by nothing else: kernel \
+5379 unchanged + caps/contract 3515 (was 3480) + busbar-unit-* 14476 unchanged = 23370. The whole \
+delta is the 35 lines of busbar_contract::kinds::CredentialSignature; the kernel did not move and \
+the unit union did not move, which is the shape a face that lands on the ABI is supposed to have."""
+
+# The four positional raises the STRUCK dialect cell caused in qa/kind-isolation.toml.
+[gate.ceiling_raises."cell.348.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 5
+because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 348 was `busbar-unit-breaker x dialect` = 3 and is now `busbar-unit-egress-auth x dialect` = 5. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+
+[gate.ceiling_raises."cell.350.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 5
+because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 350 was `busbar-unit-ledger x dialect` = 2 and is now `busbar-unit-trust x dialect` = 5. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+
+[gate.ceiling_raises."cell.351.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 7
+because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 351 was `busbar-unit-trust x dialect` = 5 and is now `busbar-unit-usage x dialect` = 7. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+
+[gate.ceiling_raises."cell.352.count"]
+file = "qa/kind-isolation.toml"
+from = 7
+to = 335
+because = """The `busbar-unit-auth x dialect` [[cell]] was STRUCK -- the unit stopped naming a dialect at all, and kind-isolation:matrix refuses a row that covers nothing. ceiling-rose keys an array-of-tables ceiling by its POSITION, so striking one row renumbers every dialect cell after it and this path now reads its neighbour. Nothing rose: index 352 was `busbar-unit-usage x dialect` = 7 and is now `busbar-voice x dialect` = 335, a number no commit of this branch touched. The two cells that actually MOVED both moved DOWN in the same commit -- busbar-unit-auth x dialect 4 -> struck, busbar-unit-egress-auth x dialect 34 -> 5 -- and the whole set is the same 354 rows minus the dead one."""
+
