@@ -2424,6 +2424,29 @@ jobs:
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
         run: cargo xtask teller-steps --root-legs
 
+      # THE EXPORT RIG, AND WHY IT IS IN THIS JOB. Measured on this tip: NO job in any workflow runs
+      # a `scripts/*-subject/h2-*.sh` scenario. This job is the one that OWNS them — `qa/teller-steps.json`'s
+      # rig column names `scripts/mcp-subject/h2-*.sh` and `scripts/a2a-subject/h2-*.sh`, and `gate
+      # teller-steps` above checks that every one of those ids resolves to a real script — but it has
+      # only ever checked that they EXIST. So the rig scenarios' CI home is here, and this is the
+      # first one that actually executes.
+      #
+      # It is not a Teller-step cell and is deliberately not in the matrix: `export` is not a plane
+      # and the matrix's rows are planes. What it proves is the one thing no cell in the tree can —
+      # that a span the SHIPPED BINARY emitted arrives at a process outside busbar that speaks OTLP,
+      # decoded by a reader that shares no line with the writer, byte-for-byte against a checked-in
+      # expectation.
+      #
+      # The selftest runs FIRST and costs no build: it holds the collector's reader to a recorded
+      # real export and shows the comparison a difference it must refuse, so a rig that could not
+      # fail reddens in seconds rather than after a release build.
+      - name: OTLP collector-rig self-test (the reader reads a recorded export; the differ can fail)
+        run: scripts/export-subject/h2-otlp-collector.sh --selftest
+      - name: Build the release binary the export rig boots
+        run: cargo build -p busbar --release --locked
+      - name: OTLP export rig (the real binary's spans, received by a process that speaks OTLP)
+        run: scripts/export-subject/h2-otlp-collector.sh
+
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
     runs-on: [self-hosted, linux, x64, busbar-xl]

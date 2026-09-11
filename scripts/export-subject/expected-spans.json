@@ -1,0 +1,52 @@
+{
+  "deliveries": 1,
+  "resource": {
+    "service.name": "busbar",
+    "service.version": "<version>"
+  },
+  "scopes": [
+    "busbar"
+  ],
+  "spans": [
+    {
+      "attributes": {
+        "ingress": "openai",
+        "op": "chat",
+        "pool": "",
+        "request_id": "<u64>",
+        "transport": "http"
+      },
+      "dropped_attributes": 0,
+      "kind": "INTERNAL",
+      "name": "forward",
+      "parent": null,
+      "span": "span-1",
+      "status": {
+        "code": "UNSET",
+        "message": ""
+      },
+      "trace": "trace-1",
+      "window": "forwards"
+    },
+    {
+      "attributes": {
+        "ingress": "openai",
+        "op": "chat",
+        "pool": "",
+        "request_id": "<u64>",
+        "transport": "http"
+      },
+      "dropped_attributes": 0,
+      "kind": "INTERNAL",
+      "name": "forward",
+      "parent": null,
+      "span": "span-2",
+      "status": {
+        "code": "UNSET",
+        "message": ""
+      },
+      "trace": "trace-2",
+      "window": "forwards"
+    }
+  ]
+}
