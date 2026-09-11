@@ -3,8 +3,8 @@
 
 //! Mutation-hardening tests for `busbar-grammar`.
 //!
-//! Added to close survivors a `cargo mutants -p busbar-grammar` run found that
-//! `tests/adversarial.rs` and `tests/json_scanner.rs` did not catch: [`Span::len`]/
+//! Added to close gaps `tests/adversarial.rs` and `tests/json_scanner.rs` did not catch:
+//! [`Span::len`]/
 //! [`Span::is_empty`] pinned only through each other, the number/garbage-byte match guard in
 //! `skip_value`, the quote-skipping arm inside `skip_container` (only ever exercised through a
 //! STRING VALUE's own direct scan, never through a decoy CONTAINER a search has to skip past),
@@ -12,7 +12,7 @@
 //! second-escape check's `||`, the position advance after a decoded surrogate pair, a 3-byte
 //! UTF-8 lead byte, and the exact-match guard in `literal`.
 //!
-//! A few other survivors from that run (the `MAX_JSON_DEPTH` comparisons in `descend`/`member`/
+//! A few other known gaps (the `MAX_JSON_DEPTH` comparisons in `descend`/`member`/
 //! `element`/`skip_value`, and the `depth + 1` arithmetic feeding them) are NOT re-tested here:
 //! they are redundant with `skip_container`'s own independent, stack-size-bounded ceiling
 //! (`depth + level + 1 > MAX_JSON_DEPTH`), which is mathematically invariant under the recursion
