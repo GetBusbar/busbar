@@ -87,10 +87,22 @@ pub fn max_translated_body_bytes() -> usize {
 /// truncated-beyond-recovery response from billing ZERO.
 pub const TRUNCATED_TAIL_BYTES_PER_TOKEN: u64 = 4;
 
-/// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
-/// carrier: the four reserved units (`input`/`output`/`cache_read`/`cache_write`) as canonical map
-/// keys. Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
-/// mapping is direct: cache-creation is the `cache_write` unit. Zero tiers are omitted so the map
+/// **THE ONE PLACE AN UPSTREAM'S USAGE FIELDS BECOME A DECLARED DIMENSION.** Project the IR's
+/// normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
+/// carrier, keyed by the meter classes the llm plane DECLARES it meters.
+///
+/// The keys are `busbar_contract::ids`' token dimensions and not a spelling of this file's own.
+/// That is the whole point of doing the mapping here: a dimension exists exactly when some plane's
+/// declaration says it does, an operator prices one by that declared name, and the boot check that
+/// accepts the name reads the declarations — so a count filed under any OTHER spelling is a count
+/// no schedule can reach. It was filed under another spelling: this shim keyed `input`/`output`
+/// while the plane declared `tokens_in`/`tokens_out`, and a `per_units` rate for `tokens_in` that
+/// the node ACCEPTED at boot multiplied a quantity that was not in the map, charged nothing, and
+/// said nothing. The translation happens ONCE, here, from the provider's field to the declared
+/// name, and downstream nothing translates anything.
+///
+/// Readers normalize `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping
+/// is direct: cache-creation is the `cache_write` dimension. Zero tiers are omitted so the map
 /// stays sparse (no-zero-entry).
 #[must_use]
 pub fn tier_usage(

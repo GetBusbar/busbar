@@ -5737,4 +5737,28 @@ fn a_per_unit_rate_for_a_dimension_no_plane_declares_is_refused_by_name() {
         !errors.iter().any(|e| e.contains("per_units[tokens_in]")),
         "a dimension a mounted plane declares is priceable: {errors:?}"
     );
+
+    // AND THE SPELLING THE MONEY PATH USED TO INVENT IS NOW REFUSED LIKE ANY OTHER TYPO. `input`
+    // was the key the codec reported under, the key the card priced by and the key the store
+    // persisted, and NO plane ever declared it. An operator who writes it is writing the tree's old
+    // internal vocabulary, not a dimension, and the node says so at boot rather than accepting the
+    // rate and charging nothing for it — which is exactly what it did before.
+    cfg.tariff = Some(
+        serde_yaml::from_str(
+            "default:\n  transaction_fee:\n    per_units:\n      - dimension: input\n        \
+             per: 1000\n        cents: 3\n",
+        )
+        .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    let named = errors
+        .iter()
+        .find(|e| e.contains("per_units[input]"))
+        .unwrap_or_else(|| panic!("the retired internal spelling is not a dimension: {errors:?}"));
+    assert!(
+        named.contains("a-kind.tokens_in (per token)"),
+        "and the refusal points at the declared name the operator meant: {named}"
+    );
 }

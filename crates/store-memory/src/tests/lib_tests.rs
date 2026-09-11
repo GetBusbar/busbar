@@ -50,8 +50,8 @@ fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
         models: vec![busbar_api::ModelTokens {
             model: model.to_string(),
             usage_units: [
-                (busbar_api::UNIT_INPUT, input),
-                (busbar_api::UNIT_OUTPUT, output),
+                (busbar_contract::DIM_TOKENS_IN, input),
+                (busbar_contract::DIM_TOKENS_OUT, output),
             ]
             .into_iter()
             .filter(|(_, v)| *v != 0)
@@ -90,9 +90,9 @@ fn add_usage_accumulates_per_model() {
         models: vec![busbar_api::ModelTokensDelta {
             model: "gpt-5".to_string(),
             usage_units: std::collections::BTreeMap::from([
-                (busbar_api::UNIT_INPUT.to_string(), 10i64),
-                (busbar_api::UNIT_OUTPUT.to_string(), 5),
-                (busbar_api::UNIT_CACHE_READ.to_string(), 1),
+                (busbar_contract::DIM_TOKENS_IN.to_string(), 10i64),
+                (busbar_contract::DIM_TOKENS_OUT.to_string(), 5),
+                (busbar_contract::DIM_CACHE_READ.to_string(), 1),
             ]),
         }],
     };

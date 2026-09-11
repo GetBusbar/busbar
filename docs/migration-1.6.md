@@ -142,6 +142,59 @@ form, are gone in 1.6.0. Each has a migration path, so no config and no persiste
 
 ---
 
+## 5a. `tariff:` dimension names are the planes' names
+
+**What changed.** A `transaction_fee.per_units` entry prices a *dimension* by name. The names are
+the ones a mounted plane declares it meters, and for the llm plane those are `tokens_in`,
+`tokens_out`, `cache_read` and `cache_write`. Until 1.6.0 the tree carried three more spellings of
+the same four quantities — the response codec filed counts under `input`/`output`, the rate card
+priced a hand-kept list of the same, and the usage ledger persisted them under those keys — and
+nothing made the four agree. The consequence was silent and it cost money: a rate for `tokens_in`
+passed the boot check (a plane declared it) and then multiplied a count filed under `input`, so it
+charged **nothing**, forever, while the operator read a file that said otherwise.
+
+**What you must do.** If your configuration prices `input` or `output`, rename them:
+
+```yaml
+tariff:
+  default:
+    transaction_fee:
+      per_units:
+        - dimension: tokens_in     # was: input
+          per: 1000
+          cents: 3
+        - dimension: tokens_out    # was: output
+          per: 1000
+          cents: 9
+```
+
+`cache_read` and `cache_write` are unchanged — they were already the declared spellings.
+
+A node that is handed the old names **refuses to boot** and names both the dimension you priced and
+every dimension this build actually meters, plane by plane, with the noun one of them is called by
+(`llm.tokens_in (per token)`). It does not start and quietly charge zero, which is what the previous
+behaviour amounted to.
+
+**What you need not do.** Nothing about your data, and nothing about your clients.
+
+- **Persisted usage is migrated for you.** A ledger row written under `input`/`output` is folded
+  onto the declared keys the first time it is read, additively, so a window that was written partly
+  before and partly after the upgrade lands on one key holding the whole count. The fold is
+  idempotent; re-running it after a crash mid-migration is the identity.
+- **Every public figure keeps its 1.5.5 spelling and its 1.5.5 value.** `prompt_tokens`,
+  `completion_tokens`, `total_tokens`, `input_tokens`, `output_tokens`, `inputTokens`,
+  `cache_read_input_tokens` and the admin API's `tokens.input_tokens` are renderings of these
+  counts, in the dialect the caller asked in. They were never these keys and they have not moved.
+- **Rate cards are unaffected.** `rate_card:` writes `input:`/`output:`/`cache_read:`/`cache_write:`
+  as *field names of a rate block*, not as dimension names, and that grammar is unchanged.
+
+**Store plugins.** A cold store plugin is handed the `usage_units` map as opaque `key -> count`
+data. The keys it receives are now the declared dimensions. A plugin that merely persists and
+returns the map needs no change; one that reads a specific key by the literal `"input"` should read
+`"tokens_in"`.
+
+---
+
 ## 6. A provider credential that cannot resolve refuses boot
 
 **What changed.** 1.5.5 resolved each provider's `api_key` reference at boot and, when that failed,

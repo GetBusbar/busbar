@@ -735,7 +735,7 @@ fn report_of(output: u64) -> LateReport {
     LateReport {
         usage: busbar_substrate::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
-                busbar_api::UNIT_OUTPUT.to_string(),
+                busbar_contract::DIM_TOKENS_OUT.to_string(),
                 output,
             )]),
         },
@@ -2646,5 +2646,113 @@ fn a_dead_stream_after_a_good_head_is_disputed_and_bills_what_was_delivered() {
         flags.contains(busbar_caps::PostingFlags::METER_DISPUTED),
         "the transport's status and the plane's finish contradict each other; a posting that did \
          not say so would make a plane that lies about its finish profitable rather than visible"
+    );
+}
+
+/// **THE NAMES THE CODEC REPORTS UNDER ARE THE NAMES THE PLANE DECLARES, AND A RATE FOR ONE OF THEM
+/// PRICES A QUANTITY THAT IS THERE.**
+///
+/// A deployment prices a dimension by NAME. The boot check that accepts that name reads the mounted
+/// planes' own declarations, so the names an operator may write are exactly `METER_CLASSES`. The
+/// quantity the schedule then multiplies is looked up by that same name in the counts the metering
+/// step reported — and those counts are keyed by whatever the codec spelled them. Two spellings of
+/// one dimension is therefore not a tidiness complaint: a rate an operator wrote, that the node
+/// ACCEPTED at boot, multiplies zero for the life of the deployment and no surface anywhere says so.
+///
+/// The cell states it as the one equality that closes the loop — what the codec reports, what this
+/// root's card reserves, and what the plane declares are ONE list — and then spends a real schedule
+/// against a real report to show the consequence: a `per_units` rate for the plane's first declared
+/// dimension, over a thousand of them, charges the three cents it says it charges.
+///
+/// RED while the codec keys its report by one vocabulary and the plane declares another.
+#[test]
+fn a_rate_for_a_declared_dimension_prices_the_quantity_the_codec_reported() {
+    use busbar_contract::plane::PlaneMeta;
+
+    // WHAT THE PLANE SAYS IT METERS. The one list; everything below is measured against it.
+    let declared: Vec<&'static str> = <busbar_plane_llm::LlmPlane as PlaneMeta>::METER_CLASSES
+        .iter()
+        .map(|c| c.key.as_str())
+        .collect();
+
+    // WHAT THE CODEC ACTUALLY REPORTS, off the real projection, for a response the upstream billed
+    // in all four. Every figure is non-zero so no key can be absent for want of a count.
+    let reported = busbar_llm::wire_shim::tier_usage(&busbar_substrate::billing::TokenUsage {
+        input: 1_000,
+        output: 200,
+        cache_read: Some(30),
+        cache_creation: Some(4),
+        input_text: None,
+        input_audio: None,
+        input_image: None,
+    });
+    let mut keyed: Vec<&str> = reported.usage_units.keys().map(String::as_str).collect();
+    keyed.sort_unstable();
+    let mut expected = declared.clone();
+    expected.sort_unstable();
+    assert_eq!(
+        keyed, expected,
+        "the codec reports under the names the plane declares, or a schedule naming a declared \
+         dimension multiplies a quantity that is not in the report"
+    );
+
+    // AND WHAT THIS ROOT'S CARD RESERVES IS THE SAME LIST, in the plane's own order — so a class
+    // this root writes a line for and a class the card prices cannot be two different sets.
+    let reserved: Vec<&'static str> = reserved_classes()
+        .iter()
+        .map(|c| c.class.as_str())
+        .collect();
+    assert_eq!(
+        reserved, declared,
+        "the card reserves what the plane declares, in the order the plane declares it"
+    );
+
+    // THE CONSEQUENCE, THROUGH THE REAL SCHEDULE. Three cents per thousand of the first declared
+    // dimension, against the quantity the codec reported for it.
+    let terms = busbar_contract::tariff::FeeTerms {
+        per_units: vec![busbar_contract::tariff::PerUnitTerm {
+            dimension: declared[0].to_string(),
+            per: 1_000,
+            amount: 3,
+        }],
+        ..busbar_contract::tariff::FeeTerms::flat(0)
+    };
+    let charge = busbar_unit_cost::charge_minor(&terms, 0, 1, &|class| {
+        reported.usage_units.get(class).copied().unwrap_or(0)
+    });
+    let line = charge
+        .lines
+        .iter()
+        .find(|(class, _, _)| class == declared[0])
+        .expect("the schedule posts a line for every dimension it prices");
+    assert_eq!(
+        (line.1, line.2),
+        (1_000, 3),
+        "a rate for a declared dimension prices the count the codec reported for it; a zero here is \
+         a deployment billing nothing for a price it wrote and the node accepted"
+    );
+}
+
+/// **THE ONE PLACE THE TREE MAY SAY A DIMENSION'S NAME TWICE, AND IT MAY NEVER SAY IT DIFFERENTLY.**
+///
+/// A billable dimension is named by the plane that meters it, and that declaration is the only one:
+/// `busbar_contract::ids::TOKEN_DIMENSIONS`. The persisted usage ledger keys its counts by those
+/// same names and RESTATES them (`busbar_api::RESERVED_UNITS`), for exactly one reason — the kind
+/// graph refuses `api -> contract` outright, so that crate cannot take the declaration by
+/// reference. A restatement nothing checks is how the three vocabularies this release deleted came
+/// to exist in the first place, so this cell is the check: the composition root is the one place
+/// that may name both sides, and here it does, in order, by value.
+///
+/// It is deliberately NOT a claim that four strings are equal. It is the claim that the names a
+/// deployment may PRICE by, the names the metering step REPORTS under, and the names the ledger
+/// PERSISTS are one list — and the moment a plane declares a fifth dimension, renames one, or a
+/// store spells one its own way, this goes red at the root rather than going quiet in a bill.
+#[test]
+fn the_persisted_ledger_keys_are_the_dimensions_the_planes_declare() {
+    assert_eq!(
+        busbar_api::RESERVED_UNITS.as_slice(),
+        busbar_contract::TOKEN_DIMENSIONS.as_slice(),
+        "the store's unit keys and the declared dimensions are one list, in one order; a tree that \
+         lets them differ prices a count filed under a name no schedule can reach"
     );
 }

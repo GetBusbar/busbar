@@ -98,3 +98,29 @@ fn refolding_a_v2_row_adds_zero() {
         serde_json::to_string(&twice).unwrap()
     );
 }
+
+/// **A ROW WRITTEN UNDER THE OLD RESERVED SPELLINGS REACHES THE DECLARED DIMENSIONS, AND A ROW
+/// HOLDING BOTH LANDS ON ONE KEY HOLDING THE SUM.**
+///
+/// `input` and `output` were a vocabulary this crate invented and the card copied; the names a
+/// schedule may price by are the ones a PLANE declares (`tokens_in`/`tokens_out`). A persisted row
+/// left under the old keys is a row no rate reaches, so it is folded at the boundary exactly as
+/// `cache_creation` already was — and ADDITIVELY, because a node that wrote part of a window before
+/// the upgrade and the rest after has both spellings in one row, and two keys holding half a bill
+/// each is the failure this fold exists to prevent.
+#[test]
+fn folds_the_old_reserved_spellings_onto_the_declared_dimensions() {
+    let raw = r#"{"models":[{"model":"m","tokens":{"input":4,"output":1},
+        "usage_units":{"input":100,"output":50,"audio":7}}]}"#;
+    let l = migrate_raw(raw);
+    let m = &l.models[0];
+    assert_eq!(m.usage_units.get(UNIT_INPUT), Some(&104));
+    assert_eq!(m.usage_units.get(UNIT_OUTPUT), Some(&51));
+    assert_eq!(
+        (m.usage_units.get("input"), m.usage_units.get("output")),
+        (None, None),
+        "the old spellings do not survive the fold; a key left behind is a count no schedule reaches"
+    );
+    // An open unit that is nobody's reserved spelling is still carried through untouched.
+    assert_eq!(m.usage_units.get("audio"), Some(&7));
+}

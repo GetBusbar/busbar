@@ -17,7 +17,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::rate::RESERVED_CLASSES;
 use crate::tests::{CACHE_READ, CACHE_WRITE, INPUT, OUTPUT};
 use crate::{
     derive_spend_micros_units, derive_spend_minor_units, CurrencyCode, LaneClass, RateCard,
@@ -404,7 +403,7 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
 ///
 /// No configured card does. The only constructors a deployment reaches are
 /// [`RateCard::from_config`] and its currency-carrying spelling, and both fan a lane's
-/// [`TierRates`] out over exactly [`RESERVED_CLASSES`]; the one way to price a fifth class is
+/// [`TierRates`] out over exactly [`busbar_contract::TOKEN_DIMENSIONS`]; the one way to price a fifth class is
 /// [`RateCard::set_rate`], and nothing outside a test calls it. So the map fold's narrowing to the
 /// reserved four is not a policy difference from the line fold, it is the same answer on every card
 /// that exists.
@@ -487,7 +486,7 @@ fn saturating_add_matches_plain_add_below_overflow() {
         ],
     ] {
         let units = toks4(quantities[0], quantities[1], quantities[2], quantities[3]);
-        let plain: u128 = RESERVED_CLASSES
+        let plain: u128 = busbar_contract::TOKEN_DIMENSIONS
             .iter()
             .zip(quantities)
             .map(|(class, n)| u128::from(n) * u128::from(lane.nanos_per_unit(class)))

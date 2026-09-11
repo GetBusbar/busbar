@@ -205,6 +205,69 @@ pub enum ClassDirection {
     Kernel,
 }
 
+/// **THE TOKEN-SHAPED DIMENSIONS, SPELLED ONCE FOR EVERY SIDE THAT HAS TO AGREE.**
+///
+/// A dimension exists exactly when some plane's `METER_CLASSES` declares it, and the plane's
+/// spelling is THE name: it is what an operator writes in a `tariff:` block, what the boot check
+/// accepts, what the metering step reports under, and what the card prices by. Those four readers
+/// live in four crates that cannot all name each other — the codec that projects an upstream's
+/// usage figures is UPSTREAM of the plane that declares them, and the crate that owns the dated
+/// card depends on neither — so the spelling is declared HERE, in the one pure crate every side
+/// already names, and each side takes it rather than restating it.
+///
+/// It is not a second vocabulary beside the planes'. A plane still declares WHICH dimensions it
+/// meters, in what family, at what divisor, under what noun; what it takes from here is only the
+/// STRING, so that a spelling cannot drift between the side that reports a count and the side that
+/// prices it. That drift is not a tidiness complaint: a rate an operator wrote, that the node
+/// ACCEPTED at boot because a plane declared the name, multiplied a quantity filed under a
+/// different spelling and charged nothing — forever, silently, with the deployment reading a file
+/// that said otherwise.
+///
+/// The four are token-shaped because the planes that bill in tokens are the ones that must agree
+/// across that gap. A plane metering seconds, calls or bytes declares those names on its own face
+/// and nothing here needs to know.
+/// EACH IS SPELLED ONCE, AND TWICE TYPED. A declaration table holds a [`MeterClassId`]; a report
+/// and a card hold a `String`-keyed map, and a boot check matches an operator's written word. So
+/// each name is a `&str` literal in exactly one place and an id built from that same literal — two
+/// views of one spelling, never two spellings.
+pub const DIM_TOKENS_IN: &str = "tokens_in";
+/// The uncached-input token dimension, as a declaration table holds it.
+pub const CLASS_TOKENS_IN: MeterClassId = MeterClassId::new(DIM_TOKENS_IN);
+/// The response side of [`DIM_TOKENS_IN`].
+pub const DIM_TOKENS_OUT: &str = "tokens_out";
+/// The response token dimension, as a declaration table holds it.
+pub const CLASS_TOKENS_OUT: MeterClassId = MeterClassId::new(DIM_TOKENS_OUT);
+/// A prompt read back from an upstream cache, priced apart from uncached input.
+pub const DIM_CACHE_READ: &str = "cache_read";
+/// The cache-read dimension, as a declaration table holds it.
+pub const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(DIM_CACHE_READ);
+/// A prompt written to an upstream cache (cache creation), priced apart from uncached input.
+pub const DIM_CACHE_WRITE: &str = "cache_write";
+/// The cache-write dimension, as a declaration table holds it.
+pub const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(DIM_CACHE_WRITE);
+
+/// The four above, in the ONE order every reader that folds them folds them in.
+///
+/// A sum is commutative and the order does not change a total; what a second list would change is
+/// WHICH FOUR are summed, and a card built over one set of names against a summation folding
+/// another prices every line of the difference at zero — which the ledger identity reads as value
+/// delivered for free.
+pub const TOKEN_CLASSES: [MeterClassId; 4] = [
+    CLASS_TOKENS_IN,
+    CLASS_TOKENS_OUT,
+    CLASS_CACHE_READ,
+    CLASS_CACHE_WRITE,
+];
+
+/// [`TOKEN_CLASSES`] as the map keys a report and a card are written against, same order, read off
+/// that one array rather than restated beside it.
+pub const TOKEN_DIMENSIONS: [&str; 4] = [
+    DIM_TOKENS_IN,
+    DIM_TOKENS_OUT,
+    DIM_CACHE_READ,
+    DIM_CACHE_WRITE,
+];
+
 /// A plane's declaration of one meter class.
 ///
 /// The divisor converts bytes to the class's own quantity and has a pinned default here so that

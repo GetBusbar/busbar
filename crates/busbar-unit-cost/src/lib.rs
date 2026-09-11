@@ -84,10 +84,7 @@ pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in,
     derive_spend_micros_units, derive_spend_minor, derive_spend_minor_units, micros_of, minor_of,
 };
-pub use rate::{
-    nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT, RESERVED_CLASSES,
-};
+pub use rate::{nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates};
 // The fee TERMS are contract data: declared there, carried by the rate-apply seam, applied here.
 // Re-exported rather than redeclared, exactly as the group vocabulary above is, so a caller that
 // holds a card names one crate for the card AND for what it charges.

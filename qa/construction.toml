@@ -605,7 +605,7 @@ because = "the boot validator's refusal for a tariff scope naming a pool, group 
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3684
+contract_caps = 3706
 grammar = 388
 contract_transport = 845
 
@@ -826,12 +826,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5433
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3686
+caps_contract_ceiling = 3708
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15165
+unit_total_ceiling = 15153
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24284
+union_ceiling = 24294
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1854,3 +1854,54 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: cost.rs adds derive_spend_minor_units and derive_spend_micros_units to the one pub(crate) use line that is the engine's seam onto the cost unit, and deletes its own reserved-four fold, its own divide to cents, its own fee multiply, its own floor and the private lane helper with them. Four spellings on one seam line in place of a second answer to what a bucket has spent, with every reader inside the crate going through that seam rather than naming the unit itself; the edge dies with busbar-core"
+
+# ── ONE DIMENSION VOCABULARY ─────────────────────────────────────────────────────────────────────
+#
+# A billable dimension is named by the plane that meters it. Four vocabularies claimed the same four
+# quantities — the codec reported `input`/`output`, the card kept its own list of the same, the
+# admission unit kept a third, and the llm plane's face DECLARED `tokens_in`/`tokens_out` — so a
+# `per_units` rate for a declared dimension validated at boot and then multiplied a quantity filed
+# under another spelling. It charged nothing, for the life of the deployment, silently. The raises
+# below are what it cost to make the declaration the one name, measured.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "the composition root's cell that drives the llm plane's own declaration against what the codec reports and what the card prices — `busbar_plane_llm::LlmPlane`'s `METER_CLASSES` read through `PlaneMeta`, in the one crate that may name the plane, the codec and the card at once. A cell that could not name the plane could not check that the money path reports under the names the plane declares, which is the whole claim."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-api.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the persisted usage ledger's unit keys are a PLANE's declared dimensions, and the constants that hold them now say so. The kind graph refuses `api -> contract` outright, so this crate cannot take the declaration by reference and must restate it; a restatement that does not say what it is restating is exactly how the four vocabularies this landing deleted came to exist. The words are the argument, and the composition root holds the cell that goes red if the restatement ever differs."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm-codec.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "`wire_shim::tier_usage` is the ONE place an upstream's usage fields become billable counts, and its doc now says whose names those counts are filed under and what it cost when they were not. One word on a comment over the projection that used to key the money path by a vocabulary no plane ever declared."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the store adapter's row projection and the legacy usage fold name the reserved unit keys, and the migration cells that pin the opening figures now name them by constant instead of by string literal. A literal in a cell is a fifth copy of a dimension name that nothing checks; naming the constant is one import line."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+file = "qa/construction.toml"
+by = 22
+because = "FACE busbar_contract::ids' token dimensions: `DIM_TOKENS_IN`/`DIM_TOKENS_OUT`/`DIM_CACHE_READ`/`DIM_CACHE_WRITE`, their `MeterClassId` twins and the two arrays that hold them in one order. It is not a second vocabulary beside the planes': a plane still declares WHICH dimensions it meters, in what family, at what divisor and under what noun, and what it takes from here is only the STRING. It has to live here because the crates that must agree cannot all name each other — the codec that projects an upstream's usage figures is UPSTREAM of the plane that declares them, and the crate holding the dated card depends on neither — and the contract is the one pure crate every side already names. Measured 3686 -> 3708."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+file = "qa/construction.toml"
+by = 22
+because = "the same face, on the pair's plugin-visible surface. Every line of it is a name and the two orders those names are folded in; there is no card, no count and no currency in it. Measured 3684 -> 3706."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+file = "qa/construction.toml"
+by = 10
+because = "the same face on the union, NET of what naming it deleted: the card's own `CLASS_INPUT`/`CLASS_OUTPUT`/`CLASS_CACHE_READ`/`CLASS_CACHE_WRITE`/`RESERVED_CLASSES` and the admission unit's identical five are gone, so the twenty-two lines the contract gained cost the union ten. The ceiling rises by the ten this landing measured and NOT to the measurement. Measured 24284 -> 24294."

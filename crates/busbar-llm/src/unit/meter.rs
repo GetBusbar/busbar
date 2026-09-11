@@ -328,15 +328,15 @@ pub type MeterStep = for<'a> fn(
     Worth<'a>,
 ) -> Metered;
 
-/// The four reserved meter classes, in the canonical order the pricer prices them.
+/// The four meter classes this step reports, in the canonical order the pricer prices them — the
+/// DECLARED ones, taken from `busbar_contract::ids` rather than spelled again here.
 ///
-/// Named from the neutral reserved-unit spellings rather than any dialect's wire field, because the
-/// readers already normalize every dialect onto them: input is UNCACHED input, and the two cache
-/// tiers are ADDITIVE, so the four partition what the response consumed on every provider.
-const CLASS_INPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_INPUT);
-const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_OUTPUT);
-const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_READ);
-const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_WRITE);
+/// They are not named from any dialect's wire field, because the readers already normalize every
+/// dialect onto them: input is UNCACHED input, and the two cache tiers are ADDITIVE, so the four
+/// partition what the response consumed on every provider.
+use busbar_contract::ids::{
+    CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_TOKENS_IN, CLASS_TOKENS_OUT,
+};
 
 /// Step 6. Fold what the legs reported, accrue it, and say what the posting is made against.
 ///
@@ -424,8 +424,13 @@ pub fn meter(
     // older release bills when an upstream tells it nothing.
     let mut lines = Vec::new();
     if let Some(u) = reported {
-        push_line(&mut lines, CLASS_INPUT, ClassDirection::Input, u.input);
-        push_line(&mut lines, CLASS_OUTPUT, ClassDirection::Response, u.output);
+        push_line(&mut lines, CLASS_TOKENS_IN, ClassDirection::Input, u.input);
+        push_line(
+            &mut lines,
+            CLASS_TOKENS_OUT,
+            ClassDirection::Response,
+            u.output,
+        );
         push_line(
             &mut lines,
             CLASS_CACHE_READ,

@@ -46,29 +46,18 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
     }
 }
 
-/// The uncached-input meter class, as a card entry is keyed.
-pub const CLASS_INPUT: &str = "input";
-/// The response meter class.
-pub const CLASS_OUTPUT: &str = "output";
-/// The cache-read meter class — a prompt read back from cache, priced apart from uncached input.
-pub const CLASS_CACHE_READ: &str = "cache_read";
-/// The cache-write (cache creation) meter class.
-pub const CLASS_CACHE_WRITE: &str = "cache_write";
-
-/// **THE RESERVED FOUR, IN CANONICAL ORDER** — the one order this crate folds them in.
-///
-/// It is the order a card's class fan-out writes ([`TierRates::by_class`] reads it) and the order
-/// the map-shaped summation adds in ([`LaneRates::reserved_units_nanos`]), so the four names and
-/// their sequence exist once rather than once per reader. A sum is commutative and the order does
-/// not change the total; what a second list would change is WHICH FOUR are summed, and a
-/// constructor fanning out one set of names against a summation folding another prices every line
-/// of the difference at zero — which the ledger identity reads as value delivered for free.
-pub const RESERVED_CLASSES: [&str; 4] = [
-    CLASS_INPUT,
-    CLASS_OUTPUT,
-    CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE,
-];
+// **THE FOUR NAMES ARE NOT THIS CRATE'S TO SPELL, AND ARE GONE FROM IT.** `CLASS_INPUT` and its
+// three siblings were `pub const`s here, and `busbar_contract::TOKEN_DIMENSIONS` was the canonical order this crate
+// folded them in. Both are DELETED. A name a card prices by is a name some PLANE declared it
+// meters — that is the whole of what makes an operator's `tariff:` dimension resolvable at boot —
+// and a second list of them here is a list that can disagree with the declaration. It did: this
+// crate priced `input` where the declaration said `tokens_in`, so a `per_units` rate the node
+// ACCEPTED at boot multiplied a quantity filed under another spelling, charged nothing, and said
+// nothing about it.
+//
+// The order is still one order and the set is still one set; they are just read from
+// `busbar_contract::ids::TOKEN_DIMENSIONS`, the declaration's own crate, which this one already
+// names for the limit vocabulary and which adds nothing to what a money multiply links against.
 
 /// ONE LANE'S CONFIGURED RATES, in micro-units per unit of quantity — the neutral raw-value view a
 /// card is built from.
@@ -98,12 +87,12 @@ pub struct TierRates {
 }
 
 impl TierRates {
-    /// The four rates paired with the class each one prices, in [`RESERVED_CLASSES`] order — read
+    /// The four rates paired with the class each one prices, in [`busbar_contract::ids::TOKEN_DIMENSIONS`] order — read
     /// off that one list rather than restating it, so the names a card is BUILT with and the names
     /// a usage map is PRICED against cannot come apart.
     fn by_class(self) -> [(&'static str, f64); 4] {
         let micro = [self.input, self.output, self.cache_read, self.cache_write];
-        std::array::from_fn(|i| (RESERVED_CLASSES[i], micro[i]))
+        std::array::from_fn(|i| (busbar_contract::TOKEN_DIMENSIONS[i], micro[i]))
     }
 }
 
@@ -292,7 +281,7 @@ impl RateCard {
     /// node that charges a fee.
     ///
     /// THE CLASS NAMES ARE THIS CRATE'S. A card entry is keyed by the neutral reserved-unit spelling
-    /// ([`CLASS_INPUT`] and its three siblings), and the usage report priced against it carries the
+    /// (the declared token dimensions), and the usage report priced against it carries the
     /// same spellings, so no name is translated between the line and the entry that prices it. The
     /// two agreeing is not left to inspection: a card keyed by names a report does not use prices
     /// every line at zero, which the ledger identity reads as a node that delivered value for free.
@@ -532,7 +521,7 @@ impl LaneRates<'_> {
     }
 
     /// **THE SAME COST, OFF A MAP-SHAPED REPORT**: the reserved four multiply-adds in
-    /// [`RESERVED_CLASSES`] order, over a `class -> quantity` map instead of a line slice.
+    /// [`busbar_contract::ids::TOKEN_DIMENSIONS`] order, over a `class -> quantity` map instead of a line slice.
     ///
     /// ONE ARITHMETIC, TWO REPORT SHAPES. The 1.5.5 ledger stores usage as a name-keyed map and the
     /// 1.6.0 report carries it as lines; the price of either is the same fold at the same rates, and
@@ -543,7 +532,7 @@ impl LaneRates<'_> {
     /// ONLY THE RESERVED FOUR PRICE HERE, and that is the shape of the map rather than a narrowing:
     /// the reserved names are the only ones a configured card names, because the two constructors a
     /// deployment reaches ([`RateCard::from_config`] and its currency-carrying spelling) fan a lane's
-    /// [`TierRates`] out over exactly [`RESERVED_CLASSES`]. A card with an open class is reachable
+    /// [`TierRates`] out over exactly [`busbar_contract::ids::TOKEN_DIMENSIONS`]. A card with an open class is reachable
     /// only through [`RateCard::set_rate`], which nothing in production calls; pin
     /// `open_class_prices_only_through_set_rate` says so and would go red the day one did.
     ///
@@ -555,11 +544,13 @@ impl LaneRates<'_> {
     /// accumulator's top the two are the same number to the byte, which
     /// `saturating_add_matches_plain_add_below_overflow` pins.
     pub fn reserved_units_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_CLASSES.iter().fold(0u128, |acc, class| {
-            let quantity = units.get(*class).copied().unwrap_or(0);
-            let amount =
-                u128::from(quantity).saturating_mul(u128::from(self.nanos_per_unit(class)));
-            acc.saturating_add(amount)
-        })
+        busbar_contract::TOKEN_DIMENSIONS
+            .iter()
+            .fold(0u128, |acc, class| {
+                let quantity = units.get(*class).copied().unwrap_or(0);
+                let amount =
+                    u128::from(quantity).saturating_mul(u128::from(self.nanos_per_unit(class)));
+                acc.saturating_add(amount)
+            })
     }
 }

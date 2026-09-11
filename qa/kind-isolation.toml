@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "117"
+count = "118"
 
 [[cell]]
 crate = "busbar"
@@ -1319,7 +1319,7 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "321"
+count = "320"
 
 [[cell]]
 crate = "busbar"
@@ -1354,7 +1354,7 @@ count = "94"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1913"
+count = "1918"
 
 [[cell]]
 crate = "busbar"
@@ -1384,7 +1384,7 @@ count = "949"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1201"
+count = "1199"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1484,7 +1484,7 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
-count = "107"
+count = "109"
 
 [[cell]]
 crate = "busbar-api"
@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "602"
+count = "572"
 
 [[cell]]
 crate = "busbar-core"
@@ -1679,7 +1679,7 @@ count = "2117"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "39"
+count = "37"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1749,7 +1749,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+count = "293"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1829,7 +1829,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "284"
+count = "285"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -2154,7 +2154,7 @@ count = "12"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "api"
-count = "72"
+count = "73"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2354,7 +2354,7 @@ count = "8"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "api"
-count = "15"
+count = "10"
 
 [[cell]]
 crate = "busbar-store-memory"
@@ -4648,6 +4648,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 3.1 (crate graph, bounded types) / ARCHITECTURE.md 1.1 — the contract is the face every kind is written against, and `unit -> contract` is a granted class."
 why     = "busbar-unit-cost names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The CONFIGURED-LIMIT VOCABULARY (`busbar_contract::limits`) is the contract's, not this crate's: the `groups:` section is parsed by the configuration grammar's crate and projected by this one, so the hand-over is a RELAY, and a relay can only be written somewhere that names both sides. With the spec types declared in this crate only a composition root could name both, so every engine resolving a model without a root behind it carried its own copy — and two readings of one `groups:` section that must agree exactly is how a node comes to be admitted against one set of ledger cells and billed against another. The contract was already in this crate's compiled closure through the capability crate, so the edge adds nothing to what a money multiply links against. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-admission"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-admission names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. THE DECLARED DIMENSION SPELLINGS, and nothing else. This crate carried its own `UNIT_INPUT`/`UNIT_OUTPUT`/`UNIT_CACHE_READ`/`UNIT_CACHE_WRITE`/`RESERVED_UNITS` — a fourth copy of four names that belong to whichever plane DECLARES it meters them, beside the store's copy, the card's copy and the planes' own faces, with nothing making the four agree. They did not agree, and the money path priced a dimension nothing reported. The copy here is DELETED and the names are taken from `busbar_contract::ids`, which was already in this crate's compiled closure through the capability crate above, so the edge adds not one crate to what an admission hold links against. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

@@ -25,6 +25,10 @@ path = "src/lib.rs"
 [dependencies]
 # The capability types and the tokens that seal them.
 busbar-caps = { path = "../busbar-caps" }
+# THE DECLARED DIMENSION SPELLINGS, and nothing else. A pure type crate with no store, no config
+# parser and no runtime, ALREADY in this crate's compiled closure through the capability crate above
+# — naming it directly adds not one crate to what an admission hold links against.
+busbar-contract = { path = "../busbar-contract" }
 # THE PRICING LAW, so this crate does not restate it. The door sizes a hold in nano-units, which
 # means it needs the one config-decimal-to-integer-rate conversion — and it used to carry its own
 # copy of those three lines, because this manifest named nothing else. Two copies of a rounding rule
