@@ -24,7 +24,7 @@
 //! `MyStore` directly — the C ABI is only the *dynamic* delivery path. That is how a build can bake
 //! a plugin in (e.g. Postgres compiled straight into a custom binary) without any `cfg` sprawl.
 
-use busbar_api::{Store, StoreError};
+use busbar_api::{SecretErrorKind, Store, StoreError};
 use busbar_plugin::cold::{StoreRequest, StoreResponse, ABI_VERSION};
 use std::os::raw::c_void;
 
@@ -649,6 +649,7 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
             let typed = busbar_plugin::cold::SecretResponse::Error {
                 kind: e.kind,
                 message: e.message.clone(),
+                error: None,
             };
             match serde_json::to_vec(&typed) {
                 Ok(payload) => BoundaryOutcome::Ok(payload),
@@ -659,6 +660,112 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
             }
         }
     }
+}
+
+// ── The structured error, for every kind ──────────────────────────────────────────────────────
+
+/// The one structured error a plugin of any kind fails with, and its closed class taxonomy — the
+/// contract's, re-exported so a plugin crate names this SDK and nothing else.
+pub use busbar_contract::{Advisory, Catalog, ErrorClass, ParamValue, PluginError};
+
+/// A `kind: secret` plugin written on the structured error: one reference's settings map in, the
+/// bytes out, or a [`PluginError`] whose `code` the plugin's own catalog declares.
+pub trait SecretHandler: Send + Sync {
+    /// Resolve one reference. The error's `developer_message` must never carry secret material.
+    fn resolve(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<u8>, PluginError>;
+}
+
+/// The handle behind the opaque `*mut c_void` for a [`SecretHandler`] plugin.
+pub type SecretHandlerHandle = Box<dyn SecretHandler>;
+
+/// The frozen wire token a class is spelled as for a host that predates the structured error.
+///
+/// A LOSSY projection by design: the five tokens are what such a host can read, and the structured
+/// error rides beside them for a host that can read more. Lossy in ONE direction only — every class
+/// has a token, so an old host is never handed a failure it cannot name; three classes share
+/// `Unavailable` and three share `Internal`, and a host that wants the distinction reads the
+/// structured error that travels with the token.
+pub fn wire_token_for(class: ErrorClass) -> SecretErrorKind {
+    match class {
+        ErrorClass::NotFound => SecretErrorKind::NotFound,
+        ErrorClass::Unavailable | ErrorClass::Timeout | ErrorClass::Exhausted => {
+            SecretErrorKind::Unavailable
+        }
+        ErrorClass::Denied => SecretErrorKind::Denied,
+        ErrorClass::Malformed | ErrorClass::Rejected => SecretErrorKind::Invalid,
+        ErrorClass::Conflict | ErrorClass::Integrity | ErrorClass::Internal => {
+            SecretErrorKind::Internal
+        }
+    }
+}
+
+/// The `STATUS_ERR` body for a kind whose frozen response has no typed error slot: the structured
+/// error as its JSON document. A host that predates it reads the document as the UTF-8 message it
+/// always was; a host that does not, reads the five fields.
+pub fn fault_outcome(e: &PluginError) -> BoundaryOutcome {
+    match serde_json::to_string(e) {
+        Ok(doc) => BoundaryOutcome::Error(doc),
+        Err(_) => BoundaryOutcome::Error(e.to_string()),
+    }
+}
+
+/// Run one `Resolve` against a [`SecretHandler`]: the typed `Error` for an older host, with the
+/// structured error beside it for a newer one.
+pub fn dispatch_secret_handler(
+    handler: &dyn SecretHandler,
+    req: busbar_plugin::cold::SecretRequest,
+) -> busbar_plugin::cold::SecretResponse {
+    match req {
+        busbar_plugin::cold::SecretRequest::Resolve { settings, .. } => {
+            match handler.resolve(&settings) {
+                Ok(bytes) => busbar_plugin::cold::SecretResponse::Bytes(bytes),
+                Err(e) => busbar_plugin::cold::SecretResponse::Error {
+                    kind: wire_token_for(e.class),
+                    message: e.developer_message.clone(),
+                    error: serde_json::to_value(&e).ok(),
+                },
+            }
+        }
+    }
+}
+
+/// The per-kind `dispatch` closure `export_secret_plugin!(handler = …)` hands to
+/// [`boundary::call_boundary`].
+///
+/// # Safety
+/// `handle` is a live [`SecretHandlerHandle`] from `open` (non-null by the boundary wrapper).
+pub unsafe fn secret_handler_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
+    let handler: &SecretHandlerHandle = &*(handle as *const SecretHandlerHandle);
+    let request: busbar_plugin::cold::SecretRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    match serde_json::to_vec(&dispatch_secret_handler(handler.as_ref(), request)) {
+        Ok(payload) => BoundaryOutcome::Ok(payload),
+        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
+    }
+}
+
+/// Emit the optional `busbar_catalog` symbol from a `'static` JSON string: the plugin's error
+/// catalog, in the shape of [`Catalog`]. The host reads it once at load and refuses a plugin
+/// whose catalog fails `Catalog::check()`.
+#[macro_export]
+macro_rules! export_catalog {
+    ($json:expr) => {
+        /// # Safety
+        /// Read only by the busbar loader at load; the bytes are `'static` and never freed.
+        #[no_mangle]
+        pub unsafe extern "C-unwind" fn busbar_catalog(out_len: *mut usize) -> *const u8 {
+            const CATALOG_JSON: &str = $json;
+            if !out_len.is_null() {
+                unsafe { *out_len = CATALOG_JSON.len() };
+            }
+            CATALOG_JSON.as_ptr()
+        }
+    };
 }
 
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
@@ -1087,6 +1194,15 @@ macro_rules! export_secret_plugin {
             dispatch = $crate::secret_dispatch,
             ctor = $ctor,
             handle = $crate::SecretHandle,
+        );
+    };
+    // The structured-error form: `$ctor` is a `fn(&str) -> Result<Box<dyn SecretHandler>, String>`.
+    (handler = $ctor:path) => {
+        $crate::export_plugin!(
+            kind = "secret",
+            dispatch = $crate::secret_handler_dispatch,
+            ctor = $ctor,
+            handle = $crate::SecretHandlerHandle,
         );
     };
 }

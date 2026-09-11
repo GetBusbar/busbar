@@ -568,6 +568,12 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
+    // THE CONTRACT IS GRANTED TO EVERYTHING, including the crates that are not kinds. ARCHITECTURE.md
+    // 1.2's manifest allow-list names busbar-contract as the ONE crate a plugin of any kind may
+    // depend on; the tooling a plugin author writes against carries the contract's types ACROSS the
+    // cdylib boundary for them, so a tooling crate that could not name the contract would have to
+    // re-declare its shapes, which is the second definition this whole seam exists to remove.
+    ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),

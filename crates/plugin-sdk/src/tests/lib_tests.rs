@@ -260,7 +260,7 @@ fn secret_ffi_roundtrip_open_call_close() {
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
+            busbar_plugin::cold::SecretResponse::Error { kind, message, .. } => {
                 assert_eq!(kind, busbar_api::SecretErrorKind::Invalid);
                 assert!(message.contains("settings.name required"), "got {message}");
             }
@@ -1141,4 +1141,130 @@ fn a_sidecar_less_request_still_decodes_at_the_neutral_defaults() {
     assert_eq!(rec.ts, 0);
     assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
     assert_eq!(rec.id, "", "no id on the wire is an empty child id");
+}
+
+// ── the structured error, for every kind ──────────────────────────────────────────────────────
+
+/// `export_catalog!` stamps the optional symbol, and what it stamps is the plugin's catalog as the
+/// contract's own JSON — read out of the pointer the way the loader reads it.
+const FIXTURE_CATALOG: &str = r#"{"default_locale":"en","entries":[{"code":"fixture.gone","templates":[{"locale":"en","text":"{what} is gone"}]}]}"#;
+crate::export_catalog!(FIXTURE_CATALOG);
+
+#[test]
+fn export_catalog_stamps_static_bytes_a_host_can_read_as_a_catalog() {
+    let mut len = 0usize;
+    let ptr = unsafe { busbar_catalog(&mut len) };
+    assert!(!ptr.is_null());
+    assert_eq!(len, FIXTURE_CATALOG.len());
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let text = std::str::from_utf8(bytes).expect("the catalog is UTF-8");
+    let catalog: Catalog = serde_json::from_str(text).expect("and a catalog document");
+    catalog.check().expect("and one that checks");
+    assert_eq!(
+        catalog.template("fixture.gone", "fr"),
+        Some("{what} is gone"),
+        "a locale the plugin does not ship falls back to its default"
+    );
+    // A NULL out-pointer is not a crash: the host may probe the symbol before it has somewhere to
+    // put the length.
+    assert!(!unsafe { busbar_catalog(std::ptr::null_mut()) }.is_null());
+}
+
+/// The projection onto the frozen five tokens is TOTAL: every class has a token, so a host that
+/// predates the structured error is never handed a failure it cannot name.
+#[test]
+fn every_class_projects_onto_one_of_the_frozen_five_tokens() {
+    for class in ErrorClass::ALL {
+        let token = wire_token_for(class);
+        let rendered = serde_json::to_string(&token).expect("a token serialises");
+        assert!(
+            [
+                "\"not_found\"",
+                "\"unavailable\"",
+                "\"denied\"",
+                "\"invalid\"",
+                "\"internal\""
+            ]
+            .contains(&rendered.as_str()),
+            "{class} projected onto {rendered}, which is not one of the frozen five"
+        );
+    }
+    // The projection is lossy in one direction only, and these are the collapses it makes.
+    assert_eq!(
+        wire_token_for(ErrorClass::Timeout),
+        wire_token_for(ErrorClass::Unavailable)
+    );
+    assert_eq!(
+        wire_token_for(ErrorClass::Integrity),
+        wire_token_for(ErrorClass::Internal)
+    );
+    assert_ne!(
+        wire_token_for(ErrorClass::Denied),
+        wire_token_for(ErrorClass::NotFound),
+        "a policy refusal must not reach an old host as a miss"
+    );
+}
+
+/// For a kind whose frozen response has NO typed error slot, the STATUS_ERR body is the structured
+/// error's own JSON: a host that predates it reads the document as the UTF-8 message it always was,
+/// and a host that does not reads the five fields out of it.
+#[test]
+fn fault_outcome_is_the_structured_error_as_its_own_document() {
+    let e = PluginError::new(ErrorClass::Exhausted, "fixture.quota")
+        .with_message("bucket empty")
+        .with_param("bucket", ParamValue::Str("prod".into()));
+    match fault_outcome(&e) {
+        BoundaryOutcome::Error(body) => {
+            let read: PluginError =
+                serde_json::from_str(&body).expect("the STATUS_ERR body is the error itself");
+            assert_eq!(read, e);
+        }
+        _ => panic!("a fault is a STATUS_ERR body, not an Ok or an Unsupported"),
+    }
+}
+
+/// A handler that fails answers with BOTH: the frozen token an old host reads and the structured
+/// error beside it. This is the whole seam in one assertion.
+#[test]
+fn a_handler_failure_carries_the_token_and_the_structured_error_together() {
+    struct Failing;
+    impl SecretHandler for Failing {
+        fn resolve(
+            &self,
+            _settings: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<Vec<u8>, PluginError> {
+            Err(
+                PluginError::new(ErrorClass::Denied, "fixture.not_permitted")
+                    .with_message("policy refuses this caller")
+                    .with_param("key", ParamValue::Str("db-password".into())),
+            )
+        }
+    }
+    let resp = dispatch_secret_handler(
+        &Failing,
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings: serde_json::Map::new(),
+            deadline_ms: None,
+        },
+    );
+    match resp {
+        busbar_plugin::cold::SecretResponse::Error {
+            kind,
+            message,
+            error,
+        } => {
+            assert_eq!(kind, SecretErrorKind::Denied);
+            assert_eq!(message, "policy refuses this caller");
+            let structured: PluginError =
+                serde_json::from_value(error.expect("the structured error rides along"))
+                    .expect("and it is the contract's own shape");
+            assert_eq!(structured.class, ErrorClass::Denied);
+            assert_eq!(structured.code, "fixture.not_permitted");
+            assert_eq!(
+                structured.param("key"),
+                Some(&ParamValue::Str("db-password".into()))
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
 }
