@@ -335,8 +335,11 @@ fn proto_span(record: &SpanRecord) -> Span {
     Span {
         trace_id: record.trace_id.to_vec(),
         span_id: record.span_id.to_vec(),
-        // A ROOT SPAN CARRIES AN EMPTY PARENT, not eight zero bytes: the schema spells "no parent"
-        // as an absent field, and a zeroed id is a span id that a collector may try to link.
+        // A ROOT SPAN CARRIES NO PARENT, and every other span carries THE ONE ITS OWN RECORD NAMED.
+        // Writing an all-zero id here would encode identically (proto3 elides a zero-valued bytes
+        // field), so "not zeroed" is not a fact this wire can carry. What this line actually holds
+        // shut is the other failure: a sink that linked a root to SOMETHING — its own id, or the
+        // record beside it — would hand every collector a tree this process never observed.
         parent_span_id: record
             .parent_span_id
             .map(|p| p.to_vec())

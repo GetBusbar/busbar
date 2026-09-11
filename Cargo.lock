@@ -385,6 +385,8 @@ dependencies = [
  "http-body",
  "http-body-util",
  "metrics",
+ "opentelemetry-proto",
+ "prost",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",

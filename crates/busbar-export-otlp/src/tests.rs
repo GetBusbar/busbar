@@ -213,14 +213,19 @@ fn a_span_batch_through_the_face_is_the_otlp_request_this_sink_framed() {
     );
 }
 
-/// A ROOT SPAN CARRIES NO PARENT, AND "NO PARENT" IS NOT EIGHT ZERO BYTES.
+/// EVERY SPAN'S PARENT IS ITS OWN RECORD'S, AND A ROOT'S IS NOTHING.
 ///
-/// The schema spells an absent parent as an empty field. A sink that wrote a zeroed span id there
-/// would hand every collector a link to a span that does not exist.
+/// Stated over a MIXED batch, because that is the only version of this that can fail: an all-zero
+/// parent encodes identically to an absent one (proto3 elides a zero-valued bytes field), so
+/// "not zeroed" is not a fact the wire can carry. What CAN go wrong is a sink that links a root to
+/// something — its own id, or the parent of the record beside it — and hands a collector a tree this
+/// process never observed. So the batch carries a parented span and a root, and each is read back
+/// against the record it came from.
 #[test]
-fn a_root_span_carries_an_empty_parent_and_not_a_zeroed_one() {
+fn every_spans_parent_is_its_own_records_and_a_roots_is_nothing() {
     let report = Arc::new(Recorder::default());
-    let bytes = batch_bytes(&[span_record(None)]);
+    let parent = [0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81];
+    let bytes = batch_bytes(&[span_record(Some(parent)), span_record(None)]);
     let wire = Wire::default();
 
     let _ = sink(&report).receive(
@@ -234,11 +239,21 @@ fn a_root_span_carries_an_empty_parent_and_not_a_zeroed_one() {
     let sent = wire.sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let decoded =
         ExportTraceServiceRequest::decode(sent[0].body.as_slice()).expect("an export request");
-    let s = &decoded.resource_spans[0].scope_spans[0].spans[0];
+    let spans = &decoded.resource_spans[0].scope_spans[0].spans;
+    assert_eq!(spans.len(), 2, "one record in, one span out, in order");
+    assert_eq!(
+        spans[0].parent_span_id,
+        parent.to_vec(),
+        "the parented span links to the parent ITS record named"
+    );
     assert!(
-        s.parent_span_id.is_empty(),
-        "a root span's parent is absent, not zeroed: {:?}",
-        s.parent_span_id
+        spans[1].parent_span_id.is_empty(),
+        "the root links to nothing, and not to its neighbour or to itself: {:?}",
+        spans[1].parent_span_id
+    );
+    assert_ne!(
+        spans[1].parent_span_id, spans[1].span_id,
+        "a root that linked to itself would be a cycle a collector cannot draw"
     );
 }
 

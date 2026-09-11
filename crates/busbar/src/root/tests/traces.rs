@@ -351,3 +351,108 @@ fn an_empty_drain_sends_nothing() {
     assert_eq!(traces.drain(), 0);
     assert!(sent.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
 }
+
+// ── the oracle ───────────────────────────────────────────────────────────────────────────────
+
+/// THE WHOLE CHAIN, READ BACK AS A COLLECTOR WOULD READ IT.
+///
+/// Every other cell in this file stops at the sink's door and every cell in the sink's own file
+/// starts at a hand-built batch, so between them sat the one question neither could answer: does a
+/// span THIS PROCESS EMITTED arrive at a collector as that span? This drives a real
+/// `tracing_subscriber::Registry` with the real layer, the real gate, the real drain and the real
+/// sink, takes the bytes off a fake wire, and DECODES THE PROTOBUF BACK — the resource, the scope,
+/// the parent link and the span's own window and status, in the schema's own words.
+///
+/// IT IS NOT THE COLLECTOR FIXTURE THE DESIGN NAMED. That one runs the real binary against a
+/// process that speaks OTLP and pins what crosses a socket; this one pins what crosses the wire's
+/// door, which is everything this tree decides. The socket in between is the engine's egress
+/// client, already proven where it lives. Stated plainly so the gap is a measurement rather than a
+/// silence.
+#[test]
+fn a_span_this_process_emitted_decodes_as_that_span_at_a_collector() {
+    use prost::Message as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let (traces, sent) = composed("https://collector.example.com/v1/traces");
+    {
+        let subscriber = tracing_subscriber::registry().with(TraceLayer {
+            traces: traces.clone(),
+            shown: String::new(),
+        });
+        let _g = tracing::subscriber::set_default(subscriber);
+        let parent = tracing::info_span!("forward", otel.kind = "server", pool = "prod");
+        let _pe = parent.enter();
+        let child = tracing::info_span!(
+            "attempt",
+            otel.status_code = "ERROR",
+            otel.status_message = "upstream refused",
+            retried = true,
+        );
+        let _ce = child.enter();
+    }
+    assert_eq!(traces.drain(), 2, "two closed spans, one export request");
+
+    let sent = sent.lock().unwrap_or_else(|e| e.into_inner());
+    let decoded =
+        opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest::decode(
+            sent[0].2.as_slice(),
+        )
+        .expect("what left this process is an OTLP export request");
+
+    let rs = &decoded.resource_spans[0];
+    let resource: Vec<String> = rs
+        .resource
+        .as_ref()
+        .expect("a collector is told what this process is")
+        .attributes
+        .iter()
+        .map(|kv| kv.key.clone())
+        .collect();
+    assert_eq!(resource, vec!["service.name", "service.version"]);
+    let ss = &rs.scope_spans[0];
+    assert_eq!(ss.scope.as_ref().expect("one scope").name, "busbar");
+    assert_eq!(ss.spans.len(), 2, "both spans ride one request");
+
+    // The CHILD closes first, so it is first in the batch.
+    let (child, parent) = (&ss.spans[0], &ss.spans[1]);
+    assert_eq!(child.name, "attempt");
+    assert_eq!(parent.name, "forward");
+    assert_eq!(
+        child.trace_id, parent.trace_id,
+        "one trace reaches the collector as one trace"
+    );
+    assert_eq!(
+        child.parent_span_id, parent.span_id,
+        "the collector can rebuild the tree this process observed"
+    );
+    assert!(
+        parent.parent_span_id.is_empty(),
+        "the root of the trace says so by absence, not by a zeroed id"
+    );
+    assert_eq!(
+        parent.kind,
+        opentelemetry_proto::tonic::trace::v1::span::SpanKind::Server as i32,
+        "`otel.kind` reached the wire as the schema's own kind"
+    );
+    assert_eq!(
+        child.status.as_ref().map(|s| (s.code, s.message.clone())),
+        Some((
+            opentelemetry_proto::tonic::trace::v1::status::StatusCode::Error as i32,
+            "upstream refused".to_string()
+        )),
+        "a failing span reaches the collector as a failing span"
+    );
+    assert!(
+        parent.start_time_unix_nano > 0 && parent.end_time_unix_nano >= parent.start_time_unix_nano,
+        "the window is this process's clock and it runs forwards"
+    );
+    assert_eq!(
+        parent
+            .attributes
+            .iter()
+            .map(|kv| kv.key.clone())
+            .collect::<Vec<_>>(),
+        vec!["pool"],
+        "the callsite's field crossed, and the three `otel.*` statements did not become attributes"
+    );
+}

@@ -303,6 +303,15 @@ openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "b
 loom-model = ["busbar-core/loom-model"]
 
 [dev-dependencies]
+# THE ORACLE'S READER, and test-only for a reason that is the whole point of it. The composition
+# root produces spans and hands them to a sink as bytes; the sink frames them. Between those two
+# halves sat the one question neither could answer on its own — does a span THIS PROCESS EMITTED
+# arrive at a collector as that span? Answering it means DECODING what leaves, and decoding it with
+# the publisher's own generated types rather than a hand-written reader, because a hand-written
+# reader that agreed with a hand-written writer would prove nothing. Not a production dependency:
+# nothing in `src/**` outside `#[cfg(test)]` names either crate, and the root frames nothing.
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
