@@ -244,6 +244,24 @@ pub const IMPLEMENTED_METHODS: &[&str] = &[
 /// here and an SDK-pinned assertion one crate over.
 pub const METHOD_SUBSCRIPTIONS_LISTEN: &str = "subscriptions/listen";
 
+/// **THE SETTLED ANSWER FOR `completion/complete`, AS THE BARE RESULT DOCUMENT.**
+///
+/// Not an envelope: no `jsonrpc`, no `id`, no `resultType`. Those three belong to whichever side is
+/// FRAMING the answer, and this crate deliberately does not know which side that is — it is the
+/// shared, pure half both framings read. What is HERE is the only part that is a fact about this
+/// METHOD rather than about the wire: the completion set this deployment offers, which is empty,
+/// and empty COMPLETELY rather than as an absence — `hasMore: false` and `total: 0` say "there are
+/// no completions", where omitting them would say "I did not look".
+///
+/// It is a `&str` and not a `serde_json::Value` builder because the whole point of it is to be
+/// COMPARABLE AS BYTES across the two framings. Two crates that each build the same object from
+/// their own `json!` literal agree until one of them is edited; two crates that read the same bytes
+/// cannot disagree at all. The member order is `serde_json`'s own for a map (this tree does not
+/// enable `preserve_order`), so a round-trip through `Value` reproduces this string exactly, which
+/// is what makes the byte comparison meaningful rather than incidental.
+pub const RESULT_COMPLETION_EMPTY: &str =
+    r#"{"completion":{"hasMore":false,"total":0,"values":[]}}"#;
+
 /// WHICH `params` MEMBER CARRIES A REQUEST'S SUBJECT, for the methods that address one.
 ///
 /// SEP-2243 and SEP-2663 require the subject to be mirrored into the `Mcp-Name` header, so this

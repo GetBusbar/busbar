@@ -1715,3 +1715,48 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 8
 because = "the units the seven steps are SERVED BY, named by the composition that binds them: `busbar_unit_auth::{Auth, AuthChain}`, `busbar_unit_trust::{Trust, BreakerView, Unavailable}`, `busbar_unit_scope::Grants`, `busbar_unit_admission::{Door, InMemoryCells, Pricer, GroupTable, BucketChain}`, `busbar_unit_usage::KernelLine` and `busbar_unit_wal::NullShipper`. Every one of them is the node's one instance handed to this leg; nothing here is a second copy of a unit and nothing here is plane-specific."
+
+# ── MCP-E (1.6.0): THE SETTLED-ANSWER WRITE ──────────────────────────────────────────────────────
+#
+# One class of thirteen answered through the mounted leg with the plane's own bytes, driven red-first.
+# Every rise below is the same landing measured on its own axis, and each is a COMPOSITION naming what
+# it composes -- never a plane naming a unit, a unit naming a plane, or a codec naming either.
+# See docs/design/1.6.0-mcp-engine.md §8.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 19
+because = "THE SETTLED-ANSWER WRITE, named by the composition that proves it: the cell drives a `completion/complete` unit through the REAL Teller loop and then asks the PLANE for the answer, through `busbar_plane_mcp::{ops::settled_document, facts::FACT_RPC_ID, McpPlane, Server}` and the contract's own `Plane::{decode_ingress, encode_response}` over `Response`/`Ir`/`FinishClass`. The root composes no document and writes no envelope: it reads the document off the plane's vocabulary table, takes the identifier off the DECODE STEP's draft, and hands both back to the plane to frame. `LegNode` additionally carries the plane it was registered with, because the scope step judges a RESOURCE and a plane with nothing registered names none -- a composition root deciding what its node has registered is the composition root's own job."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the one registration the answering node has, named by the composition that registers it: the `Server` row's `transport` field (`claims::TRANSPORT_HTTP`) and its dialed host. A node whose registration named no transport could not be routed at all, and the arrival step's claim/stack agreement check -- already exercised by the refusal cell beside this one -- would be driven against a registration that does not describe a connection."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the scope the settled class REQUIRES, named by the composition that grants it: `busbar_unit_scope::{Grants, Scope}` at `Grants::of(Scope::ReadOnly)`. `Grants::default` holds nothing, and a caller holding nothing is refused at approve before any answer is composed -- so a cell that wanted to reach the answer branch and did not say which scope the caller holds would be proving the refusal branch a second time."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.codec.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by this crate's own cell so the serve path's result document is asserted against the codec's rather than against a literal this crate keeps a second copy of. The plane crate reads the same constant from the same place; that is what makes the two framings comparable without either crate naming the other."
+
+# NO RAISE ROW FOR `cell.busbar-mcp.plane.count`, DELIBERATELY. It moves 3297 -> 3301 on this branch
+# and is re-pinned in qa/kind-isolation.toml, but it is still FAR BELOW the base 468bad13's 3345: the
+# per-call record battery MOVED out of this crate into the composition root earlier on this branch and
+# took 47 plane spellings with it. A raise row here would be declaring a rise that did not happen, and
+# `ceiling-rose` refuses it by name. The four are the sentence in the `completion/complete` cell that
+# says which plane composes the same envelope out of the same codec document -- neither crate names
+# the other in code, and the comment is what makes the two assertions a pin rather than two literals.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-mcp.codec.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by `ops::settled_document` -- the face by which the plane hands a mounted leg a settled unit's document. The codec is the pure half this plane already names (`busbar-mcp-codec`, NOT `busbar-mcp`), and the document lives there rather than here for the same reason every other method name and refusal code does: it is a fact about the protocol that both framings must read from one place."

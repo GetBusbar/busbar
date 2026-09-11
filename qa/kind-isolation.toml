@@ -1382,7 +1382,7 @@ count = "93"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1951"
+count = "1970"
 
 [[cell]]
 crate = "busbar"
@@ -1414,7 +1414,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "945"
+count = "947"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1426,7 +1426,7 @@ count = "945"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1199"
+count = "1201"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1901,7 +1901,7 @@ count = "9"
 [[cell]]
 crate = "busbar-mcp"
 kind = "codec"
-count = "42"
+count = "43"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -1921,7 +1921,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3297"
+count = "3301"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -2101,7 +2101,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "codec"
-count = "33"
+count = "34"
 
 [[cell]]
 crate = "busbar-plane-mcp"

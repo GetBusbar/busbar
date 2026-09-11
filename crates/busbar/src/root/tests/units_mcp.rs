@@ -1702,6 +1702,13 @@ fn draft_for(method: &str, id: &str, legs: &[Leg]) -> McpDraft {
 
 /// Everything one MCP unit is driven against, as a node assembles it once at boot.
 struct LegNode {
+    /// The registrations this node's operator configured.
+    ///
+    /// `EMPTY` is the default and it is a REFUSING node: the scope step reads "no resource" off a
+    /// plane with nothing registered and refuses at approve, which is the honest answer for a
+    /// deployment that registered nothing. A cell that needs the loop to reach the exit with an
+    /// ANSWER hands in a plane with a server on it.
+    plane: McpPlane,
     auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
     trust: Trust,
@@ -1735,19 +1742,32 @@ impl BreakerView for AlwaysReady {
     }
 }
 
+/// The one registration a node that answers has.
+///
+/// The name is the pool key the bindings are built against, because the breaker, the pool view and
+/// the scope resource are all keyed on it and a node whose registration and whose pool disagreed
+/// would be judging one server and charging another.
+static ONE_SERVER: &[Server] = &[Server {
+    id: "fs",
+    lane: LaneId::new("fs-lane"),
+    host: "mcp.example",
+    transport: claims::TRANSPORT_HTTP,
+}];
+
 impl LegNode {
     fn new(store: &StoreAdapter) -> Self {
+        Self::registering(store, McpPlane::EMPTY)
+    }
+
+    /// The same node, over a plane that has the operator's registrations on it.
+    fn registering(store: &StoreAdapter, plane: McpPlane) -> Self {
         LegNode {
+            plane,
             auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
             auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
-            pools: Pools::new(McpPlane::EMPTY, None, true, false),
-            kinds: Catalogue::new(
-                McpPlane::EMPTY,
-                records::SCHEMA_CATALOGUE,
-                records::OP_GET,
-                seam(),
-            ),
+            pools: Pools::new(plane, None, true, false),
+            kinds: Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_GET, seam()),
             breaker: AlwaysReady,
             door: Door::new(InMemoryCells::new()),
             pricer: Pricer::flat(0),
@@ -1767,7 +1787,7 @@ impl LegNode {
 
     fn bindings(&self) -> McpBindings<'_> {
         McpBindings {
-            plane: McpPlane::EMPTY,
+            plane: self.plane,
             auth: &self.auth,
             auth_bindings: &self.auth_bindings,
             trust: &self.trust,
@@ -1947,4 +1967,124 @@ fn a_refused_mcp_request_is_answered_in_the_rigs_own_bytes() {
     );
     // And the number in those bytes is the code table's own, never a literal that drifted from it.
     assert_eq!(busbar_plane_mcp::jsonrpc::CODE_REFUSED, -32000);
+}
+
+/// **A SETTLED UNIT'S BYTES ARE ITS ANSWER, AND THE PLANE WRITES THEM.**
+///
+/// The refusal half of this pair already ran: a unit the scope unit says no to is rendered by
+/// [`McpPlane::encode_refusal`] into the rig's own error envelope. The other half was the open
+/// question, and it is the one that decides whether the mounted leg can answer anything at all —
+/// [`refusal_of`] returns `None` for a unit that SETTLED, on the stated ground that a settled
+/// unit's bytes are its answer and the PLANE writes them from the unit's own arena. Nothing in the
+/// tree did that. This cell is that write, end to end, for the smallest of the thirteen
+/// client-sent classes.
+///
+/// THE THREE THINGS IT PINS, in the order they have to hold:
+///
+/// 1. **The loop settles it.** `completion/complete` goes through the ten steps against the node's
+///    own units and comes out `Settled`, and `refusal_of` answers `None` — so this is the branch
+///    with no refusal envelope to render, which is exactly the branch that had no byte source.
+/// 2. **The face carries the document.** The bare result comes off
+///    [`busbar_plane_mcp::ops::settled_document`], the plane's own vocabulary table, and not out of
+///    this file. A cell that wrote the completion set by hand would prove that this file can spell
+///    a document, which is not the property in question.
+/// 3. **The plane frames it, into the legacy path's bytes.** The framing is
+///    `Plane::encode_response`'s already-existing second branch — the one whose comment says an
+///    answer this node composed itself arrives as a bare result and is wrapped here, with the
+///    identifier the decode step recorded. The literal below is what `busbar-mcp`'s
+///    `method::completion_complete` puts on the wire today, and `busbar-mcp`'s own cell asserts
+///    that from the other side of the wall, so the two are pinned to one string without this crate
+///    naming that one.
+#[test]
+fn a_settled_mcp_unit_is_answered_in_the_plane_s_own_bytes() {
+    use busbar_contract::bounded::{Facts, Ir, Labels};
+    use busbar_contract::plane::{Plane as _, Response};
+    use busbar_contract::unit::FinishClass;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let store = StoreAdapter::native(Arc::new(SilentStore));
+    // A node with a registration on it: the scope step judges a RESOURCE, and a plane with nothing
+    // registered names none, which is a refusal before the caller's grants are even read.
+    let node = LegNode::registering(&store, McpPlane::new(ONE_SERVER));
+    let kernel = Kernel::new();
+    let legs = [catalogue_leg()];
+    let unit = McpUnits::new(
+        node.bindings(),
+        draft_for("completion/complete", "9", &legs),
+        // The caller holds the read scope this class requires. `Grants::default` holds NOTHING, and
+        // a caller holding nothing is refused at approve before any answer is composed.
+        Grants::of(busbar_unit_scope::Scope::ReadOnly),
+    );
+    assert_eq!(
+        unit.draft().op,
+        Ok(ops::OP_COMPLETION),
+        "the plane's own method table named the class"
+    );
+
+    let ended = run_leg(&kernel, &unit);
+    assert!(
+        matches!(ended, LoopEnd::Settled { .. }),
+        "the unit reached the exit and settled exactly once: {ended:?}"
+    );
+    assert!(
+        refusal_of(&ended).is_none(),
+        "a settled unit is owed an ANSWER, not a refusal envelope: {:?}",
+        refusal_of(&ended)
+    );
+
+    // The document is the FACE's, read off the class the plane itself named.
+    let document = ops::settled_document(ops::OP_COMPLETION)
+        .expect("the plane's face carries this class's settled document");
+
+    // And the plane frames it, over the caller's own identifier, into the caller's own dialect.
+    let body = rig_request("9", "completion/complete");
+    let frames = one_frame(&body);
+    let arena = CellArena;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let ctx = Ctx::new(
+        Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        &config,
+        None,
+        &transport,
+        &labels,
+        &arena,
+    );
+    let mut cursor = FrameCursor::new(&frames);
+    let plane = McpPlane::EMPTY;
+    let busbar_contract::plane::Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the rig's own request decodes")
+    else {
+        panic!("a completion is one shot");
+    };
+    // The identifier is the DECODE STEP'S, carried on the draft the plane built — never one this
+    // cell echoes back out of the request it wrote.
+    let mut facts = Facts::new();
+    let id = draft
+        .facts
+        .get(busbar_plane_mcp::facts::FACT_RPC_ID)
+        .expect("the decode step recorded the caller's identifier");
+    facts
+        .set(busbar_plane_mcp::facts::FACT_RPC_ID, id)
+        .expect("one fact fits");
+    let response = Response {
+        ir: Ir::new(document, &[]),
+        finish: FinishClass::Complete,
+        facts,
+    };
+    let out = plane
+        .encode_response(&response, None, &ctx)
+        .expect("a settled answer renders");
+
+    assert_eq!(
+        core::str::from_utf8(out.as_slice()).expect("the dialect is text"),
+        r#"{"id":9,"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#,
+        "the answer a caller reads off the MOUNTED leg is the serve path's own envelope, byte for byte"
+    );
 }

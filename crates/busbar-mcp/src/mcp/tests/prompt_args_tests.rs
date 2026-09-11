@@ -242,4 +242,33 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
         body.pointer("/result/resultType").and_then(|v| v.as_str()),
         Some("complete"),
     );
+
+    // **THE SERVE PATH'S BYTES ARE THE FACE'S BYTES.**
+    //
+    // The two assertions above say what the answer MEANS. This one says what it IS, and it is the
+    // half that matters to the mount: `busbar_plane_mcp` composes this same answer for the same
+    // class out of `codec::RESULT_COMPLETION_EMPTY`, framed by its own `jsonrpc::success`, and the
+    // root's cell asserts the framed result against the very literal below. Neither crate can name
+    // the other, so the two are pinned to one string through the codec both already read — and a
+    // drift on either side is a red here rather than a wire change nobody measured.
+    //
+    // The bare result, not the envelope: `jsonrpc` and `id` are the dialect's and `resultType` is
+    // stamped by whichever side framed it, so what the two sides must agree on is exactly the
+    // document the codec carries.
+    assert_eq!(
+        serde_json::to_string(body.pointer("/result").expect("a result"))
+            .expect("a result reserialises"),
+        r#"{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}"#,
+        "the serve path's result document must be the codec's, byte for byte"
+    );
+    assert_eq!(
+        busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY,
+        r#"{"completion":{"hasMore":false,"total":0,"values":[]}}"#,
+        "and the codec's document is the one the plane's face hands the mounted leg"
+    );
+    assert_eq!(
+        core::str::from_utf8(&bytes).expect("the dialect is text"),
+        r#"{"id":1,"jsonrpc":"2.0","result":{"completion":{"hasMore":false,"total":0,"values":[]},"resultType":"complete"}}"#,
+        "the whole envelope this serve path writes is the one the mounted leg must reproduce"
+    );
 }
