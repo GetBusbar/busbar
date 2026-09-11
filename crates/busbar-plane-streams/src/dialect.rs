@@ -83,6 +83,16 @@ pub use busbar_voice_codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, WireEvent, WireRef,
 };
 
+/// WHERE A DIALECT'S UPSTREAM TAKES THE DEPLOYMENT'S CREDENTIAL, re-exported for the same reason the
+/// codec's own vocabulary above is: a dialect crate names its PLANE for the types its plane's row is
+/// written in. A dialect reaching past its plane into the transport contract for one enum would put
+/// that contract in every dialect's dependency line for a fact its plane already declares.
+///
+/// The SCRUB rides with the declaration and for the same reason: [`CredentialAt::Query`] is the row
+/// that says a secret may travel in a URL, so the redactor that keeps it out of a log is part of
+/// what declaring it obliges, and a caller that has one and not the other is the leak.
+pub use busbar_contract::transport::session::{redact_url_credentials, CredentialAt};
+
 use crate::session::VoiceSessionState;
 
 /// A dialect that carries its OWN frame envelope, rather than riding the shared duplex IR codec.
@@ -154,6 +164,20 @@ pub struct Dialect {
     /// THE WRITER FOR THIS DIALECT'S FRAMES. See [`Dialect::reader`]; the same rule, the other
     /// direction.
     pub writer: Option<fn() -> Box<dyn DuplexWriter>>,
+    /// WHERE AN UPSTREAM SPEAKING THIS DIALECT TAKES THE DEPLOYMENT'S CREDENTIAL.
+    ///
+    /// `None` means this dialect's upstream authenticates some OTHER way than a credential presented
+    /// at the upgrade — a token minted over a separate pass, a carrier that authenticates its own
+    /// signalling — and a leg on it dials with nothing added. It is a DECLARED answer and not a
+    /// missing one, which is the same rule [`Dialect::reader`] states: the alternative, measured,
+    /// was a `?key={api_key}` written under `if dialect == <one vendor>` inside the mount, and a
+    /// dialect crate whose vendor changed where the key goes could not say so without editing the
+    /// neutral plane.
+    ///
+    /// It is a transport-contract type because the presentation is a WIRE fact — which header, which
+    /// query parameter — and the wire is what reads it. Nothing about it is priced, metered or
+    /// routed, so no unit sees it.
+    pub credential_at: Option<CredentialAt>,
 }
 
 impl PartialEq for Dialect {

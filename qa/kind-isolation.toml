@@ -1492,7 +1492,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "76"
+count = "80"
 
 [[cell]]
 crate = "busbar"
@@ -2322,7 +2322,7 @@ count = "21"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "contract-transport"
-count = "7"
+count = "8"
 
 [[cell]]
 crate = "busbar-plane-streams"
@@ -2922,7 +2922,7 @@ count = "34"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "contract-transport"
-count = "115"
+count = "118"
 
 [[cell]]
 crate = "busbar-transport-ws"
@@ -2937,7 +2937,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "217"
+count = "236"
 
 [[cell]]
 crate = "busbar-unit-admission"
@@ -3207,7 +3207,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "718"
+count = "720"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3217,7 +3217,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "839"
+count = "843"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3232,7 +3232,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "286"
+count = "285"
 
 [[cell]]
 crate = "busbar-voice-codec"

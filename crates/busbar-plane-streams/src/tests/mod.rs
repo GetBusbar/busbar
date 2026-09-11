@@ -109,6 +109,7 @@ mod purity {
             locked_session_config: None,
             reader: None,
             writer: None,
+            credential_at: None,
         };
         assert_eq!(a.upstream_for_dialect(&OTHER), None);
     }
@@ -254,6 +255,7 @@ mod dialect_face {
         locked_session_config: None,
         reader: Some(own_reader),
         writer: Some(own_writer),
+        credential_at: None,
     };
 
     /// A row that declares `None` — "the shared IR reads my frames", which is an ANSWER and not a
@@ -267,6 +269,7 @@ mod dialect_face {
         locked_session_config: None,
         reader: None,
         writer: None,
+        credential_at: None,
     };
 
     /// A DIALECT'S READER IS A FIELD OF ITS ROW, NEVER A TEST ON ITS NAME.

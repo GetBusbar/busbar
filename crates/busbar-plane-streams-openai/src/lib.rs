@@ -92,4 +92,9 @@ pub static OPENAI_REALTIME: Dialect = Dialect {
     // where these ARE it.
     reader: None,
     writer: None,
+    // DECLARED `None`: this vendor's realtime upgrade is authenticated by an EPHEMERAL client
+    // secret minted over a separate one-shot pass, not by the deployment's provider key presented at
+    // the socket. A row that declared the deployment's key here would send a long-lived credential
+    // to a door that does not read it, which is a leak with no upside.
+    credential_at: None,
 };

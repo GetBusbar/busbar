@@ -617,6 +617,19 @@ pub struct WsLegEgress<U: crate::root::session_driver::SessionUnits + ?Sized + S
     wire: std::sync::Arc<WsTransport>,
     keys: busbar_contract::TransportKeyHandle,
     driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+    /// THE LEG'S CREDENTIAL, as this deployment resolved it and as the leg's DIALECT declared its
+    /// presentation — `None` when the dialect declared none.
+    ///
+    /// Held here rather than read per dial because it is a property of the LEG, settled once when
+    /// the composition bound it: the row's dialect said where it goes and the node's one upstream
+    /// catalog said what it is, and neither answer can change between two dials of the same leg. The
+    /// secret is OWNED because this port outlives the config generation's borrow; it is handed to
+    /// the wire as the borrowed [`busbar_contract::transport::session::LegCredential`] face and is
+    /// never formatted, never logged and never written into the sealed destination.
+    credential: Option<(
+        busbar_contract::transport::session::CredentialAt,
+        std::string::String,
+    )>,
     media: &'static str,
     depth: usize,
 }
@@ -630,6 +643,9 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> std
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsLegEgress")
             .field("keys", &self.keys)
+            // WHERE the credential goes, never whether one is set and never its length: the place is
+            // the dialect's public declaration and the rest is the deployment's secret.
+            .field("credential_at", &self.credential.as_ref().map(|(at, _)| at))
             .field("media", &self.media)
             .field("depth", &self.depth)
             .finish_non_exhaustive()
@@ -648,6 +664,10 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
         wire: std::sync::Arc<WsTransport>,
         keys: busbar_contract::TransportKeyHandle,
         driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+        credential: Option<(
+            busbar_contract::transport::session::CredentialAt,
+            std::string::String,
+        )>,
         media: &'static str,
         depth: usize,
     ) -> Self {
@@ -655,6 +675,7 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
             wire,
             keys,
             driver,
+            credential,
             media,
             depth,
         }
@@ -687,8 +708,13 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static>
             // own, made before a socket is opened. This function adds no second dialling path to
             // keep honest — it reaches `Transport::dial` through the same call every other caller
             // does. What it adds is the OWNERSHIP split of the three halves.
+            // THE CREDENTIAL, PRESENTED AS THE DIALECT DECLARED — borrowed out of the field for the
+            // one call, never copied into a message and never into the sealed destination.
+            let cred = self.credential.as_ref().map(|(at, secret)| {
+                busbar_contract::transport::session::LegCredential { at: *at, secret }
+            });
             let (source, lease, drain) = busbar_transport_ws::mount::dial_session(
-                &self.wire, dest, &self.keys, self.media, self.depth,
+                &self.wire, dest, &self.keys, cred, self.media, self.depth,
             )
             .await?;
 
