@@ -46,21 +46,28 @@ PY
 # served call posts a real, non-zero priced figure -- see h2-meter-row.sh), and the group(s) named
 # in <group-yaml-block> (indented under `groups:`, caller's responsibility to indent correctly).
 # Sets: H2_DATA_PORT H2_ADMIN_PORT H2_UPSTREAM_PORT H2_CANON H2_ADMIN_TOKEN H2_SIGNING_KEY
-#       H2_UPSTREAM_PID H2_BUSBAR_PID H2_EGRESS_DIR H2_WORKDIR
+#       H2_UPSTREAM_PID H2_BUSBAR_PID H2_EGRESS_DIR H2_WORKDIR H2_CONTROL_FILE
+#
+# H2_CONTROL_FILE is the upstream's FAULT CONTROL, the same name and the same contract the a2a
+# sibling's h2_boot sets: write `down` into it and h2-mock-upstream.mjs answers every POST 502 until
+# it is cleared. Created EMPTY here (never absent), so a scenario arms an outage by writing one word
+# rather than by knowing where the rig put its working directory.
 h2_boot() {
   local dir="$1" groups_yaml="$2"
   mkdir -p "$dir"
   dir="$(cd "$dir" && pwd)"
   H2_WORKDIR="$dir"
   H2_EGRESS_DIR="$dir/egress"
+  H2_CONTROL_FILE="$dir/upstream.control"
   mkdir -p "$H2_EGRESS_DIR"
+  : >"$H2_CONTROL_FILE"
 
   read -r H2_DATA_PORT H2_ADMIN_PORT H2_UPSTREAM_PORT <<<"$(h2_free_ports)"
   H2_CANON="http://127.0.0.1:${H2_DATA_PORT}/mcp"
   H2_SIGNING_KEY="$dir/signing.key"
   H2_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
 
-  MCP_MOCK_CAPTURE_DIR="$H2_EGRESS_DIR" node "${H2_HERE}/h2-mock-upstream.mjs" "$H2_UPSTREAM_PORT" \
+  MCP_MOCK_CAPTURE_DIR="$H2_EGRESS_DIR" node "${H2_HERE}/h2-mock-upstream.mjs" "$H2_UPSTREAM_PORT" "$H2_CONTROL_FILE" \
     >"$dir/upstream.log" 2>&1 &
   H2_UPSTREAM_PID=$!
   track_pid "$H2_UPSTREAM_PID"

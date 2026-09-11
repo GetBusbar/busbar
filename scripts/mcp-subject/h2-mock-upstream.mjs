@@ -19,14 +19,28 @@
 // its own JSON file `{ts}-{pid}-{seq}.json` holding `{path, method, headers, body}` — read the
 // directory's file count before/after a call to prove egress did or did not happen.
 //
-// Usage: node h2-mock-upstream.mjs <port>
+// CONTROL: a control file (arg 2), if it exists and its contents (trimmed, lower-cased) are `down`,
+// answers every POST with a 502 (the unreachable-upstream response a real vendor would give under a
+// hard outage) instead of dispatching. Checked PER REQUEST, so a scenario can flip it mid-run with
+// no restart, and the egress record is still written first -- an outage is a request that REACHED
+// the upstream and was refused, not a request that never left, and a mock that skipped the capture
+// would make those two indistinguishable to a scenario counting egress.
+//
+// This is the EXACT mechanism scripts/a2a-subject/h2-mock-agent.mjs has had (read the two `isDown`
+// functions side by side; they are one function). Its absence here is what made the mcp plane's
+// `upstream_down` row unrecordable: the recorder's plane driver refuses to drive an outage cell
+// against a HEALTHY upstream, because a green recorded that way is a lie about the one thing the
+// cell is for. The a2a sibling had the control, so a2a recorded and mcp did not.
+//
+// Usage: node h2-mock-upstream.mjs <port> [control-file]
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const PORT = Number(process.argv[2]);
+const [portArg, controlFile] = process.argv.slice(2);
+const PORT = Number(portArg);
 if (!PORT) {
-  console.error('usage: h2-mock-upstream.mjs <port>');
+  console.error('usage: h2-mock-upstream.mjs <port> [control-file]');
   process.exit(2);
 }
 
@@ -64,6 +78,15 @@ function send(res, status, obj) {
   res.end(raw);
 }
 
+function isDown() {
+  if (!controlFile || !existsSync(controlFile)) return false;
+  try {
+    return readFileSync(controlFile, 'utf8').trim().toLowerCase() === 'down';
+  } catch {
+    return false;
+  }
+}
+
 const server = createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
@@ -77,6 +100,10 @@ const server = createServer((req, res) => {
     const id = body.id ?? null;
     const method = body.method;
     if (req.method !== 'POST') return send(res, 404, { error: 'GET not served' });
+    if (isDown()) {
+      return send(res, 502, { jsonrpc: '2.0', id,
+        error: { code: -32603, message: 'h2 fixture upstream: down' } });
+    }
     if (method === 'tools/list') {
       return send(res, 200, { jsonrpc: '2.0', id, result: { tools: TOOLS } });
     }
