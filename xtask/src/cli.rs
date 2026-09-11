@@ -441,6 +441,10 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     );
     let report = gate.selftest(cx);
     let jobs = report.jobs();
+    // TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case is a plan now, and a plan is taken on the
+    // first read of the report — so reading the cases after the watchdog was dropped would have
+    // disarmed the ceiling over exactly the work it exists to bound. This is that read.
+    let _ = report.cases();
     drop(watchdog);
     for case in report.cases() {
         let got = match &case.got {
@@ -466,6 +470,20 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             0
         }
         Err(errs) => {
+            // WHAT A RED BATTERY COST IS PRINTED TOO. It used to be printed only on the green
+            // path, so the one run a reader most needs to attribute — the slow one that also
+            // failed — was the one that said nothing about where its minutes went.
+            println!(
+                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{} at --jobs {jobs}",
+                report.cases().len(),
+                report.skipped(),
+                report.total().as_secs_f64(),
+                report.units(),
+                report
+                    .slowest()
+                    .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
+                    .unwrap_or_default(),
+            );
             println!("xtask selftest {} FAILED:", gate.name());
             for e in &errs {
                 println!("  - {e}");
@@ -477,6 +495,7 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 );
                 gates::set_selftest_jobs(1);
                 let serial = gate.selftest(cx);
+                let _ = serial.cases();
                 let again = gates::verify_report(gate, &serial)
                     .err()
                     .unwrap_or_default();
