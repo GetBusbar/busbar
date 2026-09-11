@@ -215,3 +215,171 @@ tier:  {{ gold: {{}} }}
         ]
     );
 }
+
+/// **AN AMOUNT NOBODY WROTE IS THE FIGURE THE PREVIOUS RELEASE CHARGED.**
+///
+/// The whole of the compatibility claim in one cell: a deployment with no `tariff:` block is
+/// charged its own `per_request_fee:` for a transaction and for a visit, because the amounts
+/// INHERIT that figure rather than defaulting to a second number nobody configured.
+#[test]
+fn an_unset_amount_inherits_the_previous_releases_own_fee() {
+    let empty = TariffCfg::default();
+    for fee in [0i64, 3, 250] {
+        let a = empty.amounts("llm", None, None, fee);
+        assert_eq!(
+            a.entry_cents, fee,
+            "the door inherits the one configured fee"
+        );
+        assert_eq!(a.transaction_flat_cents, fee);
+        assert!(
+            a.per_units.is_empty(),
+            "nothing prices a dimension but the card"
+        );
+        assert_eq!(a.minimum_cents, 0);
+        assert_eq!(a.maximum_cents, None, "uncapped is not a cap of zero");
+        assert_eq!(
+            a.rounding,
+            super::super::tariff::RoundingCfg::Bankers,
+            "the teller's rule, declared"
+        );
+    }
+}
+
+/// **THE AMOUNTS RESOLVE BY THE SAME FOUR SCOPES, FIELD BY FIELD**, and a scope that names one
+/// number keeps every other number it had.
+#[test]
+fn an_amount_set_at_a_scope_moves_that_number_and_no_other() {
+    let scoped = crate::plane::plane_keys()
+        .next()
+        .expect("a registered plane");
+    let section = parse(&format!(
+        r#"
+default:
+  transaction_fee: {{ flat_cents: 7 }}
+  minimum_cents: 2
+plane:
+  {scoped}:
+    entry_fee: {{ enabled: true, amount_cents: 11 }}
+pool:
+  pool-a:
+    maximum_cents: 40
+tier:
+  gold:
+    rounding: up
+"#
+    ));
+    // the default scope answers what it names and inherits the fee for what it does not
+    let d = section.amounts("a-plane-nothing-names", None, None, 250);
+    assert_eq!((d.transaction_flat_cents, d.entry_cents), (7, 250));
+    assert_eq!((d.minimum_cents, d.maximum_cents), (2, None));
+
+    // the plane scope adds the door's amount and keeps the default's flat and minimum
+    let p = section.amounts(scoped, None, None, 250);
+    assert_eq!((p.entry_cents, p.transaction_flat_cents), (11, 7));
+    assert_eq!(
+        p.minimum_cents, 2,
+        "an unset field inherits, it does not reset"
+    );
+
+    // the pool caps, and changes nothing else
+    let pool = section.amounts(scoped, Some("pool-a"), None, 250);
+    assert_eq!(pool.maximum_cents, Some(40));
+    assert_eq!((pool.entry_cents, pool.transaction_flat_cents), (11, 7));
+
+    // the tier declares the rounding, and changes nothing else
+    let t = section.amounts(scoped, Some("pool-a"), Some("gold"), 250);
+    assert_eq!(t.rounding, super::super::tariff::RoundingCfg::Up);
+    assert_eq!(t.maximum_cents, Some(40));
+    assert_eq!((t.entry_cents, t.transaction_flat_cents), (11, 7));
+}
+
+/// **PER N UNITS OF A DIMENSION A PLANE DECLARED**, and the tariff names no dimension of its own.
+#[test]
+fn a_per_unit_rate_is_read_back_as_it_was_written() {
+    let section = parse(
+        r#"
+default:
+  transaction_fee:
+    flat_cents: 0
+    per_units:
+      - { dimension: tool_calls, per: 1, cents: 2 }
+      - { dimension: bytes, per: 1024, cents: 1 }
+"#,
+    );
+    let a = section.amounts("mcp", None, None, 0);
+    let read: Vec<(&str, u64, i64)> = a
+        .per_units
+        .iter()
+        .map(|u| (u.dimension.as_str(), u.per, u.cents))
+        .collect();
+    assert_eq!(read, vec![("tool_calls", 1, 2), ("bytes", 1024, 1)]);
+}
+
+/// **ONE FEE, TWO NUMBERS, AND THE NODE REFUSES.**
+///
+/// The conflict is reported with BOTH spellings and BOTH figures, at the scope that carries it.
+/// A zero `per_request_fee:` is not a second number: it is the key's own serde default, it is
+/// indistinguishable from absence in a parsed configuration, and it is the identity of the sum.
+#[test]
+fn a_fee_named_twice_for_one_scope_is_a_conflict_by_name() {
+    let section = parse(
+        r#"
+default:
+  transaction_fee: { flat_cents: 5 }
+  entry_fee: { enabled: true, amount_cents: 9 }
+"#,
+    );
+    let none_prices = |_: &str| false;
+    assert!(
+        section.amount_conflicts(0, &none_prices).is_empty(),
+        "a deployment that never wrote the old key may write the new one"
+    );
+    let clashes = section.amount_conflicts(3, &none_prices);
+    let named: Vec<(String, String, i64, i64)> = clashes
+        .iter()
+        .map(|c| (c.scope.clone(), c.key.clone(), c.new_amount, c.old_amount))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            ("default".into(), "entry_fee.amount_cents".into(), 9, 3),
+            ("default".into(), "transaction_fee.flat_cents".into(), 5, 3),
+        ]
+    );
+}
+
+/// A per-unit rate for a dimension the card already prices is the same offence: two prices for one
+/// unit of one thing.
+#[test]
+fn a_per_unit_rate_the_card_already_prices_is_a_conflict() {
+    let section = parse(
+        r#"
+default:
+  transaction_fee:
+    per_units:
+      - { dimension: tokens_in, per: 1, cents: 1 }
+      - { dimension: tool_calls, per: 1, cents: 1 }
+"#,
+    );
+    let clashes = section.amount_conflicts(0, &|d| d == "tokens_in");
+    assert_eq!(clashes.len(), 1, "{clashes:?}");
+    assert_eq!(clashes[0].key, "transaction_fee.per_units[tokens_in]");
+    assert!(clashes[0].old_key.contains("rate_card"));
+}
+
+/// **A KEY THIS GRAMMAR DOES NOT NAME IS A REFUSAL, NOT A SHRUG.** Every level of it.
+#[test]
+fn an_unknown_key_is_refused_at_every_level_of_the_section() {
+    for fragment in [
+        "default:\n  entry_fee: { enabled: true, amount: 5 }\n",
+        "default:\n  transaction_fee: { flat: 5 }\n",
+        "default:\n  transaction_fee:\n    per_units:\n      - { dimension: bytes, per: 1, cents: 1, currency: USD }\n",
+        "default:\n  minimum: 5\n",
+        "plane:\n  llm:\n    cap_cents: 5\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<TariffCfg>(fragment).is_err(),
+            "the grammar accepted a key it does not name: {fragment}"
+        );
+    }
+}

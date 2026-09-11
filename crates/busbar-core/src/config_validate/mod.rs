@@ -1510,6 +1510,88 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 ));
             }
         }
+
+        // ONE FEE, ONE NUMBER. `per_request_fee:` and `rate_card:` are the previous release's
+        // spelling of the transaction fee and of what a unit of a dimension costs. A deployment
+        // that also writes the tariff's own spelling for the same fee at the same scope has said
+        // two things about one number, and there is no arm anywhere that picks between them: the
+        // node refuses to boot and names BOTH keys and BOTH figures, so the operator deletes the
+        // one they did not mean rather than discovering next month which one won.
+        for clash in tariff.amount_conflicts(cfg.per_request_fee, &|dimension| {
+            cfg.rate_card.as_ref().is_some_and(|c| !c.is_empty())
+                && busbar_unit_cost::RESERVED_CLASSES.contains(&dimension)
+        }) {
+            errors.push(format!(
+                "tariff.{}.{} says {} and {} says {}: one fee, two numbers, and nothing here will \
+                 pick one — delete whichever you did not mean (the tariff key inherits the older \
+                 one when it is absent, so a deployment keeping the old spelling writes nothing)",
+                clash.scope, clash.key, clash.new_amount, clash.old_key, clash.old_amount
+            ));
+        }
+
+        // A PRICE THE PRICING SITE COULD NOT APPLY IS REFUSED HERE, not resolved into a zero.
+        for (scope, cell) in tariff.every_scope() {
+            for (key, amount) in [
+                (
+                    "entry_fee.amount_cents",
+                    cell.entry_fee.as_ref().and_then(|e| e.amount_cents),
+                ),
+                (
+                    "transaction_fee.flat_cents",
+                    cell.transaction_fee.as_ref().and_then(|t| t.flat_cents),
+                ),
+                ("minimum_cents", cell.minimum_cents),
+                ("maximum_cents", cell.maximum_cents),
+            ] {
+                if let Some(v) = amount {
+                    if v < 0 {
+                        errors.push(format!(
+                            "tariff.{scope}.{key} must be >= 0 (got {v}); a negative amount would \
+                             credit the caller for having been charged"
+                        ));
+                    }
+                }
+            }
+            if let (Some(min), Some(max)) = (cell.minimum_cents, cell.maximum_cents) {
+                if min > max {
+                    errors.push(format!(
+                        "tariff.{scope} sets minimum_cents {min} above maximum_cents {max}: no \
+                         charge can satisfy both, so every unit under this scope would be billed a \
+                         figure one of the two rules forbids"
+                    ));
+                }
+            }
+            let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for unit in cell
+                .transaction_fee
+                .as_ref()
+                .and_then(|t| t.per_units.as_ref())
+                .into_iter()
+                .flatten()
+            {
+                if unit.per == 0 {
+                    errors.push(format!(
+                        "tariff.{scope}.transaction_fee.per_units[{}] charges per 0 units, which \
+                         is not a price; write how many units one charge covers",
+                        unit.dimension
+                    ));
+                }
+                if unit.cents < 0 {
+                    errors.push(format!(
+                        "tariff.{scope}.transaction_fee.per_units[{}] is {} (must be >= 0); a \
+                         negative rate would credit the caller for consuming",
+                        unit.dimension, unit.cents
+                    ));
+                }
+                if !seen.insert(unit.dimension.as_str()) {
+                    errors.push(format!(
+                        "tariff.{scope}.transaction_fee.per_units names the dimension '{}' twice: \
+                         one dimension has one rate per scope, and two entries are two answers",
+                        unit.dimension
+                    ));
+                }
+            }
+        }
     }
 
     // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared

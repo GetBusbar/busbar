@@ -510,6 +510,10 @@
     "EntryFeeCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "amount_cents": {
+          "optional": true,
+          "type": "i64"
+        },
         "enabled": {
           "optional": true,
           "type": "bool"
@@ -1265,6 +1269,25 @@
       "kind": "struct",
       "transparent": false
     },
+    "PerUnitFeeCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "cents": {
+          "optional": false,
+          "type": "i64"
+        },
+        "dimension": {
+          "optional": false,
+          "type": "String"
+        },
+        "per": {
+          "optional": false,
+          "type": "u64"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "PinMechanism": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1965,6 +1988,16 @@
       "kind": "struct",
       "transparent": false
     },
+    "RoundingCfg": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "bankers",
+        "down",
+        "up"
+      ]
+    },
     "RoutingCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2140,6 +2173,22 @@
         "entry_fee": {
           "optional": true,
           "type": "EntryFeeCfg"
+        },
+        "maximum_cents": {
+          "optional": true,
+          "type": "i64"
+        },
+        "minimum_cents": {
+          "optional": true,
+          "type": "i64"
+        },
+        "rounding": {
+          "optional": true,
+          "type": "RoundingCfg"
+        },
+        "transaction_fee": {
+          "optional": true,
+          "type": "TransactionFeeCfg"
         }
       },
       "kind": "struct",
@@ -2236,6 +2285,21 @@
       "deserialize": "manual",
       "fields": {},
       "kind": "struct"
+    },
+    "TransactionFeeCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "flat_cents": {
+          "optional": true,
+          "type": "i64"
+        },
+        "per_units": {
+          "optional": true,
+          "type": "Vec<PerUnitFeeCfg>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
     },
     "Transport": {
       "deny_unknown_fields": false,
