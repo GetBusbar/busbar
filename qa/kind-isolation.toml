@@ -1329,7 +1329,7 @@ kind = "caps"
 # once more: the mark a contradicted posting carries is a caps type and always was, and a cell that
 # asserted the count without the mark would pass over the half of the answer that puts a
 # disagreement on the disputes report.
-count = "327"
+count = "328"
 
 [[cell]]
 crate = "busbar"
@@ -1383,7 +1383,7 @@ count = "177"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "95"
+count = "97"
 
 [[cell]]
 crate = "busbar"
@@ -1434,7 +1434,7 @@ count = "954"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1205"
+count = "1207"
 
 [[cell]]
 crate = "busbar-a2a"
