@@ -377,42 +377,131 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
 /// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
 /// is a budget somebody raises without reading it.
-const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
-    (
-        "plane-purity",
-        80000.0,
-        "25 792 units measured, the dearest self-test in the registry by a factor of two. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than four minutes nobody attributes. It is the first name on the shard's own drain list.",
-    ),
-    (
-        "plane-purity-strict",
-        45000.0,
-        "13 959 units measured, the ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
-    ),
-    (
-        "structure-lint",
-        22000.0,
-        "6 914 units measured. One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
-    ),
-    (
-        "audit-ledger",
-        22000.0,
-        "6 552 units measured, down from 7 868 once the reachability rule stopped forking a `merge-base` per record per pin. What is left is `ls-tree` and `cat-file` per planted register, which is the instrument reading the repository rather than the register.",
-    ),
-    (
-        "construction",
-        50000.0,
-        "about 15 600 units: thirty-six rules over a 660k-line tree, thirty cases, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves.",
-    ),
-    (
-        "kind-isolation",
-        310000.0,
-        "102 581 units measured over 126 cases, up from 86 069 over 107 when the VAULT DOOR round-two LOCK landed: the compiled set held against the scanned set (every `mod`/`#[path]` resolved to the file the compiler opens, and a `git check-ignore` hit on one reported in its own words), `include!` on the marker list with its argument read across lines and either resolved or refused, the build script held to the DIRECTORY rather than to the name, the entry face read as TOKENS so a `use … as` rename and a rustfmt-wrapped header are the same implementation, and a case for each of the ten registry-parser refusals a mutation campaign found unproven. Nineteen cases for about nineteen per cent more work: the new source-side rules lex every line of every file, which is why the per-file compiled set is memoised on (path, bytes) exactly as `matrix.rs` memoises its scan. Before that: 86 069 over 107, up from 79 594 over 88 when the round-two rules landed: the merge-base provenance of the ledger (a `[[dep]]` row may RECORD a not-allowed edge and never INTRODUCE one; a minted `[[cell]]` is a 0 -> N raise), the census refusals that fail closed, and the manifest reader's own unreadable-line report. Nineteen cases for about eight per cent more work, which is the shape a battery grows in when the new rules read history rather than the tree: the merge-base is read ONCE per process and memoised, so the cost is the plants, not the git. Before that: up from 19 500 when the dependency side landed -- eleven rows rather than eight, and a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which thirty of those cases do, because a census that walks the whole repository is proven by planting crates in it.",
-    ),
-    (
-        "kind-isolation-ship",
-        320000.0,
-        "107 600 units projected over 122 cases when the VAULT DOOR round-two LOCK part five landed: the seven ship cases it adds are the three derivations with a degenerate answer (`no-exemplar`, `no-entry`, `no-battery`) and the four floors whose subject is the size of their own input (`:shape` and `:testkit` reaching no crate, `:control-path` reaching no surface, and the source index below MIN_SOURCES), plus the shared-arm `plane-names-dialect` case. TWO MEASUREMENTS, BOTH ON A CONTENDED HOST, and the spread between them is the entry: the base commit measured 100 557 units over 114 cases (882/case) and this tree measured 83 595 over 122 (685/case) with two other agents' selftests on the same four cores. The ruler is arithmetic in-process and the gates are I/O, so heavy contention moves the two apart rather than together, and a budget written off the LOWER reading is a budget that flaps the first time the machine is quiet. So the number written down is the HIGHER per-case rate carried across the new case count -- 882 x 122 ~ 107 600 -- and the budget is three times it. Before that: 94 236 units measured over 104 cases, up from 80 289 over 86 when the round-two LOCK landed.",
-    ),
+/// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
+/// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
+/// failure this whole shape exists to make impossible.
+const TAKEN: &str = "2026-09-10 b6f66e929";
+
+// THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
+// self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
+// is a diff a reviewer can read as a list of numbers that moved.
+const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
+const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
+const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
+const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
+const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
+
+// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) AND NO LONGER HAS AN ENTRY. Its budget was
+// 22 000 against a note claiming 6 552; times the declared slack its measurement asks for 7 093,
+// which is BELOW `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line
+// nobody re-reads, so it is struck rather than re-baselined — the default covers it with room, and
+// if the gate grows back past 9 000 the default is what says so. This is the same stale-waiver rule
+// the tree applies to every other exception it carries.
+
+/// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
+///
+/// A STRUCT AND NOT A TUPLE OF PROSE, because the thing that went wrong here was prose. The
+/// `construction` entry's note said "about 15 600 units"; the tree measured three times that, under
+/// a budget it was within seven per cent of blowing. A number a reader cannot check against a
+/// measurement is not a guard, it is a number — and every arm below is now checked by
+/// `every_budget_carries_the_measurement_it_was_set_from`.
+pub struct Budget {
+    /// The registered gate this is about.
+    pub gate: &'static str,
+    /// WHAT IT MEASURED, at `--jobs 1`, on the tree and date in `taken`. The entry IS this number;
+    /// `allowed` is derived from it.
+    pub measured: f64,
+    /// What the self-test may spend before it is RED: `measured` times [`BUDGET_SLACK`].
+    pub allowed: f64,
+    /// WHEN AND ON WHAT, as `YYYY-MM-DD <sha>` — so a reader can re-take the measurement on the
+    /// same tree, and so an entry whose tree is long gone is visibly old rather than quietly wrong.
+    pub taken: &'static str,
+    /// What the gate is doing with the time. Not the budget's justification — the slack is that,
+    /// and it is declared once for all of them — but what a reader needs in order to act on a
+    /// regression.
+    pub why: &'static str,
+}
+
+/// THE SLACK OVER THE MEASUREMENT, DECLARED ONCE AND MEASURED RATHER THAN GUESSED.
+///
+/// It used to be "about three times what the gate measured", for two reasons: the ruler drifts with
+/// the machine, and the failure being caught is a factor of ten. The first half is now a number
+/// instead of an adjective. With the ruler read on the worker between cases (see
+/// [`work_unit_here`]), `structure-lint` measured, on one box, in one sitting:
+///
+/// ```text
+/// jobs    summed     units    vs serial
+///    1     96.0 s     7934      1.00x
+///    4     99.1 s     7980      1.01x
+///    8    116.5 s     8330      1.05x
+///   12    142.1 s     9323      1.18x
+///   18    179.7 s    11367      1.43x
+/// ```
+///
+/// So the ruler's own spread, between the serial figure written into an entry and the worst reading
+/// the harness's DEFAULT job count produces, is 1.43x. THE SLACK IS 1.6x: that measured worst case
+/// with a little room, and nothing else. It still catches what the budget is for — a rule that grew
+/// a whole-tree scan per plant, a factor of ten — with a margin of six.
+///
+/// It is deliberately TIGHTER than the three it replaces. Three times a measurement that was itself
+/// three times stale is how `construction` came to sit at 93 per cent of a budget its own note said
+/// it used a third of.
+pub const BUDGET_SLACK: f64 = 1.6;
+
+// THE SLACK IS CHECKED WHERE IT IS WRITTEN, at compile time, because it is a constant and a
+// constant that is wrong should not build. Below the ruler's measured spread it would red a battery
+// for the box it ran on; at the size of the regression it is catching nothing.
+const _: () = assert!(BUDGET_SLACK >= 1.43);
+const _: () = assert!(BUDGET_SLACK < 10.0);
+
+/// The gates whose self-tests legitimately cost more than [`DEFAULT_BUDGET_UNITS`], each with the
+/// measurement it was set from. An entry for a gate that is no longer registered is refused by
+/// `gates::posture_tests`, and so is an entry whose `allowed` is not its `measured` times the
+/// declared slack, or whose measurement does not say when and on what it was taken.
+const SELFTEST_BUDGETS: &[Budget] = &[
+    Budget {
+        gate: "plane-purity",
+        measured: MEASURED_PLANE_PURITY,
+        allowed: MEASURED_PLANE_PURITY * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The dearest self-test in the registry after the two kind-isolation batteries, and a name on the shard's own drain list. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+    },
+    Budget {
+        gate: "plane-purity-strict",
+        measured: MEASURED_PLANE_PURITY_STRICT,
+        allowed: MEASURED_PLANE_PURITY_STRICT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
+    },
+    Budget {
+        gate: "structure-lint",
+        measured: MEASURED_STRUCTURE_LINT,
+        allowed: MEASURED_STRUCTURE_LINT * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
+    },
+    Budget {
+        gate: "construction",
+        measured: MEASURED_CONSTRUCTION,
+        allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
+    },
+    Budget {
+        gate: "kind-isolation",
+        measured: MEASURED_KIND_ISOLATION,
+        allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
+    },
+    Budget {
+        gate: "kind-isolation-ship",
+        measured: MEASURED_KIND_ISOLATION_SHIP,
+        allowed: MEASURED_KIND_ISOLATION_SHIP * BUDGET_SLACK,
+        taken: TAKEN,
+        why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
+    },
 ];
 
 /// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
@@ -483,8 +572,8 @@ fn work_unit_here() -> std::time::Duration {
 fn selftest_budget(gate: &str) -> f64 {
     SELFTEST_BUDGETS
         .iter()
-        .find(|(n, _, _)| *n == gate)
-        .map(|(_, u, _)| *u)
+        .find(|b| b.gate == gate)
+        .map(|b| b.allowed)
         .unwrap_or(DEFAULT_BUDGET_UNITS)
 }
 
@@ -2348,18 +2437,72 @@ mod posture_tests {
     /// to be one is a number nobody argued for.
     #[test]
     fn every_selftest_budget_names_a_registered_gate_with_a_reason() {
-        for (name, units, why) in SELFTEST_BUDGETS {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
             assert!(
                 find(name).is_some(),
                 "`{name}` has a self-test budget and is not a registered gate"
             );
             assert!(
-                *units > DEFAULT_BUDGET_UNITS,
-                "`{name}`'s budget of {units} units is not above the default; strike the entry"
+                b.allowed > DEFAULT_BUDGET_UNITS,
+                "`{name}`'s budget of {} units is not above the default; strike the entry",
+                b.allowed
             );
             assert!(
-                why.len() > 60,
+                b.why.len() > 60,
                 "`{name}`'s budget reason is too short to be one"
+            );
+        }
+    }
+
+    /// A BUDGET WITHOUT A WRITTEN MEASUREMENT IS REFUSED, and so is one whose measurement no longer
+    /// explains it.
+    ///
+    /// THE BUG THIS IS THE FIX FOR. `construction`'s entry allowed 50 000 work units and its note
+    /// said the gate measured "about 15 600". The tree measured three times that — so the entry read
+    /// as a guard with two-thirds of its room to spare while it was in fact a few per cent from
+    /// firing, and the first thing that pushed it over would have been read as a regression in
+    /// whatever touched it last. A number whose written provenance is prose is a number nobody can
+    /// check.
+    ///
+    /// Every arm here is about that: the measurement is a NUMBER and not a sentence, the budget is
+    /// DERIVED from it by one declared slack rather than chosen per entry, and the date and the tree
+    /// it was taken on are written down so a reader can take it again.
+    #[test]
+    fn every_budget_carries_the_measurement_it_was_set_from() {
+        for b in SELFTEST_BUDGETS {
+            let name = b.gate;
+            assert!(
+                b.measured > 0.0,
+                "`{name}` has a budget and no measurement. The entry IS the measurement; a budget \
+                 set from nothing cannot be checked, re-taken, or argued with."
+            );
+            // THE BUDGET IS THE MEASUREMENT TIMES THE ONE DECLARED SLACK, not a number somebody
+            // liked. Compared with a tolerance because it is written as a product of two floats.
+            let want = b.measured * BUDGET_SLACK;
+            assert!(
+                (b.allowed - want).abs() < 1.0,
+                "`{name}`'s budget is {} against a measurement of {} — that is {:.2}x, and the \
+                 declared slack is {BUDGET_SLACK}x. A budget that drifted from its own measurement \
+                 is the shape `construction` was in when it sat a few per cent under a budget its \
+                 note said it used a third of.",
+                b.allowed,
+                b.measured,
+                b.allowed / b.measured
+            );
+            // WHEN, AND ON WHAT. `YYYY-MM-DD <sha>`, both halves present and both readable.
+            let (date, sha) = b
+                .taken
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("`{name}`'s measurement does not say when it was taken"));
+            assert!(
+                date.len() == 10 && date.split('-').count() == 3,
+                "`{name}`'s measurement date `{date}` is not a YYYY-MM-DD"
+            );
+            assert!(
+                sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "`{name}`'s measurement names no tree: `{sha}` is not a commit sha, so nobody can \
+                 re-take it"
             );
         }
     }

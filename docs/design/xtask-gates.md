@@ -309,7 +309,7 @@ were re-taken on the tree this change actually landed on, so the case counts are
 
 | battery | cases | `--jobs 1` | `--jobs N` | summed case cost | speed-up |
 |---|---|---|---|---|---|
-| `kind-isolation` | 152 | *(owed)* | **153.3 s** (18) | 2405.5 s | — |
+| `kind-isolation` | 152 | 1360.9 s | **153.3 s** (18) | 2405.5 s | **8.88×** |
 | `construction` | 36 | 346.3 s | **55.7 s** (18) | 504.2 s | **6.22×** |
 | `structure-lint` | 39 | 80.7 s | **13.5 s** (18) | 129.9 s | **5.99×** |
 
@@ -318,11 +318,12 @@ printed case list — every name, every GREEN/RED/SKIPPED beside it — diffs BY
 serial and parallel runs of `structure-lint`, which is the cheap one and so the one a reader can
 re-take in under two minutes.
 
-THE ONE FIGURE THIS TABLE OWES is `kind-isolation` at `--jobs 1`: a forty-minute serial run that had
-not finished when this landed. The `summed case cost` column is the harness's own ruler and is the
-honest stand-in until it is taken — it is what the battery would cost on one thread up to scheduling,
-and against it the parallel run is 15.7×. It is a work figure, not a wall clock, and is not to be
-quoted as one.
+THE FIGURE THIS TABLE OWED — `kind-isolation` at `--jobs 1` — HAS BEEN TAKEN: **1360.9 s**, 152
+cases, 128 034 work units, on `b6f66e929`. The battery is 8.88× faster across eighteen cores than on
+one. Note that this is BELOW the `summed case cost` of 2405.5 s in the next column, and the gap is
+the thing that column was a stand-in for: summed cost is measured with the cases contending, so it
+over-states what one thread would have taken. The wall clock is the honest figure and it is the one
+to quote.
 
 **READ THE PARALLEL FIGURE OFF THE BATTERY, NOT OFF THE PROCESS.** A red battery is re-taken
 serially, so `time cargo xtask gate kind-isolation --selftest` on a red tree reports the parallel
@@ -345,6 +346,40 @@ share.
 **WHAT A BATTERY SPENT PLANTING IS PRINTED BESIDE ITS TOTAL**, with the case that owns most of it.
 The serial fraction is the only part a bigger box cannot help, so it is the only part worth
 rewriting, and a number beats a guess.
+
+**AND EVERY WORK-UNIT BUDGET IS NOW THE MEASUREMENT IT WAS SET FROM.** The entries used to be a
+number and a paragraph of prose; `construction`'s said the gate measured "about 15 600 units" under
+a budget of 50 000, and the tree measured three times the note — the entry read as a guard with
+two-thirds of its room to spare while it was a few per cent from firing. A number whose provenance is
+prose is a number nobody can check. So a `Budget` is now a record: the `measured` figure at
+`--jobs 1`, the `allowed` figure DERIVED from it by one declared slack, and `taken` — the date and
+the tree sha, so a reader can take it again. All seven were re-taken on `b6f66e929` in one sitting:
+
+| gate | cases | `--jobs 1` | measured | budget (×1.6) | old budget |
+|---|---|---|---|---|---|
+| `kind-isolation` | 152 | 1360.9 s | 128 034 | 204 854 | 310 000 |
+| `kind-isolation-ship` | 122 | 1290.7 s | 120 208 | 192 333 | 320 000 |
+| `construction` | 36 | 352.4 s | 33 096 | 52 954 | 50 000 |
+| `plane-purity` | 16 | 298.0 s | 27 923 | 44 677 | 80 000 |
+| `plane-purity-strict` | 12 | 202.1 s | 19 435 | 31 096 | 45 000 |
+| `structure-lint` | 39 | 88.4 s | 7 938 | 12 701 | 22 000 |
+| `audit-ledger` | 14 | 46.5 s | 4 433 | *(entry struck)* | 22 000 |
+
+`audit-ledger` no longer has an entry at all: times the slack its measurement asks for 7 093, which
+is below `DEFAULT_BUDGET_UNITS`. An exception that no longer excuses anything is a line nobody
+re-reads, so it is struck rather than re-baselined — the default covers it, and if the gate grows
+back past 9 000 the default is what says so. Five of the remaining six budgets came DOWN, some by
+half; `construction` went up by six per cent, which is the one that was actually tight.
+
+THE SLACK IS 1.6× AND IT IS MEASURED, not chosen. It used to be "about three times", justified by the
+ruler drifting with the machine and by the regression being a factor of ten. The first half is now a
+number: the ruler's own spread between the serial figure written into an entry and the worst reading
+the DEFAULT job count produces is 1.43× (the table below). 1.6 is that with a little room. It still
+catches a whole-tree scan per plant — a factor of ten — with a margin of six, and it is deliberately
+tighter than the three it replaces, because three times a measurement that was itself three times
+stale is how `construction` got where it was. A budget entry without a written measurement, or whose
+budget has drifted from its own measurement, or whose measurement does not say when and on what tree
+it was taken, is refused by `every_budget_carries_the_measurement_it_was_set_from`.
 
 **THE BUDGET'S RULER IS READ ON THE WORKER, BETWEEN CASES.** Cases are summed by wall clock, so
 taking N at once inflates every one of them while a ruler measured once on one thread does not —
