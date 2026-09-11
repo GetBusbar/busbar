@@ -709,6 +709,18 @@ ledger|amend|refused-unsigned
 ledger|currency|minor-unit-rounding
 ledger|currency|native
 ledger|rate-history|as-of
+llm.stream|anthropic|cut
+llm.stream|anthropic|stream-error
+llm.stream|bedrock|cut
+llm.stream|bedrock|stream-error
+llm.stream|cohere|cut
+llm.stream|cohere|stream-error
+llm.stream|gemini|cut
+llm.stream|gemini|stream-error
+llm.stream|openai|cut
+llm.stream|openai|stream-error
+llm.stream|responses|cut
+llm.stream|responses|stream-error
 llm|anthropic|anthropic|request|malformed
 llm|anthropic|anthropic|request|ok
 llm|anthropic|anthropic|request|ok_stream
@@ -836,6 +848,7 @@ llm|responses|openai|request|ok_stream
 llm|responses|openai|request|upstream_down
 llm|responses|responses|request|malformed
 llm|responses|responses|request|ok
+llm|responses|responses|request|ok_citation
 llm|responses|responses|request|ok_stream
 llm|responses|responses|request|out_of_scope
 llm|responses|responses|request|over_budget

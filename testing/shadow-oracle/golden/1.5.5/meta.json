@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 928,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
+  "harness_rev": "231984c31047b5a024f47a354da0b3d27be18b4fb037d46b723a482e746a791b",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -93,6 +93,11 @@
         "from": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
         "to": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
         "why": "2026-09-11 documentation-only: accepted-gaps.json is a harness_rev file, and three of its four entries were rewritten to the reason that is still true after the v0.3.14 pin (the mid-stream entry narrowed to the one leg still open, the billing|key-usage|after-upstream-down defect re-attributed from a dead pre-control to a measured 5/5 nondeterminism in `applied`, and the a2a pair extended with what a recorder run would actually require). No cell was re-recorded and not one cells/*.json byte changed; neither did the ledger, `recorded`, `binary_sha256`, `at`, `version` or `host_triple`. Only which reasons the register states moved."
+      },
+      {
+        "from": "d3b3ffeb3e358014f28981e9711a6dc4498d45e76307bf383c7ac9e671c85132",
+        "to": "231984c31047b5a024f47a354da0b3d27be18b4fb037d46b723a482e746a791b",
+        "why": "2026-09-11 documentation-only: owed-baseline.txt is a harness_rev file (it is the floor the replay is measured against, so it decides the verdict), and it gained the 13 golden PASS ids it did not name — the 12 llm.stream cells merged on 2026-09-10 and llm|responses|responses|request|ok_citation merged today. Coverage GROWING needs no gap entry and is always allowed; what was wrong is that a PASS the baseline does not name can stop being owed with no red row, which is what replay-selftest reports. No cell was re-recorded and not one cells/*.json byte changed."
       }
     ],
     "merges": [
