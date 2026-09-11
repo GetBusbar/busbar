@@ -970,8 +970,8 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         "pub fn planted_take_and_settle() {\n    let hold = cell.take(token);\n    if x { return; \
          }\n    hold.settle(token);\n}\n\npub fn planted_catch() {\n    let h: Hold = make();\n    \
          let _ = catch_unwind(|| ());\n}\n\npub fn planted_abort() {\n    handle.abort();\n}\n\npub \
-         fn planted_forget() {\n    mem::forget(planted_hold_value);\n}\n\npub async fn route() \
-         {\n    let _ = planted_thing().await;\n}\n",
+         fn planted_forget() {\n    mem::forget(planted_hold_value);\n}\n\npub async fn \
+         planted_unguarded_await() {\n    let _ = planted_thing().await;\n}\n",
     );
     r.push(prove_red(
         cx,
@@ -982,15 +982,38 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
             "hold-discipline:no-catch-unwind-capture",
             "hold-discipline:no-join-abort",
             "hold-discipline:no-forget-or-drop",
-            "hold-discipline:cancellation-before-await",
+            "hold-discipline:guarded-await",
         ],
         ov,
         &[
             "planted_take_and_settle at",
             "planted_catch at",
             "zz_planted_hold.rs",
-            "route at",
+            "planted_unguarded_await at",
         ],
+    ));
+
+    // THE GREEN HALF OF THE SAME ROW, and the reason the rule is a rule rather than a ban on
+    // `.await`. The arming covers what follows it in its own function — `planted_guarded_await` —
+    // AND the function that await reaches, `planted_leg`, whose own await is under no arm of its
+    // own and whose every call site in the kernel is under one. That second half is the least
+    // fixpoint, and it is what lets the loop's route leg live in a function of its own instead of
+    // being inlined into the guard's frame to satisfy a scanner.
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_guarded.rs",
+        "pub async fn planted_guarded_await() {\n    let mut guard = Abandoned::arm(kernel, \
+         units, ctx, run, settling);\n    let outcome = planted_leg().await;\n    \
+         guard.reached(outcome);\n}\n\nasync fn planted_leg() -> u32 {\n    \
+         planted_dial().await\n}\n",
+    );
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "an await under an armed guard, and one in the function that await reaches, are both \
+         covered",
+        &["hold-discipline:guarded-await"],
+        ov,
     ));
 
     let units = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]));

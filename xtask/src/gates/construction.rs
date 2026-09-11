@@ -193,7 +193,7 @@ impl ConstructionGate {
             "hold-discipline:no-catch-unwind-capture",
             "hold-discipline:no-join-abort",
             "hold-discipline:no-forget-or-drop",
-            "hold-discipline:cancellation-before-await",
+            "hold-discipline:guarded-await",
             "hold-escapes",
             "seal-sites",
             "kernel-seal-impls",

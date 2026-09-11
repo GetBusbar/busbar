@@ -716,7 +716,8 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("hold-discipline")?;
-    let mut crates = c.list_of("scope_crates_kernel");
+    let kernel_crates = c.list_of("scope_crates_kernel");
+    let mut crates = kernel_crates.clone();
     let glob = need_str(c, "scope_crate_glob", "hold-discipline")?;
     crates.extend(
         dirs_for_globs(cx, &[format!("crates/{glob}")])
@@ -853,48 +854,145 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
         ));
     }
 
-    // (e) a cancellation-token check before every `.await` in the route step.
-    let cancel_rx = Regex::new(need_str(c, "cancel_check_pattern", "hold-discipline")?)?;
-    let route_fns = c.list_of("route_step_functions");
-    let mut uncancellable = Vec::new();
-    let mut any_route_await = false;
-    for rel in &files {
-        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
-            if f.intest || !route_fns.contains(&f.name) {
-                continue;
-            }
-            let mut seen_check = false;
-            for l in &tree.files[rel][f.start - 1..f.end] {
-                if cancel_rx.is_match(l.code_bytes()) {
-                    seen_check = true;
-                }
-                if l.code.contains(".await") {
-                    any_route_await = true;
-                    if !seen_check {
-                        uncancellable.push(format!("{} at {rel}:{}", f.name, l.no));
-                    }
-                }
-            }
+    // (e) THE AWAIT UNDER THE HOLD STANDS INSIDE AN ARMED ABANDONMENT GUARD.
+    //
+    // THIS ROW USED TO LOOK FOR A CANCELLATION-TOKEN CHECK BEFORE EVERY `.await` IN A FUNCTION
+    // NAMED `route`, AND IT COULD NEVER HAVE FOUND ONE. `Units::route` is the SYNCHRONOUS trait
+    // method — it hands back a `Decision<Route>` in place — so no `.await` was ever written inside
+    // it, on this tree or any tree this design admits; the row reported "vacuous: no `.await` found
+    // inside a route-step function" and was PASSING on the absence of its own subject. And the
+    // check it was looking for does not exist either: cancellation in this loop is not polled, it
+    // is a DROP. The caller going away drops the loop's future, and what stands there is a guard
+    // that owns the terminal for the length of the await — the hold comes out of the cell, the
+    // audit door seals the end and the leases go back, before the frame is gone. A token check
+    // could only ever catch a cancellation that had already happened when the await was entered;
+    // the guard catches the one that happens DURING it, which is the only one there is. So the rule
+    // now measures the discipline the design actually has, and it is the stronger claim.
+    //
+    // SCOPED TO THE KERNEL, AND STATED WHY. A unit crate's route step awaits too — the egress
+    // walk's dials and races are the whole point of it — but every one of those awaits runs INSIDE
+    // the leg the kernel armed its guard over, reached through a trait object that no textual call
+    // graph can follow. Holding them to a guard they cannot name would be asking a unit crate to
+    // re-arm what the loop already armed, i.e. a second guard beside the one guard. The kernel is
+    // where the await seam is and where the arming is, so the kernel is what this measures.
+    //
+    // AN AWAIT IS COVERED if the guard is armed before it in its OWN function, or if every call
+    // site of that function inside the kernel is itself covered. The second half is a LEAST
+    // fixpoint and the direction is deliberate: a function with no call site in scope, or one
+    // reachable only around a cycle, never becomes covered — an entry point that awaits under no
+    // guard at all is exactly the finding this rule is for.
+    let arm_rx = Regex::new(need_str(c, "guard_arm_pattern", "hold-discipline")?)?;
+    // `\b`, not a substring test: `facts.await_deadline_ok()` is not an await, and a substring test
+    // over `.await` calls it one.
+    let await_rx = Regex::new(r"\.await\b")?;
+    let kernel_files: Vec<String> = kernel_crates
+        .iter()
+        .flat_map(|cr| tree.crate_files(cr))
+        .collect();
+    let awaits = tree.grep(&await_rx, true, Some(&kernel_files));
+
+    // The FIRST arming in each function, keyed by (file, the line of its `fn`). First, because an
+    // arming covers what comes after it and nothing that came before.
+    let mut armed_at: BTreeMap<(String, usize), usize> = BTreeMap::new();
+    for (rel, l) in tree.grep(&arm_rx, true, Some(&kernel_files)) {
+        if let Some(f) = tree.enclosing_fn(rel, l.no) {
+            let first = armed_at.entry((rel.to_string(), f.start)).or_insert(l.no);
+            *first = (*first).min(l.no);
         }
     }
-    let max_uncancellable = need_int(c, "max_uncancellable_await", "hold-discipline")?;
+    let under_arm = |rel: &str, no: usize| -> bool {
+        tree.enclosing_fn(rel, no)
+            .and_then(|f| armed_at.get(&(rel.to_string(), f.start)))
+            .is_some_and(|&a| a < no)
+    };
+
+    // The functions that need a CALLER's guard, and the sites that would supply it — closed over,
+    // because a caller that does not arm before the call is itself a function whose whole body has
+    // to be under one.
+    let mut sites_of: BTreeMap<(String, usize), Vec<(String, usize)>> = BTreeMap::new();
+    let mut work: Vec<(String, usize, String)> = Vec::new();
+    for (rel, l) in &awaits {
+        if under_arm(rel, l.no) {
+            continue;
+        }
+        if let Some(f) = tree.enclosing_fn(rel, l.no) {
+            work.push((rel.to_string(), f.start, f.name.clone()));
+        }
+    }
+    while let Some((rel, start, name)) = work.pop() {
+        let owner = (rel, start);
+        if sites_of.contains_key(&owner) {
+            continue;
+        }
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for (rel2, l2) in call_sites(tree, &name, Some(&kernel_files))? {
+            let Some(caller) = tree.enclosing_fn(rel2, l2.no) else {
+                continue;
+            };
+            if (rel2.to_string(), caller.start) == owner {
+                // A recursive call supplies no guard its own function does not already have.
+                continue;
+            }
+            if !under_arm(rel2, l2.no) {
+                work.push((rel2.to_string(), caller.start, caller.name.clone()));
+            }
+            sites.push((rel2.to_string(), l2.no));
+        }
+        sites_of.insert(owner, sites);
+    }
+
+    let mut covered: BTreeSet<(String, usize)> = BTreeSet::new();
+    loop {
+        let gained: Vec<(String, usize)> = sites_of
+            .iter()
+            .filter(|(owner, sites)| !sites.is_empty() && !covered.contains(*owner))
+            .filter(|(_, sites)| {
+                sites.iter().all(|(rel, no)| {
+                    under_arm(rel, *no)
+                        || tree
+                            .enclosing_fn(rel, *no)
+                            .is_some_and(|g| covered.contains(&(rel.clone(), g.start)))
+                })
+            })
+            .map(|(owner, _)| owner.clone())
+            .collect();
+        if gained.is_empty() {
+            break;
+        }
+        covered.extend(gained);
+    }
+
+    let mut unguarded = Vec::new();
+    for (rel, l) in &awaits {
+        if under_arm(rel, l.no) {
+            continue;
+        }
+        let holder = tree.enclosing_fn(rel, l.no);
+        if holder.is_some_and(|f| covered.contains(&(rel.to_string(), f.start))) {
+            continue;
+        }
+        let name = holder.map_or(String::new(), |f| f.name.clone());
+        unguarded.push(format!("{name} at {rel}:{}", l.no));
+    }
+    let max_unguarded = need_int(c, "max_unguarded_await", "hold-discipline")?;
     rows.push(plain(
-        "hold-discipline:cancellation-before-await",
-        uncancellable.len() as i64 <= max_uncancellable,
-        "a cancellation-token check precedes every `.await` in the route step",
-        if any_route_await {
-            format!(
-                "{} `.await` in a route step with no prior cancellation check (ceiling \
-                 {max_uncancellable}): {}",
-                uncancellable.len(),
-                join_or_none(&uncancellable)
-            )
+        "hold-discipline:guarded-await",
+        unguarded.len() as i64 <= max_unguarded,
+        "every `.await` the kernel writes stands inside an armed abandonment guard",
+        if awaits.is_empty() {
+            format!("{VACUOUS}no `.await` found in the kernel's production source")
         } else {
-            format!("{VACUOUS}no `.await` found inside a route-step function in scope")
+            format!(
+                "{} of {} `.await` in the kernel with no armed abandonment guard over them \
+                 (ceiling {max_unguarded}): {}",
+                unguarded.len(),
+                awaits.len(),
+                join_or_none(&unguarded)
+            )
         },
-        uncancellable.len() as i64,
-        max_uncancellable,
-        uncancellable,
+        unguarded.len() as i64,
+        max_unguarded,
+        unguarded,
     ));
     Ok(rows)
 }

@@ -218,7 +218,6 @@ land_ceiling_verdict() {
 land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
-hold-discipline:cancellation-before-await
 kernel-seal-impls
 one-pick-site
 one-pricing-site:fee-fields

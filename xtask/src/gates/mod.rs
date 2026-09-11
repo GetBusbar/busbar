@@ -156,14 +156,20 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// COMMIT that strikes that entry — the stale-name check above will red until you do, which is the
 /// point.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
-    // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
-    // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
-    // the route step" that found no `.await` in scope at all, and passed on that basis.
-    "hold-discipline:cancellation-before-await",
-    // `hold-escapes` WAS STRUCK FROM HERE, and not by waiver. It named two sites in busbar-timing,
-    // where an `atexit` handler wrapped its diagnostic dump in `catch_unwind(AssertUnwindSafe(...))`
-    // to survive a failed print. The escape was DELETED rather than reviewed: the dump path was made
-    // unable to panic, so there is no unwind boundary left in that crate to carry anything across.
+    // TWO NAMES WERE STRUCK FROM HERE, and neither by waiver.
+    //
+    // `hold-discipline:cancellation-before-await` was what the scan-set floor caught: a rule
+    // claiming "a cancellation-token check precedes every `.await` in the route step" that found no
+    // `.await` in scope at all and passed on that basis. It could never have found one — the route
+    // step's trait method is synchronous — and the check it looked for is not this design's:
+    // cancellation here is a DROP, caught by the guard standing over the loop's one await. The rule
+    // now measures that, as `hold-discipline:guarded-await`, and is green because the discipline is
+    // real.
+    //
+    // `hold-escapes` named two sites in busbar-timing, where an `atexit` handler wrapped its
+    // diagnostic dump in `catch_unwind(AssertUnwindSafe(...))` to survive a failed print. The
+    // escape was DELETED rather than reviewed: the dump path was made unable to panic, so there is
+    // no unwind boundary left in that crate to carry anything across.
     "kernel-seal-impls",
     "one-pick-site",
     "one-pricing-site:fee-fields",

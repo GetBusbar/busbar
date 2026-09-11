@@ -557,12 +557,29 @@ trait = "Audit"
 # ── 20. hold-discipline (ARCHITECTURE.md section 3.7 / section 8.3) ────────────────────────────────────────────────
 [rules.hold-discipline]
 why = """Every path takes its Hold exactly once and every path that takes one actually settles it. \
-Five mechanical proxies for that, each a pattern match over busbar-kernel and busbar-unit-* \
-production code, each reported only where its subject exists (a crate that has none of the pattern \
-yet is a vacuous PASS, not a lie): no `?` or early `return` between a HoldCell take and its settle; \
-no identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
-`mem::forget`/`drop(...)` of a value whose name says it is a hold; and a cancellation-token check \
-before every `.await` inside the route step, wherever the route step is async."""
+Five mechanical proxies for that, each a pattern match over production code, each reported only \
+where its subject exists: no `?` or early `return` between a HoldCell take and its settle; no \
+identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
+`mem::forget`/`drop(...)` of a value whose name says it is a hold — those four over busbar-kernel \
+and busbar-unit-* — and, over the kernel alone, every `.await` it writes standing inside an armed \
+abandonment guard.
+
+The fifth used to read "a cancellation-token check before every `.await` in the route step", and it \
+could never have found one: `Units::route` is the SYNCHRONOUS trait method, so no `.await` is ever \
+written inside it, and the row passed on the absence of its own subject. Cancellation in this loop \
+is not polled, it is a DROP — the caller goes away, the loop's future is dropped mid-await, and the \
+guard standing there owns the terminal: the hold comes out of the cell, the audit door seals the \
+end and the leases go back before the frame is gone. A token check catches only a cancellation that \
+had already happened when the await was entered; the guard catches the one that happens during it, \
+which is the only one there is.
+
+Scoped to the kernel, deliberately. A unit crate's route step awaits too, but every one of those \
+awaits runs inside the leg the kernel armed its guard over, reached through a trait object no \
+textual call graph can follow; holding them to a guard they cannot name would be asking for a \
+second guard beside the one guard. An await is covered if the guard is armed before it in its own \
+function, or if every call site of that function inside the kernel is itself covered — a least \
+fixpoint, so a function with no call site in scope, or one reachable only around a cycle, is NOT \
+covered."""
 scope_crates_kernel = ["busbar-kernel"]
 scope_crate_glob = "busbar-unit-*"
 take_pattern = '\.take\('
@@ -571,13 +588,14 @@ catch_unwind_pattern = 'catch_unwind'
 hold_word = "Hold"
 abort_pattern = '\.abort\('
 forget_or_drop_pattern = '(?:mem::forget|drop)\(\s*&?\s*[A-Za-z_][A-Za-z0-9_]*[Hh]old[A-Za-z0-9_]*'
-route_step_functions = ["route"]
-cancel_check_pattern = 'is_cancelled|cancellation'
+# The arming of the abandonment guard: the one place the loop takes ownership of a unit's terminal
+# for the length of its await.
+guard_arm_pattern = 'Abandoned::arm\('
 max_early_exit = 0
 max_catch_unwind_capture = 0
 max_join_abort = 0
 max_forget_or_drop = 0
-max_uncancellable_await = 0
+max_unguarded_await = 0
 
 # ── 21. forbid-unsafe (ARCHITECTURE.md section 1.2) ─────────────────────────────────────────────────────────
 [rules.kernel-seal-impls]
