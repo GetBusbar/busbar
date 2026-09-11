@@ -1468,3 +1468,29 @@ key = "cell.busbar-plane-admin.legacy.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = """ONE HIT, and it is the FROZEN SHAPE SURVIVING A MESSAGE A CALLER WROTE. busbar-plane-admin x legacy rises 8 -> 9 because `refusal.rs` gains one doc sentence naming the `busbar_core::` path the 1.5.5 envelope's two keys are defined at, in the commit that makes the envelope survive an operator-supplied string: a caller's own message must not be able to displace or reshape the frozen two-key body, and the test that proves it drives a message through every shape a caller can write. Naming where the frozen shape is defined is how the next reader checks that this rendering still agrees with it. The rendering itself is GONE two commits later -- `envelope_of` delegates to `busbar_contract::envelope_of` -- and what is left here is the code table, which is this plane's own."""
+
+# ── ROW 10: the config grammar goes home, and the gate follows it out of the crate ───────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """THE POOL-FAILOVER VALUE GRAMMAR ARRIVING, second delta on the same row. `failover:` is a POOL'S value grammar -- a per-request budget and hop cap an operator writes inside a pool block -- and it sat with the disposition halves in busbar-core, which is the crate this release exists to empty. It moves to the file that already holds the pool shapes, `config::pools`, which is in the SURVIVING half of the substrate; busbar-core is 46 production lines lighter for it and re-exports nothing new. Two hits, both prose: the doc lines that say which busbar_core path the grammar came FROM, which is the record of the move and is how the next reader checks the two ends agree. The frozen wire form is unchanged -- the config-schema snapshot renders byte-identical -- and busbar-substrate is not touched at all: 26 556 production lines before this row and 26 556 after."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """THE POOL-FAILOVER VALUE GRAMMAR ARRIVING, second delta on the same row. Three hits: `failover:` is written inside a POOL block, and a pool is a plane's, so the grammar's own field docs name the plane vocabulary the budget applies to -- the same sentences that were in busbar-core, scored against the crate they now sit in. No type is renamed, no wire form moves a byte, no dependency edge is added, and busbar-substrate is untouched (26 556 production lines before and after)."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """ONE HIT, the reader's end of the same move. busbar-core x substrate rises by a further 1 because the config layer now names its neutral leaves DIRECTLY -- `busbar_substrate::config::...` -- instead of reaching them through busbar-core's own re-export shims. A shim is a second name for one thing, and a second name is how two call sites end up meaning different things while both look right. The crate is 46 production lines lighter across this row for naming what it uses; the row that would grow without the direct naming is the shim count, and it falls to zero."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.api.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """TWO HITS, the same direct naming. busbar-core x api rises 610 -> 612 because the config layer, having stopped reaching its neutral leaves through busbar-core's own re-export shims, now spells the two `busbar_api::` types those leaves are written against at the sites that use them instead of inheriting them from a shim's signature. A shim is a second name for one thing and a second name is how two call sites end up meaning different things while both look right, so the two hits are the cost of the shims going: the crate is 46 production lines lighter across this row, and the retiring api crate gains no new capability here -- these are the same two types the same code already passed through, now visible where they are used."""

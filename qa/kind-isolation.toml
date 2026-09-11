@@ -1712,7 +1712,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "610"
+count = "612"
 
 [[cell]]
 crate = "busbar-core"
@@ -1727,7 +1727,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5519"
 
 [[cell]]
 crate = "busbar-core"
@@ -1737,7 +1737,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3066"
 
 [[cell]]
 crate = "busbar-core"
@@ -1757,7 +1757,7 @@ count = "98"
 [[cell]]
 crate = "busbar-core"
 kind = "substrate"
-count = "4"
+count = "5"
 
 [[cell]]
 crate = "busbar-core"
@@ -2532,12 +2532,12 @@ count = "253"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "164"
+count = "166"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "176"
+count = "179"
 
 [[cell]]
 crate = "busbar-substrate-values"
