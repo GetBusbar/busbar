@@ -1732,3 +1732,56 @@ key = "cell.busbar.caps.count"
 file = "qa/kind-isolation.toml"
 by = 3
 because = "root/units_common.rs, the one home of the step bodies every mounted plane shares. The bodies MOVED out of root/units_mcp.rs rather than being copied, so the capability vocabulary they carry -- `ReasonCode`, `Outcome`, the ten `StepName` arms of `refusal_step` -- is unchanged in total; the rise is the new file's own `use busbar_caps::{...}` lines, which is the whole price of a body having one home instead of two. A composition root is the ONE kind entitled to name the loop's vocabulary, and this file names nothing else: it names no plane at all, which is the test of whether a body belongs in it."
+
+# ------------------------------------------------------------------------------------------------
+# THE A2A PLANE'S LOOP ENTRY AND ITS REFUSAL BYTES (A2A-T, 1.6.0)
+# ------------------------------------------------------------------------------------------------
+#
+# `crates/busbar/src/root/units_a2a.rs` gains `Wire` and `A2aDraft::read` -- the PRODUCTION read of
+# this protocol, at the one step entitled to read the bytes, through the plane's OWN ingress decoder
+# -- and the decode failure is now CARRIED onto the draft as the reason the decode step refuses with
+# rather than as a bare absence, so a caller over the arena's bound and a caller who sent nonsense
+# are told apart. `A2aUnits::head` reads back what the AUDIT step sealed, off the step that saw it.
+# Two cells drive a rig-shaped request through the REAL `busbar_kernel::teller::run_unit`, one to a
+# settled ending with an audit head and one to the refusal the SCOPE UNIT raised, rendered by the
+# PLANE byte for byte.
+#
+# Every raise below is ROOT COMPOSITION and nothing else, and every one is a DELTA on the figure
+# MCP-T left. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in a single file -- that is what a composition root IS.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "one name: `ReasonCode`, in the draft field that now CARRIES the decode failure instead of losing it. The reason is the loop's closed vocabulary and the decode step refuses with the one the read produced, which is how a caller over the arena's bound and a caller who sent nonsense stop being told the same thing."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the two RESERVED TRANSPORT FACTS this plane's decoder asks FIRST, published by the cell's transport view exactly as a listener publishes them: `busbar_contract::transport::facts::{PATH, METHOD}`. Three of the surfaces this plane claims carry no request document at all, so the target and the verb are what decide whether the arriving bytes are an envelope; a cell that published neither would be arranging for the envelope path by saying nothing, rather than proving the plane routed the rig's real target to it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE LOOP ITSELF, named by the cells that enter it: `busbar_kernel::teller::{run_unit, Run, Ended, Kernel}` and `busbar_kernel::slice::{ConcurrencyGauge, LeaseCell}`, net of the spellings the file already had. The cells drive `run_unit` rather than an approximation of it, which is the whole value of the proof: a driver that approximated the loop would be proving the plane agrees with the approximation."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 46
+because = "the A2A plane, named by the composition that mounts it on the loop: `busbar_plane_a2a::{A2aPlane, ops, records, claims, jsonrpc}` in the draft's read (`A2aDraft::read`, the production read of this protocol), and in the byte-identity cell, which decodes the rig's own request through the plane's own ingress decoder and renders the loop's refusal through the plane's own `encode_refusal`. The root parses none of this protocol and writes none of its envelope: what it owns is the JOIN between the kernel's closed reason vocabulary and the contract's spelling of it, and the bytes come back from the plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "the arrival handover and the request surface, named by the composition that drives them: the claim's transport and the composed chain the transports recorded (`claims::TRANSPORT_HTTP`, the tcp/tls/http chain the cells' `ArrivalRecord` carries), and the cell's own transport view. The arrival step's one question is whether the claim and the stack describe the SAME connection, and a cell that did not build a real chain would not be driving the step that can refuse a handoff mismatch."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = "the units the seven steps are SERVED BY, named by the composition that binds them to one assembly: `busbar_unit_admission::{GroupTable, BucketChain, InMemoryCells}` and the one `bindings()` the cells now share, which replaced a bindings block written out per cell. Every one of them is the node's one instance handed to this leg; nothing here is a second copy of a unit and nothing here is plane-specific."

@@ -1331,20 +1331,34 @@ count = "25"
 # vocabulary they carry is unchanged; the +3 is the new file's own `use busbar_caps::{...}` lines,
 # which is what a body costs to have one home instead of two. The count is TODAY'S MEASUREMENT, exact
 # in both directions.
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 317 -> 318: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "317"
+count = "318"
 
 [[cell]]
 crate = "busbar"
 kind = "codec"
 count = "5"
 
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 18 -> 20: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "18"
+count = "20"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1370,10 +1384,17 @@ count = "5"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 4 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 165 -> 167: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "165"
+count = "167"
 
 [[cell]]
 crate = "busbar"
@@ -1387,10 +1408,17 @@ count = "93"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 51 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 1951 -> 1997: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1951"
+count = "1997"
 
 [[cell]]
 crate = "busbar"
@@ -1419,10 +1447,17 @@ count = "9"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 6 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 945 -> 954: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "945"
+count = "954"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1431,10 +1466,17 @@ count = "945"
 # is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
 # through the file's existing imports rather than fully qualified, which is why the rise is 8 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
+# RAISED AGAIN by ROOT COMPOSITION (A2A-T, 1.6.0), 1199 -> 1213: root/units_a2a.rs gains `Wire` and
+# `A2aDraft::read` -- the PRODUCTION read of this protocol, at the one step entitled to read the bytes
+# -- the decode failure carried onto the draft as a reason rather than a bare absence, the audit head
+# read back off the step that sealed it, and two cells that drive a rig-shaped request through the REAL
+# `busbar_kernel::teller::run_unit`. A composition root is the ONE kind entitled to name a plane, the
+# kernel's loop, the units and the capability vocabulary in one file -- that is what a composition root
+# IS. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1199"
+count = "1213"
 
 [[cell]]
 crate = "busbar-a2a"

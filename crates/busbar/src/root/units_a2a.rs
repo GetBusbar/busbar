@@ -68,6 +68,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::root::units_common::{encoded_frame, read_ingress, read_through_poison, Read};
+
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
@@ -506,8 +508,14 @@ impl From<busbar_kernel::pump::RecordRefusal> for LegError {
 /// is a fact the plane produced, never a fact this file computed.
 #[derive(Debug, Clone)]
 pub struct A2aDraft {
-    /// What the decode step recognised. `None` is a body this plane does not carry.
-    pub op: Option<OpClassId>,
+    /// The class the plane's method table named, or the REASON it could not read the body.
+    ///
+    /// Carried rather than raised, because the step that answers for a decode failure is the DECODE
+    /// step and the loop has not reached it when the read happens. A read that returned an error
+    /// would be refusing a unit before the loop opened one, and the journal would carry no row for a
+    /// request that was certainly answered. Carrying the reason rather than a bare "no" is what lets
+    /// a caller who is over the arena's bound and a caller who sent nonsense be told apart.
+    pub op: Result<OpClassId, ReasonCode>,
     /// The scheme alternative the plane narrowed the claim to. `None` on the three open surfaces,
     /// whose claims declare no scheme at all.
     pub narrowing: Option<&'static str>,
@@ -554,6 +562,83 @@ impl A2aDraft {
                 DestinationFacts::Upstream { .. } | DestinationFacts::SessionUpstream { .. }
             )
         })
+    }
+}
+
+/// What the transport and the plane already decided, as the read is handed it.
+///
+/// One borrowed value rather than ten arguments, for the reason the bindings' is one: every field
+/// is a fact somebody else established before this unit existed, and a constructor taking them
+/// singly is a constructor a caller can fill in wrongly one at a time.
+#[derive(Clone, Copy)]
+pub struct Wire<'a> {
+    /// What the transports wrote about the connection.
+    pub arrival: &'a ArrivalRecord,
+    /// The scheme alternative the plane narrowed the matched claim to. `None` on the open surfaces.
+    pub narrowing: Option<&'static str>,
+    /// The alternatives that claim declared. Empty on an open surface.
+    pub declared_schemes: &'static [&'static str],
+    /// Whether the principal is a bound session's rather than these bytes'.
+    pub from_session: bool,
+    /// The credential the carrier presented, where one arrived.
+    pub credential: Option<&'a str>,
+    /// The audience an audience-bound ingress requires.
+    pub expected_aud: Option<&'a str>,
+    /// Where the plane says this unit goes.
+    pub destination: DestinationFacts,
+    /// The resource the plane named for the approval, where it named one.
+    pub resource: Option<ResourceLocator>,
+    /// The plan the plane returned, in the plan's order.
+    pub legs: &'a [Leg],
+    /// The whole request document's length, which is what this plane prices its input on.
+    pub request_bytes: u64,
+}
+
+impl A2aDraft {
+    /// **The production read.** Read one arriving request through THE PLANE'S OWN ingress decoder
+    /// and keep what the steps need.
+    ///
+    /// This is the one step entitled to read the bytes, and it reads them ONCE. What survives is an
+    /// OWNED answer rather than a borrow, and that is the whole reason this type exists: the loop
+    /// hands each step `&self` and nothing else, so a draft that borrowed the frame would tie the
+    /// unit's lifetime to the cursor and the loop would not compile.
+    ///
+    /// The decode failure is CARRIED rather than raised — see [`A2aDraft::op`]. The root parses
+    /// none of this protocol: the envelope shape, the method table and the pointer table are the
+    /// plane's, and the read goes through [`crate::root::units_common::read_ingress`], which is the
+    /// same read every mounted plane's draft is built by.
+    #[must_use]
+    pub fn read<'u>(
+        plane: &busbar_plane_a2a::A2aPlane,
+        frames: &mut busbar_contract::wire::FrameCursor<'u>,
+        ctx: &busbar_contract::unit::Ctx<'u>,
+        wire: Wire<'_>,
+    ) -> Self {
+        let (op, streaming) = match read_ingress(plane, frames, ctx) {
+            Ok(Read::Unit(decoded)) => (Ok(decoded.op), decoded.streaming),
+            // Neither a dropped notice nor a partial frame opens a unit, and neither is a class.
+            // The decode step renders both the way it renders a body this plane does not carry.
+            Ok(Read::Dropped | Read::NeedMore) => (Err(ReasonCode::DecodeFailed), false),
+            Err(reason) => (Err(reason), false),
+        };
+        A2aDraft {
+            op,
+            narrowing: wire.narrowing,
+            declared_schemes: wire.declared_schemes,
+            from_session: wire.from_session,
+            credential: wire.credential.map(ToString::to_string),
+            expected_aud: wire.expected_aud.map(ToString::to_string),
+            destination: wire.destination,
+            resource: wire.resource,
+            legs: wire.legs.to_vec(),
+            request_bytes: wire.request_bytes,
+            // Nothing has been answered yet. The answer's size is the METERING step's reading, and
+            // a read that guessed it here would be pricing a document that has not been written.
+            response_bytes: 0,
+            finish: FinishClass::Complete,
+            streaming,
+            arrival: wire.arrival.clone(),
+        }
     }
 }
 
@@ -700,18 +785,6 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub origin: busbar_caps::Origin,
 }
 
-/// A lock this plane holds, taken the way the root takes its locks.
-///
-/// A poisoned lock is read through rather than refused. The panic that poisoned it happened
-/// somewhere else, and what is behind these two locks is written once per field and then read — so
-/// a reader after a panic sees a prefix of the truth rather than a corrupted one. The alternative
-/// is a node whose audit chain stops sealing, and whose exit path stops settling, because one
-/// unrelated unit panicked once: a poisoned node-global lock would take every later request with
-/// it, which is a far larger failure than the one that poisoned it.
-fn read_through_poison<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(|p| p.into_inner())
-}
-
 /// What the steps recorded as they ran.
 ///
 /// The settlement table reads this once, at the exit. It is behind a lock because the steps take
@@ -765,6 +838,15 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     #[must_use]
     pub fn draft(&self) -> &A2aDraft {
         &self.draft
+    }
+
+    /// The hash the audit chain sealed this unit under, once the AUDIT step has run.
+    ///
+    /// Recorded at the step that sees it and nowhere else: nothing earlier could have it, and
+    /// nothing later is handed it again.
+    #[must_use]
+    pub fn head(&self) -> Option<String> {
+        read_through_poison(&self.progress).audit_hash.clone()
     }
 
     /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
@@ -1108,8 +1190,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The plane read the bytes; this is its answer. A body carrying a method this plane does
         // not name is a refusal at the step that read it, not a guess at the nearest class.
         match self.draft.op {
-            Some(op) => Decision::proceed(token, op),
-            None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+            Ok(op) => Decision::proceed(token, op),
+            Err(reason) => Decision::refuse(token, Refusal::new(reason)),
         }
     }
 
@@ -1170,7 +1252,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
-        let Some(op) = self.draft.op else {
+        let Ok(op) = self.draft.op else {
             return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
         };
         // Silence is a refusal. A pair the deployment's policy says nothing about has not been
@@ -1443,26 +1525,11 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
-        // The plane's encoders take the unit's arena, and this signature carries neither an arena
-        // nor the plane's draft, so the bytes are written where the borrow lives and this step
-        // reports what left. That is a statement about the seam, not a shortcut: a root that
-        // allocated a second buffer here would be writing the wire format twice.
+        // What left, reported by the one body every mounting reports it with: the bytes were
+        // written where the borrow lives, because this signature carries neither an arena nor the
+        // plane's draft.
         let bytes = read_through_poison(&self.progress).encoded;
-        Decision::proceed(
-            token,
-            busbar_contract::wire::Frame {
-                direction: busbar_contract::wire::Direction::Outbound,
-                stream: busbar_contract::ids::StreamId(0),
-                bytes: busbar_contract::bounded::SlabBytes::new(Arc::from(&[][..])),
-                meta: busbar_contract::wire::FrameMeta {
-                    bytes,
-                    transport_units: None,
-                    status: None,
-                    status_code: None,
-                    retry_after_secs: None,
-                },
-            },
-        )
+        Decision::proceed(token, encoded_frame(bytes))
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {

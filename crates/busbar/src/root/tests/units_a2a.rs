@@ -1013,7 +1013,7 @@ fn leg_record(schema: RecordSchemaId, op: &'static str) -> Leg {
 /// A draft carrying the shape one served request has.
 fn draft(op: OpClassId) -> A2aDraft {
     A2aDraft {
-        op: Some(op),
+        op: Ok(op),
         narrowing: Some("bearer"),
         declared_schemes: &["bearer"],
         from_session: false,
@@ -1686,12 +1686,68 @@ impl Deployment {
         self.groups.chain_for(who.as_str(), group).ok()
     }
 
+    /// One unit of this deployment driving A DRAFT THE PLANE PRODUCED, rather than the
+    /// hand-written shape the money cells are built on.
+    ///
+    /// The two share one bindings block on purpose: a leg driven against a second assembly would
+    /// be proving that the plane agrees with an assembly no node has.
+    fn driving<'r>(
+        &'r self,
+        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        draft: A2aDraft,
+    ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+        A2aUnits::new(
+            self.bindings(chain, 1_700_000_000),
+            draft,
+            Grants::of(Scope::Full),
+        )
+    }
+
     /// One unit of this deployment, lent a chain somebody already resolved.
     fn calling<'r>(
         &'r self,
         chain: Option<&'r busbar_unit_admission::BucketChain>,
     ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
         self.calling_at(chain, 1_700_000_000)
+    }
+
+    /// Everything one unit of this deployment is driven against, assembled once the way a node
+    /// assembles it at boot. ONE assembly, so every cell in this file drives the same node.
+    fn bindings<'r>(
+        &'r self,
+        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        now: u64,
+    ) -> A2aBindings<'r, busbar_unit_admission::InMemoryCells> {
+        A2aBindings {
+            auth: &self.auth,
+            auth_bindings: &self.auth_bindings,
+            trust_token: &self.trust,
+            pools: &self.pools,
+            kinds: &self.kinds,
+            breaker: &EveryLaneOpen,
+            resolver: &self.resolver,
+            guard: GuardPolicy::default(),
+            denylist: &self.denylist,
+            pinned: &[],
+            door: &self.door,
+            chain,
+            pricer: &self.pricer,
+            bytes_nanos: 0,
+            records: &self.records,
+            meter_policy: &self.meter_policy,
+            scope_policy: &self.scope,
+            durability: &self.durability,
+            pool: "agents",
+            now,
+            // An hour, which is long enough that no fixture here trips the deadline by
+            // accident and short enough that a test meaning to trip it can just step the
+            // wall clock past it.
+            task_ttl_secs: 3_600,
+            // One reading per unit, off the node's own counter, exactly as the root would
+            // take it at arrival.
+            mono: self.mono.fetch_add(1, Ordering::AcqRel),
+            origin: self.origin,
+        }
     }
 
     /// The same unit, arriving at a named wall epoch — so a test can step the wall clock the
@@ -1702,36 +1758,7 @@ impl Deployment {
         now: u64,
     ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
         A2aUnits::new(
-            A2aBindings {
-                auth: &self.auth,
-                auth_bindings: &self.auth_bindings,
-                trust_token: &self.trust,
-                pools: &self.pools,
-                kinds: &self.kinds,
-                breaker: &EveryLaneOpen,
-                resolver: &self.resolver,
-                guard: GuardPolicy::default(),
-                denylist: &self.denylist,
-                pinned: &[],
-                door: &self.door,
-                chain,
-                pricer: &self.pricer,
-                bytes_nanos: 0,
-                records: &self.records,
-                meter_policy: &self.meter_policy,
-                scope_policy: &self.scope,
-                durability: &self.durability,
-                pool: "agents",
-                now,
-                // An hour, which is long enough that no fixture here trips the deadline by
-                // accident and short enough that a test meaning to trip it can just step the
-                // wall clock past it.
-                task_ttl_secs: 3_600,
-                // One reading per unit, off the node's own counter, exactly as the root would
-                // take it at arrival.
-                mono: self.mono.fetch_add(1, Ordering::AcqRel),
-                origin: self.origin,
-            },
+            self.bindings(chain, now),
             draft(ops::OP_MESSAGE_SEND),
             Grants::of(Scope::Full),
         )
@@ -1948,4 +1975,334 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
         "one resolved chain, lent twice — not two copies of one answer"
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// THE LEG — an A2A request, answered through the loop every plane is answered by
+// ─────────────────────────────────────────────────────────────────────────
+
+use busbar_caps::{Canary, Hold, HoldCell};
+use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+use busbar_kernel::teller::{run_unit, Ended as LoopEnd, Kernel, Run};
+use busbar_plane_a2a::A2aPlane;
+
+use crate::root::units_common::refusal_of;
+
+/// One request, built the way the conformance rig's own request builder builds one.
+///
+/// The rig is the oracle for this plane until the recorder can drive it, so the fixture is the
+/// rig's shape rather than a convenient one: `{"jsonrpc","id","method","params"}` in that order,
+/// the `PascalCase` method naming the published specification uses, and a message carrying every
+/// member the rig's own `user_message` fills in. A cell that sent a tidier document would be
+/// exercising a body no run ever produces.
+fn rig_request(id: &str, method: &str) -> String {
+    format!(
+        r#"{{"jsonrpc": "{}", "id": {id}, "method": "{method}", "params": {{"message": {{"messageId": "8f1c2c21-0b23-4f1a-9a2c-1f4f6a1b0e77", "role": "ROLE_USER", "parts": [{{"text": "ping"}}]}}}}}}"#,
+        busbar_plane_a2a::jsonrpc::VERSION
+    )
+}
+
+/// A leaking arena. Test-only, run a bounded number of times per process: the trait's allocators
+/// hand back borrowed slices, so an honest double either leaks or is unsafe, and this crate's
+/// tests do not reach for unsafe.
+struct CellArena;
+
+impl busbar_contract::bounded::Arena for CellArena {
+    fn alloc_bytes<'a>(
+        &'a self,
+        src: &[u8],
+    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+    {
+        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
+        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+    }
+
+    fn alloc_str<'a>(
+        &'a self,
+        src: &str,
+    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+        Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, busbar_contract::bounded::Span)],
+    ) -> Result<
+        &'a [(&'a str, busbar_contract::bounded::Span)],
+        busbar_contract::bounded::ArenaBudget,
+    > {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
+    }
+
+    fn remaining(&self) -> usize {
+        usize::MAX
+    }
+}
+
+struct CellConfig;
+
+impl busbar_contract::unit::ConfigView for CellConfig {
+    fn get_str(&self, _key: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _key: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _key: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// The request surface, composed the way the node composes it.
+///
+/// The two published facts are the ones this plane's decoder asks FIRST: a request's target and
+/// its verb decide whether the bytes are an envelope at all, because three of the surfaces this
+/// plane claims carry no request document. `/a2a` is the JSON-RPC request surface the rig posts
+/// to, and it is not one of them — so publishing the rig's real target is what proves the plane
+/// routed it to the envelope decoder rather than a cell arranging for it by saying nothing.
+struct CellTransport;
+
+impl busbar_contract::unit::TransportView for CellTransport {
+    fn key(&self) -> &'static str {
+        busbar_plane_a2a::claims::TRANSPORT_HTTP
+    }
+    fn chain(&self) -> &[&'static str] {
+        &["tcp", "tls", "http"]
+    }
+    fn fact(&self, key: &str) -> Option<&str> {
+        match key {
+            busbar_contract::transport::facts::PATH => Some("/a2a"),
+            busbar_contract::transport::facts::METHOD => Some("POST"),
+            _ => None,
+        }
+    }
+}
+
+/// One inbound frame carrying `body`.
+fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
+    vec![busbar_contract::wire::Frame {
+        direction: busbar_contract::wire::Direction::Inbound,
+        stream: busbar_contract::ids::StreamId(0),
+        bytes: busbar_contract::bounded::SlabBytes::new(Arc::from(body.as_bytes())),
+        meta: busbar_contract::wire::FrameMeta::default(),
+    }]
+}
+
+/// The arrival the transports record for one of these connections.
+fn leg_arrival() -> ArrivalRecord {
+    ArrivalRecord {
+        source: "198.51.100.9:41022".to_string(),
+        port: 8443,
+        alpn: Some("h2".to_string()),
+        sni: Some("agents.example".to_string()),
+        peer_cert: None,
+        transport_chain: vec!["tcp", "tls", busbar_plane_a2a::claims::TRANSPORT_HTTP],
+    }
+}
+
+/// Read one rig-shaped request into the owned draft the loop's steps are answered from.
+///
+/// This is the PRODUCTION read: [`A2aDraft::read`] drives `read_ingress`, which drives the plane's
+/// own ingress decoder. Nothing in this cell parses this protocol.
+fn draft_for(method: &str, id: &str, arrival: &ArrivalRecord, legs: &[Leg]) -> A2aDraft {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let body = rig_request(id, method);
+    let frames = one_frame(&body);
+    let arena = CellArena;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let ctx = Ctx::new(
+        Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        &config,
+        None,
+        &transport,
+        &labels,
+        &arena,
+    );
+    let mut cursor = FrameCursor::new(&frames);
+    A2aDraft::read(
+        &A2aPlane::EMPTY,
+        &mut cursor,
+        &ctx,
+        Wire {
+            arrival,
+            // The document surface declares one alternative; the chain these cells run is the
+            // empty one, which is the open front door, so the unit authenticates as the
+            // anonymous principal.
+            narrowing: Some("bearer"),
+            declared_schemes: &["bearer"],
+            from_session: false,
+            credential: None,
+            expected_aud: None,
+            // Where the plane says this unit ends up. A plan this cell drives always names it,
+            // because a request that reaches nowhere is refused at the routing step and would be
+            // proving the refusal rather than the loop.
+            destination: legs
+                .first()
+                .expect("a plan this cell drives names where it goes")
+                .destination,
+            resource: Some(ResourceLocator {
+                kind: SCOPE_KIND_AGENT,
+                name: "probe",
+            }),
+            legs,
+            request_bytes: body.len() as u64,
+        },
+    )
+}
+
+/// Drive one unit through the REAL loop.
+fn run_leg(kernel: &Kernel, unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>) -> LoopEnd {
+    let cell = HoldCell::new(Hold::open(
+        &kernel.admit_token(),
+        PrincipalId::new("vk_a2a"),
+        0,
+    ));
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    run_unit(
+        kernel,
+        unit,
+        &a2a_ctx(),
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    )
+}
+
+/// **AN A2A REQUEST ENTERS THE TELLER LOOP.**
+///
+/// The whole of what "the A2A plane is on the kernel" means, stated as a run rather than as a
+/// sentence: a request the rig's own builder would send is read by the plane, and then the ten
+/// steps are answered by the node's units — authenticate, verify, approve, admit, route, meter,
+/// audit — in the loop's order and by nothing else. `Settled` is the exit path having taken the
+/// hold, and there is no second taker in this run.
+///
+/// The head is the second assertion and it is not a detail: it is recorded at the AUDIT step,
+/// which is the step that sees it, and read back off the unit rather than handed to it again.
+#[test]
+fn an_a2a_request_is_answered_through_the_loop_by_the_units() {
+    let node = deployment(busbar_unit_admission::GroupTable::default());
+    let who = PrincipalId::new("vk_a2a");
+    let chain = node.resolve(&who, None);
+    let kernel = Kernel::new();
+    let arrival = leg_arrival();
+    // The one record leg a listing of this node's own tasks reaches. No agent is dialled, which is
+    // what makes this the plane's own records answering rather than a hop.
+    let legs = [leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
+    let unit = node.driving(chain.as_ref(), draft_for("ListTasks", "1", &arrival, &legs));
+
+    assert_eq!(
+        unit.draft().op,
+        Ok(ops::OP_TASK_LIST),
+        "the plane's own method table named the class off the rig's own method spelling"
+    );
+
+    let ended = run_leg(&kernel, &unit);
+    assert!(
+        matches!(ended, LoopEnd::Settled { .. }),
+        "the unit reached the exit and settled exactly once: {ended:?}"
+    );
+    assert!(
+        unit.head().is_some(),
+        "the audit step is the step that sees the head, and it recorded one"
+    );
+}
+
+/// **THE BYTES ARE THE RIG'S, BYTE FOR BYTE.**
+///
+/// A caller the deployment's policy has not authorized is refused by the SCOPE UNIT at the approve
+/// step of the real loop, and the refusal a caller reads is that refusal rendered by the PLANE —
+/// never an envelope this file writes out by hand. The literal below is this dialect's own error
+/// document for a policy refusal: member order, the identifier echoed off the caller's own request,
+/// the code table's own number, the dialect's own words, and the `ErrorInfo` detail this protocol
+/// attaches to every one of its nine own codes. A single byte's difference here is a wire change,
+/// and a wire change is a release that breaks every peer that already works.
+#[test]
+fn a_refused_a2a_request_is_answered_in_the_rigs_own_bytes() {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::plane::Plane as _;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let mut node = deployment(busbar_unit_admission::GroupTable::default());
+    // Silence is a refusal: a deployment whose policy says nothing about this plane's classes has
+    // authorized none of them.
+    node.scope = crate::root::policy::ScopePolicy::new();
+    let who = PrincipalId::new("vk_a2a");
+    let chain = node.resolve(&who, None);
+    let kernel = Kernel::new();
+    let arrival = leg_arrival();
+    let legs = [leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
+    let unit = node.driving(
+        chain.as_ref(),
+        draft_for("SendMessage", "8", &arrival, &legs),
+    );
+
+    let ended = run_leg(&kernel, &unit);
+    let refusal = refusal_of(&ended).expect("the loop refused this unit");
+    assert_eq!(
+        refusal.step,
+        busbar_contract::unit::Step::Approve,
+        "the scope unit is what said no, and the envelope names the step it said it at"
+    );
+    assert_eq!(
+        refusal.reason,
+        busbar_contract::unit::RefusalReason::ScopeMissing
+    );
+
+    // And the plane renders it, over the caller's own request, into the caller's own dialect.
+    let body = rig_request("8", "SendMessage");
+    let frames = one_frame(&body);
+    let arena = CellArena;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let ctx = Ctx::new(
+        Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        &config,
+        None,
+        &transport,
+        &labels,
+        &arena,
+    );
+    let mut cursor = FrameCursor::new(&frames);
+    let plane = A2aPlane::EMPTY;
+    let busbar_contract::plane::Ingress::OneShot(decoded) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the rig's own request decodes")
+    else {
+        panic!("a send is one shot");
+    };
+    let out = plane
+        .encode_refusal(&refusal, Some(&decoded), None, &ctx)
+        .expect("a refusal renders");
+
+    assert_eq!(
+        core::str::from_utf8(out.as_slice()).expect("the dialect is text"),
+        r#"{"error":{"code":-32004,"data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","domain":"a2a-protocol.org","reason":"UNSUPPORTED_OPERATION"}],"message":"the caller may not perform this operation"},"id":8,"jsonrpc":"2.0"}"#,
+        "the refusal a caller reads is this dialect's own envelope, byte for byte"
+    );
+    // And the number in those bytes is the code table's own, never a literal that drifted from it.
+    assert_eq!(
+        busbar_plane_a2a::jsonrpc::CODE_UNSUPPORTED_OPERATION,
+        -32004
+    );
 }
