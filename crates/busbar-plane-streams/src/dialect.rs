@@ -127,6 +127,34 @@ pub struct Envelope {
     pub render_downlink_audio: fn(&mut VoiceSessionState, &[u8]),
 }
 
+/// WHAT SERVER EVENT, IF ANY, A DIALECT'S SESSION OPENS WITH.
+///
+/// Some wires of this plane are SERVER-SPEAKS-FIRST: the socket upgrades and the node owes a frame
+/// before the client sends one, because the client has nothing to send until it has been told what
+/// the session resolved to. Others are not — a carrier leg speaks when the caller does, and a leg
+/// this node DIALS gets its opening event by relaying the one its upstream sent.
+///
+/// WHICH of those a wire is, is the dialect's own fact and nobody else's, so it is declared on the
+/// row. The alternative, measured, is the shape this declaration replaces: the opening frame was
+/// authored inside one vendor's session object in the crate that owns sockets, so the plane that
+/// served every dialect could not open a session on any wire but that one, and a dialect whose
+/// vendor announced its sessions differently had nowhere to say so.
+///
+/// ONE VARIANT TODAY, and the enum is an enum rather than a `bool` for that reason: a second wire
+/// that opens with something other than its resolved session object declares a second variant here,
+/// and every reader of this field fails to compile until it says what it renders for it. A `bool`
+/// would silently render the first variant's event for the second wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpeningEvent {
+    /// THE RESOLVED SESSION OBJECT, announced as this dialect's session-created event.
+    ///
+    /// What is announced is what the session RESOLVED to — after the deployment's locked posture,
+    /// and after any rewrite an operator's tap committed — never the request's own hint. A client
+    /// told one posture while the session runs under another is a client whose every later frame is
+    /// built against a session that does not exist.
+    SessionCreated,
+}
+
 /// ONE DIALECT OF THIS PLANE, as data.
 ///
 /// Every field is a fact the loop asks about, and none of them is a vendor's name in this plane's
@@ -178,6 +206,19 @@ pub struct Dialect {
     /// query parameter — and the wire is what reads it. Nothing about it is priced, metered or
     /// routed, so no unit sees it.
     pub credential_at: Option<CredentialAt>,
+    /// WHAT SERVER EVENT THIS DIALECT'S SESSION OPENS WITH, before any frame arrives.
+    ///
+    /// `None` means this wire is client-speaks-first, or that a leg on it gets its opening event by
+    /// relaying the one an upstream sent. It is a DECLARED answer and not a missing one, the same
+    /// rule [`Dialect::reader`] and [`Dialect::credential_at`] state.
+    ///
+    /// The row says WHICH event; it does not carry the bytes. What is announced is the session's own
+    /// resolved posture, which the plane already renders once per connection for the operator
+    /// projector and holds — so rendering it is the plane's, through the writer this same row
+    /// declares, and the envelope is the codec's. That division is what keeps a vendor's JSON out of
+    /// the neutral plane while leaving the neutral plane the only thing that decides WHEN a session
+    /// owes a frame.
+    pub opening_event: Option<OpeningEvent>,
 }
 
 impl PartialEq for Dialect {

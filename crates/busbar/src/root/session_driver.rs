@@ -1115,6 +1115,32 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
         true
     }
 
+    /// THE FRAMES THIS SESSION OWES BEFORE ANY FRAME ARRIVES, as the plane rendered them.
+    ///
+    /// The third sync accessor of the accept file's own sequence, and it comes LAST of the three on
+    /// purpose: the two projector hops run first, so what this announces is the posture the session
+    /// resolved to after an operator's tap committed whatever it committed. Announcing before the
+    /// adopt would tell a client one posture and run the session under another.
+    ///
+    /// Synchronous, like everything on this side of the driver seam, and OWNED: the thing that
+    /// writes these onto a socket awaits, and a borrow would hold the session's own lock across that
+    /// write.
+    ///
+    /// EMPTY for a session that has gone, and empty for every plane whose wire is
+    /// client-speaks-first — which is the ordinary answer and a declared one on the plane's side.
+    /// This driver decides nothing about it: WHICH frames, and whether there are any, is the plane's
+    /// own answer through the contract, and what this adds is the moment it is asked.
+    #[must_use]
+    pub fn opening_frames(&self, session: SessionHandle) -> Vec<Vec<u8>> {
+        let Some(slot) = self.slot(session) else {
+            return Vec::new();
+        };
+        let Ok(mut guard) = slot.lock() else {
+            return Vec::new();
+        };
+        self.plane.opening_frames(&mut guard.state)
+    }
+
     /// ATTACH THE CLIENT'S OFFERING END, so the inbound half of a leg has somewhere to write.
     ///
     /// The counterpart of [`attach_leg`](Self::attach_leg) in the other direction and for the same

@@ -624,6 +624,41 @@ impl SessionPlane for VoicePlane {
             state.params = declared.to_vec();
         }
     }
+
+    /// THE FRAME A SERVED SESSION OWES BEFORE ANY FRAME ARRIVES, when its dialect declares one.
+    ///
+    /// WHICH event is the DIALECT's declaration ([`dialect::Dialect::opening_event`]) and nothing
+    /// here decides it; WHAT is announced is the posture this session RESOLVED to, which is the same
+    /// bytes the projector rendered and holds; and the ENVELOPE is the codec's, reached through the
+    /// writer the same row declares. This module therefore contains no vendor's JSON and no vendor's
+    /// event name — which is the whole of why the declaration is on the row.
+    ///
+    /// It reads `state.params` rather than re-rendering the posture, and that ordering is the point:
+    /// the projector has already run, an operator's tap has already committed whatever it committed,
+    /// and `adopt_session_params` has already taken it. A second render here would announce the
+    /// posture the session was ASKED to open on while running under the one it resolved to.
+    ///
+    /// EMPTY on every other answer, and each is a declared one: a dialect that owes no opening event
+    /// (a carrier that speaks second, a dialled leg that relays its upstream's), a session whose
+    /// posture was never rendered, and a posture that does not read back as a session shape.
+    fn opening_frames(&self, st: &mut PlaneSessionState) -> Vec<Vec<u8>> {
+        let Some(state) = st.get_mut::<VoiceSessionState>() else {
+            return Vec::new();
+        };
+        let Some(declared) = state.dialect.and_then(|d| d.opening_event) else {
+            return Vec::new();
+        };
+        let Ok(session) = serde_json::from_slice::<serde_json::Value>(&state.params) else {
+            return Vec::new();
+        };
+        let event = match declared {
+            dialect::OpeningEvent::SessionCreated => IrServerEvent::SessionCreated { session },
+        };
+        writer_for(state.dialect)
+            .write_down(event, &mut state.codec)
+            .map(|frame| vec![frame.0.to_vec()])
+            .unwrap_or_default()
+    }
 }
 
 /// The container a deployment files this plane's session hooks under.

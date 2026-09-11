@@ -375,6 +375,10 @@ impl SessionPlane for FixturePlane {
 
     /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
     fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
+
+    fn opening_frames(&self, _st: &mut PlaneSessionState) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
 }
 
 // ── a transport, implemented in full ──────────────────────────────────────────────────────────

@@ -57,7 +57,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use busbar_plane_streams::dialect::Dialect;
+use busbar_plane_streams::dialect::{Dialect, OpeningEvent};
 
 /// This dialect's WIRE NAME — the string on the session's dialect fact, the string the `dialects`
 /// verb answers, and the string the plane's claim table names this dialect by.
@@ -97,4 +97,12 @@ pub static OPENAI_REALTIME: Dialect = Dialect {
     // the socket. A row that declared the deployment's key here would send a long-lived credential
     // to a door that does not read it, which is a leak with no upside.
     credential_at: None,
+    // THE SESSION OPENS WITH ITS RESOLVED SESSION OBJECT. This vendor's GA handshake is
+    // server-speaks-first: the socket upgrades and the node announces what the session resolved to,
+    // and a client that never receives one has no session to update in and no id to name — so it
+    // sends nothing and waits. A leg this node DIALS gets that event by relaying the upstream's
+    // (the decode of that frame is the only place it is constructed on a dialled leg); a leg this
+    // node SERVES has no upstream to relay, so the announcement is this row's declaration and the
+    // plane renders it from the posture the session resolved to.
+    opening_event: Some(OpeningEvent::SessionCreated),
 };

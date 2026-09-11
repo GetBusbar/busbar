@@ -145,3 +145,90 @@ fn an_adopted_rewrite_replaces_the_projection_and_an_unreadable_one_does_not() {
         "the control: the rewrite has to differ from the lock or the assertion above proves nothing"
     );
 }
+
+// ── the opening frame ───────────────────────────────────────────────────────────────────────────
+
+/// A DIALECT THAT DECLARES AN OPENING EVENT OPENS ITS SESSION WITH ONE, AND ONE THAT DOES NOT OWES
+/// NOTHING.
+///
+/// The claim the whole declaration exists for. A duplex session is not always client-speaks-first:
+/// the GA realtime handshake opens with the resolved session object, and a client that never
+/// receives one has no session to update in and no id to name — so it sends nothing and waits. Every
+/// other seam on the session face is driven BY an arriving frame, so a wire like that had no way to
+/// say its first byte was the server's, and a composition that mounted it served an upgraded socket
+/// that stayed silent until the client gave up.
+///
+/// WHICH event is the row's and the bytes are the session's: this cell asserts both ends of that
+/// division — the frame appears only for the row that declares one, and what it carries is the
+/// posture the session resolved to rather than a shape invented here.
+#[test]
+fn an_opening_event_is_declared_by_the_row_and_rendered_from_the_resolved_posture() {
+    let arena = LeakArena;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let empty = EmptyConfig;
+    let c = ctx(&arena, &empty, &stack, &labels);
+    let p = plane();
+
+    // ── A ROW THAT DECLARES NONE owes nothing, which is the ordinary answer.
+    let mut silent = opened(&super::harness::A_DIALECT);
+    let _ = SessionPlane::session_params(&p, &mut silent, &c);
+    assert!(
+        SessionPlane::opening_frames(&p, &mut silent).is_empty(),
+        "a wire that is client-speaks-first owes no frame before one arrives"
+    );
+
+    // ── A ROW THAT DECLARES ONE opens with it.
+    let mut speaking = opened(&super::harness::A_SPEAKING_DIALECT);
+    let _ = SessionPlane::session_params(&p, &mut speaking, &c);
+    let frames = SessionPlane::opening_frames(&p, &mut speaking);
+    assert_eq!(frames.len(), 1, "one opening event, once");
+    let rendered: serde_json::Value =
+        serde_json::from_slice(&frames[0]).expect("the opening frame is this dialect's own JSON");
+    assert_eq!(
+        rendered.get("type").and_then(serde_json::Value::as_str),
+        Some("session.created"),
+        "the event the row declared, rendered through the codec its row names: {rendered}"
+    );
+    assert_eq!(
+        rendered.get("session"),
+        Some(&serde_json::to_value(config::default_session()).unwrap()),
+        "and what it announces is the posture this session RESOLVED to, byte for byte — not a \
+         stand-in shape and not the request's own hint"
+    );
+}
+
+/// AND IT ANNOUNCES WHAT A REWRITE COMMITTED, never the posture the projector first rendered.
+///
+/// The ordering claim, and it is the one that costs something to get wrong. An operator's tap may
+/// rewrite a session's parameters at the open; the session then RUNS under what the tap committed.
+/// A node that announced the pre-rewrite posture would tell the client one session and serve
+/// another, and every later frame the client built against what it was told would be built against
+/// a session that does not exist.
+#[test]
+fn the_opening_event_announces_what_a_rewrite_committed() {
+    let arena = LeakArena;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let empty = EmptyConfig;
+    let c = ctx(&arena, &empty, &stack, &labels);
+    let p = plane();
+
+    let mut st = opened(&super::harness::A_SPEAKING_DIALECT);
+    // The projector runs first, as the accept file runs it.
+    let _ = SessionPlane::session_params(&p, &mut st, &c);
+    // A tap commits a different, still-readable posture.
+    let mut rewritten: SessionConfig = config::default_session();
+    rewritten.model = Some("a-model-a-tap-chose".to_string());
+    let committed = serde_json::to_vec(&rewritten).unwrap();
+    SessionPlane::adopt_session_params(&p, &mut st, &committed);
+
+    let frames = SessionPlane::opening_frames(&p, &mut st);
+    let rendered: serde_json::Value = serde_json::from_slice(&frames[0]).expect("one frame");
+    assert_eq!(
+        rendered.get("session"),
+        Some(&serde_json::to_value(&rewritten).unwrap()),
+        "the announcement is what the session resolved to after the tap, not what the projector \
+         first rendered: {rendered}"
+    );
+}

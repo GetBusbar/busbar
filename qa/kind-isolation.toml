@@ -2342,7 +2342,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "transport"
-count = "105"
+count = "107"
 
 [[cell]]
 crate = "busbar-plane-streams-gemini"

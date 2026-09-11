@@ -339,7 +339,8 @@ pub struct SessionParams<'p> {
 /// The registry requires this trait exactly when any transport the plane claims declares itself a
 /// session transport. The first two methods are where the plane's per-connection codec state comes
 /// from: one half for the client connection, one per upstream the session dials. The second pair is
-/// the projector a composition screens an OPEN through ([`SessionParams`]).
+/// the projector a composition screens an OPEN through ([`SessionParams`]). The fifth is the frames
+/// a session owes before any frame arrives, for the wires that are not client-speaks-first.
 pub trait SessionPlane: Plane {
     /// Open the client half of this session's codec state.
     fn open_session<'u>(&self, ctx: &Ctx<'u>) -> PlaneSessionState;
@@ -359,4 +360,27 @@ pub trait SessionPlane: Plane {
     /// Take back the payload a rewrite tap committed, in place of the one the projector rendered.
     /// A payload this plane cannot read is not adopted; the locked one stands.
     fn adopt_session_params(&self, st: &mut PlaneSessionState, declared: &[u8]);
+
+    /// THE FRAMES THIS SESSION OWES BEFORE ANY FRAME ARRIVES, in order.
+    ///
+    /// A duplex session is not always client-speaks-first. Some wires open with a SERVER event —
+    /// the resolved session object, announced so the client has something to update in and an
+    /// identifier to name — and a client on one of those sends nothing at all until it has been
+    /// told. Every other seam on this trait is driven BY an arriving frame, so a session whose first
+    /// byte is the server's had nowhere to come from: a composition that mounted such a wire served
+    /// an upgraded socket that stayed silent until a client that was waiting gave up.
+    ///
+    /// Called ONCE, after the open and after any rewrite a tap committed
+    /// ([`SessionPlane::adopt_session_params`]) — never before. The bytes announce what the session
+    /// RESOLVED to, and announcing the pre-rewrite posture would tell the client one thing while the
+    /// session ran as another.
+    ///
+    /// EMPTY is the ordinary answer and a DECLARED one: a plane whose wires are client-speaks-first
+    /// owes no opening frame, and returning nothing is what it means to say so. There is no default
+    /// body, by this crate's own rule — a plane that grows a session transport decides this
+    /// deliberately rather than inheriting silence.
+    ///
+    /// Owned rather than borrowed out of the state: the caller writes these onto a socket across an
+    /// await, and a borrow would hold the session's own lock for the length of that write.
+    fn opening_frames(&self, st: &mut PlaneSessionState) -> Vec<Vec<u8>>;
 }

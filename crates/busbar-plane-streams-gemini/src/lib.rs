@@ -116,4 +116,8 @@ pub static GEMINI_LIVE: Dialect = Dialect {
     // also the whole reason the contract owns a URL redactor: a secret in a query string is a secret
     // in every URL-shaped error message and audit record unless something takes it back out.
     credential_at: Some(CredentialAt::Query("key")),
+    // DECLARED `None`: a leg on this dialect is DIALLED, and it gets its opening event the way every
+    // dialled leg does — by relaying the one its upstream sent. A node that announced its own on top
+    // of the upstream's would put two openings on one session.
+    opening_event: None,
 };

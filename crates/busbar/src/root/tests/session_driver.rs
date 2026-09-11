@@ -169,7 +169,21 @@ const A_PROVIDER_REPLY: &[u8] = b"reply";
 /// Reached only through the contract's `SessionPlane` face, which is the point: the driver is handed
 /// `dyn`, and a cell that asserted a frame's bytes is asserting that the bytes the PLANE wrote are
 /// the bytes that went out — not that the driver spelled anything itself.
-struct MadeUpPlane;
+struct MadeUpPlane {
+    /// What this plane owes a client before any frame arrives. Empty for a client-speaks-first
+    /// wire, which is every cell in this file but the one that drives the opening frame.
+    opening: Vec<Vec<u8>>,
+}
+
+impl MadeUpPlane {
+    /// A client-speaks-first wire: the shape every cell here ran under before an opening frame was
+    /// representable at all.
+    fn silent() -> Self {
+        MadeUpPlane {
+            opening: Vec::new(),
+        }
+    }
+}
 
 /// What the made-up plane keeps per session: how many frames it has read.
 struct Opened {
@@ -448,6 +462,12 @@ impl SessionPlane for MadeUpPlane {
 
     /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
     fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
+
+    /// This made-up plane owes an opening frame when its fixture was built to, and nothing when it
+    /// was not — which is the two answers the driver's accessor has to carry across unchanged.
+    fn opening_frames(&self, _st: &mut PlaneSessionState) -> Vec<Vec<u8>> {
+        self.opening.clone()
+    }
 }
 
 /// The made-up plane's configuration block, which has nothing in it.
@@ -745,7 +765,7 @@ impl Node {
         Node {
             kernel: crate::root::kernel::new_kernel(),
             units,
-            plane: MadeUpPlane,
+            plane: MadeUpPlane::silent(),
             config: NoConfig,
             gauge: ConcurrencyGauge::new(),
             canary: busbar_caps::Canary::new(),
@@ -1267,7 +1287,8 @@ fn the_roots_own_units_with_nothing_composed_refuse_a_declared_run() {
     let kernel = crate::root::kernel::new_kernel();
     let gauge = ConcurrencyGauge::new();
     let canary = busbar_caps::Canary::new();
-    let driver = SessionLoopDriver::new(&kernel, &units, &MadeUpPlane, &NoConfig, &gauge, &canary);
+    let plane = MadeUpPlane::silent();
+    let driver = SessionLoopDriver::new(&kernel, &units, &plane, &NoConfig, &gauge, &canary);
 
     let refused = driver.open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE);
 
@@ -1945,6 +1966,53 @@ async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
         "the dial refused, so the leg is still the parked one: nothing was attached, and no lease \
          with no socket under it was left on the slot"
     );
+}
+
+/// THE FRAMES A SESSION OWES BEFORE ANY FRAME ARRIVES CROSS THE DRIVER SEAM UNCHANGED.
+///
+/// A duplex session is not always client-speaks-first. On a wire whose first byte is the SERVER's, a
+/// client sends nothing until it has been told what the session resolved to — so a mount with no way
+/// to ask for that frame serves an upgraded socket that stays silent until the client gives up,
+/// which is worse than not mounting. Every other seam on this driver is driven BY an arriving frame.
+///
+/// WHAT the frames are is the plane's answer and this driver decides none of it; what the driver
+/// adds is the MOMENT they are asked for, and that they are asked once. The empty answer is the
+/// ordinary one and has to stay representable: a plane whose wire is client-speaks-first owes
+/// nothing, and a seam that could not say so would make every composition invent a frame.
+#[test]
+fn the_frames_a_session_owes_before_any_arrives_cross_the_seam() {
+    let mut node = Node::new();
+    node.plane.opening = vec![b"{\"type\":\"made.up.created\"}".to_vec()];
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    assert_eq!(
+        driver.opening_frames(session),
+        vec![b"{\"type\":\"made.up.created\"}".to_vec()],
+        "the frames the plane rendered reach the thing that writes them, byte for byte"
+    );
+
+    // A SESSION THAT HAS GONE OWES NOTHING, which is not an error: the accept task asks between
+    // awaits, and the session it opened may have ended under it.
+    driver.close(session, CLIENT_WENT);
+    assert!(
+        driver.opening_frames(session).is_empty(),
+        "a closed session owes no frame, and asking is not an error"
+    );
+}
+
+/// AND A CLIENT-SPEAKS-FIRST WIRE OWES NOTHING, which is what every other cell in this file runs
+/// under and is the answer a mount must not turn into a fabricated frame.
+#[test]
+fn a_client_speaks_first_wire_owes_no_opening_frame() {
+    let node = Node::new();
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    assert!(driver.opening_frames(session).is_empty());
 }
 
 /// THE CREDENTIAL THE UNITS SETTLED REACHES THE DIAL, AND NOTHING BETWEEN THE TWO RENDERS IT.

@@ -212,6 +212,29 @@ pub static A_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect {
     reader: None,
     writer: None,
     credential_at: None,
+    // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
+    opening_event: None,
+};
+
+/// A SECOND FIXTURE ROW, identical to [`A_DIALECT`] except that its wire SPEAKS FIRST.
+///
+/// A second row rather than a knob on the first, and for the reason the first one exists at all: the
+/// cells must drive a declaration a composition could have written, and the thing under test is that
+/// the plane reads WHICH answer a row gave. Mutating one row between two assertions would prove the
+/// plane reads a variable; two rows prove it reads the row.
+pub static A_SPEAKING_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect {
+    name: "a-speaking-dialect",
+    duplex_upstream: true,
+    authenticates_from_session: true,
+    meters_own_uplink: false,
+    envelope: None,
+    locked_session_config: None,
+    reader: None,
+    writer: None,
+    credential_at: None,
+    // THE ONE DIFFERENCE: this wire owes its client the resolved session object before the client
+    // sends anything, because on it a client has nothing to send until it has been told.
+    opening_event: Some(crate::dialect::OpeningEvent::SessionCreated),
 };
 
 /// REGISTER [`A_DIALECT`], once per test process.

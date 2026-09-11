@@ -913,6 +913,14 @@ impl SessionPlane for A2aPlane {
 
     /// Nothing was projected, so there is nothing a rewrite could have committed to take back.
     fn adopt_session_params(&self, _st: &mut PlaneSessionState, _declared: &[u8]) {}
+
+    /// NO OPENING FRAME. This plane's session wire is client-speaks-first — a caller opens and then
+    /// sends a task — so there is nothing this node owes before a frame arrives. Declared rather
+    /// than inherited: the trait carries no default body, so saying "nothing" is a decision this
+    /// plane made.
+    fn opening_frames(&self, _st: &mut PlaneSessionState) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
 }
 
 /// The agent's own name for a task, where a record leg came back carrying one.

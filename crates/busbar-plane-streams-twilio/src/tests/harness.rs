@@ -164,4 +164,6 @@ pub static AN_UPSTREAM_DIALECT: Dialect = Dialect {
     reader: None,
     writer: None,
     credential_at: None,
+    // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
+    opening_event: None,
 };

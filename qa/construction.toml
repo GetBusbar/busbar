@@ -151,7 +151,7 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3489
+contract_caps = 3490
 grammar = 388
 contract_transport = 1099
 
@@ -612,12 +612,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5408
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3491
+caps_contract_ceiling = 3492
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14591
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23490
+union_ceiling = 23491
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1813,3 +1813,31 @@ key = "cell.busbar.contract-transport.count"
 file = "qa/kind-isolation.toml"
 by = 3
 because = "busbar x contract-transport (busbar, contract-transport): the guard's refusal is a `busbar_contract::TransportError`, which is the transport-facing contract's own closed failure vocabulary, and the cells assert against the same two arms. A guard with a refusal type of its own would oblige the port to translate one answer into another on the one path that must not grow a second reading (88 -> 91)"
+
+# ── declared raises: R3's FACE — THE FRAMES A SESSION OWES BEFORE ANY FRAME ARRIVES. A duplex
+# session is not always client-speaks-first: on a wire whose first byte is the SERVER's, a client
+# sends nothing until it has been told what the session resolved to. Every other seam on
+# `SessionPlane` is driven BY an arriving frame, so such a wire could not be served by the generic
+# driver at all — the socket upgraded and stayed silent until the client gave up, which is the
+# posture the deletion list calls worse than not mounting. One declaration, no default body.
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 1
+because = "FACE busbar_contract::plane::SessionPlane::opening_frames — the frames a session owes BEFORE any frame arrives, for the wires that are not client-speaks-first. The GA realtime handshake opens with the resolved session object and a client that never receives one has no session to update in and no id to name, so it sends nothing; every other seam on this trait is driven by an arriving frame, so a plane on such a wire had no way to say its first byte was the server's and a composition that mounted it served an upgraded socket that relayed nothing. Called ONCE, after the open and after any rewrite a tap committed, so what is announced is what the session RESOLVED to. Empty is the ordinary answer and a DECLARED one: no default body, by this crate's own rule, so the two neutral planes (a2a, mcp) answer `Vec::new()` explicitly. Owned rather than borrowed because the caller writes these across an await and a borrow would hold the session's own lock for the length of that write. ONE surface line for the declaration, measured by scripts/loc-surface.py (3,489 -> 3,490)"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 1
+because = "The SAME opening-frames declaration, counted again by the older call-graph LOC rule over the same pair (3,491 -> 3,492). The two rows count the pair with the same counting rule and differ only in which script measures it, so the face is declared to both rather than to the one that happened to be red first"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "The SAME opening-frames declaration again, counted in the union the caps/contract pair belongs to (23,490 -> 23,491). The kernel did not move and no reachable busbar-unit-* file moved: the declaration is one line of the contract's own session face and names nothing behind a unit's trait"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-streams.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-plane-streams x transport (busbar-plane-streams, transport): the opening-frame declaration is a method of `busbar_contract::plane::SessionPlane`, the contract face a SESSION transport obliges, so the plane's implementation of it and the cells that drive it name that face's own session vocabulary. Two hits, both the face: the implementation's signature and the battery's call of it through the trait. A plane that answered this question somewhere other than the session face would be answering it where no transport asks (105 -> 107)"

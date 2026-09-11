@@ -386,6 +386,10 @@ pub static TWILIO_MEDIA_STREAMS: Dialect = Dialect {
     // is ingress only — a unit ARRIVES on it and is routed to a duplex upstream, never dialled as
     // one — so there is no upgrade of this node's making for a credential to ride.
     credential_at: None,
+    // DECLARED `None`: this carrier speaks second. The caller's platform opens the socket and sends
+    // its own start frame, and a node that spoke first on this wire would send a frame the carrier's
+    // protocol does not define at a point it does not read one.
+    opening_event: None,
 };
 
 /// This dialect's own row, for the two places its reader has to name it.
