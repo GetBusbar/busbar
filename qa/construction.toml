@@ -120,6 +120,49 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
+# THE ONE RAISE THIS LANDING NEEDS, and it is one edit in three rows because three ceilings measure
+# the same 44 lines. The tree's first production `busbar_contract::bounded::Arena` lands in the
+# kernel — the buffer and the bump cursor over one lease of it — and the kernel's OWN second bump
+# buffer is deleted in the same commit: 116 lines that implemented nothing of that trait and had no
+# caller outside this crate's own test. +126 for the arena the tree did not have, -82 for the arena
+# it had twice, +44 net, and the same +44 in each of the three rows that can see it.
+#
+# WHY THE KERNEL AND NOT THE CONTRACT. An arena is the loop's memory. `busbar-caps` +
+# `busbar-contract` is measured as what a PLUGIN AUTHOR has to read, and an author reads the trait
+# and never the cursor behind it, so a ceiling that had to be raised to hold the implementation
+# would be a ceiling that had stopped measuring its own sentence — and that pair had zero headroom.
+# The design's own figures for the rows below are unchanged and still hold: `busbar-kernel` at 8k
+# and arena/masking at 0.3k. Nothing in ARCHITECTURE.md moves for this. These three are ratchets
+# pinned at yesterday's measurement, not the design's numbers, which is exactly what a ratchet is
+# for and exactly why a raise of one is declared rather than typed.
+#
+# WHAT THE FIFTEEN REMAINING TEST DOUBLES DO ABOUT IT: NOTHING YET, AND THE GATE IS WHY. The
+# obvious rail is a re-export in `busbar-plugin-testkit`, which the kind boundaries do leave open
+# in principle — tooling may name the kernel and the kernel names no tooling. It was built and
+# refused, twice and categorically: `kind-isolation:matrix` refuses the `[[cell]]
+# busbar-plugin-testkit x kernel` the re-export mints, because the `kernel` column already has rows
+# and a minted row in a column that exists is a 0 -> N raise wearing the clothes of a first
+# measurement; and `kind-isolation:test-deps` refuses `busbar-contract -> busbar-plugin-testkit`
+# outright as an edge this branch INTRODUCED, with no verdict, count or citation able to make it
+# admissible. Both refusals are correct. The route through them is the gate's own instruction — a
+# rail crate of its own, whose column has no row at the base and whose every cell is therefore a
+# first measurement by construction — and a new crate needs a kind, which is an owner's ruling and
+# not a raise's.
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 5379
+to = 5423
+because = """The tree's first production implementor of the contract's `Arena` trait — `ArenaBuf`, the 4 KiB buffer, and `UnitArena`, the bump cursor over one lease of it — minus this crate's own second bump buffer, which implemented none of that trait and had no caller outside its own test. +126 and -82. Every other implementor of the trait in this tree is a test double that leaks, so what the arena's own doc claims — the same 4 KiB at hour one — was measured by nothing until now."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.arena.ceiling"]
+from = 178
+to = 222
+because = """The same 44 lines as `rules.loc-ceilings.kernel_ceiling`, all of them in this file: the production arena arrives and the second bump buffer is deleted rather than left beside it. The design's own figure for this row is 0.3k and does not move."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23465
+to = 23509
+because = """The same 44 lines again, seen from the union. `caps_contract_ceiling` does NOT move for this landing: the arena is the loop's memory and is measured against the kernel's ceiling, not against what a plugin author has to read."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -344,7 +387,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5423
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -352,7 +395,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23509
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -408,7 +451,7 @@ ceiling = 193
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
 patterns = ["arena.rs", "masking.rs"]
-ceiling = 178
+ceiling = 222
 
 # ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]

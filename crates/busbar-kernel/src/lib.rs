@@ -26,7 +26,8 @@
 //! - [`registry`] — the plugin registry, its generations, and whether two claims can both match.
 //! - [`grammar`] — the closed grammars: selectors, locations, and the JSON span scanner.
 //! - [`tick`] — the session tick, the node tick and its sweep, drain, and the fleet rule.
-//! - [`arena`] — the per-unit 4 KiB scratch space and the per-connection credential slab.
+//! - [`arena`] — the per-unit 4 KiB scratch space, which is the contract's own arena, and the
+//!   per-connection credential slab.
 //!
 //! ## What this crate names, and what it owns
 //!
@@ -50,7 +51,9 @@
 //! The design's rule is that nothing on the Teller path allocates outside the per-unit arena.
 //! Honestly, as this crate stands:
 //!
-//! - **Met.** [`arena::Arena`] is a fixed 4 KiB buffer with a bump cursor and no heap use at all.
+//! - **Met.** [`arena::ArenaBuf`] is a fixed 4 KiB buffer with a bump cursor over it, no heap use
+//!   after the one allocation, and it IS the contract's `Arena` rather than a second arena beside
+//!   one — which is what this crate carried until the landing that deleted the second.
 //!   The JSON span scanner in [`grammar`] allocates nothing, ever — it returns byte spans into the
 //!   caller's buffer and decodes escapes through a stack buffer. The hold cell, the accrual
 //!   counter, the cancellation token and the step state are atomics and a mutex. The settlement
