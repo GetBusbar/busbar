@@ -1219,6 +1219,52 @@ pub fn ceiling_from_env(name: &str) -> Option<Duration> {
     ceiling_for(name, |k| std::env::var(k).ok())
 }
 
+/// A BATTERY IS NOT A GATE RUN, AND MUST NOT BE HELD TO A GATE RUN'S CEILING.
+///
+/// `kind-isolation`'s self-test drives the whole gate over a planted tree ONE HUNDRED AND
+/// SEVENTY-SIX TIMES. Five minutes is the right number for "this gate has stopped making progress";
+/// it is plainly the wrong number for a hundred and seventy-six of them, and holding a battery to
+/// it means the ceiling fires on a self-test that is working perfectly — which is a runner killing
+/// the one job that would have told it what was wrong.
+///
+/// IT WAS ONLY EVER MASKED. Before the cases became plans, a battery ran inside `gate.selftest(cx)`
+/// with the watchdog armed over it, and a serial `construction --selftest` — 617 s measured — was
+/// killed at 300 s exactly like this. The lazy report hid it for one commit (the work happened
+/// after the watchdog was dropped) and resolving under the watchdog put it back. It is a real
+/// finding either way, and the answer is a ceiling that knows what it is bounding.
+///
+/// THIRTY MINUTES, and it is still a ceiling rather than a budget: the dearest battery in the
+/// registry takes about three and a half at the default job count, so this is an order of magnitude
+/// of headroom and anything that reaches it is wedged, not slow. The REGRESSION guard is
+/// [`selftest_budget`], which is denominated in work units and is the thing that notices a battery
+/// that merely grew. `XTASK_SELFTEST_CEILING_SECS` moves it; `0` disables it; an unreadable value
+/// is the default, never "no ceiling".
+pub const DEFAULT_SELFTEST_CEILING: Duration = Duration::from_secs(1800);
+
+/// The ceiling for one BATTERY, read from the environment the same way [`ceiling_for`] reads a
+/// gate's. A gate-specific `XTASK_GATE_CEILING_SECS_<GATE>` still wins, because a caller who named
+/// one gate meant that gate.
+pub fn selftest_ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
+    let per_gate = format!(
+        "XTASK_GATE_CEILING_SECS_{}",
+        name.to_uppercase().replace(['-', '.', '/'], "_")
+    );
+    let raw = env(&per_gate).or_else(|| env("XTASK_SELFTEST_CEILING_SECS"));
+    match raw {
+        None => Some(DEFAULT_SELFTEST_CEILING),
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(DEFAULT_SELFTEST_CEILING),
+        },
+    }
+}
+
+/// The battery ceiling as the runner reads it, from the real process environment.
+pub fn selftest_ceiling_from_env(name: &str) -> Option<Duration> {
+    selftest_ceiling_for(name, |k| std::env::var(k).ok())
+}
+
 /// [`execute`], UNDER A WALL-CLOCK CEILING. A gate that exceeds it is RED, with `hung` in every
 /// owed row, and the run CONTINUES.
 ///
@@ -2107,6 +2153,53 @@ mod parallel_tests {
         }
         let names: Vec<&str> = report.cases().iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["case 0", "case 1", "case 2", "case 3"]);
+    }
+
+    /// A BATTERY GETS THE BATTERY'S CEILING, and a gate named on the command line still wins.
+    ///
+    /// Red first, in the shape that bit: a serial `construction --selftest` measured 617 s and the
+    /// gate-run ceiling is 300 s, so the runner killed a self-test that was working.
+    #[test]
+    fn a_battery_is_not_held_to_one_gate_runs_ceiling() {
+        let none = |_: &str| None;
+        assert_eq!(
+            selftest_ceiling_for("construction", none),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "a battery's default ceiling is the battery's, not the gate run's"
+        );
+        assert!(
+            DEFAULT_SELFTEST_CEILING > Duration::from_secs(617),
+            "the measured serial `construction` battery must fit under it, or the ceiling is \
+             killing working self-tests"
+        );
+        assert_eq!(
+            ceiling_for("construction", none),
+            Some(DEFAULT_GATE_CEILING),
+            "one gate RUN keeps the five minutes it always had"
+        );
+
+        // The env forms, and the precedence between them.
+        let per_gate =
+            |k: &str| (k == "XTASK_GATE_CEILING_SECS_CONSTRUCTION").then(|| "42".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", per_gate),
+            Some(Duration::from_secs(42)),
+            "a caller who named one gate meant that gate"
+        );
+        let all = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "7".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", all),
+            Some(Duration::from_secs(7))
+        );
+        let off = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "0".to_string());
+        assert_eq!(selftest_ceiling_for("construction", off), None, "0 is off");
+        // AND A TYPO IS THE DEFAULT, NEVER "NO CEILING".
+        let typo = |k: &str| (k == "XTASK_SELFTEST_CEILING_SECS").then(|| "ten".to_string());
+        assert_eq!(
+            selftest_ceiling_for("construction", typo),
+            Some(DEFAULT_SELFTEST_CEILING),
+            "an unreadable override must not be the thing that lets a wedged battery hang forever"
+        );
     }
 
     /// A report whose cases were never taken must not read as a report with no cases. Every reader
