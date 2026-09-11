@@ -1406,7 +1406,14 @@ async fn run(data_workers: usize) {
     // across the restart, and hands the engine a durable path it records through without naming a
     // store, a kernel or a plane. With nothing durable configured it does nothing, which is the
     // documented in-memory behaviour and not a failure.
-    let admin_audit = root::audit_stream::mount(app.governance.as_ref().map(|gov| gov.store()));
+    // THE NODE'S ONE STORE HANDLE, bound here and read from here by everything below. Both streams
+    // took their own read of the governance state, which is two spellings of one fact and is how a
+    // node ends up with a plane writing onto a store nothing serves. One binding, cloned.
+    let node_store = app
+        .governance
+        .as_ref()
+        .map(|gov| root::store::node_adapter(gov.store()));
+    let admin_audit = root::audit_stream::mount(node_store.as_ref().map(|store| store.store()));
 
     // THE MCP PER-CALL RECORD'S DURABLE PATH, on the same leg and for the same reason: the plane
     // declares the record and keeps the one chokepoint every call is written through, and the root
@@ -1415,7 +1422,7 @@ async fn run(data_workers: usize) {
     // the previous one. With nothing durable configured the slot stays empty, the call still serves
     // and nothing is kept, which is the documented `store: memory` contract.
     #[cfg(feature = "plane-mcp")]
-    root::call_stream::mount(app.governance.as_ref().map(|gov| gov.store()));
+    root::call_stream::mount(node_store.as_ref().map(|store| store.store()));
 
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table and the MCP demotion/
     // spent-approval records, restored from the configured governance store
