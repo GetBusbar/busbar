@@ -226,6 +226,7 @@ fn category_title(category: &str) -> &'static str {
         "TYPE" => "no neutral crate names a plane or dialect type",
         "KEY" => "no neutral crate names a concrete plane key",
         "DIALECT" => "no neutral crate names a dialect",
+        "KEY-SEGMENT" => "no neutral crate names a plane key inside a longer identifier",
         _ => "no plane crate reaches back into busbar_core:: implementation",
     }
 }

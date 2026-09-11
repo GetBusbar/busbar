@@ -13,11 +13,12 @@
 # never lowers it for you, and a lowered number that goes stale (measurement now below it) still
 # passes, so tightening is always safe to do eagerly.
 #
-# [categories] — the same six side-channel classes `cargo xtask gate plane-purity` already enforces
+# [categories] — the side-channel classes `cargo xtask gate plane-purity` already enforces
 # in PRODUCTION scope
 # (PATH-INCLUDE/SYMBOL/TYPE/KEY/DIALECT/BACKWARDS), now counted across PRODUCTION + TEST scope
 # combined. Production is already 0 for every one of these (that is what makes --check green), so
-# today each ceiling equals the TEST-scope count only.
+# for those six today's ceiling equals the TEST-scope count only. KEY-SEGMENT is the exception and
+# says so below: it is the one class whose PRODUCTION count is not yet zero.
 [categories]
 PATH-INCLUDE = 0
 SYMBOL = 61
@@ -25,6 +26,45 @@ TYPE = 13
 KEY = 377
 DIALECT = 456
 BACKWARDS = 33
+
+# KEY-SEGMENT — A PLUGIN'S NAME INSIDE THE NEUTRAL CRATES, WHICH `KEY` CANNOT SEE.
+#
+# `KEY` bans a plane key as a BARE TOKEN and treats `_` as not-a-boundary, so `mcp_slot`,
+# `attach_mcp_durable_sinks`, `a2a_card_issuer`, `llm_runtime_key` and `MCP_RUNTIME_SLOT` all read
+# as clean to it. That carve-out is where the defect lives: the neutral crates were naming ONE
+# PLUGIN in the SPELLING OF A STEP — a seam field and a boot-trait method spelled after one plane —
+# and a step spelled after one plane is a step that can serve exactly one plane. The second plane
+# needing it has to grow a twin, which is how a kind-neutral seam stops being kind-neutral. The rule
+# is the owner's: core knows its plugin KINDS and that is it, so a plugin NAME in the neutral
+# crates is a defect to DELETE — a plane supplies the fact through its own DECLARATION (its key, its
+# `config_section`, its `audit_kind`) and the step reads the declaration.
+#
+# WHY IT IS PINNED RATHER THAN ZERO. It is not zero today and pretending otherwise would mean either
+# a red tree or giving up `KEY`'s zero by folding the two together, and a ceiling given up is an
+# invariant given up. So it is its own class, at its MEASURED count, and it only goes DOWN.
+#
+# MEASURED: 156 on the base (production 55 — busbar-core 51, busbar-substrate 4), 153 here
+# (production 51 — busbar-core 49, busbar-substrate 2) after the two substrate sites and their core
+# twin were deleted onto kind-neutral steps. The production figure falls by four; the combined
+# figure falls by three because the cell that proves the sinks are attached without a plane hook
+# has to build an app with a durable home, and the only harness builder for one is spelled
+# `mcp_durable_store` — which is step 2 of the drain below, in TEST scope, where it is visible.
+#
+# THE DRAIN SCHEDULE, in the order the sites come apart, each step a deletion and never a rename:
+#   1. busbar-substrate to ZERO (2 left, both `to_llm`/`from_llm` on the breaker-input conversion in
+#      `store.rs`): the neutral crate is FROZEN, so these leave as the conversion is folded into the
+#      one `plane_host::BreakerInput` it converts to. Nothing else in the substrate names a plugin.
+#   2. busbar-core's TEST-SUPPORT harness (`mcp_durable_store`, `default_mcp_test_runtime`): a
+#      harness builder spelled after one plane is the same defect in a fixture — it becomes the
+#      section-keyed builder the composition root already reads by declaration.
+#   3. busbar-core's remaining production spellings (`llm_runtime_key`, `a2a_card_issuer`,
+#      `migrate_mcp_verify_ttl`): each is a fact its own plane declares — the fallback plane's
+#      runtime key, the card-signing plane's issuer, the owning plane's config migration — and each
+#      leaves by being read off the declaration instead of being spelled in core.
+#   4. WIDEN THE SCAN. `busbar-kernel` and `busbar-unit-*` measure ZERO today but are not in
+#      `xtask::planes::neutral_src_roots()`, so nothing is holding that zero. They join the neutral
+#      root list once busbar-core's count is low enough that a widened scan cannot hide a rise in it.
+KEY-SEGMENT = 153
 
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
 # the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test

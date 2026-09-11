@@ -28,13 +28,14 @@ use crate::ctx::SourceFile;
 /// because these are the awk alternations' contents and drift between the two would be silent.
 pub const PLANE_ALTERNATION: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
 
-/// The six category names, in the fixed report order the shell prints and
+/// The category names, in the fixed report order the shell prints and
 /// `qa/plane-purity-strict.toml` keys its `[categories]` table by.
-pub const CATEGORIES: [&str; 6] = [
+pub const CATEGORIES: [&str; 7] = [
     "PATH-INCLUDE",
     "SYMBOL",
     "TYPE",
     "KEY",
+    "KEY-SEGMENT",
     "DIALECT",
     "BACKWARDS",
 ];
@@ -206,7 +207,15 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         }
         let intest = istestfile || test_depth > 0 || entered;
 
+        // WHICH ROWS ALREADY NAMED THIS LINE. The segment rule below is the only one that can
+        // double-count — `busbar_mcp::` is one identifier carrying one plane key — so it asks first
+        // whether a structural row has already reported the site. One site, one finding, so the
+        // drain count below is a count of things to fix rather than a count of rules that fired.
+        let named = std::cell::Cell::new(false);
         let mut emit = |category: &'static str| {
+            if category == "SYMBOL" || category == "TYPE" {
+                named.set(true);
+            }
             out.push(Hit {
                 category,
                 file: name.to_string(),
@@ -273,6 +282,30 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         //      inside `busbar_mcp` / `plane_mcp` / `MCP_RUNTIME_SLOT`: `_` is not a boundary.
         if PLANE_ALTERNATION.iter().any(|k| word_ci(&lc, k)) {
             emit("KEY");
+        }
+
+        // (c1b) KEY-SEGMENT — a concrete plane key as a SEGMENT of a longer identifier, which the
+        //       KEY rule above cannot see: `_` is deliberately not a word boundary there, so
+        //       `mcp_slot`, `attach_mcp_durable_sinks`, `a2a_card_issuer` and `MCP_RUNTIME_SLOT`
+        //       read as clean to it. That carve-out is what let a NEUTRAL crate name one plugin in
+        //       the SPELLING OF A STEP — a seam field and a trait method spelled after one plane —
+        //       and a step spelled after one plane is a step that can serve exactly one plane: the
+        //       second plane needing it has to grow a twin, which is how a kind-neutral seam stops
+        //       being kind-neutral. The owner's rule is that core knows its plugin KINDS and that is
+        //       it, so a plugin NAME inside the neutral crates is a defect to DELETE.
+        //
+        //       It is its OWN category, not a widening of KEY, because KEY is at a ceiling of zero
+        //       and this is not: it is pinned at its measured count in
+        //       `qa/plane-purity-strict.toml` and drains from there. Folding it into KEY would
+        //       either red the tree or force KEY's zero to be given up, and a ceiling given up is
+        //       an invariant given up.
+        //
+        //       `busbar_mcp::`/`plane_mcp` stay SYMBOL's and TYPE's business: a segment hit is only
+        //       counted when no structural row already names the line, so one site is never two
+        //       findings. The keys are the same [`PLANE_ALTERNATION`] the KEY rule reads, so the
+        //       two spellings of the ban cannot drift apart.
+        if !named.get() && PLANE_ALTERNATION.iter().any(|k| segment_ci(&lc, k)) {
+            emit("KEY-SEGMENT");
         }
 
         // (c2) DIALECT — one of the six dialect names as a token.
@@ -403,6 +436,29 @@ pub fn word_ci(lc: &str, needle: &str) -> bool {
         {
             return true;
         }
+    }
+    false
+}
+
+/// A plane key as a `_`-joined SEGMENT of a longer identifier — `mcp_slot`, `attach_mcp_durable_sinks`,
+/// `a2a_card_issuer`, `MCP_RUNTIME_SLOT` — and deliberately NOT the bare token, which is [`word_ci`]'s
+/// (hence [`CATEGORIES`]' `KEY`'s) to report. An identifier of ONE segment is not a hit here for that
+/// reason: one site, one category.
+///
+/// The segments are split on `_` only, not on case: a CamelCase plane name (`McpFoo`) is TYPE's, and
+/// scoring it here too would make one declaration two findings and make the drain count unreadable.
+pub fn segment_ci(lc: &str, needle: &str) -> bool {
+    let mut ident = String::new();
+    for ch in lc.chars().chain(std::iter::once(' ')) {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            ident.push(ch);
+            continue;
+        }
+        let segs: Vec<&str> = ident.split('_').filter(|s| !s.is_empty()).collect();
+        if segs.len() > 1 && segs.contains(&needle) {
+            return true;
+        }
+        ident.clear();
     }
     false
 }

@@ -153,8 +153,14 @@ Counts/paths verified first-hand on the `dev` branch.
 - `PlaneHost` declares `a2a_agent_pool_members` / `a2a_audience_bound` / `a2a_secret_resolver` /
   `a2a_agent_defs` (`substrate/plane_host/mod.rs:474-500`) + core impls (`core/plane_host/mod.rs:589-631`).
 - ABI dispatch hard-codes `plane_key 0 => mcp`, `1 => a2a` (`core/plane_host/dispatch.rs:456-468`).
-- `attach_mcp_durable_sinks` / `attach_a2a_durable_sinks` on a neutral boot trait
-  (`substrate/plane/registry.rs`), `MCP_RUNTIME_SLOT`/`mcp_slot` names.
+- `MCP_RUNTIME_SLOT` (`core/state.rs`), `llm_runtime_key` (`core/state.rs`), `a2a_card_issuer`
+  (`core/governance/state.rs`) — plugin names in the SPELLING of a neutral step, which
+  `plane-purity`'s `KEY` row cannot see (`_` is not a word boundary there) and its `KEY-SEGMENT`
+  row now counts and drains (`qa/plane-purity-strict.toml`).
+  The two that lived in the FROZEN substrate are gone: `BuildCtx::mcp_slot` and the boot trait's
+  `attach_mcp_durable_sinks` were deleted onto kind-neutral steps served once by the composition
+  root — a plane's slot keyed by its own declared `config_section`, and the core-owned durable
+  registries attached by core's own boot before any plane hook runs.
 - `App` fields `a2a_agent_gates` / `agent_pools` / `agent_defs` (`core/state.rs:463,538,625`),
   `mcp_server_gates` (`:531`) — `allow(dead_code)`, not removed.
 
