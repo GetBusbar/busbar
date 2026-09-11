@@ -1105,7 +1105,7 @@ fn budget_block_carries_downgrade_target() {
 /// interleaving — it is what happens to any request slower than the tick. Driven here at the
 /// governance seam (flush, flush, fresh `GovState`, hydrate) because that is where the engine
 /// decides what crosses the store boundary; the matching ruling on the OTHER side of that boundary
-/// is `busbar_plugin_testkit::store_conformance::assert_usage_survives_reopen_atomically`, which a
+/// is the shared store-conformance suite's `assert_usage_survives_reopen_atomically`, which a
 /// shipped first-party backend fails by hanging the bucket-level counters off its per-model rows.
 #[test]
 fn a_flush_that_straddles_the_response_keeps_the_request_count_and_the_tokens() {
