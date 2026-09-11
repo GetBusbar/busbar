@@ -1428,6 +1428,133 @@ jobs:
               --no-default-features --locked --verbose
           fi
 
+  # ── EVERY NON-DEFAULT FEATURE IS COMPILED BY A JOB THAT NAMES IT ──────────────────────────────
+  # A cargo feature nothing builds is a feature that is already broken and nobody knows. The code
+  # behind `#[cfg(feature = "…")]` is not compiled, so it is not type-checked, so it does not have
+  # to be valid Rust; it rots at the speed the rest of the tree moves and the first person to turn
+  # the feature on pays the whole bill. That is not hypothetical: the root binary's duplex-serve leg
+  # was default-OFF and named by NO job, and it stopped compiling for DAYS without one red run.
+  #
+  # `check` above compiles a great deal of this by accident — a feature reachable from some crate's
+  # `default`, or unified in by a dev-dependency under `--all-targets`, gets built without anybody
+  # deciding it should be. Accidental coverage is coverage until the default moves. This job is the
+  # coverage that does not move: one matrix row per feature set, each row NAMING its features.
+  #
+  # `docs/ci/feature-sets.md` is the full measurement — all 67 declared features, 46 non-default,
+  # which leg builds each, and the seven that no leg built before this job existed. The
+  # `feature-sets` xtask gate holds the two together: a non-default feature that appears neither in
+  # this matrix nor in a `# feature-covered:` declaration below is RED.
+  #
+  # WHY CLIPPY AND NOT `cargo check`: `cargo clippy --workspace --all-targets` IS
+  # `cargo check --workspace --all-targets` — same front end, same target set — and then refuses on
+  # warnings. Running both would compile the workspace twice per row for no extra information.
+  #
+  # WHY SEPARATE ROWS: one union row proves the features compile TOGETHER, which is not a build
+  # anybody ships. Each row is a build somebody could ship.
+  feature-sets:
+    name: feature sets (every non-default feature compiles, with lints, with its tests)
+    # SAME RUNNER LABEL AND SAME PINNED TOOLCHAIN AS `check`. A feature leg that builds on a
+    # different runner class or a different compiler is answering a different question.
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. A row is one workspace clippy
+    # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
+    # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
+    timeout-minutes: 45
+    # FAST TIER — no `if:` guard. The defect this job exists for is "nobody compiled it for days",
+    # and a full-tier job on the integration line is a job that does not compile it for days.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The six sets. `features` is passed verbatim to `--features`; `tests` is passed verbatim
+          # after `cargo test`. Both are read by `cargo xtask gate feature-sets`, so a row is data,
+          # not prose.
+          - name: root test-harness
+            features: busbar/test-harness
+            tests: -p busbar
+          - name: timing
+            features: busbar-core/timing,busbar-llm/timing,busbar-llm-codec/timing
+            tests: -p busbar-core -p busbar-llm -p busbar-llm-codec -p busbar-timing
+          - name: llm auth-admin-tokens
+            features: busbar-llm/auth-admin-tokens
+            tests: -p busbar-llm
+          - name: llm webhook-receiver
+            features: busbar-llm/webhook-receiver
+            tests: -p busbar-llm
+          - name: mcp-codec test-support
+            features: busbar-mcp-codec/test-support
+            tests: -p busbar-mcp-codec
+          # duplex-ws is reachable from the root binary's default `plane-voice` TODAY. It is in this
+          # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
+          # the exposure this whole job is about. A row that NAMES the feature survives the flip.
+          - name: core duplex-ws
+            features: busbar-core/duplex-ws
+            tests: -p busbar-core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Clippy — ${{ matrix.name }}
+        run: cargo clippy --workspace --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
+      - name: Tests — ${{ matrix.name }}
+        # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
+        # valid Rust; running the suite is what proves it does anything.
+        run: cargo test ${{ matrix.tests }} --features "${{ matrix.features }}" --locked
+  # ── WHERE THE OTHER FORTY NON-DEFAULT FEATURES ARE BUILT ──────────────────────────────────────
+  # `cargo xtask gate feature-sets` requires EVERY non-default feature in the tree to appear either
+  # in the matrix above or on one of these lines, and requires every line to name a feature that
+  # still exists and a job that still exists. The shape is fixed:
+  #
+  #   # feature-covered: <pkg>/<feature> -- <job-key> -- <reason, at least 30 characters>
+  #
+  # A feature added to any crate is RED until somebody writes down which job builds it. These are
+  # the forty that an existing leg already builds; the derivation behind each is the table in
+  # docs/ci/feature-sets.md, produced with `cargo tree -f '{p}|{f}'` over every CI invocation.
+  #
+  # feature-covered: busbar/loom-model -- txn-guards -- scripts/loom.sh builds it in release to explore the txn interleavings
+  # feature-covered: busbar-core/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one
+  # feature-covered: busbar/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar with the feature named
+  # feature-covered: busbar-core/openapi-schema -- openapi-schema -- same job names -p busbar-core with the feature
+  # feature-covered: busbar-a2a/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
+  # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-substrate/openapi-schema -- openapi-schema -- pulled by the forward from every plane crate there
+  # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
+  # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
+  # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
+  # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
+  # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
+  # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
+  # feature-covered: busbar-core/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
+  # feature-covered: busbar-substrate/plane-voice -- check -- reached from busbar-core/plane-voice in the workspace default build
+  # feature-covered: busbar-substrate/plane-a2a -- check -- reached from busbar-core/plane-a2a in the workspace default build
+  # feature-covered: busbar-substrate/plane-mcp -- check -- reached from busbar-core/plane-mcp in the workspace default build
+  # feature-covered: busbar-substrate/plane-llm -- check -- reached from busbar-core/plane-llm in the workspace default build
+  # feature-covered: busbar-substrate/dispatch -- check -- reached from the plane-mcp forward in the workspace default build
+  # feature-covered: busbar-substrate/relay -- check -- reached from the plane-a2a forward in the workspace default build
+  # feature-covered: busbar-substrate/runtime -- check -- reached from the plane-voice forward in the workspace default build
+  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-substrate/dispatch in the default build
+  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-substrate/relay in the default build
+  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-substrate/runtime in the default build
+  # feature-covered: busbar-unit-auth/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
+  # feature-covered: busbar-core/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
+  # feature-covered: busbar-substrate/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-a2a-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
+
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops
   # working, core assumed it always had that module — and that module is not a plugin, it is part of
@@ -2587,6 +2714,7 @@ jobs:
       - executable-config-lint
       - no-default-features
       - deletion-test-matrix
+      - feature-sets
       - no-plugins-gate
       - txn-guards
       - timing
@@ -2650,6 +2778,7 @@ jobs:
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
         no-default-features|full|${{ needs.no-default-features.result }}
         deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
+        feature-sets|fast|${{ needs.feature-sets.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}
