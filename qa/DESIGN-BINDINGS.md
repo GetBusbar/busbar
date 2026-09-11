@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
-- mapped (proven): **102**
-- unproven (cited, but nothing compared): **1**
+- mapped (proven): **100**
+- unproven (cited, but nothing compared): **3**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 11, lint 5, oracle-cell 58, oracle-family 5, test 453
+- checks by kind (mapped bindings only): gate 11, lint 5, oracle-cell 57, oracle-family 5, test 451
 
 ## Bindings
 
@@ -38,7 +38,7 @@ The three words are not interchangeable:
 | PB-9 | revocation / rotation | mapped | PASS |  | test: `rotate_invalidates_the_outstanding_signed_token`<br>test: `local_revoke_rejects_the_very_next_auth_attempt`<br>test: `peer_revoke_written_to_the_store_is_honoured_within_the_window` |
 | PB-10 | upstream disposition and status mapping | mapped | PASS |  | oracle-cell: `route.failover\|fo\|primary-down`<br>test: `test_disposition_hard_down_billing_code`<br>test: `test_disposition_transient_rate_limit_code`<br>test: `test_disposition_transient_server_error`<br>test: `test_disposition_hard_down_auth`<br>test: `test_disposition_code_drives_classification`<br>test: `test_disposition_client_fault_no_known_code`<br>test: `test_classify_context_length_both_protocols`<br>test: `test_extract_error_bad_api_key_classifies_as_auth_harddown` |
 | PB-11 | plugin trust and ABI windows | mapped | PASS |  | oracle-family: `plugins` (14/14 cells cite it)<br>test: `supported_abi_auth_floor_admits_v1`<br>test: `a_v2_store_artifact_is_accepted_at_load`<br>test: `untrusted_is_skipped_not_fatal_but_reference_fails_loud`<br>gate: `scripts/signing-gate.sh` |
-| PB-12 | export subsystem | mapped | PASS |  | test: `each_webhook_instance_gets_its_own_admission_gate`<br>test: `file_sink_sheds_appends_beyond_its_inflight_cap`<br>test: `producerless_stream_is_a_loud_config_error`<br>test: `audit_is_refused_as_a_stream_with_the_reason`<br>test: `unknown_stream_names_the_vocabulary`<br>test: `durable_true_is_a_loud_not_yet_implemented_error`<br>test: `fields_on_metrics_is_a_loud_error`<br>test: `empty_streams_list_is_a_loud_error` |
+| PB-12 | export subsystem | mapped | PASS |  | test: `each_composed_webhook_gate_is_sized_to_that_instances_own_cap`<br>test: `the_composed_file_gate_is_sized_to_the_sinks_stated_inflight_cap`<br>test: `producerless_stream_is_a_loud_config_error`<br>test: `audit_is_refused_as_a_stream_with_the_reason`<br>test: `unknown_stream_names_the_vocabulary`<br>test: `durable_true_is_a_loud_not_yet_implemented_error`<br>test: `fields_on_metrics_is_a_loud_error`<br>test: `empty_streams_list_is_a_loud_error` |
 | PB-13 | `data_dir` | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
 | PB-14 | store outage, peerless node | mapped | PASS |  | test: `test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage` |
 | PB-15 | WAL high-water | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
@@ -77,9 +77,9 @@ The three words are not interchangeable:
 | PB-48 | stall sweep on `http`/`sse` | mapped | PASS |  | test: `crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one`<br>test: `crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick`<br>test: `crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier`<br>test: `crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes` |
 | PB-49 | config overlay subsystem | mapped | PASS |  | test: `a_read_only_config_dir_boots_without_an_overlay_instead_of_refusing`<br>test: `f_every_persist_entry_point_refuses_a_none_locked_overlay`<br>test: `d_overlay_precedence_config_over_env_over_default`<br>test: `write_is_0600`<br>test: `merge_into_applies_tombstones`<br>test: `safe_mode_requested_matches_the_exact_flag_only` |
 | PB-50 | `--migrate-config` and the 1.x detector | mapped | PASS |  | oracle-family: `config.migrate` (69/138 cells cite it)<br>test: `every_shipped_config_migrates_to_a_valid_current_config`<br>test: `a_migration_with_nothing_to_decide_emits_no_comment_banner`<br>test: `legacy_markers_detected_and_named`<br>test: `detect_real_14x_top_level_and_on_exhausted_markers` |
-| PB-51 | `RUST_LOG` | mapped | PASS |  | oracle-cell: `cli\|env\|RUST_LOG-crate-filter`<br>test: `otlp_level_floors_at_debug_and_never_trails_stderr` |
+| PB-51 | `RUST_LOG` | unproven | FAIL | partly proven; a referenced check settles nothing: test:otlp_level_floors_at_debug_and_never_trails_stderr | oracle-cell: `cli\|env\|RUST_LOG-crate-filter`<br>test: `otlp_level_floors_at_debug_and_never_trails_stderr` |
 | PB-52 | env-vs-config precedence | mapped | PASS |  | test: `worker_threads_from_env_parses_valid_rejects_invalid`<br>test: `validate_worker_threads_config_diagnoses_zero`<br>test: `worker_threads_from_config_reads_a_real_file`<br>test: `busbar_providers_env_is_deprecated_but_honored`<br>test: `d_overlay_precedence_config_over_env_over_default`<br>test: `validate_honors_deprecated_busbar_config_overlay_env_var` |
-| PB-53 | metric absences and gates | mapped | PASS |  | test: `metrics_route_declared_only_when_configured` |
+| PB-53 | metric absences and gates | unproven | FAIL | UNPROVEN: nothing this binding cites compares anything today -- test:metrics_route_declared_only_when_configured | test: `metrics_route_declared_only_when_configured` |
 | PB-54 | CLI / env / signals / spans cells | mapped | PASS |  | lint: `xtask/src/gates/tracing.rs`<br>oracle-family: `cli` |
 | PB-55 | active health probers | mapped | PASS |  | test: `test_health_probe_recovers_tripped_lane`<br>test: `test_health_probe_failure_records_transient`<br>test: `test_probe_auth_failure_is_hard_down_not_transient`<br>test: `test_probe_client_fault_does_not_penalize_lane`<br>test: `a_swap_does_not_push_the_probe_deadline_out` |
 | PB-56 | egress HTTP client | mapped | PASS |  | test: `redirects_surface_verbatim_and_are_followed_by_neither_stack` |
@@ -137,6 +137,8 @@ red under `cargo xtask gate design-bindings`; it is fixed by making the citation
 or it is demoted to a named gap. It is never waived.
 
 - **PB-0** (master rule): partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh
+- **PB-51** (`RUST_LOG`): partly proven; a referenced check settles nothing: test:otlp_level_floors_at_debug_and_never_trails_stderr
+- **PB-53** (metric absences and gates): UNPROVEN: nothing this binding cites compares anything today -- test:metrics_route_declared_only_when_configured
 
 ## Findings: bindings in conflict with the tree
 

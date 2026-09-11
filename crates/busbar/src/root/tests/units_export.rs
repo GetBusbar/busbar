@@ -280,3 +280,149 @@ fn an_operators_credentials_reach_the_sink_only_in_the_address_never_in_the_labe
         "https://***@logs.example.com/busbar"
     );
 }
+
+/// The `request-log-webhook` instances TWO named entries of an operator's document resolve to, each
+/// with its own target and its own `max_inflight_deliveries` — minted through the real config path,
+/// because that is the only place a cap becomes an instance's own number.
+fn two_webhook_instances(
+    first: (&str, u64),
+    second: (&str, u64),
+) -> Vec<export::RequestLogWebhookInstance> {
+    let mut defs = ExportDefs::new();
+    for (name, (url, cap)) in [("w1", first), ("w2", second)] {
+        defs.insert(
+            name.to_string(),
+            serde_json::from_value(serde_json::json!({
+                "module": "request-log-webhook",
+                "settings": {
+                    "url": url,
+                    "max_inflight_deliveries": cap,
+                },
+            }))
+            .expect("a well-formed export instance"),
+        );
+    }
+    let mut errors = Vec::new();
+    let cfg = config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:#?}");
+    export::request_log_webhook_instances(&cfg)
+}
+
+/// EACH COMPOSED WEBHOOK SINK GETS ITS OWN GATE, SIZED TO THAT INSTANCE'S OWN CAP — measured on the
+/// wire rather than on the struct field.
+///
+/// `each_webhook_instance_carries_its_own_declared_cap` above proves the RESOLVER carries the
+/// operator's number onto the instance; this proves the COMPOSER turns that number into the gate
+/// the fan-out sheds against, which is the half that decides whether a low cap is enforced at all.
+/// The gate this replaced was a process global sized to the MAXIMUM cap across instances, and under
+/// it the cap-1 sink below would deliver three times.
+///
+/// Every delivery HOLDS its permit (the fake wire never drops `hold`), exactly as a real in-flight
+/// exchange does, so what is counted is concurrency and not throughput.
+#[test]
+fn each_composed_webhook_gate_is_sized_to_that_instances_own_cap() {
+    let instances = two_webhook_instances(
+        ("https://one.example.com/busbar", 1),
+        ("https://three.example.com/busbar", 3),
+    );
+    assert_eq!(instances.len(), 2, "two configured instances, two sinks");
+
+    let held: Arc<std::sync::Mutex<Vec<Box<dyn Send>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (keep, seen) = (held.clone(), sent.clone());
+    let send: export::ExportDeliverySend =
+        Arc::new(move |url, _headers, _body, _timeout, hold, outcome| {
+            // HOLD the slot for as long as a real exchange would, so the next fan-out meets a
+            // saturated gate rather than a freed one.
+            keep.lock().unwrap_or_else(|e| e.into_inner()).push(hold);
+            seen.lock().unwrap_or_else(|e| e.into_inner()).push(url);
+            outcome(Ok(200));
+        });
+
+    let sinks = compose_webhook_sinks(instances, send);
+    let facts = facts();
+    for _ in 0..4 {
+        fan_out(&sinks, &facts);
+    }
+
+    let count = |host: &str| {
+        sent.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|u| u.contains(host))
+            .count()
+    };
+    assert_eq!(
+        count("one.example.com"),
+        1,
+        "the cap-1 instance admits exactly ONE concurrent delivery and sheds the rest"
+    );
+    assert_eq!(
+        count("three.example.com"),
+        3,
+        "the cap-3 instance admits exactly THREE — its own budget, unaffected by its sibling"
+    );
+
+    // And the slots come back on Drop, so the gate is a concurrency bound and not a lifetime quota.
+    held.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    fan_out(&sinks, &facts);
+    assert_eq!(
+        (count("one.example.com"), count("three.example.com")),
+        (2, 4),
+        "a released permit re-opens each instance's slot"
+    );
+}
+
+/// THE FILE SINK'S BUDGET IS THE FIXED CAP THE CRATE STATES, and the composer wires exactly that
+/// number into the gate it sheds with.
+///
+/// The cap is compiled in rather than configured (`request-log-file` has no `max_inflight` setting),
+/// so the only thing that can go wrong is the composition naming a different number — the webhook's,
+/// a literal that drifted from the constant, or `Semaphore::MAX_PERMITS`. The gate is drained to
+/// saturation, which is the only way to observe the number the composer actually used.
+#[test]
+fn the_composed_file_gate_is_sized_to_the_sinks_stated_inflight_cap() {
+    assert_eq!(
+        busbar_export_file::MAX_INFLIGHT_APPENDS,
+        64,
+        "the binding names this figure: the file sink's fixed in-flight cap is 64"
+    );
+
+    let mut defs = ExportDefs::new();
+    defs.insert(
+        "f".to_string(),
+        serde_json::from_value(serde_json::json!({
+            "module": "request-log-file",
+            "settings": { "path": "/dev/null" },
+        }))
+        .expect("a well-formed export instance"),
+    );
+    let mut errors = Vec::new();
+    let cfg = config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    let sinks = file_sinks(&cfg);
+    assert_eq!(sinks.len(), 1, "one configured instance, one composed sink");
+
+    // Drain the composed gate: hold every permit, and count how many it hands out before it denies.
+    let mut permits = Vec::new();
+    while let Some(p) = sinks[0].gate.try_enter() {
+        permits.push(p);
+        assert!(
+            permits.len() <= busbar_export_file::MAX_INFLIGHT_APPENDS,
+            "the gate handed out more slots than the sink states"
+        );
+    }
+    assert_eq!(
+        permits.len(),
+        busbar_export_file::MAX_INFLIGHT_APPENDS,
+        "the composed gate is sized to the cap the sink crate states, and to nothing else"
+    );
+    // The bound is on concurrency: returning a slot re-opens it.
+    permits.pop();
+    assert!(
+        sinks[0].gate.try_enter().is_some(),
+        "a released permit re-opens the slot"
+    );
+}
