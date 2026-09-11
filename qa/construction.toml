@@ -149,6 +149,81 @@ busbar-voice = ["busbar-voice-codec"]
 # `busbar_substrate::ingress::arrival::install_path_ingress`. The same commit takes the root's reach
 # into the legacy core DOWN by two and its total legacy reach DOWN by one, so the retirement is net
 # forward and this single name is the sideways step that paid for it.
+# MOVE BY IDENTITY: the structural URL judge is the trust unit's, and busbar-core keeps only the
+# class byte. `plane_host/guard.rs` held its own copy of the arms — the http(s) scheme allowlist,
+# the metadata question, the obfuscated-encoding check and the private-address check, composed in
+# that order — which made it the THIRD reading of a control the tree already had two of, and the
+# one place that arm order was written down twice. The decision moves to
+# `busbar_unit_trust::net::{judge_literal, judge_host}`; what stays in core is a five-arm map onto
+# the neutral `GuardClass` the plugin ABI carries, and that map is an identity because the unit's
+# refusal vocabulary was chosen to BE that one. THE SOURCE LINES THAT DIE: guard.rs `judge_url`
+# (7), `judge_host` (13), `normalize_host` (3) and `probe_url` (7) — 30 lines of duplicated
+# judgement deleted for 8 lines of mapping, and the crate's transport cell falls 2113 -> 2111 in
+# the same commit because the `"http"`/`"https"` literals those arms spelled go with them.
+# [FACE] busbar_unit_trust::net::{judge_literal, judge_host, LiteralRefusal} — the STRUCTURAL
+# judgement of an UNRESOLVED authority, 66 measured lines. ARCHITECTURE.md 1.1 amended in this
+# same commit.
+#
+# THIS IS A FACE AND NOT A MOVE, and the arithmetic says so plainly: busbar-core gives up 21
+# production lines and the unit gains 135 (66 by this gate's count). Calling that a move by
+# identity would be calling a 21-line deletion the payment for a 66-line arrival, which it is not.
+#
+# WHAT THE UNIT COULD NOT DO BEFORE. Everything in the unit's net module judges a host that is
+# about to be DIALLED: the name arms run, the name is resolved exactly once, and every answered
+# address is judged. That is why `judge_host_name` is names-only — the addresses are coming, from
+# the resolver, in a moment — and why the address arms live in `judge_address`, behind a
+# resolution. The host-vtable's URL-argument slot is the OTHER caller and it resolves nothing by
+# design: a URL-shaped tool ARGUMENT is attacker-influenced data, the host is not the party that
+# will dial it, and a lookup there is advisory at best (rebinding defeats it) while making the host
+# a name-resolution oracle for whatever a model types. That slot needs the address arms WITHOUT the
+# resolution, and the unit had no such arm: handed only `judge_host_name` it answers `Ok` for
+# `169.254.169.254`, `10.0.0.1` and `[::ffff:127.0.0.1]`.
+#
+# WHY THE FACE COSTS MORE THAN THE DELETION. The decision crossing into a unit brings its
+# VOCABULARY with it. busbar-core's copy returned `(GuardClass, String)` and BORROWED `GuardClass`
+# from the plugin ABI; a unit reaches `caps` and `contract` only and may not name it. So
+# `LiteralRefusal`'s five variants and their `Display` are ~40 of the 66, and they are precisely
+# what lets busbar-core's remaining 8 lines be an IDENTITY map rather than an interpretation.
+#
+# WHAT IS BOUGHT. The tree holds ONE structural judge instead of two: `plane_host/guard.rs`'s
+# `judge_url`/`judge_host`/`normalize_host`/`probe_url` are deleted, and the arm order that makes
+# the knob safe — metadata first and unconditionally, obfuscated encodings next and also
+# unconditionally, private addressing last because it is the one a target opts into — is written
+# down once, in the crate whose step it is, with cells pinning every input that distinguished the
+# two copies. The predicate table is docs/design/1.6.0-one-net-judge.md.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 66
+because = "FACE busbar_unit_trust::net::{judge_literal, judge_host, LiteralRefusal}, 66 measured lines, ARCHITECTURE.md 1.1 amended in this commit: the structural judgement of an UNRESOLVED authority, which the unit did not have. Its existing arms judge a host about to be dialled and put the address checks behind a resolution; the host-vtable's URL-argument slot resolves nothing by design and so answered Ok for 169.254.169.254. Not a move — busbar-core gives up 21 lines against 66 — because the decision crossing into a unit brings its vocabulary: a unit may not name the ABI's GuardClass, so LiteralRefusal and its Display are ~40 of the 66 and are what make core's remaining 8 lines an identity map."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 66
+because = "the same FACE as the unit_total_ceiling raise, busbar_unit_trust::net::{judge_literal, judge_host, LiteralRefusal}: the structural literal-address judge arrives in the trust unit at 66 measured lines. The 21 busbar-core lines that die are not counted in this union, so it rises by the whole unit rise rather than by a net figure."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "the structural URL judge moves to busbar_unit_trust::net::judge_literal; plane_host/guard.rs deletes its own judge_url/judge_host/normalize_host/probe_url (30 lines of duplicated arms) and keeps only the identity map from LiteralRefusal onto the ABI's neutral GuardClass. busbar-core x transport falls 2113 -> 2111 in the same commit as the http(s) literals go with the deleted arms."
+
+# THE ARM THE UNIT NEVER TOOK. `judge_host_name` is names-only and judges addresses nowhere: the
+# address arms live in `judge_address`, which runs against a RESOLVED answer. That is right for the
+# dialling guard and WRONG for the host-vtable's URL-argument slot, which resolves nothing by
+# design (an advisory lookup rebinding defeats, on attacker-influenced data, is worse than an
+# honest structural answer). Handed only the name judge, that slot waves `http://169.254.169.254/`
+# through: a dotted quad is not a metadata NAME, `dns_name_is_internal` is a name predicate, and a
+# canonical quad is not an alternate encoding. `judge_literal`/`judge_host` are the structural arms
+# that close it, in the substrate's own order (metadata, then obfuscated, then private), plus the
+# `LiteralRefusal` vocabulary and its Display. The measured rise is the `"http"`/`"https"` literals
+# the scheme allowlist and the `probe_url` wrapper spell, in net.rs (24) and in the cells that pin
+# every distinguishing input from the predicate table (29) -- docs/design/1.6.0-one-net-judge.md.
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-trust.transport.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "the trust unit gains the structural literal arm it lacked (judge_literal/judge_host over an unresolved authority: metadata, obfuscated, private, in the substrate's arm order) so the host-vtable's URL-argument slot no longer needs a third copy of it. The rise is the http(s) scheme-allowlist literals in net.rs and in the red-first cells pinning every distinguishing input."
+
 [[gate.ceiling_raises]]
 key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
@@ -519,10 +594,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3566
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15149
+unit_total_ceiling = 15215
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24097
+union_ceiling = 24163
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

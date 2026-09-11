@@ -698,6 +698,141 @@ pub fn judge_host_name(host: &str, policy: GuardPolicy) -> Result<(), AddressRef
     Ok(())
 }
 
+// =================================================================================================
+//   THE STRUCTURAL JUDGEMENT OF AN UNRESOLVED AUTHORITY.
+//
+//   Everything above this point judges a host that is ABOUT TO BE DIALLED: the name arms run, the
+//   name is resolved exactly once, and every answered address is judged. That is the right shape
+//   for a guard that is the connecting party, and it is why `judge_host_name` is names-only —
+//   the addresses are coming, from the resolver, in a moment.
+//
+//   This is the other caller, and it resolves NOTHING. A URL-shaped tool ARGUMENT is
+//   attacker-influenced data travelling to an operator-chosen destination, and the host judging it
+//   is not the party that will dial it: the upstream resolves the name later, from its own
+//   resolver. A lookup here would be advisory at best — trivially defeated by rebinding, since
+//   nothing binds our answer to the upstream's connect — while turning the judge into a
+//   name-resolution oracle for whatever a model types. The honest consequence is stated rather
+//   than softened: a hostname whose A record points at loopback is NOT caught here.
+//
+//   So the judgement is STRUCTURAL, over the string alone, and it needs the address arms that
+//   `judge_host_name` leaves to the resolver — or `169.254.169.254` passes three name checks and
+//   the argument reaches a credential endpoint. Those arms are here, and they are the SAME
+//   predicates the resolving path uses rather than a second reading of the same ranges.
+// =================================================================================================
+
+/// Why the structural judge would not let a URL-shaped ARGUMENT be dialled.
+///
+/// The variants are the whole vocabulary, in the ARM ORDER below, and they exist as a closed set
+/// so a caller that must report a neutral refusal CLASS across an ABI maps them one for one
+/// instead of translating. A judge whose caller has to decide what a refusal meant is a judge that
+/// has only half-decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiteralRefusal {
+    /// The URL named no `http`/`https` scheme. Everything else — `file:`, `gopher:`, `smb:`,
+    /// `data:` — is refused by ABSENCE from the allowlist rather than by a blocklist, because a
+    /// blocklist of schemes is a list somebody has to keep up with. Carries the URL.
+    Scheme(String),
+    /// The URL, or the bare host, read as no usable host at all. Carries what was handed in.
+    NoHost(String),
+    /// A cloud-metadata endpoint, by NAME or by LITERAL, however it was spelled. Carries the
+    /// normalized host.
+    CloudMetadata(String),
+    /// An alternate IPv4 encoding (`0x7f000001`, `2130706433`, `127.1`) that a resolver expands
+    /// but a canonical IP-literal check misses. Carries the normalized host.
+    ObfuscatedHost(String),
+    /// A private, loopback or link-local destination, without the opt-in. Carries the normalized
+    /// host.
+    InternalHost(String),
+}
+
+impl std::fmt::Display for LiteralRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiteralRefusal::Scheme(url) => {
+                write!(
+                    f,
+                    "`{url}` uses no http(s) scheme; only http(s) is fetched over"
+                )
+            }
+            LiteralRefusal::NoHost(u) => write!(f, "`{u}` has no usable host"),
+            LiteralRefusal::CloudMetadata(h) => write!(
+                f,
+                "host `{h}` is a cloud-metadata endpoint; that is refused unconditionally"
+            ),
+            LiteralRefusal::ObfuscatedHost(h) => write!(
+                f,
+                "host `{h}` is an alternate IPv4 encoding the resolver expands; write the address \
+                 in dotted-quad form so it can be checked"
+            ),
+            LiteralRefusal::InternalHost(h) => write!(
+                f,
+                "host `{h}` is an internal destination and this call is not opted into private \
+                 addressing"
+            ),
+        }
+    }
+}
+
+/// JUDGE A URL STRUCTURALLY: the `http(s)` scheme allowlist, then the host.
+///
+/// The scheme is asked FIRST, so a `file://` URL is refused for its scheme even when its host
+/// would also have been refused — the caller is told the thing about its argument that it can
+/// actually fix. [`extract_normalized_host`] is the reader; re-deriving any of the WHATWG strip,
+/// the backslash fold, the userinfo drop, the percent-decode or the root-dot strip here would be a
+/// third copy of the one thing this module exists to have one of.
+pub fn judge_literal(url: &str, allow_private: bool) -> Result<(), LiteralRefusal> {
+    if !scheme_is(url, "http") && !scheme_is(url, "https") {
+        return Err(LiteralRefusal::Scheme(url.to_string()));
+    }
+    let host =
+        extract_normalized_host(url).ok_or_else(|| LiteralRefusal::NoHost(url.to_string()))?;
+    judge_host(&host, allow_private)
+}
+
+/// JUDGE A BARE HOST STRUCTURALLY, in the order the arms must be asked in.
+///
+/// **Metadata first and unconditionally**, so a caller that opted into private addressing has not
+/// thereby opted into the one endpoint whose whole value to an attacker is that it hands out
+/// credentials. **Obfuscated encodings second and also unconditionally**: a value spelled so the
+/// check cannot read it is refused for being unreadable rather than guessed at, and it is asked
+/// BEFORE the private arm because the two overlap — [`host_is_private_or_loopback`] answers `true`
+/// for an alternate encoding by design, so whichever question is asked first decides what the
+/// caller is told about its own argument. **Internal addressing last**, because that is the one a
+/// target can legitimately opt into.
+///
+/// The host is routed through [`extract_normalized_host`] before any arm sees it, so a bare host
+/// and the same host inside a URL are judged as the same bytes.
+pub fn judge_host(raw: &str, allow_private: bool) -> Result<(), LiteralRefusal> {
+    let host = extract_normalized_host(&probe_url(raw))
+        .ok_or_else(|| LiteralRefusal::NoHost(raw.to_string()))?;
+    // The metadata question is the denylist's, asked with no operator lists: the hardcoded set is
+    // what a structural judge may speak for, and an operator's carve-out belongs to the dial that
+    // the operator configured, not to a tool argument a model typed.
+    if ssrf_blocked_host(&probe_url(&host), &[], false, &[]).is_some() {
+        return Err(LiteralRefusal::CloudMetadata(host));
+    }
+    if is_alternate_ipv4_encoding(&host) {
+        return Err(LiteralRefusal::ObfuscatedHost(host));
+    }
+    if !allow_private && host_is_private_or_loopback(&host) {
+        return Err(LiteralRefusal::InternalHost(host));
+    }
+    Ok(())
+}
+
+/// Wrap a bare host as an authority the shared reader can read: an IPv6 literal is bracketed so it
+/// is seen as an authority rather than a `host:port` with many colons, and everything else is
+/// passed as written.
+fn probe_url(host: &str) -> String {
+    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    let host = bare.unwrap_or(host);
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("https://[{host}]/")
+    } else {
+        format!("https://{host}/")
+    }
+}
+
 /// JUDGE ONE RESOLVED ADDRESS, in the order that makes [`GuardPolicy::allow_private`] safe to have.
 ///
 /// Metadata FIRST and unconditionally, then the internal ranges, which are the only population the

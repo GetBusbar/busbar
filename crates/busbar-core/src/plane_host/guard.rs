@@ -6,12 +6,14 @@
 //!
 //! A model that has just read a hostile tool description can put `http://169.254.169.254/…` into a
 //! tool ARGUMENT, and that argument is attacker-influenced DATA travelling to an operator-chosen
-//! destination — the classic SSRF shape. Judging it means naming the tree's host primitives (the
+//! destination — the classic SSRF shape. Judging it means the tree's host primitives (the
 //! `http(s)` scheme allowlist, the WHATWG host normalizer, the cloud-metadata / obfuscated-encoding
-//! / internal-address checks over [`crate::net_guard`] + [`crate::config_validate`]). Those are the
-//! host's internals; a plane compiled apart from the host cannot name them. So the judgement is a
-//! host-vtable slot: the plane passes the URL bytes and the target's private-addressing policy, and
-//! the host returns an allow/deny verdict + the refusal class + the offending host bytes.
+//! / internal-address checks), which live in the TRUST UNIT as
+//! [`busbar_unit_trust::net::judge_literal`]. A plane compiled apart from the host cannot reach
+//! them, and the neutral refusal CLASS the ABI carries is this crate's to speak. So the judgement
+//! is a host-vtable slot: the plane passes the URL bytes and the target's private-addressing
+//! policy, and the host returns an allow/deny verdict + the refusal class + the offending host
+//! bytes. The DECISION is the unit's; only the classification is here.
 //!
 //! ## STRUCTURAL only — no name resolution
 //!
@@ -23,21 +25,20 @@
 //! record points at loopback is NOT caught here. Adding resolution would CHANGE the answer, so it is
 //! not added.
 //!
-//! ## Order is load-bearing
+//! ## Order is load-bearing, and it is stated where the arms are
 //!
 //! Metadata first and unconditionally, so a private-addressing target cannot reach the one endpoint
 //! whose whole value to an attacker is that it hands out credentials. Obfuscated encodings next and
 //! also unconditionally: a value spelled so the check cannot read it is refused rather than guessed
-//! at. Internal addressing last, because that is the one a target can legitimately opt into.
+//! at. Internal addressing last, because that is the one a target can legitimately opt into. That
+//! order is [`busbar_unit_trust::net::judge_host`]'s and is pinned by the unit's own cells — this
+//! module no longer restates it, because an order written down twice is an order that can differ.
 
 use super::{recover, with_borrowed_host, DispatchScope, HostState};
-use crate::config_validate::{
-    extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
-};
-use crate::net_guard::is_alternate_ipv4_encoding;
 use crate::state::App;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{GuardClass, GuardVerdict, StatusClass};
+use busbar_unit_trust::net::{judge_literal, LiteralRefusal};
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -124,49 +125,27 @@ unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
     n
 }
 
-/// THE STRUCTURAL JUDGEMENT: the `http(s)` scheme allowlist, then the host. `extract_normalized_host`
-/// is the tree's strictest host reader (the WHATWG tab/newline strip, the backslash fold, the userinfo
-/// drop, the trailing-root-dot strip, the percent-decode a connecting stack applies); re-deriving any
-/// of that here would be a second copy of a guard that already exists. `Ok(())` is admissible; `Err`
-/// carries the refusal class and the offending host/url.
+/// THE STRUCTURAL JUDGEMENT, which is the TRUST UNIT'S and is only CLASSIFIED here.
+///
+/// This module used to hold its own copy of the arms — the scheme allowlist, the metadata question,
+/// the obfuscated-encoding check and the private-address check, composed here in this order. That
+/// made it a third reading of a control the tree already had two of, and the one place the order of
+/// those arms was written down twice. The decision is now asked of `busbar_unit_trust::net`, which
+/// judges the UNRESOLVED authority structurally and resolves no name — the property this slot needs
+/// and the reason it cannot use the resolving path (see the module header).
+///
+/// What stays here is the only part that is this crate's: mapping the unit's refusal onto the
+/// neutral [`GuardClass`] the plugin ABI carries. The map is an IDENTITY, variant for variant,
+/// because the unit's vocabulary was chosen to BE this one — a caller that had to interpret a
+/// refusal would be a caller holding a second opinion about what the judge meant.
 fn judge_url(url: &str, allow_private: bool) -> Result<(), (GuardClass, String)> {
-    if !scheme_is(url, "http") && !scheme_is(url, "https") {
-        return Err((GuardClass::Scheme, url.to_string()));
-    }
-    let host = extract_normalized_host(url).ok_or_else(|| (GuardClass::NoHost, url.to_string()))?;
-    judge_host(&host, allow_private)
-}
-
-/// THE HOST JUDGEMENT, composed from the shared primitives rather than hand-rolled. Order is
-/// load-bearing (see the module header): metadata unconditionally, then obfuscated encodings
-/// unconditionally, then internal addressing (the one a target opts into).
-fn judge_host(raw: &str, allow_private: bool) -> Result<(), (GuardClass, String)> {
-    let host = normalize_host(raw).ok_or_else(|| (GuardClass::NoHost, raw.to_string()))?;
-    if ssrf_blocked_host(&probe_url(&host), &[], false, &[]).is_some() {
-        return Err((GuardClass::CloudMetadata, host));
-    }
-    if is_alternate_ipv4_encoding(&host) {
-        return Err((GuardClass::ObfuscatedHost, host));
-    }
-    if !allow_private && host_is_private_or_loopback(&host) {
-        return Err((GuardClass::InternalHost, host));
-    }
-    Ok(())
-}
-
-/// Normalize a bare host the same way a URL's host component is normalized, by routing it through the
-/// same reader: an IPv6 literal is bracketed so the reader sees an authority rather than a host:port,
-/// and everything else is passed as written.
-fn normalize_host(raw: &str) -> Option<String> {
-    extract_normalized_host(&probe_url(raw))
-}
-
-fn probe_url(host: &str) -> String {
-    if host.parse::<std::net::Ipv6Addr>().is_ok() {
-        format!("https://[{host}]/")
-    } else {
-        format!("https://{host}/")
-    }
+    judge_literal(url, allow_private).map_err(|refusal| match refusal {
+        LiteralRefusal::Scheme(url) => (GuardClass::Scheme, url),
+        LiteralRefusal::NoHost(u) => (GuardClass::NoHost, u),
+        LiteralRefusal::CloudMetadata(h) => (GuardClass::CloudMetadata, h),
+        LiteralRefusal::ObfuscatedHost(h) => (GuardClass::ObfuscatedHost, h),
+        LiteralRefusal::InternalHost(h) => (GuardClass::InternalHost, h),
+    })
 }
 
 /// Reconstruct a [`GuardClass`] from the verdict's neutral class byte (the inverse of `class as u8`);

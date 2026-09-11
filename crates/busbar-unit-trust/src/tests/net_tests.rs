@@ -1405,3 +1405,267 @@ fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
         );
     }
 }
+
+// =================================================================================================
+//   THE STRUCTURAL LITERAL ARM — the judgement of an UNRESOLVED authority.
+//
+//   `judge_host_name` is names-only and judges addresses nowhere: it asks the metadata NAME list,
+//   the `localhost` NAME family and the alternate-encoding shape, and everything else it answers
+//   `Ok`. The address arms live in `judge_address`, which runs against a RESOLVED answer. That is
+//   the right shape for a guard that is about to dial, because that guard resolves.
+//
+//   It is the WRONG shape for a guard that resolves nothing. The host-vtable's URL-argument slot
+//   judges a URL-shaped tool ARGUMENT — attacker-influenced data — from the string alone and
+//   deliberately performs no lookup, because the host is not the connecting party there and an
+//   advisory answer rebinding defeats is worse than an honest structural one. Handed only
+//   `judge_host_name`, that slot would wave `http://169.254.169.254/` through: the dotted quad is
+//   not a metadata NAME, `dns_name_is_internal` is a name predicate, and a canonical quad is not an
+//   alternate encoding. Three `Ok`s and a credential endpoint on the other end.
+//
+//   These cells pin the arm that closes it, and they pin the ORDER, because two of the arms
+//   overlap: `host_is_private_or_loopback` deliberately answers `true` for an alternate encoding,
+//   so which of `ObfuscatedHost` and `InternalHost` a caller sees for `0x7f000001` is decided by
+//   which question is asked first, not by the host.
+// =================================================================================================
+
+/// THE GAP, stated as the input that falls through every name arm.
+///
+/// Each of these is an address a connecting stack reaches and `judge_host_name` answers `Ok` for.
+/// The literal judge must refuse all of them.
+#[test]
+fn the_name_judge_answers_ok_for_every_literal_the_literal_judge_refuses() {
+    let policy = GuardPolicy::default();
+    for host in [
+        "169.254.169.254",  // IMDS, the whole reason the arm exists
+        "169.254.170.2",    // ECS task metadata
+        "100.100.100.200",  // Alibaba metadata
+        "168.63.129.16",    // Azure WireServer
+        "192.0.0.192",      // OCI metadata
+        "10.0.0.1",         // RFC1918
+        "127.0.0.1",        // loopback literal
+        "::ffff:127.0.0.1", // IPv4-mapped loopback
+        "::ffff:169.254.169.254",
+        "fd00:ec2::254", // EC2 IMDSv6
+    ] {
+        assert!(
+            judge_host_name(host, policy).is_ok(),
+            "{host}: the name judge is names-only; if it started refusing literals this cell is \
+             restating the literal judge instead of motivating it"
+        );
+        assert!(
+            judge_host(host, false).is_err(),
+            "{host}: the literal judge waved through an address a connecting stack reaches — this \
+             is the metadata bypass on a tool argument"
+        );
+    }
+}
+
+/// The metadata arm: first, and unconditional. `allow_private` does not speak for it.
+#[test]
+fn the_literal_judge_refuses_metadata_however_it_is_spelled_and_whatever_the_policy() {
+    for (host, why) in [
+        ("169.254.169.254", "the canonical IMDS quad"),
+        (
+            "169.254.169.254.",
+            "the trailing FQDN root dot getaddrinfo resolves the same",
+        ),
+        ("metadata.google.internal", "the GCP metadata name"),
+        (
+            "metadata.tencentyun.com",
+            "a metadata name the SUBSTRATE's 2-entry const never held",
+        ),
+        ("instance-data", "the EC2 short name"),
+        (
+            "[::ffff:169.254.169.254]",
+            "the IPv4-mapped v6 spelling of IMDS",
+        ),
+        ("fd00:ec2::254", "EC2 IMDSv6"),
+        ("0xA9FEA9FE", "IMDS as whole-host hex"),
+        ("2852039166", "IMDS as a decimal int"),
+        ("0251.0376.0251.0376", "IMDS in octal"),
+    ] {
+        for allow_private in [false, true] {
+            assert_eq!(
+                judge_host(host, allow_private),
+                Err(LiteralRefusal::CloudMetadata(
+                    normalized_for(host).to_string()
+                )),
+                "{host} ({why}) with allow_private={allow_private}: metadata is refused FIRST and \
+                 unconditionally, or a target that opted into private addressing has opted into \
+                 the one endpoint whose whole value to an attacker is that it hands out credentials"
+            );
+        }
+    }
+}
+
+/// The obfuscated arm: SECOND, unconditional, and ahead of the private arm.
+///
+/// `host_is_private_or_loopback` answers `true` for an alternate encoding by design, so both arms
+/// match `0x7f000001`. The substrate's structural judge asks obfuscated first. The unit's NAME
+/// judge asks private first and would answer `LoopbackName`. The literal judge takes the
+/// substrate's order, because a value spelled so the check cannot read it is refused for being
+/// unreadable rather than for whatever it happens to decode to.
+#[test]
+fn the_obfuscated_arm_is_asked_before_the_private_arm() {
+    for host in ["0x7f000001", "2130706433", "127.1", "0177.0.0.1"] {
+        assert!(
+            host_is_private_or_loopback(host),
+            "{host}: both arms must match, or this cell is not testing an order"
+        );
+        assert_eq!(
+            judge_host(host, false),
+            Err(LiteralRefusal::ObfuscatedHost(host.to_string())),
+            "{host}: the private arm answered first and the caller was told the wrong thing about \
+             why its argument was refused"
+        );
+    }
+    // Unconditional: the knob speaks for private addressing, not for unreadable spellings.
+    assert_eq!(
+        judge_host("0x7f000001", true),
+        Err(LiteralRefusal::ObfuscatedHost("0x7f000001".to_string())),
+        "allow_private turned the obfuscated arm off; a target that admits private addressing has \
+         not thereby admitted addresses the guard cannot read"
+    );
+}
+
+/// The private arm: LAST, and the only one `allow_private` speaks for.
+#[test]
+fn the_private_arm_is_last_and_is_the_one_the_policy_opts_into() {
+    for host in [
+        "10.0.0.1",
+        "192.168.1.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "127.0.0.1",
+        "localhost",
+    ] {
+        assert_eq!(
+            judge_host(host, false),
+            Err(LiteralRefusal::InternalHost(host.to_string())),
+            "{host}: a private literal reached through a tool argument"
+        );
+        assert!(
+            judge_host(host, true).is_ok(),
+            "{host}: allow_private is the target's deliberate opt-in and must be honoured"
+        );
+    }
+    // The `localhost` family, including the rooted spelling that misses an exact compare by a byte.
+    assert_eq!(
+        judge_host("localhost.", false),
+        Err(LiteralRefusal::InternalHost("localhost".to_string())),
+        "the trailing root dot must be normalized away before the compare, or `localhost.` is a \
+         one-byte bypass of the loopback arm"
+    );
+    assert_eq!(
+        judge_host("db.localhost", false),
+        Err(LiteralRefusal::InternalHost("db.localhost".to_string())),
+        "RFC 6761 reserves the whole `.localhost` TLD to loopback"
+    );
+}
+
+/// An ordinary public destination is admissible, which is the control this whole arm needs.
+#[test]
+fn the_literal_judge_admits_a_public_host() {
+    for host in ["api.openai.com", "example.com", "8.8.8.8", "1.1.1.1"] {
+        assert!(
+            judge_host(host, false).is_ok(),
+            "{host}: the literal judge refused an ordinary public destination — a guard that \
+             refuses everything is not a guard"
+        );
+    }
+}
+
+/// The URL door: the scheme allowlist, then the host, in that order.
+#[test]
+fn the_literal_url_judge_asks_the_scheme_before_the_host() {
+    // Refused by ABSENCE from the allowlist, not by a blocklist somebody has to maintain.
+    for url in [
+        "file:///etc/passwd",
+        "gopher://169.254.169.254/",
+        "ftp://10.0.0.1/",
+    ] {
+        assert_eq!(
+            judge_literal(url, false),
+            Err(LiteralRefusal::Scheme(url.to_string())),
+            "{url}: the scheme arm is first, so a non-http(s) URL is refused for its scheme even \
+             when its host would also have been refused"
+        );
+    }
+    assert_eq!(
+        judge_literal("https://169.254.169.254/latest/meta-data/", false),
+        Err(LiteralRefusal::CloudMetadata("169.254.169.254".to_string()))
+    );
+    assert!(judge_literal("http://api.openai.com/v1", false).is_ok());
+    assert!(judge_literal("HTTPS://api.openai.com/v1", false).is_ok());
+    // No usable host at all.
+    assert_eq!(
+        judge_literal("https://", false),
+        Err(LiteralRefusal::NoHost("https://".to_string()))
+    );
+}
+
+/// The literal judge reads the host through the SAME reader the denylist does.
+///
+/// Not a second normalization: the whole obfuscation defence is `extract_normalized_host`, and a
+/// structural judge that re-derived any of it would be the third copy of the thing this file
+/// exists to stop being two of.
+#[test]
+fn the_literal_judge_reads_the_host_through_the_shared_reader() {
+    for url in [
+        "https://169.254.169.254 ",                // WHATWG trailing trim
+        "https://169.254.169\t.254/",              // interior tab, deleted from anywhere
+        "https://169%2E254%2E169%2E254/",          // percent-encoded dots
+        "https://10.0.0.1\\x.allowed.com/",        // the backslash authority-boundary fold
+        "https://api.openai.com@169.254.169.254/", // userinfo prefix
+        "https://169.254.169.254:80/?q=#frag",     // port, query, fragment
+    ] {
+        assert!(
+            matches!(
+                judge_literal(url, false),
+                Err(LiteralRefusal::CloudMetadata(_) | LiteralRefusal::InternalHost(_))
+            ),
+            "{url}: the literal judge read a different host than the shared reader does, which is \
+             the drift the extraction was unified to prevent"
+        );
+    }
+    // THE LEADING-PADDING SPELLING REFUSES AT THE SCHEME ARM, NOT THE HOST ARM, and that is the
+    // faithful answer rather than a gap. The leading trim is the half of the WHATWG first step that
+    // hides the SCHEME rather than the host: `" https://169.254.169.254/"` splits on `://` into the
+    // scheme `" https"`, which is in no allowlist. Since the scheme is asked FIRST, the refusal
+    // says scheme. It is still a refusal — fail-closed — and it is the same arm the host-vtable's
+    // structural judge answers on, so a re-point changes no caller's verdict. Pinned with its
+    // reason so a later change that "fixes" it into a host refusal is a decision and not a drift.
+    for url in [" https://169.254.169.254/", "\u{1}http://169.254.169.254/"] {
+        assert_eq!(
+            judge_literal(url, false),
+            Err(LiteralRefusal::Scheme(url.to_string())),
+            "{url}: leading padding hides the scheme, so the scheme arm is the one that must fire"
+        );
+    }
+}
+
+/// The host bytes a refusal carries are the NORMALIZED host, not the raw spelling.
+///
+/// The vtable slot copies these bytes back to the plane as the refusal reason, so what they are is
+/// an operator-visible fact and not an implementation detail.
+#[test]
+fn a_refusal_carries_the_normalized_host_bytes() {
+    assert_eq!(
+        judge_host("169.254.169.254.", false),
+        Err(LiteralRefusal::CloudMetadata("169.254.169.254".to_string())),
+        "the rooted spelling must report the host the guard actually judged"
+    );
+    assert_eq!(
+        judge_literal("https://user:pass@10.0.0.1:8443/v1", false),
+        Err(LiteralRefusal::InternalHost("10.0.0.1".to_string())),
+        "the userinfo must not survive into a refusal string: a refusal naming a rejected \
+         credential would be the one place a password is written down twice"
+    );
+}
+
+/// The normalized spelling of a host, for the cells above that state an expected refusal payload.
+fn normalized_for(host: &str) -> String {
+    let bracketed = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    let bare = bracketed.unwrap_or(host);
+    bare.strip_suffix('.').unwrap_or(bare).to_string()
+}

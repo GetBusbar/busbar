@@ -142,7 +142,29 @@ them). Each axis is blind to the other two; only the kernel composes them.
   cost unit naming the admission unit is a Cargo library cycle, refused by name. The topology is the
   cost unit's, the walk is the door's, and a memo of the walk is the door's too. It is a MOVE: 105
   of the 138 lines are the retiring engine's own by identity, and `busbar-core/src/cost.rs` falls
-  471 -> 292 in the same transaction. 100 % (non-equivalent)
+  471 -> 292 in the same transaction. The third is
+  **`busbar_unit_trust::net::{judge_literal, judge_host, LiteralRefusal}`** (66 measured lines):
+  the STRUCTURAL judgement of an UNRESOLVED authority. Everything the trust unit's net module held
+  before it judges a host that is about to be DIALLED — the name arms run, the name is resolved
+  exactly once, and every answered address is judged — which is why `judge_host_name` is names-only
+  and the address arms live in `judge_address`, behind a resolution. The host-vtable's URL-argument
+  slot is the other caller and it resolves NOTHING by design: a URL-shaped tool ARGUMENT is
+  attacker-influenced data travelling to an operator-chosen destination, the host is not the party
+  that will dial it, and a lookup there would be advisory at best (rebinding defeats it, since
+  nothing binds the answer to the upstream's connect) while turning the host into a
+  name-resolution oracle for whatever a model types. So that slot needs the address arms WITHOUT
+  the resolution, and until this face the unit could not serve it at all: handed only the name
+  judge it answers `Ok` for `169.254.169.254`, `10.0.0.1` and `[::ffff:127.0.0.1]`. It is a FACE
+  and not a move: `busbar-core/src/plane_host/guard.rs` gives up 21 lines against the 66 that
+  arrive, because the decision crossing into a unit brings its VOCABULARY with it — a unit reaches
+  `caps` and `contract` only and may not name the plugin ABI's `GuardClass`, so `LiteralRefusal`
+  and its `Display` are ~40 of the 66 and are exactly what lets the engine's remaining 8 lines be
+  an IDENTITY map rather than an interpretation. What is bought is that the tree holds ONE
+  structural judge instead of two: the arm order that makes the knob safe — metadata first and
+  unconditionally, obfuscated encodings next and also unconditionally, private addressing last
+  because it is the one a target opts into — is now written down once, in the crate whose step it
+  is, with cells pinning every input that distinguished the copies
+  (`docs/design/1.6.0-one-net-judge.md`). 100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
