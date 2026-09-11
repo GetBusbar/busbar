@@ -437,6 +437,11 @@ fn probe_load_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// in THIS process. `probe` is the caller's word — the flag — because mapping an image runs its
 /// `.init_array`, and listing a directory must never run what is in it.
 fn list_plugins_command(probe: bool) -> i32 {
+    // Imported once rather than spelled `busbar_plugin_loader::ProbeVerdict::...` at each of the
+    // three match arms: the kind-isolation matrix counts every naming of a plugin-tooling crate
+    // from this one, and three spellings of one dependency is three couplings where one will do.
+    use busbar_plugin_loader::ProbeVerdict;
+
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
@@ -524,17 +529,17 @@ fn list_plugins_command(probe: bool) -> i32 {
             String::new()
         };
         let status = match probed {
-            Some(busbar_plugin_loader::ProbeVerdict::Loads) => format!("LOADS{store_suffix}"),
+            Some(ProbeVerdict::Loads) => format!("LOADS{store_suffix}"),
             // The refusal is printed IN FULL, because the reason is the whole value: `dlopen
             // failed` and `cannot create private plugin staging dir /tmp/...: No such file or
             // directory` are two different operator actions, and a truncated verdict makes them
             // one.
-            Some(busbar_plugin_loader::ProbeVerdict::CannotLoad(e)) => {
+            Some(ProbeVerdict::CannotLoad(e)) => {
                 format!("CANNOT LOAD: {e}")
             }
             // Probed, but this row never reached the trust/ABI window — its own status already
             // says why, so repeating "not verified" here would bury it.
-            Some(busbar_plugin_loader::ProbeVerdict::NotVerified) => row.status.clone(),
+            Some(ProbeVerdict::NotVerified) => row.status.clone(),
             None if selected => format!("VERIFIED (not loaded; store.module: {store_ref})"),
             None if !plugins_cfg.enabled && row.status == "ready" => {
                 "ready (inert: plugins.enabled is false)".to_string()

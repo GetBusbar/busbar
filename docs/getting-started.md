@@ -102,7 +102,7 @@ chmod +x busbar
 ./busbar --version
 ```
 
-**Or use Docker**: a tiny `FROM scratch` image (the static binary plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size), cosign-signed with build provenance:
+**Or use Docker**: a small `debian:bookworm-slim` image (pinned by digest; the binary plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size), cosign-signed with build provenance:
 
 ```bash
 docker run -d -p 8080:8080 \
@@ -111,7 +111,7 @@ docker run -d -p 8080:8080 \
   getbusbar/busbar
 ```
 
-The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
+The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). If you use a durable store, give it a writable volume — see [busbar in Docker, with a plugin](#busbar-in-docker-with-a-plugin) below for the whole recipe.
 
 The `:ro` on that mount is deliberate, and it has one consequence worth knowing up front: Busbar keeps admin-API config changes in an overlay file written next to `config.yaml`, so a read-only config directory means there is nowhere to persist them. Busbar starts and serves traffic normally, logs a warning saying so, and refuses admin-API config mutations rather than applying a change that would silently revert on the next restart. That is the right default for a container you deploy from a file you version-control. If you want to drive this Busbar through the admin API instead, give the overlay a writable path:
 
@@ -124,6 +124,65 @@ docker run -d -p 8080:8080 \
 ```
 
 with `config.overlay.file: /var/lib/busbar/busbar-overlay.json` in your `config.yaml`. Or set `config.locked: true` to declare the read-only posture deliberately and silence the warning.
+
+### busbar in Docker, with a plugin
+
+The image ships with **zero plugins pre-installed** — store, auth and hook alike, no exceptions. To
+run a durable governance store (or any other plugin) in a container you mount the signed tarball and
+you set **all four** of these keys. Three of the four are the ones people miss:
+
+| key | value | why it is easy to get wrong |
+| --- | --- | --- |
+| `plugins.enabled` | `true` | off by default; with it off the tarball is inventoried and never loaded |
+| `plugins.dir` | `/etc/busbar/plugins` — **absolute** | a relative path resolves against the process's working directory, so the tarball you mounted is simply not found, and the failure reads like "busbar does not persist" |
+| `store.module` | the manifest's `alias` (or `name`), e.g. `sqlite` | not the filename and not the kind |
+| `store.settings.db_path` | `/var/lib/busbar/governance.db` — **on the volume** | a path anywhere else lives in the container's writable layer and dies with `docker rm` |
+
+```bash
+# the signed tarball, from the plugin's own releases (see docs/plugins.md)
+mkdir -p ./busbar-plugins && cp busbar-store-sqlite-*.tar.gz ./busbar-plugins/
+
+docker run -d -p 8080:8080 \
+  -e BUSBAR_ADMIN_TOKEN \
+  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
+  -v "$PWD/busbar-plugins:/etc/busbar/plugins:ro" \
+  -v busbar-data:/var/lib/busbar \
+  getbusbar/busbar
+```
+
+```yaml
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins          # ABSOLUTE
+store:
+  module: sqlite                    # the manifest alias
+  settings:
+    db_path: /var/lib/busbar/governance.db   # on the volume
+```
+
+**Pre-flight it first.** The image runs as uid `65532`, and `--probe-load` really loads each verified
+tarball inside the image and tells you so:
+
+```bash
+docker run --rm \
+  -v "$PWD/config.yaml:/etc/busbar/config.yaml:ro" \
+  -v "$PWD/busbar-plugins:/etc/busbar/plugins:ro" \
+  getbusbar/busbar --list-plugins --probe-load
+```
+
+A row that says `LOADS` really mapped. A bare `--list-plugins` says `VERIFIED (not loaded)`, because
+that is all it did. See [plugins.md](plugins.md#--probe-load-does-it-load-here).
+
+A **named volume** (`busbar-data` above) picks up the right ownership on its own. A **bind mount**
+carries the host directory's, so `chown 65532:65532 ./data` first — otherwise SQLite's `open()`
+fails and the message is about the database rather than about the mount.
+
+> **On `getbusbar/busbar:1.5.5` and earlier this recipe does not work**, and the workaround is to
+> pin `1.6.0` or later. Those images were `FROM scratch` over a statically linked binary, and a
+> static binary's `dlopen` always fails — so no plugin of any kind could load in them, whatever you
+> mounted. Their own `--list-plugins` reported `LOADS` for the tarball anyway. Until you can move,
+> run busbar from the release tarball (the `*-unknown-linux-gnu` assets are dynamically linked and
+> load plugins normally) rather than from the 1.5.x image.
 
 **Or build from source** (requires Rust 1.97+):
 

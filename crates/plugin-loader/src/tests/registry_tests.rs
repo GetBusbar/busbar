@@ -6,7 +6,7 @@
 use super::*;
 use busbar_plugin_sign::{sign, SigningKey};
 
-fn key(seed: u8) -> SigningKey {
+pub(crate) fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
@@ -125,7 +125,7 @@ fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
     }
 }
 
-fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
+pub(crate) fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
         alias: alias.into(),
@@ -145,7 +145,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     }
 }
 
-fn policy(first_party: &SigningKey) -> TrustPolicy {
+pub(crate) fn policy(first_party: &SigningKey) -> TrustPolicy {
     TrustPolicy {
         first_party_key: Some(first_party.verifying_key()),
         binary_version: "1.5.0".into(),
@@ -158,7 +158,7 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
     }
 }
 
-fn tmpdir(tag: &str) -> PathBuf {
+pub(crate) fn tmpdir(tag: &str) -> PathBuf {
     // `pid + tag` is already unique across today's 13 call sites (each passes a distinct
     // literal tag), but a clock read is not a monotonic ticket — two threads on two cores can
     // observe the same `SystemTime::now()` value, and routinely do on a coarse-clock platform.
@@ -173,7 +173,7 @@ fn tmpdir(tag: &str) -> PathBuf {
     d
 }
 
-fn write_tarball(dir: &Path, file: &str, m: &Manifest, lib: &[u8]) {
+pub(crate) fn write_tarball(dir: &Path, file: &str, m: &Manifest, lib: &[u8]) {
     let bytes = tarball::package(m, "lib.so", lib).unwrap();
     std::fs::write(dir.join(file), bytes).unwrap();
 }
@@ -982,44 +982,6 @@ fn a_ready_row_whose_bytes_are_not_a_library_probes_cannot_load() {
             "a `ready` row whose bytes are not a library must probe CannotLoad, got {other:?}"
         ),
     }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// THE PROBE CAN SAY YES, AND IT SAYS IT FOR A HOOK — not a store. `probe_load` maps an image and
-/// nothing else, so a store plugin and a hook plugin are loaded by identical means; proving the
-/// positive over the HOOK cdylib is what keeps "every plugin kind loads the same way" from being a
-/// claim about the store path with the other five assumed. A probe that could only ever answer
-/// `CannotLoad` would pass the sibling test above while being useless, so this is the other half.
-#[test]
-fn a_real_cdylib_probes_loads_for_a_hook_just_as_for_a_store() {
-    let Some(cdylib) = crate::hook::tests::hook_plugin_path() else {
-        eprintln!("skip: hook test plugin cdylib not built (run under --workspace)");
-        return;
-    };
-    let bytes = std::fs::read(&cdylib).expect("read the hook test plugin cdylib");
-    let release = key(1);
-    let dir = tmpdir("probe-real-cdylib");
-    let mut m = manifest("busbar-hook-test-plugin", "test-hook", "busbar");
-    m.kind = "hook".into();
-    m.abi_version = busbar_plugin::cold::hook::HOOK_ABI_VERSION;
-    let m = sign(&release, m, &bytes);
-    write_tarball(&dir, "hook.tar.gz", &m, &bytes);
-
-    let rows = inventory(&dir, &policy(&release));
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].status, "ready", "{rows:?}");
-    assert_eq!(
-        rows[0].probe_load(),
-        ProbeVerdict::Loads,
-        "a real cdylib, staged and dlopen'd in this process, must probe Loads"
-    );
-    // TWICE. The probe unloads what it mapped and releases its staging; a second probe that failed
-    // would mean the first left the process changed, which is the one thing a pre-flight may not do.
-    assert_eq!(
-        rows[0].probe_load(),
-        ProbeVerdict::Loads,
-        "probing is repeatable: the first probe must leave the process as it found it"
-    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

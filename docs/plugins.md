@@ -677,7 +677,7 @@ the published docs site, so a relative path resolves in a checkout and 404s for 
 $ busbar --list-plugins
 plugins dir: plugins (plugins.enabled: true)
 FILE                               NAME                        ALIAS    KIND   VERSION   SIGNATURE                STATUS
-busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey-plugin  valkey   store  1.5.0     first-party              LOADS (store.module: valkey)
+busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey-plugin  valkey   store  1.5.0     first-party              VERIFIED (not loaded; store.module: valkey)
 busbar-store-sqlite-1.5.0.tar.gz   busbar-store-sqlite-plugin  sqlite   store  1.5.0     first-party              ready
 acme-store-dynamo-1.0.0.tar.gz     acme-store-dynamo           dynamo   store  1.0.0     unknown-publisher        SKIPPED: publisher 'acme' is not in the allowlist; ...
 old-valkey.tar.gz                  busbar-store-valkey-plugin  valkey   store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
@@ -685,9 +685,40 @@ broken.tar.gz                      -                           -        -      -
 ```
 
 `--list-plugins` is manifest-only: it never loads plugin code, so it is safe to run against a
-directory full of untrusted artifacts. `busbar --validate` is the gate: it validates
-`config.yaml`, `providers.yaml`, and every plugin manifest (structure, signature and trust,
-conflicts, ABI, version floors) with zero side effects, exiting 0 only when boot would succeed.
+directory full of untrusted artifacts — and it says so. A verified row reads **`VERIFIED (not
+loaded)`**, because the signature, the trust policy and the declared ABI are all that were checked.
+Whether the library inside can actually be mapped into *this* process, on *this* libc, in *this*
+container is a different question, and only a `dlopen` answers it.
+
+### `--probe-load`: does it load *here*?
+
+```sh
+$ busbar --list-plugins --probe-load
+plugins dir: /etc/busbar/plugins (plugins.enabled: true)
+FILE                               NAME                        ALIAS    KIND   VERSION   SIGNATURE                STATUS
+busbar-headroom-2.0.7-...tar.gz    busbar-headroom             headroom hook   2.0.7     first-party              LOADS
+busbar-store-sqlite-1.0.6-...tar.gz busbar-store-sqlite-plugin sqlite   store  1.0.6     first-party              LOADS (store.module: sqlite)
+```
+
+`--probe-load` stages each **verified** row's bytes exactly as boot does and `dlopen`s them in this
+process, then unloads again. Only then may a row read `LOADS`; one that cannot reads `CANNOT LOAD:`
+followed by the loader's own words. It is the pre-flight to run before a deploy, and especially
+before a *container* deploy: it is the one form that answers "will a plugin load on this machine"
+rather than "is this tarball signed".
+
+It is **opt-in**, and it must be: mapping a library runs its initialiser, which is plugin code. A
+row the trust policy refused is therefore never probed — it carries no verified bytes and reports
+its own skip reason instead.
+
+> **Why the flag exists.** Through 1.5.5 a verified store row printed `LOADS`, off the signature
+> check alone. The published `getbusbar/busbar:1.5.5` container printed exactly that for the SQLite
+> tarball and then refused to boot with `dlopen failed`: its binary was statically linked, and a
+> static musl binary's `dlopen` always fails. An operator who ran the pre-flight was told yes and
+> then refused. The verdict that names a load now comes from one.
+
+`busbar --validate` is the gate: it validates `config.yaml`, `providers.yaml`, and every plugin
+manifest (structure, signature and trust, conflicts, ABI, version floors) with zero side effects,
+exiting 0 only when boot would succeed. Like a bare `--list-plugins`, it loads nothing.
 
 The admin API exposes the same manifest-only catalog (`GET /api/v1/admin/plugins?type=store`) and
 can install or remove tarballs remotely through the identical trust gate; see

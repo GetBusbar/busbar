@@ -792,3 +792,41 @@ async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
         "a freed slot must let the next call through"
     );
 }
+
+/// THE PROBE CAN SAY YES, AND IT SAYS IT FOR A HOOK — not a store. `probe_load` maps an image and
+/// nothing else, so a store plugin and a hook plugin are loaded by identical means; proving the
+/// positive over the HOOK cdylib is what keeps "every plugin kind loads the same way" from being a
+/// claim about the store path with the other five assumed. A probe that could only ever answer
+/// `CannotLoad` would pass the sibling test above while being useless, so this is the other half.
+#[test]
+fn a_real_cdylib_probes_loads_for_a_hook_just_as_for_a_store() {
+    let Some(cdylib) = hook_plugin_path() else {
+        eprintln!("skip: hook test plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let bytes = std::fs::read(&cdylib).expect("read the hook test plugin cdylib");
+    let release = crate::registry::tests::key(1);
+    let dir = crate::registry::tests::tmpdir("probe-real-cdylib");
+    let mut m = crate::registry::tests::manifest("busbar-hook-test-plugin", "test-hook", "busbar");
+    m.kind = "hook".into();
+    m.abi_version = busbar_plugin::cold::hook::HOOK_ABI_VERSION;
+    let m = busbar_plugin_sign::sign(&release, m, &bytes);
+    crate::registry::tests::write_tarball(&dir, "hook.tar.gz", &m, &bytes);
+
+    let rows = crate::registry::inventory(&dir, &crate::registry::tests::policy(&release));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].status, "ready", "{rows:?}");
+    assert_eq!(
+        rows[0].probe_load(),
+        crate::ProbeVerdict::Loads,
+        "a real cdylib, staged and dlopen'd in this process, must probe Loads"
+    );
+    // TWICE. The probe unloads what it mapped and releases its staging; a second probe that failed
+    // would mean the first left the process changed, which is the one thing a pre-flight may not do.
+    assert_eq!(
+        rows[0].probe_load(),
+        crate::ProbeVerdict::Loads,
+        "probing is repeatable: the first probe must leave the process as it found it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

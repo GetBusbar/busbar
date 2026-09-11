@@ -458,17 +458,51 @@ cannot open refuses boot, loudly, exit 1, with the reason named — there is no 
 an in-memory ledger. That was proven for one backend; it is now proven for all four, against the
 published mysql, postgres and valkey tarballs as well as sqlite.
 
-**The `docker run` recipe in the Dockerfile does not work, and did not work in 1.5.5 either.** The
-published image is `FROM scratch` and its busbar is dynamically linked, so a plugin — which is a
-shared library loaded with `dlopen` — cannot be loaded inside it at all. Dropping a signed tarball
-into `/etc/busbar/plugins` and mounting a volume for the SQLite file, exactly as the Dockerfile's
-header describes, ends in `plugin load failed: ... dlopen failed` and a refusal to start. Busbar is
-right to refuse; the image is what is wrong. **Until the image ships what a `dlopen` needs, run
-busbar from the release tarball if you want a durable governance store** — the binary is the same
-one that is in the image, and every store plugin loads under it. Worse, the image's own
-`--list-plugins` reports `STATUS: LOADS` for the tarball that then fails, so the obvious pre-flight
-check does not warn you. Both are pinned by an oracle cell now, so the day the image can load a
-plugin is a day something changes colour.
+**The container image can load a plugin. Through 1.5.5 it could not load any plugin of any kind.**
+
+`getbusbar/busbar:1.5.5` and every image before it were `FROM scratch` over a *statically linked*
+binary — an `ELF ... static-pie linked` with no interpreter at all, built for
+`*-unknown-linux-musl` with `crt-static`. A busbar plugin is a cdylib and loading one is a `dlopen`,
+and musl's **static** libc provides `dlopen` only as a stub that always refuses. So dropping a
+signed tarball into `/etc/busbar/plugins` and mounting a volume for the SQLite file — exactly as the
+Dockerfile's own header described — ended in `plugin load failed: ... dlopen failed` and a refusal
+to start. Busbar was right to refuse; the image was what was wrong.
+
+It was not the container. The same binary, lifted onto a full glibc host with a real `/tmp`, an
+absolute `plugins.dir`, and a plugin whose every `NEEDED` library `ldd` resolves, still said `dlopen
+failed`. The missing `/tmp` in the image (`cannot create private plugin staging dir /tmp/...`) was a
+red herring hiding the real cause. And every plugin GetBusbar publishes is a `*-unknown-linux-gnu`
+cdylib needing `libc.so.6` and `ld-linux-*.so.2`, so even a *dynamic* musl image could not have
+loaded one.
+
+Two things therefore changed together in 1.6.0, and neither alone would have been enough: the image
+binary is now built for `*-unknown-linux-gnu` and is dynamically linked, and the base is
+`debian:bookworm-slim` pinned by digest, which carries the loader and glibc it needs. The image
+keeps `USER 65532:65532`, gains a real passwd entry for it, declares `/var/lib/busbar` a volume
+owned by it, and ships `/etc/busbar/plugins` so the documented mount lands somewhere. **It costs
+size**: roughly 20 MB before, roughly 150 MB after. That is the price of an image that can run the
+software it ships, and it is stated rather than hidden.
+
+Two gates keep it true. The Dockerfile itself **refuses to build** over a binary whose `ldd` does
+not name `libc.so.6`, printing the reason — the check that would have stopped 1.5.5. And every push
+runs `scripts/image-loads-plugins.sh` against an image built from the tree, which asserts that a
+**store** plugin and a **hook** plugin both load in it (two kinds, because an image that loads one
+and not the other has a kind-specific runtime), and that a key minted in one container reads back
+`200` from a *different* container over the same `/var/lib/busbar` volume.
+
+**`--list-plugins` no longer reports `LOADS` for a plugin it never tried to load.** That verdict was
+printed off the signature/ABI check alone, which is how the 1.5.5 image told operators
+`STATUS: LOADS (store.module: sqlite)` about the very tarball its next boot refused. A verified row
+now reads `VERIFIED (not loaded; store.module: <ref>)`, and the new **`busbar --list-plugins
+--probe-load`** really `dlopen`s each verified tarball in this process and unloads it again — only
+that form may print `LOADS`, and a row that cannot prints `CANNOT LOAD:` with the loader's own
+words. It is opt-in because mapping a library runs its initialiser; a row the trust policy refused
+is never probed.
+
+**If you are still on 1.5.5 or earlier**, the workaround stands: no plugin will load in those
+images, whatever you mount, and the image's own pre-flight will not warn you. Run busbar from the
+release tarball instead — the `*-unknown-linux-gnu` assets have always been dynamically linked and
+load every published plugin — or move to 1.6.0.
 
 **`store-sqlite` is a required part of the release gate.** It is the store this project's own
 Dockerfile recommends by name, and its gate phase needs no container, so a release can no longer be

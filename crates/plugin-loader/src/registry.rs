@@ -835,4 +835,6 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
 
 #[cfg(test)]
 #[path = "tests/registry_tests.rs"]
-mod tests;
+// `pub(crate)` so hook's own probe test can build a tarball with THESE helpers rather than a second
+// copy of them. One fixture builder, so a signed-tarball fixture cannot drift between two modules.
+pub(crate) mod tests;
