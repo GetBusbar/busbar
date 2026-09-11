@@ -243,13 +243,13 @@ because = """`busbar-caps` gains `BodyLease`, `Completion` and `CompletedUnits`:
 
 [gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
 from = 14606
-to = 14623
-because = """+17 in `busbar-unit-egress`: `Delivered` gains the body lease and the completion, and the relay counts bytes off `FrameMeta::bytes` as the frames go past. The unit still reads no body — it hands each frame to the plane's codec and counts — which is the claim this widening could have broken and did not."""
+to = 14624
+because = """+18 in `busbar-unit-egress`: `Delivered` gains the body lease and the completion, and the relay counts bytes off `FrameMeta::bytes` as the frames go past. The unit still reads no body — it hands each frame to the plane's codec and counts — which is the claim this widening could have broken and did not."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23623
-to = 23746
-because = """The same two landings seen from the union: the record's 114, then this landing's 45 + 61 + 17. `caps_contract_ceiling` did not move for the record — it is the loop's own value — and it does move here, for the one thing both the kernel and the egress unit have to name. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
+to = 23747
+because = """The same two landings seen from the union: the record's 114, then this landing's 45 + 61 + 18. `caps_contract_ceiling` did not move for the record — it is the loop's own value — and it does move here, for the one thing both the kernel and the egress unit have to name. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
@@ -273,6 +273,18 @@ file = "qa/kind-isolation.toml"
 from = 55
 to = 56
 because = """`busbar-unit-egress` x `contract-transport`, +1, in the cell that relays a body larger than the per-unit arena and asserts the outcome carries the count and none of the bytes. It names the transport-facing status class its scripted frames carry, which is the same name every other cell in this unit's battery already names."""
+
+[gate.ceiling_raises."cell.2.count"]
+file = "qa/kind-isolation.toml"
+from = 299
+to = 300
+because = """`busbar` x `caps`, +1, in the cell that drives a recorded golden through the plane's own face: the outcome the encode step answers with is opened against the step's own token, which is this kind's and is exactly what makes a cell unable to read back an answer it never asked for."""
+
+[gate.ceiling_raises."cell.5.count"]
+file = "qa/kind-isolation.toml"
+from = 1062
+to = 1077
+because = """`busbar` x `control`, +15 against the tip this line is stacked on. The served leg starts calling the CONTRACT'S plane face — `decode_ingress` for the request line, `encode_response` for the bytes that leave — instead of reaching around it to the plane's own verb table, which is what gave `busbar_contract::Plane` its first production caller in this tree: sixteen declared methods, five implementors, and until now every `&dyn Plane` binding anywhere was an egress-unit or object-safety fixture. The plane arrives as `Arc<dyn Plane>` on the binding, so every call site names the FACE and none names a dialect; what is counted is the ONE construction of it in the composition root — the one place entitled to know which plane this is — plus the prose that explains it and the cell that measures it against a recorded golden. The root is the only crate in the tree this edge is normal for."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -503,10 +515,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3541
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14623
+unit_total_ceiling = 14624
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23746
+union_ceiling = 23747
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

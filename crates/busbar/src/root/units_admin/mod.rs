@@ -1133,6 +1133,14 @@ pub struct AdminBinding {
     pub posture: Arc<dyn PostureView>,
     /// The requests currently being walked.
     pub units: AdminUnits,
+    /// THE PLANE, AS A FACE. What bytes mean on this surface, reached through the contract's own
+    /// sixteen-method trait and never through this plane's own type.
+    ///
+    /// It is `&dyn Plane` at every call site below, which is the whole point: the steps read an
+    /// operation class off `decode_ingress` and render an answer through `encode_response`, and
+    /// neither line names a dialect, a verb table or a plane. The composition root is the one place
+    /// entitled to know WHICH plane this is, so it is the one place that says so.
+    pub plane: Arc<dyn busbar_contract::Plane>,
 }
 
 /// Where the two sealed gates a money-governance verb is checked against are read from.
@@ -1204,6 +1212,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
+            plane: Arc::new(busbar_plane_admin::AdminPlane::new()),
         }
     }
 
@@ -1342,12 +1351,100 @@ pub(crate) fn decode(
     let Some(request) = binding.units.request(ctx.key()) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
     };
-    match busbar_plane_admin::verbs::resolve(&request.method, &request.path) {
-        None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
-        Some(resolved) => {
-            binding.units.set_verb(ctx.key(), resolved);
-            Decision::proceed(token, resolved.op_class())
+    // THE PLANE READS THE BYTES, through the contract's own face and over the context the loop
+    // built for this unit. What this step used to do was ask the plane's verb table directly — the
+    // same closed table `decode_ingress` walks, reached around the face rather than through it — so
+    // the sixteen methods every plane in this tree implements had, on the served path, no caller at
+    // all. The operation class below is the plane's own answer and the arena it is resolved over is
+    // the unit's own 4 KiB.
+    let envelope = ingress_envelope(&request);
+    let carried = [ingress_frame(&envelope)];
+    let mut cursor = busbar_contract::FrameCursor::new(&carried);
+    let read = binding
+        .plane
+        .decode_ingress(&mut cursor, None, ctx.ctx())
+        .map_err(|failure| match failure {
+            // An arena that ran out is a budget and not a misread body, and the two are owed
+            // different answers.
+            busbar_contract::wire::Decode::Oversize => ReasonCode::ArenaBudget,
+            _ => ReasonCode::DecodeFailed,
+        });
+    let op = match read {
+        Err(reason) => return Decision::refuse(token, Refusal::new(reason)),
+        // Every unit of this plane is complete in one frame: the administrative claim declares no
+        // handshake and opens no session, so an answer of any other shape is a plane whose shape
+        // changed and is refused rather than carried on as a unit nothing decoded.
+        Ok(busbar_contract::plane::Ingress::OneShot(draft)) => draft.op,
+        Ok(_) => return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+    };
+    // The kernel verb the row names is still resolved here, and it is not a second reading of the
+    // body: the request LINE is the unit's destination on this plane, the destination is decided at
+    // Route, and Route needs the row rather than the class. The two come off the same closed table,
+    // which is what makes them incapable of disagreeing.
+    let Some(resolved) = busbar_plane_admin::verbs::resolve(&request.method, &request.path) else {
+        return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+    };
+    binding.units.set_verb(ctx.key(), resolved);
+    Decision::proceed(token, op)
+}
+
+/// The request, as the plane's ingress envelope spells it.
+///
+/// The plane reads a request LINE out of an envelope; a transport delivers a method, a target and a
+/// body. Composing the one from the other is the composition root's job and nobody else's — a plane
+/// may not name a transport and a transport may not name a plane — so it is done here, once.
+///
+/// THE BODY IS DELIBERATELY NOT IN IT, and the omission is the safe one rather than the lazy one.
+/// The plane declares one representative body field for a documented subset of mutation verbs and
+/// says in its own words that a verb the table does not cover "simply carries no extra body fact,
+/// which is a visible omission rather than a silently wrong one". Splicing the request body in
+/// would buy those facts — which nothing on this path reads yet — at the price of an envelope that
+/// a MALFORMED body could make unparseable, and an unparseable envelope is a decode refusal for a
+/// request the closed table resolves perfectly well. A caller who sent bad JSON to an operation is
+/// owed that operation's own answer, not a different one from a step that never used to look.
+fn ingress_envelope(request: &AdminRequest) -> Vec<u8> {
+    let mut out = String::from("{\"method\":\"");
+    push_json_escaped(&mut out, &request.method);
+    out.push_str("\",\"path\":\"");
+    push_json_escaped(&mut out, &request.path);
+    out.push_str("\"}");
+    out.into_bytes()
+}
+
+/// One string value, escaped as JSON's own grammar spells it.
+///
+/// Written out rather than reached for, because the root carries no serialiser in production and
+/// this is two members of one flat object. The escapes are JSON's whole closed set for a string:
+/// the quote, the backslash, the five named controls, and everything else below `0x20` as `\u00XX`.
+fn push_json_escaped(out: &mut String, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
+    }
+}
+
+/// One inbound frame carrying the envelope, as the plane's cursor is handed it.
+fn ingress_frame(envelope: &[u8]) -> busbar_contract::Frame {
+    busbar_contract::Frame {
+        direction: busbar_contract::Direction::Inbound,
+        stream: busbar_contract::StreamId(0),
+        bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(envelope)),
+        meta: busbar_contract::FrameMeta {
+            bytes: envelope.len() as u64,
+            transport_units: None,
+            status: None,
+            status_code: None,
+            retry_after_secs: None,
+        },
     }
 }
 
@@ -1968,11 +2065,37 @@ pub(crate) fn encode(
     ctx: &UnitRecord<'_>,
     _outcome: &Outcome,
 ) -> Decision<Encode> {
-    let bytes = binding
+    let answered = binding
         .units
         .answer(ctx.key())
         .map(|answer| answer.body)
         .unwrap_or_default();
+    // THE PLANE WRITES THE BYTES THAT LEAVE, through the contract's own face. This plane's response
+    // encoder is a verbatim pass-through: the answer is the executing verb's own bytes, they
+    // already live for the unit, and borrowing them is both cheaper than copying and the only
+    // thing that works — the arena is 4 KiB and `openapi.json` alone is over 350 KB.
+    //
+    // THE `verb` FACT IS NOT STAMPED, and that is a decision with a recorded byte behind it. The
+    // plane declares ONE exception to the pass-through: where a response carries a `verb` fact
+    // naming the OpenAPI document, it substitutes `info.version` for the PLANE's version. The
+    // executing unit's own rendering is what the recorded cell holds, so stamping the fact here
+    // would move `admin.ops|GetOpenapiJson|ok`'s body — a recorded byte, changed by a landing whose
+    // whole claim is that none moves. The plane's own documented default for an absent fact is the
+    // pass-through, and the pass-through is what this takes. Whoever wants the substitution owes
+    // the recording that goes with it.
+    //
+    // A refusal from the encoder falls back to the answer as it stands, which is the kernel's own
+    // minimal rendering and the same bytes this step handed back before the face was called at all.
+    let ir = busbar_contract::bounded::Ir::new(&answered, &[]);
+    let response = busbar_contract::plane::Response {
+        ir,
+        finish: busbar_contract::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    let bytes = binding
+        .plane
+        .encode_response(&response, None, ctx.ctx())
+        .map_or_else(|_| answered.clone(), |out| out.as_slice().to_vec());
     Decision::proceed(
         token,
         busbar_contract::Frame {

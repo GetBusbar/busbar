@@ -2876,3 +2876,103 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
+
+/// THE MOUNTED LEG ANSWERS A RECORDED REQUEST BYTE-IDENTICAL, THROUGH THE PLANE'S OWN FACE.
+///
+/// `busbar_contract::Plane` declares sixteen methods, five planes in this tree implement every one
+/// of them, and until this landing the served path called NONE: the only `&dyn Plane` bindings
+/// anywhere were in the egress unit and in an object-safety fixture, so the contract's codec face
+/// had zero production callers. The admin leg is the one plane already in the Teller loop, so it is
+/// the one that can be put through the face first.
+///
+/// Both halves are here, and the second is the one with a recorded byte behind it.
+///
+/// **Ingress.** The step used to ask the plane's verb TABLE directly — the same closed table
+/// `decode_ingress` walks, reached around the face rather than through it. It now composes the
+/// envelope the plane reads a request line out of and asks the plane. The class it answers is the
+/// class the table names, because `decode_ingress` and `resolve` run the same `find_verb`; every
+/// other admin cell in this file already drives the new path, because the fixture builder calls
+/// `decode` to put the verb in the table.
+///
+/// **Egress.** The answer is the executing verb's own bytes and the plane's response encoder is a
+/// verbatim pass-through, so this asserts the thing that would actually break: what leaves the
+/// encode step is the recorded cell's body, byte for byte, with nothing re-rendered, re-serialised
+/// or re-ordered on the way through the face. The bytes compared against are the ORACLE's own
+/// recording of the published binary's answer, read out of the golden tree here and not restated.
+///
+/// THE ONE BYTE THAT WOULD HAVE MOVED, named because a landing that claims none must say where the
+/// risk was. The plane declares a single exception to the pass-through: where the response carries
+/// a `verb` fact naming the OpenAPI document, it substitutes `info.version` for the PLANE's own
+/// version. The recorded cell holds the EXECUTING unit's rendering. So the encode step does not
+/// stamp that fact — the plane's own documented default for an absent one is the pass-through —
+/// and `admin.ops|GetOpenapiJson|ok` is unmoved. Whoever wants the substitution owes the recording.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_mounted_leg_answers_a_recorded_golden_through_the_planes_own_face() {
+    const GOLDEN: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetAdminAuth__ok.json"
+    ));
+    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let recorded = serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+
+    let mut request = a_request();
+    request.method = "GET".to_string();
+    request.path = "/api/v1/admin/admin-auth".to_string();
+    let (binding, ctx, seal) = a_bound_unit(request);
+    crate::open_record!(record, &ctx);
+
+    // INGRESS, through the face: the plane read the request line and named the class.
+    let op = decode(&binding, &UnitToken::mint(&seal), &record)
+        .into_result(&seal)
+        .expect("the plane decodes a request line the closed table declares");
+    let resolved = binding
+        .units
+        .verb(ctx.key)
+        .expect("and the same table names the kernel verb the unit routes to");
+    assert_eq!(
+        op,
+        resolved.op_class(),
+        "the class the plane answered is the class the row it resolved prices under"
+    );
+
+    // AND IT READ THIS REQUEST LINE, not a request line. The closed split has two sides, so a
+    // second unit on the mutating side is what says the answer above came off the bytes rather
+    // than off anything constant: fix the envelope's path to any one operation and this reds while
+    // the read above still passes.
+    let mut mutating = a_request();
+    mutating.method = "POST".to_string();
+    mutating.path = "/api/v1/admin/operator-key".to_string();
+    let (write_binding, write_ctx, write_seal) = a_bound_unit(mutating);
+    crate::open_record!(write_record, &write_ctx);
+    let write_op = decode(&write_binding, &UnitToken::mint(&write_seal), &write_record)
+        .into_result(&write_seal)
+        .expect("the plane decodes the mutating row too");
+    assert_ne!(
+        write_op, op,
+        "a write and a read are not one class, and the plane read which of them arrived"
+    );
+
+    // EGRESS, through the face: the recorded answer goes in and the recorded answer comes out.
+    binding.units.set_answer(
+        ctx.key,
+        AdminAnswer {
+            status: cell["status"].as_u64().expect("the cell records a status") as u16,
+            headers: Vec::new(),
+            body: recorded.clone(),
+        },
+    );
+    let frame = encode(
+        &binding,
+        &UnitToken::mint(&seal),
+        &record,
+        &busbar_caps::Outcome::Completed,
+    )
+    .into_result(&seal)
+    .expect("the encode step answers");
+    assert_eq!(
+        frame.bytes.as_slice(),
+        recorded.as_slice(),
+        "the bytes that leave are the recorded answer's bytes, through the plane's own encoder"
+    );
+}
