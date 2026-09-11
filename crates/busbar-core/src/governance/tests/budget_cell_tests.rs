@@ -14,7 +14,7 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
     let tok = |n: u64| -> std::collections::BTreeMap<String, u64> {
         let mut m = std::collections::BTreeMap::new();
         if n != 0 {
-            m.insert(busbar_api::UNIT_INPUT.to_string(), n);
+            m.insert(busbar_contract::DIM_TOKENS_IN.to_string(), n);
         }
         m
     };

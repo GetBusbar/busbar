@@ -18,18 +18,14 @@ use std::collections::BTreeMap;
 /// multiplier that takes a configured cent cap back into the nano-units a hold is sized in.
 pub const NANOS_PER_CENT: u128 = 10_000_000;
 
-/// The uncached input token key.
-pub const UNIT_INPUT: &str = "input";
-/// The output token key.
-pub const UNIT_OUTPUT: &str = "output";
-/// The cache-read token key — a prompt read back from cache, priced apart from uncached input.
-pub const UNIT_CACHE_READ: &str = "cache_read";
-/// The cache-write (cache creation) token key.
-pub const UNIT_CACHE_WRITE: &str = "cache_write";
-
-/// The four reserved token keys, in canonical order. A ledger map may carry other keys; only
-/// these four price through the rate table.
-pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
+// **A FIFTH COPY OF THE FOUR NAMES, DELETED.** `DIM_TOKENS_IN` and its three siblings and
+// `TOKEN_DIMENSIONS` were `pub const`s here — a fourth spelling of what the store spelled, what the
+// card spelled, and what the planes DECLARE. The names belong to the declaration and are taken
+// from `busbar_contract::ids`, which is already in this crate's compiled closure through the
+// capability crate.
+use busbar_contract::ids::{
+    DIM_CACHE_READ, DIM_CACHE_WRITE, DIM_TOKENS_IN, DIM_TOKENS_OUT, TOKEN_DIMENSIONS,
+};
 
 /// Saturating sum of every count in a keyed unit map — the scalar "total tokens" view over a
 /// ledger cell's per-model counters.
@@ -86,10 +82,10 @@ impl RateNanos {
     #[inline]
     pub fn reserved_rate(&self, unit: &str) -> u64 {
         match unit {
-            UNIT_INPUT => self.input,
-            UNIT_OUTPUT => self.output,
-            UNIT_CACHE_READ => self.cache_read,
-            UNIT_CACHE_WRITE => self.cache_write,
+            DIM_TOKENS_IN => self.input,
+            DIM_TOKENS_OUT => self.output,
+            DIM_CACHE_READ => self.cache_read,
+            DIM_CACHE_WRITE => self.cache_write,
             _ => 0,
         }
     }
@@ -106,7 +102,7 @@ impl RateNanos {
     /// one level lower so no layer of the money fold is the exception.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_UNITS.iter().fold(0u128, |acc, u| {
+        TOKEN_DIMENSIONS.iter().fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
             let amount = u128::from(n).saturating_mul(u128::from(self.reserved_rate(u)));
             acc.saturating_add(amount)

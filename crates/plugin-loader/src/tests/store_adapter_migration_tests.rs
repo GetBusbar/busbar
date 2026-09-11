@@ -19,6 +19,8 @@
 //! store from the oracle cache, which skips when the cache is cold.
 
 use super::store_adapter_tests::cached_published_sqlite_tarball;
+use busbar_api::{UNIT_INPUT, UNIT_OUTPUT};
+
 use super::*;
 use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
 use busbar_api::{
@@ -250,7 +252,7 @@ impl AbiStore for EveryBucketHoldsTheSame {
         Ok(UsageLedger {
             requests: 2,
             billable_requests: 1,
-            models: vec![model("gpt-4", &[("input", 10)])],
+            models: vec![model("gpt-4", &[(UNIT_INPUT, 10)])],
         })
     }
     fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> StoreResult<()> {
@@ -343,8 +345,8 @@ fn a_serving_store() -> Arc<SeededRows> {
             requests: 512,
             billable_requests: 500,
             models: vec![
-                model("gpt-4", &[("input", 6_000), ("output", 2_500)]),
-                model("claude", &[("input", 500)]),
+                model("gpt-4", &[(UNIT_INPUT, 6_000), (UNIT_OUTPUT, 2_500)]),
+                model("claude", &[(UNIT_INPUT, 500)]),
             ],
         },
     );
@@ -354,7 +356,7 @@ fn a_serving_store() -> Arc<SeededRows> {
         UsageLedger {
             requests: 3,
             billable_requests: 3,
-            models: vec![model("gpt-4", &[("input", 40)])],
+            models: vec![model("gpt-4", &[(UNIT_INPUT, 40)])],
         },
     );
     store.seed_metering(WINDOW, metering_row("vk_a", "gpt-4", "openai"));
@@ -415,7 +417,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
         opened(
             totals,
             "vk_a",
-            CapDimension::Class("input".into()),
+            CapDimension::Class(UNIT_INPUT.into()),
             BucketScope::Pool("lane:gpt-4".into())
         )
         .settled,
@@ -425,7 +427,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
         opened(
             totals,
             "vk_a",
-            CapDimension::Class("output".into()),
+            CapDimension::Class(UNIT_OUTPUT.into()),
             BucketScope::Pool("lane:gpt-4".into())
         )
         .settled,
@@ -435,7 +437,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
         opened(
             totals,
             "vk_a",
-            CapDimension::Class("input".into()),
+            CapDimension::Class(UNIT_INPUT.into()),
             BucketScope::Pool("lane:claude".into())
         )
         .settled,
@@ -445,7 +447,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
         opened(
             totals,
             "vk_b",
-            CapDimension::Class("input".into()),
+            CapDimension::Class(UNIT_INPUT.into()),
             BucketScope::Pool("lane:gpt-4".into())
         )
         .settled,
@@ -460,7 +462,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
             opened(
                 totals,
                 "vk_a",
-                CapDimension::Class("input".into()),
+                CapDimension::Class(UNIT_INPUT.into()),
                 pool.clone()
             )
             .settled,
@@ -672,7 +674,7 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
         UsageLedger {
             requests: 0,
             billable_requests: 0,
-            models: vec![model("gpt-4", &[("input", 100)])],
+            models: vec![model("gpt-4", &[(UNIT_INPUT, 100)])],
         },
     );
     store.seed_metering(
@@ -817,7 +819,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             &UsageLedger {
                 requests: 21,
                 billable_requests: 20,
-                models: vec![model("gpt-4", &[("input", 1_234), ("output", 56)])],
+                models: vec![model("gpt-4", &[(UNIT_INPUT, 1_234), (UNIT_OUTPUT, 56)])],
             },
         )
         .expect("the published wire takes a token ledger");
@@ -856,7 +858,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
         opened(
             &opening.checkpoint.totals,
             "vk_sqlite",
-            CapDimension::Class("input".into()),
+            CapDimension::Class(UNIT_INPUT.into()),
             BucketScope::Pool("lane:gpt-4".into())
         )
         .settled,
@@ -867,7 +869,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
         opened(
             &opening.checkpoint.totals,
             "vk_sqlite",
-            CapDimension::Class("input".into()),
+            CapDimension::Class(UNIT_INPUT.into()),
             BucketScope::Pool("meter:gpt-4/openai".into())
         )
         .settled,

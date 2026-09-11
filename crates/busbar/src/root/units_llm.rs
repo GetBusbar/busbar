@@ -666,16 +666,14 @@ impl LlmNode {
 
 /// The declared classes this root's card reserves, in the order a line sequence is written in.
 ///
-/// The four names and their sequence are read off [`busbar_unit_cost::RESERVED_CLASSES`] — the one
+/// The four names and their sequence are read off [`busbar_contract::ids::TOKEN_CLASSES`] — the one
 /// list a card's class fan-out and the map-shaped summation already share — rather than off the
 /// previous release's key vocabulary, so a class this root writes a line for and a class the card
 /// prices can never be two different sets.
 fn reserved_classes() -> Vec<busbar_unit_usage::CanonicalClass> {
-    busbar_unit_cost::RESERVED_CLASSES
-        .iter()
-        .map(|class| {
-            busbar_unit_usage::CanonicalClass::counted(busbar_caps::MeterClassId::new(class))
-        })
+    busbar_contract::TOKEN_CLASSES
+        .into_iter()
+        .map(busbar_unit_usage::CanonicalClass::counted)
         .collect()
 }
 

@@ -102,10 +102,10 @@ fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &Usage
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
     let units: std::collections::BTreeMap<String, u64> = [
-        (busbar_api::UNIT_INPUT, b.tokens_input),
-        (busbar_api::UNIT_OUTPUT, b.tokens_output),
-        (busbar_api::UNIT_CACHE_READ, b.tokens_cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, b.tokens_cache_creation),
+        (busbar_contract::DIM_TOKENS_IN, b.tokens_input),
+        (busbar_contract::DIM_TOKENS_OUT, b.tokens_output),
+        (busbar_contract::DIM_CACHE_READ, b.tokens_cache_read),
+        (busbar_contract::DIM_CACHE_WRITE, b.tokens_cache_creation),
     ]
     .into_iter()
     .filter(|(_, v)| *v != 0)
