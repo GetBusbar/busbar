@@ -20,7 +20,7 @@ use busbar_contract::ids::{
     StreamId,
 };
 use busbar_contract::kinds::{
-    Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
+    Ack, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
     CredentialFacts, CredentialLocator, Delivery, EgressAuthScheme, Export, ExportHost, ExportItem,
     Head, Hook, HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, RouteBar,
     RouteStatement, Seat, Secret, SecretError, SecretRef, SecretValue, ServeRequest, Served,
@@ -53,7 +53,6 @@ const _SECRET: Option<&dyn Secret> = None;
 const _HOOK: Option<&dyn Hook> = None;
 const _EXPORT: Option<&dyn Export> = None;
 const _EXPORT_HOST: Option<&dyn ExportHost> = None;
-const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _SIGNER: Option<&dyn Signer> = None;
 const _ARENA: Option<&dyn Arena> = None;

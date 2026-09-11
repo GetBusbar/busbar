@@ -838,21 +838,6 @@ pub trait Export: Plugin + Send + Sync + 'static {
     fn serve(&self, req: &ServeRequest<'_>, host: &dyn ExportHost) -> Served;
 }
 
-/// An export sink that can also anchor the journal's head somewhere outside the node.
-///
-/// Anchoring is what makes the chain checkable by someone who does not trust the node: the head is
-/// written where the node cannot rewrite it, and read back to compare.
-///
-/// # Errors
-/// Both methods return [`StoreError`] when the anchor cannot be written or read.
-pub trait Anchor: Export {
-    /// Write a head out.
-    fn write_head(&self, head: Head) -> Result<(), StoreError>;
-
-    /// Read one of the last heads back.
-    fn read_head(&self, n: u32) -> Result<Option<Head>, StoreError>;
-}
-
 // ── the shapes the loop passes around that no one kind owns ───────────────────────────────────
 
 /// One stream's worth of what a plane relayed, for the metering step's kernel-derived floor.

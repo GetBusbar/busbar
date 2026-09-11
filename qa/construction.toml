@@ -214,7 +214,7 @@ because = "the export projection grammar face busbar_plugin::cold::export::proje
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3559
+contract_caps = 3555
 grammar = 388
 contract_transport = 845
 
@@ -435,12 +435,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5398
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3561
+caps_contract_ceiling = 3557
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15165
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24124
+union_ceiling = 24120
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -608,7 +608,7 @@ file = "crates/busbar-contract/src/kinds.rs"
 plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport.rs"
 traits = [
-  "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
+  "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export",
   "Plane", "SessionPlane", "Transport", "VirtualKeyDirectory",
 ]
 max_defaulted = 0
@@ -1758,26 +1758,30 @@ because = "TWO lines in crates/busbar-core/src/plugin_routes.rs: the engine take
 # second route face — what it adds is that EVERY sink of the kind states a route the same way,
 # instead of one sink owning its own spelling.
 #
-# 33 LINES, and the three ceilings that carry busbar-contract all rise by exactly that and by
+# 29 LINES NET, and the three ceilings that carry busbar-contract all rise by exactly that and by
 # nothing else: busbar-caps is untouched, and so are busbar-kernel and every busbar-unit-* crate, so
-# the union's rise is the pair's rise. The deletion that pays for it is outside all three unions
-# (`busbar_plugin_sdk::ExportHandler`, and `busbar_export_prometheus`'s and
-# `busbar_export_webhook`'s own copies of the route and delivery vocabulary), which is why nothing
-# is paid back here.
+# the union's rise is the pair's rise. The face itself is 33; the 4 that come off it are
+# `kinds::Anchor`, the export kind's own extension trait, DELETED on this line after measurement:
+# nothing in the workspace implemented it and the only two lines that named it were this crate's own
+# re-export and its own object-safety fixture. It was declared as part of the export face's cost and
+# it is paid back against the export face's raise, which is why the 33 is re-priced here rather than
+# left standing with a second entry beside it. The rest of the deletion that pays for the face is
+# outside all three unions (`busbar_plugin_sdk::ExportHandler`, and `busbar_export_prometheus`'s and
+# `busbar_export_webhook`'s own copies of the route and delivery vocabulary).
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 33
-because = "FACE busbar_contract::kinds::{Export, ExportItem, ExportHost, Ack, Delivery, RouteStatement, RouteBar, ServeRequest, Served} + plugin::EXPORT_ABI: the ONE export face, net of the three ExportItem variants deleted for having no producer anywhere in the tree. busbar-caps is untouched, so the pair rises by the contract's own lines exactly"
+by = 29
+because = "FACE busbar_contract::kinds::{Export, ExportItem, ExportHost, Ack, Delivery, RouteStatement, RouteBar, ServeRequest, Served} + plugin::EXPORT_ABI: the ONE export face, net of the three ExportItem variants deleted for having no producer anywhere in the tree AND net of the 4 lines of kinds::Anchor, the export kind's extension trait, deleted on this line for having no implementor in the workspace and no reader outside this crate. busbar-caps is untouched, so the pair rises by the contract's own lines exactly"
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 33
-because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes: +33 lines in busbar-contract and nothing in busbar-caps, busbar-kernel or any busbar-unit-* crate, so the union rises by exactly the caps/contract rise. The lines it is paid for with are busbar-plugin-sdk's and the two sinks' own, and this union carries none of those crates"
+by = 29
+because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes, less the 4 lines of kinds::Anchor deleted on this line: +29 net lines in busbar-contract and nothing in busbar-caps, busbar-kernel or any busbar-unit-* crate, so the union rises by exactly the caps/contract rise. The lines it is paid for with are busbar-plugin-sdk's and the two sinks' own, and this union carries none of those crates"
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 33
-because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes, measured at the identical 33 lines: the face a plugin author reads to write an export sink, which before this commit no sink in the tree implemented and no caller ever produced an item for. ARCHITECTURE.md section 1.1 is amended in this same commit, as that figure's own rule requires - it is the FOURTH face to move it, after the virtual-key directory, busbar_contract::limits and busbar_contract::telemetry::Telemetry"
+by = 29
+because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes, measured at the identical 29 net lines: the face a plugin author reads to write an export sink, which before that commit no sink in the tree implemented and no caller ever produced an item for, less the 4 lines of kinds::Anchor that a plugin author no longer reads because nothing in the workspace implements it. ARCHITECTURE.md section 1.1 carries the figure and is amended with it - it is the FOURTH face to move it, after the virtual-key directory, busbar_contract::limits and busbar_contract::telemetry::Telemetry"
 
 # The same face, one kind-isolation matrix cell over. `Export::streams` is the method a sink
 # declares what it carries with, and `streams` is also the bare instance id of a plane member of

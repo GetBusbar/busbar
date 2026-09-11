@@ -47,7 +47,7 @@ pub use ids::{
     SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
 };
 pub use kinds::{
-    Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
+    Ack, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
     CredentialFacts, CredentialLocator, Delivery, EgressAuthScheme, EnvelopeFields, Export,
     ExportHost, ExportItem, Head, Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyFacts,
     KeyMaterial, KeyScope, OnFailure, PlaneFacts, RecordBytes, RouteBar, RouteStatement, Seat,

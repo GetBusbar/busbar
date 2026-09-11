@@ -209,9 +209,14 @@ per call is what keeps that true in both directions: the wire and the reading be
 every method on it is an ANSWER and none is a capability, and a sink that is lent nothing is told so
 honestly rather than handed a stub that pretends.
 
-It is MEASURED on the three ceilings that carry `busbar-contract` — **`contract_caps` 3526 → 3559**,
-**`caps_contract_ceiling` 3528 → 3561** and **`union_ceiling` 24091 → 24124**, all three the same 33
-lines, because `busbar-caps`, `busbar-kernel` and every `busbar-unit-*` crate are untouched — and on
+It is MEASURED on the three ceilings that carry `busbar-contract` — **`contract_caps` 3526 → 3555**,
+**`caps_contract_ceiling` 3528 → 3557** and **`union_ceiling` 24091 → 24120**, all three the same 29
+NET lines, because `busbar-caps`, `busbar-kernel` and every `busbar-unit-*` crate are untouched. The
+face itself is 33; the 4 that come off it are `kinds::Anchor`, the export kind's own extension trait,
+which claimed that a sink could also anchor the journal's head outside the node. NOTHING IN THE
+WORKSPACE EVER IMPLEMENTED IT: the whole of what named it was this crate's own re-export and its own
+object-safety fixture, and a face with no implementor is a claim a plugin author reads and cannot
+act on. It is deleted, and the 4 lines are paid back against the face that declared them — and on
 four matrix cells, all four of which are the word **`streams`**: **`busbar-contract × plane`
 42 → 43** (the face's one method name) and three cells minted at 2 apiece
 (`busbar-export-file`, `busbar-export-webhook`, `busbar-export-prometheus` × `plane`, each the

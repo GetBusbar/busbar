@@ -41,7 +41,7 @@ implements; implementing a second kind's trait in one crate is a kind fusion and
 | **store** | `busbar-store-<name>` | `KEY`, `ABI_FLOOR`, `FLEET_SAFE`, schema versions, measured record rate | all durable I/O, blocking pool | `kinds::Store` | contract | kernel | — | `plugin-testkit::store_conformance` (23 assertions) + gap detection + fleet-safe N-node verdict |
 | **secret** | `busbar-secret-<name>` | `KEY`, `REF_GRAMMAR` | key I/O | `kinds::Secret` | contract | the auth / egress-auth / transport-key **units** only | — | universal-config · resolve/watch/sign/seal round-trip · canary grep |
 | **hook** | `busbar-hook-<name>` | `KEY`, kind (`Tap`\|`Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` | none (pure) | `kinds::Hook` | contract | kernel | — | purity · seat composition · veto/restrict/permutation · priced-delta bound |
-| **export** | `busbar-export-<name>` | `KEY`, sink, format, retention | sink I/O | `kinds::Export` (+ `Anchor` extension) | contract | kernel | — | universal-config · at-least-once ack · anchor head round-trip |
+| **export** | `busbar-export-<name>` | `KEY`, sink, format, retention | sink I/O | `kinds::Export` | contract | kernel | — | universal-config · at-least-once ack |
 | *(core)* **unit** | `busbar-unit-<name>` | nothing plugin-visible; a sealed unit trait | the rules — decides one step | its sealed unit trait in `busbar-contract::unit` | contract, **capabilities** (`busbar-core-capabilities`), contract-transport where it holds a wire handle | kernel only | `busbar-unit-*` ≤ 45k, union ≤ 56k | the step battery + mutation floor on the seven money files |
 
 **The control kind, in one paragraph.** A control surface is an UNMETERED served surface, and the
@@ -296,7 +296,7 @@ boundaries around traits nothing implements.
 | hook | `hooks-ranking` impls `busbar_api::RoutingPolicy` | re-base onto `kinds::Hook`; seats from the four-seat table | ~200 | **R5** `hooks/` row |
 | auth | `auth-admin-tokens` is a 1.5.5-era module on `busbar-api`; `auth-static-plugin` likewise | re-base onto `kinds::AuthScheme`; the token SIGNER lands in `busbar-unit-auth`, not in a plugin and not in capabilities | ~250 | **R5** `auth/` row |
 | secret | `secret-example-plugin` only; `secret-ref` is a type crate swept in by the glob | re-base onto `kinds::Secret`; fold `SecretRef` into the contract | ~150 | **R5** `store/`+`auth/` rows |
-| export | `export-example-plugin` on `busbar-api` | re-base onto `kinds::Export`; `Anchor` for the retention sink | ~150 | **R5** `export/` row |
+| export | `export-example-plugin` on `busbar-api` | re-base onto `kinds::Export` | ~150 | **R5** `export/` row |
 | egress-auth | **zero crates**; the schemes are hardcoded in `busbar-unit-egress-auth` and a full dialect-detection ladder sits in `busbar-unit-auth` | create `busbar-egress-auth-anthropic` / `-openai`; the unit keeps the mechanism, the crates keep the vocabulary; `lean-core`'s `max_hits = 21` ratchet closes to 0 | ~300 | **R6**, with the dialect split (same vocabulary, same move) |
 
 Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` constant — only `STORE_ABI`

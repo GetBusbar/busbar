@@ -83,7 +83,7 @@ standard library" — stale — and the file carries a `[workspace]` stanza mark
 | C10 | `Store` (1.6.0, 22 methods) | out | `kinds.rs:313` | durability / verbs | store adapter | trait | 1.6.0 seam |
 | C11 | `Secret` | out | `kinds.rs:471` | boot + `sign`/`seal` | `secret-local` | trait | 1.6.0 seam |
 | C12 | `Hook` | out | `kinds.rs:572` | four seats | hook plugins | trait, 8 methods; `Seat` enum `kinds.rs:501`, `HookFacts` `:551`, `HookView` `:528` | 1.6.0 seam |
-| C13 | `Export` / `Anchor` | out | `kinds.rs:642` / `:654` | journal export, checkpoint anchor | export plugins | traits | 1.6.0 seam |
+| C13 | `Export` | out | `kinds.rs:824` | telemetry export: streams, receive, routes, serve | export plugins | trait | 1.6.0 seam |
 | C14 | `Transport` / `TransportMeta` / `TransportConfigView` | both | `transport.rs:89` / `:43` / `:81` | pump | 7 in-tree transports (below) | traits | 1.6.0 seam |
 | C15 | `ConfigView` / `SessionView` / `TransportView` | in | `unit.rs:426` / `:442` / `:460` | `Ctx` construction | root | traits | 1.6.0 seam |
 | C16 | `Arena` | in | `bounded.rs:295` | `Ctx.arena` | kernel arena | trait | 1.6.0 seam |

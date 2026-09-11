@@ -56,7 +56,7 @@ external call, and by review. Every one of their calls runs on a bounded blockin
 why they are written as ordinary blocking methods rather than as futures.
 
 **Fallibility convention (was repeated per method as `# Errors`):** every fallible method on
-`Store`, `Secret`, `Signer` and `Anchor` returns the kind's own error enum on failure; the
+`Store`, `Secret` and `Signer` returns the kind's own error enum on failure; the
 per-method doc used to restate "returns an error when the call fails" almost verbatim on every
 method. That sentence now lives once on the trait, and a method's doc only adds words when its
 failure mode is distinctive (e.g. a fencing race, a stale epoch).
