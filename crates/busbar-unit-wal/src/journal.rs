@@ -917,11 +917,14 @@ impl Journal {
 
         let mut sealed = Vec::with_capacity(entries.len() + usize::from(overflow.is_some()));
         if let Some(overflow) = &overflow {
-            sealed.push(self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body())));
+            // The unit may not read a wall clock itself (`unit-no-wall-clock`): the break is
+            // stamped with the reading this append already carries on its own entries, never 0.
+            let (w, m) = entries.first().map_or((0, 0), |e| (e.wall, e.mono));
+            sealed.push(self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body()).at(w, m)));
         }
-        for entry in entries {
-            sealed.push(self.seal(entry));
-        }
+        // One line, not a loop: the loop's only body was `push(self.seal(entry))`, and a fold that
+        // does one thing to every element is `.map` and not a hand-written `for`.
+        sealed.extend(entries.iter().map(|e| self.seal(e)));
 
         let batch: Vec<Record> = sealed
             .iter()
