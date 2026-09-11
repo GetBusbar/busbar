@@ -203,6 +203,37 @@ lq_preproved_status() { # $1 = tip sha, $2 = queue line, $3 = ledger (default $P
   echo "$ans"
 }
 
+# ── WHAT THE UNION MAY INHERIT: THE MEMBERS' OWN PRE-PROOF LOGS, AND WHAT EACH OF THEM TOUCHED ────
+# MEASURED 2026-09-10: every line lands proven TWICE — alone at pre-proof, and again in the batch
+# union, where land.sh re-runs build, tests, gates and oracle in full (68 min serial). land.sh can
+# now decline the legs a member already paid for at this exact tip (its land_preproof_inherits), and
+# what it needs to do that is this index: one row per member whose pre-proof was GREEN AT THIS TIP,
+# `<the proof's log>TAB<the files that member's picks touch>`.
+#
+# GREEN ONLY, AND AT THIS TIP ONLY. A RED or a NONE proved nothing to inherit, and a row keyed to
+# another tip is evidence about another tree — the same rule the whole ledger is built on. The FILES
+# are measured here, from the repo, rather than read out of the pre-proof's log: land.sh recomputes
+# the member's owing set from them with the same function it uses on the union, so neither side is
+# taking the other's word for what was owed.
+lq_preproof_index() { # $1 = batch file, $2 = tip, $3 = repo (default $W), $4 = ledger (default $PP); writes <batch>.preproofs, prints the rows
+  local bf="$1" tip="$2" repo="${3:-$W}" pp="${4:-$PP}" out="$1.preproofs" line lg files n=0
+  : >"$out"
+  [ -f "$bf" ] && [ -n "$tip" ] && [ -f "$pp" ] || { printf '0\n'; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in '#'*) continue ;; esac
+    lg="$(LQ_AWK_T="$line" awk -F"$TAB" -v tip="$tip" \
+            '$1 == "GREEN" && $2 == tip && $4 == ENVIRON["LQ_AWK_T"] { l = $3 } END { if (l != "") print l }' "$pp")"
+    [ -n "$lg" ] || continue
+    files="$(lq_line_files "$(lq_line_payload "$line")" "$repo" | grep -v '^$' | sort -u | tr '\n' ' ')"
+    files="${files% }"
+    [ -n "$files" ] || continue
+    printf '%s%s%s\n' "$lg" "$TAB" "$files" >>"$out"
+    n=$((n + 1))
+  done <"$bf"
+  printf '%s\n' "$n"
+}
+
 # THE BATCH SIZE. THE DEFAULT becomes eight when eight lines have already been proven green against
 # THIS tip on boxes of their own; four otherwise.
 #
@@ -3773,7 +3804,9 @@ lq_selftest() {
   _t "a line with a backslash finds its own row" RED "$(lq_outcome_row "$cres" "$bsl")"
   _t "  ...and awk -v would not have"            1 \
      "$( [ "$(awk -F"$TAB" -v w="$bsl" '$2 == w { print $1 }' "$cres")" = "" ] && echo 1 || echo 0)"
-  _t "  ...the popper reads the RED log by ENVIRON too" 1 \
+  # …and so does every other reader that matches a queue line inside awk: the popper's RED log,
+  # and the pre-proof index the union inherits from. Both, by count, so a third cannot use -v.
+  _t "  ...the popper and the union index read by ENVIRON too" 2 \
      "$(grep -c 'LQ_AWK_T="\$line" awk -F"\$TAB" -v tip="\$tip"' "$0")"
   _t "  ...and no line is compared by awk -v anywhere" 0 \
      "$(grep -c 'awk -F"\$TAB" -v t="\$' "$0")"
@@ -3836,6 +3869,34 @@ lq_selftest() {
      "$( [ "$(grep -n '^  lq_status >"\$W/target/gate/landq4.status"$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  tip="\$(git -C "\$W" rev-parse HEAD)"$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...and puts it in the log too"         1 "$(grep -c '^  lq_log "status: ' "$0")"
 
+
+
+  # ── WHAT THE UNION MAY INHERIT FROM ITS MEMBERS (see lq_preproof_index) ───────────────────────
+  echo "landq4 selftest: the union is told which members were pre-proven green at this tip"
+  local savedQi="$Q" savedPPi="$PP" savedWi="$W"
+  W="$repo"; PP="$root/inh-pp.txt"
+  local ibatch="$root/inh.batch"
+  printf -- '--prove %s\n--prove %s\n' "$ha" "$hb" >"$ibatch"
+  printf 'GREEN%stipI%s/l/a.log%s--prove %s\n' "$TAB" "$TAB" "$TAB" "$ha" >"$PP"
+  printf 'RED%stipI%s/l/b.log%s--prove %s\n' "$TAB" "$TAB" "$TAB" "$hb" >>"$PP"
+  _t "only the GREEN member is offered"        1 "$(lq_preproof_index "$ibatch" tipI "$repo" "$PP")"
+  _t "  ...naming its log and the files it touches" "/l/a.log${TAB}a.txt" "$(cat "$ibatch.preproofs")"
+  _t "a row at ANOTHER tip is not offered"     0 "$(lq_preproof_index "$ibatch" tipJ "$repo" "$PP")"
+  printf 'GREEN%stipI%s/l/b.log%s--prove %s\n' "$TAB" "$TAB" "$TAB" "$hb" >>"$PP"
+  _t "two green members are two rows"          2 "$(lq_preproof_index "$ibatch" tipI "$repo" "$PP")"
+  _t "  ...and the RED row for the same line does not add a third" 2 "$(grep -c . "$ibatch.preproofs")"
+  _t "an empty ledger offers nothing"          0 "$(lq_preproof_index "$ibatch" tipI "$repo" "$root/nosuch-pp.txt")"
+  _t "  ...and writes an EMPTY index, not a stale one" 0 "$(grep -c . "$ibatch.preproofs" 2>/dev/null || true)"
+  Q="$savedQi"; PP="$savedPPi"; W="$savedWi"
+  _t "the runner writes the index before it launches" 1 \
+     "$( [ "$(grep -n '^  ninh="\$(lq_preproof_index ' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n '^  bash "\$W/target/gate/land.run.sh" --batch' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and names it to land.sh in the environment" 1 \
+     "$(grep -c '^  export LAND_PREPROOF_INDEX="\$batch.preproofs"$' "$LQ_SRC")"
+  _t "  ...and logs which legs were inherited, and from where" 1 \
+     "$(grep -c 'inherited from the pre-proof log' "$LQ_SRC")"
+  _t "  ...saying so explicitly when none was"  1 \
+     "$(grep -c 'no leg inherited; the union paid for everything' "$LQ_SRC")"
 
   # ── A ROOT PROVEN RED MOOTS EVERY DEEPER RUNG OF ITS CHAIN ────────────────────────────────────
   # MEASURED 2026-09-10: line 1 of a sweep — a chain's ROOT, proven ALONE — came back RED at
@@ -4062,6 +4123,12 @@ while true; do
   # The staged engine (see lq_stage_engine): a landing can change land.sh without changing the copy
   # that is landing it.
   lq_stage_engine
+  # WHAT THIS UNION MAY INHERIT FROM ITS MEMBERS' PRE-PROOFS (see lq_preproof_index and land.sh's
+  # land_preproof_inherits). Written BEFORE the batch is launched, because land.sh reads it as it
+  # plans; a batch with no green member at this tip gets an empty index and the full proof.
+  ninh="$(lq_preproof_index "$batch" "$tip" "$W")"
+  export LAND_PREPROOF_INDEX="$batch.preproofs"
+  lq_log "union: ${ninh:-0} member(s) of this batch were pre-proven GREEN at $(printf '%.9s' "$tip"); their logs are offered to the union proof"
   # THE OVERLAP (see lq_predict_tip): the tree this batch will make is built HERE, before the batch
   # is launched — the batch is about to move HEAD, and the prediction is of THIS tip plus these picks.
   predicted=""; predtree=""
@@ -4098,6 +4165,17 @@ while true; do
   # THE LANDING LINES, NOT THE FILE'S LINES: a batch file carries `#UNIT <k>` markers now, and
   # land.sh writes one outcome per LANDING line (see lq_batch_lines).
   tail -c +"$((lq_l0 + 1))" "$L" >"$batch.log" 2>/dev/null || : >"$batch.log"
+  # WHICH LEGS THE UNION DID NOT PAY FOR, AND WHOSE PRE-PROOF PAID INSTEAD. In the ledger, beside
+  # the batch, so a green union with a shorter plan than the last one says why without anybody
+  # opening a 40 MB log on a fleet box's copy-back.
+  if [ -s "$batch.inherited" ]; then
+    while IFS="$TAB" read -r ileg ilog; do
+      [ -n "$ileg" ] || continue
+      lq_log "union: $ileg was NOT re-run — inherited from the pre-proof log $ilog (green there on the same owing file set, at this tip)"
+    done <"$batch.inherited"
+  else
+    lq_log "union: no leg inherited; the union paid for everything its file set owes"
+  fi
   want="$(lq_batch_lines "$batch" | grep -c . || true)"
   got="$(grep -c . "$batch.result" 2>/dev/null || true)"
   if [ "${got:-0}" != "${want:-0}" ]; then

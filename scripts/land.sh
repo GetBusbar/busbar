@@ -542,6 +542,113 @@ land_gate_battery_set() { # $1 = newline-separated touched paths  $2 = 1 when Ca
   } | grep . | sort -u || true
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHAT THE UNION OWES THAT ITS MEMBERS' PRE-PROOFS DID NOT ALREADY PAY FOR
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED 2026-09-10: every line on the queue is proven TWICE. Once ALONE, on a fleet box, at
+# pre-proof; then again inside the batch union, where this script re-runs build, tests, clippy,
+# fmt, the gates, the per-gate self-test batteries and the oracle families in full — 68 minutes
+# serial. The second run is not waste in general, and this change does not treat it as waste: a
+# union can break in ways no member breaks alone, and proving the union is what the batch is FOR.
+#
+# It is waste LEG BY LEG wherever the union cannot possibly differ from the member. T0-D9 already
+# wrote the shape of that argument down for the batteries — "not owed by this union" — reading the
+# union's own file set. This extends it by one term: the pre-proofs' evidence.
+#
+#   A LEG IS OWED BY THE UNION IFF (a) the union's file set owes it, AND (b) it is not already
+#   green, for the SAME OWING FILE SET, at the SAME BASE, in a member's pre-proof log.
+#
+# THE OWING FILE SET IS WHAT MAKES IT SOUND, and it is why this is not "the member was green so
+# skip it". A leg is owed BECAUSE OF certain files. If the files that owe construction's battery
+# are byte-identical between one member and the whole union, then that battery has the same inputs
+# and the same tree beneath it in both runs, and running it a second time can only produce the same
+# sentence. If the union's owing set differs by so much as one path — another member touched a
+# second qa/*.toml — the sets are unequal, nothing is inherited, and the leg runs.
+#
+# WHAT IS NEVER INHERITED, AND THIS IS THE LINE THAT MATTERS: the union's own COMPILATION and the
+# GATES THEMSELVES. build, tests, clippy, fmt, the kind-isolation gate, the construction report and
+# its ceiling ratchets run on every union, always, exactly as they did. Those are the legs that can
+# differ when six members meet on one tree — two members re-pinning the same ceiling, two members
+# whose types no longer agree — so they are the whole reason the union is proven at all. What is
+# inheritable is only the self-PROOF of a gate (its --selftest battery) and the oracle families:
+# legs that ask "does this gate still discriminate" and "does the built system still answer the
+# same", which are questions about a file set, not about a meeting of file sets.
+#
+# THE ORACLE'S OWING SET IS WHAT A RUNNING SYSTEM READS. scripts/, .github/, docs/, *.md and
+# qa/*.toml are not compiled into the product and cannot change a recorded cell; every other path
+# can, and is in the set. A union whose only code change came from one member therefore inherits
+# that member's families, and a union with two code members inherits nothing.
+# xtask/ is in the list for the same reason: it is the GATE RUNNER, and `cargo build --release -p
+# busbar` — the binary the recorder drives — does not contain a line of it. testing/ is NOT in the
+# list: cells.json and accepted-differences.json are the recording's own inputs.
+LAND_ORACLE_BLIND_RE='^(scripts/|\.github/|docs/|xtask/|qa/[^/]+\.toml$)|\.md$'
+land_leg_owing_set() { # $1 = leg (battery:<gate> | oracle), $2 = newline-separated touched paths; prints the owing paths, sorted
+  local leg="$1" touched="$2" f g
+  [ -n "$touched" ] || return 0
+  case "$leg" in
+    oracle)
+      printf '%s\n' "$touched" | grep -v '^$' | grep -vE "$LAND_ORACLE_BLIND_RE" | sort -u || true ;;
+    battery:*)
+      g="${leg#battery:}"
+      # ONE PATH AT A TIME, THROUGH THE RULE ITSELF. land_gate_battery_set is the only reader of
+      # what a path owes; asking it per path is the only way to get the SUBSET without a second,
+      # divergent copy of its table (audit 17's rule: one predicate, both readers).
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        land_gate_battery_wanted "$g" "$(land_gate_battery_set "$f" 0)" && printf '%s\n' "$f"
+      done <<EOF
+$(printf '%s\n' "$touched")
+EOF
+      ;;
+  esac
+}
+# THE SENTENCE A GREEN LEG LEAVES BEHIND, so the next union can read it out of the pre-proof's log.
+# It carries the BASE, which is the whole of "at the same tip": a pre-proof's base is the tip it was
+# taken on and a union's base is the tip it is landing onto, and a row whose base is a different sha
+# is evidence about a different tree.
+land_leg_green() { # $1 = leg, $2 = the base this run judged against
+  echo "land.sh: LEG GREEN: $1 base $2"
+}
+# AND THE READER. Prints the pre-proof log a leg may be inherited from, or nothing at all.
+#
+# THE INDEX IS THE QUEUE RUNNER'S (landq4.sh writes `<batch>.preproofs`): one row per member whose
+# pre-proof was GREEN at this tip, `<log path>TAB<space-separated files the member touched>`. This
+# script recomputes the member's owing set from those files with the SAME function the union uses —
+# it does not take the member's word for what it owed.
+land_preproof_inherits() { # $1 = leg, $2 = the union's owing set (newline-separated), $3 = index, $4 = base sha
+  local leg="$1" want="$2" idx="${3:-${LAND_PREPROOF_INDEX:-}}" base="${4:-}" lg files mine
+  [ "${LAND_NO_INHERIT:-0}" = 1 ] && return 0
+  [ -n "$leg" ] && [ -n "$base" ] || return 0
+  # AN EMPTY OWING SET IS NEVER INHERITED — it is not owed at all, and the caller's own
+  # "not owed by this union" arm is what handles it. Inheriting nothing from a log would put a
+  # misleading row in the ledger.
+  [ -n "$want" ] || return 0
+  [ -n "$idx" ] && [ -f "$idx" ] || return 0
+  want="$(printf '%s\n' "$want" | grep -v '^$' | sort -u)"
+  local tab; tab="$(printf '\t')"
+  while IFS="$tab" read -r lg files; do
+    [ -n "$lg" ] && [ -f "$lg" ] || continue
+    # THE LOG MUST SAY IT RAN THE LEG GREEN, AT THIS BASE. A pre-proof that SKIPPED the leg (because
+    # the member did not owe it either) proves nothing about it, and is exactly the log that would
+    # otherwise launder a skip into a proof.
+    grep -qxF -- "land.sh: LEG GREEN: $leg base $base" "$lg" 2>/dev/null || continue
+    mine="$(land_leg_owing_set "$leg" "$(printf '%s\n' $files)" | grep -v '^$' | sort -u)"
+    [ "$mine" = "$want" ] || continue
+    printf '%s\n' "$lg"
+    return 0
+  done <"$idx"
+  return 0
+}
+# THE RECORD. An inherited leg is written to the sidecar the queue runner reads, so the ledger can
+# say WHICH leg came from WHICH pre-proof log rather than leaving a green with a silently shorter
+# plan behind it.
+land_inherit_record() { # $1 = leg, $2 = the log it came from
+  echo "land.sh: $1 inherited from $2 (green there on the same owing file set, at this base)"
+  PROVEN="$PROVEN $1 inherited from $2;"
+  [ -n "${LAND_INHERITED_OUT:-}" ] || return 0
+  printf '%s\t%s\n' "$1" "$2" >>"$LAND_INHERITED_OUT" 2>/dev/null || true
+}
+
 # Is gate $1 in the set $2? `ALL` contains every gate; the empty set contains none.
 land_gate_battery_wanted() { # $1 = gate name  $2 = the set land_gate_battery_set printed
   case "$2" in ALL) return 0 ;; esac
@@ -1444,9 +1551,18 @@ EOF
         if [ "$battery" = ALL ]; then
           echo "land.sh: construction --selftest: inside the full battery below, not run twice"
         elif land_gate_battery_wanted construction "$battery"; then
-          land_selftest_leg construction "$here/target/land-cselftest-$stamp.log" XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 \
-            || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
-                 echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
+          # …AND ONLY WHEN A MEMBER'S PRE-PROOF DID NOT ALREADY PAY FOR IT (see
+          # land_preproof_inherits). Same owing file set, same base, and the member's own log says
+          # it ran this battery green: the union cannot make it say anything else.
+          local cinh; cinh="$(land_preproof_inherits battery:construction "$(land_leg_owing_set battery:construction "$touched")" "${LAND_PREPROOF_INDEX:-}" "$base")"
+          if [ -n "$cinh" ]; then
+            land_inherit_record "construction --selftest" "$cinh"
+          else
+            land_selftest_leg construction "$here/target/land-cselftest-$stamp.log" XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 \
+              || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
+                   echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
+            land_leg_green battery:construction "$base"
+          fi
         else
           echo "land.sh: construction --selftest skipped (no construction source, data or gate plumbing in this union) — the ceiling ratchets below still run"
           PROVEN="$PROVEN construction --selftest not owed by this union;"
@@ -1574,9 +1690,17 @@ EOF
         echo "land.sh: kind-isolation --selftest: inside the full battery the gatefiles leg ran, not run twice"
         PROVEN="$PROVEN kind-isolation --selftest via the full battery;"
       elif land_gate_battery_wanted kind-isolation "$battery"; then
-        land_selftest_leg kind-isolation "$kslog" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 \
-          || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
-               echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
+        # …and the same inheritance question. 1910-1914 s on every landing, five of five, measured
+        # the day this arm was written; a member that already answered it at this base answers it.
+        local kinh; kinh="$(land_preproof_inherits battery:kind-isolation "$(land_leg_owing_set battery:kind-isolation "$touched")" "${LAND_PREPROOF_INDEX:-}" "$base")"
+        if [ -n "$kinh" ]; then
+          land_inherit_record "kind-isolation --selftest" "$kinh"
+        else
+          land_selftest_leg kind-isolation "$kslog" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 \
+            || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
+                 echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
+          land_leg_green battery:kind-isolation "$base"
+        fi
       else
         echo "land.sh: kind-isolation --selftest skipped (no kind-isolation source, data or gate plumbing in this union) — the GATE still runs, below"
         PROVEN="$PROVEN kind-isolation --selftest not owed by this union;"
@@ -1595,7 +1719,17 @@ EOF
       PROVEN="$PROVEN construction rows ($grx, standing reds named);" ;;
 
     oracle)
-      prove_oracle "$families" || return 1 ;;
+      # THE FAMILIES THE UNION CAN CHANGE BEYOND WHAT ITS MEMBERS PROVED. The oracle records a
+      # RUNNING system, so its owing set is every touched path a build can reach (see
+      # LAND_ORACLE_BLIND_RE): a union whose only code change came from one member is, at this
+      # base, the tree that member already recorded. A union with two code members owes it in full.
+      local oinh; oinh="$(land_preproof_inherits oracle "$(land_leg_owing_set oracle "$touched")" "${LAND_PREPROOF_INDEX:-}" "$base")"
+      if [ -n "$oinh" ]; then
+        land_inherit_record "oracle families ($families)" "$oinh"
+      else
+        prove_oracle "$families" || return 1
+        land_leg_green oracle "$base"
+      fi ;;
     esac
   done
   [ -n "$PROVEN" ] || {
@@ -2206,6 +2340,10 @@ land_run_batch() {  # $1 = batch file
 
   # PER-LINE OUTCOMES, in the queue's own order, for the runner and for the record.
   local res="$bf.result"; : >"$res"
+  # …AND WHICH LEGS THIS UNION INHERITED FROM WHICH PRE-PROOF LOG (see land_preproof_inherits). A
+  # green union with a shorter plan than the last one must be able to say why, in the ledger, and
+  # not only in 40 MB of log on a fleet box's copy-back.
+  export LAND_INHERITED_OUT="$bf.inherited"; : >"$LAND_INHERITED_OUT"
   local done_file="${LAND_DONE:-$here/target/gate/land-done.txt}"
   # ── LAND_PREPROVE=1: PROVE AND REPORT, PUBLISH NOTHING ─────────────────────────────────────────
   # A pre-proof runs the SAME batch through the SAME engine — the picks, the legs, the bisect — and
@@ -2339,6 +2477,82 @@ land_selftest() {
   _st "wanted: the OTHER gate is not"          1 land_gate_battery_wanted construction "kind-isolation"
   _st "wanted: the empty set holds nothing"    1 land_gate_battery_wanted kind-isolation ""
   _st "wanted: a prefix is not a member"       1 land_gate_battery_wanted kind "kind-isolation"
+
+  # ── CASE P: THE UNION PAYS ONLY FOR WHAT THE PRE-PROOFS DID NOT ────────────────────────────────
+  # MEASURED 2026-09-10: every line on the queue is proven TWICE — alone, on a fleet box, at
+  # pre-proof, and then again inside the batch union, where the union proof re-runs build, tests,
+  # gates and the oracle in full at 68 minutes serial. The second run is not waste in general: a
+  # union can break in ways no member breaks alone, and that is exactly what the union proof is
+  # FOR. But it is waste leg by leg wherever the union cannot differ from the member — and T0-D9
+  # already wrote down the shape of that argument for the batteries ("owed by this union"). This is
+  # the same rule with the pre-proofs' evidence added to it.
+  #
+  # THE RULE. A leg is OWED by the union iff (a) the union's own file set owes it, and (b) it is not
+  # already green, for the SAME OWING FILE SET, at the SAME BASE, in a member's pre-proof log. The
+  # owing file set is what makes this sound: if the files that put construction's battery in the
+  # set are byte-identical between the member and the union, the battery has the same inputs and
+  # the same tree under it, and running it twice produces the same sentence twice.
+  echo "land.sh selftest: which legs a union INHERITS from its members' pre-proofs (case P)"
+  _owing() { # $1 = name, $2 = expected set (space-separated), $3 = leg, $4 = touched
+    local got; got="$(land_leg_owing_set "$3" "$4" | tr '\n' ' ')"; got="${got% }"
+    if [ "$got" = "$2" ]; then printf '  ok   %-46s\n' "$1"
+    else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$got"; fails=$((fails + 1)); fi
+  }
+  local ptouch; ptouch="$(printf 'crates/busbar-core/src/a.rs\nqa/construction.toml\nscripts/land.sh\ndocs/x.md\nxtask/src/gates/kind_isolation/mod.rs\n')"
+  _owing "the construction battery is owed by qa + its gate" "qa/construction.toml" "battery:construction" "$ptouch"
+  _owing "the kind-isolation battery by its own module"      "xtask/src/gates/kind_isolation/mod.rs" "battery:kind-isolation" "$ptouch"
+  _owing "the oracle is owed by what a RUNNING system reads" "crates/busbar-core/src/a.rs" "oracle" "$ptouch"
+  _owing "  ...scripts, workflows, docs and qa owe it nothing" "" "oracle" \
+     "$(printf 'scripts/land.sh\n.github/workflows/ci.yml\ndocs/a.md\nREADME.md\nqa/segments.toml\n')"
+  _owing "a leg nothing owes has an empty owing set"         "" "battery:construction" "crates/busbar-core/src/a.rs"
+  # THE INHERITANCE, driven over a planted index and planted member logs.
+  local pidx="$root/preproofs.tsv" plog1="$root/pp-1.log" plog2="$root/pp-2.log"
+  printf 'land.sh: LEG GREEN: battery:construction base BASE0\n' >"$plog1"
+  printf 'land.sh: LEG GREEN: oracle base BASE0\n' >"$plog2"
+  printf '%s\tqa/construction.toml\n%s\tcrates/busbar-core/src/a.rs\n' "$plog1" "$plog2" >"$pidx"
+  _t2() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  _t2 "a member that proved this leg on the SAME files is inherited" "$plog1" \
+      "$(land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" BASE0)"
+  _t2 "  ...and the oracle the same way"        "$plog2" \
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx" BASE0)"
+  _t2 "a DIFFERENT owing file set is not inherited" "" \
+      "$(land_preproof_inherits battery:construction "$(printf 'qa/construction.toml\nqa/segments.toml\n')" "$pidx" BASE0)"
+  # A MEMBER WHOSE OWN SET IS A SUPERSET IS NOT THE SAME MEASUREMENT. It proved the leg over files
+  # this union does not owe it over, which is a different question with a different answer.
+  printf '%s\tcrates/busbar-core/src/a.rs crates/busbar-core/src/b.rs\n' "$plog2" >"$pidx.super"
+  printf 'land.sh: LEG GREEN: oracle base BASE0\n' >"$plog2"
+  _t2 "  ...nor is a member's set that is merely a SUPERSET" "" \
+      "$(land_preproof_inherits oracle "crates/busbar-core/src/a.rs" "$pidx.super" BASE0)"
+  _t2 "a DIFFERENT base is not inherited"       "" \
+      "$(land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" OTHERBASE)"
+  printf 'land.sh: the battery was skipped\n' >"$plog1"
+  _t2 "a member log that does not SAY it ran the leg green is not inherited" "" \
+      "$(land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" BASE0)"
+  printf 'land.sh: LEG GREEN: battery:construction base BASE0\n' >"$plog1"
+  _t2 "a missing index inherits nothing"        "" \
+      "$(land_preproof_inherits battery:construction "qa/construction.toml" "$root/nosuch.tsv" BASE0)"
+  _t2 "an EMPTY owing set is never inherited"   "" \
+      "$(land_preproof_inherits battery:construction "" "$pidx" BASE0)"
+  _t2 "the kill switch turns the whole rule off" "" \
+      "$(LAND_NO_INHERIT=1 land_preproof_inherits battery:construction "qa/construction.toml" "$pidx" BASE0)"
+  # THE LEGS THAT ARE NEVER INHERITED. The union's own COMPILATION and the gates themselves are the
+  # whole point of proving the union at all: they are what can differ when six members meet.
+  _stgrep "the kind-isolation GATE is still unconditional" "$LAND_SRC" 'cargo xtask gate kind-isolation\)'
+  _stgrep "the construction REPORT is still unconditional" "$LAND_SRC" 'cargo xtask gate construction --report \)'
+  _t2 "no floor leg asks to be inherited"       0 \
+      "$(sed -n '/^    plugins)/,/^    gatefiles)/p' "$LAND_SRC" | grep -c 'land_preproof_inherits')"
+  # THE THREE ARMS THAT DO ASK.
+  _t2 "the construction battery asks"           1 "$(grep -c 'land_preproof_inherits battery:construction' "$LAND_SRC")"
+  _t2 "the kind-isolation battery asks"         1 "$(grep -c 'land_preproof_inherits battery:kind-isolation' "$LAND_SRC")"
+  _t2 "the oracle leg asks"                     1 "$(grep -c 'land_preproof_inherits oracle' "$LAND_SRC")"
+  # AND THE RECORD SAYS WHICH LEG CAME FROM WHICH LOG.
+  _t2 "an inherited leg is written to the ledger sidecar" 1 \
+      "$(grep -c '>>"\$LAND_INHERITED_OUT"' "$LAND_SRC")"
+  _stgrep "  ...naming the pre-proof log it came from" "$LAND_SRC" 'inherited from \$'
+  _t2 "the batch names the sidecar for the union" 1 "$(grep -c 'LAND_INHERITED_OUT="\$bf.inherited"' "$LAND_SRC")"
+  # A LEG THAT RUNS GREEN SAYS SO IN THE WORDS THE NEXT UNION READS.
+  _t2 "a green battery leaves the sentence a union inherits by" 2 "$(grep -c 'land_leg_green battery:' "$LAND_SRC")"
+  _stgrep "  ...and so does a green oracle"     "$LAND_SRC" 'land_leg_green oracle'
 
   # THE LOCKFILE READER, over real-shaped lockfiles. A grep for `xtask` anywhere in the diff would
   # fire on every crate that merely DEPENDS on nothing of the sort; the RESOLVED CLOSURE is the unit.
