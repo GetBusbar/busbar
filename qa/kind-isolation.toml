@@ -1324,7 +1324,11 @@ kind = "caps"
 # capability crate to build the frame it fed them; they now drive the step over the root's ONE
 # constructor, and the two `UnitCtx` builders beside them are the root's identity value with the one
 # field each actually varies.
-count = "299"
+#
+# 299 -> 300: ONE, in the cell that drives a recorded golden through the plane's own face — the
+# outcome the encode step answers with is opened against the step's own token, which is this kind's
+# and is what makes a cell unable to read back an answer it did not ask for.
+count = "300"
 
 [[cell]]
 crate = "busbar"
@@ -1342,7 +1346,16 @@ kind = "control"
 # 1063 -> 1062: the cells that wrote a unit's six identity fields out by hand stop writing the one
 # that names another kind's surface. The root has one constructor for that value now, and a cell
 # states only the field it varies.
-count = "1062"
+#
+# 1062 -> 1077: the served leg starts calling the CONTRACT'S plane face — `decode_ingress` for the
+# request line and `encode_response` for the bytes that leave — instead of reaching around it to the
+# plane's own verb table. The plane arrives as `Arc<dyn Plane>` on the binding, so every call site
+# names the FACE and none of them names a dialect; what is counted here is the one construction of
+# it in the composition root, which is the one place entitled to know which plane this is, plus the
+# prose that explains the change and the cell that measures it. The root is the only crate in the
+# tree this edge is normal for, and the 15 buy the first production caller `busbar_contract::Plane`
+# has ever had.
+count = "1077"
 
 [[cell]]
 crate = "busbar"
