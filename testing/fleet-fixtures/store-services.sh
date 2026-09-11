@@ -39,10 +39,20 @@
 #   Those two bands are disjoint and MUST STAY disjoint; --selftest asserts it rather than trusting it.
 #
 # READINESS IS PROVEN, NEVER SLEPT ON
-#   pg_isready / mysqladmin ping / valkey-cli ping INSIDE the container, capped at the seconds
+#   pg_isready / `mysqladmin status` / valkey-cli ping INSIDE the container, capped at the seconds
 #   service-images.tsv pins (mysql's is 120, not 60: MySQL 8's first boot initialises the datadir and
 #   restarts once). A poll that decides WHETHER THE TEST CAN BEGIN is not a retry; exceeding a cap is
 #   a red that names the service and dumps `docker logs`, never a silent skip and never a re-run.
+#
+#   MYSQL'S PROBE IS `status` AND NOT `ping`, AND THAT IS NOT A STYLE CHOICE. `mysqladmin ping`
+#   EXITS 0 ON ACCESS DENIED -- measured, on the pinned image:
+#   `mysqladmin ping -h localhost -uNOSUCH -pWRONG` prints `error: 'Access denied'` and returns 0.
+#   The probe this table shipped with was `mysqladmin ping -h localhost -ubusbar -pbusbar`, and
+#   `busbar@localhost` does not exist in that image at all -- the accounts are `busbar@%` and
+#   `root@%`, so the in-container SOCKET path can never authenticate. The gate therefore proved
+#   that a TCP port answered and nothing else: a readiness check that could not fail, in front of
+#   every mysql suite this repo runs. `mysqladmin --protocol=TCP ... status` returns 0 on a real
+#   login and 1 on a bad one; --selftest red-proves that rather than trusting this paragraph.
 #
 # NAMESPACES — THE CONCURRENCY HAZARD THE ORACLE CREATES
 #   The shadow-oracle job records the golden AND the candidate in the same job against the same
@@ -244,8 +254,15 @@ do_ns() {
       printf 'postgres://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
     mysql)
       need_docker
-      docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
-        -e "CREATE DATABASE IF NOT EXISTS ${db}" >/dev/null 2>&1 \
+      # OVER TCP, AS root, AND THE NAMESPACE IS GRANTED. Three separate faults, each measured: the
+      # image creates `busbar@%` and no `busbar@localhost`, so the in-container socket path
+      # authenticates as nobody; `busbar` holds rights on busbar_store_qa only, so it cannot CREATE
+      # DATABASE at all; and a database created by root that busbar was never granted is one the
+      # recording then cannot open. This verb had all three, so it had never worked once -- `ns
+      # mysql` died with "could not create namespace database", which is how it was found: by an
+      # agent using it.
+      docker exec "$(container "$svc")" mysql -h 127.0.0.1 --protocol=TCP -uroot -pbusbar \
+        -e "CREATE DATABASE IF NOT EXISTS ${db}; GRANT ALL ON ${db}.* TO 'busbar'@'%'" >/dev/null 2>&1 \
         || die "could not create namespace database ${db} on mysql"
       printf 'mysql://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
     valkey)
@@ -261,7 +278,7 @@ do_ns_drop() {
   case "$svc" in
     postgres) docker exec "$(container "$svc")" psql -U busbar -d busbar_store_qa \
                 -c "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
-    mysql)    docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
+    mysql)    docker exec "$(container "$svc")" mysql -h 127.0.0.1 --protocol=TCP -uroot -pbusbar \
                 -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
     # FLUSHDB on THIS index, never FLUSHALL: one recording must not be able to erase another's.
     valkey)   docker exec "$(container "$svc")" valkey-cli -n "$(ns_index "$token")" FLUSHDB >/dev/null 2>&1 || true ;;
@@ -282,11 +299,11 @@ do_ns_sweep() {
             -c "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 && say "  swept ${db}"
         done ;;
     mysql)
-      docker exec "$(container "$svc")" mysql -ubusbar -pbusbar -N -B \
+      docker exec "$(container "$svc")" mysql -h 127.0.0.1 --protocol=TCP -uroot -pbusbar -N -B \
         -e "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'busbar\\_oracle\\_%'" 2>/dev/null \
       | while read -r db; do
           [ -n "$db" ] || continue
-          docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
+          docker exec "$(container "$svc")" mysql -h 127.0.0.1 --protocol=TCP -uroot -pbusbar \
             -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 && say "  swept ${db}"
         done ;;
     valkey) say "  valkey namespaces are logical db indexes; nothing accumulates to sweep." ;;
@@ -386,6 +403,27 @@ run_selftest() {
   else
     record "fixtures|mysql-cap-120" FAIL "mysql's readiness cap is not 120s" "found: $(svc_secs mysql)"
   fi
+
+  # 5b. A READINESS PROBE MUST BE ABLE TO FAIL. This row exists because one could not: mysql's
+  #     shipped probe was `mysqladmin ping`, which EXITS 0 ON ACCESS DENIED, against an account
+  #     (`busbar@localhost`) the image never creates -- so `up mysql` reported ready on a server
+  #     nothing could log into, and every mysql suite in this repo started behind that. The check is
+  #     static because the real one needs a container: a probe that authenticates must name a
+  #     TRANSPORT (the socket path cannot authenticate as `busbar` at all) and must not be a bare
+  #     `ping`. A future probe that reintroduces either shape is caught here rather than in a suite
+  #     that mysteriously fails after the gate said go.
+  local myprobe; myprobe="$(svc_probe mysql)"
+  owe "fixtures|mysql-probe-can-fail"
+  case "$myprobe" in
+    *" ping"*|*" ping")
+      record "fixtures|mysql-probe-can-fail" FAIL "mysql's readiness probe is a bare ping, which exits 0 on ACCESS DENIED" \
+        "found: ${myprobe} — a readiness gate that cannot fail is not a gate; use \`mysqladmin --protocol=TCP ... status\`" ;;
+    *"--protocol=TCP"*)
+      record "fixtures|mysql-probe-can-fail" PASS "mysql's readiness probe authenticates over TCP and fails on bad credentials" "$myprobe" ;;
+    *)
+      record "fixtures|mysql-probe-can-fail" FAIL "mysql's readiness probe does not name a transport" \
+        "found: ${myprobe} — the image creates busbar@% and no busbar@localhost, so the in-container socket path authenticates as nobody" ;;
+  esac
 
   # 6. RED-PROOF: an unknown service is refused, not silently treated as 'all'.
   owe "fixtures|unknown-service-refused"

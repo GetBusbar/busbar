@@ -2105,7 +2105,7 @@ jobs:
           MYSQL_PASSWORD: busbar
           MYSQL_DATABASE: busbar_test
         options: >-
-          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-cmd "mysqladmin -h 127.0.0.1 --protocol=TCP -ubusbar -pbusbar status"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12

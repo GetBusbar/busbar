@@ -184,7 +184,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
+          ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin -h 127.0.0.1 --protocol=TCP -ubusbar -pbusbar status" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
       # Real Vault dev-mode server for a plugin's live-Vault tests (BUSBAR_TEST_VAULT_ADDR /
       # BUSBAR_TEST_VAULT_TOKEN, set on the Test steps below) — same hard-fail-under-CI-if-unset
       # discipline the plugin's own tests apply, mirroring busbarAI's own ci.yml vault service block.

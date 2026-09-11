@@ -37,7 +37,7 @@
 #
 # service	image	digest	ready_probe	port	local_port	ready_secs
 postgres	postgres:16	sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b	pg_isready -U busbar	5432	15432	60
-mysql	mysql:8	sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb	mysqladmin ping -h localhost -ubusbar -pbusbar	3306	13306	120
+mysql	mysql:8	sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb	mysqladmin -h 127.0.0.1 --protocol=TCP -ubusbar -pbusbar status	3306	13306	120
 valkey	valkey/valkey:8	sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6	valkey-cli ping	6379	16379	60
 vault	hashicorp/vault	sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2	-	8200	18200	60
 wiremock	wiremock/wiremock:3.9.2	sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176	-	8080	-	60

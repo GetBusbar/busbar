@@ -1553,11 +1553,11 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
         -e MYSQL_DATABASE=busbar_release_check \
         -p 13306:3306 \
         mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb >/dev/null
-      echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
+      echo "  waiting for mysql to accept connections (mysqladmin status inside the container; ping exits 0 on access denied)..."
       waited=0
       # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
       # postgres, and ping as the busbar user so "ready" means "ready for OUR credentials".
-      until docker exec "$SUITE_CONTAINER" mysqladmin ping -h localhost -ubusbar -pbusbar >/dev/null 2>&1; do
+      until docker exec "$SUITE_CONTAINER" mysqladmin -h 127.0.0.1 --protocol=TCP -ubusbar -pbusbar status >/dev/null 2>&1; do
         waited=$((waited + 1))
         if [ "$waited" -ge 120 ]; then
           echo "mysql did not become ready within 120s" >&2
