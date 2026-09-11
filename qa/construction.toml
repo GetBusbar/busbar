@@ -1193,3 +1193,30 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# DECLARED RAISES — see `xtask/src/gates/construction/ceilings.rs::raises`. Each entry names ONE
+# ceiling's exact before/after in `qa/kind-isolation.toml`'s `[[cell]]` array (the cell's position
+# in that file, `cell.<n>.count`) and expires by itself the moment this commit lands and the base
+# carries the new number — `ceiling-rose` then reads no rise here at all, and a stale entry left
+# behind is refused as one that describes nothing.
+#
+# All three are DOCK-1 (busbar 1.6.0: the container image can load a plugin): the CLI's
+# `--list-plugins --probe-load` now performs a real `dlopen`, and that answer has to come from the
+# loader, not be reinvented at the call site.
+[gate.ceiling_raises."cell.10.count"]
+file = "qa/kind-isolation.toml"
+from = 28
+to = 29
+because = "busbar's `--list-plugins` now imports busbar-plugin-loader's `ProbeVerdict` (one `use`, matched at three call sites) to print a real load verdict instead of inferring one from a signature check; the crate's CLI naming the loader's verdict type is the one new naming edge this feature requires, and the accompanying explanatory comment that repeated the crate path in prose was reworded to remove the second, redundant hit."
+
+[gate.ceiling_raises."cell.174.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 3
+because = "busbar-plugin-loader gained `a_real_cdylib_probes_loads_for_a_hook_just_as_for_a_store` in hook_tests.rs, proving `probe_load` maps and dlopens a HOOK cdylib and not only a store one — the positive case for the second plugin kind the image gate now also proves loads. One new test naming the hooks kind is the cost of measuring, rather than assuming, that every plugin kind loads the same way."
+
+[gate.ceiling_raises."cell.177.count"]
+file = "qa/kind-isolation.toml"
+from = 19
+to = 20
+because = "the same new hook_tests.rs test signs its planted hook fixture with busbar_plugin_sign::sign, the one tarball-signing call registry_tests.rs already used for its store fixtures — reused rather than reimplemented, so the rise is one call site naming a second plugin-tooling crate from a test that did not exist before this feature."

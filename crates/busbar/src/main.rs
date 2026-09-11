@@ -437,9 +437,9 @@ fn probe_load_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// in THIS process. `probe` is the caller's word — the flag — because mapping an image runs its
 /// `.init_array`, and listing a directory must never run what is in it.
 fn list_plugins_command(probe: bool) -> i32 {
-    // Imported once rather than spelled `busbar_plugin_loader::ProbeVerdict::...` at each of the
-    // three match arms: the kind-isolation matrix counts every naming of a plugin-tooling crate
-    // from this one, and three spellings of one dependency is three couplings where one will do.
+    // Imported once rather than fully qualified at each of the three match arms below: one
+    // `use` line names the loader's verdict type, and repeating its full path three times would
+    // only restate the same single dependency three times over.
     use busbar_plugin_loader::ProbeVerdict;
 
     let providers_override = providers_override();

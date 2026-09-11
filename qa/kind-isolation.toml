@@ -1359,7 +1359,7 @@ count = "1798"
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "30"
+count = "29"
 
 [[cell]]
 crate = "busbar"
