@@ -408,3 +408,93 @@ fn the_shipped_default_resolves_to_the_previous_releases_own_terms() {
         );
     }
 }
+
+/// **THE AMOUNTS A UNIT IS ACTUALLY CHARGED ARE THE AMOUNTS THE FOLD RESOLVED FOR IT.**
+///
+/// The counts half and the amounts half both read [`TariffCfg::scopes`] — tier, pool, plane,
+/// default, most specific first — and that is the whole of the law. The CARD, though, does not
+/// carry one cell per unit: it carries one per configured scope, and a posting records the single
+/// innermost scope that applied, so that a reader holding the posting and the dated history can
+/// re-derive the figure without re-walking a configuration that has since moved.
+///
+/// Those two shapes agree for exactly as long as the chain above a recorded scope is the default
+/// and nothing else. Where only plane cells are written, they do, and this asserts it: the card's
+/// plane entry IS the fold's answer for a unit of that plane, figure for figure.
+#[test]
+fn a_card_entry_charges_what_the_fold_resolved_at_that_scope() {
+    let cfg = parse(
+        "default:\n  minimum_cents: 1\nplane:\n  llm:\n    transaction_fee:\n      \
+         flat_cents: 7\n",
+    );
+
+    let folded = cfg.amounts("llm", None, None, 0);
+    assert_eq!(
+        (folded.transaction, folded.minimum),
+        (7, 1),
+        "the fold takes the fee from the plane and the floor from the default: that is what \
+         most-specific-first, field by field, means"
+    );
+
+    let scope = cfg.scope_of("llm", None, None);
+    let at_scope = cfg.card_amounts(0).at(&scope).clone();
+    assert_eq!(
+        (at_scope.transaction, at_scope.minimum),
+        (folded.transaction, folded.minimum),
+        "the card entry for the scope a posting records is the fold's own answer"
+    );
+}
+
+/// **A PLANE-SCOPED AMOUNT THAT SOME UNIT OF THAT PLANE WOULD NEVER PAY IS REFUSED AT BOOT.**
+///
+/// A unit on a plane that has a `tariff.plane.<k>` cell, inside a pool that has a
+/// `tariff.pool.<p>` cell, records the POOL — and the card's pool entry is the pool folded over the
+/// default, with no plane layer between them, because a pool entry is resolved with no plane to
+/// resolve against and a pool does not name its plane. So the amount written at `tariff.plane.<k>`
+/// was charged to every unit of that plane OUTSIDE the scoped pool and to none inside it: two units
+/// on one plane, priced by two schedules, one of which the deployment never wrote. Nothing said so;
+/// the fold answered one figure and the card charged another.
+///
+/// There is no honest arm to pick. Folding the plane into the pool's entry prices a unit under a
+/// schedule its own row does not name, and dropping it is the silent under-charge. So the node
+/// refuses and says which two cells collide, and the operator writes the amount where it should
+/// apply.
+///
+/// RED before the refusal: the same configuration validated, booted, and quietly charged nothing
+/// at the plane for every unit in the pool.
+#[test]
+fn a_plane_amount_a_narrower_scope_would_shadow_is_refused_naming_both() {
+    // The shape that collides: an amount at the plane, any cell at all at a narrower scope.
+    let colliding = parse(
+        "plane:\n  llm:\n    transaction_fee:\n      flat_cents: 7\npool:\n  p:\n    \
+         minimum_cents: 1\n",
+    );
+    let shadowed = colliding.shadowed_plane_amounts();
+    assert_eq!(
+        shadowed,
+        vec![("plane.llm".to_string(), "pool.p".to_string())],
+        "the collision is reported as the PAIR, because a refusal that named one of them would \
+         leave the operator guessing which edit makes it go away"
+    );
+
+    // A tier cell collides on the same terms.
+    let by_tier =
+        parse("plane:\n  llm:\n    minimum_cents: 4\ntier:\n  gold:\n    dispute_policy: full\n");
+    assert_eq!(
+        by_tier.shadowed_plane_amounts(),
+        vec![("plane.llm".to_string(), "tier.gold".to_string())]
+    );
+
+    // A plane cell that sets no AMOUNT does not collide: the counts half resolves it whole at every
+    // scope, and there is no figure for a card entry to drop.
+    let counts_only =
+        parse("plane:\n  llm:\n    dispute_policy: full\npool:\n  p:\n    minimum_cents: 1\n");
+    assert!(
+        counts_only.shadowed_plane_amounts().is_empty(),
+        "a plane cell with no amount has nothing a card entry could fail to charge"
+    );
+
+    // And neither does a plane amount with no narrower scope beside it — the case the cell above
+    // proves the card charges correctly.
+    let plane_only = parse("plane:\n  llm:\n    transaction_fee:\n      flat_cents: 7\n");
+    assert!(plane_only.shadowed_plane_amounts().is_empty());
+}
