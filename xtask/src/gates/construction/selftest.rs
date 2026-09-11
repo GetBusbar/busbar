@@ -993,13 +993,54 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         ],
     ));
 
+    // ── WHO READ THE CLOCK, AND WHAT GOT STAMPED ───────────────────────────────────────────────
+    //
+    // Five rows, ONE plant, because they are one subject: a clock read that should not have
+    // happened here, and a timestamp field that never read one at all. Grouping them is this
+    // file's own convention — the plants are grouped by family so a family costs ONE whole-tree
+    // scan rather than five — and it is not a weaker proof for it: `prove_red` requires EVERY
+    // covered row to be red, so a rule that stopped counting turns this case green and the
+    // self-test says so.
+    //
+    // The planted clock file earns three of the five by itself: `SystemTime::now()` inside a unit
+    // crate is that crate reading a clock it may not read, AND a second wall-clock implementation
+    // beside the one the node has.
+    //
+    // THE TWO FIELD-NAME ROWS ARE PLANTED NAME BY NAME, for the reason [`plant_each`] gives: a
+    // plant that exercised two of the eight `timestamp_fields` would leave the other six deletable
+    // from the ceilings file with the case still red. So the plant is DERIVED from that list — a
+    // name added there arrives with its own proof, and a name dropped is one this case stops
+    // planting.
+    let ts_fields = ConstructionGate::cfg(cx)
+        .ok()
+        .and_then(|c| {
+            c.rule("ts-reads-the-clock")
+                .ok()
+                .map(|t| t.list_of("timestamp_fields"))
+        })
+        .unwrap_or_default();
+    if ts_fields.is_empty() {
+        r.note_infra_failure(
+            "[rules.ts-reads-the-clock] names no `timestamp_fields`, so the zero-stamp and \
+             Default-derive rows are unproven here rather than passing",
+        );
+    }
     let units = dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"]));
     let target = units
         .iter()
         .map(|d| crate_name_of_dir(d))
         .find(|n| n != "busbar-unit-ledger");
+    let name = "a clock read where none may happen, a cited finding id, a timestamp field stamped \
+                zero, and another left to Default";
+    let covers = strings(&[
+        "unit-no-wall-clock",
+        "unit-no-finding-ids",
+        "ts-reads-the-clock",
+        "ts-reads-the-clock:default-derive",
+        "ts-reads-the-clock:second-clock",
+    ]);
     match target {
-        Some(unit) => {
+        Some(unit) if !ts_fields.is_empty() => {
             let mut ov = on(base);
             ov.set(
                 format!("crates/{unit}/src/zz_planted_clock.rs"),
@@ -1007,18 +1048,33 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
                  planted_clock() {\n    let _ = SystemTime::now();\n    let _ = \
                  Instant::now();\n}\n",
             );
-            r.push(prove_red(
-                cx,
-                gate,
-                "a unit crate reads the clock and cites a finding identifier",
-                &["unit-no-wall-clock", "unit-no-finding-ids"],
-                ov,
-                &["zz_planted_clock.rs"],
-            ));
+            let mut named = vec!["zz_planted_clock.rs".to_string()];
+            for (i, field) in ts_fields.iter().enumerate() {
+                let zero = format!("crates/{unit}/src/zz_planted_ts_zero_{i}.rs");
+                ov.set(
+                    &zero,
+                    format!(
+                        "pub fn planted_ts_zero_{i}() {{\n    let _ = PlantedRow {{\n        \
+                         {field}: 0,\n    }};\n}}\n"
+                    ),
+                );
+                named.push(zero);
+                let derive = format!("crates/{unit}/src/zz_planted_ts_default_{i}.rs");
+                ov.set(
+                    &derive,
+                    format!(
+                        "#[derive(Debug, Default)]\npub struct ZzPlantedTsDefault{i} {{\n    pub \
+                         {field}: u64,\n}}\n"
+                    ),
+                );
+                named.push(derive);
+            }
+            let naming: Vec<&str> = named.iter().map(String::as_str).collect();
+            r.push(prove_red(cx, gate, name, &refs(&covers), ov, &naming));
         }
-        None => r.push(Case {
-            name: "a unit crate reads the clock and cites a finding identifier".to_string(),
-            covers: strings(&["unit-no-wall-clock", "unit-no-finding-ids"]),
+        _ => r.push(Case {
+            name: name.to_string(),
+            covers,
             expected: Expect::Red { naming: vec![] },
             got: Expect::Skipped,
         }),
