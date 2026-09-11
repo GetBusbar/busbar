@@ -1,5 +1,16 @@
 name: CI
 
+# LATCHKEY MIGRATION (phase 1 of docs/ci/latchkey-migration.md) — SELF-HEALING CANNOT BE SCOPED.
+# Every job below moved from `[self-hosted, linux, x64, busbar-xl]` to a sized `latchkey-*` label.
+# Latchkey's self-healing (retry-with-backoff / raise-memory / free-disk / bounded-AI-diagnosis on a
+# failed step) is documented as a WORKSPACE-LEVEL switch only — Settings → Self-Healing, on by
+# default, no per-repository and no per-job/per-workflow toggle. Every job in this file is a VERDICT
+# (a gate, a test suite, a lint) whose exit code is read by branch protection or by
+# `cargo xtask gate ship-ready`; a self-healed retry that turns a red into a green before GitHub ever
+# reports the job's result is not a flake fixed, it is the tree's verdict laundered. Said loudly here
+# because there is no YAML line that fixes it: the workspace switch must be turned OFF by an org
+# owner/admin before this file's green means what it says. See docs/ci/latchkey-migration.md.
+#
 # TWO TIERS, AND WHY.
 #
 # This workflow used to trigger on `push` to main/dev/qa ONLY, plus `pull_request`. That left every
@@ -65,7 +76,8 @@ concurrency:
   cancel-in-progress: true
 
 # ── COMPILER CACHE (sccache) ───────────────────────────────────────────────────────────────────────
-# Swatinem/rust-cache already restores `target/` and the registry PER JOB: it makes the SECOND run of
+# Latchkey Fast Cache (latchkey-dev/cache-action, restore/save around ~/.cargo and target/) already
+# restores `target/` and the registry PER JOB: it makes the SECOND run of
 # the SAME job on the SAME lockfile cheap. It does nothing for the first run of a new branch, and
 # nothing for the fifteen OTHER jobs in this run that are compiling the same crates from the same
 # sources at the same moment — each one starts from its own key and rebuilds the world.
@@ -123,7 +135,8 @@ jobs:
   # verdict being self-describing instead of needing someone to remember the rule.
   gate-tier:
     name: gate tier (what this run actually proved)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.1 min
     # over the last 18 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -183,7 +196,8 @@ jobs:
   # is paid off. Both jobs are required checks, and neither can now hide the other.
   structure-lint:
     name: structure lint
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 14.5 min
     # over the last 20 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 22
@@ -208,11 +222,14 @@ jobs:
       # on `xtask` so the gates below do not pay for the workspace's build.
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
@@ -569,10 +586,20 @@ jobs:
         run: cargo xtask gate kind-isolation
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
   check:
     name: fmt · clippy · build · test
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
     # test leaves the job printing nothing until someone notices and cancels by hand. A green run
     # takes ~13 minutes warm, ~40 cold; 75 bounds the damage while leaving cold-cache headroom.
@@ -666,8 +693,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -929,9 +962,19 @@ jobs:
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
   #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 3.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -948,7 +991,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
@@ -986,9 +1036,19 @@ jobs:
   #
   # Needs full history: the corpus is checked in, but `refresh.sh` reads tags, and a shallow clone
   # would make a regenerated corpus silently smaller rather than failing loudly.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1006,8 +1066,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Corpus is present and covers the tags
         run: |
           set -euo pipefail
@@ -1023,10 +1089,20 @@ jobs:
           fi
       - name: Every shipped config migrates to a valid current config
         run: cargo test -p busbar --test migration_corpus --locked -- --nocapture
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
   config-stability:
     name: config-stability gate (frozen grammar · additive-only)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.0 min
     # over the last 19 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1047,11 +1123,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
 
@@ -1088,9 +1167,19 @@ jobs:
   # `--write` command if the committed file differs. Self-test FIRST (the sibling convention) so a
   # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
   # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   generated-artifact-drift:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.7 min
     # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1103,8 +1192,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
       # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
       # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
@@ -1157,9 +1252,19 @@ jobs:
   # which is the exact definition of "what the public gets". Self-test FIRST, and a scan that
   # discovers ZERO files is a HARD FAILURE, so neither a broken rule table nor a mistyped path can
   # read as "clean". The same script runs over every PLUGIN repo via the plugin-ci reusable workflow.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   public-hygiene:
     name: docs hygiene (public prose describes the software, not the process)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.2 min
     # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1220,7 +1325,8 @@ jobs:
   # testing/fleet-fixtures/verdict.sh.
   service-image-pins:
     name: service image pins (one pinned list, every workflow reads it)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.6 min
     # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1243,11 +1349,14 @@ jobs:
       # THE REGISTRY/TARGET CACHE, which this job never had: it builds the gate runner from source on
       # every run with nothing restored. Keyed `xtask`, the same key `structure-lint` uses, so the
       # two jobs that build only the runner share one entry instead of each paying for it.
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-xtask-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Service-image lint self-test (every rule proven RED)
         run: cargo xtask gate service-images --selftest
       - name: Service-image pin gate
@@ -1260,6 +1369,15 @@ jobs:
       # where nobody is watching.
       - name: Store-service fixtures self-test
         run: testing/fleet-fixtures/store-services.sh --selftest
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-xtask-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
   # EXECUTABLE-CONFIG gate. Every config-grammar guard that existed before this one was scoped to
   # DOCS — `crates/busbar/tests/docs_examples.rs` reads `docs/**`, marketing's check-config-blocks.mjs
@@ -1279,7 +1397,8 @@ jobs:
   # inherits it with no per-repo work.
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1295,8 +1414,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build busbar (the validator this gate judges with)
         run: cargo build --locked --bin busbar
       - name: Executable-config gate self-test (RED/GREEN before the verdict is trusted)
@@ -1329,9 +1454,19 @@ jobs:
   # so it cannot see a core path that compiles fine and then fails at runtime because the module it
   # reaches for is absent. Proving the featureless binary WORKS is the `no-plugins-gate` job below,
   # which boots it and drives real HTTP through it.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   no-default-features:
     name: no-default-features build · clippy · test
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 22.0 min
     # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 33
@@ -1348,7 +1483,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Clippy (no-default-features)
         run: cargo clippy --no-default-features --locked -- -D warnings
       - name: Build (no-default-features)
@@ -1412,9 +1554,19 @@ jobs:
   # `dep:` lines in a scratch checkout, then builds the neutral crates + bin and boot-smokes that the
   # plane reports absent. It is wired as its own gate (`plane-delete-test.sh --all`) and passes for all
   # three planes; this weak form is the per-plane compile-level complement, asserted on every matrix leg.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.6 min
     # over the last 15 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1439,7 +1591,14 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
         # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
@@ -1475,9 +1634,19 @@ jobs:
   # fixtures that genuinely depend on a compiled-out plugin, plus stub servers that pass every earlier
   # assertion and break exactly one later one, so a gate that had rotted into passing vacuously fails
   # here instead of manufacturing false confidence.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1492,7 +1661,14 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
       - name: No-plugins gate (axis 1 compiled out · axis 2 not installed)
@@ -1503,9 +1679,19 @@ jobs:
   # behind the `txn_fence_red` rustc cfg) and the loom model explores interleavings exhaustively behind
   # `loom-model`, far too slowly for the default suite. A gate nothing runs is not a gate, so they
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   txn-guards:
     name: txn compile fence · loom model
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 12.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 18
@@ -1520,7 +1706,14 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
@@ -1530,9 +1723,19 @@ jobs:
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
   # noise can never trip it — it exists to catch GROSS hot-path regressions (sync I/O, stray
   # sleeps) the instant they land. Fine-grained overhead numbers are bench/latency/'s job.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   timing:
     name: timing gate (release)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 27
@@ -1547,7 +1750,14 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Hot-path timing gate
         run: |
           set -euo pipefail
@@ -1575,6 +1785,15 @@ jobs:
   # this job is green while the spawn half is unexecuted on Windows. `cargo test` cannot notice that
   # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
   # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
@@ -1614,7 +1833,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build
         run: cargo build --workspace --verbose
       # CLIPPY ON WINDOWS, which `build` above does not subsume in either direction. `cargo build`
@@ -1715,9 +1941,19 @@ jobs:
   #
   # Same digest-pinned postgres/valkey services + BUSBAR_TEST_POSTGRES_URL / VALKEY_URL as `check`,
   # so the store-postgres / store-valkey roundtrip tests are covered here too rather than skipped.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   coverage:
     name: coverage (llvm-cov · codecov)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 6.4 min
     # over the last 9 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
@@ -1761,8 +1997,14 @@ jobs:
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (workspace, live-DB tests wired)
@@ -1814,9 +2056,19 @@ jobs:
   #      other gate jobs follow.
   #
   # FULL TIER: runs on every PR, on dev/qa/main, and on dispatch — same guard as the other gate jobs.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   perf-build-gate:
     name: perf + build-parity gate
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 15
@@ -1835,7 +2087,14 @@ jobs:
           # skipping, which is the vacuous pass it exists to make impossible — so the component is
           # part of wiring it, not an optimisation.
           components: clippy, llvm-tools
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
       # (same discipline as `cargo xtask gate <name> --selftest` et al).
@@ -1947,6 +2206,15 @@ jobs:
   # `unknown`, never green). Public-safety is fail-closed (check-proof-manifest-public.mjs: verdicts +
   # counts + names only, no source, no secrets). The commit back carries [skip ci] so it cannot loop.
   # Not in the ci-umbrella needs: a manifest refresh must never gate a promotion.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   proof-manifest:
     name: proof-manifest (stage-mirrored dev/qa/main)
     if: github.event_name == 'push' && contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1955,7 +2223,8 @@ jobs:
       - check
       - no-plugins-gate
       - no-default-features
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 30
     permissions:
       contents: write
@@ -1969,7 +2238,14 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
@@ -2092,9 +2368,19 @@ jobs:
   # oracle itself; the candidate is recorded fresh every run. The candidate is built with the release
   # public key embedded, exactly as build-artifact.yml builds it — without it every first-party
   # plugin signature is unverifiable and the plugins family reads red for the wrong reason.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   shadow-oracle:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
@@ -2162,8 +2448,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
       # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
       # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
@@ -2321,9 +2613,19 @@ jobs:
   # reports VACUOUS (zero rows) instead of the real verdict. run.sh's default output directory is
   # absolute (target/llm-conformance/candidate under the repo), which is what the artifact upload
   # below collects.
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   llm-conformance:
     name: llm spec conformance (HEAD recording vs the published provider specs)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     timeout-minutes: 20
     needs: shadow-oracle
     # Runs whether the shadow oracle passed or FAILED (a replay divergence must not hide a spec
@@ -2420,7 +2722,8 @@ jobs:
   # default path, so a mistyped arm ran a check nobody asked for and reported green for it.)
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     timeout-minutes: 30
     # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
     # builds, so it cannot ride a warm cache from the `check` job; it runs on every pull request, on
@@ -2435,8 +2738,14 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: Teller-steps self-test (a lying matrix is refused)
@@ -2451,10 +2760,20 @@ jobs:
 
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
         run: cargo xtask teller-steps --root-legs
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     timeout-minutes: 15
     # `continue-on-error: true` IS GONE, AND SO IS THE REASON FOR IT. It was here because the gate
     # is RED BY DESIGN on HEAD and the only two answers available were "green" and "red", neither of
@@ -2535,7 +2854,8 @@ jobs:
   # Self-test FIRST, as everywhere else in this file.
   design-bindings:
     name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2566,7 +2886,8 @@ jobs:
     #
     # `continue-on-error` is deliberately ABSENT. The job's own result is the signal branch
     # protection reads; softening it here would make the required check unable to fail.
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-large
+
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2578,10 +2899,14 @@ jobs:
           git fetch --no-tags --quiet origin \
             +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: xtask
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: Ship-ready self-test
@@ -2598,6 +2923,15 @@ jobs:
           # verdict carried in the tree is a verdict the person being gated can write.
           GH_TOKEN: ${{ github.token }}
         run: cargo xtask gate ship-ready
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
 
   ci-umbrella:
     name: ci umbrella
@@ -2642,7 +2976,8 @@ jobs:
     # non-gating: proof-manifest -- publishes the Build Proof Dashboard on dev/qa/main only. By its
     #   own contract it CHANGES NO GATE, it records verdicts other jobs produced; a manifest refresh
     #   must never be able to gate a promotion.
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 5
     env:
       # Report-only: printed, never counted. Flip condition is on the construction-gate job.
