@@ -1794,3 +1794,42 @@ key = "cell.busbar.plugin-tooling.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "ONE name: `busbar_plugin_loader::store_adapter::StoreAdapter`, the type that carries the three unit-side store seams over a loaded store. The root names it once, in the one function that constructs one, because the loader is what opened the store and the adapter is the shape it hands back. Nothing else in the root gains a loader name on this landing."
+
+# ── BIND-1 (1.6.0): ONE RESOLVER, AND THE KIND-NEUTRAL RECORD-LEG RUNNER ─────────────────────────
+#
+# `crates/busbar/src/root/bindings.rs` (the resolver), `root/store.rs::PlaneRecords` (the runner the
+# record legs of EVERY plane are run through, moved out of `root/units_mcp.rs` and made neutral) and
+# the cells that drive both. MCP-T's `LegNode` no longer assembles the boot-resolved half at all: it
+# mounts the plane on a real node under the plane's own key and reads the nine fields back through
+# `resolve_bindings`. `cell.busbar.legacy` 95 -> 97 takes NO declaration and needs none -- it is
+# still under the 98 the base carries.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the published store protocol, named where a node's one store is bound to a SECOND plane's declaration: `busbar_api::Store` in the resolver's cells, which mount two planes on one node and prove the same runner refuses what the second plane's table does not declare. The root is the one kind entitled to name the store protocol beside a plane's schemas, and this is the file that does it once for every plane rather than once per plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the SEALED ORIGIN an audit record is written under, named by the composition that seals it: `busbar_caps::Origin` as the node's field and as the resolver's ninth returned binding, and `busbar_caps::OriginKind::Client` where the node's cells seal one. Origin::seal takes the kernel's seal and this is not the kernel, so the root carries the sealed value — one per node, handed to every plane's leg, never one per plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "ONE name: `busbar_kernel::teller::Kernel`, in the resolver's cells, which seal the node's origin the way the root's boot seals it. A cell that invented an origin rather than sealing one would be proving a node that cannot exist, because the only way to obtain a sealed origin is to ask the kernel for it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "THE PLANE AS A KEY, never as a conditional: `busbar_contract::plane::PlaneMeta` read for `<McpPlane as PlaneMeta>::KEY` at every mounting and every resolve, the plane's own record declaration (`busbar_plane_mcp::records::{operations_for, SCHEMA_CATALOGUE, SCHEMA_APPROVAL, OP_PUT, OP_REDEEM}`) handed in as the mounted plane's data, and the store protocol's plane-record spellings in the runner that was moved here out of the mcp leg file. The resolver contains no plane name and cannot: what differs between two planes is the entry the node was handed when the plane was mounted."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "the units a NODE holds, named by the composition that holds them: `busbar_unit_auth::{Auth, AuthChain}`, `busbar_unit_admission::{Door, InMemoryCells, Pricer}`, `busbar_unit_wal::NullShipper` and `busbar_unit_ledger::legacy::RecordingRows` in the node type, its constructor and the cells that assemble one. Every one of them is the node's ONE instance, borrowed by every plane's leg; the cells assert exactly that by pointer, because a node whose two planes had two doors would admit twice against one budget."

@@ -1310,9 +1310,12 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "api"
-count = "158"
+count = "161"
 
 [[cell]]
 crate = "busbar"
@@ -1327,9 +1330,12 @@ count = "25"
 # through the file's existing imports rather than fully qualified, which is why the rise is 12 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "caps"
-count = "314"
+count = "317"
 
 [[cell]]
 crate = "busbar"
@@ -1366,17 +1372,23 @@ count = "5"
 # through the file's existing imports rather than fully qualified, which is why the rise is 4 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "kernel"
-count = "165"
+count = "166"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "legacy"
-count = "95"
+count = "97"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1389,9 +1401,12 @@ count = "95"
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
 # (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
 # declaration in qa/construction.toml.
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "1978"
+count = "1998"
 
 [[cell]]
 # RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
@@ -1436,9 +1451,12 @@ count = "947"
 # through the file's existing imports rather than fully qualified, which is why the rise is 8 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED again by ROOT COMPOSITION (BIND-1, 1.6.0): the ONE resolver (`root/bindings.rs`) and
+# the kind-neutral record-leg runner it hands back (`root/store.rs::PlaneRecords`), with MCP-T's
+# cells switched onto both. See the declarations in qa/construction.toml.
 crate = "busbar"
 kind = "unit"
-count = "1201"
+count = "1213"
 
 [[cell]]
 crate = "busbar-a2a"
