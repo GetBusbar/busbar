@@ -282,6 +282,19 @@ jobs:
         run: cargo xtask gate ci-umbrella --selftest
       - name: ci-umbrella membership (no job is outside the required check by accident)
         run: cargo xtask gate ci-umbrella
+      # FEATURE-SET COVERAGE, the same contract one axis over: `ci-umbrella` asserts every JOB is
+      # inside the required check, this asserts every non-default CARGO FEATURE is inside a job. A
+      # feature nothing builds is not compiled, so it is not type-checked, so it does not have to be
+      # valid Rust -- the root duplex-serve leg was default-OFF, named by no job, and broken for DAYS
+      # with every run green. Membership is derived from the member manifests and asserted against
+      # the `feature-sets` matrix below; a deliberate exclusion is possible only as a written
+      # `# feature-covered:` line naming the job that already builds it. Self-test runs FIRST and its
+      # first case re-plants exactly that defect -- a crate grows a feature no job names -- and
+      # requires a red. `docs/ci/feature-sets.md` is the measurement behind it.
+      - name: feature-set coverage self-test (an unbuilt feature re-planted, proven RED)
+        run: cargo xtask gate feature-sets --selftest
+      - name: feature-set coverage (no non-default feature is outside CI by accident)
+        run: cargo xtask gate feature-sets
       # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
       # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
       # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the

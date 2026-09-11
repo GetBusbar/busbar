@@ -28,6 +28,7 @@ pub mod construction;
 pub mod denylist_gate;
 pub mod design_bindings;
 pub mod duplex_ws_default_edge;
+pub mod feature_sets;
 pub mod field_inventory;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
@@ -1342,6 +1343,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(ci_umbrella::CiUmbrellaGate),
         summary: "every job is in the umbrella's needs or excluded for a written reason",
+    },
+    Registration {
+        name: "feature-sets",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(feature_sets::FeatureSetsGate),
+        summary: "every non-default cargo feature is built by a CI job that names it",
     },
     Registration {
         name: "inventory-ref",
