@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening additions for `busbar-secret-ref`, born of a `cargo mutants` pass over the
-//! crate (`cargo mutants -p busbar-secret-ref`): that pass found ZERO surviving mutants (13
-//! caught, 11 unviable/non-compiling) against the crate's existing suite in
-//! `src/tests/lib_tests.rs` — so nothing here is closing a mutation gap. This file instead locks
-//! in the one invariant the task explicitly requires regardless of mutation results: `SecretRef`
-//! must never leak a secret VALUE through `Debug`/`Display`/logging.
+//! Mutation-hardening additions for `busbar-secret-ref`. The crate's existing suite in
+//! `src/tests/lib_tests.rs` already covers its behavior; this file instead locks in the one
+//! invariant that stands apart from ordinary behavior coverage: `SecretRef` must never leak a
+//! secret VALUE through `Debug`/`Display`/logging.
 //!
 //! Its own top-level `tests/` file (rather than a case added to `src/tests/lib_tests.rs`) because
 //! it stands for a crate-level SECURITY invariant, not a unit of `lib.rs`'s own behavior — see the
@@ -65,9 +63,9 @@ fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
 /// not expressible as a runtime assertion, so this test instead asserts the DOCUMENTED absence by
 /// construction: if a `Display` impl existed, `{}`-formatting a `SecretRef` inline below would need
 /// no `{:?}`, and this file would not compile with `{}` in place of `{:?}` — so the crate's public
-/// API is exercised only through `Debug`, matching what `cargo mutants`' unviable-mutant list
-/// confirms nothing else formats it. (A `serde::Serialize` impl exists instead, tested separately
-/// below — Serialize is not string-formatting and carries no log-echo risk on its own.)
+/// API is exercised only through `Debug`; nothing else formats it. (A `serde::Serialize` impl
+/// exists instead, tested separately below — Serialize is not string-formatting and carries no
+/// log-echo risk on its own.)
 #[test]
 fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_smuggle_in() {
     // The deserializer path (the ONLY path an actual pasted secret VALUE could arrive on this

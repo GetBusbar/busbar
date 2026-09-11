@@ -2551,11 +2551,11 @@ jobs:
 
   ship-ready:
     name: ship-ready
-    # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose in a
-    # design document — the ship twin is zero everywhere, no ceiling carries slack, no ceiling rose,
-    # nothing is standing red, the mutation job caught everything — and nothing in the repository
-    # could tell whether any line of it was true. `cargo xtask gate ship-ready` is those five lines
-    # as five rows that can each go red on their own.
+    # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose that
+    # nothing enforced — the ship twin is zero everywhere, no ceiling carries slack, no ceiling
+    # rose, nothing is standing red, the mutation job caught everything — and nothing in the
+    # repository could tell whether any line of it was true. `cargo xtask gate ship-ready` is those
+    # five lines as five rows that can each go red on their own.
     #
     # IT IS RED ON THIS LINE, ON PURPOSE, AND THAT IS WHY IT IS NOT IN THE UMBRELLA'S `needs`. The
     # integration line is not the ship SHA: the twin is red on HEAD by design and the standing-red

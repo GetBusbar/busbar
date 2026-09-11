@@ -2,10 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Mutation-hardening tests for `crates/busbar-timing/src/lib.rs` (feature-on registry, module
-//! `imp`). Added to close survivors a `cargo mutants -p busbar-timing --features timing` run
-//! found that `tests/imp_tests.rs` did not catch: the cached-disabled gate branch, the
-//! install-once `atexit` latch, and `bucket_floor`'s own arithmetic (previously only ever checked
-//! against ANOTHER call to itself).
+//! `imp`). Added to close gaps `tests/imp_tests.rs` did not catch: the cached-disabled gate
+//! branch, the install-once `atexit` latch, and `bucket_floor`'s own arithmetic (previously only
+//! ever checked against ANOTHER call to itself).
 //!
 //! An earlier draft of this file also tried to pin `dump`/`dump_scoped`/`print_table`/`fmt_ns` by
 //! redirecting the real stderr fd (`dup2`) around a call made on a freshly spawned thread, to
@@ -46,10 +45,10 @@ fn a_cached_disabled_gate_does_not_resample_the_environment() {
     );
 }
 
-/// `install_atexit` is the ONLY writer of `ATEXIT_INSTALLED`; replacing its body with `()` (a
-/// surviving mutant) leaves the flag permanently `false` no matter how many times the gate turns
-/// on. This does not depend on `atexit(3)` itself ever firing (which a unit test cannot observe
-/// without ending the process) — only on the latch install_atexit exists to set.
+/// `install_atexit` is the ONLY writer of `ATEXIT_INSTALLED`; guards against its body being
+/// weakened to a no-op, which would leave the flag permanently `false` no matter how many times
+/// the gate turns on. This does not depend on `atexit(3)` itself ever firing (which a unit test
+/// cannot observe without ending the process) — only on the latch install_atexit exists to set.
 #[test]
 fn enabling_the_gate_installs_the_atexit_latch_exactly_once() {
     let _gate = gate_lock();

@@ -1,6 +1,6 @@
 //! `cargo xtask gate ship-ready` — THE SHIP CRITERION, AS A ROW THAT CAN GO RED.
 //!
-//! The ship criterion used to be a checklist in a design document: the ship twin is zero
+//! The ship criterion used to be a checklist that nothing enforced: the ship twin is zero
 //! everywhere, no ceiling carries slack, no ceiling rose, the standing-red list is empty, the
 //! mutation job caught everything. A checklist is a promise that someone will read it. Nothing in
 //! the tree could tell whether any line of it was true, and nothing went red when a line stopped
@@ -315,14 +315,18 @@ fn mutants_row(cx: &Ctx, repo: &str) -> Row {
                     Some("success") => Row::pass(
                         ROW_MUTANTS,
                         "every mutant in the changed gate code was caught",
-                        format!("`{MUTANTS_CHECK}` success on {} -- {}", &a.sha[..12.min(a.sha.len())], a.url),
+                        format!(
+                            "`{MUTANTS_CHECK}` success on {} -- {}",
+                            &a.sha[..12.min(a.sha.len())],
+                            a.url
+                        ),
                     ),
                     Some(other) => Row::fail(
                         ROW_MUTANTS,
                         "the mutation job is not green",
                         format!(
-                            "`{MUTANTS_CHECK}` is `{other}` on {} -- {}. A surviving mutant is gate \
-                             code this branch changed that no self-test case holds down.",
+                            "`{MUTANTS_CHECK}` is `{other}` on {} -- {}. Gate code this branch \
+                             changed is not fully held down by a self-test case.",
                             &a.sha[..12.min(a.sha.len())],
                             a.url
                         ),

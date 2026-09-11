@@ -1875,7 +1875,7 @@ pub fn selftest<'a>(
     // -- THE DIALECT VOCABULARY -----------------------------------------------------------------
     //
     // A red team put `const VD = "anthropic";` and `fn openai_shim()` into `busbar-store-memory`
-    // and every gate in the tree stayed green (`audit-gate-round2-naming.md`, plant 40). The vendor
+    // and every gate in the tree stayed green. The vendor
     // names are the `dialect` kind's vocabulary, and the `dialect` kind has no crate yet, so the
     // census derived NO needles for it and the matrix had no row to raise. The vocabulary is read
     // from the DIALECT rule's own list rather than written out here, so the two cannot drift.

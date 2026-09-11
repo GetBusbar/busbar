@@ -5,10 +5,10 @@
 //! [`dlclose_on_worker`] and [`free_guarded`]. `validate_plugin_unloads_on_a_worker_not_the_callers_thread`
 //! (in `lib_tests.rs`) already pins the end-to-end unload path, but it SKIPS whenever the in-tree
 //! example store plugin cdylib isn't sitting next to the test binary — which is exactly the case
-//! under an isolated single-package build (`cargo test --package busbar-plugin-loader`, as run by
-//! `cargo mutants`), so a mutant that guts `dlclose_on_worker` or `free_guarded` to a no-op is
-//! invisible to that test in that harness. These tests exercise both functions directly, with no
-//! on-disk plugin fixture, so they run (and catch the mutant) everywhere.
+//! under an isolated single-package build (`cargo test --package busbar-plugin-loader`), so a
+//! regression that guts `dlclose_on_worker` or `free_guarded` to a no-op is invisible to that test
+//! in that build. These tests exercise both functions directly, with no on-disk plugin fixture, so
+//! they run (and catch the regression) everywhere.
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};

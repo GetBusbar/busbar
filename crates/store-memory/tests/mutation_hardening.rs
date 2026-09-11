@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-hardening additions for `busbar-store-memory`.
-//!
-//! `cargo mutants -p busbar-store-memory` was run locally (see the owning task's report for
-//! process detail) but did not reach a trustworthy full-crate result before local mutation runs
-//! were stopped in favor of a sharded EC2 run: a `--shard 1/6` attempt reported all 82 mutants in
-//! that shard "unviable", which is the tool's signal that the SCRATCH-DIR BUILD itself failed for
-//! that shard (a machine/environment problem — this repo's workspace is large and several other
-//! `cargo mutants` invocations were running concurrently against the same worktree at the time),
-//! not a verdict on the mutants themselves. That result is not included in the survivor table as a
-//! real finding. This file instead locks in the two invariants the task requires regardless of
-//! mutation results, so they are ready to be checked against whatever the eventual EC2 run finds.
+//! Mutation-hardening additions for `busbar-store-memory`. This file locks in two invariants that
+//! stand apart from ordinary behavior coverage, regardless of how any given hardening pass scores
+//! the rest of the crate.
 //!
 //! Its own top-level `tests/` file (rather than a case added to `src/tests/lib_tests.rs`), matching
 //! this crate's existing `tests/store_conformance.rs` — a cross-cutting store contract check does

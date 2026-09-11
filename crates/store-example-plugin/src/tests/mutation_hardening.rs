@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Mutation-testing hardening: tests added after a `cargo-mutants` run on this crate surfaced gaps
-//! `src/tests.rs`'s ABI-round-trip coverage didn't pin — narrow boundary conditions in
+//! Mutation-hardening: closes gaps `src/tests.rs`'s ABI-round-trip coverage didn't pin — narrow
+//! boundary conditions in
 //! `FileStore::load_from`, `lock_path_for`, `purge_tasks_before`'s age cutoff, and the
 //! append-is-idempotent-or-forked settlement on the task-event / call logs.
 
