@@ -581,11 +581,13 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 
 // The RESOLVED runtime breaker cfg (`BreakerCfg`/`TripConfig`/`TripMode`) is neutral DATA and now
 // lives in `busbar_substrate::store` (re-exported below via `pub use in_memory::*` from the parent
-// `store` module) so the LLM plane names it without reaching into `busbar-core`. Its `Default`,
-// `to_llm`, and `from_llm` move WITH it; only the config->runtime lowering stays here (core owns the
-// `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
-// is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
-// `on_exhausted`/`OnExhausted` lowering already uses.
+// `store` module) so the LLM plane names it without reaching into `busbar-core`. Its `Default` and
+// its plane-reachable inverse constructor `from_input` (BreakerInput -> BreakerCfg, called IN-PLANE
+// by `build_runtime`) move WITH it. The FLATTENING direction (BreakerCfg -> BreakerInput) has only
+// ONE caller-crate — this one (`appbuild` + the test fixture) — so it stays HERE instead, as
+// [`breaker_input_of`] below: a free function rather than an inherent method on either foreign type,
+// for the same orphan-rule reason [`breaker_cfg_to_runtime`] is one. Only the config->runtime
+// lowering stays here as that reason's original case (core owns the `config::BreakerCfg` grammar).
 // R5-store: a private import, not a re-export. `TripConfig`/`TripMode` never had a reader outside
 // this engine, and `BreakerCfg`'s two — `failover/mod.rs` and the test-support pool builder — name
 // `busbar_substrate::store::BreakerCfg` directly.
@@ -619,6 +621,34 @@ pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> Breaker
         // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
         // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
         bench_below_trip_threshold: true,
+    }
+}
+
+/// Flatten a RESOLVED runtime breaker cfg into the neutral carrier the plane's `build_runtime`
+/// reconstructs from (money-path Phase 3-4 C, via `BreakerCfg::from_input`, substrate-side and
+/// callable from any plane). Lossless over every field the FSM reads.
+/// `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path, carried
+/// anyway so a future divergence cannot silently drop. A free function, not an inherent method on
+/// either `BreakerCfg` or `plane_host::BreakerInput`, for the same reason [`breaker_cfg_to_runtime`]
+/// is one: both types are foreign to this crate (substrate-owned), which the orphan rule forbids an
+/// inherent impl over. Lives here rather than in substrate because this is its ONLY caller-crate
+/// (`appbuild` + the test fixture); the plane-reachable inverse direction stays substrate-side.
+pub(crate) fn breaker_input_of(cfg: &BreakerCfg) -> busbar_substrate::plane_host::BreakerInput {
+    busbar_substrate::plane_host::BreakerInput {
+        base_cooldown_secs: cfg.base_cooldown_secs,
+        max_cooldown_secs: cfg.max_cooldown_secs,
+        honor_retry_after: cfg.honor_retry_after,
+        bench_below_trip_threshold: cfg.bench_below_trip_threshold,
+        trip: busbar_substrate::plane_host::TripInput {
+            mode: match cfg.trip.mode {
+                TripMode::ErrorRate => busbar_substrate::plane_host::TripModeInput::ErrorRate,
+                TripMode::Consecutive => busbar_substrate::plane_host::TripModeInput::Consecutive,
+            },
+            window_s: cfg.trip.window_s,
+            threshold: cfg.trip.threshold,
+            min_requests: cfg.trip.min_requests,
+            consecutive_n: cfg.trip.consecutive_n,
+        },
     }
 }
 

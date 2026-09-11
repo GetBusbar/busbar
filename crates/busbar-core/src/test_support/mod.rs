@@ -1439,7 +1439,8 @@ impl TestApp {
     /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
     /// neutral carrier the plane reconstructs it from).
     pub fn pool_breaker(mut self, name: &str, b: &busbar_substrate::store::BreakerCfg) -> Self {
-        self.pool_breaker.insert(name.into(), b.to_llm());
+        self.pool_breaker
+            .insert(name.into(), crate::store::breaker_input_of(b));
         self
     }
     /// Set a pool's own `upstream_credentials:` override (the 1.5.3 per-pool egress-credential mode).

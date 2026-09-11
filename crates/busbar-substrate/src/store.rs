@@ -182,7 +182,7 @@ pub enum Permit {
 // ── The RESOLVED runtime breaker configuration the FSM evaluates. Neutral DATA (no serde, no config
 //    grammar attached — the serialized `config::BreakerCfg` grammar and the config->runtime lowering
 //    stay in core). Relocated DOWN here so the LLM plane names the breaker cfg in its money-path
-//    signatures and reconstructs it via `from_llm` without reaching into `busbar-core`; core's `store`
+//    signatures and reconstructs it via `from_input` without reaching into `busbar-core`; core's `store`
 //    re-exports `BreakerCfg`/`TripConfig`/`TripMode` at their historical `crate::store::*` paths (the
 //    breaker FSM, `appbuild`, and the store tests are untouched), and core owns the
 //    `config::BreakerCfg -> BreakerCfg` lowering as an inherent `to_runtime` method.
@@ -244,35 +244,14 @@ impl Default for BreakerCfg {
 }
 
 impl BreakerCfg {
-    /// Flatten this RESOLVED runtime breaker cfg into the neutral carrier the LLM plane's
-    /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
-    /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
-    /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_llm(&self) -> crate::plane_host::BreakerInput {
-        crate::plane_host::BreakerInput {
-            base_cooldown_secs: self.base_cooldown_secs,
-            max_cooldown_secs: self.max_cooldown_secs,
-            honor_retry_after: self.honor_retry_after,
-            bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: crate::plane_host::TripInput {
-                mode: match self.trip.mode {
-                    TripMode::ErrorRate => crate::plane_host::TripModeInput::ErrorRate,
-                    TripMode::Consecutive => crate::plane_host::TripModeInput::Consecutive,
-                },
-                window_s: self.trip.window_s,
-                threshold: self.trip.threshold,
-                min_requests: self.trip.min_requests,
-                consecutive_n: self.trip.consecutive_n,
-            },
-        }
-    }
-
-    /// Reconstruct the runtime breaker cfg from the neutral carrier — the inverse of [`to_llm`],
-    /// called IN-PLANE by the LLM plane's `build_runtime` (the allowed plane->core edge; the plane
-    /// names only this pub constructor and the neutral input type).
-    ///
-    /// [`to_llm`]: Self::to_llm
-    pub fn from_llm(i: &crate::plane_host::BreakerInput) -> Self {
+    /// Reconstruct the runtime breaker cfg from the neutral carrier, called IN-PLANE by the plane's
+    /// `build_runtime` (the allowed plane->core edge; the plane names only this pub constructor and
+    /// the neutral input type). The inverse direction (flattening this RESOLVED cfg INTO the
+    /// carrier) is core's own `store::breaker_input_of` free fn: it has exactly one caller-crate
+    /// (core's `appbuild`/test fixture) where this one has two (every relocated-engine plane's
+    /// `build_runtime`), so it stays here where both can reach it, while the single-caller
+    /// direction moved to its one caller instead of adding a second inherent method beside it.
+    pub fn from_input(i: &crate::plane_host::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,
             max_cooldown_secs: i.max_cooldown_secs,
