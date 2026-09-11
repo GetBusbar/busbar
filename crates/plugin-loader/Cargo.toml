@@ -11,6 +11,14 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# The DIAGNOSTICS CATALOG alone (`diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID`,
+# `CONFIG_FIRSTPARTY_FLOOR_INVALID` and the `diag_warn!` macro): the two anti-downgrade-floor
+# warnings `policy.rs` emits carry codes an operator has had pinned since 1.5.0, and a warning
+# changes its code only when its meaning changes. `busbar-substrate-values` is the PURE half of the
+# substrate — the half D33 keeps (`docs/design/D33-legacy-retirement.md`: busbar-substrate retires,
+# the values crate survives it), and the half ARCHITECTURE.md 1.1 places below every kind. This is an
+# edge to the surviving values crate and NOT to `busbar-substrate`, which this crate never names.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
