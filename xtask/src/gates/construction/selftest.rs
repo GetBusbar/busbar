@@ -739,6 +739,18 @@ fn ceiling_ratchet_cases<'a>(
     r
 }
 
+/// One ceilings-file text with every `[[gate.ceiling_raises]]` entry struck.
+///
+/// See [`declared_raise_cases`]: a self-test of the expiry mechanism must not be held hostage by
+/// whatever that mechanism has not expired yet.
+fn strip_raises(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(next) = ceilings::strike(&out, 1) {
+        out = next;
+    }
+    out
+}
+
 /// THE DECLARED RAISE: an array of deltas per ceiling, summed against the rise, self-expiring.
 ///
 /// THE PLANT IS THIS FAMILY'S OWN, NEVER THE COMMITTED FILE'S. The `[[gate.ceiling_raises]]`
@@ -774,6 +786,17 @@ fn declared_raise_cases<'a>(
     cfg: &Cfg,
 ) -> Report<'a> {
     let mut r = Report::new();
+    // THE COMMITTED TABLE IS STRUCK BEFORE ANYTHING IS PLANTED, on both sides.
+    //
+    // This family's whole design is that it plants both halves rather than reading whichever entry
+    // the tree happens to carry — and for as long as the committed table was empty, "plants both
+    // halves" and "appends to the committed text" were the same thing. The moment a landing writes
+    // a real entry they stop being the same thing: the committed entries ride into every plant,
+    // shift every ordinal the cases assert on, and show up as carried warnings the cases do not
+    // name. Measured, on the commit that added two: six of these cases went red on a mechanism
+    // that was working exactly as written. So the family's text is the committed file with every
+    // `[[gate.ceiling_raises]]` struck, and what the tree carries cannot reach these cases at all.
+    let text = &strip_raises(text);
     let (table, key) = ("rules.legacy-reach", "ceiling");
     let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
         r.note_infra_failure(format!(

@@ -1015,7 +1015,14 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+#
+# 91 -> 97 (GATES-2, 2026-09-11): the FIRST GATING FIGURE of two rows that were not gating before.
+# `busbar_mcp::` (4) and `busbar_a2a::` (2) were named by the root all along and counted by nothing;
+# adding them to a rule whose total is a SUM raises the total by exactly what they measure, and not
+# one symbol of the root's reach moved. This is the raise the mechanism documents — the same one
+# `busbar_substrate` 26 -> 47 took when its row stopped being informational — and it is declared
+# below as `[[gate.ceiling_raises]]`, not written by hand. It ratchets down from here.
+ceiling = 97
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1049,6 +1056,26 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
 figure = 47
+
+# THE TWO MOUNTED LEGS' ENGINES, ADDED AS SUB-ROWS BY MEASUREMENT (GATES-2, 2026-09-11). The root
+# reaches into `busbar_mcp::` and `busbar_a2a::` exactly as it reaches into `busbar_llm::`, and
+# until now neither was counted at all: the rule named three prefixes and the two legacy plane
+# engines were simply outside it, so the deletion those crates are queued for had no worklist and
+# no ratchet. Measured by this rule's own counting — distinct symbols, grouped `use` braces
+# expanded, over `crates/busbar/src/root/*.rs` and `main.rs` — and pinned to that measurement.
+[rules.legacy-reach.prefixes.busbar_mcp]
+prefix = "busbar_mcp::"
+exclude = []
+because = "the mcp engine the mounted leg still runs: its two decls, its diagnostics and the stdio serve loop"
+# busbar_mcp::DIAGNOSTICS, ::PLANE_DECL, ::PROTO_DECL, ::mcp::stdio_serve::serve_stdio
+figure = 4
+
+[rules.legacy-reach.prefixes.busbar_a2a]
+prefix = "busbar_a2a::"
+exclude = []
+because = "the a2a engine the mounted leg still runs: its plane declaration and its diagnostics table"
+# busbar_a2a::DIAGNOSTICS, ::PLANE_DECL
+figure = 2
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -1191,7 +1218,7 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 loc_ceilings_kernel_files = 9
-legacy_reach_prefixes = 3
+legacy_reach_prefixes = 5
 plane_crates = 4
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
@@ -1264,3 +1291,23 @@ abi = 1
 #
 # `floor` is the dotted key under `[gate.census]` — `plane_crates`, `legacy_reach_prefixes`,
 # `loc_ceilings_kernel_files`, or `plugin_kinds.<kind>` for a glob count.
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.ceiling"
+by = 6
+because = "legacy-reach's two new sub-rows: the root's reach into busbar_mcp:: (4 distinct symbols) and busbar_a2a:: (2) was never counted, and this rule's total is a sum, so the first gating figure of two rows that were not gating before adds exactly 6 — no symbol of the root's reach moved"
+
+[[gate.ceiling_raises]]
+key = "gate.census.legacy_reach_prefixes"
+by = 2
+because = "the census floor for legacy-reach prefixes, 3 -> 5: the two sub-rows the same commit adds for busbar_mcp:: and busbar_a2a::, so a later commit cannot quietly strike either row and stop counting the engine it names"
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_mcp.figure"
+by = 4
+because = "the first gating figure of a sub-row that was not gating before: the root names four distinct busbar_mcp:: symbols (DIAGNOSTICS, PLANE_DECL, PROTO_DECL, mcp::stdio_serve::serve_stdio) and nothing counted them until this commit"
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_a2a.figure"
+by = 2
+because = "the first gating figure of a sub-row that was not gating before: the root names two distinct busbar_a2a:: symbols (DIAGNOSTICS, PLANE_DECL) and nothing counted them until this commit"
