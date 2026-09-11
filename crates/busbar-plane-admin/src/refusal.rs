@@ -201,7 +201,7 @@ pub(crate) fn envelope(reason: RefusalReason) -> String {
 /// human half of a validation complaint — because a `"` in one of those closes the string early and
 /// hands the reader a different document from the one this rendered, with a `code` its parser never
 /// reaches. The escape set is JSON's, not this module's, so the honest way to apply it is to ask the
-/// serializer, which is also what `busbar-core`'s administrative surface has always asked: the two
+/// serializer, which is also what the retiring administrative surface has always asked: the two
 /// renderings are byte-identical by construction rather than by a comparison somebody has to keep
 /// re-running.
 ///

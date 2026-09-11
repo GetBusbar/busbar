@@ -1334,7 +1334,7 @@ count = "27"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1066"
+count = "1088"
 
 [[cell]]
 crate = "busbar"
@@ -1349,7 +1349,7 @@ count = "165"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "97"
+count = "100"
 
 [[cell]]
 crate = "busbar"
@@ -1379,12 +1379,12 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "956"
+count = "958"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1205"
+count = "1217"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5512"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+count = "2144"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "12"
+count = "28"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2004,12 +2004,12 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "transport"
-count = "24"
+count = "32"
 
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "unit"
-count = "16"
+count = "20"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2809,7 +2809,7 @@ count = "5"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "control"
-count = "139"
+count = "146"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -2819,7 +2819,7 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "transport"
-count = "6"
+count = "4"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
@@ -3639,6 +3639,26 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-api dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-plane-admin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-plane-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge. THE EDGE IS THE COST OF DELETING A SECOND COPY, and it points the sanctioned way: the 1.5.5 error envelope's frozen wire shape is the admin plane's (refusal::envelope_of), and core rendered the same two keys a second time out of its own json!. Two renderings of one frozen wire is a shape that can be changed in one place and not the other. The taxonomy and the shape live in the plane; the axum glue that turns them into a Response stays in core, where the transport is. Measured in the same diff: busbar-core x control FALLS 5521 -> 5512 and busbar-core x transport FALLS 2145 -> 2144."
+drain   = "delete the busbar-plane-admin dependency from busbar-core's Cargo.toml. The edge goes when busbar-core does: it exists only so the second copy of the envelope could be deleted, and the ratchet here IS the retirement."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-scope"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-unit-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge. THE EDGE IS THE COST OF DELETING A SECOND COPY. Scope, Grants and the method+path authorization matrix existed TWICE — in core's admin contract and again in the unit, whose own doc says it was ported verbatim out of core. Two encodings of one authorization rule is a rule that can be tightened in one place and not the other, on the surface where that is least survivable. The unit is the copy that stays, because deciding whether a held grant satisfies a requirement is what a unit DOES; core names it and its own call sites keep spelling Scope exactly as they always did."
+drain   = "delete the busbar-unit-scope dependency from busbar-core's Cargo.toml. The edge goes when busbar-core does: it exists only so the second copy of the matrix could be deleted, and the ratchet here IS the retirement."
 
 [[dep]]
 from    = "busbar-core"

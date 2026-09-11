@@ -9,7 +9,7 @@
 //! their order, the quoting — and says so in its own doc comment: the shape lives there and nowhere
 //! else, because a second `format!` of it somewhere else is a second chance for a surface a client
 //! pinned to move in one place and not the other. What it did not own was the pair of strings it is
-//! handed. Those came from a `busbar-core` enum, and every one of the administrative surface's
+//! handed. Those came from an enum in the retiring surface's own crate, and every one of the
 //! operations went through that enum to produce them.
 //!
 //! Shape in one crate and content in another is the same split with an extra seam: the `code` a

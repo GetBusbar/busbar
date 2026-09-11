@@ -1660,7 +1660,7 @@ pub enum AnsweredBy {
     /// The loop produces the bytes itself, from a seam it holds. The surface underneath is not asked
     /// and has no route for the path.
     Loop,
-    /// The loop hands the request to the administrative surface `busbar-core` mounts and returns
+    /// The loop hands the request to the administrative surface the retiring crate mounts and returns
     /// what that answered, unchanged — status, headers and body together.
     LegacySurface,
 }
