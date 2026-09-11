@@ -68,20 +68,33 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.7k **of plugin-visible SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. The pair is where each plugin kind's ONE entry lives, and
+  (`--ceiling busbar-contract,busbar-caps=3636`), which the construction gate runs as
+  `surface-ceiling:contract+caps`. **Amended 3.5k → 3.7k**, once, for
+  `busbar_contract::error` (below): the pair stood at exactly 3,500 and the ONE structured error a
+  face carries when it refuses a caller had nowhere to land. The alternative was to leave the
+  taxonomy in the retiring engine or to home it in a plane, and both were refused — a plane home
+  makes the engine name a plane crate to refuse a caller, which is the coupling this release exists
+  to remove. The number moves for a face, in the commit that introduces it, and it does not move
+  again by drift: `ceiling-slack` pins it to the measurement from here. The pair is where each plugin kind's ONE entry lives, and
   `busbar_contract::RecordSink` — the three verbs a plane's kernel-held durable records land in,
   standing on their own because they are bound on their own and a store-kind plugin may not name
   `busbar-kernel` — is one of them; `busbar_caps::Unit` — the `unit` row's one trait: the step as
   an associated type, a derived `STEP` const, a per-step `Input<'_>`, and a `decide` sealed by the
   `UnitToken` the loop mints per call — is another, and it lives in `busbar-caps` rather than
   `busbar-contract` because `Decision` and `UnitToken` do and the edge runs caps → contract, never
-  the reverse. Two crates carry their own surface ceilings beside it, because
+  the reverse; `busbar_contract::error` — the ONE structured error a face carries when it refuses a
+  caller: the closed `ErrorClass` (ten conditions, ten frozen `code` strings, ten statuses), the
+  `PluginError` that is one refusal plus the caller-safe detail its class renders, and the frozen
+  two-key envelope they serialize into — is a third. It is contract rather than a plane's because
+  every crate that renders a refusal reaches the same taxonomy — the administrative control surface,
+  the composition root, and the 1.5.5 engine still being drained — and a taxonomy homed in any one of
+  them is the other two naming that one. Its names carry no kind; the ten `code` strings, the ten
+  statuses, the message phrasing and the envelope's two keys and their order are frozen wire. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

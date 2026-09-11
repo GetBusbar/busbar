@@ -75,9 +75,7 @@ impl ErrKind {
             ErrKind::Validation => AdminError::Validation(String::new()),
             ErrKind::VersionConflict => AdminError::VersionConflict(String::new()),
             ErrKind::Conflict => AdminError::Conflict(String::new()),
-            ErrKind::Forbidden => AdminError::Forbidden {
-                needed: Scope::Full,
-            },
+            ErrKind::Forbidden => super::forbidden(Scope::Full),
         }
     }
 
@@ -88,7 +86,7 @@ impl ErrKind {
 
     /// The HTTP status for this kind (reuses `AdminError::http_status`).
     pub(crate) fn status(self) -> u16 {
-        self.as_admin_error().http_status()
+        self.as_admin_error().status()
     }
 }
 

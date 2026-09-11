@@ -415,18 +415,28 @@ pub(crate) fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
     err_json_tagged(e, Some(cond))
 }
 
-/// The one construction site of the v1 error envelope. In a TEST build it stamps the response with
-/// the taxonomy [`observed::Tag`] so the router's recording layer — which knows the matched route,
-/// which this function does not — can attribute the emission to an operation and check it against
-/// `declared_errors`. In a release build the tag does not exist and this is the plain projection.
+/// The one place the v1 error envelope becomes an HTTP response — which is a smaller claim than the
+/// one this function used to make, and the smaller claim is the true one.
+///
+/// It used to be the one place the envelope was CONSTRUCTED, and it was not: the administrative
+/// control surface renders the same two keys for every refusal the composition root's loop answers,
+/// and a `json!` here was a second copy of a wire shape a client pinned, free to move without the
+/// other moving — the two had already begun to differ in what they did with a `"` in the message.
+///
+/// So the BODY is the error's own (`PluginError::envelope`, in the CONTRACT, beside the code and
+/// message it wraps) and what happens here is the part that is genuinely this crate's: the status, the
+/// content type, and — in a TEST build — the taxonomy [`observed::Tag`] that lets the router's
+/// recording layer, which knows the matched route that this function does not, attribute the
+/// emission to an operation and check it against `declared_errors`. In a release build the tag does
+/// not exist and this is the status and the header around bytes decided elsewhere.
 #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
-    let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(e.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
     let mut resp = (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
-        json!({"error": {"code": e.code(), "message": e.message()}}).to_string(),
+        e.envelope(),
     )
         .into_response();
     #[cfg(any(test, feature = "test-support"))]

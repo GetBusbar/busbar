@@ -284,9 +284,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
     let actual_codes: BTreeSet<String> = [
         AdminError::not_found(""),
         AdminError::Unauthorized,
-        AdminError::Forbidden {
-            needed: crate::admin::v1::contract::Scope::Full,
-        },
+        crate::admin::v1::contract::forbidden(crate::admin::v1::contract::Scope::Full),
         AdminError::MethodNotAllowed,
         AdminError::Validation(String::new()),
         AdminError::VersionConflict(String::new()),
@@ -485,9 +483,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         ),
         (AdminError::Conflict(String::new()), ErrKind::Conflict),
         (
-            AdminError::Forbidden {
-                needed: crate::admin::v1::contract::Scope::Full,
-            },
+            crate::admin::v1::contract::forbidden(crate::admin::v1::contract::Scope::Full),
             ErrKind::Forbidden,
         ),
     ];
@@ -500,7 +496,7 @@ fn err_kind_bridges_every_admin_error_variant() {
         );
         assert_eq!(
             kind.status(),
-            e.http_status(),
+            e.status(),
             "{kind:?} status drifted from AdminError"
         );
     }
@@ -734,5 +730,54 @@ fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
                 );
             }
         }
+    }
+}
+
+/// The bytes this surface answers a refusal with are the contract's envelope, byte for byte.
+///
+/// The claim the move has to make good. Every one of the surface's operations renders its failure
+/// through `err_json`, and `err_json` no longer decides what those bytes are — it decides the status
+/// and the content type around bytes the taxonomy renders beside the shape, one crate over. This
+/// asks the two directly, over the whole taxonomy INCLUDING messages a caller wrote, because the
+/// caller-supplied half is where a second copy of a rendering rule shows up first.
+///
+/// A byte comparison rather than a parse: a parse passes on two documents that agree about their
+/// contents and disagree about their bytes, and it is the bytes a client pinned.
+#[tokio::test]
+async fn a_refusals_bytes_are_the_contracts_envelope() {
+    use http_body_util::BodyExt;
+    let taxonomy = [
+        AdminError::not_found("hook"),
+        AdminError::not_found_because("key", "governance disabled"),
+        AdminError::not_found(r#"key "prod""#),
+        AdminError::Unauthorized,
+        AdminError::MethodNotAllowed,
+        crate::admin::v1::contract::forbidden(crate::admin::v1::contract::Scope::Full),
+        AdminError::Validation(r#"field `mode` is not one of: "a", "b""#.to_string()),
+        AdminError::VersionConflict("stale".to_string()),
+        AdminError::Conflict("a change\tis in flight".to_string()),
+        AdminError::RateLimited,
+        AdminError::Internal,
+        AdminError::Unavailable("the plugin catalog scan is taking too long".to_string()),
+    ];
+    for error in &taxonomy {
+        let response = err_json(error);
+        assert_eq!(
+            response.status().as_u16(),
+            error.status(),
+            "the status for {error:?}"
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            bytes.as_ref(),
+            busbar_contract::envelope_of(error.code(), &error.message()).as_bytes(),
+            "the surface\u{2019}s bytes for {error:?} are not the envelope the contract renders"
+        );
+        // Not vacuously equal to anything: still one parseable document with the frozen two keys.
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).expect("one document");
+        let inner = parsed["error"].as_object().expect("the one key");
+        assert_eq!(inner.len(), 2);
+        assert_eq!(inner["code"], error.code());
+        assert_eq!(inner["message"].as_str(), Some(error.message().as_str()));
     }
 }

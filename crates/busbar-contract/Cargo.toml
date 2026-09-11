@@ -35,6 +35,12 @@ busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
 futures = { workspace = true }
+# `serde_json` renders the ONE frozen error envelope (`error::envelope_of`). It was a dev-dependency
+# here already, for the same reason it is a dependency now: a shape whose values can carry text a
+# CALLER wrote is a shape that must be ESCAPED by the serializer rather than by a `format!`, and the
+# escape set is JSON's rather than this crate's. It stands below the contract and names nothing of
+# busbar's, so the policy above is unchanged.
+serde_json = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

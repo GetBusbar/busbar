@@ -1569,7 +1569,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "23"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5501"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+count = "2138"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "12"
+count = "28"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2809,7 +2809,7 @@ count = "5"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "control"
-count = "139"
+count = "146"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -2819,7 +2819,7 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "transport"
-count = "6"
+count = "4"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
@@ -3652,6 +3652,16 @@ drain   = "delete the busbar-auth-admin-tokens dependency from busbar-core's Car
 
 [[dep]]
 from    = "busbar-core"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list \u2014 busbar-contract is the face every kind is written against."
+why     = "busbar-core names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The one thing it reaches for is `busbar_contract::error` \u2014 the ONE structured error a face carries when it refuses a caller \u2014 which this crate used to own half of and render the other half of a second time. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing \u2014 what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-core"
 to      = "busbar-hooks-ranking"
 half    = "shipped"
 count   = "1"
@@ -3729,6 +3739,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-scope"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 the three axes are blind to each other; qa/kind-isolation.toml [[transitional]] busbar-core -> busbar-unit-* (owner ruling 2026-09-08: while busbar-core drains it MAY depend on unit crates, as a NAMED transitional exemption that is empty on the ship sha)."
+why     = "busbar-core names busbar-unit-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the DRAIN'S OWN EDGE: the scope model, the grants and the method+path authorization matrix existed twice \u2014 here and in the unit, whose own doc said it was ported verbatim out of here \u2014 and two encodings of one authorization rule is a rule that can be tightened in one place and not the other. The unit is the copy that stays. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete the busbar-unit-scope dependency from busbar-core's Cargo.toml, which is what the retirement of busbar-core does to it: the callers move to the unit and the legacy crate goes. The [[transitional]] row above expires at the ship sha, by which time this `from` crate must not exist."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

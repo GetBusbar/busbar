@@ -104,13 +104,7 @@ fn admin_error_codes_and_statuses_are_frozen() {
         (AdminError::not_found("key"), "not_found", 404u16),
         (AdminError::Unauthorized, "unauthorized", 401),
         (AdminError::MethodNotAllowed, "method_not_allowed", 405),
-        (
-            AdminError::Forbidden {
-                needed: Scope::Full,
-            },
-            "forbidden",
-            403,
-        ),
+        (super::forbidden(Scope::Full), "forbidden", 403),
         (AdminError::Validation("bad".into()), "invalid_request", 400),
         (
             AdminError::VersionConflict("stale".into()),
@@ -124,7 +118,7 @@ fn admin_error_codes_and_statuses_are_frozen() {
     ];
     for (e, code, status) in cases {
         assert_eq!(e.code(), code, "frozen error code changed");
-        assert_eq!(e.http_status(), status, "frozen error status changed");
+        assert_eq!(e.status(), status, "frozen error status changed");
     }
 }
 
@@ -184,7 +178,8 @@ fn the_two_copies_of_the_authorization_matrix_answer_alike() {
     ];
     let mut disagreements = Vec::new();
     for method in METHODS {
-        let m = Method::from_bytes(method.as_bytes()).expect("a method the surface can be asked with");
+        let m =
+            Method::from_bytes(method.as_bytes()).expect("a method the surface can be asked with");
         for path in PATHS {
             let here = required_scope(&m, path);
             let unit = busbar_unit_scope::admin_required_scope(method, path);

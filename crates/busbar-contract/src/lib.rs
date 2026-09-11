@@ -12,6 +12,7 @@
 
 pub mod bounded;
 pub mod dest;
+pub mod error;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -34,6 +35,7 @@ pub use dest::{
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };
+pub use error::{envelope_of, ErrorClass, PluginError};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,

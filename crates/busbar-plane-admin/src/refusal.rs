@@ -185,32 +185,23 @@ pub(crate) fn envelope(reason: RefusalReason) -> String {
     envelope_of(code_for(reason), message_for(reason))
 }
 
-/// The 1.5.5 admin error envelope around one code and one message.
+/// The frozen v1 error envelope around one code and one message.
 ///
-/// THE SHAPE LIVES HERE AND NOWHERE ELSE. Which code a condition renders under is a different
-/// question for a plane (which maps a `RefusalReason`) than for a composition root (which maps a
-/// `ReasonCode` and pairs it with a status), and those two tables legitimately differ because they
-/// answer different questions — but the two keys, their order, the quoting and the absence of a
-/// trailing byte are one frozen wire shape, and a second `format!` of it somewhere else is a second
-/// chance for the surface a client pinned to change in one place and not the other. So the callers
-/// bring the code and the message, and this brings the envelope.
+/// RENDERED BY THE CONTRACT, not here. The shape used to live in this module and say so — one
+/// `format!` of it and nowhere else, because a second rendering is a second chance for a surface a
+/// client pinned to change in one place and not the other. It was not the only rendering: the
+/// retiring engine rendered the same two keys out of its own `json!`, and the CONTENT those keys
+/// carry — the frozen code strings, the statuses, the message phrasing — was a third thing, in a
+/// third crate.
 ///
-/// SERIALIZED, not hand-formatted. It was hand-formatted while the only callers brought closed,
-/// quote-free prose, and for those callers the two are the same bytes. They stop being the same
-/// bytes the moment a message carries text a CALLER wrote — a resource name in a `not_found`, the
-/// human half of a validation complaint — because a `"` in one of those closes the string early and
-/// hands the reader a different document from the one this rendered, with a `code` its parser never
-/// reaches. The escape set is JSON's, not this module's, so the honest way to apply it is to ask the
-/// serializer, which is also what `busbar-core`'s administrative surface has always asked: the two
-/// renderings are byte-identical by construction rather than by a comparison somebody has to keep
-/// re-running.
-///
-/// The key order is `code` then `message` whichever way the map is built — the serializer orders a
-/// map's keys, and `code` sorts before `message` — so the frozen shape does not depend on the order
-/// this function happens to insert them in.
+/// All of it is one contract face now, `busbar_contract::error`, which is where a thing every kind
+/// renders belongs: this plane reaches it, the engine reaches it, the composition root reaches it,
+/// and none of the three reaches either of the others. What stays here is the function name this
+/// crate's own callers already spell, delegating — a delegation cannot drift from the thing it
+/// delegates to.
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
-    serde_json::json!({ "error": { "code": code, "message": message } }).to_string()
+    busbar_contract::envelope_of(code, message)
 }
 
 #[cfg(test)]
