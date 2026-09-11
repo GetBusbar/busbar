@@ -725,6 +725,88 @@ EOF
 # happened to survive: the merged recording would simply be missing those cells and --strict would
 # have nothing to complain about because it was never told they were owed by THIS run.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A PORT BLOCK PER PROOF ON A BOX — CLAIMED, NOT GUESSED
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The recorder binds six ports per shard inside a 20-wide range off LAND_ORACLE_PORT_BASE, and a
+# box runs up to PROVE_PER_BOX proofs at once. The transport used to hand each proof
+# `40000 + ($$ % 40) * 200`: forty buckets, chosen by a pid, with nothing checking whether anything
+# else already held one. Two proofs on one box collide on a 1-in-40 roll, and record.sh's own
+# occupied-port guard then turns that collision into a RED attributed to whichever commits happened
+# to be picked. Measured 2026-09-10: line 3's `no_data_dir_neutrality` died in 0.07 s at
+# `req.send().await.expect("request")` — connection refused, the node never bound — on a shared box.
+#
+# THE CLAIM IS A DIRECTORY, BECAUSE `mkdir` IS THE ATOMIC OPERATION EVERY FILESYSTEM HAS. Two
+# proofs racing for the same block: exactly one `mkdir` succeeds. The pid inside makes a claim
+# COLLECTABLE — a proof that crashed must not cost the box a block for the rest of the day — and
+# the listener probe catches the other half: a neighbouring agent's worktree binding ports on this
+# box without going through this engine at all.
+# ── THE OTHER HALF OF A PORT COLLISION, WHICH THIS ENGINE CANNOT FIX FROM HERE ──────────────────
+# A block of its own protects the RECORDER. It does not protect a cargo test that picks its own
+# port — and one family of busbar's tests does, in the shape that loses the race:
+#
+#     fn free_port() -> u16 { TcpListener::bind("127.0.0.1:0")…local_addr().port() }   // then DROPS it
+#
+# The listener is closed and the port handed to a CHILD PROCESS to bind a moment later. On an idle
+# laptop that always works; on a box running three proofs and four CI agents, the window is long
+# enough for somebody else to take it. Measured 2026-09-10: line 3's `no_data_dir_neutrality` died
+# in 0.07 s at `req.send().await.expect("request")` — connection refused, because the node it was
+# talking to never bound. Reported, not edited — the tests are the product's, not the engine's.
+# The nine that carry that helper, as of 2026-09-10:
+#     crates/busbar/tests/no_data_dir_neutrality.rs      crates/busbar/tests/boot_lines_neutrality.rs
+#     crates/busbar/tests/thread_per_core_serves.rs      crates/busbar/tests/scrape_shape_1_5_5.rs
+#     crates/busbar/tests/mcp_open_front_door.rs         crates/busbar/tests/ledger_identity.rs
+#     crates/busbar/tests/inbound_concurrency_shed.rs    crates/busbar/tests/metrics_scrape_boot_window.rs
+#     crates/busbar/benches/hook_path.rs
+# The fix is theirs to make (pass the bound listener down, or `listen: "127.0.0.1:0"` and read the
+# port back out of the boot line, which is what the other 70-odd tests that use :0 already do).
+LAND_ORACLE_PORT_LOW="${LAND_ORACLE_PORT_LOW:-40000}"
+LAND_ORACLE_PORT_HIGH="${LAND_ORACLE_PORT_HIGH:-48000}"
+LAND_ORACLE_PORT_WIDTH="${LAND_ORACLE_PORT_WIDTH:-200}"
+LAND_PORT_CLAIM_DIR="${LAND_PORT_CLAIM_DIR:-$HOME/.busbar-portblocks}"
+# Every port something is listening on, one per line. Three tools, because a box has `ss`, a laptop
+# has `lsof`, and something older has `netstat`; NONE of them is not a reason to stop — the claim
+# directory alone is already strictly better than a modulo.
+land_listening_ports() {
+  if command -v ss >/dev/null 2>&1; then ss -ltnH 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }'
+  elif command -v netstat >/dev/null 2>&1; then netstat -an 2>/dev/null | awk '/^tcp.*LISTEN/ { n = split($4, a, /[:.]/); print a[n] }'
+  elif command -v lsof >/dev/null 2>&1; then lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { n = split($9, a, ":"); print a[n] }'
+  fi
+}
+land_port_block_busy() { # $1 = base; 0 when anything is listening anywhere in the block
+  local b="$1"
+  land_listening_ports | awk -v lo="$b" -v hi="$(( b + LAND_ORACLE_PORT_WIDTH ))" \
+    '$1 ~ /^[0-9]+$/ && $1 + 0 >= lo && $1 + 0 < hi { f = 1 } END { exit !f }'
+}
+land_claim_port_block() { # prints a base this process now owns; rc 1 when the box has none free
+  local n=$(( (LAND_ORACLE_PORT_HIGH - LAND_ORACLE_PORT_LOW) / LAND_ORACLE_PORT_WIDTH ))
+  local i=0 b d p start=$(( $$ % n ))
+  mkdir -p "$LAND_PORT_CLAIM_DIR" 2>/dev/null || return 1
+  while [ "$i" -lt "$n" ]; do
+    b=$(( LAND_ORACLE_PORT_LOW + ((start + i) % n) * LAND_ORACLE_PORT_WIDTH ))
+    i=$((i + 1))
+    d="$LAND_PORT_CLAIM_DIR/$b"
+    if [ -d "$d" ]; then
+      # A CLAIM IS ONLY A CLAIM WHILE ITS PROOF IS ALIVE.
+      p="$(cat "$d/pid" 2>/dev/null)"
+      case "$p" in ''|*[!0-9]*) rm -rf "$d" ;; *) kill -0 "$p" 2>/dev/null && continue; rm -rf "$d" ;; esac
+    fi
+    mkdir "$d" 2>/dev/null || continue
+    if land_port_block_busy "$b"; then rm -rf "$d"; continue; fi
+    printf '%s\n' "$$" >"$d/pid"
+    printf '%s\n' "$b"
+    return 0
+  done
+  return 1
+}
+land_release_port_block() { # $1 = base; only ever this process's own claim
+  local b="${1:-}" d
+  [ -n "$b" ] || return 0
+  d="$LAND_PORT_CLAIM_DIR/$b"
+  [ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$d"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # HOW MUCH SLOWER THIS BOX IS THAN AN IDLE ONE, AND WHAT THAT COSTS THE RECORDER'S STOPWATCHES
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # record.sh has two waits that are WALL-CLOCK BOUNDS WHOSE EXPIRY IS WRITTEN INTO THE CELL:
@@ -1528,7 +1610,30 @@ EOF
 # independent (request, response, effects) triple. What makes it NOT trivially parallel is that each
 # recorder binds a listen/admin/mock triple and drives one busbar process, so two shards on one port
 # triple would produce a red attributed to the picked commits. Each shard gets its own triple.
+# THE LEG'S PORT BLOCK IS CLAIMED ROUND THE WHOLE OF IT, AND GIVEN BACK HOWEVER IT ENDS. The claim
+# is here rather than at each of the leg's exits because the leg has six of them, and a block leaked
+# by the one that was forgotten is a block this box never offers again.
 prove_oracle() {
+  local claimed="" rc
+  if [ "${LAND_ORACLE_PORT_CLAIM:-0}" = 1 ]; then
+    if claimed="$(land_claim_port_block)" && [ -n "$claimed" ]; then
+      # THE WHOLE TRIPLE MOVES WITH THE BASE, and only where it was this base's own default: an
+      # operator who pinned ORACLE_LISTEN_PORT by hand keeps it (this file's header has the rule).
+      [ "$ORACLE_LISTEN_PORT" = "$((LAND_ORACLE_PORT_BASE + 1))" ] && ORACLE_LISTEN_PORT=$(( claimed + 1 ))
+      [ "$ORACLE_ADMIN_PORT"  = "$((LAND_ORACLE_PORT_BASE + 2))" ] && ORACLE_ADMIN_PORT=$(( claimed + 2 ))
+      [ "$ORACLE_MOCK_PORT"   = "$((LAND_ORACLE_PORT_BASE + 11))" ] && ORACLE_MOCK_PORT=$(( claimed + 11 ))
+      LAND_ORACLE_PORT_BASE="$claimed"
+      echo "land.sh: oracle: port block $claimed-$(( claimed + LAND_ORACLE_PORT_WIDTH - 1 )) claimed on $(hostname 2>/dev/null || echo this box) — no other proof here can be handed it"
+    else
+      claimed=""
+      echo "land.sh: oracle: no free port block on this box; falling back to LAND_ORACLE_PORT_BASE=$LAND_ORACLE_PORT_BASE, which another proof may also hold" >&2
+    fi
+  fi
+  prove_oracle_inner "$@"; rc=$?
+  land_release_port_block "$claimed"
+  return "$rc"
+}
+prove_oracle_inner() {
   local families="$1"
   # cargo's exit status is the verdict (a pipe into grep would let pipefail invert it).
   local blog="$here/target/land-build-$stamp.log"
@@ -2688,6 +2793,66 @@ EOF
   # 2026-09-10: three pre-proofs red on `documented|changelog|admin-restart` with an empty
   # `/put_settings_body` — a second boot that did not come up inside 60 s on a box carrying two
   # other proofs and four CI runner agents.
+  # ── A PORT BLOCK PER PROOF ON A BOX, CLAIMED AND NOT GUESSED ─────────────────────────────────
+  # land-remote.sh gave each proof `40000 + ($$ % 40) * 200` — forty buckets, chosen by a pid, with
+  # no check that anything else holds one. Two proofs on one box collide on a 1-in-40 roll, and a
+  # collision is recorded as a RED attributed to whichever picks happened to be on the tree.
+  # Measured 2026-09-10: line 3's `no_data_dir_neutrality` died in 0.07 s at
+  # `req.send().await.expect("request")` — connection refused, the node never bound — on a box
+  # shared with other proofs.
+  echo "land.sh selftest: each proof on a box claims its own port block"
+  local CL="$root/claims"; rm -rf "$CL"
+  _t4() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  # The listener probe is stubbed, so these cases run on any host and say exactly what they mean.
+  land_listening_ports() { printf '%s\n' 40100 40205 49999; }
+  _t4 "a block with a listener in it is busy"       0 "$(land_port_block_busy 40000; echo $?)"
+  _t4 "  ...and the next one along is busy too"     0 "$(land_port_block_busy 40200; echo $?)"
+  _t4 "a block nobody is listening in is free"      1 "$(land_port_block_busy 40400; echo $?)"
+  _t4 "the block's last port counts"                0 "$(land_port_block_busy 49800; echo $?)"
+  land_listening_ports() { :; }
+  local b1 b2
+  b1="$(LAND_PORT_CLAIM_DIR="$CL" land_claim_port_block)"
+  _t4 "a claim lands inside the range"              1 "$( [ "${b1:-0}" -ge 40000 ] && [ "${b1:-0}" -lt 48000 ] && echo 1 || echo 0)"
+  _t4 "  ...and it is a block boundary"             0 "$(( ${b1:-1} % 200 ))"
+  _t4 "  ...and it leaves a claim behind"           1 "$( [ -d "$CL/$b1" ] && echo 1 || echo 0)"
+  b2="$(LAND_PORT_CLAIM_DIR="$CL" land_claim_port_block)"
+  _t4 "a SECOND proof on this box gets a DIFFERENT block" 1 "$( [ -n "$b2" ] && [ "$b2" != "$b1" ] && echo 1 || echo 0)"
+  _t4 "  ...and both claims stand"                  2 "$(ls "$CL" | grep -c .)"
+  # A CLAIM WHOSE PROOF IS GONE IS NOT A CLAIM. A crashed proof must not cost the box a block for
+  # the rest of the day — the pid in the claim is what makes it collectable.
+  printf '999999\n' >"$CL/$b1/pid"
+  local b3; b3="$(LAND_PORT_CLAIM_DIR="$CL" land_claim_port_block)"
+  _t4 "a claim held by a DEAD pid is taken over"    "$b1" "$b3"
+  # A BUSY BLOCK IS SKIPPED EVEN WHEN NOBODY CLAIMED IT: another agent's worktree binds ports on
+  # this box without going through this engine at all.
+  rm -rf "$CL"
+  land_listening_ports() { local p=40000; while [ "$p" -lt 48000 ]; do printf '%s\n' "$((p + 1))"; p=$((p + 200)); done; }
+  local b4; b4="$(LAND_PORT_CLAIM_DIR="$CL" land_claim_port_block)"
+  _t4 "every block busy: no claim at all"           "" "$b4"
+  _t4 "  ...and no claim is left behind"            0 "$(ls "$CL" 2>/dev/null | grep -c . || true)"
+  land_listening_ports() { :; }
+  # RELEASE: mine goes, somebody else's never does.
+  rm -rf "$CL"; local b5; b5="$(LAND_PORT_CLAIM_DIR="$CL" land_claim_port_block)"
+  mkdir -p "$CL/47000"; printf '999999\n' >"$CL/47000/pid"
+  LAND_PORT_CLAIM_DIR="$CL" land_release_port_block "$b5"
+  _t4 "a proof releases its own block"              0 "$( [ -d "$CL/$b5" ] && echo 1 || echo 0)"
+  LAND_PORT_CLAIM_DIR="$CL" land_release_port_block 47000
+  _t4 "  ...and never somebody else's"              1 "$( [ -d "$CL/47000" ] && echo 1 || echo 0)"
+  unset -f land_listening_ports
+  # THE LEG USES IT, AND GIVES IT BACK ON EVERY PATH.
+  _t4 "the oracle leg claims a block when asked to" 1 "$(grep -c 'claimed="\$(land_claim_port_block)"' "$LAND_SRC")"
+  _t4 "  ...and releases it however the leg ends"   1 "$(grep -c 'land_release_port_block "\$claimed"' "$LAND_SRC")"
+  _t4 "  ...through one wrapper, not at each return" 1 "$(grep -c '^prove_oracle_inner() {' "$LAND_SRC")"
+  # THE OTHER HALF, REPORTED RATHER THAN FIXED: the tests that pick a port and drop it.
+  _t4 "the engine names the tests that race for a port" 1 \
+      "$(grep -c 'fn free_port() -> u16 { TcpListener::bind' "$LAND_SRC")"
+  _t4 "  ...and lists the one that was measured"        1 \
+      "$(grep -c 'crates/busbar/tests/no_data_dir_neutrality.rs      crates/busbar/tests/boot_lines_neutrality.rs' "$LAND_SRC")"
+  _t4 "the transport asks for a claimed block"      1 \
+      "$(grep -c 'LAND_ORACLE_PORT_CLAIM=1' "$(dirname "$0")/land-remote.sh" 2>/dev/null || true)"
+  _t4 "  ...and its pid formula is only the fallback" 1 \
+      "$(grep -c 'LAND_ORACLE_PORT_BASE=\$(( 40000 + ( \$\$ % 40 ) \* 200 ))' "$(dirname "$0")/land-remote.sh" 2>/dev/null || true)"
+
   echo "land.sh selftest: the recorder's bounds scale with the box's measured load"
   _t3() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
   _t3 "an idle box scales by 1"             1 "$(land_load_factor 0.20 16)"
@@ -2705,9 +2870,9 @@ EOF
   _t3 "the scaling can be turned off, and then it is the old number" "180 45" \
       "$(LAND_LOAD_FACTOR=4 LAND_ORACLE_LOAD_SCALE=0 land_oracle_bounds 3)"
   _t3 "the oracle leg takes its bounds from that one function" 1 \
-      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_bounds "\$k"')"
+      "$(sed -n '/^prove_oracle_inner() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_bounds "\$k"')"
   _t3 "  ...and never re-derives them inline"        0 \
-      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'ORACLE_BOOT_BOUND_SECS:-')"
+      "$(sed -n '/^prove_oracle_inner() {/,/^}/p' "$LAND_SRC" | grep -c 'ORACLE_BOOT_BOUND_SECS:-')"
   _t3 "the box is told what it measured"             1 \
       "$(grep -c 'oracle: bounds' "$LAND_SRC")"
 
@@ -2744,9 +2909,9 @@ EOF
   # THE LEG REALLY GOES THROUGH IT: every oracle red in prove_oracle is printed by land_oracle_red.
   _t2() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
   _t2 "no oracle red bypasses the harness check" 0 \
-      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -cE 'echo "land[.]sh: RED — oracle (families|shard)')"
+      "$(sed -n '/^prove_oracle_inner() {/,/^}/p' "$LAND_SRC" | grep -cE 'echo "land[.]sh: RED — oracle (families|shard)')"
   _t2 "  ...they all go through land_oracle_red" 3 \
-      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_red ')"
+      "$(sed -n '/^prove_oracle_inner() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_red ')"
 
   echo "land.sh selftest: the ledger union (what was RECORDED, not what was requested)"
   if [ -f "$here/testing/shadow-oracle/cells.json" ]; then

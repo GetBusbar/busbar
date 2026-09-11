@@ -323,7 +323,12 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}"
 export XTASK_GATE_CEILING_SECS="$CEIL"
 # LAND_REMOTE_INNER is the loop-breaker: this copy of land.sh must run the engine, not delegate.
 export LAND_REMOTE_INNER=1
-# The box may be running four proofs at once; the recorder's fixed port block would collide.
+# A PORT BLOCK OF ITS OWN, CLAIMED ON THE BOX. The box may be running several proofs at once, and
+# `$$ % 40` is a guess that collides on a 1-in-40 roll — recorded as a RED attributed to whichever
+# commits happened to be picked. land.sh claims a block nothing else holds and nothing is listening
+# in (land_claim_port_block), and gives it back when the leg ends; the pid formula below is only
+# what it falls back to when this box has no free block at all.
+export LAND_ORACLE_PORT_CLAIM=1
 export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
 cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
 # The integration base the laptop resolved comes in under the origin name the gate reads (see
