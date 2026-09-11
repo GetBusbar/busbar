@@ -636,19 +636,17 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     let now = 1_000;
 
     // Touch three cells for the same destination (the default "" cell, and two named pools) so
-    // each exists before the hard-down fan-out.
-    assert_eq!(
-        unit.state("", DestinationId::new(1), now, &route_token()),
-        LaneState::Ready
-    );
-    assert_eq!(
-        unit.state("pool-a", DestinationId::new(1), now, &route_token()),
-        LaneState::Ready
-    );
-    assert_eq!(
-        unit.state("pool-b", DestinationId::new(1), now, &route_token()),
-        LaneState::Ready
-    );
+    // each exists before the hard-down fan-out. THE TOUCH IS AN ADMISSION, because an admission is
+    // what touching a cell means: reading a cell's state does not create one and does not register
+    // the pool's name against the destination, so a pool nobody has dialled is not a pool the
+    // fan-out has anything to trip. Dialling is what puts a pool on the destination.
+    for pool in ["", "pool-a", "pool-b"] {
+        assert_eq!(
+            unit.try_admit(pool, DestinationId::new(1), now),
+            Ok(Admit { probe_epoch: None }),
+            "pool {pool:?} admits before anything has gone wrong"
+        );
+    }
 
     let fresh = unit.observe(
         "pool-a",
@@ -1289,5 +1287,128 @@ fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero()
     assert!(
         (90..=100).contains(&computed),
         "the computed cooldown at a saturating streak must be at the ceiling; got {computed}"
+    );
+}
+
+// ── The token-free readiness read ───────────────────────────────────────────────────────────────
+
+/// **THE PEEK'S PURITY, PROVED BY WHAT IS LEFT FOR THE ADMISSION.**
+///
+/// `state_peek` is contractually side-effect-free, and the expensive way to get that wrong is not a
+/// wrong answer — it is a peek that quietly takes the single-flight recovery probe. A cell whose
+/// cooldown has elapsed is probe-winnable: exactly ONE caller may take that probe, and if an
+/// enumeration took it then the dispatch that follows would find the lane probing and shed a
+/// request nothing was wrong with.
+///
+/// So the proof is not "the answer did not change". It is a thousand peeks at an open cell,
+/// followed by the admission that should still be the first one, and a second admission that must
+/// be refused because the first took the only probe there is.
+#[test]
+fn a_thousand_peeks_never_take_the_probe_the_admission_takes() {
+    let unit: BreakerUnit = BreakerUnit::new();
+    let cfg = consecutive_cfg(100, 10_000);
+    let destination = DestinationId::new(1);
+
+    // One failure trips the cell open.
+    assert!(unit.observe(
+        "pool",
+        destination,
+        Outcome::Transient { retry_after: None },
+        &cfg,
+        NOW,
+        &route_token(),
+    ));
+    let LaneState::Suppressed { until } = unit.state_peek("pool", destination, NOW) else {
+        panic!("a consecutive_n=1 cell is Suppressed the moment it trips");
+    };
+
+    // WHILE IT IS COOLING: a thousand peeks, and the cell is still cooling to the same deadline
+    // after all of them. A peek that drove the cell out of Open would report Ready here.
+    for _ in 0..1_000 {
+        assert_eq!(
+            unit.state_peek("pool", destination, NOW),
+            LaneState::Suppressed { until },
+            "a peek must not drive a cooling cell anywhere"
+        );
+    }
+
+    // PAST THE COOLDOWN: the cell is probe-winnable, which reads as Ready — and a thousand reads of
+    // it must leave the probe untaken.
+    for _ in 0..1_000 {
+        assert_eq!(
+            unit.state_peek("pool", destination, until),
+            LaneState::Ready,
+            "an elapsed cooldown is probe-winnable, and a peek says so without taking it"
+        );
+    }
+
+    // THE ADMISSION IS STILL THE FIRST ONE. It wins the probe that all two thousand reads left
+    // alone.
+    let admit = unit
+        .try_admit("pool", destination, until)
+        .expect("the probe is still there to be won");
+    assert!(
+        matches!(
+            admit,
+            Admit {
+                probe_epoch: Some(_)
+            }
+        ),
+        "the admission after the peeks is the one that takes the probe"
+    );
+
+    // AND THERE WAS EXACTLY ONE. The next admission is refused for the probe now in flight, which
+    // is the state a peek can also read without disturbing it.
+    assert_eq!(
+        unit.try_admit("pool", destination, until),
+        Err(LaneState::ProbeInFlight),
+        "the single-flight probe is single"
+    );
+    assert_eq!(
+        unit.state_peek("pool", destination, until),
+        LaneState::ProbeInFlight
+    );
+}
+
+/// A lane nobody has dialled reads Ready, and reading it does not create the cell.
+///
+/// The other half of the same contract: a peek allocates no cell and registers no pool name, so an
+/// enumeration over a pool's whole table leaves the map exactly as it found it. A read that created
+/// what it read would change which cells a later hard-down fan-out reaches.
+#[test]
+fn peeking_at_an_untouched_lane_creates_nothing() {
+    let unit: BreakerUnit = BreakerUnit::new();
+    let destination = DestinationId::new(9);
+
+    assert_eq!(
+        unit.state_peek("pool", destination, NOW),
+        LaneState::Ready,
+        "a cell nobody has touched is Closed-and-unspent"
+    );
+    assert!(
+        !unit.has_cell("pool", destination),
+        "and asking did not bring one into existence"
+    );
+}
+
+/// The destination's lifetime budget takes precedence in the peek, exactly as it does in the sealed
+/// read — one fold, not two.
+#[test]
+fn the_peek_folds_the_lifetime_budget_the_way_the_sealed_read_does() {
+    let unit: BreakerUnit = BreakerUnit::new();
+    let destination = DestinationId::new(2);
+    unit.set_budget(destination, 1);
+
+    assert_eq!(unit.state_peek("pool", destination, NOW), LaneState::Ready);
+    assert!(unit.spend_budget(destination));
+
+    assert_eq!(
+        unit.state_peek("pool", destination, NOW),
+        LaneState::BudgetExhausted
+    );
+    assert_eq!(
+        unit.state("pool", destination, NOW, &route_token()),
+        LaneState::BudgetExhausted,
+        "the sealed read answers from the same body"
     );
 }

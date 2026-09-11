@@ -519,10 +519,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14949
+unit_total_ceiling = 14964
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23842
+union_ceiling = 23857
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1833,3 +1833,21 @@ key = "cell.busbar.unit.count"
 file = "qa/kind-isolation.toml"
 by = 12
 because = "the units a NODE holds, named by the composition that holds them: `busbar_unit_auth::{Auth, AuthChain}`, `busbar_unit_admission::{Door, InMemoryCells, Pricer}`, `busbar_unit_wal::NullShipper` and `busbar_unit_ledger::legacy::RecordingRows` in the node type, its constructor and the cells that assemble one. Every one of them is the node's ONE instance, borrowed by every plane's leg; the cells assert exactly that by pointer, because a node whose two planes had two doors would admit twice against one budget."
+
+# THE TOKEN-FREE READINESS READ on the breaker unit: `busbar_unit_breaker::BreakerUnit::state_peek`
+# and the non-creating `cell_peek` the peek reads through. The VERIFY step decides which lanes may
+# be sealed and it holds no `Route` token; the sealed `Breaker::state` takes one. There were exactly
+# two ways out of that and both were worse than 15 lines: mint a route token at the root (refused —
+# `KernelSeal::acquire_for_kernel` is confined to the kernel by `seal-sites`), or give the verify
+# step a readiness opinion of its own, which is the second opinion about health that the split
+# between the peek and the admission exists to prevent. The sealed method KEEPS ITS CALLERS and
+# gains no body: it delegates, so there is one state table and not two.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 15
+because = "FACE busbar_unit_breaker::BreakerUnit::state_peek, the token-free side-effect-free LaneState read, plus the private non-creating cell_peek it reads through: +15 surface lines in busbar-unit-breaker and 0 anywhere else under the glob. The verify step holds no Route token and may not mint one, so without this the root would either forge a capability outside the kernel or give the verify step a second opinion about lane health. The sealed Breaker::state does not fork: it delegates to this body, so the budget-then-cell fold is written once"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 15
+because = "the same FACE as the unit_total_ceiling raise, busbar_unit_breaker::BreakerUnit::state_peek: +15 surface lines in busbar-unit-breaker and nothing in busbar-caps, busbar-contract or busbar-kernel, so this union rises by exactly the unit rise and by nothing else. busbar-unit-breaker/src/lib.rs is name-matched into the kernel's call graph, so the same 15 lines are counted here a second time and the kernel's own ceiling does not move"
