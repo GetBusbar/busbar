@@ -107,6 +107,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // (`PluginFetch` and its three shapes), so the tracked set follows it there. A single FILE
         // and not the directory: the rest of `plugin-loader/src` is ABI and runtime, not grammar.
         "crates/plugin-loader/src/fetch.rs".to_string(),
+        // The `plugins.trust:` grammar is declared beside the `TrustPolicy` it lowers onto. Its own
+        // FILE, because `plugin-sign/src/lib.rs` carries the signed-MANIFEST types — wire shapes the
+        // config freeze has never covered and must not start covering by accident.
+        "crates/plugin-sign/src/config.rs".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.

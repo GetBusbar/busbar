@@ -1837,7 +1837,7 @@ count = "3034"
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "264"
+count = "266"
 
 [[cell]]
 crate = "busbar-core"

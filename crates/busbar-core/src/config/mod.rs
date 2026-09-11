@@ -1439,36 +1439,16 @@ impl Default for PluginsCfg {
     }
 }
 
-/// `plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin
-/// verifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;
-/// anything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and
-/// SKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.
-#[derive(Deserialize, Clone, Default, Debug)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PluginsTrustCfg {
-    /// THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a
-    /// publisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the
-    /// binary and never configured here.
-    #[serde(default)]
-    pub(crate) publishers: Vec<PluginPublisher>,
-    /// EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default
-    /// `false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed
-    /// / executed), at boot and in the admin catalog.
-    #[serde(default)]
-    pub(crate) allow_unsigned: bool,
-    /// EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in
-    /// `publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.
-    #[serde(default)]
-    pub(crate) allow_third_party: bool,
-}
-
-/// One allowlisted plugin publisher: a name and its hex ed25519 public key.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PluginPublisher {
-    pub(crate) name: String,
-    pub(crate) public_key: String,
-}
+// THE `plugins.trust:` GRAMMAR MOVED to the signing crate, beside the `TrustPolicy` it is the
+// operator-facing half of: every word in it — publisher, public key, unsigned, third party — is that
+// crate's vocabulary, and the resolver below was already reaching into it for the reserved
+// first-party publisher name and the hex key parser. Re-exported at the historical `config::` path,
+// so the frozen `PluginsCfg::trust` field and its readers are unchanged.
+pub(crate) use busbar_plugin_sign::config::PluginsTrustCfg;
+// The publisher entry itself is named in core only by the admin test that writes one by hand; the
+// production resolver reaches it through the section field it re-exports above.
+#[cfg(test)]
+pub(crate) use busbar_plugin_sign::config::PluginPublisher;
 
 impl PluginsCfg {
     /// Resolve `plugins.fetch:` into the loader's [`busbar_plugin_loader::FetchSpec`] list: each

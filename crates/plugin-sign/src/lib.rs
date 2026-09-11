@@ -53,6 +53,9 @@
 use ed25519_dalek::{Signature, Signer};
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
+
+/// The `plugins.trust:` config section: the operator-facing half of [`TrustPolicy`].
+pub mod config;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
