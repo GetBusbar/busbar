@@ -92,37 +92,6 @@ const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
 /// the upstream is contacted at all.
 const RESULT_TYPE_TASK: &str = "task";
 
-/// `cacheScope` on every cacheable result: `private`, and it is the only value that is TRUE here,
-/// not a cautious default.
-///
-/// Every answer this module computes is scoped to the CALLER'S GRANT (owner ruling 2): two callers
-/// holding two different grants get two different catalogues from the same deployment, from the
-/// same registry, at the same instant. `public` means precisely "any client or intermediary MAY
-/// cache this and serve it ACROSS authorization contexts" — which for this server would mean a
-/// shared proxy serving one caller's authorized catalogue to a caller who holds none of it. That is
-/// the grant boundary being crossed by a cache, and a cache is not a place where authorization is
-/// re-checked. So `private`, on every result, including the ones that happen to be empty today: a
-/// value that is only correct while the registry is empty is a value that becomes wrong silently.
-const CACHE_SCOPE: &str = "private";
-
-/// `ttlMs` on every cacheable result: `0` — "consider this immediately stale; re-fetch when you
-/// need it".
-///
-/// A POSITIVE ttl is a promise that the answer will still be true for that long, and this server
-/// cannot make it. The registry is versioned and the operator can move it at any moment: an
-/// approval revoked, a pin bumped, a rug-pull quarantine landing between two requests. The
-/// invalidation channel that exists — `subscriptions/listen`, which is why `listChanged` is now
-/// advertised `true` — is OPT-IN and per-caller: a client that never opened a stream has no
-/// correction coming, so a positive ttl would be a promise kept only for the clients that
-/// subscribed. A client that cached for a minute would keep OFFERING a de-approved tool for a
-/// minute. Dispatch would still refuse the call it produced (the generation re-check is per
-/// request and does not consult any cache), so the cost is a confusing refusal rather than an
-/// unauthorized call. That is exactly why the honest answer is `0` and not a comfortable-looking
-/// `60000`: a cache hint that lies is worse than none, and `0` is not the absence of a hint — it
-/// is the schema's own way of stating "no freshness window", which is the true statement about a
-/// catalogue whose only invalidation channel is one the caller may not have opened.
-const CACHE_TTL_MS: i64 = 0;
-
 /// Everything a method needs, gathered once so no handler reaches for a global.
 pub(crate) struct Ctx<'a> {
     /// THE NEUTRAL HOST SEAM — the `EngineHost` this request runs against, and now the SOLE engine
@@ -416,21 +385,6 @@ fn completion_complete(id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// Add the SEP-2549 caching hints to a result that is CACHEABLE. See [`CACHE_SCOPE`] and
-/// [`CACHE_TTL_MS`] for the two values and why they are those values.
-///
-/// One function so the pair cannot drift apart across the six cacheable results, for the same
-/// reason [`super::envelope::error_response`] is one function for the status/code pair: a hint that
-/// says "private" in one place and "public" in another is a hint no client can act on.
-fn cache_hints(value: serde_json::Value) -> serde_json::Value {
-    let mut value = value;
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("cacheScope".into(), CACHE_SCOPE.into());
-        obj.insert("ttlMs".into(), CACHE_TTL_MS.into());
-    }
-    value
-}
-
 /// `server/discover` — the MERGED, GRANT-SCOPED catalogue advertisement.
 ///
 /// Under `2026-07-28` there is no `initialize`, so this is the only capability advertisement there
@@ -460,7 +414,7 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 
     result(
         id,
-        cache_hints(serde_json::json!({
+        busbar_plane_mcp::view::cacheable(serde_json::json!({
             "protocolVersion": super::envelope::PROTOCOL_VERSION,
             // The versions this server will ACCEPT, which is the mandatory field of a
             // `DiscoverResult` and is not the same statement as `protocolVersion` above (that one
@@ -572,7 +526,7 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
         })
         .map(CatalogueItem::render)
         .collect();
-    result(id, cache_hints(serde_json::json!({ "tools": tools })))
+    result(id, busbar_plane_mcp::view::tools_result(tools))
 }
 
 /// `prompts/list`, with every description markup-normalised on the way out.
@@ -581,7 +535,7 @@ fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let prompts: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
         .catalogue
         .prompts_rendered(&caller);
-    result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
+    result(id, busbar_plane_mcp::view::prompts_result(prompts))
 }
 
 /// Substitute `{arg}` placeholders in a prompt template from the caller's `params.arguments`.
@@ -832,10 +786,7 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let resources: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
         .catalogue
         .resources_rendered(&caller);
-    result(
-        id,
-        cache_hints(serde_json::json!({ "resources": resources })),
-    )
+    result(id, busbar_plane_mcp::view::resources_result(resources))
 }
 
 /// `resources/templates/list` — the GRANT-SCOPED URI-TEMPLATE catalogue.
@@ -858,7 +809,7 @@ fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Res
         .resource_templates_rendered(&caller);
     result(
         id,
-        cache_hints(serde_json::json!({ "resourceTemplates": templates })),
+        busbar_plane_mcp::view::resource_templates_result(templates),
     )
 }
 
@@ -916,7 +867,7 @@ fn resources_read(
     };
     result(
         id,
-        cache_hints(serde_json::json!({ "contents": [content] })),
+        busbar_plane_mcp::view::cacheable(serde_json::json!({ "contents": [content] })),
     )
 }
 

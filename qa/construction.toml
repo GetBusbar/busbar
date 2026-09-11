@@ -1741,6 +1741,17 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "the scope the settled class REQUIRES, named by the composition that grants it: `busbar_unit_scope::{Grants, Scope}` at `Grants::of(Scope::ReadOnly)`. `Grants::default` holds nothing, and a caller holding nothing is refused at approve before any answer is composed -- so a cell that wanted to reach the answer branch and did not say which scope the caller holds would be proving the refusal branch a second time."
 
+# ── MCP-M1 (1.6.0), PLAN LINE 3: THE FOUR CATALOGUE PROJECTIONS ──────────────────────────────────
+#
+# One projection for the four listing classes, on the plane's face. See docs/design/1.6.0-mcp-engine.md
+# section 7 line 3.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 18
+because = "THE CATALOGUE VIEW, and this is the legacy engine reading the face it MOVED ONTO: `busbar_plane_mcp::view::{cacheable, tools_result, prompts_result, resources_result, resource_templates_result, tool, prompt, resource, resource_template, ToolView, PromptView, ResourceView, CACHE_SCOPE}` at the four listing handlers, the four `CatalogueItem::render` bodies and the one `resources/read` content result. Every one of those bodies is DELETED here, not left beside the face: the four render impls now state only which of an entry's fields answer the wire and that the description is normalised first, the `cache_hints` helper and the `CACHE_SCOPE`/`CACHE_TTL_MS` pair are gone from this crate entirely, and busbar-mcp falls 22684 -> 22587 against it. The rise over the merge-base 468bad13's 3345 is 18, which is what is declared; the other 29 of the 47-count move is slack this branch had already drained at plan line 2."
+
 # STRUCK by MCP-M1's plan-line-2 landing (the method table's collapse onto the plane's face). The
 # entry declared `cell.busbar-mcp.codec.count` 42 -> 43 for `RESULT_COMPLETION_EMPTY`; this crate's
 # dispatch stopped naming the codec's retired `IMPLEMENTED_METHODS` and the cell now measures 40,
