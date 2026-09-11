@@ -164,7 +164,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   refused at boot: they live on the dated card so that spend stays re-derivable at read time, a card
   is the node's, and a posting records no scope to resolve a per-pool schedule by. The counts go on
   resolving at all four scopes, because a count is decided while the unit is running, where the pool
-  and the tier are known.
+  and the tier are known. What a deployment agreed to charge is carried as one record everywhere it
+  goes — `busbar_contract::tariff::FeeTerms` — so the engine that parses it, the seam that carries
+  it and the unit that applies it hold one shape between them rather than three.
 
 - **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
   "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,

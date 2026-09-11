@@ -518,6 +518,7 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
+ "busbar-contract",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",

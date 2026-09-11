@@ -6,7 +6,9 @@
 //! Every case here is about one decision the schedule makes — which way a fraction goes, what a
 //! floor and a cap do to a total, and what the previous release's one figure means in this shape.
 
-use super::{FeeSchedule, PerUnitFee, Rounding};
+use busbar_contract::tariff::{FeeTerms, PerUnitTerm, Rounding};
+
+use super::charge_minor;
 
 /// No quantity at all, for the cases that charge only counts.
 fn nothing(_: &str) -> u64 {
@@ -56,31 +58,31 @@ fn a_charge_per_zero_units_is_nothing_rather_than_a_panic() {
 /// unit, has no floor and has no cap.
 #[test]
 fn the_previous_releases_schedule_charges_its_one_figure_per_count() {
-    let s = FeeSchedule::flat(250);
-    assert_eq!(s.charge_minor(0, 1, &nothing).total_minor, 250);
-    assert_eq!(s.charge_minor(1, 1, &nothing).total_minor, 500);
-    assert_eq!(s.charge_minor(0, 0, &nothing).total_minor, 0);
+    let s = FeeTerms::flat(250);
+    assert_eq!(charge_minor(&s, 0, 1, &nothing).total_minor, 250);
+    assert_eq!(charge_minor(&s, 1, 1, &nothing).total_minor, 500);
+    assert_eq!(charge_minor(&s, 0, 0, &nothing).total_minor, 0);
     assert!(s.per_units.is_empty());
-    assert_eq!((s.minimum_minor, s.maximum_minor), (0, None));
+    assert_eq!((s.minimum, s.maximum), (0, None));
     // a negative figure would credit the caller for having been charged; it is clamped at the one
     // place a schedule is made from a single number.
-    assert_eq!(FeeSchedule::flat(-5), FeeSchedule::flat(0));
+    assert_eq!(FeeTerms::flat(-5), FeeTerms::flat(0));
 }
 
 /// **A TOTAL IS DECOMPOSABLE**, because a total nobody can take apart is a bill nobody can dispute.
 #[test]
 fn every_line_that_made_the_total_is_reported_beside_it() {
-    let s = FeeSchedule {
-        entry_minor: 2,
-        transaction_minor: 5,
-        per_units: vec![PerUnitFee {
-            class: "tokens_in".into(),
+    let s = FeeTerms {
+        entry: 2,
+        transaction: 5,
+        per_units: vec![PerUnitTerm {
+            dimension: "tokens_in".into(),
             per: 1000,
-            minor: 3,
+            amount: 3,
         }],
-        ..FeeSchedule::default()
+        ..FeeTerms::default()
     };
-    let charged = s.charge_minor(1, 1, &|c| if c == "tokens_in" { 1500 } else { 0 });
+    let charged = charge_minor(&s, 1, 1, &|c| if c == "tokens_in" { 1500 } else { 0 });
     let lines: Vec<(&str, u64, i128)> = charged
         .lines
         .iter()
@@ -98,30 +100,42 @@ fn every_line_that_made_the_total_is_reported_beside_it() {
 /// **A FLOOR AND A CAP MOVE THE TOTAL AND SAY BY HOW MUCH.** Never a silent adjustment.
 #[test]
 fn a_floor_and_a_cap_report_what_they_moved() {
-    let floored = FeeSchedule {
-        transaction_minor: 1,
-        minimum_minor: 10,
-        ..FeeSchedule::default()
-    }
-    .charge_minor(0, 1, &nothing);
+    let floored = charge_minor(
+        &FeeTerms {
+            transaction: 1,
+            minimum: 10,
+            ..FeeTerms::default()
+        },
+        0,
+        1,
+        &nothing,
+    );
     assert_eq!(floored.total_minor, 10);
     assert_eq!(floored.bound_adjustment_minor, 9);
 
-    let capped = FeeSchedule {
-        transaction_minor: 100,
-        maximum_minor: Some(25),
-        ..FeeSchedule::default()
-    }
-    .charge_minor(0, 1, &nothing);
+    let capped = charge_minor(
+        &FeeTerms {
+            transaction: 100,
+            maximum: Some(25),
+            ..FeeTerms::default()
+        },
+        0,
+        1,
+        &nothing,
+    );
     assert_eq!(capped.total_minor, 25);
     assert_eq!(capped.bound_adjustment_minor, -75);
 
     // A cap of nothing is a cap, and it is a different statement from no cap at all.
-    let free = FeeSchedule {
-        transaction_minor: 100,
-        maximum_minor: Some(0),
-        ..FeeSchedule::default()
-    }
-    .charge_minor(0, 1, &nothing);
+    let free = charge_minor(
+        &FeeTerms {
+            transaction: 100,
+            maximum: Some(0),
+            ..FeeTerms::default()
+        },
+        0,
+        1,
+        &nothing,
+    );
     assert_eq!(free.total_minor, 0);
 }

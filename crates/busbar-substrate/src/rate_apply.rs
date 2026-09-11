@@ -20,76 +20,17 @@ use crate::billing::RawTierRates;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///
-/// One entry per configured lane in the deployment's own order, plus the flat per-request fee, plus
-/// whether a rate card was configured AT ALL. The third is not the emptiness of the first: an ABSENT
-/// card prices every class at nothing and still charges the fee, and a PRESENT card that happens to
-/// name no lane is a different statement. Collapsing them would silently turn one deployment's
-/// configuration into another's.
+/// One entry per configured lane in the deployment's own order, the fee terms, and whether a rate
+/// card was configured AT ALL. The third is not the emptiness of the first: an ABSENT card prices
+/// every class at nothing and still charges the fee, and a PRESENT card naming no lane is a
+/// different statement; collapsing them turns one deployment's configuration into another's.
 pub struct RawRates<'r> {
     /// `(lane, its four raw micro-per-token tier rates)`, as configured.
     pub lanes: &'r [(String, RawTierRates)],
-    /// **WHAT THE DEPLOYMENT'S COUNTS ARE WORTH**: the amounts half of its tariff, in the
-    /// currency's minor units, as the neutral raw view a holder rebuilds its schedule from.
-    ///
-    /// A whole schedule rather than one scalar, because there is more than one thing a unit is
-    /// charged for and a seam that carried only the flat figure would leave every other amount to
-    /// be read off a configuration somewhere else — which is the second pricing policy this seam
-    /// exists to prevent.
-    pub schedule: RawSchedule,
+    /// What the deployment's counts are worth, as contract data — see [`busbar_contract::tariff`].
+    pub terms: busbar_contract::tariff::FeeTerms,
     /// Whether the deployment configured a rate card at all.
     pub present: bool,
-}
-
-/// **THE AMOUNTS, AS NEUTRAL RAW VALUES.** One record of the deployment's own figures in a
-/// canonical order, and deliberately nothing more: the config GRAMMAR that produced them belongs to
-/// whoever parses it, and the shape of a card belongs to whoever holds one. Only the numbers cross.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RawSchedule {
-    /// What one admitted visit costs.
-    pub entry: i64,
-    /// What one completed transaction costs, flat.
-    pub transaction: i64,
-    /// `(dimension, per, amount)` — what one `per` units of a declared dimension costs.
-    pub per_units: Vec<(String, u64, i64)>,
-    /// The floor under one unit's charge.
-    pub minimum: i64,
-    /// The cap over it; `None` is uncapped.
-    pub maximum: Option<i64>,
-    /// Which way a fraction of one minor unit goes: half to even, away from zero, toward zero.
-    /// Spelled as the three cases rather than as a shared enum, for the same reason the rest of
-    /// this record is scalars: the seam carries figures and choices, not another crate's type.
-    pub rounding: RawRounding,
-}
-
-impl RawSchedule {
-    /// **WHICH WAY A FRACTION GOES, SAID AS WHAT IT DOES** rather than as which rule it is:
-    /// `(away from zero, toward zero)`, and both false is half to even.
-    ///
-    /// The holder is the composition root, which is where a deployment's configuration becomes a
-    /// running node and which must learn as few spellings as possible from the crates the
-    /// retirement is emptying. A rule IS what it does to a remainder — that is the whole of its
-    /// meaning at the site that applies it — so the seam carries the two answers and not the name,
-    /// exactly as the dispute policy's own seam carries what a policy charges and not which policy
-    /// it is. A shared enum would be a third vocabulary neither side owns.
-    #[must_use]
-    pub fn rounding_choice(&self) -> (bool, bool) {
-        (
-            matches!(self.rounding, RawRounding::Up),
-            matches!(self.rounding, RawRounding::Down),
-        )
-    }
-}
-
-/// Which way a fraction of one minor unit goes. See [`RawSchedule::rounding`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum RawRounding {
-    /// Half to even — the teller's rule.
-    #[default]
-    Bankers,
-    /// Away from zero.
-    Up,
-    /// Toward zero.
-    Down,
 }
 
 /// A holder of rates that a live apply must reach.

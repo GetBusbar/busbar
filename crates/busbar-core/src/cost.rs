@@ -125,23 +125,22 @@ impl CostModel {
         per_request_fee: i64,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
-        Self::resolve_parts_with_schedule(
+        Self::resolve_parts_with_terms(
             rate_card,
-            busbar_unit_cost::FeeSchedule::flat(per_request_fee),
+            busbar_contract::tariff::FeeTerms::flat(per_request_fee),
             groups_cfg,
         )
     }
 
-    /// [`Self::resolve_parts`] with the deployment's WHOLE fee schedule rather than its one flat
+    /// [`Self::resolve_parts`] with the deployment's WHOLE fee terms rather than its one flat
     /// figure — what the composition path calls, once the `tariff:` section has been resolved.
     ///
-    /// The one-figure spelling above is this, with the schedule the previous release's: one figure
-    /// for the visit and for the transaction, nothing per unit, no floor and no cap. Two entry
-    /// points, one card constructor, and no second place that turns a configured amount into a
-    /// price.
-    pub fn resolve_parts_with_schedule(
+    /// The one-figure spelling above is this, with the previous release's terms: one figure for the
+    /// visit and for the transaction, nothing per unit, no floor and no cap. Two entry points, one
+    /// card constructor, and no second place that turns a configured amount into a price.
+    pub fn resolve_parts_with_terms(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
-        schedule: busbar_unit_cost::FeeSchedule,
+        terms: busbar_contract::tariff::FeeTerms,
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
         // rate_card is the ONLY cost source - the 1.4.x pool-member tiered-override loop is
@@ -165,7 +164,7 @@ impl CostModel {
                     )
                 })
             }),
-            schedule,
+            terms,
         );
         Self::from_card(card, groups_cfg)
     }
@@ -242,8 +241,8 @@ impl CostModel {
     pub(crate) fn price_per_request_cents(&self) -> i64 {
         self.inner
             .card()
-            .fee_schedule(CurrencyCode::USD)
-            .map_or(0, |s| s.transaction_minor)
+            .fee_terms(CurrencyCode::USD)
+            .map_or(0, |t| t.transaction)
     }
 
     /// **THE CARD ITSELF**, for a reader that needs to DERIVE rather than to ask this model a
@@ -313,36 +312,3 @@ impl CostModel {
 #[cfg(test)]
 #[path = "tests/cost_tests.rs"]
 mod tests;
-
-/// **THE DEPLOYMENT'S RESOLVED AMOUNTS, IN THE CARD'S OWN SHAPE.** One lift, in one place.
-///
-/// The `tariff:` section's resolved figures are the configuration's; a [`busbar_unit_cost::
-/// FeeSchedule`] is the card's. This is the only translation between them, so there is no second
-/// reading of an amount anywhere that could disagree with this one about what a deployment charges.
-#[must_use]
-pub fn fee_schedule_of(
-    amounts: &crate::config::tariff::TariffAmounts,
-) -> busbar_unit_cost::FeeSchedule {
-    use crate::config::tariff::RoundingCfg;
-    use busbar_unit_cost::{FeeSchedule, PerUnitFee, Rounding};
-    FeeSchedule {
-        entry_minor: amounts.entry_cents.max(0),
-        transaction_minor: amounts.transaction_flat_cents.max(0),
-        per_units: amounts
-            .per_units
-            .iter()
-            .map(|u| PerUnitFee {
-                class: u.dimension.clone(),
-                per: u.per,
-                minor: u.cents.max(0),
-            })
-            .collect(),
-        minimum_minor: amounts.minimum_cents.max(0),
-        maximum_minor: amounts.maximum_cents.map(|m| m.max(0)),
-        rounding: match amounts.rounding {
-            RoundingCfg::Bankers => Rounding::Bankers,
-            RoundingCfg::Up => Rounding::Up,
-            RoundingCfg::Down => Rounding::Down,
-        },
-    }
-}

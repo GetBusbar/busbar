@@ -27,8 +27,8 @@
 //! **COUNTS FOR THE KERNEL, AMOUNTS FOR THE CARD, AND THE TWO NEVER MEET IN A STORED FIGURE.** This
 //! section says how many entries and how many transactions a unit owes and whether the meter's
 //! quantities are charged for — that half goes to the teller, which counts and never prices. It also says what one of each is WORTH, in the currency's minor units — that half goes
-//! onto the dated card, and it is applied at the ONE pricing site in `busbar_unit_cost` and nowhere
-//! else. The ledger stores the counts; the money is what the card in force makes of them at the
+//! onto the dated card, and it is applied at the ONE pricing site, where the card lives, and
+//! nowhere else. The ledger stores the counts; the money is what the card in force makes of them at the
 //! moment somebody asks, so an amount written here is a figure a later reader re-derives rather
 //! than a second answer they cannot.
 //!
@@ -50,6 +50,10 @@
 //! the grammar so an operator who wants a different rule names it and an auditor reading a bill can
 //! read which one produced it.
 
+// THE FEE TERMS ARE CONTRACT DATA. What a deployment WRITES is this file's, what the figures ARE
+// is the contract's, and what they come to is the card's — three questions, three homes, and no
+// crate holding a second shape for one set of figures.
+use busbar_contract::tariff::{FeeTerms, PerUnitTerm, Rounding};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -96,7 +100,7 @@ pub struct TariffScopeCfg {
     pub maximum_cents: Option<i64>,
     /// Which way a fraction of a minor unit goes. See the module header: the default is banker's.
     #[serde(default)]
-    pub rounding: Option<RoundingCfg>,
+    pub rounding: Option<Rounding>,
     /// What a unit whose two endings contradict each other is charged.
     #[serde(default)]
     pub dispute_policy: Option<DisputePolicyCfg>,
@@ -139,38 +143,7 @@ pub struct TransactionFeeCfg {
     /// outermost default is EMPTY, and empty is what makes `rate_card:` the only thing pricing a
     /// unit of a dimension on a deployment that has not written this key.
     #[serde(default)]
-    pub per_units: Option<Vec<PerUnitFeeCfg>>,
-}
-
-/// **CENTS PER N UNITS OF ONE DECLARED DIMENSION.**
-///
-/// `per` is written rather than assumed to be one, because a schedule of "3 cents per 1000 tokens"
-/// is the one operators actually publish and expressing it as a fraction of a cent per token is a
-/// rounding decision smuggled into a rate. With `per` on the schedule the division happens once, at
-/// the pricing site, under the declared [`RoundingCfg`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PerUnitFeeCfg {
-    /// The dimension's key, as the plane that declared it spells it.
-    pub dimension: String,
-    /// How many units one charge covers. Must be at least one: a charge per zero units is not a
-    /// price, and validation refuses it rather than letting the pricing site invent a divisor.
-    pub per: u64,
-    /// What one `per` units costs, in the currency's MINOR units.
-    pub cents: i64,
-}
-
-/// **WHICH WAY A FRACTION OF A MINOR UNIT GOES.** Declared, never implied.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RoundingCfg {
-    /// Half to even — the teller's rule, and the default. See the module header for why.
-    #[default]
-    Bankers,
-    /// Always away from zero. The house takes every fraction.
-    Up,
-    /// Always toward zero. The customer takes every fraction.
-    Down,
+    pub per_units: Option<Vec<PerUnitTerm>>,
 }
 
 /// What a contradicted unit is charged. The three answers to one question, generous first.
@@ -265,7 +238,7 @@ impl TariffCfg {
         pool: Option<&str>,
         tier: Option<&str>,
         inherited_fee: i64,
-    ) -> TariffAmounts {
+    ) -> FeeTerms {
         let scopes = self.scopes(plane, pool, tier);
         let entry = |f: &dyn Fn(&EntryFeeCfg) -> Option<i64>| {
             scopes.iter().find_map(|s| s.entry_fee.as_ref().and_then(f))
@@ -275,9 +248,9 @@ impl TariffCfg {
                 .iter()
                 .find_map(|s| s.transaction_fee.as_ref().and_then(f))
         };
-        TariffAmounts {
-            entry_cents: entry(&|e| e.amount_cents).unwrap_or(inherited_fee),
-            transaction_flat_cents: txn(&|t| t.flat_cents).unwrap_or(inherited_fee),
+        FeeTerms {
+            entry: entry(&|e| e.amount_cents).unwrap_or(inherited_fee),
+            transaction: txn(&|t| t.flat_cents).unwrap_or(inherited_fee),
             per_units: scopes
                 .iter()
                 .find_map(|s| {
@@ -285,10 +258,10 @@ impl TariffCfg {
                         .as_ref()
                         .and_then(|t| t.per_units.as_ref())
                 })
-                .cloned()
+                .map(Vec::<PerUnitTerm>::clone)
                 .unwrap_or_default(),
-            minimum_cents: scopes.iter().find_map(|s| s.minimum_cents).unwrap_or(0),
-            maximum_cents: scopes.iter().find_map(|s| s.maximum_cents),
+            minimum: scopes.iter().find_map(|s| s.minimum_cents).unwrap_or(0),
+            maximum: scopes.iter().find_map(|s| s.maximum_cents),
             rounding: scopes.iter().find_map(|s| s.rounding).unwrap_or_default(),
         }
     }
@@ -347,7 +320,7 @@ impl TariffCfg {
                     out.push(TariffAmountConflict {
                         scope: scope.clone(),
                         key: format!("transaction_fee.per_units[{}]", unit.dimension),
-                        new_amount: unit.cents,
+                        new_amount: unit.amount,
                         old_key: format!("rate_card (the '{}' rate)", unit.dimension),
                         old_amount: 0,
                     });
@@ -407,27 +380,6 @@ pub struct TariffAmountConflict {
     pub old_key: String,
     /// What that key says.
     pub old_amount: i64,
-}
-
-/// **ONE SCOPE'S AMOUNTS, WITH EVERY FIELD ANSWERED.** What amount resolution produces.
-///
-/// In the currency's MINOR units throughout, because that is the unit a deployment writes a fee in
-/// and the unit a bill is read in; the lift to the nano-units the card computes in happens once, at
-/// the pricing site, where the currency is known.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TariffAmounts {
-    /// What one admitted visit costs.
-    pub entry_cents: i64,
-    /// What one completed transaction costs, flat.
-    pub transaction_flat_cents: i64,
-    /// What the transaction's units cost, per dimension.
-    pub per_units: Vec<PerUnitFeeCfg>,
-    /// The floor under one unit's tariff charge.
-    pub minimum_cents: i64,
-    /// The cap over it; `None` is uncapped.
-    pub maximum_cents: Option<i64>,
-    /// Which way a fraction of a minor unit goes.
-    pub rounding: RoundingCfg,
 }
 
 /// **ONE SCOPE'S CELL, WITH EVERY FIELD ANSWERED.** What resolution produces.
