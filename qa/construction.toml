@@ -1203,54 +1203,81 @@ abi = 1
 # and an entry that describes no rise is refused as stale. THESE SEVEN MUST BE STRUCK BY THE LANDING
 # THAT FOLLOWS THIS ONE.
 #
-# What actually moved, and why the measurement cannot be drained instead: `kind-isolation:matrix`
-# counts a crate's naming of another kind's vocabulary across its whole source text -- prose and
-# doc comments included, deliberately, because a comment that explains another kind's wire IS
-# coupling to it. This line adds one new function to each of two crates and the doc comments that
-# say why they exist (a fabricated terminal has no stream state to take its creation time from, so
-# the caller's clock reading is threaded to the writer), plus two red-first tests that drive the
-# Responses door end to end. Six of the seven rises are a handful of words each; the two large ones
-# are the tests and the doc comments, and shrinking a comment to move a counter is not draining a
-# measurement, it is hiding one.
+# FORTY-SIX HITS, ATTRIBUTED -- NOT ONE TOTAL. A single number tells the owner nothing about what
+# grew, so the rise is measured into three buckets and every `because` below says which of the three
+# its own cell is. The measurement is three runs of `kind-isolation:matrix` over this tree, not an
+# estimate: the tip as it stands; the tip with the three TEST files reverted to the base; and that,
+# with every doc-comment line this line ADDED to the seven production files stripped out and the code
+# left standing. The differences are the buckets.
+#
+#   bucket                                                      hits
+#   ----------------------------------------------------------  ----
+#   SEAM       the new cross-kind entry points and their call      20
+#              sites -- code only, comments stripped
+#   TESTS      the two red-first tests, plus the seven call        21
+#              sites they share with the changed signature
+#   COMMENTS   the doc prose added beside the seam                  5
+#                                                            total 46
+#
+#   cell                              base    +SEAM   +COMMENTS   +TESTS = tip
+#   --------------------------------  ------  ------  ---------  ------   ------
+#   busbar-llm       x codec              25      +1         +0      +0       26
+#   busbar-llm       x plane             300      +1         +0      +0      301
+#   busbar-llm       x transport        1206      +0         +0      +5     1211
+#   busbar-llm       x dialect          3208      +0         +1     +16     3225
+#   busbar-llm-codec x dialect        11200     +15         +4      +0    11219
+#   busbar-llm-codec x substrate        904      +1         +0      +0      905
+#   busbar-llm-codec x transport        615      +2         +0      +0      617
+#
+# THIS IS ATTRIBUTION, NOT REDUCTION. Forty-one of the forty-six are tests and prose, and neither was
+# trimmed to move a counter. A test that proves what the Responses door writes when the socket dies
+# mid-stream must name the Responses door, the stream and the transport failure; a doc comment that
+# explains why a creation time is handed down rather than read must name the wire that needs it.
+# `kind-isolation:matrix` counts prose deliberately -- a comment about another kind's wire IS
+# coupling to it -- and shrinking a comment to move the number it produces is hiding a measurement,
+# not draining one. The twenty that ARE seam are the face this line adds, and they are declared as a
+# face: docs/design/ARCHITECTURE.md section 1.1 is amended in this same commit to state the rule the
+# face serves (the clock reading is handed down from the two engine sites that hold one; the codec
+# never holds one).
 
 [gate.ceiling_raises."cell.91.count"]
 file = "qa/kind-isolation.toml"
 from = 25
 to = 26
-because = "busbar-llm x codec +1: engine/wire.rs reaches busbar_llm_codec::wire_shim::stream_error_frame for the fabricated mid-stream terminal, because the neutral DialectCodec seam takes only (&IrError) and cannot carry the caller's clock reading, and the substrate that declares that seam is frozen. wire_shim is the module the engine already reaches for its other body-shaping helpers, so this is one more name at a seam that already existed rather than a new edge."
+because = "SEAM +1, tests +0, comments +0. busbar-llm x codec: engine/wire.rs reaches busbar_llm_codec::wire_shim::stream_error_frame for the fabricated mid-stream terminal, because the neutral DialectCodec face takes only (&IrError) and cannot carry the caller's clock reading, and the substrate that declares that face is frozen. wire_shim is the module the engine already reaches for its other body-shaping helpers, so this is one more name at a seam that already existed rather than a new edge. Measured with comments stripped and the tests reverted: the hit is the call, not the prose around it."
 
 [gate.ceiling_raises."cell.96.count"]
 file = "qa/kind-isolation.toml"
 from = 300
 to = 301
-because = "busbar-llm x plane +1: one word, in the doc comment on the stream-open site in engine/attempt/respond.rs that explains where the creation time a streaming writer stamps comes from. No new dependency, no new call, no new type -- the rise is prose that makes the clock reading's provenance findable at the site that reads it."
+because = "SEAM +1, tests +0, comments +0. busbar-llm x plane: the stream-open site in engine/attempt/respond.rs now names the stamped translator factory. Measured with every doc-comment line this line added stripped out, the rise is still there, so this is code and not prose: one call site, one new argument, no new dependency and no new type."
 
 [gate.ceiling_raises."cell.100.count"]
 file = "qa/kind-isolation.toml"
 from = 1206
 to = 1211
-because = "busbar-llm x transport +5: the red-first integration test drives a real streaming request through the Responses door and reads the fabricated terminal off the wire, and the fabrication site's own doc comment names the transport failure it answers. A mid-stream cut is a transport event; a test that proves what the door writes when the socket dies cannot avoid naming it."
+because = "TESTS +5, seam +0, comments +0. busbar-llm x transport: entirely the red-first integration test, which drives a real streaming request through the Responses door and reads the fabricated terminal off the wire. With the three test files reverted to the base this cell measures the base number exactly -- the production change contributes nothing to it. A mid-stream cut IS a transport event; a test that proves what the door writes when the socket dies cannot avoid naming one."
 
 [gate.ceiling_raises."cell.337.count"]
 file = "qa/kind-isolation.toml"
 from = 3208
 to = 3225
-because = "busbar-llm x dialect +17: the two red-first tests. One drives /v1/responses end to end and asserts the fabricated response.failed carries a real unix second inside the bracket the test reads around the request; the other pins the seam, that the caller's reading lands on the frame verbatim and that no other dialect's terminal error frame grows a timestamp from it. Proving a dialect's wire means naming that dialect's wire."
+because = "TESTS +16, comments +1, seam +0. busbar-llm x dialect: sixteen of the seventeen are the two red-first tests -- one drives /v1/responses end to end and asserts the fabricated response.failed carries a real unix second inside the bracket the test reads around the request, the other pins the seam, that the caller's reading lands on the frame verbatim and that no other dialect's terminal error frame grows a timestamp from it. The seventeenth is one word of doc prose. The seam code itself contributes zero: proving a dialect's wire means naming that dialect's wire, and that is the whole of this rise."
 
 [gate.ceiling_raises."cell.338.count"]
 file = "qa/kind-isolation.toml"
 from = 11200
 to = 11219
-because = "busbar-llm-codec x dialect +19: three small functions and the doc comments that say why they exist -- protocol_stamped, protocol_for_stamped and with_writer_stamped, each the stamped twin of a resolver that already existed. The prose is the load-bearing part: it records that the creation time is an INPUT and never a clock read, which is the rule this line finishes wiring rather than one it bends."
+because = "SEAM +15, comments +4, tests +0. busbar-llm-codec x dialect: fifteen are the three stamped resolvers -- protocol_stamped, protocol_for_stamped and with_writer_stamped, each the stamped twin of a resolver that already existed and each naming this dialect's reader and writer by name to build them. Four are the doc prose that records WHY they are twins rather than a clock argument on the face: the creation time is an INPUT and never a clock read, which is the rule this line finishes wiring rather than one it bends (ARCHITECTURE.md section 1.1, amended in this commit). No test touches this cell."
 
 [gate.ceiling_raises."cell.105.count"]
 file = "qa/kind-isolation.toml"
 from = 904
 to = 905
-because = "busbar-llm-codec x substrate +1: wire_shim::stream_error_frame names the substrate's own error carrier in its signature (breaker::CanonicalSignal), which is the neutral type the seam it stands beside already takes. One name, in one signature, for a type this crate was already handed on every other error path."
+because = "SEAM +1, tests +0, comments +0. busbar-llm-codec x substrate: wire_shim::stream_error_frame names the substrate's own error carrier in its signature (breaker::CanonicalSignal), which is the neutral type the face it stands beside already takes. One name, in one signature, for a type this crate is handed on every other error path already."
 
 [gate.ceiling_raises."cell.107.count"]
 file = "qa/kind-isolation.toml"
 from = 615
 to = 617
-because = "busbar-llm-codec x transport +2: the stamped stream-translator factory and its doc comment, which say that the reading is taken when the stream is OPENED -- a transport moment -- and carried for the life of that stream. The three-argument factory keeps its signature for the neutral fn-pointer seam; the four-argument one is the production path."
+because = "SEAM +2, tests +0, comments +0. busbar-llm-codec x transport: the stamped stream-translator factory and the stamped same-proto constructor, both of which say that the reading is taken when the stream is OPENED -- a transport moment -- and carried for the life of that stream. The three-argument factory keeps its signature for the neutral fn-pointer seam, whose type cannot carry a clock; the four-argument one is the production path."

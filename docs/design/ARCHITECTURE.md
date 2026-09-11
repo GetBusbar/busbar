@@ -86,6 +86,29 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
+**THE CLOCK IS HANDED DOWN, NEVER HELD.** A unit takes the kernel's clock; nothing else on these
+three axes reads one. A codec in particular must not — its whole worth is that two identical calls
+produce identical bytes, and a `SystemTime::now()` inside it destroys exactly that: the output can
+then be checked against no frozen recording, and a kind that fabricates a value out of the ambient
+world is not a pure kind. But some wires REQUIRE a time the answer does not carry. The OpenAI
+Responses stream stamps `created_at` on the full response object of every lifecycle event, and a
+terminal the door FABRICATES — after the upstream socket died mid-stream, with no answer object and
+no opening event to inherit from — has nothing to take it from. So the rule is not "that shape may
+not exist"; the rule is that **the reading is an argument**. Whoever holds the clock reads it once
+and hands the value across the seam, and the codec stamps what it was handed.
+
+There are exactly two such sites, both in a plane's engine, both reading the host's `clock_now`
+port: the one that OPENS a stream — the reading rides the writer the translator holds for that
+stream's whole life, so every event of one stream stamps one value, and two runs on the same
+reading produce the same bytes — and the one that ENDS a stream the upstream abandoned. The
+buffered path's counterpart is older and identical in kind: the answer-normalization pass takes
+`now_epoch` and fills the answer's own creation time before the writer ever sees it. A SEAM THAT
+CANNOT CARRY THE READING DOES NOT GET ONE: the neutral dialect-codec face takes the error and
+nothing else, so a stamped resolver sits BESIDE each unstamped one rather than the face growing a
+clock argument it has no business declaring. With no reading supplied a codec stamps a declared
+"the caller offered no time" constant — never a fresh one, and never silently: a constant is
+visible in a recording, and a clock read is not.
+
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
 `docs/design/D33-legacy-retirement.md` §7 carries the measurement):
 
