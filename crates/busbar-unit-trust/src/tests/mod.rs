@@ -3,6 +3,7 @@
 
 //! The unit's tests, ported with their assertions intact from the shipped guards' and pick's suites.
 
+mod counterparty_tests;
 mod destination_tests;
 mod freshness_tests;
 mod guard_tests;

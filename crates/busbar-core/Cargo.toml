@@ -26,6 +26,14 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# THE PLUGIN-VISIBLE CONTRACT, for the one vocabulary this crate both reads and hands on: the
+# counterparty facts and verdict (`busbar_contract::counterparty`). The host-vtable's trust slot is
+# the only place the `#[repr(C)]` counterparty POD is read, so it is the only place the POD and the
+# neutral vocabulary are spelled against each other; the DECISION is busbar-unit-trust's and is
+# written in the contract's words, which is why they have to be nameable from here. The contract is
+# granted to every kind (ARCHITECTURE.md 1.2 manifest allow-list), so this edge is not part of the
+# transitional drain and does not die with busbar-core.
+busbar-contract = { path = "../busbar-contract" }
 # The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
 # diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the

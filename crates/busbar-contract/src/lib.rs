@@ -11,6 +11,7 @@
 #![deny(missing_debug_implementations)]
 
 pub mod bounded;
+pub mod counterparty;
 pub mod dest;
 pub mod grammar;
 pub mod ids;

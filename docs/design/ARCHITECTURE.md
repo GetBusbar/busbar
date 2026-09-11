@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3509`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3564`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -93,6 +93,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   silently, because both readings are internally consistent and neither knows the other exists. The
   one relay is `busbar_substrate::config::groups::group_specs`, beside the grammar it reads; the
   root's copy went in the same commit. Nothing is added to what a plugin author must read: no trait
+  takes these types and no plugin is handed one. The third is **`busbar_contract::counterparty`**
+  (`Liveness`, `Grant`, `RegistrationState`, `Artifact`, `CounterpartyFacts`, `Verdict`; 54 code
+  lines + 1 module line, declared at +55): the vocabulary for the PARTY at the other end of a
+  destination — what one side asserts about the other, and the closed verdict that answers it. The
+  contract already owned the resolved half of that subject (the sealed and verified destination);
+  what it did not own was any way to say a word about the counterparty itself, so the fold that
+  turns per-step facts into a verdict could only be written where the plugin ABI's `#[repr(C)]`
+  counterparty POD could be named. That is the host-vtable, in the retiring engine, and not the
+  verify step whose question it is — so the decision sat one crate away from its owner, and the
+  rule that a counterparty's own assertions may only NARROW the books' standing (never widen it, or
+  a demoted counterparty asserts its way back to approved) sat there with it. With the words
+  minted, the fold is `busbar_unit_trust::counterparty` and what stays in the engine is the
+  TRANSLATION, written once because the host-vtable is the only place the POD is read. `Default` is
+  implemented on every type and every default is the REFUSING value, so a field nobody wrote can
+  never read as a fact that passes. Nothing is added to what a plugin author must read: no trait
   takes these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,

@@ -12,9 +12,9 @@
 //! | [`verify_store`] | the same ledger — the leader records a completed fetch | non-`Ok` status |
 //! | [`drift_quarantine`] | [`crate::plane::quarantine`] durable demotion record | `Fault`/`Refused` |
 //! | [`approval_redeem`] | [`crate::plane::approvals`] spent-approval ledger | `Refused` (already-spent OR store error) |
-//! | [`trust_evaluate`] | the durable drift/quarantine trust state | [`TrustVerdict::Denied`] |
+//! | [`trust_evaluate`] | `busbar_unit_trust::counterparty` over the durable drift state | [`TrustVerdict::Denied`] |
 //!
-//! ## The design split (why the host holds the freshness, and why it holds no verdict)
+//! ## The design split (why the host holds the freshness, and why it decides nothing)
 //!
 //! The HOST coordinates; the PLANE does the fetch. The freshness rule, the single flight and the
 //! release a dropped leader depends on are [`busbar_unit_trust::VerifyFreshness`]'s, and are stated
@@ -23,6 +23,14 @@
 //! [`VerifyStoreFn`](busbar_plugin::hot::host::VerifyStoreFn) carries no digest — so a `Hit` reports
 //! "verified within ttl", never a cached payload, and its `digest_ptr` is null, which is exactly
 //! what a `VerifyGate` that stores no verdict of its own can promise.
+//!
+//! ## The verdict is DECIDED elsewhere; this module only reads the POD
+//!
+//! `trust_evaluate` takes no trust decision. It recovers the books' own standing, decodes the
+//! asserted fact tail into [`busbar_contract::counterparty::CounterpartyFacts`], and hands both to
+//! `busbar_unit_trust::counterparty::evaluate` — the verify step, where the ordered fold and the
+//! rule that a plane's facts may only NARROW the host's standing are stated. What is written here
+//! is the TRANSLATION, in one place, because this is the only place the `#[repr(C)]` POD is read.
 //!
 //! ## Fail-closed, because trust fails closed
 //!
@@ -37,17 +45,15 @@
 //!   than being told `Follow` and re-polling) is the large piece deferred here: `verify_lookup`
 //!   designates leadership faithfully and `verify_store` releases it, but the follower does not yet
 //!   block on a host-side condvar keyed to the leader's completion.
-//! * `trust_evaluate` consults the real durable drift state (the demotion records) and maps it to a
-//!   verdict; the FULL ordered validator (`crate::trust::validate::validate_request` —
-//!   identity → grant → artifact → generation) is wired once the counterparty→registration
-//!   resolution (a registry lookup that turns opaque identity bytes into an `Approval`/`Sighting`)
-//!   lands. Until then an un-demoted counterparty is `Allow` and a demoted one is `Quarantined`.
 //! * The freshness ledger is a module-global here rather than an `App` field, so `verify_store` →
 //!   `verify_lookup` persists across dispatch invocations without reshaping `App`. Phase 2 moves it
 //!   onto the `App` beside `mcp_verify` and keys it to the real `VerifyGate` epochs for cross-node
 //!   coordination.
 
 use super::{recover, HostState};
+use busbar_contract::counterparty::{
+    Artifact, CounterpartyFacts, Grant, Liveness, RegistrationState, Verdict,
+};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     ApprovalQuery, CounterpartyRef, Key, StatusClass, TrustVerdict, VerifyDecision, VerifyLease,
@@ -72,8 +78,12 @@ static FRESHNESS: LazyLock<busbar_unit_trust::VerifyFreshness> =
 /// `key` must be a live `&Key` whose `(key_ptr, key_len)`, when non-null, borrows an initialized
 /// range for the call (the ABI's borrow discipline).
 unsafe fn cache_key(key: &Key) -> Option<(u32, Vec<u8>)> {
-    // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline (delegated to `cache_key_raw`).
-    unsafe { cache_key_raw(key.scope, key.key_ptr, key.key_len) }
+    if key.key_ptr.is_null() || key.key_len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(key_ptr, key_len)` borrows a live, initialized range for the call.
+    let bytes = unsafe { std::slice::from_raw_parts(key.key_ptr, key.key_len) };
+    Some((key.scope, bytes.to_vec()))
 }
 
 /// The counterparty/approval SUBJECT as a string, or `None` when the borrowed identity is null/empty
@@ -205,31 +215,12 @@ pub(crate) extern "C-unwind" fn verify_store(
     .unwrap_or(StatusClass::Fault)
 }
 
-/// Copy an owned subject from a borrowed `(scope, ptr, len)` range, or `None` when null/empty — the
-/// shared body of [`cache_key`] (over a [`Key`]) and the [`VerifyQuery`]/[`ApprovalQuery`] paths.
-///
-/// # Safety
-/// `(ptr, len)`, when non-null, borrow a live, initialized range for the call.
-unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<(u32, Vec<u8>)> {
-    if ptr.is_null() || len == 0 {
-        return None;
-    }
-    // SAFETY: a non-null `(ptr, len)` borrows a live, initialized range for the call.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    Some((scope, bytes.to_vec()))
-}
-
-/// THE reverify-`due` REACH, wrapped once — returns the full [`crate::trust::reverify::Due`] REASON
-/// (never a lossy bool). The compiled-in bool veneer that once collapsed it for the MCP plane is gone
-/// with that plane's `VerifyGate`, which now lives in the neutral substrate and names
-/// `reverify::due` directly; what remains funnels through here. The plane's a2a
-/// re-verify job (`crate::a2a::verify::reverify_once`) and the operator `sync` verb
-/// (`crate::a2a::verbs::sync`) funnel through here, so the a2a plane never reaches
-/// `crate::trust::reverify::due` itself post-extraction — only this host veneer does. `operator_sync`
-/// OUTRANKS the timer (an operator who asks does not wait): it is unconditionally [`Due::OperatorSync`],
-/// exactly as `due` promises. Reconstructs a minimal ledger/policy because `due` reads only
-/// `last_checked_ms` and `ttl_ms` — `recovery_backoff_ms` and the drift counters never enter the
-/// freshness decision.
+/// THE ONE READER of the substrate's frozen `reverify::due` (`busbar_substrate::trust::reverify`,
+/// re-exported as [`crate::trust::reverify`]) left in this tree: the extracted planes each name the
+/// substrate arithmetic themselves, so what funnels through here is the wired [`verify_decide_q`]
+/// slot and nothing else. Returns the full [`crate::trust::reverify::Due`] REASON, never a lossy
+/// bool. `operator_sync` OUTRANKS the timer, exactly as `due` promises. Reconstructs a minimal
+/// ledger/policy because `due` reads only `last_checked_ms` and `ttl_ms`.
 pub(crate) fn verify_decide_due(
     last_checked_ms: Option<u64>,
     ttl_ms: u64,
@@ -277,15 +268,14 @@ pub(crate) extern "C-unwind" fn verify_decide_q(
 }
 
 /// WIRED `approval_redeem_q` → [`crate::plane::approvals::SpentTokenLedger::spend`], over a richer
-/// [`ApprovalQuery`]. Identical to [`approval_redeem`] except it spends against the seal's OWN
-/// `expires_at` and the caller's `now` (marshalled in the query) rather than recomputing a default
-/// TTL — the behavior-identity the `mcp::callerask` call site requires. `Ok` iff this is the FIRST
-/// redemption; `Refused` when already spent OR the ledger could not answer (fail-closed). A null query
-/// is `Refused`; a caught panic is `Fault`.
-// The MCP plane's `callerask` completion arm calls this ABI slot directly, so it is `pub`. It takes
-// the raw `*const ApprovalQuery` the plane ABI dictates and derefs it under the audited recovery
-// invariant; it cannot be marked `unsafe` without changing the extern fn-pointer type the slot is
-// registered as, so the deref lint is allowed here exactly as at every other host-call slot.
+/// [`ApprovalQuery`]: it spends against the seal's OWN `expires_at` and the caller's `now` rather
+/// than recomputing a default TTL. `Ok` iff this is the FIRST redemption; `Refused` when already
+/// spent OR the ledger could not answer ( a ledger that cannot say "already spent" must not be read
+/// as "not spent"); a null query is `Refused` and a caught panic is `Fault`.
+// A plane's completion arm calls this ABI slot directly, so it is `pub`. It derefs the raw
+// `*const ApprovalQuery` the ABI dictates under the audited recovery invariant, and cannot be marked
+// `unsafe` without changing the registered fn-pointer type — so the deref lint is allowed here
+// exactly as at every other host-call slot.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C-unwind" fn approval_redeem_q(
     host: HostCtx,
@@ -303,7 +293,11 @@ pub extern "C-unwind" fn approval_redeem_q(
         let Some(nonce) = (unsafe { subject(q.key_ptr, q.key_len) }) else {
             return StatusClass::Refused;
         };
-        if redeem_approval(&state.app.spent_token_ledger, &nonce, q.expires_at, q.now) {
+        if state
+            .app
+            .spent_token_ledger
+            .spend(&nonce, q.expires_at, q.now)
+        {
             StatusClass::Ok // first redemption, against the seal's own expiry.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
@@ -312,15 +306,12 @@ pub extern "C-unwind" fn approval_redeem_q(
     .unwrap_or(StatusClass::Fault)
 }
 
-/// WIRED `drift_quarantine` → [`crate::plane::quarantine::settle`]: settle the durable demotion record
-/// for a counterparty a plane just took a live observation of, so the disposition outlives the process
-/// that noticed it. The slot carries the CALLER's trust-state in [`Key::drift_state`]: a `Quarantined`
-/// observation RECORDS the demotion, an `Approved` one CLEARS it (an operator's remedy, or a clean
-/// re-verification) — the one settle rule, so a caller that demotes and a caller that clears reach the
-/// same books. A sender that predates the field (guarded out by `size`) settles the pre-extension
-/// demote-only [`crate::trust::TrustState::Quarantined`]. The write is fire-and-forget at the primitive
-/// (the disposition is already in force in-process; a store hiccup costs durability, not the refusal),
-/// so a clean call is `Ok`. A null key is `Refused`; a caught panic is `Fault`.
+/// WIRED `drift_quarantine` → [`crate::plane::quarantine::settle`]: settle the durable demotion
+/// record for a counterparty a caller just took a live observation of, so the disposition outlives
+/// the process that noticed it. The CALLER's disposition rides in [`Key::drift_state`], and the one
+/// settle rule is the primitive's. The write is fire-and-forget there (the disposition is already in
+/// force in-process; a store hiccup costs durability, not the refusal), so a clean call is `Ok`. A
+/// null key is `Refused`; a caught panic is `Fault`.
 pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
@@ -338,26 +329,12 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
         // sender (or an unknown value) falls back to the demote-only `Quarantined`.
         let settle_state =
             trust_state_from_u8(read_sized_field!(k, k.size, Key, drift_state).unwrap_or(0));
-        // THE ONE settle rule, written once: `Quarantined` records the demotion, `Approved` clears it.
-        quarantine_drift(&state.app.demotion_record, &subject, settle_state);
+        // THE ONE settle rule, stated on the primitive: `Quarantined` records the demotion,
+        // `Approved` clears it, and every other disposition leaves the row as it is.
+        crate::plane::quarantine::settle(&state.app.demotion_record, &subject, settle_state);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
-}
-
-/// THE ONE drift-settle body — the compiled-in veneer both the extern-C [`drift_quarantine`] slot and
-/// the in-process plane (`mcp`'s verify-on-call and the admin trust-view verb) funnel through, the
-/// drift analogue of [`redeem_approval`]. Records `state` for `subject` in the durable demotion store:
-/// a `Quarantined` observation writes the demotion, an `Approved` one CLEARS it — the one settle rule,
-/// written once, so a single call site can never record a demotion the other never clears. The write
-/// is fire-and-forget at the primitive (the demotion is already in force in-process; a store hiccup
-/// costs durability, not the refusal). NEITHER the extern-C slot nor the plane reimplements the rule.
-pub(crate) fn quarantine_drift(
-    demotions: &crate::plane::quarantine::DemotionRecord,
-    subject: &str,
-    state: crate::trust::TrustState,
-) {
-    crate::plane::quarantine::settle(demotions, subject, state);
 }
 
 /// Settle a drift disposition for `subject` through the host `drift_quarantine` vtable slot — the SAFE
@@ -396,30 +373,10 @@ pub fn quarantine_settle_over(
     })
 }
 
-/// THE ONE redemption body — the compiled-in veneer both approval veneers funnel through, the trust
-/// analogue of CLUSTER-1's [`crate::plane_host::scope::DispatchScope::settle_admission`]. Redeem a
-/// one-time approval against the shared spent-approval ledger, spending against the seal's OWN
-/// `expires_at` and the caller's `now`. `true` iff this is the FIRST redemption; `false` when already
-/// spent OR the durable ledger could not answer — [`spend`](crate::plane::approvals::SpentTokenLedger::spend)
-/// fails closed on a store error (a ledger that cannot say "already spent" must not be read as "not
-/// spent"). The extern-C [`approval_redeem`]/[`approval_redeem_q`] slots map this bool onto the ABI
-/// [`StatusClass`]; the in-process plane (`mcp::callerask`) calls it directly — NEITHER reimplements
-/// the check-and-record, so the atomic redemption is written once.
-pub(crate) fn redeem_approval(
-    approvals: &crate::plane::approvals::SpentTokenLedger,
-    nonce: &str,
-    expires_at: u64,
-    now: u64,
-) -> bool {
-    approvals.spend(nonce, expires_at, now)
-}
-
 /// WIRED `approval_redeem` → [`crate::plane::approvals::SpentTokenLedger::spend`]: redeem a one-time
-/// approval (the [`Key`] bytes are the sealed state's nonce) against the shared spent-approval
-/// ledger. `Ok` iff this is the FIRST redemption; `Refused` when it was already spent OR the durable
-/// ledger could not answer — `spend` fails closed on a store error (a ledger that cannot say "already
-/// spent" must not be read as "not spent"), and this slot carries that refusal through. A null key is
-/// `Refused`; a caught panic is `Fault`.
+/// approval (the [`Key`] bytes are the sealed nonce) against the shared spent-approval ledger, at a
+/// default TTL. Same fail-closed reading as [`approval_redeem_q`]: `Ok` only on the FIRST
+/// redemption, `Refused` when already spent OR the ledger could not answer, `Fault` on a panic.
 pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
@@ -435,7 +392,7 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
         };
         let now = busbar_substrate::store::now();
         let expires_at = now.saturating_add(crate::plane::approvals::DEFAULT_TTL_SECS);
-        if redeem_approval(&state.app.spent_token_ledger, &nonce, expires_at, now) {
+        if state.app.spent_token_ledger.spend(&nonce, expires_at, now) {
             StatusClass::Ok // first redemption.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
@@ -444,9 +401,10 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
     .unwrap_or(StatusClass::Fault)
 }
 
-/// The neutral mirror of the plane's registration lifecycle state, as marshalled into
-/// [`CounterpartyRef::registration_state`] (see the POD field doc). `2` is `Approved` — the only
-/// state that serves; every other value is a `NotServing` fact the fold maps to a specific verdict.
+/// The ABI's OWN NUMBERING for a registration state, carried in
+/// [`CounterpartyRef::registration_state`] and [`Key::drift_state`]. What each state MEANS is
+/// [`RegistrationState`]'s; this module is the one place the two are spelled against each other,
+/// because it is the only place the POD is read.
 mod reg_state {
     pub(super) const PENDING: u8 = 1;
     pub(super) const APPROVED: u8 = 2;
@@ -455,11 +413,10 @@ mod reg_state {
     pub(super) const FAILED: u8 = 5;
 }
 
-/// Marshal a [`crate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
-/// [`Key::drift_state`] (the same numbering [`reg_state`] names). Always compiled (the
-/// `EngineHost::quarantine_settle` core impl reaches `quarantine_settle_over`, which needs it, under
-/// any feature set), so a dead-code allow replaces the former `plane-mcp` gate. The inverse of
-/// [`trust_state_from_u8`]; the drift call sites use it to hand the slot the CALLER's disposition.
+/// Marshal a [`crate::trust::TrustState`] into [`Key::drift_state`] — the same [`reg_state`]
+/// numbering the fact path decodes, so a settled drift and an asserted registration are one
+/// vocabulary. Always compiled (`quarantine_settle_over` needs it under any feature set), so a
+/// dead-code allow replaces the former `plane-mcp` gate. The inverse of [`trust_state_from_u8`].
 #[allow(dead_code)]
 pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
     use crate::trust::TrustState;
@@ -472,10 +429,11 @@ pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
     }
 }
 
-/// Reconstruct a [`crate::trust::TrustState`] from the neutral u8 mirror in [`Key::drift_state`].
-/// `0`/absent (a sender that predates the field, guarded out by `size`) and any unknown value fail
-/// SAFE to [`crate::trust::TrustState::Quarantined`] — the pre-extension demote-only disposition, so
-/// a drift the caller could not name still records rather than silently clearing.
+/// Reconstruct a [`crate::trust::TrustState`] from [`Key::drift_state`]. `0`/absent and any unknown
+/// value fail SAFE to [`crate::trust::TrustState::Quarantined`]. The settle path's safe value is
+/// NOT the fact path's ([`asserted_facts`] reads an unnamable state as
+/// [`RegistrationState::Unknown`], which refuses): a drift nobody could name must still be WRITTEN,
+/// and a registration nobody could name must not SERVE.
 fn trust_state_from_u8(v: u8) -> crate::trust::TrustState {
     use crate::trust::TrustState;
     match v {
@@ -488,15 +446,66 @@ fn trust_state_from_u8(v: u8) -> crate::trust::TrustState {
     }
 }
 
-/// The legacy `trust_evaluate` disposition — the durable DRIFT map — used as the forward-compat
-/// fallback for a sender that predates the fact tail (bit 0 of `fact_flags` clear, or a `size` too
-/// short to reach it). A counterparty with a durable demotion on record is
-/// [`TrustVerdict::Quarantined`]; otherwise [`TrustVerdict::Allow`]; a null/empty identity is
-/// [`TrustVerdict::Denied`] (fail-closed). Preserves the exact pre-enrichment behaviour.
-fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict {
+/// THE ONE POD -> CONTRACT TRANSLATION of the asserted fact tail, read through the sized-struct
+/// guard so the decision never sees a raw byte. `None` when the sender wrote no tail (bit 0 of
+/// `fact_flags` clear, or a `size` too short), which the decision reads as "nothing asserted".
+/// Every byte this build cannot name decodes to the value the ABI's own field docs define as
+/// absent — which passes for the three outcome bytes and REFUSES for the registration state.
+fn asserted_facts(cp: &CounterpartyRef) -> Option<CounterpartyFacts> {
+    let written =
+        read_sized_field!(cp, cp.size, CounterpartyRef, fact_flags).is_some_and(|f| f & 0x01 != 0);
+    if !written {
+        return None;
+    }
+    Some(CounterpartyFacts {
+        // STEP 1 — `0` not-live, `1` live, `2` no-principal (the honest ungoverned `None`).
+        liveness: match read_sized_field!(cp, cp.size, CounterpartyRef, identity_live).unwrap_or(0)
+        {
+            0 => Liveness::NotLive,
+            2 => Liveness::NoPrincipal,
+            _ => Liveness::Live,
+        },
+        // STEP 2 — `0` all held, `1` not-granted, `2` egress-denied.
+        grant: match read_sized_field!(cp, cp.size, CounterpartyRef, grant_outcome).unwrap_or(0) {
+            1 => Grant::NotGranted,
+            2 => Grant::EgressDenied,
+            _ => Grant::Held,
+        },
+        // STEP 3a — the lifecycle state, in the one numbering `reg_state` names.
+        registration: match read_sized_field!(cp, cp.size, CounterpartyRef, registration_state)
+            .unwrap_or(0)
+        {
+            reg_state::PENDING => RegistrationState::Pending,
+            reg_state::APPROVED => RegistrationState::Approved,
+            reg_state::QUARANTINED => RegistrationState::Quarantined,
+            reg_state::SUSPENDED => RegistrationState::Suspended,
+            reg_state::FAILED => RegistrationState::Failed,
+            _ => RegistrationState::Unknown,
+        },
+        // STEP 3b — `0` no-capability, `1` serves, `2` drifted, `3` unobservable.
+        artifact: match read_sized_field!(cp, cp.size, CounterpartyRef, artifact_outcome)
+            .unwrap_or(0)
+        {
+            1 => Artifact::Serves,
+            2 => Artifact::Drifted,
+            3 => Artifact::Unobservable,
+            _ => Artifact::NotAsked,
+        },
+        // STEP 4 — the two generations, compared by the decision and not here.
+        generation_admitted: read_sized_field!(cp, cp.size, CounterpartyRef, generation_admitted)
+            .unwrap_or(0),
+        generation_live: read_sized_field!(cp, cp.size, CounterpartyRef, generation_live)
+            .unwrap_or(0),
+    })
+}
+
+/// THE BOOKS' OWN DISPOSITION as a contract verdict: a demotion on record is
+/// [`Verdict::Quarantined`], a null/empty identity is [`Verdict::Denied`] (nothing to look up), and
+/// anything else is [`Verdict::Allow`] — a CEILING, never a pass; the rule is the unit's.
+fn standing(state: &HostState, cp: &CounterpartyRef) -> Verdict {
     // SAFETY: `cp` is a live `&CounterpartyRef`; `subject` upholds the borrow discipline.
     let Some(subject) = (unsafe { subject(cp.ref_ptr, cp.ref_len) }) else {
-        return TrustVerdict::Denied; // no identity → fail-closed.
+        return Verdict::Denied; // no identity -> fail-closed.
     };
     let quarantined = state
         .app
@@ -505,63 +514,32 @@ fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict
         .iter()
         .any(|row| row.server == subject);
     if quarantined {
-        TrustVerdict::Quarantined
+        Verdict::Quarantined
     } else {
-        TrustVerdict::Allow
+        Verdict::Allow
     }
 }
 
-/// FOLD the plane's marshalled per-step FACTS into a [`TrustVerdict`] in the EXACT order of
-/// `crate::trust::validate::validate_request` (identity → grant → artifact → generation) — the
-/// `Signal`→`classify` precedent applied to trust. The plane computes each step's fact (its
-/// `validate_request` runs plane-side over its own registry); the host reproduces the ORDER and the
-/// verdict MAPPING, so a refusal keeps its SPECIFIC step rather than collapsing to `Denied`. Proven
-/// the inverse of the plane's `Refusal` disposition by `trust_evaluate_folds_validate_request_order`.
-fn fold_facts(cp: &CounterpartyRef) -> TrustVerdict {
-    // ── 1. IDENTITY ──────────────────────────────────────────────────────────────────────────────
-    // `0` not-live, `1` live, `2` no-principal (honest ungoverned `None` — passes identity).
-    if read_sized_field!(cp, cp.size, CounterpartyRef, identity_live).unwrap_or(0) == 0 {
-        return TrustVerdict::IdentityNotLive;
+/// The RETURN half of the one translation: the decided [`Verdict`] on the ABI's [`TrustVerdict`].
+/// Total by construction, so no verdict can fall through to a permissive default.
+fn verdict_pod(verdict: Verdict) -> TrustVerdict {
+    match verdict {
+        Verdict::Allow => TrustVerdict::Allow,
+        Verdict::Quarantined => TrustVerdict::Quarantined,
+        Verdict::Denied => TrustVerdict::Denied,
+        Verdict::NeedsApproval => TrustVerdict::NeedsApproval,
+        Verdict::IdentityNotLive => TrustVerdict::IdentityNotLive,
+        Verdict::NotGranted => TrustVerdict::NotGranted,
+        Verdict::EgressDenied => TrustVerdict::EgressDenied,
+        Verdict::ArtifactDrifted => TrustVerdict::ArtifactDrifted,
+        Verdict::GenerationMoved => TrustVerdict::GenerationMoved,
     }
-    // ── 2. GRANT ─────────────────────────────────────────────────────────────────────────────────
-    match read_sized_field!(cp, cp.size, CounterpartyRef, grant_outcome).unwrap_or(0) {
-        1 => return TrustVerdict::NotGranted,
-        2 => return TrustVerdict::EgressDenied,
-        _ => {}
-    }
-    // ── 3a. REGISTRATION STATE ───────────────────────────────────────────────────────────────────
-    // Only `Approved` serves; every other state is a `NotServing` refusal mapped to the verdict that
-    // names its remedy (quarantine/failed → re-establish; pending → redeem approval; suspended →
-    // operator denial; absent/unknown → fail closed).
-    match read_sized_field!(cp, cp.size, CounterpartyRef, registration_state).unwrap_or(0) {
-        reg_state::APPROVED => {}
-        reg_state::QUARANTINED | reg_state::FAILED => return TrustVerdict::Quarantined,
-        reg_state::PENDING => return TrustVerdict::NeedsApproval,
-        reg_state::SUSPENDED => return TrustVerdict::Denied,
-        _ => return TrustVerdict::Denied,
-    }
-    // ── 3b. ARTIFACT ─────────────────────────────────────────────────────────────────────────────
-    // `2` drifted, `3` unobservable — both are the plane's `ARTIFACT_DRIFTED` refusal word.
-    match read_sized_field!(cp, cp.size, CounterpartyRef, artifact_outcome).unwrap_or(0) {
-        2 | 3 => return TrustVerdict::ArtifactDrifted,
-        _ => {}
-    }
-    // ── 4. GENERATION ────────────────────────────────────────────────────────────────────────────
-    let admitted =
-        read_sized_field!(cp, cp.size, CounterpartyRef, generation_admitted).unwrap_or(0);
-    let live = read_sized_field!(cp, cp.size, CounterpartyRef, generation_live).unwrap_or(0);
-    if admitted != live {
-        return TrustVerdict::GenerationMoved;
-    }
-    TrustVerdict::Allow
 }
 
-/// WIRED `trust_evaluate` → the admission-time trust verdict for a counterparty. When the plane wrote
-/// the fact tail (bit 0 of `fact_flags`, proven present by the sized-struct guard), the host FOLDS
-/// those facts in `validate_request`'s exact order via [`fold_facts`] and reproduces the plane's
-/// disposition (identity → grant → artifact → generation, mapping each refusal to its specific
-/// verdict). A sender that predates the tail falls back to [`legacy_drift_verdict`] (the durable
-/// drift map). A null POD, or a caught panic, is [`TrustVerdict::Denied`] — trust fails closed.
+/// WIRED `trust_evaluate` -> the admission-time verdict for a counterparty, DECIDED BY THE VERIFY
+/// UNIT (`busbar_unit_trust::counterparty::evaluate`, which owns the ceiling rule and the ordered
+/// fold). This slot reads the POD and nothing else. A null POD, or a caught panic, is
+/// [`TrustVerdict::Denied`] — trust fails closed.
 pub(crate) extern "C-unwind" fn trust_evaluate(
     host: HostCtx,
     counterparty: *const CounterpartyRef,
@@ -574,29 +552,12 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
         }
         // SAFETY: a non-null `counterparty` is a live, initialized `CounterpartyRef` for the call.
         let cp = unsafe { &*counterparty };
-        // FFI-F4: plane-asserted trust facts are NOT authoritative — a plane may only NARROW the
-        // host's own disposition, never assert `Allow` over it. The HOST verdict (its durable
-        // drift/quarantine map — `legacy_drift_verdict`) is the CEILING: if the host already refuses
-        // this counterparty (a durable demotion on record, or a null identity), that refusal STANDS
-        // regardless of what the plane's fact tail claims (so a quarantined counterparty cannot send
-        // `registration_state = APPROVED` facts to buy its way back — the confused-deputy). Only when
-        // the host would ALLOW does the plane's fact tail get to fold in, and it can only tighten that
-        // `Allow` into a specific refusal — never loosen a host refusal into `Allow`.
-        let host_verdict = legacy_drift_verdict(state, cp);
-        let facts_written = read_sized_field!(cp, cp.size, CounterpartyRef, fact_flags)
-            .is_some_and(|f| f & 0x01 != 0);
-        if host_verdict != TrustVerdict::Allow {
-            // The host refuses; the plane cannot override it. (Also covers the null-identity `Denied`.)
-            host_verdict
-        } else if facts_written {
-            // Host allows → the plane's facts may NARROW to a specific refusal (or agree on `Allow`).
-            fold_facts(cp)
-        } else {
-            // No fact tail: the host's own disposition (here, `Allow`) is the whole answer.
-            host_verdict
-        }
+        verdict_pod(busbar_unit_trust::counterparty::evaluate(
+            standing(state, cp),
+            asserted_facts(cp).as_ref(),
+        ))
     }))
-    .unwrap_or(TrustVerdict::Denied) // caught panic → denied, never allowed.
+    .unwrap_or(TrustVerdict::Denied) // caught panic -> denied, never allowed.
 }
 
 #[cfg(test)]

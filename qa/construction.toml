@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3509
+contract_caps = 3564
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3511
+caps_contract_ceiling = 3566
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15113
+unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24006
+union_ceiling = 24097
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1559,6 +1559,56 @@ file = "qa/kind-isolation.toml"
 # occurrences — six hits, one per needle — are no longer in this tree to be counted.
 by = 22
 because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
+
+# ── THE NEUTRAL COUNTERPARTY VOCABULARY (J-8's plane_host residue table: `trust.rs`'s verdict fold).
+# `busbar-core/src/plane_host/trust.rs` held the whole counterparty DECISION — the ordered fold from
+# a caller's asserted per-step facts to a verdict, and the rule that the books' own standing is a
+# CEILING those facts may narrow and may never widen — and it held it there for one reason: every
+# input and every output was a `busbar-plugin` `#[repr(C)]` POD (`CounterpartyRef` read through
+# `read_sized_field!`, `TrustVerdict` returned by value), so the decision could only be written where
+# that ABI could be named. That is one crate, and it is not the crate whose step this is.
+#
+# So the vocabulary is MINTED on the contract, where every kind is granted it, and the decision moves
+# to the verify step that owns it. `busbar_contract::counterparty` is 54 code lines + 1 module line:
+# the facts one side asserts about another (`Liveness`, `Grant`, `RegistrationState`, `Artifact`, the
+# two generations, as `CounterpartyFacts`) and the closed `Verdict` that answers them, with `Default`
+# on every type and every default the REFUSING value. No ABI type and no protocol word is in it.
+# `busbar_unit_trust::counterparty` is 35 code lines + 1 module line and is the fold itself, moved by
+# identity out of `trust.rs`. What stays in core is the TRANSLATION — the POD read through the sized
+# guard into contract facts, the contract verdict marshalled back onto the ABI enum — written ONCE,
+# because the host-vtable is the only place the POD is read.
+#
+# PAID BY DELETION IN THE SAME COMMIT. Two pass-through veneers died with the move: `redeem_approval`
+# and `quarantine_drift`, each a one-line forward to the primitive beneath it, each documented as the
+# body "both the extern-C slot and the in-process plane funnel through" — and neither had had a
+# caller outside this file since the planes were extracted. `cache_key_raw` went the same way (one
+# caller, `cache_key`, and no other reader of the `(scope, ptr, len)` shape it was split out for).
+# busbar-core production lines 72628 -> 72589 (-39) against the 36 the unit gains.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 55
+because = "FACE busbar_contract::counterparty — the neutral counterparty vocabulary (54 code lines + the 1 module line lib.rs needs): the facts one side asserts about the other (Liveness, Grant, RegistrationState, Artifact and the two generations, as CounterpartyFacts) and the closed Verdict that answers them, with Default on every type and every default the refusing value. It is here because the fold that turns those facts into that verdict is ONE decision, and before this existed the facts could only be spelled in a wire encoding and the verdict only in the same encoding's enum — so the decision could only be written where the plugin ABI could be named, which is busbar-core and not the verify step whose question it is. No ABI type and no protocol word is in it, and nothing is added to what a plugin author must read: no trait takes these types and no plugin is handed one. busbar-core deletes the fold and three dead veneers in the same commit, 72628 -> 72589."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 55
+because = "FACE busbar_contract::counterparty — the same 55 lines, on the surface line as well as the LOC line because a vocabulary shared across a crate boundary IS surface. The contract already owns the resolved half of the trust subject (the sealed destination, the verified destination); what it did not own was the PARTY at the other end of one, so the fold that judges a counterparty had to be written in the plugin ABI's words, in the one crate that can name them. Minting the words is what lets the decision live in busbar_unit_trust::counterparty, where the verify step is."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 36
+because = "MOVE by identity: FACE busbar_unit_trust::counterparty::{fold, evaluate} is busbar-core/src/plane_host/trust.rs's own verdict fold, moved whole and rewritten in no new logic — the ordered identity -> grant -> registration -> artifact -> generation walk that short-circuits at the first refusing step so the verdict names that step, and the rule that the books' standing is a CEILING the asserted facts may narrow and may never widen (a counterparty the books demoted cannot assert its way back to Approved). 35 code lines + the 1 module line lib.rs needs, against 39 busbar-core production lines deleted in the same commit."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "FACE busbar_unit_trust::counterparty: the host-vtable's trust slot names the unit that now takes the decision — the one `busbar_unit_trust::counterparty::evaluate` call the slot is reduced to, and the doc sentences that send a reader to where the ordered fold and the ceiling rule are stated — plus the manifest row that already declared the edge. Five occurrences in plane_host/trust.rs, scored 10 by the matrix's two scanners, against the 39 busbar-core production lines the same commit deletes; the same commit takes cell busbar-core x plane DOWN 2857 -> 2846 and busbar-core x control DOWN 5041 -> 5040 with the veneers whose docs named them."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 91
+because = "the same two lines above carried through, and nothing else: 55 for FACE busbar_contract::counterparty (this union carries busbar-contract) plus 36 for the MOVE onto busbar_unit_trust::counterparty (busbar-unit-trust/src/counterparty.rs is not in the kernel's call-graph name-match set, so it spends unit budget once), 55 + 36 = 91. The 39 busbar-core production lines the same commit deletes are not in this union."
 
 # ── THE VERIFY FRESHNESS LEDGER (J-8's plane_host residue table: `trust.rs` -> busbar-unit-trust).
 # `busbar-core/src/plane_host/trust.rs` held, inline, the ledger the two verify slots answer from:

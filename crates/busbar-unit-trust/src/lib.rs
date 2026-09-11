@@ -36,6 +36,13 @@
 //! library beside it that a caller may or may not have called. A guard nothing on the sealed path
 //! reaches is a guard that is not running, however carefully it is written.
 //!
+//! ## The counterparty is asked about too, and by the same step
+//!
+//! [`counterparty`] holds the other party to the deal: the facts one side asserts about the other
+//! fold, in one stated order, into one closed verdict, and the books' own standing is a CEILING
+//! those facts may narrow and may never widen. It is the trust question asked about a PARTY rather
+//! than about a PLACE, so it is asked here, beside the destination guards, and asked once.
+//!
 //! ## Freshness is asked before "where", not beside it
 //!
 //! [`freshness`] holds the other half of this step: whether a subject was verified recently enough
@@ -70,6 +77,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod counterparty;
 pub mod destination;
 pub mod freshness;
 pub mod guard;
