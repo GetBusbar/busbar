@@ -76,18 +76,17 @@ pub(crate) use busbar_substrate::metrics::{
     enabled, recorder_installed, BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL,
     METERING_PENDING_COALESCED_TOTAL, PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
     PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL, PROMETHEUS_CONTENT_TYPE, TRANSLATIONS_TOTAL,
-    WEBHOOK_LOGS_DROPPED_TOTAL,
 };
-/// FOUR COUNTER NAMES THE COMPOSITION ROOT EMITS, re-exported PUBLICLY for it.
+/// FIVE COUNTER NAMES THE COMPOSITION ROOT EMITS, re-exported PUBLICLY for it.
 ///
 /// The export fan-out owns a capacity gate of its own now (`busbar/src/root/units_export`) and every
-/// gate in the process must land on the SAME `busbar_admission_denied_total` series; the file sink
-/// has left for a crate of kind `export`, which may name no recorder, so the root emits its three
-/// counters on its behalf from the sink's own reports. One spelling of each name, in the recorder's
-/// crate, reached from here.
+/// gate in the process must land on the SAME `busbar_admission_denied_total` series; the file and
+/// webhook sinks have left for crates of kind `export`, which may name no recorder, so the root
+/// emits their counters on their behalf from the sinks' own reports. One spelling of each name, in
+/// the recorder's crate, reached from here.
 pub use busbar_substrate::metrics::{
     ADMISSION_DENIED_TOTAL, FILE_LOGS_DROPPED_TOTAL, FILE_LOGS_ROTATED_TOTAL,
-    FILE_LOGS_ROTATE_FAILED_TOTAL,
+    FILE_LOGS_ROTATE_FAILED_TOTAL, WEBHOOK_LOGS_DROPPED_TOTAL,
 };
 pub use busbar_substrate::metrics::{
     BILLING_TRUNCATED_TOTAL, HOOK_CONTENT_TRUNCATED_TOTAL, ROUTE_POLICY_REJECTIONS_TOTAL,

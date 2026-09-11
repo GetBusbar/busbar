@@ -18,7 +18,7 @@ use crate::net_guard::{
 
 // 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
 // `AdmissionGate` machinery, `configure_webhook`, `fire_request_log`, `build_request_log`) moved OUT
-// of this module into the built-in `request-log-webhook` EXPORTER (`crate::export::webhook`). The
+// of this module into the built-in `request-log-webhook` sink, which is a crate of its own kind. The
 // SSRF VALIDATOR ([`validate_webhook_url`] / [`host_is_internal`]) + the userinfo masker
 // ([`mask_userinfo`]) STAY here (they are shared, validated primitives — `mask_userinfo` also guards
 // the OTLP endpoint log below) and are called BY the exporter. Only distribution moved; validation
@@ -210,7 +210,7 @@ fn scheme_is(url: &str, scheme: &str) -> bool {
 ///
 /// `None` (webhook disabled) is always valid. Pure, so it is unit-testable without touching the
 /// process-wide `OnceLock`s. `pub(crate)` since 1.5.3: called by the built-in `request-log-webhook` /
-/// `generic-webhook` exporters ([`crate::export::webhook`]) that now own the delivery.
+/// `generic-webhook` sinks, whose targets it validates once, at resolution.
 pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, String> {
     let Some(u) = url else {
         return Ok(None);

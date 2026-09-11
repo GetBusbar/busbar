@@ -1048,5 +1048,5 @@ where
 // R5-store: the whole `crate::state::…` re-export block is DELETED. D33 wave 0 cut 2 retargeted the
 // composition root onto `busbar_substrate::detached::…`, after which four of the five names
 // (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
-// caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
+// caller left anywhere, and the fifth (`spawn_detached`) had exactly one — the webhook delivery —
 // which now names the substrate directly.

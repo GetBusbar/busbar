@@ -201,11 +201,12 @@ file = "qa/kind-isolation.toml"
 by = 53
 because = "the export projection grammar face busbar_plugin::cold::export::projection, moved beside the ExportStream/ExportField vocabulary it is written over. EVERY ONE OF THE 53 IS THE WORD `streams`. A plane member of this tree carries the bare instance id `streams`, and matrix scores whole text, so the noun the export grammar cannot avoid using — its config key is literally `streams:`, its frozen enum is `ExportStream`, and its central question is which streams a sink carries — reads as this crate naming a plane. There is no coupling here to drain: busbar-plugin gained no dependency, no type and no call against any plane, and the same word already scored 18 in cold/export.rs beside the enum before this landing. It is a homonym, and the honest place to fix it is the plane's id, not the grammar's vocabulary. Flagged for the owner rather than worked around."
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-core.plugin-tooling.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "the same export projection grammar face: busbar-core stops declaring the grammar and starts naming it, so two config-layer sites spell `busbar_plugin::cold::export::projection` where they used to spell `crate::export::projection`. Two lines of SPELLING against a Cargo edge busbar-core already carried (crates/busbar-core/Cargo.toml:55), not a new reach — and it is transitional: both sites travel to busbar-core-config. It was declared at +2 and is +1 at this tip, which is that promise being kept and not an over-declaration corrected: the file sink left for a crate of kind export on this line, and core's own prose about the face that sink is written against went with it, so one of the two spellings is already drained."
+# STRUCK, and the promise it made is what struck it. The entry above it declared the export
+# projection grammar face at +2 on `cell.busbar-core.plugin-tooling.count`, then +1 when the file
+# sink left; the webhook sink leaving takes the last one — its module was the remaining core file
+# that spelled `busbar_plugin_loader::ExportStream` for a sink body — and the cell is back at the
+# base's 265. A declaration that describes no rise at the base is stale and refused, so it is struck
+# in the commit that drained it rather than left to warn.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them

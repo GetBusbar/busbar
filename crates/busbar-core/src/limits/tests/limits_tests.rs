@@ -51,7 +51,7 @@ fn uninstalled_accessors_return_historical_defaults() {
     assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(default_policy_timeout_ms(), DEFAULT_POLICY_TIMEOUT_MS);
     // 1.5.3: no `webhook_delivery_timeout_secs()` accessor exists any more — the deadline is PER
-    // named `request-log-webhook` export instance (`export::webhook::Target::timeout`), so there is
+    // named `request-log-webhook` instance (`RequestLogWebhookInstance::timeout`), so there is
     // no single process-global value an accessor could honestly return.
     // Discharges the warning two paragraphs up: `tls.rs`'s body-read-timeout test now installs
     // its NON-default value through `InstallGuard` (restores on drop) instead of the bare

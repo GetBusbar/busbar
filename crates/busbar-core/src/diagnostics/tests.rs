@@ -49,7 +49,13 @@ const MIGRATED_FILES: &[&str] = &[
     // extraction). Core does NOT scan a plane crate's tree — a neutral crate must name no plane path
     // (the plane-purity lint enforces this); each plane crate enforces its own uncoded-diagnostic floor. So neither the
     // A2A nor the MCP sources are listed here.
-    "src/export/webhook.rs",
+    // The webhook sink RELOCATED out of this module to a crate of kind `export`, beside the file
+    // sink that went before it — so neither is scanned here any more, for the reason stated next.
+    // The webhook DELIVERY's one diagnostic that is still core's — `WEBHOOK_EXPORTER_DISABLED`,
+    // raised when an operator's target fails the SSRF guard at RESOLUTION — landed in the module
+    // below with the rest of the config layer's verdicts, so the floor follows it there rather than
+    // lapsing with the file it left.
+    "src/export/mod.rs",
     // The file sink RELOCATED out of this module to a crate of kind `export`. A sink of that kind
     // may name no diagnostics registry at all, so it emits nothing and reports instead; the root
     // turns those reports into the same coded diagnostics this list exists to hold in place, and the

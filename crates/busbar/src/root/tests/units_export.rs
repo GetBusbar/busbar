@@ -152,3 +152,131 @@ fn payload_is_shared_across_sinks_holding_the_identical_projection() {
     assert_eq!(a["pool"], "prod");
     assert_eq!(a["latency_ms"], 42_u64);
 }
+
+/// The `request-log-webhook` instances an operator's document resolves to, minted through the REAL
+/// config path — the only way to obtain a `Projection` at all, and the path that runs the SSRF guard
+/// that decides whether a target becomes an instance in the first place.
+fn webhook_instances(url: &str) -> Vec<export::RequestLogWebhookInstance> {
+    let mut defs = ExportDefs::new();
+    defs.insert(
+        "w".to_string(),
+        serde_json::from_value(serde_json::json!({
+            "module": "request-log-webhook",
+            "settings": {
+                "url": url,
+                "auth_header": { "name": "Authorization", "value": "Bearer sekret" },
+                "delivery_timeout_secs": 7,
+                "max_inflight_deliveries": 2,
+            },
+        }))
+        .expect("a well-formed export instance"),
+    );
+    let mut errors = Vec::new();
+    let cfg = config::resolve_export(&defs, &mut errors);
+    assert!(errors.is_empty(), "{errors:#?}");
+    export::request_log_webhook_instances(&cfg)
+}
+
+/// THE SERVED EXPORT PATH DELIVERS THROUGH THE PLUGIN, AND WHAT THE PLUGIN FRAMES IS THE LINE THE
+/// ENGINE USED TO POST.
+///
+/// One request-finish goes into the root's fan-out; what comes out the far end is the
+/// `busbar-export-webhook` sink's framed POST, handed to a send of this test's own instead of to a
+/// socket. The assertion is on the BYTES: the body is the request-log line built to this instance's
+/// projection — the same payload the in-engine `webhook.rs` serialized — at the operator's target,
+/// under the operator's auth header, with that instance's own deadline.
+///
+/// The engine cannot answer this on its own any more: it holds no webhook sink to state the
+/// delivery, and if the composition stopped naming the sink it mounts — or shipped it something
+/// other than the payload it built — this is where it would show.
+#[test]
+fn the_served_webhook_path_frames_the_request_log_line_through_the_plugin() {
+    let instances = webhook_instances("https://logs.example.com/busbar");
+    assert_eq!(instances.len(), 1, "one configured instance, one sink");
+
+    // The fake wire: it receives exactly what the socket would have, keeps it, and answers.
+    type Sent = (String, Vec<(String, String)>, Vec<u8>, std::time::Duration);
+    let sent: Arc<std::sync::Mutex<Vec<Sent>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = sent.clone();
+    let send: export::RequestLogWebhookSend =
+        Arc::new(move |url, headers, body, timeout, permit, outcome| {
+            drop(permit);
+            seen.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((url, headers, body, timeout));
+            outcome(Ok(200));
+        });
+
+    let sinks = compose_webhook_sinks(instances, send);
+    let facts = facts();
+    fan_out(&sinks, &facts);
+
+    let sent = sent.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(sent.len(), 1, "one request-finish, one delivery");
+    let (url, headers, body, timeout) = &sent[0];
+    assert_eq!(url, "https://logs.example.com/busbar");
+    assert_eq!(
+        headers,
+        &vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("Authorization".to_string(), "Bearer sekret".to_string()),
+        ]
+    );
+    assert_eq!(*timeout, std::time::Duration::from_secs(7));
+
+    // THE BYTES. What went out is the request-log line the root built to this sink's projection —
+    // not a re-encoding of it and not some other sink's payload.
+    let expected = export::build_request_log(sinks[0].projection, &facts).to_string();
+    assert_eq!(
+        String::from_utf8(body.clone()).expect("a utf-8 line"),
+        expected
+    );
+    let line: serde_json::Value = serde_json::from_slice(body).expect("json");
+    assert_eq!(line["pool"], "prod");
+    assert_eq!(line["latency_ms"], 42_u64);
+}
+
+/// A TARGET THE GUARD REFUSES NEVER BECOMES A SINK, so nothing composes and nothing is ever POSTed
+/// at it. The guard runs at resolution — once, on the operator's document — and the sink crate never
+/// sees the target at all.
+#[test]
+fn an_ssrf_refused_target_composes_no_sink() {
+    assert!(
+        webhook_instances("https://169.254.169.254/latest/meta-data/").is_empty(),
+        "a cloud-metadata target is refused before it can become a sink"
+    );
+    assert!(
+        webhook_instances("gopher://hook.example.com/log").is_empty(),
+        "a target whose scheme is not the secure one is refused, whatever it is instead"
+    );
+}
+
+/// EACH NAMED INSTANCE IS ITS OWN BUDGET, and the number that reaches the gate is the one the
+/// operator wrote on THAT instance — never a value reconciled across instances (the process-global
+/// gate this replaced was sized to the MAX across them, so a low cap was never enforced at all).
+#[test]
+fn each_webhook_instance_carries_its_own_declared_cap() {
+    let instances = webhook_instances("https://logs.example.com/busbar");
+    assert_eq!(instances[0].max_inflight, 2);
+    assert_eq!(instances[0].timeout, std::time::Duration::from_secs(7));
+    assert_eq!(
+        instances[0].display_url, "https://logs.example.com/busbar",
+        "a credential-free target is carried unchanged into the loggable spelling"
+    );
+}
+
+/// THE LOGGABLE SPELLING IS MASKED AT RESOLUTION, beside the masker, and it is the ONLY target
+/// spelling the sink crate is given for its reports — while the delivery still goes to the real one.
+#[test]
+fn an_operators_credentials_reach_the_sink_only_in_the_address_never_in_the_label() {
+    let instances = webhook_instances("https://alice:hunter2@logs.example.com/busbar");
+    assert_eq!(instances.len(), 1);
+    assert_eq!(
+        instances[0].url,
+        "https://alice:hunter2@logs.example.com/busbar"
+    );
+    assert_eq!(
+        instances[0].display_url,
+        "https://***@logs.example.com/busbar"
+    );
+}

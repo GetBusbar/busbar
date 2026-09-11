@@ -112,11 +112,6 @@ kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
 [[announced]]
-crate  = "busbar-export-webhook"
-kind   = "export"
-reason = "the SSRF-guarded request-log webhook sink lifted out of busbar-core/src/export/webhook.rs; export kind, Export face"
-
-[[announced]]
 crate  = "busbar-export-prometheus"
 kind   = "export"
 reason = "the /metrics pull exporter lifted out of busbar-core/src/export/prometheus.rs; export kind, Export face, declares its route through ExportHandler::routes"
@@ -1671,7 +1666,7 @@ count = "2994"
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "266"
+count = "265"
 
 [[cell]]
 crate = "busbar-core"
@@ -1696,7 +1691,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2112"
 
 [[cell]]
 crate = "busbar-core"
@@ -2981,7 +2976,7 @@ count = "19"
 [[cell]]
 crate = "busbar"
 kind = "export"
-count = "17"
+count = "26"
 
 [[disagreement]]
 crate = "busbar"
@@ -3175,6 +3170,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 — the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
 why     = "busbar names busbar-export-file: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-webhook"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 — the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
+why     = "busbar names busbar-export-webhook: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

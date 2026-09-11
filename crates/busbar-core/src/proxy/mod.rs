@@ -82,7 +82,7 @@ pub use busbar_substrate::egress::engine::{
 // The infallible LLM-lane egress-client shim now lives in the neutral substrate
 // (`busbar_substrate::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`, `egress_auth`, `export::webhook`, `engine_facade`).
+// call sites (`preflight`, `auth::token`, `egress_auth`, the webhook delivery, `engine_facade`).
 pub use busbar_substrate::proxy::build_egress_client;
 
 // THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from

@@ -15,22 +15,21 @@
 //!   well-known-`/metrics` exception), rendering the recorder registry. When `export.prometheus` is
 //!   present the recorder is installed (collection on) and a `GET /metrics` plugin route is
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
-//! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
-//!   built request-log line behind the relocated SSRF guard.
-//! - the `request-log-file` sink is GONE from this crate: its body is a crate of kind `export`,
-//!   which this crate may not name. What is left here is the config layer's
-//!   own job — resolving the operator's `module:` token and the settings under it — which this
-//!   module hands to the composition root as [`request_log_file_instances`].
+//! - the `request-log-webhook` and `request-log-file` sinks are GONE from this crate: each body is
+//!   a crate of kind `export`, which this crate may not name. What is left here is the config
+//!   layer's own job — resolving the operator's `module:` token, the settings under it and, for a
+//!   webhook, the SSRF verdict on its target — which this module hands to the composition root as
+//!   [`request_log_webhook_instances`] and [`request_log_file_instances`]. The one piece of a
+//!   webhook DELIVERY that is not the sink's is the socket, and that is the engine's egress client:
+//!   [`webhook_send`], which leaves with that client and not with the sink.
 //!
 //! WHAT LEFT. The FAN-OUT is not here any more: the composition root builds one payload per
-//! distinct projection, sheds for each sink against a gate it owns, and calls the sink. Each PUSH
-//! module below therefore states itself as a [`BuiltinPushSink`] — its projection, its capacity,
-//! its gate label, its drop counter and the one call that ships a payload — and carries no
-//! semaphore, no `OnceLock` and no knowledge of its siblings. That is the shape a `busbar-export-*`
-//! crate presents over the ABI, reached here without one.
+//! distinct projection, sheds for each sink against a gate it owns, and calls the sink. With the
+//! last PUSH body gone to its own crate, this module states no sink at all — it resolves the
+//! operator's document into INSTANCES and hands them over, which is the only half of a built-in
+//! sink a config layer ever owned.
 
 pub mod prometheus;
-pub(crate) mod webhook;
 
 use crate::config::ExportCfg;
 use crate::plugin_routes::{RouteDecl, RouteKind};
@@ -42,8 +41,8 @@ use crate::plugin_routes::{RouteDecl, RouteKind};
 pub use busbar_plugin::cold::export::projection::{build_request_log, Projection, RequestLogFacts};
 use busbar_plugin_loader::ExportStream;
 use busbar_plugin_loader::Route;
-use serde_json::Value;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
 /// The streams the `request-log-file` sink carries. Its BODY is a crate of kind `export`, which
@@ -91,46 +90,146 @@ pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
     prometheus::route_owner(cfg).into_iter().collect()
 }
 
-/// Ship one payload, already built to the sink's projection, taking the permit that holds this
-/// delivery's slot. Named so the sink declaration below reads as the five facts it is, rather than
-/// as one line of type.
-pub type Ship = Box<dyn Fn(&Arc<Value>, OwnedSemaphorePermit) + Send + Sync>;
+/// The streams the `request-log-webhook` sink carries. Its BODY is a crate of kind `export`, which
+/// this crate may not name — the same split as the file sink's below: resolving which sink an
+/// operator's `module:` token names, and what that sink was therefore granted, is the config
+/// layer's own job and stays here beside the token.
+pub(crate) const REQUEST_LOG_WEBHOOK_STREAMS: &[ExportStream] = &[ExportStream::Logs];
 
-/// One configured built-in PUSH sink, handed to the COMPOSITION ROOT as data.
+/// One configured `request-log-webhook` instance, as data for the composition root to build its
+/// sink crate from — an ALREADY-VALIDATED target plus the policy numbers the composition enforces.
 ///
-/// The root composes the export sinks and fans the built request-log line out to them; this struct
-/// is how a sink that has not yet become its own `busbar-export-*` crate presents itself to that
-/// fan-out. Everything on it except [`ship`](Self::ship) is a POLICY the root enforces, stated by
-/// the sink rather than guessed: how deep this instance's in-flight queue may get, what its gate is
-/// called on `busbar_admission_denied_total{gate}`, and which counter its shed lands on. The root
-/// takes the permit and only then calls `ship` — the sink never sees a delivery it has no room for,
-/// and never carries a semaphore of its own.
-pub struct BuiltinPushSink {
-    /// The streams + fields THIS instance was granted. The root builds its payload to exactly this,
-    /// so an ungranted field is never serialized for it.
-    pub projection: Projection,
-    /// How many deliveries of this instance may be in flight at once.
+/// The SSRF guard runs HERE, at resolution, and not in the sink: whether an operator's URL may be
+/// POSTed to at all is a judgement on the operator's document, made once by whoever reads that
+/// document, and a sink asked to re-decide it per delivery would be deciding it in the wrong place.
+/// A target that fails the guard is never turned into an instance at all (it is reported and left
+/// disabled, the exact posture the single-webhook config had), so everything on this struct is a
+/// target the guard already passed.
+pub struct RequestLogWebhookInstance {
+    /// The validated `https://` target every delivery of this instance is addressed to.
+    pub url: String,
+    /// The SAME target with any embedded userinfo masked — the ONLY spelling that may appear in a
+    /// log line. It is computed here, beside the masker, so the sink crate holds no masker and can
+    /// never log the wrong one of the two.
+    pub display_url: String,
+    /// The optional `{name, value}` auth header the operator configured for this instance.
+    pub auth: Option<(String, String)>,
+    /// This instance's OWN per-delivery deadline (`settings.delivery_timeout_secs`): the `export:`
+    /// map holds NAMED instances, so two webhook sinks can legitimately want different deadlines.
+    pub timeout: Duration,
+    /// How many deliveries of THIS instance may be in flight at once — its own budget, enforced by
+    /// the composition root against a gate of its own, never reconciled across instances.
     pub max_inflight: usize,
-    /// This sink's own `busbar_admission_denied_total{gate="..."}` label — supplied BY THE SINK, so
-    /// the label is never a string the fan-out invented about an instance it is shedding for.
-    pub gate: &'static str,
-    /// This sink's own drop counter, incremented by the root on a shed (the admission counter above
-    /// fires for every gate; this one is the sink's policy-specific one).
-    pub dropped_total: &'static str,
-    /// Ship one payload, already built to [`projection`](Self::projection). Fire-and-forget: the
-    /// root has already shed for it and hands over the permit that holds its slot, which the sink
-    /// releases by dropping when the delivery ends.
-    pub ship: Ship,
+    /// The streams + fields THIS instance was granted.
+    pub projection: Projection,
 }
 
-/// Every configured built-in PUSH sink from the resolved `export:` block, in config order. Called
-/// ONCE at boot by the composition root, which holds the result — the process-global `OnceLock`s
-/// these sinks used to hide behind are gone, because "exactly one of these, built at boot" is a
-/// statement the root makes about everything it composes and not a thing each sink re-invents.
-/// Empty when no PUSH sink is configured (the zero-config default), which is the root's signal to
-/// install no fan-out at all.
-pub fn builtin_push_sinks(cfg: &ExportCfg) -> Vec<BuiltinPushSink> {
-    webhook::sinks(cfg)
+/// Every configured `module: request-log-webhook` instance whose target survives the SSRF guard, in
+/// config order. Empty ⇒ no webhook sink, and in that case the composition root builds no delivery
+/// client at all (the default config pays nothing).
+pub fn request_log_webhook_instances(cfg: &ExportCfg) -> Vec<RequestLogWebhookInstance> {
+    let mut instances = Vec::new();
+    for w in &cfg.request_log_webhooks {
+        match crate::observability::validate_webhook_url(Some(w.url.clone())) {
+            Ok(Some(url)) => instances.push(RequestLogWebhookInstance {
+                display_url: crate::observability::mask_userinfo(&url),
+                url,
+                auth: w
+                    .auth_header
+                    .as_ref()
+                    .map(|h| (h.name.clone(), h.value.clone())),
+                timeout: Duration::from_secs(w.delivery_timeout_secs),
+                // CLAMPED, not trusted: `config_validate` rejects a `max_inflight_deliveries`
+                // outside `1..=Semaphore::MAX_PERMITS`, but the gate the root builds from this must
+                // not be the thing that panics (0 permits would also black-hole the sink silently)
+                // if this is ever reached unvalidated.
+                max_inflight: w
+                    .max_inflight_deliveries
+                    .clamp(1, tokio::sync::Semaphore::MAX_PERMITS),
+                projection: w.projection,
+            }),
+            Ok(None) => {}
+            Err(msg) => crate::diagnostics::diag_error!(
+                crate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
+                "{msg}; disabling this webhook exporter"
+            ),
+        }
+    }
+    instances
+}
+
+/// Put ONE stated delivery on the wire: the target, the headers and the body the sink stated, that
+/// instance's own deadline, the permit holding its slot, and the callback the outcome (an answered
+/// status, or a URL-FREE cause) is handed back to. Fire-and-forget — it returns immediately.
+pub type RequestLogWebhookSend = Arc<
+    dyn Fn(
+            String,
+            Vec<(String, String)>,
+            Vec<u8>,
+            Duration,
+            OwnedSemaphorePermit,
+            Box<dyn FnOnce(Result<u16, String>) + Send>,
+        ) + Send
+        + Sync,
+>;
+
+/// The process's webhook delivery, built ONCE by the composition root and shared by every webhook
+/// sink it composes. Call it only when at least one instance is configured: it builds a client.
+///
+/// WHY THIS IS STILL HERE. The sink frames the POST; opening the socket is the ENGINE's egress
+/// client on the cold open-web posture, which no crate of kind `export` may name. It is its own
+/// client rather than the shared upstream pool because webhook delivery is a background,
+/// seconds-cadence push with its own SSRF posture. Delivery posture matches the retired reqwest
+/// client where it matters: 10s connect bound (the engine's connect deadline, now spanning TLS
+/// too), reqwest-default pooling (unbounded idle per host, 90s idle timeout — sinks are
+/// operator-configured hosts, exactly the shape the LLM lanes pool for); the per-DELIVERY total
+/// timeout is each target's own `delivery_timeout_secs`, applied per request below. This goes with
+/// the egress client when the egress client goes.
+pub fn request_log_webhook_send() -> RequestLogWebhookSend {
+    let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
+        usize::MAX,
+        90,
+        false,
+        false,
+    ));
+    Arc::new(move |url, headers, body, timeout, permit, outcome| {
+        let client = client.clone();
+        let Ok(uri) = url.parse::<http::Uri>() else {
+            // Structurally unreachable: the target survived its guard at resolution. Answered as a
+            // transport failure so the sink reports it rather than losing the line in silence.
+            outcome(Err("target URL does not parse".to_string()));
+            return;
+        };
+        // The header vocabulary is the WIRE'S, which is why it is applied here and not stated in a
+        // crate of kind `export`. A pair this wire refuses is dropped and the delivery still goes,
+        // the posture the in-engine sink had.
+        let mut head = http::HeaderMap::new();
+        for (name, value) in headers {
+            if let (Ok(n), Ok(v)) = (
+                http::header::HeaderName::from_bytes(name.as_bytes()),
+                http::header::HeaderValue::from_str(&value),
+            ) {
+                head.insert(n, v);
+            }
+        }
+        busbar_substrate::detached::spawn_detached(async move {
+            let _permit = permit; // slot releases on task end via the owned permit's Drop.
+            let req = busbar_substrate::egress::engine::request(
+                http::Method::POST,
+                uri,
+                head,
+                bytes::Bytes::from(body),
+            );
+            // This target's own per-delivery deadline over the whole send — the same span the
+            // retired per-request reqwest `.timeout()` covered.
+            let deadline = tokio::time::Instant::now() + timeout;
+            match busbar_substrate::egress::engine::send_bounded(&client, req, deadline).await {
+                Ok(resp) => outcome(Ok(resp.status().as_u16())),
+                // The cause string is URL-free by construction (hyper errors never carry the URL).
+                Err(e) => outcome(Err(e.into_cause())),
+            }
+        });
+    })
 }
 
 /// One configured `request-log-file` instance, as data for the composition root to build its sink

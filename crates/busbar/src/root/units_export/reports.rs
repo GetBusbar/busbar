@@ -1,29 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What this process does with what the file sink REPORTS.
+//! What this process does with what the composed sinks REPORT.
 //!
-//! `busbar-export-file` is a crate of kind `export`: it may name neither a metrics recorder nor a
-//! diagnostics registry, because both are properties of the process it was loaded into rather than
-//! of the sink. So it reports, and the composer decides what a report means. Here that means the
-//! same five diagnostics and three counters the in-engine sink emitted — byte-identical ids,
-//! byte-identical field names, byte-identical metric series — so nothing an operator's dashboard or
-//! log pipeline matches on moved when the sink did.
+//! A crate of kind `export` may name neither a metrics recorder nor a diagnostics registry, because
+//! both are properties of the process it was loaded into rather than of the sink. So the sinks
+//! report, and the composer decides what a report means. Here that means the same seven diagnostics
+//! and three counters the in-engine sinks emitted — byte-identical ids, byte-identical field names,
+//! byte-identical metric series — so nothing an operator's dashboard or log pipeline matches on
+//! moved when the sinks did.
+//!
+//! BOTH IMPLS ARE IN ONE FILE and that is deliberate: the substrate's diagnostic twin is spelled
+//! ONCE for the whole fan-out. The `legacy-reach` ratchet counts what the root spells through a
+//! retiring crate's prefix and may only go down, so a second composed sink must not cost a second
+//! import of the same macro.
+//!
+//! THE WEBHOOK'S MASKING IS ALREADY DONE, and deliberately not here. The `url` on every webhook
+//! event is the masked spelling the config layer produced once when it validated the target,
+//! carried by the sink from construction. Neither this file nor the crate it serves holds the raw
+//! target's credentials in a form it could log by accident.
 
 // THE COUNTER NAMES THROUGH THE PARENT, THE DIAGNOSTIC MACRO OFF THE SUBSTRATE. The `legacy-reach`
 // ratchet counts DISTINCT symbols the root spells through a RETIRING crate's prefix and may only go
 // down, so `metrics` is the one the parent module already spells and `diag_warn!` is taken from the
 // substrate's own cross-crate twin — a byte-identical expansion, emitting the same `diag =` field
 // on the same coded ids, without teaching the root one more name through a crate that is leaving.
-use busbar_substrate_values::{diag_warn, diagnostics};
+use busbar_substrate_values::{diag_debug, diag_warn, diagnostics};
 
 use super::metrics;
 use busbar_export_file::{Event, Report};
+use busbar_export_webhook::{Event as WebhookEvent, Report as WebhookReport};
 
 /// The [`Report`] every composed file sink is built with.
-pub(crate) struct EngineReport;
+pub(crate) struct EngineFileReport;
 
-impl Report for EngineReport {
+impl Report for EngineFileReport {
     fn report(&self, event: Event<'_>) {
         match event {
             Event::Rotated { path, archive } => {
@@ -59,6 +70,28 @@ impl Report for EngineReport {
                 diagnostics::FILE_LOG_OPEN_FAILED,
                 path = %path, error = %error,
                 "request-log file open failed; this log was dropped"
+            ),
+        }
+    }
+}
+
+/// The [`WebhookReport`] every composed webhook sink is built with.
+pub(crate) struct EngineWebhookReport;
+
+impl WebhookReport for EngineWebhookReport {
+    fn report(&self, event: WebhookEvent<'_>) {
+        match event {
+            WebhookEvent::Non2xx { url, status } => diag_debug!(
+                diagnostics::WEBHOOK_DELIVERY_NON_2XX,
+                webhook_url = url,
+                status = status,
+                "request-log webhook delivery returned a non-2xx status; this log was dropped"
+            ),
+            WebhookEvent::TransportError { url, error } => diag_debug!(
+                diagnostics::WEBHOOK_DELIVERY_TRANSPORT_ERROR,
+                webhook_url = url,
+                error_kind = %error,
+                "request-log webhook delivery failed (transport error); this log was dropped"
             ),
         }
     }

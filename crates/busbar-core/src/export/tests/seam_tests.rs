@@ -42,3 +42,27 @@ async fn deliver_request_log_is_noop_when_no_root_fan_out_is_installed() {
         "an uninstalled seam must not spawn a delivery task"
     );
 }
+
+/// The built request-log payload is the byte-identical 5-field shape (the builder lives beside the
+/// `produced_fields` table that claims to describe it), for a sink whose projection grants the whole
+/// `logs` stream. Kept HERE as well as in the grammar's own anti-drift test because this one asserts
+/// the VALUES a delivering sink is handed, not just the key set. It outlived the webhook module it
+/// used to sit in: what it measures is the payload the SEAM carries, which is this file's subject.
+#[test]
+fn build_request_log_shape() {
+    let p = busbar_plugin::cold::export::projection::build_request_log(
+        crate::export::test_logs_projection(),
+        &busbar_plugin::cold::export::projection::RequestLogFacts {
+            ts: 1_700_000_000,
+            ingress_protocol: "anthropic",
+            pool: "prod",
+            outcome: "ok",
+            latency_ms: 42,
+        },
+    );
+    assert_eq!(p["ts"], 1_700_000_000_u64);
+    assert_eq!(p["ingress_protocol"], "anthropic");
+    assert_eq!(p["pool"], "prod");
+    assert_eq!(p["outcome"], "ok");
+    assert_eq!(p["latency_ms"], 42_u64);
+}

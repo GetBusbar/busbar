@@ -23,8 +23,10 @@
 //! - **The shed.** Every sink states its capacity; the root enforces it with an [`AdmissionGate`]
 //!   of its own ([`admission`]) and hands the surviving delivery the permit. A sink never sees a
 //!   delivery it has no room for and never carries a semaphore.
-//! - **NOT the delivery.** What a sink DOES with its payload — append it, POST it, drop it — is
-//!   the sink's, over its own face. The root calls and forgets.
+//! - **NOT the delivery.** What a sink DOES with its payload — frame it as a POST, append it, drop
+//!   it — is the sink's, over its own face. The root calls and forgets. The one exception is the
+//!   SOCKET a webhook delivery goes out on: a connection pool is a property of this process and its
+//!   egress posture, so the root opens it and hands the sink's framed request to it.
 //!
 //! THE `legacy-reach` RATCHET counts the DISTINCT symbols the root spells through a retiring
 //! crate's prefix, over `crates/busbar/src/root/*.rs` — an `fnmatch` glob whose `*` crosses
@@ -33,7 +35,7 @@
 //! spelled, so lifting the fan-out out of the engine costs the ratchet nothing.
 
 pub(crate) mod admission;
-mod file_report;
+mod reports;
 
 use admission::AdmissionGate;
 // MODULE-LEVEL, deliberately. The `legacy-reach` ratchet counts DISTINCT symbols the root spells
@@ -41,9 +43,16 @@ use admission::AdmissionGate;
 // still owns here — and every item under them by short path — is the same two names main.rs
 // already spelled, so lifting the fan-out out of the engine costs the ratchet nothing.
 use busbar_core::{config, export, metrics};
-use export::{BuiltinPushSink, Projection, RequestLogFacts, Ship};
+use busbar_export_webhook::{WebhookSink, GATE as WEBHOOK_GATE};
+use export::{Projection, RequestLogFacts, RequestLogWebhookSend};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
+
+/// Ship one payload, already built to the sink's projection, taking the permit that holds this
+/// delivery's slot. Named so the sink declaration below reads as the four facts it is, rather than
+/// as one line of type. It is the ROOT's vocabulary: the last engine-side sink that used to present
+/// itself through it is a crate of kind `export` now, so nothing but this fan-out speaks it.
+type Ship = Box<dyn Fn(&Arc<Value>, tokio::sync::OwnedSemaphorePermit) + Send + Sync>;
 
 /// One composed PUSH sink: what it was granted, what the root will shed for it, and the one call
 /// that ships it a payload.
@@ -72,7 +81,7 @@ static SINKS: OnceLock<Vec<Sink>> = OnceLock::new();
 /// pays for none of this.
 pub fn install(cfg: &config::ExportCfg) {
     let mut sinks = file_sinks(cfg);
-    sinks.extend(engine_sinks(cfg));
+    sinks.extend(webhook_sinks(cfg));
     if sinks.is_empty() {
         return;
     }
@@ -94,7 +103,7 @@ fn file_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
             let handler = Arc::new(busbar_export_file::FileSink::new(
                 instance.path,
                 instance.rotate_mb,
-                Arc::new(file_report::EngineReport),
+                Arc::new(reports::EngineFileReport),
             ));
             Sink {
                 projection: instance.projection,
@@ -122,26 +131,64 @@ fn file_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
         .collect()
 }
 
-/// The PUSH sinks whose bodies are still in the engine — today just `request-log-webhook`, whose
-/// delivery is the substrate's egress engine behind the engine's own SSRF guard and therefore not
-/// yet something a crate of kind `export` could carry.
-fn engine_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
-    export::builtin_push_sinks(cfg)
+/// Compose one `busbar-export-webhook` sink per configured `request-log-webhook` instance.
+///
+/// The crate states its gate label and frames each delivery as the POST that carries it; the root
+/// builds it, holds it, sheds for it, opens the socket, applies the deadline and turns its reports
+/// into this process's diagnostics. The socket is the reason the send is not the crate's: a
+/// connection pool on the cold open-web posture is the engine's egress client, which no crate of
+/// kind `export` may name — so the root takes the client, and the sink keeps the framing.
+///
+/// No configured instance ⇒ NO client is built at all: the default config pays nothing.
+fn webhook_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
+    let instances = export::request_log_webhook_instances(cfg);
+    if instances.is_empty() {
+        return Vec::new();
+    }
+    compose_webhook_sinks(instances, export::request_log_webhook_send())
+}
+
+/// [`webhook_sinks`] over an explicit instance list and an explicit send — the whole of the webhook
+/// composition, split from the config read and the client build in front of it so a test can drive
+/// it over a send of its own and see the bytes that would have gone out on the wire.
+fn compose_webhook_sinks(
+    instances: Vec<export::RequestLogWebhookInstance>,
+    send: RequestLogWebhookSend,
+) -> Vec<Sink> {
+    instances
         .into_iter()
-        .map(
-            |BuiltinPushSink {
-                 projection,
-                 max_inflight,
-                 gate,
-                 dropped_total,
-                 ship,
-             }| Sink {
+        .map(|instance| {
+            let projection = instance.projection;
+            let max_inflight = instance.max_inflight;
+            let handler = Arc::new(WebhookSink::new(
+                instance.url,
+                instance.display_url,
+                instance.auth,
+                instance.timeout,
+                Arc::new(reports::EngineWebhookReport),
+            ));
+            let send = send.clone();
+            Sink {
                 projection,
-                gate: AdmissionGate::new(max_inflight, gate),
-                dropped_total,
-                ship,
-            },
-        )
+                gate: AdmissionGate::new(max_inflight, WEBHOOK_GATE),
+                dropped_total: metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
+                ship: Box::new(move |payload, permit| {
+                    // Already built to THIS sink's projection, so an ungranted field is never put
+                    // on the wire. The sink states the delivery; the root serialized it and sends
+                    // it, because the wire is the root's and the statement is the sink's.
+                    let delivery = handler.delivery(&payload.to_string());
+                    let outcome = handler.clone();
+                    send(
+                        delivery.url,
+                        delivery.headers,
+                        delivery.body,
+                        handler.timeout(),
+                        permit,
+                        Box::new(move |result| outcome.observe(result)),
+                    );
+                }),
+            }
+        })
         .collect()
 }
 
