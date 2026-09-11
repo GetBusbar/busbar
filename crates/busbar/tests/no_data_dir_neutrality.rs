@@ -17,6 +17,9 @@
 // regression. Full-feature builds run it.
 #![cfg(feature = "proto-llm")]
 
+mod common;
+
+use common::ReservedPort;
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -38,16 +41,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A port the OS just handed out and released: the listener must be a fixed address so the test
-/// can scrape it (the boot line prints the CONFIGURED address, not the bound one).
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// The 1.5.5 shape (the shadow oracle's own config, cut down): one provider, one model, keys on
@@ -123,8 +116,10 @@ const LEDGER_BOOT_WORDS: &[&str] = &[
 #[test]
 fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let dir = fixture_dir();
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
@@ -141,6 +136,10 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
          nothing, and this assertion would then pass on a node that wrote a whole ledger tree.",
         before.len()
     );
+    // Fixture setup is done; release the reservations immediately before the child that binds these
+    // numbers is spawned (see `ReservedPort`'s doc for why this ordering is the fix).
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         // The directory the assertion below reads is only the directory a stray file lands in if
         // it is also the directory the node was started in: a journal opened at a RELATIVE path

@@ -46,6 +46,9 @@
 // Needs a bootable server with an LLM route: the money path is what is being reconciled.
 #![cfg(feature = "proto-llm")]
 
+mod common;
+
+use common::ReservedPort;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -73,37 +76,16 @@ use ledger_identity::{
 // Every number below is fixed by the fixture, not observed from the run, so a change in any of them
 // fails here rather than quietly re-deriving itself on both sides of the identity.
 
-/// The three ports this cell needs, asked for once and kept for the run.
-///
-/// Asked for rather than fixed, and that is the whole of it: the numbers this cell used to name sit
-/// inside the range the operating system hands out to anything that asks for a port, so a sibling
-/// test asking for a free one could be given this cell's and the collision would arrive disguised
-/// as a boot that never listened. Held in one place for the process so the mock, the config and
-/// every request agree on which three they are.
-static PORTS: std::sync::LazyLock<Ports> = std::sync::LazyLock::new(|| Ports {
-    data: free_port(),
-    admin: free_port(),
-    mock: free_port(),
-});
-
-/// The ports one run of this cell listens on.
+/// The three ports this cell needs, held on the `Rig` for the run so the mock, the config and every
+/// request agree on which three they are. Reserved with `common::ReservedPort` (not a bare
+/// bind-and-drop): the numbers sit in the range the OS hands out to anything that asks for a port,
+/// and holding the reservation open across the rest of fixture setup — writing config/provider
+/// YAML, generating a signing key, starting the mock — narrows the window in which a sibling
+/// process could be handed the same number before this rig's own children bind them.
 struct Ports {
     data: u16,
     admin: u16,
     mock: u16,
-}
-
-/// One port nothing else holds.
-///
-/// The bind is dropped before the number is returned, which is the same small race every test in
-/// this directory takes; the alternative is a fixed number, and a fixed number races everything on
-/// the machine rather than the moment between two calls.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("the bound address")
-        .port()
 }
 
 /// The one lane and its provider — the oracle's `m-<dialect>` naming.
@@ -413,7 +395,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     // over two empty tables. Both of those are what a HEALTHY node looks like from outside, which is
     // why the row count is asserted here and asserted first.
     let totals: serde_json::Value = serde_json::from_slice(&get_bytes(
-        PORTS.admin,
+        rig.ports.admin,
         "/api/v1/admin/ledger/totals",
         ADMIN_TOKEN,
     ))
@@ -487,7 +469,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     // way — it is that the dual write reached both books for every posting the run made, which is a
     // claim only a NON-EMPTY table can carry.
     let reconciliation: serde_json::Value = serde_json::from_slice(&get_bytes(
-        PORTS.admin,
+        rig.ports.admin,
         "/api/v1/admin/ledger/reconciliation",
         ADMIN_TOKEN,
     ))
@@ -559,6 +541,7 @@ struct Rig {
     control: PathBuf,
     child: Child,
     mock: Child,
+    ports: Ports,
     key_ok: String,
     key_broke: String,
     key_noscope: String,
@@ -587,6 +570,19 @@ impl Rig {
         std::fs::create_dir_all(&dir).unwrap();
         let control = dir.join("mock.control");
 
+        // Reserved up front and held open across everything below that does not itself need a bound
+        // socket — resolving the oracle tool, writing config/provider YAML, generating a signing key
+        // — so the window between "the OS says these are free" and "our own children bind them" is
+        // as small as the ordering below can make it (see `common::ReservedPort`'s doc).
+        let data_reserved = ReservedPort::reserve();
+        let admin_reserved = ReservedPort::reserve();
+        let mock_reserved = ReservedPort::reserve();
+        let ports = Ports {
+            data: data_reserved.port(),
+            admin: admin_reserved.port(),
+            mock: mock_reserved.port(),
+        };
+
         // The oracle's own multi-dialect mock: a byte-deterministic upstream with fixed usage, and
         // a control file the rig flips to take it down without busbar ever seeing a control header.
         // `mock-upstream.py` used to live in-tree; it now ships inside the pinned oracle tool that
@@ -598,10 +594,15 @@ impl Rig {
             "the oracle's mock upstream is missing at {mock_py:?} (resolved from the pinned \
              oracle tool's directory)"
         );
+        write_configs(&dir, &ports);
+
         let mock_log = std::fs::File::create(dir.join("mock.log")).unwrap();
+        // The mock's own port reservation is released immediately before spawning it — everything
+        // else the mock needs (the script path, the marker, the control file path) is ready.
+        mock_reserved.release();
         let mock = Command::new("python3")
             .arg(&mock_py)
-            .arg(PORTS.mock.to_string())
+            .arg(ports.mock.to_string())
             .arg("oracle-marker")
             .arg(&control)
             .stdout(mock_log.try_clone().unwrap())
@@ -613,20 +614,22 @@ impl Rig {
         // its serve loop is not yet mistaken for one that has. The budget is generous because a
         // python interpreter starting on a saturated machine is slow, not broken.
         wait_until(Duration::from_secs(60), || {
-            get(PORTS.mock, "/", None).status == 200
+            get(ports.mock, "/", None).status == 200
         })
         .unwrap_or_else(|| {
             panic!(
                 "the mock upstream did not come up on port {}; log:\n{}",
-                PORTS.mock,
+                ports.mock,
                 read_to_string(&dir.join("mock.log"))
             )
         });
 
-        write_configs(&dir);
-
         let log_path = dir.join("out.log");
         let log = std::fs::File::create(&log_path).unwrap();
+        // Same treatment for busbar's own two: released right before this spawn, after config
+        // writing (and the mock's own boot, which needed no bind of theirs) are already done.
+        data_reserved.release();
+        admin_reserved.release();
         let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
             .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -644,6 +647,7 @@ impl Rig {
             control,
             child,
             mock,
+            ports,
             key_ok: String::new(),
             key_broke: String::new(),
             key_noscope: String::new(),
@@ -657,12 +661,12 @@ impl Rig {
                     read_to_string(&rig.log_path)
                 );
             }
-            get(PORTS.data, "/healthz", None).status == 200
+            get(rig.ports.data, "/healthz", None).status == 200
         });
         assert!(
             booted.is_some(),
             "busbar did not answer on {}; log:\n{}",
-            PORTS.data,
+            rig.ports.data,
             read_to_string(&rig.log_path)
         );
 
@@ -676,7 +680,7 @@ impl Rig {
 
     fn mint(&self, body: &str) -> String {
         let r = request(
-            PORTS.admin,
+            self.ports.admin,
             "POST",
             "/api/v1/admin/keys",
             Some(ADMIN_TOKEN),
@@ -698,7 +702,7 @@ impl Rig {
         let body =
             format!(r#"{{"model":"{LANE}","messages":[{{"role":"user","content":"ping"}}]}}"#);
         request(
-            PORTS.data,
+            self.ports.data,
             "POST",
             "/v1/chat/completions",
             Some(token),
@@ -741,7 +745,7 @@ impl Rig {
             "the mock upstream never acknowledged `down = {down}`: it still answers {} on port {}, \
              so the outage this cell is about had not started when the request was sent",
             self.probe_mock(),
-            PORTS.mock
+            self.ports.mock
         );
     }
 
@@ -750,7 +754,7 @@ impl Rig {
     /// not busbar's opinion of it, and it moves nothing this cell counts.
     fn probe_mock(&self) -> u16 {
         request(
-            PORTS.mock,
+            self.ports.mock,
             "POST",
             "/v1/chat/completions",
             None,
@@ -762,7 +766,7 @@ impl Rig {
     /// The legacy usage projection, as bytes. Bytes rather than a parsed value because PB-16's
     /// claim is about the response and not about what a lenient parser makes of it.
     fn usage_bytes(&self) -> Vec<u8> {
-        let r = get(PORTS.admin, "/api/v1/admin/usage", Some(ADMIN_TOKEN));
+        let r = get(self.ports.admin, "/api/v1/admin/usage", Some(ADMIN_TOKEN));
         assert_eq!(r.status, 200, "reading /usage failed: {}", r.body);
         r.body.into_bytes()
     }
@@ -892,13 +896,13 @@ fn oracle_tool_dir() -> PathBuf {
 /// The oracle's configuration, narrowed to the one dialect this cell needs: the same auth chain,
 /// the same two budget groups, the same priced card, and the same unused pool the out-of-scope key
 /// is confined to. A flat fee is added, for the reason `FEE_CENTS` gives.
-fn write_configs(dir: &Path) {
-    let (data_port, admin_port) = (PORTS.data, PORTS.admin);
+fn write_configs(dir: &Path, ports: &Ports) {
+    let (data_port, admin_port) = (ports.data, ports.admin);
     std::fs::write(
         dir.join("providers.yaml"),
         format!(
             "{PROVIDER}:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{}\"\n",
-            PORTS.mock
+            ports.mock
         ),
     )
     .unwrap();

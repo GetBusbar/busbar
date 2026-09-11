@@ -18,6 +18,9 @@
 // codec fail-closes at boot. The shed layer itself is plane-independent.
 #![cfg(feature = "proto-llm")]
 
+mod common;
+
+use common::ReservedPort;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -39,13 +42,19 @@ const SHED_BODY: &str = r#"{"error":{"type":"overloaded","message":"The gateway 
 fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
     let dir = fixture_dir();
     let upstream_port = spawn_slow_upstream();
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
     write_configs(&dir, data_port, admin_port, upstream_port);
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
+    // Release the reservations immediately before the spawn that binds these numbers (see
+    // `ReservedPort`'s doc for why this ordering is the fix).
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
@@ -160,16 +169,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A free loopback port asked of the OS. The data plane binds a FIXED port on every worker socket,
-/// so an ephemeral `:0` in the config would not do.
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
