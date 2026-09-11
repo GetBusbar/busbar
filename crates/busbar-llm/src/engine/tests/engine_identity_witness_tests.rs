@@ -96,11 +96,11 @@ fn engine_never_branches_on_operation_identity() {
 /// `WrapSetup` profiler stage, and fires the response-stage taps once the head is known. Every one
 /// of those is a STEP, and a step is served once.
 ///
-/// When the LLM plane was switched onto the composition root, the Route step re-implemented that
+/// When this plane was switched onto the composition root, the Route step re-implemented that
 /// shell beside the original and called the dispatch core directly — the same span, the same
 /// `next_request_id`, the same completion-shape capture, the same `fire_stage_taps` projection,
 /// written twice. Two copies of one step is exactly the shape that drifts, and it already had:
-/// the copy omitted `profile::Stage::WrapSetup`, so the SHIPPED leg (`root-llm`, default on)
+/// the copy omitted `profile::Stage::WrapSetup`, so the SHIPPED leg (the composition-root feature, default on)
 /// reported zero samples for a stage the legacy leg timed, and no oracle cell could see it because
 /// the profiler is not on the wire.
 ///
