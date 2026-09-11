@@ -20720,7 +20720,6 @@
       "op": "chat",
       "outcome": "ok_citation",
       "why": "happy path whose ANSWER carries a URL citation: the Responses annotation the published UrlCitationBody FLATTENS onto the annotation object, which the `ok` fixture's bare-text answer never exercises",
-      "needs_fixture": true,
       "mock_control": {
         "citation": true
       }

@@ -233,23 +233,30 @@ def llm_cells(inv: dict) -> list[dict]:
     # error looks like on the wire, the door decides what the client is told, and the diagonal
     # covers all six of each.
     #
-    # THESE SIX STAY `needs_fixture`, AND THE REASON IS NOT THE MOCK. The mock grew the
-    # `stream-error` verb for all six dialects and the PINNED tool (oracle.pin v0.3.7) ships it. What
-    # is missing is the RECORDER, and it is missing twice, on the two independent legs of the cell:
-    #   1. record.sh's built-in `llm` driver writes the mock control for exactly ONE outcome —
-    #      `if [ "$outcome" = upstream_down ]` -> "down". A cell's own `mock_control` is read by the
-    #      `http` and `concurrent` drivers only. On an llm cell it is dead, so the mock answers the
-    #      HEALTHY 200 — the same silent-pass shape the gemini tool-use note below describes.
-    #   2. build-request.py decides streaming by `oc in ("ok_stream", "ok_stream_array")`.
-    #      `stream_upstream_error` is in neither tuple, so the request it builds is BUFFERED: not a
-    #      stream at all, and a buffered request can never fail mid-stream.
+    # THESE SIX STAY `needs_fixture`, AND ONE OF THE TWO REASONS IS NOW CLOSED. The mock grew the
+    # `stream-error` verb for all six dialects and has shipped it since v0.3.7. What is missing is
+    # the RECORDER, and it was missing twice, on the two INDEPENDENT legs of the cell:
+    #   1. CLOSED BY v0.3.14. record.sh's built-in `llm` driver wrote the mock control for exactly
+    #      ONE outcome — `if [ "$outcome" = upstream_down ]` -> "down" — so a cell's own
+    #      `mock_control` was dead on this driver and the mock answered the HEALTHY 200. v0.3.14
+    #      routes all three drivers and the `pre` runner through one `cell_mock_control()`, so the
+    #      cell's own `{"stream-error": true}` now lands.
+    #   2. STILL OPEN, and it is sufficient on its own. build-request.py (the same pinned tool,
+    #      v0.3.14, line 48) still decides streaming by `oc in ("ok_stream", "ok_stream_array")`.
+    #      `stream_upstream_error` is in neither tuple, so the request it builds is BUFFERED — and
+    #      the mock's own rule is that `stream-error` "only ever applies to a request that IS a
+    #      stream" (mock-upstream.py: every dialect arm reads `if want_stream and stream_error`),
+    #      because answering a buffered request with half a stream is a shape no upstream produces.
+    #      So with the control landing and the request buffered, the mock falls through to the
+    #      HEALTHY buffered answer: the same silent pass as before, now arrived at by a different
+    #      route.
     # MEASURED, NOT ARGUED (2026-09-10, published 1.5.5, aarch64-apple-darwin): with `needs_fixture`
     # lifted, all six record `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a
     # buffered `chat.completion` body — the happy path frozen under the name of the failure, and
     # frozen identically on the candidate, so the cell would prove the opposite of what it claims.
-    # Recording them therefore needs a TOOL release that teaches the llm driver `mock_control` and
-    # build-request.py the streaming outcome; that is named in accepted-gaps.json and owed to a pin
-    # bump, not to anything in this tree. The behaviour itself is pinned TODAY by the
+    # Recording them therefore still needs a TOOL release, now for leg 2 alone: build-request.py has
+    # to build a STREAMING request for this outcome. That is named in accepted-gaps.json and owed to
+    # a pin bump, not to anything in this tree. The behaviour itself is pinned TODAY by the
     # `llm.stream|<dialect>|<fault>` family above, in the half of the harness busbar owns.
     # gemini is not in the inventory's `streams` set (its streaming is the path-selected
     # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
@@ -261,18 +268,27 @@ def llm_cells(inv: dict) -> list[dict]:
         c["needs_fixture"] = True
         c["mock_control"] = {"stream-error": True}
         cells.append(c)
-    # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. Same SKIP-able posture as the mid-stream
-    # failure above: definitions only, `needs_fixture` until the integrator records them from the
-    # published 1.5.5 binary, so each reads as a NAMED golden gap rather than a silent pass.
+    # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. The cachePoint cell below is still
+    # definitions-only; the citation cell is NOT, as of the v0.3.14 pin.
     #
     # THE CITATION, on the DIAGONAL (responses -> responses). The annotation is a property of the
     # ANSWER, so the egress dialect is what decides its shape; the diagonal is the striking case
     # because a same-dialect hop READS BACK bytes it has just written, so a reader that only knows
     # the nested Chat spelling drops an annotation its own writer produced in the flat one. Driven by
     # the mock's `citation` verb, which answers with the published flat `UrlCitationBody`.
+    #
+    # `needs_fixture` IS LIFTED HERE, AND THE TWO FACTS THAT LIFT IT ARE BOTH MEASURED IN THE PINNED
+    # TOOL rather than assumed. (1) The verb exists and is reachable: `citation` is in
+    # mock-upstream.py's VERBS and its own selftest asserts `{"citation": true}` resolves to it for
+    # a non-per-model control. (2) The REQUEST this outcome builds is the one the verb answers:
+    # build-request.py names `ok_citation` explicitly and leaves `stream` false, and the mock's
+    # citation arm answers the BUFFERED Responses shape — so unlike the six mid-stream cells above,
+    # whose outcome build-request.py does not know how to stream, nothing about this cell's request
+    # has to change for the control to mean what the cell says. The only thing that was ever missing
+    # was the llm driver WRITING the control at all, which is exactly what v0.3.14 fixed. Recorded
+    # from the published 1.5.5 binary and merged into the golden as its own part.
     if "responses" in dialects:
         c = cell("responses", "responses", *RESPONSES_CITATION_OUTCOME)
-        c["needs_fixture"] = True
         c["mock_control"] = {"citation": True}
         cells.append(c)
     # THE cachePoint-BEFORE-A-DOCUMENT REQUEST. Bedrock-shaped both ends: `cachePoint` and the native
@@ -327,6 +343,49 @@ def protocol_cells(inv: dict) -> list[dict]:
                 "role": c["role"], "transport": c["transport"], "obligation": c["obligation"],
                 "outcome": oc, "why": why,
             })
+    # TWO OUTCOMES THAT BELONG TO ONE INVENTORY CELL, AND THEREFORE CANNOT BE AN AXIS. `OUTCOMES`
+    # above is the CROSS PRODUCT axis: every outcome in it is asked of every non-N/A inventory cell,
+    # which is right for `ok`/`malformed`/`unauthenticated` and wrong for these two — a destination
+    # with no lane behind it and a body the plane cannot decode are facts about the a2a CLIENT
+    # issuing a SendMessage over jsonrpc, and asking a server-role mcp cell the same question would
+    # mint a cell nothing can ever answer.
+    #
+    # THEY ARE GENERATED HERE BECAUSE THEY WERE NOT. Both rows were HAND-WRITTEN into cells.json
+    # when they landed, and cells.json is generated output: `busbar-oracle cells --check` compares
+    # the checked-in file against what this module yields and, finding 468 a2a cells generated
+    # against 470 committed, reported the a2a family as SHRINKING — the family-shrink guard, firing
+    # on a hand edit exactly as it is designed to. That left the check RED and `--write` refused, so
+    # no later generator change could be regenerated at all without either laundering the loss past
+    # the guard with --accept-family-shrink or deleting the two cells. Restating them here, byte for
+    # byte, is the only answer that keeps the corpus and its generator the same object.
+    #
+    # They stay `needs_fixture`: no recorder drives this plane (see accepted-gaps.json), and the
+    # expected bytes each is owed are written into its own `why` so the recording that eventually
+    # lands can be checked against what was claimed before it was made.
+    cells.extend([
+        {"id": "a2a|jsonrpc|client|client|SendMessage|no-agents-configured",
+         "plane": "a2a", "method": "SendMessage", "originator": "client", "role": "client",
+         "transport": "jsonrpc", "obligation": "issue", "outcome": "no-agents-configured",
+         "why": "a task for which NO AGENT is configured resolves to an upstream-shaped destination "
+                "with no lane behind it. 1.5.5 read the destination's SHAPE and charged the caller a "
+                "flat per-request fee for an exchange that never happened; 1.6.0 reads the lane, and "
+                "the visit is charged for the visit alone. Expected effects.usage: {\"requests\": 1} "
+                "with no spend key, exactly as the 45 requests-only rows of the 1.5.5 ledger record "
+                "for a unit that drew a slot and bought nothing. Recorded BEFORE and AFTER the "
+                "change, so it is visible in the corpus rather than argued from a test.",
+         "needs_fixture": True},
+        {"id": "a2a|jsonrpc|client|client|SendMessage|undecodable-body",
+         "plane": "a2a", "method": "SendMessage", "originator": "client", "role": "client",
+         "transport": "jsonrpc", "obligation": "issue", "outcome": "undecodable-body",
+         "why": "a body this plane cannot decode is refused at decode, before any destination is "
+                "resolved: no visit reached a destination, so there is no exchange and no "
+                "transaction fee, and the flat fee 1.5.5 charged off the destination's shape was "
+                "charged for a request it never carried. Expected effects.usage: {} beside a native "
+                "decode refusal, the shape a2a|*|malformed already records. With "
+                "no-agents-configured it is the whole observable surface of the reachability "
+                "change.",
+         "needs_fixture": True},
+    ])
     return cells
 
 
