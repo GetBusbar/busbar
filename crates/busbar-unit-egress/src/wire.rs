@@ -175,20 +175,102 @@ impl RouteOutcome {
     }
 }
 
-/// A delivered answer: which member served it, what the transport made of it, and how many frames
-/// were relayed.
+/// WHAT ONE LEG OF A ROUTE ANSWERED, AND THE RELAY IT LEFT BEHIND IT.
+///
+/// The walk answers with this rather than with the outcome alone, and the reason is the whole of
+/// the body pump: the outcome is known at the FIRST frame and the body is still arriving. A walk
+/// that returned only the outcome had to drain the answer before it could answer at all, which
+/// made the kernel's hold over the routed body a hold over a body that was already drained.
+///
+/// The pump is `None` for every leg that delivered nothing, and for the one-frame refusal a
+/// degraded caller relays as-is — an answer that was over before it got here has no stream left.
+pub struct Routed<'a> {
+    /// What came back.
+    pub outcome: RouteOutcome,
+    /// The relay, unrun. The ROOT drives it, on the runtime the frames are arriving on.
+    pub pump: Option<crate::attempt::BodyPump<'a>>,
+}
+
+impl Routed<'_> {
+    /// A leg that delivered nothing: the refusal, and no body to relay.
+    #[must_use]
+    pub fn refused(shed: Shed) -> Self {
+        Routed {
+            outcome: RouteOutcome::Refused(shed),
+            pump: None,
+        }
+    }
+
+    /// The refusal, where the leg produced one.
+    #[must_use]
+    pub fn shed(&self) -> Option<&Shed> {
+        self.outcome.shed()
+    }
+
+    /// Whether an upstream answered.
+    #[must_use]
+    pub fn is_delivered(&self) -> bool {
+        self.outcome.is_delivered()
+    }
+}
+
+impl std::fmt::Debug for Routed<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Routed")
+            .field("outcome", &self.outcome)
+            .field("pump", &self.pump.is_some())
+            .finish()
+    }
+}
+
+/// WHAT THE RELAY MADE OF THE ANSWER'S BODY, once the body finished.
+///
+/// Three readings of one stream, produced together by the one pass that made them, and kept
+/// together because they are one instant: how many frames went past, what the PLANE made of the
+/// ending, and what the answer carried per dimension the plane declared.
+///
+/// It is a value of its own and not three fields on the delivered answer, because it does not exist
+/// at the same time the delivered answer does. The answer's head is known when the first frame
+/// comes back; what the body carried is known when the last one does, and between those two
+/// instants the walk has returned and the unit is not blocked on anything. A type that carried both
+/// would be a type with three fields that are hollow for the length of an upstream call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Relayed {
+    /// How many response frames were relayed to the client.
+    pub frames: usize,
+    /// The PLANE's reading of how the answer ended — its own decode of the frames, and never the
+    /// transport's status re-derived. This is the second of the fee decision's two sources, and
+    /// the reason it is independent is that it is read from a different thing.
+    pub finish: Option<busbar_contract::FinishClass>,
+    /// WHAT THE STREAM CARRIED, as the relay counted it while it ran.
+    ///
+    /// Quantities against declared keys and never an amount: what a quantity is worth is the cost
+    /// unit's answer, and a plane that could name an amount could name an invoice. The frames and
+    /// the bytes are this unit's own count of what it relayed; the per-class dimensions are the
+    /// PLANE's declared locators evaluated over the plane's own decoded response, which is a
+    /// reading this unit does not make — it holds a value the plane produced and asks the plane
+    /// what is in it.
+    ///
+    /// It travels rather than being recomputed at the meter because there is no second reading of
+    /// the body to recompute it from: the bytes were the transport's and by the time the meter runs
+    /// they are gone. One reading, carried forward, is what makes the money side's figure and the
+    /// relay's figure incapable of disagreeing.
+    pub carried: Completion,
+}
+
+/// A delivered answer's HEAD: which member served it and what the transport made of it.
+///
+/// Everything here is known at the FIRST frame. What the body carried is [`Relayed`], and it
+/// arrives when the pump the walk handed back has finished.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivered {
     /// Which member of the verified set served the request.
     pub destination: crate::ports::DestinationId,
     /// Which pool cell the attempt was recorded against.
     pub pool: String,
-    /// The transport's own reading of the first relayed frame, where it carries one.
+    /// The transport's own reading of the first relayed frame, where it carries one. This is the
+    /// first of the fee decision's two sources.
     pub status: Option<busbar_contract_transport::wire::StatusClass>,
-    /// How many response frames were relayed to the client.
-    pub frames: usize,
-    /// The plane's reading of how the answer ended.
-    pub finish: Option<busbar_contract::FinishClass>,
     /// Whether the answer came off a degraded path (a spill, a queued permit, or the one
     /// documented breaker bypass) rather than the ordered walk.
     pub degraded: bool,
@@ -207,17 +289,46 @@ pub struct Delivered {
     /// what it carried. Nothing in this crate ever reads a body, and this field is what keeps that
     /// true while still giving the meter something to read.
     pub body: BodyLease,
-    /// WHAT THE STREAM CARRIED once it finished, as the relay counted it while it ran.
+    /// WHAT THE RELAY MADE OF THE BODY, where the whole answer left this unit in one piece.
     ///
-    /// Quantities against declared keys and never an amount: what a quantity is worth is the cost
-    /// unit's answer, and a plane that could name an amount could name an invoice. The frames and
-    /// the bytes are this unit's own count of what it relayed; the per-class dimensions are the
-    /// plane's declared locators evaluated over the answer, which is the reading this unit does
-    /// not make and does not have — it calls the plane's codec and reads no body of its own.
+    /// `None` is the ordinary case and it means the body has NOT been relayed yet: the walk has
+    /// answered with the head and handed back a pump, and the reading arrives when the root has
+    /// driven it. `Some` is the one-frame answer a degraded caller relays as-is, which was over
+    /// before it got here and has no stream left to pump.
     ///
-    /// It travels on the outcome rather than being recomputed at the meter because there is no
-    /// second reading of the body to recompute it from: the bytes were the transport's and by the
-    /// time the meter runs they are gone. One reading, carried forward, is what makes the money
-    /// side's figure and the relay's figure incapable of disagreeing.
-    pub carried: Completion,
+    /// It is an option and not a hollow value for a reason that is about readers: a caller that
+    /// reads a frame count of zero off an answer that has not been relayed yet has read a lie, and
+    /// there is no spelling of zero that says "not yet".
+    pub relayed: Option<Relayed>,
+}
+
+impl Delivered {
+    /// THE ANSWER'S HEAD, as the fee decision reads it — from TWO sources, one each.
+    ///
+    /// The transport's status class is this value's; the plane's finish is the relay's, read off
+    /// the plane's own decode of the frames that followed. That is what makes them independent and
+    /// it is the whole of why the kernel's dispute arm is reachable at all: a leg that derived the
+    /// finish from the status had two sources that were one source, and a mid-stream cut after a
+    /// good head billed the same fee a clean answer did and flagged nothing.
+    ///
+    /// `at` is the transport's own declaration of WHICH frame carries its status, and it is an
+    /// argument rather than a reading because this unit is handed a transport behind a port and the
+    /// composition root is the one place entitled to know which transport is under which plane.
+    #[must_use]
+    pub fn head(
+        &self,
+        at: Option<busbar_contract::StatusAt>,
+        relayed: &Relayed,
+    ) -> busbar_contract::StatusLeg {
+        busbar_contract::StatusLeg {
+            at,
+            status: self.status,
+            finish: relayed.finish,
+            // A frame reached the client. A status frame with an empty body counts, which is why
+            // this reads the relay's count and not the body's byte total.
+            delivered: relayed.frames > 0,
+            degraded: self.degraded,
+            relayed_error: self.relayed_error,
+        }
+    }
 }

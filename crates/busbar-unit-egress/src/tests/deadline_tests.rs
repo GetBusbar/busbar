@@ -214,10 +214,10 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         .script("a", drip(&node, 20, CEILING_MS / 4, false));
 
     let started = node.clock.now_millis();
-    let outcome = node.route("primary");
+    let (outcome, relayed) = node.route_and_drain("primary");
     let elapsed = node.clock.now_millis() - started;
 
-    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+    let crate::wire::RouteOutcome::Delivered(_) = &outcome else {
         panic!("the frames that did arrive are relayed, not shed: {outcome:?}");
     };
     assert_eq!(
@@ -226,11 +226,11 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
         "the send is cut at the ceiling, measured from the send start"
     );
     assert_eq!(
-        delivered.frames, 4,
+        relayed.frames, 4,
         "only the frames that fit inside the ceiling are relayed"
     );
     assert_eq!(
-        delivered.finish,
+        relayed.finish,
         Some(busbar_contract::FinishClass::Partial),
         "a cut answer is a partial one"
     );
@@ -245,13 +245,13 @@ fn a_streamed_answer_that_finishes_inside_the_ceiling_is_untouched() {
     node.transport
         .script("a", drip(&node, 3, CEILING_MS / 4, true));
 
-    let outcome = node.route("primary");
-    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+    let (outcome, relayed) = node.route_and_drain("primary");
+    let crate::wire::RouteOutcome::Delivered(_) = &outcome else {
         panic!("a whole answer is delivered: {outcome:?}");
     };
-    assert_eq!(delivered.frames, 3);
+    assert_eq!(relayed.frames, 3);
     assert_eq!(
-        delivered.finish,
+        relayed.finish,
         Some(busbar_contract::FinishClass::Complete),
         "the answer ended on its own terminal frame"
     );

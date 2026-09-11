@@ -44,7 +44,9 @@
 //! There is no per-dimension figure on the settlement evidence and no settlement that can answer
 //! with more than one line.
 
-use busbar_caps::{Completion, CompletedUnits, MeterClassId, Outcome, PostingFlags, QuantitySource};
+use busbar_caps::{
+    CompletedUnits, Completion, MeterClassId, Outcome, PostingFlags, QuantitySource,
+};
 use busbar_caps::{ReasonCode, StepName};
 use busbar_kernel::teller::{
     fee_count, settle_lines, Evidence, FeeEvidence, FinishClass, StatusAt, StatusClass, StatusLeg,

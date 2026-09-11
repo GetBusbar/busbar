@@ -1480,10 +1480,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         let progress = read_through_poison(&self.progress);
         Evidence {
-            located: progress.metered,
+            // ONE DECLARED CLASS, because this plane declares one: what an agent exchange spent is
+            // the size of the document it exchanged. The shape carries as many as a plane declares
+            // and no longer decides that a plane declares one.
+            completed: progress
+                .metered
+                .map(|units| crate::root::spent_in_one_class(CLASS_BYTES, units)),
             accrued_floor: self.draft.request_bytes,
             // Nothing is required of a card that does not price this class. With a card that does,
-            // the located figure is what settles and the floor is the tripwire beside it.
+            // the reported figure is what settles and the floor is the tripwire beside it.
             locator_required: false,
             terminal_error: matches!(self.draft.finish, FinishClass::Error),
             recovered: false,
@@ -1492,7 +1497,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: Some(CLASS_BYTES),
+            accrued_class: Some(CLASS_BYTES),
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),

@@ -66,13 +66,14 @@ pub mod select;
 pub mod walk;
 pub mod wire;
 
+pub use attempt::BodyPump;
 pub use pool::{
     Failover, Member, OnExhausted, Pool, PoolTable, DEFAULT_FAILOVER_CAP,
     DEFAULT_FAILOVER_DEADLINE_SECS,
 };
 pub use select::{RequestCtx, WeightedFloor};
 pub use walk::RouteRequest;
-pub use wire::{Delivered, RouteOutcome, Shed};
+pub use wire::{Delivered, Relayed, RouteOutcome, Routed, Shed};
 
 use busbar_caps::{Route, UnitToken};
 
@@ -104,7 +105,7 @@ pub trait Egress: sealed::Sealed {
         request: &'a RouteRequest<'a>,
         ctx: &'a mut RequestCtx,
         token: &'a UnitToken<Route>,
-    ) -> ports::BoxFut<'a, RouteOutcome>;
+    ) -> ports::BoxFut<'a, Routed<'a>>;
 }
 
 /// The egress unit.
@@ -140,7 +141,7 @@ impl Egress for EgressUnit {
         request: &'a RouteRequest<'a>,
         ctx: &'a mut RequestCtx,
         _token: &'a UnitToken<Route>,
-    ) -> ports::BoxFut<'a, RouteOutcome> {
+    ) -> ports::BoxFut<'a, Routed<'a>> {
         // `request.token` (not `_token`) is what actually reaches every `Breaker::observe` call
         // through `Hop`/`RouteRequest` — see those types' own doc comments. `route`'s own token
         // parameter is the step-shaped seal every unit trait in the design carries; the caller

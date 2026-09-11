@@ -1522,28 +1522,31 @@ impl Units for LlmUnit<'_> {
     fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
-            // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
-            // zero. The reason is no longer the one this comment used to give. It used to say the
-            // figure arrived after the unit ended — the tap fills its cell when the response body
-            // is consumed — and that stopped being true when the routed body became a handle the
-            // unit HOLDS: a completed body's count is on the record at `completion()`, readable at
-            // the Meter step and at this one, which is the whole point of the hold.
+            // WHAT THIS UNIT SPENT IS READ OFF THE RECORD, and on this leg the record is carrying
+            // nothing — so the settlement table posts zero, exactly as it did when this field was
+            // one quantity against one class.
             //
-            // What blocks it now is a shape, and it is measured rather than assumed: `Evidence`
-            // carries ONE located quantity against ONE class, and what a unit on this plane spent
-            // is FOUR declared dimensions priced against the card it was admitted under. There is
-            // no single class this figure could honestly be reported in, and reporting the
-            // answer's byte count in place of it would settle bytes as money. So it stays `None`
-            // until the fee and the quantity move onto the kernel's own reading together, which is
-            // a cutover that moves money and is gated on the byte-identity cell that precedes it.
-            // A floor invented in its place would be a number the books could not defend.
+            // The shape is no longer the reason. `Evidence` used to carry ONE located figure
+            // against ONE class, and what a unit on this plane spends is FOUR declared dimensions;
+            // there was no single class the figure could honestly be reported in, and reporting the
+            // answer's byte count in its place would have settled bytes as money. That is fixed:
+            // this field is the plane's own declared dimensions, as many as it declares, and the
+            // exit settles one line per key.
+            //
+            // What is left is the SERVED PATH. This plane's leg still walks its own engine rather
+            // than the egress unit, so nothing fills the record's completion for it and the
+            // dimensions never arrive. Moving the leg onto the served walk is where the four
+            // numbers start arriving and it is a cutover that moves money — gated on the
+            // byte-identity proof over this plane's 103 recorded money cells, which is the cell
+            // beside this landing. A floor invented in the meantime would be a number the books
+            // could not defend.
             //
             // This is what keeps the root's ledger empty for this plane. A settlement of zero is not
             // a row, so the totals view answers over nothing and the identity holds vacuously; the
             // exit arm below is bound and does reach the book, and what it carries is the kernel's
             // record that a unit ran and ended. Carrying the money as well needs the settlement to
             // happen where the figure is, which is past this unit's terminal.
-            located: None,
+            completed: ctx.completion().cloned(),
             accrued_floor: self.meter.total(),
             locator_required: false,
             terminal_error: status.is_some_and(|s| !(200..300).contains(&s)),
@@ -1553,7 +1556,7 @@ impl Units for LlmUnit<'_> {
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: None,
+            accrued_class: None,
             // A verified set with an upstream in it is what makes a client unit draw a request slot,
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),

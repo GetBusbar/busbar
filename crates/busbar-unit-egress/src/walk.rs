@@ -31,7 +31,7 @@ use crate::exhaustion::handle_exhaustion_for_pool;
 use crate::pool::{Member, PoolTable};
 use crate::ports::{Breaker, Capacity, Clock, Disposition, EgressAuth, Journal, Telemetry};
 use crate::select::{pick_among, PickInput, Preference, RequestCtx, WeightedFloor};
-use crate::wire::{RouteOutcome, Shed};
+use crate::wire::{RouteOutcome, Routed, Shed};
 
 /// Everything one route reads. Borrowed for the length of the walk and never mutated by it — the
 /// mutable state of a request is the [`RequestCtx`], which is passed separately for exactly that
@@ -110,9 +110,9 @@ impl<'a> RouteRequest<'a> {
 }
 
 /// Walk one pool's verified set.
-pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutcome {
+pub async fn walk<'a>(request: &'a RouteRequest<'a>, ctx: &mut RequestCtx) -> Routed<'a> {
     let Some(pool) = request.pools.get(request.pool) else {
-        return RouteOutcome::Refused(Shed::empty_pool());
+        return Routed::refused(Shed::empty_pool());
     };
     // The blocklist is applied once, here, before anything reads the membership — so a blocklisted
     // member is unreachable by the walk, by the least-bad terminal, and by the retry hint alike.
@@ -126,7 +126,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
     for attempt_no in 0..=max_hops {
         let now = request.clock.now_secs();
         if ctx.expired(now) {
-            return RouteOutcome::Refused(Shed::request_timeout());
+            return Routed::refused(Shed::request_timeout());
         }
 
         let pick = pick_among(
@@ -145,7 +145,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
         );
         let Some(mut pick) = pick else {
             if members.is_empty() {
-                return RouteOutcome::Refused(Shed::empty_pool());
+                return Routed::refused(Shed::empty_pool());
             }
             // Nowhere to send this hop — whether the members were suppressed before this request
             // arrived or burned through by its own earlier hops. The pool's terminal decides what
@@ -157,11 +157,11 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
             .iter()
             .position(|m| m.destination == pick.destination)
         else {
-            return RouteOutcome::Refused(Shed::internal());
+            return Routed::refused(Shed::internal());
         };
         let member = &members[position];
         let Some(dest) = request.destination(pick.destination) else {
-            return RouteOutcome::Refused(Shed::internal());
+            return Routed::refused(Shed::internal());
         };
 
         // Mark this member as tried before the attempt runs, so a failure never re-offers it.
@@ -171,7 +171,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
         // records an outcome for it. Every shed above this line dropped the pick and gave it back.
         let probe_epoch = pick.take_probe_epoch();
         let metric_pool = request.metric_pool(&pool.name, member);
-        let outcome = attempt(AttemptInput {
+        let (outcome, pump) = attempt(AttemptInput {
             hop: Hop {
                 breaker: request.breaker,
                 token: request.token,
@@ -196,19 +196,24 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 lane_field: request.lane_field,
                 stream: request.stream,
                 degraded: false,
+                unit: request.unit,
+                ctx: request.ctx,
             },
             permit: pick.permit,
             probe_epoch,
-            unit: request.unit,
-            ctx: request.ctx,
         })
         .await;
 
         match outcome {
             // A delivered answer — including a relayed client fault — ends the walk. This is the
             // before-first-byte boundary: the client has the answer, so there is no failing over.
-            AttemptOutcome::Delivered(delivered) => return RouteOutcome::Delivered(delivered),
-            AttemptOutcome::Bail(shed) => return RouteOutcome::Refused(shed),
+            AttemptOutcome::Delivered(delivered) => {
+                return Routed {
+                    outcome: RouteOutcome::Delivered(delivered),
+                    pump,
+                }
+            }
+            AttemptOutcome::Bail(shed) => return Routed::refused(shed),
             AttemptOutcome::Failed {
                 disposition,
                 err_type,

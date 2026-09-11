@@ -26,12 +26,25 @@ static UPSTREAMS: &[Upstream] = &[
     },
 ];
 
+/// WHAT THE SETTLEMENT TABLE COMES TO, as one figure: the sum of the lines it answered with.
+///
+/// The table posts one line per dimension the plane declared, so "what did this settle at" is an
+/// addition rather than a field read. Over this plane's one reported dimension it is that
+/// dimension, which is why every row below reads as it always did.
+fn settled(end: &Outcome, evidence: &busbar_kernel::teller::Evidence) -> u64 {
+    busbar_kernel::teller::settle_lines(end, evidence)
+        .0
+        .iter()
+        .fold(0_u64, |acc, line| acc.saturating_add(line.quantity))
+}
+
 /// THE CLASS THE ROOT NAMES IS THE CLASS THE PLANE DECLARES, at every site that names it.
 ///
 /// The label selects the unit price, so a turn admitted against one spelling and settled under
 /// another is money on a rate card where the two rates differ — and a wire string re-spelled in
 /// the root is a rename in the plane that leaves the root pricing under a class nobody declares.
 /// The plane's declaration is the one source, and every reading below comes from it.
+
 #[test]
 fn the_emitted_audio_class_is_the_one_the_plane_declares() {
     let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
@@ -1442,7 +1455,6 @@ fn a_three_turn_session_pays_one_flat_fee() {
 #[test]
 fn a_text_only_turn_settles_the_text_it_metered() {
     crate::open_record!(unit_record, &ctx(1));
-    use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
     let usage = TurnUsage {
@@ -1455,12 +1467,15 @@ fn a_text_only_turn_settles_the_text_it_metered() {
         .reporting(usage);
     let evidence = unit.evidence(&unit_record);
     assert_eq!(
-        evidence.located,
+        evidence
+            .completed
+            .as_ref()
+            .map(|c| c.dimensions().iter().map(|d| d.units).sum::<u64>()),
         Some(100),
-        "the located figure is every class the turn metered"
+        "the reported figure is every class the turn metered"
     );
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence).0,
+        settled(&Outcome::Completed, &evidence),
         usage.total(),
         "a completed turn posts what it metered, not what it drew the lease at"
     );
@@ -1566,7 +1581,6 @@ fn a_paid_turns_record_names_its_principal() {
 #[test]
 fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
     crate::open_record!(unit_record, &ctx(1));
-    use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
     let kernel = Kernel::new();
@@ -1584,7 +1598,9 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
         evidence.accrued_floor, 3,
         "2_500 ms is three seconds of billable audio, not 2_500 of anything"
     );
-    let class = evidence.class.expect("the plane still declares the class");
+    let class = evidence
+        .accrued_class
+        .expect("the plane still declares the class");
     assert_ne!(
         class,
         meta::CLASS_AUDIO_TOKENS_OUT,
@@ -1597,13 +1613,13 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
                 && decl.direction == busbar_contract::ids::ClassDirection::Input),
         "and the class it is counted under is one the plane declares, on the inbound side"
     );
-    // The floor row: a live end that is not a completion with nothing located posts the floor.
+    // The floor row: a live end that is not a completion with nothing reported posts the floor.
     let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
     let floor_only = Evidence {
-        located: None,
+        completed: None,
         ..evidence
     };
-    assert_eq!(settle_amount(&end, &floor_only).0, 3);
+    assert_eq!(settled(&end, &floor_only), 3);
 }
 
 /// A STREAM THAT ENDED ON AN ERROR BILLS NOTHING, even with a figure located.
@@ -1617,7 +1633,6 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
 #[test]
 fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
     crate::open_record!(unit_record, &ctx(1));
-    use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
@@ -1636,10 +1651,17 @@ fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
         evidence.terminal_error,
         "the plane sealed an error ending and the evidence says so"
     );
-    assert_eq!(evidence.located, Some(120), "the figure is still located");
+    assert_eq!(
+        evidence
+            .completed
+            .as_ref()
+            .map(|c| c.dimensions().iter().map(|d| d.units).sum::<u64>()),
+        Some(120),
+        "the figure is still reported"
+    );
     let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
     assert_eq!(
-        settle_amount(&end, &evidence).0,
+        settled(&end, &evidence),
         0,
         "and an errored stream posts nothing against it"
     );

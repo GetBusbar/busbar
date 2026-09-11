@@ -27,7 +27,7 @@ use crate::pool::{Member, Pool, PoolTable};
 use crate::ports::Clock;
 use crate::ports::DestinationId;
 use crate::select::{RequestCtx, WeightedFloor};
-use crate::wire::RouteOutcome;
+use crate::wire::{Relayed, RouteOutcome};
 
 pub(crate) use harness::*;
 
@@ -94,10 +94,49 @@ impl Node {
         self
     }
 
-    /// Walk one pool and answer with what came back.
+    /// Walk one pool, drive the relay the walk hands back, and answer with what came back.
+    ///
+    /// The two halves in one call, because the ROOT is what drives the pump and almost every cell
+    /// below is about what the whole answer was rather than about the instant between the two.
+    /// The cells that are about that instant call [`route_head_and_pump`](Node::route_head_and_pump).
     pub fn route(&self, pool: &str) -> RouteOutcome {
+        self.route_and_drain(pool).0
+    }
+
+    /// Walk one pool and answer with the head AND what the relay made of the body.
+    pub fn route_and_drain(&self, pool: &str) -> (RouteOutcome, Relayed) {
         let mut ctx = self.request_ctx();
-        self.route_with(pool, &mut ctx)
+        self.with_request(pool, |request| {
+            crate::race::block_on(async {
+                let routed = crate::walk::walk(request, &mut ctx).await;
+                // Where the answer was over before it got here the relay's reading came with it;
+                // where a stream is still arriving the root drives the pump, which is this line.
+                let relayed = match routed.pump {
+                    Some(pump) => pump.drain().await,
+                    None => match &routed.outcome {
+                        RouteOutcome::Delivered(delivered) => {
+                            delivered.relayed.clone().unwrap_or_default()
+                        }
+                        RouteOutcome::Refused(_) => Relayed::default(),
+                    },
+                };
+                (routed.outcome, relayed)
+            })
+        })
+    }
+
+    /// Walk one pool and hand the caller the head and the UNRUN relay, at the instant the walk
+    /// returns and before anything has drained the body.
+    pub fn route_head_and_pump<R>(
+        &self,
+        pool: &str,
+        f: impl for<'a> FnOnce(RouteOutcome, Option<crate::attempt::BodyPump<'a>>) -> R,
+    ) -> R {
+        let mut ctx = self.request_ctx();
+        self.with_request(pool, |request| {
+            let routed = crate::race::block_on(crate::walk::walk(request, &mut ctx));
+            f(routed.outcome, routed.pump)
+        })
     }
 
     /// A fresh request context on this node's clock.
@@ -112,7 +151,13 @@ impl Node {
     /// Walk one pool with a context the caller keeps, so a test can read what was excluded.
     pub fn route_with(&self, pool: &str, ctx: &mut RequestCtx) -> RouteOutcome {
         self.with_request(pool, |request| {
-            crate::race::block_on(crate::walk::walk(request, ctx))
+            crate::race::block_on(async {
+                let routed = crate::walk::walk(request, ctx).await;
+                if let Some(pump) = routed.pump {
+                    let _ = pump.drain().await;
+                }
+                routed.outcome
+            })
         })
     }
 
@@ -137,7 +182,7 @@ impl Node {
     fn with_request<R>(
         &self,
         pool: &str,
-        f: impl FnOnce(&crate::walk::RouteRequest<'_>) -> R,
+        f: impl for<'a> FnOnce(&'a crate::walk::RouteRequest<'a>) -> R,
     ) -> R {
         let plane_ctx = PlaneContext::new();
         let unit = test_unit();

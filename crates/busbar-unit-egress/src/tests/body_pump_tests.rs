@@ -87,24 +87,25 @@ fn the_walk_returns_undrained_and_the_completion_is_still_whole() {
         let RouteOutcome::Delivered(delivered) = &outcome else {
             panic!("the answer is delivered: {outcome:?}");
         };
-        assert_eq!(
-            delivered.carried.bytes(),
-            0,
-            "THE WALK HAS RETURNED AND NOTHING HAS BEEN RELAYED YET. A count here would mean the \
-             walk had drained the body before answering, which is the shape this cell replaced"
+        assert!(
+            delivered.relayed.is_none(),
+            "THE WALK HAS RETURNED AND NOTHING HAS BEEN RELAYED YET. A reading here would mean the \
+             walk had drained the body before answering, which is the shape this cell replaced — \
+             and it is absent rather than zero, because there is no spelling of zero that says \
+             \"not yet\""
         );
-        assert_eq!(delivered.carried.frames(), 0);
         let lease = delivered.body;
 
         let pump = pump.expect("a delivered answer leaves a relay behind it for the root to drive");
-        let carried = crate::race::block_on(pump.drain());
+        let relayed = crate::race::block_on(pump.drain());
 
         assert_eq!(
-            carried.bytes(),
+            relayed.carried.bytes(),
             total,
             "and once the root has driven the pump, every byte the relay saw is counted"
         );
-        assert_eq!(carried.frames(), frames as u64);
+        assert_eq!(relayed.carried.frames(), frames as u64);
+        assert_eq!(relayed.frames, frames);
         assert_eq!(
             lease.get(),
             0,
@@ -136,8 +137,9 @@ fn the_plane_fills_every_dimension_it_declared() {
         ]),
     );
 
-    let carried = node.route_and_drain("primary").1;
-    let seen: Vec<(MeterClassId, u64)> = carried
+    let relayed = node.route_and_drain("primary").1;
+    let seen: Vec<(MeterClassId, u64)> = relayed
+        .carried
         .dimensions()
         .iter()
         .map(|d| (d.class, d.units))
@@ -172,10 +174,11 @@ fn a_plane_that_reads_one_dimension_short_reaches_the_meter_short() {
         ]),
     );
 
-    let carried = node.route_and_drain("primary").1;
-    assert_eq!(carried.dimensions().len(), 3);
+    let relayed = node.route_and_drain("primary").1;
+    assert_eq!(relayed.carried.dimensions().len(), 3);
     assert!(
-        carried
+        relayed
+            .carried
             .dimensions()
             .iter()
             .all(|d| d.class != MeterClassId::new("cache_read")),
@@ -194,8 +197,8 @@ fn a_plane_that_declares_no_dimensions_reports_none() {
     node.pool("primary", vec![member(DestinationId::new(0), "a")]);
     node.transport
         .script("a", Script::Frames(vec![frame(None, "end")]));
-    let carried = node.route_and_drain("primary").1;
-    assert!(carried.dimensions().is_empty());
+    let relayed = node.route_and_drain("primary").1;
+    assert!(relayed.carried.dimensions().is_empty());
 }
 
 /// THE SECOND SOURCE IS REAL: a mid-stream cut has a SUCCESS status and an ERROR finish.
@@ -220,11 +223,11 @@ fn a_mid_stream_cut_gives_the_head_two_sources_that_disagree() {
         ]),
     );
 
-    let (outcome, _) = node.route_and_drain("primary");
+    let (outcome, relayed) = node.route_and_drain("primary");
     let RouteOutcome::Delivered(delivered) = &outcome else {
         panic!("the client saw the answer start: {outcome:?}");
     };
-    let head = delivered.head(Some(StatusAt::FirstFrame));
+    let head = delivered.head(Some(StatusAt::FirstFrame), &relayed);
     assert_eq!(
         head.status,
         Some(StatusClass::Success),
@@ -257,11 +260,11 @@ fn a_whole_answer_gives_the_head_two_sources_that_agree() {
             frame(None, "end"),
         ]),
     );
-    let (outcome, _) = node.route_and_drain("primary");
+    let (outcome, relayed) = node.route_and_drain("primary");
     let RouteOutcome::Delivered(delivered) = &outcome else {
         panic!("delivered: {outcome:?}");
     };
-    let head = delivered.head(Some(StatusAt::FirstFrame));
+    let head = delivered.head(Some(StatusAt::FirstFrame), &relayed);
     assert_eq!(head.status, Some(StatusClass::Success));
     assert_eq!(head.finish, Some(FinishClass::Complete));
 }

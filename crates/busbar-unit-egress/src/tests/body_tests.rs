@@ -51,25 +51,26 @@ fn the_relay_counts_a_body_the_unit_could_never_have_held() {
         ),
     );
 
-    let outcome = node.route("primary");
+    let (outcome, relayed) = node.route_and_drain("primary");
     let RouteOutcome::Delivered(delivered) = &outcome else {
         panic!("the answer is delivered: {outcome:?}");
     };
 
     assert_eq!(
-        delivered.carried.bytes(),
+        relayed.carried.bytes(),
         total,
         "every byte the relay saw go past is counted, and none of them is kept"
     );
     assert_eq!(
-        delivered.carried.frames(),
-        delivered.frames as u64,
+        relayed.carried.frames(),
+        relayed.frames as u64,
         "the completion's frame count is the relay's own, not a second reading"
     );
     assert!(
-        delivered.carried.dimensions().is_empty(),
-        "a per-class dimension is the plane's declared locator over a decoded answer, and this \
-         unit decodes none: it hands each frame to the plane's codec and counts"
+        relayed.carried.dimensions().is_empty(),
+        "a per-class dimension is the PLANE's declared locator over the plane's own decoded \
+         answer, and this plane declares none: the unit hands each frame to the codec, counts, and \
+         asks the plane what the answer was worth"
     );
     assert_eq!(
         delivered.body.get(),

@@ -1008,11 +1008,23 @@ pub struct TestPlane {
     /// The envelope field the lane name goes in, where the test wants one written.
     pub lane_field: Mutex<Option<String>>,
     pub decoded: Mutex<usize>,
+    /// What this plane's declared locators read off a decoded answer, as the test sets it.
+    ///
+    /// Data rather than a second fixture, because "how many dimensions does the plane read" is the
+    /// only thing the dimension cells vary and everything else about the plane is the same either
+    /// way. Empty is the honest answer for a plane that declares no meter class at all, which is
+    /// what the control plane does.
+    pub usage: Mutex<Vec<(busbar_contract::MeterClassId, u64)>>,
 }
 
 impl TestPlane {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// What this plane reads off every decoded answer from here on.
+    pub fn report_usage(&self, lines: Vec<(busbar_contract::MeterClassId, u64)>) {
+        *self.usage.lock().unwrap_or_else(|e| e.into_inner()) = lines;
     }
 }
 
@@ -1106,10 +1118,15 @@ impl busbar_contract::Plane for TestPlane {
         };
         let response = busbar_contract::Response {
             ir: Ir::new(&[], &[]),
-            finish: if frame.bytes.as_slice() == b"end" {
-                busbar_contract::FinishClass::Complete
-            } else {
-                busbar_contract::FinishClass::Partial
+            // Three endings, and the third is the one the fee decision's second source exists for:
+            // a frame this plane reads as its dialect's own ERROR ENVELOPE, arriving after a head
+            // the transport already read as a success. That is what a real upstream sends when it
+            // gives up half way through a stream it has already committed to, and it is the only
+            // shape in which the plane's finish can disagree with the transport's status.
+            finish: match frame.bytes.as_slice() {
+                b"end" => busbar_contract::FinishClass::Complete,
+                b"cut" => busbar_contract::FinishClass::Error,
+                _ => busbar_contract::FinishClass::Partial,
             },
             facts: busbar_contract::Facts::new(),
         };
@@ -1185,7 +1202,22 @@ impl busbar_contract::Plane for TestPlane {
         _r: &busbar_contract::Response<'u>,
         _ctx: &Ctx<'u>,
     ) -> UsageLocators {
-        UsageLocators::default()
+        let mut locators = UsageLocators::default();
+        for (class, quantity) in self
+            .usage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+        {
+            let _ = locators.lines.push(busbar_contract::unit::UsageLocator {
+                class,
+                location: None,
+                quantity: Some(quantity),
+                lane: None,
+            });
+        }
+        locators
     }
 
     fn audit<'u>(&self, _u: &Unit<'u>, _out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {

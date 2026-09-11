@@ -1359,15 +1359,20 @@ impl Ended<'_> {
 
 /// The evidence one ended unit settles against.
 ///
-/// The class is the byte-shaped one: the floor and the located figure are both readings of the
+/// The class is the byte-shaped one: the floor and the reported figure are both readings of the
 /// document, and the call-shaped line is a flat count rather than what the amount is denominated in.
 #[must_use]
 pub fn evidence(ended: &Ended<'_>) -> Evidence {
     Evidence {
-        located: ended.metered,
+        // ONE DECLARED CLASS, because this plane's answer IS its document and what it spent is the
+        // size of it. A plane that declares more reports more; what the shape no longer does is
+        // decide for it.
+        completed: ended
+            .metered
+            .map(|units| crate::root::spent_in_one_class(CLASS_BYTES, units)),
         accrued_floor: ended.request_bytes,
         // Nothing is required of a card that does not price this class. With a card that does, the
-        // located figure is what settles and the floor is the tripwire beside it.
+        // reported figure is what settles and the floor is the tripwire beside it.
         locator_required: false,
         terminal_error: matches!(ended.finish, busbar_contract::unit::FinishClass::Error),
         recovered: false,
@@ -1376,7 +1381,7 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
         variance: None,
         lane_mismatch: None,
         settle_record_lost: false,
-        class: Some(CLASS_BYTES),
+        accrued_class: Some(CLASS_BYTES),
         // The fee's upstream rule and the request slot's are the same rule, read from the same fact.
         upstream_candidate: ended.shape.hops_upstream,
         fee: fee_identity(ended.shape, ended.origin),
