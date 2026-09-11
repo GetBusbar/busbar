@@ -4280,6 +4280,16 @@ drain   = "none while the loader and the plugin tooling are outside the kind sys
 
 [[dep]]
 from    = "busbar-plugin-sdk"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base. ARCHITECTURE.md 1.2 manifest allow-list names busbar-contract as the ONE crate a plugin of any kind may depend on, so this is the allowed edge rather than an excused one."
+why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The plugin structured-error seam: the SDK carries `busbar_contract::error::PluginError` and the catalog shape across the cdylib boundary for every kind, and names the contract's error module and nothing else of it — no face type, no reference type, so no kind vocabulary rides with the edge. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number. This is the edge `busbar-plugin-sdk -> busbar-api` retires onto."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
 to      = "busbar-api"
 half    = "shipped"
 count   = "1"

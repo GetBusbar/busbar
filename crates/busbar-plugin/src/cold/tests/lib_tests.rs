@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-abi/src/lib.rs`.
 
 use super::*;
-use busbar_api::{AuditRecord, ScopeRef, VirtualKey};
+use busbar_api::{AuditRecord, ScopeRef, SecretErrorKind, VirtualKey};
 
 /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
 /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
@@ -231,4 +231,94 @@ fn abi_version_is_four() {
 #[test]
 fn auth_abi_version_is_two() {
     assert_eq!(AUTH_ABI_VERSION, 2);
+}
+
+// ── the structured error crosses the ABI beside the frozen pair ────────────────────────────────
+
+/// THE FROZEN ENVELOPE IS BYTE-IDENTICAL WHEN THE STRUCTURED ERROR IS ABSENT.
+///
+/// `SecretResponse::Error` grew a third field on airlock minor 21. That is only additive if a
+/// plugin built before it existed produces the SAME BYTES it always did — an installed third-party
+/// `kind: secret` cdylib does not get recompiled because this workspace grew a field. `default` is
+/// what lets an old plugin's two-key document still PARSE here; `skip_serializing_if` is what keeps
+/// this side's two-key document byte-identical on the way out. This cell is the second half, which
+/// is the half a type system cannot state.
+#[test]
+fn the_frozen_secret_error_envelope_is_byte_identical_without_the_structured_error() {
+    let envelope = serde_json::to_string(&SecretResponse::Error {
+        kind: SecretErrorKind::NotFound,
+        message: "no such key".to_string(),
+        error: None,
+    })
+    .expect("envelope serialises");
+    assert_eq!(
+        envelope, r#"{"Error":{"kind":"not_found","message":"no such key"}}"#,
+        "the 1.5.5 envelope's bytes moved: an installed plugin's response is no longer what the \
+         host reads"
+    );
+}
+
+/// And a two-key document from a plugin that predates the field still reads, with `None` for what
+/// it never sent. The other direction of the same claim.
+#[test]
+fn an_older_plugins_two_key_envelope_still_reads() {
+    let read: SecretResponse =
+        serde_json::from_str(r#"{"Error":{"kind":"unavailable","message":"backend down"}}"#)
+            .expect("an envelope from a plugin that predates the field still parses");
+    match read {
+        SecretResponse::Error {
+            kind,
+            message,
+            error,
+        } => {
+            assert_eq!(kind, SecretErrorKind::Unavailable);
+            assert_eq!(message, "backend down");
+            assert!(
+                error.is_none(),
+                "a field a plugin never sent is absent, not invented"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// The structured error rides as the contract's own JSON and nothing else: the wire names no shape
+/// of its own, so there is one definition of what a failure looks like.
+#[test]
+fn the_structured_error_rides_as_the_contracts_own_json() {
+    let structured = serde_json::json!({
+        "class": "not_found",
+        "code": "vault.no_entry",
+        "params": [{ "key": "key", "value": "db-password" }],
+        "developer_message": "no entry for db-password",
+        "advisory": {},
+    });
+    let envelope = serde_json::to_string(&SecretResponse::Error {
+        kind: SecretErrorKind::NotFound,
+        message: "no entry for db-password".to_string(),
+        error: Some(structured.clone()),
+    })
+    .expect("envelope serialises");
+    let read: serde_json::Value = serde_json::from_str(&envelope).expect("valid json");
+    assert_eq!(
+        read["Error"]["error"], structured,
+        "the structured error crosses the boundary verbatim"
+    );
+    assert_eq!(
+        read["Error"]["kind"], "not_found",
+        "and the frozen token is still beside it for a host that reads only that"
+    );
+}
+
+/// The optional catalog symbol is spelled `busbar_catalog`, NUL-terminated like every other, and
+/// carries no kind in its name — a plugin of any kind exports the same symbol.
+#[test]
+fn the_catalog_symbol_is_one_kind_neutral_nul_terminated_name() {
+    assert_eq!(symbol::CATALOG, b"busbar_catalog\0");
+    for kind in ["secret", "store", "hook", "export", "auth"] {
+        assert!(
+            !String::from_utf8_lossy(symbol::CATALOG).contains(kind),
+            "the catalog symbol names a kind"
+        );
+    }
 }

@@ -181,7 +181,25 @@ pub mod symbol {
     /// `busbar_set_log_sink(sink, ctx)` — OPTIONAL, the only symbol here that is. See
     /// [`super::SetLogSinkFn`] for why its absence is not an error and not a transport bump.
     pub const SET_LOG_SINK: &[u8] = b"busbar_set_log_sink\0";
+    /// `busbar_catalog(out_len) -> *const u8` — OPTIONAL. The plugin's ERROR CATALOG, as the
+    /// UTF-8 JSON of `busbar_contract::error::Catalog`, in `'static` bytes the plugin owns (the
+    /// host never frees them). Read ONCE at load, never on a call: a host renders a plugin's
+    /// error code by reading this table, not by asking the plugin. A plugin that does not export
+    /// it emits only the wire's own `wire.*` codes, which the host's own catalog declares.
+    pub const CATALOG: &[u8] = b"busbar_catalog\0";
 }
+
+/// `busbar_catalog` — the optional catalog symbol (see [`symbol::CATALOG`]). Writes the byte
+/// length through `out_len` and returns a pointer to `'static` UTF-8 JSON, or null for none.
+pub type CatalogFn = unsafe extern "C-unwind" fn(out_len: *mut usize) -> *const u8;
+
+/// THE STRUCTURED ERROR ON THE WIRE: the JSON of `busbar_contract::error::PluginError`
+/// (`{ class, code, params, developer_message, advisory }`), carried as an opaque document so
+/// this crate names no contract type and the shape has exactly ONE definition — the contract's.
+/// It rides beside a kind's frozen typed error slot where one exists ([`SecretResponse::Error`]),
+/// and as the whole `STATUS_ERR` body otherwise; a host that predates it reads that body as the
+/// UTF-8 message it always was.
+pub type WireError = serde_json::Value;
 
 /// Severity for a record crossing [`LogSinkFn`]. Deliberately a plain `u32` rather than a Rust enum:
 /// this crosses a C boundary between two independently-compiled objects, so it has to be a value
@@ -621,6 +639,11 @@ pub enum SecretResponse {
     Error {
         kind: busbar_api::SecretErrorKind,
         message: String,
+        /// ADDITIVE (1.6.0, airlock minor 21): the structured error beside the frozen pair. A
+        /// plugin that predates it never sends it and a host that predates it never reads it;
+        /// `skip_serializing_if` keeps the frozen envelope byte-identical when it is absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<WireError>,
     },
 }
 

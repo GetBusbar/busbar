@@ -72,7 +72,11 @@ pub const ABI_MAJOR: u32 = 1;
 ///
 /// 19→20 (1.6.0 M1): the append-only `hot::Usage` keyed-unit tail (`units_ptr`/`units_len`), paired
 /// with `POD_VERSION` 2→3. `check_preamble` still accepts an older minor (append-only compatibility).
-pub const ABI_MINOR: u32 = 20;
+///
+/// 20→21 (1.6.0 structured error seam): the append-only `error` field on the cold lane's
+/// `SecretResponse::Error` and the optional `busbar_catalog` symbol. Neither is read by an older
+/// peer; `check_preamble` still accepts an older minor.
+pub const ABI_MINOR: u32 = 21;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
