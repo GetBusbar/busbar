@@ -1285,6 +1285,21 @@ EOF
 # The families a sweep's lines ask the oracle for — the set a base replay has to measure, and no
 # more: a replay of every family would cost the box a full recording to answer a question nobody
 # in this sweep asked.
+# AN ORACLE RED AT A TIP NOBODY MEASURED IS NOT EVIDENCE ABOUT THE LINE. lq_line_red_is_base_oracle
+# can only say "these rows are the base's" when the base HAS been measured; at an unmeasured tip it
+# says nothing and the red used to fall straight through to a #RED park — a line parked for three
+# hours with no evidence about itself, which is exactly what the owner rule forbids. MEASURED 09-11:
+# the sweep took every box, the base replay got none, and a line parked #RED on rows nobody had
+# measured at the tip. So: an oracle red at an unmeasured tip is NONE:base-unmeasured, the line goes
+# back live and to the FRONT of the next sweep, and the tip is measured before it is judged again.
+lq_red_is_unmeasured_oracle() { # $1 = tip, $2 = log; 0 when the red is the ORACLE's at a tip nobody measured
+  local tip="${1:-}" lg="${2:-}"
+  [ -n "$lg" ] && [ -f "$lg" ] || return 1
+  lq_oracle_leg_ran "$lg" || return 1
+  [ -n "$(lq_oracle_fail_rows "$lg")" ] || return 1
+  lq_base_red_known "$tip" && return 1
+  return 0
+}
 lq_line_families() { # $1 = queue line; prints its --families value, unquoted
   local l="${1:-}" v
   v="$(printf '%s' "$l" | sed -n "s/.*--families[[:space:]]*'\([^']*\)'.*/\1/p" | head -1)"
@@ -1296,15 +1311,27 @@ lq_line_families() { # $1 = queue line; prints its --families value, unquoted
 # HASHES, which land.sh accepts (a line with no hashes AND no --prove is the one it refuses) and
 # which proves exactly the tree the sweep's lines are being judged against. It takes its box AFTER
 # every line in the sweep has one, so measuring the base never costs a line its proof.
-lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4 = the sweep's lines, $5 = hosts already taken
-  local tree="$1" dir="$2" key="$3" taken="$5" fams h=""
+# THE BASE REPLAY'S BOX IS RESERVED BEFORE THE LINES ARE DISPATCHED, NOT PICKED UP AFTER THEM.
+# MEASURED 09-11: "base state: no free box for the base replay at <tip> — the tip stays unmeasured,
+# and an oracle red stays RED". The sweep had taken every box, so the batch's oracle red could not
+# be judged against the base and a line was parked #RED with NO EVIDENCE about itself. The replay is
+# not a luxury the sweep spends its leftovers on — it is what makes every other verdict in the sweep
+# readable — so it takes its slot first, and the lines share what is left.
+lq_base_replay_reserve() { # $1 = tip key, $2 = the sweep's lines; prints the reserved host, or nothing
+  local key="$1" fams
+  [ "${LANDQ_BASE_REPLAY:-1}" = 1 ] || return 1
+  lq_base_red_known "$key" && return 1
+  fams="$(printf '%s\n' "$2" | lq_families_union)"
+  [ -n "$fams" ] || return 1
+  local h; h="$( fleet_pick_host )" || h=""
+  [ -n "$h" ] || return 1
+  printf '%s\n' "$h"
+}
+lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4 = the sweep's lines, $5 = the RESERVED host
+  local tree="$1" dir="$2" key="$3" h="$5" fams
   fams="$(printf '%s\n' "$4" | lq_families_union)"
   [ -n "$fams" ] || { lq_log "base state: no line in this sweep asks the oracle for a family; there is nothing to measure at $(printf '%.9s' "$key")"; return 1; }
-  # AFTER EVERY LINE HAS ITS BOX: the lines it must not take are named to the allocator, which is
-  # the same one ask the lines themselves make of the sweep's probe table.
-  # shellcheck disable=SC2086
-  h="$( fleet_pick_host $taken )" || h=""
-  [ -n "$h" ] || { lq_log "base state: no free box for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red stays RED"; return 1; }
+  [ -n "$h" ] || { lq_log "base state: no box was reserved for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red is NONE:base-unmeasured, never a park"; return 1; }
   printf -- '--prove --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
   lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams"
   (
@@ -2098,11 +2125,40 @@ lq_chain_root_red() { # $1 = root payload, $2 = tip key, $3 = ledger (default $P
 # the moment a slot's verdict is in it asks whether that verdict emptied a chain. Everything else is
 # unchanged: it ends when every slot has reported or been mooted, and `wait` still reaps the
 # children so nothing is left running behind the sweep.
-lq_sweep_watch() { # $1 = sweep dir, $2 = slot count, $3 = tip key, $4 = tree (default $W)
-  local dir="$1" n="${2:-0}" key="${3:-}" tree="${4:-$W}" j fin rootl mooted mm
+# A PREDICTION THE BATCH HAS ALREADY KILLED. The overlapped sweep is keyed at <tip + the in-flight
+# batch's picks>; if that batch comes back with any row that is not GREEN, the tree the sweep is
+# proving against will NEVER EXIST — the picks go back out, the tip does not move, and every row the
+# sweep is about to write is a row about nothing. MEASURED 13:13 on 09-11: a batch read RED and ten
+# pre-proofs kept running for the better part of an hour against the dead prediction, holding ten
+# boxes the next sweep then could not have.
+#
+# The moot-cancel already exists for a chain whose ROOT was proven red (lq_moot_deeper); this is the
+# same fact one level up, and it fires the same way — the proofs are cancelled ON THE FLEET, the
+# slots are marked moot, and the next loop re-dispatches at the tip that really is.
+lq_prediction_dead() { # $1 = the in-flight batch file; 0 when its result is in and is not wholly green
+  local bf="${1:-}"
+  [ -n "$bf" ] && [ -s "$bf.result" ] || return 1
+  awk -F"$TAB" 'NF && $1 != "GREEN" { bad = 1 } END { exit !bad }' "$bf.result"
+}
+lq_sweep_watch() { # $1 = sweep dir, $2 = slot count, $3 = tip key, $4 = tree (default $W), $5 = the in-flight batch
+  local dir="$1" n="${2:-0}" key="${3:-}" tree="${4:-$W}" inflight="${5:-}" j fin rootl mooted mm
   case "$n" in ''|*[!0-9]*) wait; return 0 ;; esac
   [ "$n" -gt 0 ] || { wait; return 0; }
   while :; do
+    # THE PREDICTION THIS SWEEP IS KEYED AT, BEFORE ANYTHING ELSE IS ASKED (see lq_prediction_dead).
+    if [ -n "$inflight" ] && lq_prediction_dead "$inflight"; then
+      lq_log "pre-prove: the batch in flight came back NOT GREEN — the predicted tree $(printf '%.9s' "$key") will never exist; every line still on a box is proving nothing"
+      j=1
+      while [ "$j" -le "$n" ]; do
+        if [ ! -f "$dir/line-$j.rc" ] && [ ! -f "$dir/line-$j.moot" ]; then
+          : >"$dir/line-$j.moot"
+          lq_log "pre-prove: slot $j cancelled on the fleet — its tree is the dead prediction; NONE:moot, re-dispatched at the real tip next loop"
+          lq_cancel_slot "$dir" "$j" "$tree"
+        fi
+        j=$((j + 1))
+      done
+      break
+    fi
     fin=0; j=1
     while [ "$j" -le "$n" ]; do
       if [ -f "$dir/line-$j.moot" ]; then fin=$((fin + 1)); j=$((j + 1)); continue; fi
@@ -2245,7 +2301,14 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   fi
   fleet_table_open "$dir/fleet-table" >/dev/null \
     || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
-  local i=0 line hosts="" cand
+  # THE BASE REPLAY TAKES ITS SLOT FIRST (see lq_base_replay_reserve). It is what makes every other
+  # verdict in this sweep readable — an unmeasured tip turns the oracle's rows into a line's own red
+  # with no evidence — so it is never what the sweep spends its leftovers on. The reserved box is in
+  # `hosts` from the start, so no line can be handed it.
+  local basehost; basehost="$(lq_base_replay_reserve "$key" "$lines
+$chained" || true)"
+  local i=0 line hosts="$basehost" cand
+  [ -n "$basehost" ] && lq_log "base state: $basehost reserved for the base replay at $(printf '%.9s' "$key") BEFORE any line was dispatched"
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
@@ -2336,12 +2399,14 @@ EOF
   # Only when it is unknown, only on a box the lines above did not take, and never when the sweep
   # has no oracle family to ask about. An unmeasured tip is not an emergency — it only means an
   # oracle red is scored RED, which is what the engine did before this existed.
-  if [ "${LANDQ_BASE_REPLAY:-1}" = 1 ]; then
-    lq_base_red_known "$key" || lq_base_red_replay "$tree" "$dir" "$key" "$lines
-$chained" "$hosts" || true
+  if [ -n "$basehost" ]; then
+    lq_base_red_replay "$tree" "$dir" "$key" "$lines
+$chained" "$basehost" || true
+  elif [ "${LANDQ_BASE_REPLAY:-1}" = 1 ] && ! lq_base_red_known "$key"; then
+    lq_log "base state: no box could be RESERVED for the base replay at $(printf '%.9s' "$key") before the lines went out; the tip stays unmeasured this sweep and an oracle red is NONE:base-unmeasured"
   fi
   lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$key")"
-  lq_sweep_watch "$dir" "$i" "$key" "$tree"
+  lq_sweep_watch "$dir" "$i" "$key" "$tree" "$inflight"
   # THE BASE IS LEARNED BEFORE A SINGLE LINE IS SCORED: the per-line verdicts below ask which rows
   # were already red at this tip.
   if [ -f "$dir/base.log" ]; then
@@ -3443,7 +3508,7 @@ lq_selftest() {
   _t "  ...deduplicated"                          "^(boot)[|]" \
      "$(printf -- '--prove --families ^(boot)[|] aaa1111\n--prove --families ^(boot)[|] bbb2222\n' | lq_families_union)"
   _t "  ...and empty when no line names one"      "" "$(printf -- '--prove --tests xtask aaa1111\n' | lq_families_union)"
-  _t "the sweep measures the base when nothing else has" 1 "$(grep -c 'lq_base_red_known "\$key" || lq_base_red_replay' "$0")"
+  _t "the sweep measures the base when nothing else has" 1 "$(grep -cF 'lq_base_red_replay "$tree" "$dir" "$key"' "$LQ_SRC")"
   _t "  ...on a box the lines did not take"       1 "$(grep -c '^lq_base_red_[r]eplay() {' "$0")"
   _t "  ...and the batch it sends has NO hashes"  1 "$(grep -c "printf -- '--prove --famil[i]es %s.n' " "$0")"
   _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
@@ -3460,8 +3525,10 @@ lq_selftest() {
   echo "landq4 selftest: the sweep probes the fleet once, allocates from the table, and drops a box it lost"
   _t "the sweep opens ONE table before it dispatches"      1 "$(grep -c 'fleet_table_open "\$dir/fleet-table"' "$0")"
   _t "  ...and closes it only once every line is scored"   1 "$(grep -c '^  fleet_table_close$' "$0")"
-  _t "a line asks for a box ONCE, naming the ones it holds" 2 "$(grep -c 'fleet_pick_host \$hosts' "$0")"
-  _t "  ...and so does the base replay, after them"         1 "$(grep -c 'fleet_pick_host \$taken' "$0")"
+  _t "a line asks for a box ONCE, naming the ones it holds" 2 "$(grep -c 'fleet_pick_host \$hosts' "$LQ_SRC")"
+  _t "  ...and the base replay's box is reserved BEFORE them" 1 \
+     "$( [ "$(grep -nF 'basehost="$(lq_base_replay_reserve ' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -nF 'cand="$( fleet_pick_host $hosts )"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...so no line re-probes the fleet looking for one"  0 "$(grep -c 'try=\$((try + 1))' "$0")"
   _t "the box each line went to is written down"            2 "$(grep -c 'printf .%s.n. "\$cand" >"\$dir/line-\$i.host"' "$0")"
   _t "a line that LOST its box drops it from the table"     1 "$(grep -c 'fleet_table_drop "\$(cat "\$dir/line-\$j.host"' "$0")"
@@ -4582,6 +4649,78 @@ lq_selftest() {
           -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
 
+  # ── TWO FAULTS MEASURED ON THE LIVE RUNNER, 09-11 (F2, second round) ──────────────────────────
+  echo "landq4 selftest: a dead prediction cancels its sweep, and the base replay is reserved first"
+  local droot="$root/dead"; mkdir -p "$droot"
+  # (1) THE DEAD PREDICTION. The overlapped sweep is keyed at <tip + the in-flight batch's picks>;
+  # a batch that comes back with ANY row that is not GREEN kills that tree for good.
+  printf 'GREEN%s--prove A\nGREEN%s--prove B\n' "$TAB" "$TAB" >"$droot/b1.result"
+  printf 'GREEN%s--prove A\nRED%s--prove B\n' "$TAB" "$TAB" >"$droot/b2.result"
+  printf 'GREEN%s--prove A\nHELD%s--prove B\n' "$TAB" "$TAB" >"$droot/b3.result"
+  printf 'RED-CONFLICT%s--prove A\n' "$TAB" >"$droot/b4.result"
+  _t "a wholly green batch keeps its prediction alive" 1 "$(lq_prediction_dead "$droot/b1"; echo $?)"
+  _t "  ...one RED row kills it"               0 "$(lq_prediction_dead "$droot/b2"; echo $?)"
+  _t "  ...a HELD row kills it too"            0 "$(lq_prediction_dead "$droot/b3"; echo $?)"
+  _t "  ...and so does a conflict"             0 "$(lq_prediction_dead "$droot/b4"; echo $?)"
+  _t "a batch with no result yet has not killed it" 1 "$(lq_prediction_dead "$droot/nothing"; echo $?)"
+  _t "  ...and neither has no batch at all"    1 "$(lq_prediction_dead ""; echo $?)"
+  # THE WATCH CANCELS ON THE FLEET. Three slots, one already reported; the other two are cancelled
+  # and marked moot rather than left proving a tree that will never exist.
+  local sw="$droot/sweep"; mkdir -p "$sw"
+  printf '0\n' >"$sw/line-1.rc"; printf 'i-a\n' >"$sw/line-1.host"; : >"$sw/line-1.batch"
+  printf 'i-b\n' >"$sw/line-2.host"; : >"$sw/line-2.batch"
+  printf 'i-c\n' >"$sw/line-3.host"; : >"$sw/line-3.batch"
+  local savedLd="$L"; L="$droot/watch.log"; : >"$L"
+  lq_sweep_watch "$sw" 3 deadkey "$repo" "$droot/b2" >/dev/null 2>&1
+  _t "the watch returns at once on a dead prediction" 1 \
+     "$(grep -c 'the predicted tree .* will never exist' "$L")"
+  _t "  ...the unfinished slots are mooted"    2 "$(ls "$sw"/line-*.moot 2>/dev/null | grep -c . || true)"
+  _t "  ...slot 2 among them"                  1 "$([ -f "$sw/line-2.moot" ] && echo 1 || echo 0)"
+  _t "  ...and slot 3"                         1 "$([ -f "$sw/line-3.moot" ] && echo 1 || echo 0)"
+  _t "  ...the slot that already reported is left alone" 0 "$([ -f "$sw/line-1.moot" ] && echo 1 || echo 0)"
+  _t "  ...each cancellation says why"         2 "$(grep -c 'its tree is the dead prediction' "$L")"
+  # AND A SWEEP WITH NO BATCH IN FLIGHT IS NEVER CANCELLED BY THIS. An ordinary loop-top sweep has
+  # no prediction to be wrong about, and a rule that fired there would cancel the whole queue.
+  local sw2="$droot/sweep2"; mkdir -p "$sw2"
+  printf '0\n' >"$sw2/line-1.rc"; printf 'i-a\n' >"$sw2/line-1.host"; : >"$sw2/line-1.batch"
+  : >"$L"
+  lq_sweep_watch "$sw2" 1 realkey "$repo" "" >/dev/null 2>&1
+  _t "an unoverlapped sweep is never cancelled for a prediction" 0 \
+     "$(grep -c 'will never exist' "$L")"
+  L="$savedLd"
+  _t "the watch is given the batch in flight"  1 "$(grep -cF 'lq_sweep_watch "$dir" "$i" "$key" "$tree" "$inflight"' "$LQ_SRC")"
+  # (2) THE BASE REPLAY'S BOX IS RESERVED BEFORE THE LINES GO OUT, and when there is none the
+  # batch's oracle red is NONE:base-unmeasured rather than a park with no evidence behind it.
+  local savedBR="$BASERED"; BASERED="$droot/basered.txt"; : >"$BASERED"
+  printf 'land.sh: RED — oracle families: route\n' >"$droot/orc.log"
+  printf 'cell.178.count%sFAIL%skind-isolation | the row diverged\n' "$TAB" "$TAB" >>"$droot/orc.log"
+  printf 'land.sh: oracle green on: route\n' >"$droot/green.log"
+  _t "an oracle red at an UNMEASURED tip is not the line's" 0 \
+     "$(lq_red_is_unmeasured_oracle tipX "$droot/orc.log"; echo $?)"
+  printf 'tipX\t#measured\n' >"$BASERED"
+  _t "  ...and at a MEASURED tip it is judged normally" 1 \
+     "$(lq_red_is_unmeasured_oracle tipX "$droot/orc.log"; echo $?)"
+  : >"$BASERED"
+  _t "  ...a red with no oracle leg at all is not this" 1 \
+     "$(printf 'land.sh: RED — clippy\n' >"$droot/cl.log"; lq_red_is_unmeasured_oracle tipX "$droot/cl.log"; echo $?)"
+  _t "  ...and a green oracle leg is not a red"  1 \
+     "$(lq_red_is_unmeasured_oracle tipX "$droot/green.log"; echo $?)"
+  BASERED="$savedBR"
+  _t "the landing path asks it before it parks" 1 \
+     "$(grep -cF 'if lq_red_is_unmeasured_oracle "$tip" "$batch.log"; then' "$LQ_SRC")"
+  _t "  ...and requeues the line LIVE and unchanged" 1 \
+     "$(grep -cF 'lq_log "=== $(lq_fault_verdict base-unmeasured):' "$LQ_SRC")"
+  _t "  ...counted as neither green nor red"   1 "$(grep -c 'nnone=\$((nnone + 1))' "$LQ_SRC")"
+  _t "  ...and such a batch never teaches the base" 1 \
+     "$(grep -cF '[ "${nnone:-0}" = 0 ] && [ -s "$batch.log" ]' "$LQ_SRC")"
+  _t "the reservation happens, and names the tip" 1 \
+     "$(grep -c 'BEFORE any line was dispatched' "$LQ_SRC")"
+  _t "  ...and the reserved box is in hosts from the start" 1 \
+     "$(grep -cF 'local i=0 line hosts="$basehost" cand' "$LQ_SRC")"
+  _t "  ...the old after-the-lines pick is GONE" 0 "$(grep -c 'fleet_pick_host \$taken' "$LQ_SRC")"
+  _t "  ...and the old sentence with it"       0 \
+     "$(grep -v '^#' "$LQ_SRC" | grep -c 'no free box for the base replay' || true)"
+
   # ── ONE STATUS FILE (F7) ──────────────────────────────────────────────────────────────────────
   # The file is JSON or it is nothing: a tick that has to parse prose is a tick that is confidently
   # wrong twice a day. Every key the tick, the integrator and landq-ctl need is asserted present
@@ -5123,7 +5262,7 @@ while true; do
   lq_fault_clear
 
   red="$W/target/gate/landq4-red.$$.txt"; : >"$red"
-  head_conflict=0; first=1; ngreen=0; nred=0; nheld=0
+  head_conflict=0; first=1; ngreen=0; nred=0; nheld=0; nnone=0
   while IFS="$TAB" read -r st text; do
     [ -n "$st" ] || continue
     case "$st" in
@@ -5136,7 +5275,18 @@ while true; do
       HELD) nheld=$((nheld + 1)); lq_park_line "$text" "$batch" "$red" HELD ;;
       RED-CONFLICT) nred=$((nred + 1)); lq_park_line "$text" "$batch" "$red"
                     [ "$first" = 1 ] && head_conflict=1 ;;
-      *) nred=$((nred + 1)); lq_park_line "$text" "$batch" "$red" ;;
+      # AN ORACLE RED AT A TIP NOBODY MEASURED IS NOT THE LINE'S (see lq_red_is_unmeasured_oracle):
+      # it goes back LIVE and to the front of the next sweep, which now reserves the base replay's
+      # box before it dispatches anything — so the next judgement has the evidence this one lacked.
+      *) if lq_red_is_unmeasured_oracle "$tip" "$batch.log"; then
+           nnone=$((nnone + 1))
+           lq_fault_record base-unmeasured "an oracle red at $(printf '%.9s' "$tip"), a tip no base replay has measured" >/dev/null
+           lq_front_add "$text"
+           printf '%s\n' "$text" >>"$red"
+           lq_log "=== $(lq_fault_verdict base-unmeasured): $(printf '%.80s' "$text") went red on ORACLE rows at a tip nobody has measured; requeued LIVE and unchanged, to the front of the next sweep — never parked"
+         else
+           nred=$((nred + 1)); lq_park_line "$text" "$batch" "$red"
+         fi ;;
     esac
     first=0
   done <"$batch.result"
@@ -5173,12 +5323,12 @@ while true; do
   # tree carrying that line's picks, and the rows it failed on may be the picks'. The tip moved, so
   # every other tip's rows go with the pre-proof ledger's.
   [ "$newtip" = "$tip" ] || lq_base_red_prune "$newtip"
-  if [ "$newtip" != "$tip" ] && [ "${nred:-0}" = 0 ] && [ "${nheld:-0}" = 0 ] && [ -s "$batch.log" ]; then
+  if [ "$newtip" != "$tip" ] && [ "${nred:-0}" = 0 ] && [ "${nheld:-0}" = 0 ] && [ "${nnone:-0}" = 0 ] && [ -s "$batch.log" ]; then
     lq_base_red_learn "$newtip" "$batch.log" \
       && lq_base_red_result "$newtip" "$batch.log" "$batch.base-detail" || true
   fi
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
-  lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD; tip $(git -C "$W" rev-parse --short HEAD)"
+  lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD, $nnone requeued live as NONE; tip $(git -C "$W" rev-parse --short HEAD)"
   rm -f "$batch" "$batch.chain" "$red"
   lq_status_json
 
