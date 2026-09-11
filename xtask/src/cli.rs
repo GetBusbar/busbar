@@ -458,10 +458,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
     // each one, so every way a gate can wedge is a way a selftest can wedge — and it was a
     // `--selftest` sitting at seven minutes that made the deadlock visible in the first place.
+    // THE BATTERY'S OWN CEILING, not one gate run's. See `gates::DEFAULT_SELFTEST_CEILING`.
     let watchdog = gates::Watchdog::arm(
         gate.name(),
         gate.owed(),
-        gates::ceiling_from_env(gate.name()),
+        gates::selftest_ceiling_from_env(gate.name()),
     );
     let report = gate.selftest(cx);
     let jobs = report.jobs();
