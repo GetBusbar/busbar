@@ -1448,7 +1448,13 @@ lq_stage_engine() { # $1 = tree (default $W)
   sed "s|^here=.*|here=\"$t\"|" "$SCRIPTS/land.sh" >"$t/target/gate/land.run.sh"
   sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/land-remote.sh" >"$t/target/gate/land-remote.sh"
   cp "$SCRIPTS/ci-remote-lib.sh" "$t/target/gate/ci-remote-lib.sh"
+  # THE FLEET'S POWER SWITCH TRAVELS WITH THE ENGINE, for the same reason the transport does: the
+  # sweep runs out of the staged tree, and a sweep that could not start a stopped box would quietly
+  # dispatch to whatever happened to be awake and call the rest "out of free boxes".
+  [ -f "$SCRIPTS/ci-fleet-power.sh" ] && cp "$SCRIPTS/ci-fleet-power.sh" "$t/target/gate/ci-fleet-power.sh"
   chmod +x "$t/target/gate/land.run.sh" "$t/target/gate/land-remote.sh"
+  [ -f "$t/target/gate/ci-fleet-power.sh" ] && chmod +x "$t/target/gate/ci-fleet-power.sh"
+  return 0
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1795,6 +1801,26 @@ lq_sweep_watch() { # $1 = sweep dir, $2 = slot count, $3 = tip key, $4 = tree (d
   wait
 }
 
+# ── HOW MANY PROOF SLOTS THIS DISPATCH WANTS ─────────────────────────────────────────────────────
+# ONE PER LINE, AND THE TWO PROOFS THAT ARE NOT LINES. A sweep is not the only thing on the fleet
+# when it runs: the base-only replay is a proof of the tip itself on a box of its own, and the batch
+# the runner is about to pop needs a box too. Counting only the lines is how a twelve-line sweep
+# takes every box that is awake and the batch behind it finds none.
+#
+# THE BATCH IS COUNTED ONLY WHEN IT IS NOT ALREADY RUNNING. A batch in flight is already holding a
+# box, and that box reports itself busy to the allocator — counting it again would start a box for a
+# slot that is already spoken for, and "never more than it needs" is the whole rule.
+lq_sweep_slot_demand() { # $1 = live lines, $2 = chained holds, $3 = base replay wanted (0|1), $4 = a batch is in flight (0|1)
+  local nlive="${1:-0}" nch="${2:-0}" base="${3:-0}" inflight="${4:-0}" d
+  case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
+  case "$nch"   in ''|*[!0-9]*) nch=0 ;; esac
+  case "$base"  in ''|*[!0-9]*) base=0 ;; esac
+  case "$inflight" in ''|*[!0-9]*) inflight=0 ;; esac
+  d=$(( nlive + nch + base ))
+  [ "$inflight" = 1 ] || d=$(( d + 1 ))
+  echo "$d"
+}
+
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
@@ -1868,6 +1894,24 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   # probed ONCE, every box at the same time and the round still bounded by that same 15 s, and each
   # line is then a read of it plus a take. A box that turns out to have vanished is dropped from the
   # table by the line that lost it, below, so the table is only ever more accurate than the round.
+  # ── START WHAT THIS DISPATCH NEEDS, AND NOTHING ELSE, BEFORE THE ROUND ─────────────────────────
+  # An idle box is STOPPED (scripts/ci-fleet-power.sh, on the reconcile's timer), which costs EBS and
+  # nothing else and is 60-90 s from proving. So the sweep asks for the slots it is about to use
+  # BEFORE it probes: --ensure-slots subtracts the free slots on the boxes already awake, starts
+  # only the whole boxes the shortfall needs at BUSBAR_PROVE_PER_BOX slots each, and WAITS for the
+  # same readiness probe the allocator asks — a box that is merely starting is not free, and a box
+  # counted before it is ready is a line dispatched into a bootstrap. It never goes past
+  # CI_RUNNER_RUNNING_MAX; if it cannot get there the sweep dispatches to what there is and says so,
+  # exactly as it does today when the fleet is short.
+  local nch_d=0
+  [ -n "$chained" ] && nch_d="$(printf '%s\n' "$chained" | grep -c . || true)"
+  local want; want="$(lq_sweep_slot_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" \
+    "$( [ -n "$inflight" ] && [ -f "$inflight" ] && echo 1 || echo 0 )")"
+  if [ -x "$tree/target/gate/ci-fleet-power.sh" ]; then
+    lq_log "pre-prove: this dispatch wants $want proof slot(s) — starting only what the awake fleet is short of"
+    bash "$tree/target/gate/ci-fleet-power.sh" --ensure-slots "$want" >/dev/null 2>&1 \
+      || lq_log "pre-prove: could not start a stopped box; dispatching to the boxes that are already awake"
+  fi
   fleet_table_open "$dir/fleet-table" >/dev/null \
     || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
   local i=0 line hosts="" cand
@@ -3983,6 +4027,28 @@ lq_selftest() {
   _t "lq_chain_candidates refuses a red root"   1 \
      "$(sed -n '/^lq_chain_candidates() {/,/^}$/p' "$LQ_SRC" | grep -c '^    lq_chain_root_red "')"
   _t "the sweep watches its slots instead of a bare wait" 1 "$(grep -c '^  lq_sweep_watch "\$dir"' "$LQ_SRC")"
+
+  # ── THE SWEEP STARTS THE BOXES IT NEEDS, AND COUNTS THE TWO PROOFS THAT ARE NOT LINES ─────────
+  # An idle box is STOPPED now (scripts/ci-fleet-power.sh), so "how many boxes are awake" is a
+  # decision this sweep makes rather than a fact it inherits. The arithmetic is the whole of it:
+  # one slot per live line, one per chained hold, one for the base-only replay, and one for the
+  # batch the runner is about to pop — but NOT for a batch already in flight, which is holding a
+  # box that already reports itself busy. Counting that twice would start a box for a slot that is
+  # already spoken for, and "never more than it needs" is the rule the bill is made of.
+  echo "landq4 selftest: the sweep asks for the slots it is about to use, and no more"
+  _t "six lines, no chains, a replay and a batch to come" 8 "$(lq_sweep_slot_demand 6 0 1 0)"
+  _t "  ...with the batch already in flight, one fewer"   7 "$(lq_sweep_slot_demand 6 0 1 1)"
+  _t "  ...with the replay turned off, one fewer again"   6 "$(lq_sweep_slot_demand 6 0 0 1)"
+  _t "chained holds are slots too"                        9 "$(lq_sweep_slot_demand 6 2 1 1)"
+  _t "an empty sweep still leaves the batch a box"        1 "$(lq_sweep_slot_demand 0 0 0 0)"
+  _t "a junk count is zero, never a fleet"                1 "$(lq_sweep_slot_demand x y z 0)"
+  _t "the sweep asks the power switch BEFORE it probes" 1 \
+     "$([ "$(grep -n 'ci-fleet-power.sh" --ensure-slots' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+        -lt "$(grep -n 'fleet_table_open "\$dir/fleet-table"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and a fleet it cannot grow is not fatal"     1 \
+     "$(grep -c 'dispatching to the boxes that are already awake' "$LQ_SRC")"
+  _t "the power switch is staged with the engine"       1 \
+     "$(grep -c 'cp "\$SCRIPTS/ci-fleet-power.sh" "\$t/target/gate/ci-fleet-power.sh"' "$LQ_SRC")"
   _t "  ...and records each slot's root and driver" 2 \
      "$(grep -c 'line-\$i\.root"$\|line-\$i\.driver"$' "$LQ_SRC")"
 
