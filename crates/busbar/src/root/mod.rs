@@ -77,6 +77,7 @@ pub mod proto_install;
 /// composition root's half of a plane's durable state.
 pub mod records;
 pub mod registry;
+pub mod store;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;

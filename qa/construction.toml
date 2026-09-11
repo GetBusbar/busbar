@@ -1760,3 +1760,37 @@ key = "cell.busbar-plane-mcp.codec.count"
 file = "qa/kind-isolation.toml"
 by = 1
 because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by `ops::settled_document` -- the face by which the plane hands a mounted leg a settled unit's document. The codec is the pure half this plane already names (`busbar-mcp-codec`, NOT `busbar-mcp`), and the document lives there rather than here for the same reason every other method name and refusal code does: it is a fact about the protocol that both framings must read from one place."
+
+# ── BIND-1 (1.6.0): THE NODE'S ONE STORE HANDLE, BOUND BY THE ROOT ───────────────────────────────
+#
+# `crates/busbar/src/root/store.rs` and its cells. Before this landing there was no production store
+# adapter anywhere in the tree -- every construction was a test's -- so a plane's record legs had
+# nothing to be bound to and the one mounted leg was handed a refusing stand-in. The binding is the
+# composition's by definition: a plane may not hold a store and a unit may not know a schema, so the
+# only kind entitled to name both is the root. Every rise below is that one file plus the cells that
+# drive a record through a plane's legs and read it back OFF THE STORE FACE.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "THE PUBLISHED STORE PROTOCOL, named by the composition that binds a node to it: `busbar_api::Store` as the handle `node_adapter` takes and returns, and `busbar_api::PlaneSelector` in the cell that reads a parent's rows back off the store. The root is the one kind entitled to name the store protocol beside a plane's schemas; the plane names neither and the unit names neither."
+
+# NO RAISE IS DECLARED for `cell.busbar.legacy.count`, and it needs none: the cell that drives the
+# RAM default names `busbar_core::governance::MemoryStore` twice (it is the backend a configuration
+# naming no store module actually gets -- not a double, deliberately, because a cell that wrote
+# through a fixture would be proving the fixture), and the figure still sits at 95 against the 98 the
+# base carries. Both names are in `root/tests/store.rs`, outside the legacy-reach scope globs, so the
+# root's own reach into the retiring crate is unchanged at 91 and its `busbar_core::` figure is too.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "a PLANE'S OWN RECORD DECLARATION, named by the composition that runs its legs: `busbar_plane_mcp::records::{SCHEMA_CATALOGUE, SCHEMA_CALL, OP_PUT, OP_APPEND}` and the `crate::root::units_mcp::{Records, RecordLeg, RecordAnswer}` the legs are run through, plus the store protocol's own plane-record spellings (`get_plane_record`, `list_plane_records`, `PlaneSelector`). The root restates no schema and declares no operation: which operations a schema has is the plane's data and the cell reads it there."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "ONE name: `busbar_plugin_loader::store_adapter::StoreAdapter`, the type that carries the three unit-side store seams over a loaded store. The root names it once, in the one function that constructs one, because the loader is what opened the store and the adapter is the shape it hands back. Nothing else in the root gains a loader name on this landing."

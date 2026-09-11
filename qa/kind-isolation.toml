@@ -1307,9 +1307,12 @@ why = "crates of kind unit naming unit vocabulary: unit package names in any spe
 drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
+# (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
+# declaration in qa/construction.toml.
 crate = "busbar"
 kind = "api"
-count = "154"
+count = "158"
 
 [[cell]]
 crate = "busbar"
@@ -1368,9 +1371,12 @@ kind = "kernel"
 count = "165"
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
+# (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
+# declaration in qa/construction.toml.
 crate = "busbar"
 kind = "legacy"
-count = "93"
+count = "95"
 
 # RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
 # the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
@@ -1380,14 +1386,20 @@ count = "93"
 # through the file's existing imports rather than fully qualified, which is why the rise is 51 and not
 # larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
+# RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
+# (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
+# declaration in qa/construction.toml.
 crate = "busbar"
 kind = "plane"
-count = "1970"
+count = "1978"
 
 [[cell]]
+# RAISED by ROOT COMPOSITION (BIND-1, 1.6.0): the node's ONE store handle, bound by the root
+# (`root/store.rs`) and driven through a plane's record legs by `root/tests/store.rs`. See the
+# declaration in qa/construction.toml.
 crate = "busbar"
 kind = "plugin-tooling"
-count = "31"
+count = "32"
 
 [[cell]]
 crate = "busbar"
