@@ -23,6 +23,39 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
 . "$HERE/ci-remote-lib.sh"
 
+# ── STOPPING A PROOF THAT IS NO LONGER WORTH TAKING ──────────────────────────────────────────────
+# MEASURED 2026-09-10: a chain's root was proven RED ALONE at 5481 s, and three DEEPER PREFIXES of
+# that same chain went on bisecting on three fleet boxes for another three hours before an operator
+# killed them by hand. Every one of those rungs stands on the root's picks; the root is red; there
+# is no tree any of them can be green on. Three boxes, three hours, for an answer that was already
+# known and could not change.
+#
+# SO THERE IS A WAY TO STOP ONE, AND IT IS THIS SCRIPT'S CHANNEL — the same `rsh` the poll loop
+# talks to the box with, not a second transport with its own idea of how the fleet is reached. The
+# box runs the proof under `setsid`, which makes the detached bash a process-GROUP leader; the
+# group id is written beside the log as `<ref>.pid` the moment it is launched, and a cancel signals
+# the GROUP (`kill -- -PGID`): land.sh, cargo, xtask and the recorder go together. Signalling the
+# one pid would leave a `cargo test` holding the box's cores and the port block.
+#
+# AND IT LEAVES A VERDICT BEHIND. `143` (128+SIGTERM) goes into the .rc the poll loop reads, so a
+# straggling poller ends at once with a status instead of waiting out ten silent polls and
+# reporting a box that vanished — which is a different thing and is scored differently.
+remote_cancel() { # $1 = host, $2 = the ref the proof was launched under; 0 when the box was told
+  local host="$1" ref="$2" cmd pdir="busbar-prove/target"
+  [ -n "$host" ] || { rlog "--cancel: no host — there is nothing to stop"; return 2; }
+  [ -n "$ref" ]  || { rlog "--cancel: no ref — a cancel with no ref would stop whatever is running"; return 2; }
+  # THE REF IS THIS SCRIPT'S OWN SHAPE OR IT IS NOTHING. The ref is interpolated into a command that
+  # runs on the box; a ref carrying a space or a semicolon would be a shell the caller wrote.
+  case "$ref" in *[!A-Za-z0-9._-]*|'') rlog "--cancel: '$ref' is not a ref this script issues"; return 2 ;; esac
+  cmd="pid=\$(cat $pdir/land-remote-$ref.pid 2>/dev/null | tr -d '[:space:]'); "
+  cmd="$cmd if [ -n \"\$pid\" ]; then kill -TERM -\"\$pid\" 2>/dev/null; sleep 3; kill -KILL -\"\$pid\" 2>/dev/null; fi; "
+  cmd="$cmd echo 143 >$pdir/land-remote-$ref.rc; exit 0"
+  rsh "$host" bash -c "$cmd" </dev/null >/dev/null 2>&1 \
+    || { rlog "--cancel: $host did not take the cancel for $ref (the box may already be gone)"; return 1; }
+  rlog "--cancel: $ref stopped on $host (its process group signalled, rc 143 recorded)"
+  return 0
+}
+
 # ── --selftest: what this file can prove of itself without a fleet ──────────────────────────────
 # land.sh runs a touched script's --selftest ON THE BOX (its gate-scripts leg), so a landing that
 # edits this file proves on Linux: that it parses; that the integration base still travels as a
@@ -140,9 +173,41 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$(_done 0 1)" = 1 ] && _ok "  ...a partially green batch still adds its green row" || _fail "a partially green batch adds its green row"
   [ "$(_done 0 0)" = 1 ] && _ok "  ...and a whole green landing does too" || _fail "a green landing adds its row"
   rm -rf "$_dt"
+  # ── THE CANCEL CHANNEL (see remote_cancel) ────────────────────────────────────────────────────
+  # Driven, not spelled: `rsh` is replaced with a stub that records what it was asked to run, and
+  # the real remote_cancel is called through it.
+  _cx="$(mktemp -d "${TMPDIR:-/tmp}/land-remote-cancel.XXXXXX")"
+  rsh() { printf '%s\n' "$*" >>"$_cx/asked.txt"; }
+  remote_cancel box-1 land-20260910-221500-4242 >/dev/null 2>&1 \
+    && _ok "a cancel goes out over the same rsh channel the poll uses" || _fail "a cancel goes out over rsh"
+  grep -qF -- 'kill -TERM -"$pid"' "$_cx/asked.txt" && _ok "  ...and it signals the process GROUP, not one pid" || _fail "the cancel signals the process group"
+  grep -qF -- 'kill -KILL -"$pid"' "$_cx/asked.txt" && _ok "  ...with a KILL behind the TERM" || _fail "a KILL follows the TERM"
+  grep -qF -- 'land-remote-land-20260910-221500-4242.pid' "$_cx/asked.txt" && _ok "  ...reading the group id the launch wrote down" || _fail "the cancel reads the launch's pid file"
+  grep -qF -- 'echo 143 >busbar-prove/target/land-remote-land-20260910-221500-4242.rc' "$_cx/asked.txt" \
+    && _ok "  ...and leaves rc 143 so a straggling poller ends" || _fail "the cancel leaves a verdict in the rc file"
+  : >"$_cx/asked.txt"
+  remote_cancel "" land-1 >/dev/null 2>&1; [ $? = 2 ] && _ok "a cancel with no host is refused" || _fail "a cancel with no host is refused"
+  remote_cancel box-1 "" >/dev/null 2>&1; [ $? = 2 ] && _ok "  ...and a cancel with no ref is refused" || _fail "a cancel with no ref is refused"
+  remote_cancel box-1 'x; rm -rf /' >/dev/null 2>&1; [ $? = 2 ] && _ok "  ...and a ref this script would never issue is refused" || _fail "a shaped ref is refused"
+  [ ! -s "$_cx/asked.txt" ] && _ok "  ...none of the three reached the box" || _fail "a refused cancel reached the box"
+  unset -f rsh; . "$HERE/ci-remote-lib.sh" 2>/dev/null || true
+  rm -rf "$_cx"
+  grep -qE -- 'echo \$! >"\$[P]IDF"' "${BASH_SOURCE[0]}" && _ok "the box writes the detached proof's group id down" || _fail "the box writes the group id down"
+  grep -qE -- '[P]IDF="target/land-remote-\$REF.pid"' "${BASH_SOURCE[0]}" && _ok "  ...beside the log, under the same ref" || _fail "the pid file is named by the ref"
+  grep -qE -- '^if \[ "\$\{1:-\}" = "--[c]ancel" \]; then' "${BASH_SOURCE[0]}" && _ok "--cancel is a mode of this script" || _fail "--cancel is a mode of this script"
+
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
   echo "land-remote selftest: RED ($fails failure(s))" >&2; exit 1
+fi
+
+# ── --cancel <host> <ref>: STOP A PROOF THAT IS NO LONGER WORTH TAKING ───────────────────────────
+# Handled before a host is picked, a tree is pushed or a batch is read: a cancel names the box and
+# the ref itself, and has nothing to allocate. See remote_cancel for why it signals the group.
+if [ "${1:-}" = "--cancel" ]; then
+  remote_wrapper || rdie "--cancel: no ssh wrapper for the fleet; the box cannot be reached"
+  remote_cancel "${2:-}" "${3:-}"
+  exit $?
 fi
 
 HOST=""
@@ -353,11 +418,18 @@ echo "integration base: $BASEREF = $BASE_SHA on $(hostname); the laptop resolved
 # fast-forwards to exactly what the box proved.
 # The runner's engine, with its tree root pointed at this checkout.
 sed "s|^here=.*|here=\"$HOME/busbar-prove\"|" target/gate/land.run.sh >target/gate/land.run.local.sh
+# THE GROUP ID IS WRITTEN DOWN THE MOMENT THE PROOF IS LAUNCHED. `setsid` makes this bash a
+# process-GROUP leader, so its pid IS the group id of the whole proof — land.sh, cargo, xtask, the
+# recorder, every one of them. `scripts/land-remote.sh --cancel <host> <ref>` reads this file and
+# signals `-PGID` when the queue has learned that the answer cannot change any more (a chain root
+# proven RED under a rung that is still bisecting).
+PIDF="target/land-remote-$REF.pid"
 setsid nohup bash -c '
   bash target/gate/land.run.local.sh "$@" >>"'"$LOG"'" 2>&1; rc=$?
   git push -q --force prove "HEAD:refs/heads/'"$REF"'-landed" >>"'"$LOG"'" 2>&1
   echo $rc >"'"$RC"'"
 ' _ "$@" >/dev/null 2>&1 </dev/null &
+echo $! >"$PIDF"
 echo "detached: $LOG"
 RUN
 [ $? -eq 0 ] || { rlog "could not start the landing on $HOST"; exit 2; }

@@ -1426,8 +1426,8 @@ lq_lock_release() { # $1 = my pid
 # that overlap is usually WHY it is held — and those files are in its own batch by construction, so
 # they are not a clash. Overlapping anything ELSE the sweep is holding is a clash exactly as it is
 # for a live line: two boxes proving trees that will not both survive.
-lq_chain_candidates() { # $1 = max, $2 = queue file, $3 = repo, $4 = tip key, $5 = file of lines whose files are claimed
-  local max="$1" qf="$2" repo="${3:-$W}" tip="$4" claimf="${5:-}" line chain dep anc ancset claimed="" f n=0 clash
+lq_chain_candidates() { # $1 = max, $2 = queue file, $3 = repo, $4 = tip key, $5 = file of lines whose files are claimed, $6 = this sweep's red-root list
+  local max="$1" qf="$2" repo="${3:-$W}" tip="$4" claimf="${5:-}" redroots="${6:-}" line chain dep anc ancset claimed="" f n=0 clash
   case "$max" in ''|*[!0-9]*) return 0 ;; esac
   [ "$max" -gt 0 ] || return 0
   if [ -n "$claimf" ] && [ -f "$claimf" ]; then
@@ -1447,6 +1447,10 @@ EOF
     anc="$(printf '%s' "$chain" | sed '$d')"
     [ -n "$anc" ] || continue
     [ "$(lq_preproved_status "$(printf '%s\n' "$anc" | lq_chain_key "$tip")" "$dep")" = GREEN ] && continue
+    # A CHAIN WHOSE ROOT IS ALREADY RED AT THIS TIP HAS NO GREEN RUNG (see lq_chain_root_red). Not
+    # dispatched at all, rather than dispatched and then cancelled: a box taken for three seconds is
+    # a box the next candidate in this very loop is refused.
+    lq_chain_root_red "$(printf '%s\n' "$chain" | head -n1)" "$tip" "$PP" "$redroots" && continue
     ancset="$TAB"
     while IFS= read -r f; do [ -n "$f" ] && ancset="$ancset$f$TAB"; done <<EOF
 $(printf '%s\n' "$anc" | while IFS= read -r l; do [ -n "$l" ] && lq_line_files "$l" "$repo"; done)
@@ -1565,6 +1569,159 @@ lq_chain_budget() { # $1 = the sweep's whole budget, $2 = how many live lines ro
   if [ "$hold" -ge "$slots" ]; then echo 0; else echo $((slots - hold)); fi
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A CHAIN WHOSE ROOT IS RED HAS NO GREEN RUNG, AND THE FLEET IS TOLD SO
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED 2026-09-10. Line 1 of the sweep was a chain's ROOT, proven ALONE, and it came back RED at
+# 5481 s. Lines 4, 5 and 11 were DEEPER PREFIXES of that same chain — root+1, root+2, root+3 — and
+# all three were still bisecting on three fleet boxes three hours later, when an operator killed
+# them by hand. Every rung of a chain is the root's picks plus more picks; the root is red, so its
+# picks are coming back off the tree, and there is no tree any of those rungs can be proven green
+# on. Three boxes for three hours, to finish computing an answer that was already known and could
+# not change.
+#
+# SO A ROOT RED STOPS THEM, AND `NONE:moot` IS WHAT THEY ARE SCORED. Not RED — nothing was learned
+# about a rung's own picks, and a park would convict a line for its predecessor's fault, which is
+# exactly what HELD exists to prevent. Not re-queued to the front either: a mooted rung is not a
+# question the fleet still owes an answer to, because the HOLD it sits under is not being released
+# at this tip whatever happens. It is simply as unproven as it was, and the next sweep — at a tip
+# where the root has been repaired — may hand it a box again.
+#
+# WHAT COUNTS AS A ROOT RED, AND WHAT DOES NOT. A box that vanished, a harness that gave up and a
+# red that is the BASE's are not verdicts on the root's picks (lq_preproof_verdict's whole rule), so
+# they moot nothing: the rungs below keep their boxes and finish. Only a red the engine attributed
+# to the root itself — a live single scored RED, or a chained slot whose PREFIX-1 row is RED —
+# empties the chain.
+lq_slot_root_red() { # $1 = sweep dir, $2 = slot number, $3 = the tip key; 0 when this slot proved its chain's ROOT red
+  local dir="$1" j="$2" key="${3:-}" rc lg res rootl
+  rootl="$(cat "$dir/line-$j.root" 2>/dev/null || true)"
+  [ -n "$rootl" ] || return 1
+  rc="$(cat "$dir/line-$j.rc" 2>/dev/null || true)"
+  [ -n "$rc" ] || return 1
+  lg="$dir/line-$j.log"; res="$dir/line-$j.batch.result"
+  if [ -f "$dir/line-$j.chainkey" ]; then
+    # THE ROOT'S OWN ROW OUT OF THE UNION'S OUTCOME FILE. land.sh's prefix bisect has already
+    # attributed it: a RED there is "the root, alone on the tip, is the culprit".
+    case "$(lq_outcome_row "$res" "$rootl")" in RED|RED-*) ;; *) return 1 ;; esac
+    lq_box_gone "$rc" "$lg" && return 1
+    lq_harness_gave_up "$lg" && return 1
+    lq_base_state_red "$lg" && return 1
+    lq_line_red_is_base_oracle "$key" "$lg" && return 1
+    return 0
+  fi
+  [ "$(lq_preproof_verdict "$rc" "$lg" "$res" "$key")" = RED ]
+}
+# WHICH SLOTS THAT RED EMPTIES. Every chained slot of the SAME chain that has not reported yet —
+# and only those: a rung of another chain is another question, and a slot that already has its own
+# rc has already answered. Marked as it goes, so the record loop below scores each one once.
+lq_moot_deeper() { # $1 = sweep dir, $2 = slot count, $3 = the slot that judged, $4 = the root payload; prints the slots
+  local dir="$1" n="${2:-0}" self="$3" rootl="$4" m=1
+  [ -n "$rootl" ] || return 0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  while [ "$m" -le "$n" ]; do
+    if [ "$m" != "$self" ] && [ ! -f "$dir/line-$m.rc" ] && [ ! -f "$dir/line-$m.moot" ] \
+       && [ -f "$dir/line-$m.chainkey" ] \
+       && [ "$(cat "$dir/line-$m.root" 2>/dev/null || true)" = "$rootl" ]; then
+      : >"$dir/line-$m.moot"
+      printf '%s\n' "$m"
+    fi
+    m=$((m + 1))
+  done
+}
+# THE REF THE TRANSPORT ISSUED, out of the transport's own first line ("host <h>   ref <r>   picks:").
+# It is the name of the log, the rc and the pid file on the box, so it is the whole of what a cancel
+# needs beyond the host.
+lq_slot_ref() { # $1 = a slot's log; prints the ref land-remote issued for it, or nothing
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  grep -oE 'ref[[:space:]]+land-[0-9]{8}-[0-9]{6}-[0-9]+' "$1" 2>/dev/null \
+    | head -n1 | sed -E 's/^ref[[:space:]]+//'
+}
+# EVERY DESCENDANT, THEN THE PARENT. The slot's driver is a subshell whose child is land.sh, whose
+# child is land-remote.sh polling the box; killing the subshell alone leaves the poller running and
+# holding the fleet's cursor.
+lq_kill_tree() { # $1 = pid
+  local pid="${1:-}" listing p
+  [ -n "$pid" ] || return 0
+  listing="$(lq_ps)"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$pid" ] && continue
+    lq_descends "$p" "$pid" "$listing" && kill -TERM "$p" 2>/dev/null
+  done <<EOF
+$(printf '%s\n' "$listing" | awk '{print $1}')
+EOF
+  kill -TERM "$pid" 2>/dev/null || true
+  return 0
+}
+# THE BOX FIRST, THE DRIVER SECOND, AND THE BOX OVER land-remote's OWN CHANNEL. Killing the local
+# driver first would leave the fleet box proving with nobody polling it — the same three hours of a
+# box, now with no log coming back at all. `land-remote.sh --cancel <host> <ref>` signals the proof's
+# process group through the same ssh the poll loop uses (see remote_cancel).
+lq_cancel_slot() { # $1 = sweep dir, $2 = slot number, $3 = tree (default $W)
+  local dir="$1" m="$2" tree="${3:-$W}" pid host ref
+  host="$(cat "$dir/line-$m.host" 2>/dev/null || true)"
+  ref="$(lq_slot_ref "$dir/line-$m.log")"
+  if [ -n "$host" ] && [ -n "$ref" ] && [ -x "$tree/target/gate/land-remote.sh" ]; then
+    bash "$tree/target/gate/land-remote.sh" --cancel "$host" "$ref" >>"$dir/line-$m.cancel.log" 2>&1 || true
+  else
+    lq_log "pre-prove: slot $m has no host/ref to cancel with (host='${host:-}' ref='${ref:-}'); only its driver is stopped"
+  fi
+  pid="$(cat "$dir/line-$m.driver" 2>/dev/null || true)"
+  lq_kill_tree "$pid"
+  return 0
+}
+# AND NO DEEPER RUNG IS HANDED A BOX WHILE THE ROOT IS RED. The ledger's RED row at this tip is one
+# half; the other is this sweep's own list, because a root judged red at 20:10 must not be handed
+# rungs by the sweep that starts at 20:12 — the ledger row is written only when the sweep ends.
+lq_root_red_mark() { # $1 = sweep dir, $2 = the root payload
+  [ -n "${2:-}" ] || return 0
+  grep -qxF -- "$2" "$1/root-red.txt" 2>/dev/null || printf '%s\n' "$2" >>"$1/root-red.txt"
+}
+lq_chain_root_red() { # $1 = root payload, $2 = tip key, $3 = ledger (default $PP), $4 = this sweep's red-root list (optional)
+  local rootl="${1:-}" key="${2:-}" led="${3:-$PP}" lst="${4:-}"
+  [ -n "$rootl" ] || return 1
+  [ -n "$lst" ] && [ -f "$lst" ] && grep -qxF -- "$rootl" "$lst" 2>/dev/null && return 0
+  [ -n "$key" ] && [ -f "$led" ] || return 1
+  LQ_AWK_R="$rootl" awk -F"$TAB" -v tip="$key" \
+    '$1 == "RED" && $2 == tip && $4 == ENVIRON["LQ_AWK_R"] { found = 1 } END { exit(found ? 0 : 1) }' "$led"
+}
+# ── THE SWEEP'S SLOTS, WATCHED RATHER THAN MERELY WAITED FOR ──────────────────────────────────────
+# A bare `wait` learns every verdict at once, at the end — which is exactly too late to act on the
+# one verdict that makes three other proofs pointless. This polls the slots' rc files instead, and
+# the moment a slot's verdict is in it asks whether that verdict emptied a chain. Everything else is
+# unchanged: it ends when every slot has reported or been mooted, and `wait` still reaps the
+# children so nothing is left running behind the sweep.
+lq_sweep_watch() { # $1 = sweep dir, $2 = slot count, $3 = tip key, $4 = tree (default $W)
+  local dir="$1" n="${2:-0}" key="${3:-}" tree="${4:-$W}" j fin rootl mooted mm
+  case "$n" in ''|*[!0-9]*) wait; return 0 ;; esac
+  [ "$n" -gt 0 ] || { wait; return 0; }
+  while :; do
+    fin=0; j=1
+    while [ "$j" -le "$n" ]; do
+      if [ -f "$dir/line-$j.moot" ]; then fin=$((fin + 1)); j=$((j + 1)); continue; fi
+      if [ -f "$dir/line-$j.rc" ]; then
+        fin=$((fin + 1))
+        if [ ! -f "$dir/line-$j.judged" ]; then
+          : >"$dir/line-$j.judged"
+          if lq_slot_root_red "$dir" "$j" "$key"; then
+            rootl="$(cat "$dir/line-$j.root" 2>/dev/null || true)"
+            lq_root_red_mark "$dir" "$rootl"
+            mooted="$(lq_moot_deeper "$dir" "$n" "$j" "$rootl")"
+            for mm in $mooted; do
+              lq_log "pre-prove: slot $j proved the chain ROOT red alone; slot $mm is a DEEPER prefix of it — cancelled on the fleet, scored NONE:moot"
+              lq_cancel_slot "$dir" "$mm" "$tree"
+            done
+          fi
+        fi
+      fi
+      j=$((j + 1))
+    done
+    [ "$fin" -lt "$n" ] || break
+    sleep "${LANDQ_SWEEP_POLL_SECS:-20}"
+  done
+  wait
+}
+
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
@@ -1605,7 +1762,7 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
     case "$kact" in ''|*[!0-9]*) kact=0 ;; esac
     [ "$kact" -le "$nlive" ] || kact="$nlive"
     [ "$kact" -le "$PREPROVE_LINES" ] || kact="$PREPROVE_LINES"
-    chained="$(lq_chain_candidates "$(lq_chain_budget "$PREPROVE_LINES" "$nroots" "$kact")" "$Q" "$tree" "$key" "$claimf")"
+    chained="$(lq_chain_candidates "$(lq_chain_budget "$PREPROVE_LINES" "$nroots" "$kact")" "$Q" "$tree" "$key" "$claimf" "$dir/root-red.txt")"
     local nch; nch="$(printf '%s\n' "$chained" | grep -c . || true)"
     case "$nch" in ''|*[!0-9]*) nch=0 ;; esac
     if [ "$nch" -gt 0 ] && [ $((nlive + nch)) -gt "$PREPROVE_LINES" ]; then
@@ -1653,6 +1810,9 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
     printf '%s\n' "$cand" >"$dir/line-$i.host"
+    # THE CHAIN THIS SLOT IS THE ROOT OF, if it is one (see lq_slot_root_red). A live single's root
+    # is itself: when it is proven red alone, the rungs held behind it are empty.
+    printf '%s\n' "$(lq_line_payload "$line")" >"$dir/line-$i.root"
     (
       # `--preprove` AS AN ARGUMENT, not LAND_PREPROVE in the environment. land.sh converts one
       # into the other for a caller who typed the variable, but the argv is what reaches the box —
@@ -1668,6 +1828,7 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
+    printf '%s\n' "$!" >"$dir/line-$i.driver"
   done <<EOF
 $lines
 EOF
@@ -1708,12 +1869,16 @@ EOF
     printf '%s\n' "$cand" >"$dir/line-$i.host"
     printf '%s\n' "$ck" >"$dir/line-$i.chainkey"
     printf '%s\n' "$ctext" >"$dir/line-$i.chaintext"
+    # THE ROOT OF THE CHAIN THIS RUNG STANDS ON — the first line of the unit, which is what the
+    # union's prefix bisect judges first and what a live single of the same chain proves alone.
+    printf '%s\n' "$(printf '%s\n' "$chain2" | head -n1)" >"$dir/line-$i.root"
     lq_log "pre-prove: chained $(printf '%.70s' "$ctext") on $(printf '%s' "$chain2" | grep -c .) line(s) at $(printf '%.9s' "$key")"
     (
       env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf2" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
+    printf '%s\n' "$!" >"$dir/line-$i.driver"
   done <<EOF
 $chained
 EOF
@@ -1726,7 +1891,7 @@ EOF
 $chained" "$hosts" || true
   fi
   lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$key")"
-  wait
+  lq_sweep_watch "$dir" "$i" "$key" "$tree"
   # THE BASE IS LEARNED BEFORE A SINGLE LINE IS SCORED: the per-line verdicts below ask which rows
   # were already red at this tip.
   if [ -f "$dir/base.log" ]; then
@@ -1744,6 +1909,14 @@ $chained" "$hosts" || true
   # never written down as either colour.
   local j=1
   while [ "$j" -le "$i" ]; do
+    # A MOOTED RUNG (see lq_moot_deeper). Its chain's root was proven red while it was still
+    # bisecting, so it was stopped on the fleet. NONE — it is exactly as unproven as it was — and
+    # NOT lq_front_add'ed: it is not a question the fleet owes an answer to, because the hold it
+    # sits under is not being released at this tip whatever any box says.
+    if [ -f "$dir/line-$j.moot" ]; then
+      lq_log "pre-prove: line $j cancelled — its chain's ROOT was proven red alone; NONE:moot, not re-queued (log: $dir/line-$j.log)"
+      j=$((j + 1)); continue
+    fi
     local rc; rc="$(cat "$dir/line-$j.rc" 2>/dev/null || true)"
     local text; text="$(head -n1 "$dir/line-$j.batch")"
     # A CHAINED SLOT IS KEYED BY (tip, the predecessor picks) AND SPEAKS FOR THE DEPENDENT ONLY.
@@ -3567,6 +3740,73 @@ lq_selftest() {
   _t "  ...before it reads the tip"            1 \
      "$( [ "$(grep -n '^  lq_status >"\$W/target/gate/landq4.status"$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  tip="\$(git -C "\$W" rev-parse HEAD)"$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...and puts it in the log too"         1 "$(grep -c '^  lq_log "status: ' "$0")"
+
+
+  # ── A ROOT PROVEN RED MOOTS EVERY DEEPER RUNG OF ITS CHAIN ────────────────────────────────────
+  # MEASURED 2026-09-10: line 1 of a sweep — a chain's ROOT, proven ALONE — came back RED at
+  # 5481 s. Lines 4, 5 and 11 were deeper PREFIXES of that same chain, and all three were still
+  # bisecting on three fleet boxes three hours later, when an operator killed them by hand. Every
+  # rung of a chain stands on the root's picks. The root is red; the root's picks are coming back
+  # off the tree; there is no tree any of those rungs can be green on. Three boxes and three hours
+  # for an answer that was already known and could not change.
+  echo "landq4 selftest: a red chain ROOT cancels the deeper rungs still on the fleet"
+  local mroot="$root/moot"; mkdir -p "$mroot"
+  printf 'ROOT-LINE\n' >"$mroot/line-1.root"; printf 'ROOT-LINE\n' >"$mroot/line-1.batch"
+  printf 'RED%sROOT-LINE\n' "$TAB" >"$mroot/line-1.batch.result"; echo 1 >"$mroot/line-1.rc"
+  : >"$mroot/line-1.log"
+  local m
+  for m in 2 3; do printf 'ROOT-LINE\n' >"$mroot/line-$m.root"; : >"$mroot/line-$m.chainkey"; done
+  printf 'OTHER-ROOT\n' >"$mroot/line-4.root"; : >"$mroot/line-4.chainkey"
+  printf 'ROOT-LINE\n' >"$mroot/line-5.root"; : >"$mroot/line-5.chainkey"; echo 0 >"$mroot/line-5.rc"
+  _t "a live single proven RED is its chain's root red" 0 \
+     "$(lq_slot_root_red "$mroot" 1 tipX >/dev/null 2>&1; echo $?)"
+  _t "the deeper rungs of that chain are mooted"  "2 3" \
+     "$(lq_moot_deeper "$mroot" 5 1 ROOT-LINE | tr '\n' ' ' | sed 's/ $//')"
+  _t "  ...and each is marked, so it is scored once" 2 \
+     "$(ls "$mroot" | grep -c '\.moot$' || true)"
+  _t "  ...a rung of ANOTHER chain is left alone"  0 "$( [ -f "$mroot/line-4.moot" ] && echo 1 || echo 0)"
+  _t "  ...and a rung that already reported is not killed" 0 "$( [ -f "$mroot/line-5.moot" ] && echo 1 || echo 0)"
+  # A GREEN root, a box that vanished and a harness give-up are NOT a root red: nothing was learned
+  # about the root's picks, so the rungs beneath it are exactly as unproven as they were.
+  printf 'GREEN%sROOT-LINE\n' "$TAB" >"$mroot/line-1.batch.result"
+  _t "a GREEN root moots nothing"                 1 "$(lq_slot_root_red "$mroot" 1 tipX >/dev/null 2>&1; echo $?)"
+  printf 'RED%sROOT-LINE\n' "$TAB" >"$mroot/line-1.batch.result"
+  printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence: harness give-up: port busy\n' >"$mroot/line-1.log"
+  _t "a harness give-up is not a root red either" 1 "$(lq_slot_root_red "$mroot" 1 tipX >/dev/null 2>&1; echo $?)"
+  : >"$mroot/line-1.log"
+  # THE CHAINED SLOT'S OWN PREFIX-1 ROW says the same thing: the root is red inside the union.
+  printf 'ROOT-LINE\n' >"$mroot/line-6.root"; : >"$mroot/line-6.chainkey"; echo 1 >"$mroot/line-6.rc"
+  : >"$mroot/line-6.log"; printf 'RED%sROOT-LINE\nHELD%sDEEP-LINE\n' "$TAB" "$TAB" >"$mroot/line-6.batch.result"
+  _t "a chained slot whose PREFIX-1 row is RED is a root red" 0 \
+     "$(lq_slot_root_red "$mroot" 6 tipX >/dev/null 2>&1; echo $?)"
+  # THE CANCEL IS land-remote's, over land-remote's channel, and the local driver goes with it.
+  local cdir="$root/cancel"; mkdir -p "$cdir/target/gate"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/asked.txt"\n' "$cdir" >"$cdir/target/gate/land-remote.sh"
+  chmod +x "$cdir/target/gate/land-remote.sh"
+  printf '[remote 22:15:00] host i-0abc   ref land-20260910-221500-4242   picks: 1234567\n' >"$mroot/line-2.log"
+  printf 'i-0abc\n' >"$mroot/line-2.host"
+  _t "the ref is read out of the transport's own log" "land-20260910-221500-4242" "$(lq_slot_ref "$mroot/line-2.log")"
+  lq_cancel_slot "$mroot" 2 "$cdir" >/dev/null 2>&1
+  _t "the box's proof is stopped over land-remote's channel" "--cancel i-0abc land-20260910-221500-4242" \
+     "$(cat "$cdir/asked.txt" 2>/dev/null || true)"
+  # NOT RE-QUEUED. A mooted rung is not an unanswered question the fleet owes: its root is red, so
+  # the HOLD it is parked under is not going to be released this tip either way.
+  _t "a mooted slot is scored NONE:moot"        1 "$(grep -c 'NONE:moot, not re-queued (log:' "$LQ_SRC")"
+  _t "  ...and is NOT put on the owed-answer front" 0 \
+     "$(grep -c 'moot.*lq_front_add\|lq_front_add.*moot' "$LQ_SRC")"
+  # NO DEEPER RUNG IS DISPATCHED WHILE THE ROOT IS RED.
+  local savedPPm="$PP"; PP="$root/moot-pp.txt"
+  printf 'RED%stipX%s/l/1%sROOT-LINE\n' "$TAB" "$TAB" "$TAB" >"$PP"
+  _t "a chain whose root is RED at this tip is not a candidate" 0 "$(lq_chain_root_red ROOT-LINE tipX "$PP"; echo $?)"
+  _t "  ...a GREEN root is"                     1 "$(lq_chain_root_red OTHER-ROOT tipX "$PP"; echo $?)"
+  printf 'ROOT-2\n' >"$root/rootred.txt"
+  _t "  ...and this sweep's own red roots count too" 0 "$(lq_chain_root_red ROOT-2 tipX "$PP" "$root/rootred.txt"; echo $?)"
+  PP="$savedPPm"
+  _t "lq_chain_candidates refuses a red root"   1 \
+     "$(sed -n '/^lq_chain_candidates() {/,/^}$/p' "$LQ_SRC" | grep -c '^    lq_chain_root_red "')"
+  _t "the sweep watches its slots instead of a bare wait" 1 "$(grep -c '^  lq_sweep_watch "\$dir"' "$LQ_SRC")"
+  _t "  ...and records each slot's root and driver" 2 \
+     "$(grep -c 'line-\$i\.root"$\|line-\$i\.driver"$' "$LQ_SRC")"
 
   # ── THE HEAD OF THE LIVE QUEUE KEEPS ITS SLOTS ────────────────────────────────────────────────
   # MEASURED 2026-09-10: a sweep of twelve spent its WHOLE budget on chained holds — "9 chained
