@@ -1319,21 +1319,13 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-# 302 -> 299: the two cells that built a plugin context by hand stop doing it. Each carried a
-# leaking arena, a blank configuration view and a transport view of its own, and each named the
-# capability crate to build the frame it fed them; they now drive the step over the root's ONE
-# constructor, and the two `UnitCtx` builders beside them are the root's identity value with the one
-# field each actually varies.
-#
-# 299 -> 300: ONE, in the cell that drives a recorded golden through the plane's own face — the
-# outcome the encode step answers with is opened against the step's own token, which is this kind's
-# and is what makes a cell unable to read back an answer it did not ask for.
-# 300 -> 304: the answer's HEAD becomes a value the unit carries. Four hits, all of them step
-# tokens: the step that saw the answer is the step entitled to record it, and on four of the five
-# planes that is a different step — Meter on the model and agent planes, Audit on the streaming
-# one, Encode on the locally served one. What is counted is naming the token for that step at the
-# one line that writes the head, plus the cell that drives it.
-count = "304"
+# 304 -> 309: FIVE. The settlement evidence a root leg fills stops carrying one located quantity
+# against one class and carries what the unit spent PER DIMENSION THE PLANE DECLARED, which is this
+# kind's `Completion` and `CompletedUnits` — types both the kernel and the relay have to name and
+# neither may name the other, which is the one place a shared name can sit. Three legs report one
+# declared class each and share ONE spelling of "what a unit spent in one class", in the root's own
+# module rather than three times over; the fourth reads the completion straight off the record.
+count = "309"
 
 [[cell]]
 crate = "busbar"
@@ -1374,9 +1366,10 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-# 158 -> 157: the root's names for the loop collapse onto one re-export beside the views bundle the
-# loop reads, and the two cell-side identity builders stop reaching for the generation themselves.
-count = "157"
+# 157 -> 159: TWO, and both are the same rename seen where the root reads it. The settlement table
+# answers with LINES rather than one amount, so the two cells that assert what a turn settles at add
+# the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
+count = "159"
 
 [[cell]]
 crate = "busbar"
@@ -1386,10 +1379,13 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-# 1798 -> 1800: the plane's own verdict on the ending stops being a field each root leg writes into
-# a fee leg by hand and becomes one field of the answer's head, recorded once by the step that saw
-# it. Two hits, both of them the finish class named at the line that builds the head.
-count = "1800"
+# 1800 -> 1807: SEVEN. What a unit spent is now reported against the classes THE PLANE DECLARES,
+# so the legs that fill it name the declared class at the line that builds the completion — which is
+# the same class each of them already named one line further down, moved to where the quantity is.
+# The streaming plane's leg carries the rest: its reported figure is still its seven-plus classes
+# TOTALLED against one of them, which the shape now makes visible rather than hiding, and the
+# comment that says so names the plane's own declaration.
+count = "1807"
 
 [[cell]]
 crate = "busbar"
@@ -1414,15 +1410,11 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-# 939 -> 936: the two hand-written transport views in the cells are deleted. The stack a cell drives
-# a step over is now the root's own view over a named chain, so the wire words are spelled where the
-# chain is declared and not again beside it.
-# 936 -> 941: the transport's own reading of the answer arrives on the head. Five hits, all in the
-# model plane's leg, where the served status becomes the transport's status CLASS on the frame the
-# transport declares it reports on — which is the leg of the fee decision the kernel could never
-# see, because every root leg wrote "this transport reports no status" as a literal and disarmed
-# the dispute arm on all five planes at once.
-count = "941"
+# 941 -> 944: THREE, in the cell that derives the model plane's 103 recorded money cells through
+# the kernel's own fee decision. It builds the head the served leg records from each cell's own
+# recorded status, and the head's first source is the TRANSPORT's reading of it — so the cell names
+# the transport's status class exactly where the leg it is proving does.
+count = "944"
 
 [[cell]]
 crate = "busbar"
@@ -1767,25 +1759,12 @@ count = "4"
 [[cell]]
 crate = "busbar-kernel"
 kind = "caps"
-# 68 -> 67: the kernel's own second 4 KiB bump buffer is deleted, and with it the one place that
-# turned its `ArenaFull` refusal into a caps reason code. The production arena answers with the
-# contract's own `ArenaBudget`, and the root already maps that to the same reason.
-#
-# 67 -> 64: the per-unit record lands and names this crate once, its cell names it once, and the
-# loop stops path-spelling it five times. `Kernel::durability_token`, `Kernel::ledger_token` and the
-# exit path's durability refusal each wrote the package name inline beside a symbol the file's own
-# import list already carries or can carry; they now write the symbol. Five spellings out, two in.
-#
-# 64 -> 65: ONE, and it is a new cell's import list. `tests/body_under_the_hold.rs` names this
-# crate once, at the top, for the tokens and the body lease the routed body under the hold is
-# sealed with. There is no second spelling of it anywhere in the file — the plane vocabulary the
-# first draft carried ("streams", three times in prose) is gone, and `busbar-kernel x plane` stayed
-# at its 1.
-#
-# 65 -> 67: the record's head cell takes any step's token — what makes a head trustworthy is not
-# which step wrote it but that exactly one did — and the new cell that drives it names the tokens
-# its fixture plane answers with.
-count = "67"
+# 67 -> 72: FIVE, all in the cells. The settlement evidence carries what a unit spent per dimension
+# the plane declared, so the cell that states it names this kind's `Completion` and `CompletedUnits`
+# — one import line — and the three rows in the existing batteries that used to set one located
+# quantity now build one dimension instead. The library does not move: `teller.rs` names the same
+# import list it already had, one name wider.
+count = "72"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -2810,21 +2789,19 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "caps"
-# 34 -> 37: THREE, all of them import lines rather than inline spellings. `Delivered` gains the
-# routed body's lease and what the relay counted, both of which are this kind's types because both
-# the kernel and this unit have to name them and neither may name the other. `wire.rs` gains one
-# import, `attempt.rs` widens the one it had, and the cell that measures the widening carries one.
-# The first draft fully-qualified every use and scored nine; naming each type once and using the
-# symbol is what took it to three.
-count = "37"
+# 37 -> 36: ONE FEWER, and it is a deletion rather than a drain. `Delivered` stopped carrying what
+# the relay made of the body — three fields that were hollow for the length of an upstream call —
+# and what carries it now is `Relayed`, which is this crate's own type. The completion is still this
+# kind's and is still named once, on the value that actually has one.
+count = "36"
 
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "contract-transport"
-# 55 -> 56: ONE, in the cell that relays a body larger than the per-unit arena and asserts the
-# outcome carries the count and none of the bytes. It names the transport-facing status class its
-# scripted frames carry, which is the same name every other cell in this unit's battery names.
-count = "56"
+# 56 -> 58: TWO. The relay leaves the walk as a value the root drives, so the connection it holds
+# and the close reason it ends on are named on that value instead of inside the loop that used to
+# run there — one each, and neither is a new spelling.
+count = "58"
 
 [[cell]]
 crate = "busbar-unit-egress"
@@ -2844,7 +2821,9 @@ count = "59"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "51"
+# 51 -> 52: ONE. The walk answers with `Routed` — the head and the relay it left behind it — and
+# the unit's own crate name appears once more where that type is re-exported for the root to name.
+count = "52"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"

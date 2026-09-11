@@ -20,7 +20,7 @@ use crate::ports::{Breaker, DestinationId, Permit, Telemetry, Unavailable};
 use crate::race;
 use crate::select::{pick_among, PickInput, ProbeGuard, RequestCtx};
 use crate::walk::RouteRequest;
-use crate::wire::{RouteOutcome, Shed};
+use crate::wire::{RouteOutcome, Routed, Shed};
 
 /// The wait a shed advertises when nothing else justifies a longer one, in whole seconds.
 ///
@@ -65,14 +65,14 @@ pub fn retry_after_secs(
 }
 
 /// The shed: refuse, with the wait the pool's own members justify.
-pub fn handle_status_503(
+pub fn handle_status_503<'a>(
     breaker: &dyn Breaker,
     members: &[Member],
     pool: &str,
     now: u64,
     token: &UnitToken<Route>,
-) -> RouteOutcome {
-    RouteOutcome::Refused(Shed::overloaded(retry_after_secs(
+) -> Routed<'a> {
+    Routed::refused(Shed::overloaded(retry_after_secs(
         breaker, members, pool, now, token,
     )))
 }
@@ -86,9 +86,9 @@ pub fn handle_status_503(
 pub async fn handle_exhaustion_for_pool<'a>(
     request: &RouteRequest<'a>,
     ctx: &mut RequestCtx,
-    pool: &Pool,
+    pool: &'a Pool,
     members: &[Member],
-) -> RouteOutcome {
+) -> Routed<'a> {
     ctx.mark_pool_visited(&pool.name);
     let now = request.clock.now_secs();
     match &pool.on_exhausted {
@@ -116,13 +116,13 @@ pub async fn handle_exhaustion_for_pool<'a>(
 async fn dispatch_degraded<'a>(
     request: &RouteRequest<'a>,
     ctx: &RequestCtx,
-    pool: &Pool,
+    pool: &'a Pool,
     member: &Member,
     permit: Permit,
     mut probe: Option<ProbeGuard<'_>>,
-) -> Result<RouteOutcome, ()> {
+) -> Result<Routed<'a>, ()> {
     let Some(dest) = request.destination(member.destination) else {
-        return Ok(RouteOutcome::Refused(Shed::internal()));
+        return Ok(Routed::refused(Shed::internal()));
     };
     let probe_epoch = probe.as_mut().map(ProbeGuard::take_epoch);
     let now = request.clock.now_secs();
@@ -131,7 +131,7 @@ async fn dispatch_degraded<'a>(
     } else {
         pool.name.as_str()
     };
-    let outcome = attempt(AttemptInput {
+    let (outcome, pump) = attempt(AttemptInput {
         hop: Hop {
             breaker: request.breaker,
             token: request.token,
@@ -156,21 +156,28 @@ async fn dispatch_degraded<'a>(
             lane_field: request.lane_field,
             stream: request.stream,
             degraded: true,
+            unit: request.unit,
+            ctx: request.ctx,
         },
         permit,
         probe_epoch,
-        unit: request.unit,
-        ctx: request.ctx,
     })
     .await;
     match outcome {
-        AttemptOutcome::Delivered(delivered) => Ok(RouteOutcome::Delivered(delivered)),
-        AttemptOutcome::Bail(shed) => Ok(RouteOutcome::Refused(shed)),
-        // The upstream answered and the breaker was told: relay that answer as it came.
+        AttemptOutcome::Delivered(delivered) => Ok(Routed {
+            outcome: RouteOutcome::Delivered(delivered),
+            pump,
+        }),
+        AttemptOutcome::Bail(shed) => Ok(Routed::refused(shed)),
+        // The upstream answered and the breaker was told: relay that answer as it came. It was
+        // over before it got here, so it carries its own relay reading and leaves no pump.
         AttemptOutcome::Failed {
             relay: Some(delivered),
             ..
-        } => Ok(RouteOutcome::Delivered(delivered)),
+        } => Ok(Routed {
+            outcome: RouteOutcome::Delivered(delivered),
+            pump: None,
+        }),
         // Nothing came back at all: the caller may try the next member, so this is a failover.
         AttemptOutcome::Failed {
             relay: None,
@@ -196,10 +203,10 @@ async fn handle_fallback_pool<'a>(
     request: &RouteRequest<'a>,
     ctx: &mut RequestCtx,
     target: &str,
-) -> RouteOutcome {
+) -> Routed<'a> {
     // The deadline travels across hops. A spill is not a fresh request.
     if ctx.expired(request.clock.now_secs()) {
-        return RouteOutcome::Refused(Shed::request_timeout());
+        return Routed::refused(Shed::request_timeout());
     }
 
     // The loop guard: if this request already routed through this pool, stop.
@@ -231,7 +238,7 @@ async fn handle_fallback_pool<'a>(
     loop {
         let now = request.clock.now_secs();
         if ctx.expired(now) {
-            return RouteOutcome::Refused(Shed::request_timeout());
+            return Routed::refused(Shed::request_timeout());
         }
 
         // The spill selects with the plain weighted floor by design: a ranking hook applies to the
@@ -257,7 +264,7 @@ async fn handle_fallback_pool<'a>(
             return Box::pin(handle_exhaustion_for_pool(request, ctx, pool, &members)).await;
         };
         let Some(member) = members.iter().find(|m| m.destination == pick.destination) else {
-            return RouteOutcome::Refused(Shed::internal());
+            return Routed::refused(Shed::internal());
         };
         ctx.exclude(pick.destination);
 
@@ -288,9 +295,9 @@ async fn handle_fallback_pool<'a>(
 async fn handle_least_bad<'a>(
     request: &RouteRequest<'a>,
     ctx: &RequestCtx,
-    pool: &Pool,
+    pool: &'a Pool,
     members: &[Member],
-) -> RouteOutcome {
+) -> Routed<'a> {
     let now = request.clock.now_secs();
     let mut ranked: Vec<&Member> = members
         .iter()
@@ -372,10 +379,10 @@ impl Drop for QueuedGuard<'_> {
 async fn handle_queue<'a>(
     request: &RouteRequest<'a>,
     ctx: &mut RequestCtx,
-    pool: &Pool,
+    pool: &'a Pool,
     members: &[Member],
     max_ms: u64,
-) -> RouteOutcome {
+) -> Routed<'a> {
     // Dedup by member: the affinity fast path may have recorded a member the rest of the pick
     // recorded again, which is deliberate and documented in the order.
     let mut waiting: Vec<DestinationId> = Vec::new();
@@ -409,12 +416,12 @@ async fn handle_queue<'a>(
 async fn queue_wait<'a>(
     request: &RouteRequest<'a>,
     ctx: &RequestCtx,
-    pool: &Pool,
+    pool: &'a Pool,
     members: &[Member],
     waiting: &mut Vec<DestinationId>,
     started: u128,
     bound_ms: u64,
-) -> RouteOutcome {
+) -> Routed<'a> {
     loop {
         if waiting.is_empty() {
             return handle_status_503(
@@ -464,7 +471,7 @@ async fn queue_wait<'a>(
                 });
                 let Some(member) = members.iter().find(|m| m.destination == destination) else {
                     drop(permit);
-                    return RouteOutcome::Refused(Shed::internal());
+                    return Routed::refused(Shed::internal());
                 };
                 return match dispatch_degraded(request, ctx, pool, member, permit, probe).await {
                     Ok(outcome) => outcome,

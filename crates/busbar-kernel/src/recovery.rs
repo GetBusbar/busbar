@@ -23,12 +23,12 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
-    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, ReasonCode, RecoveryToken, StepName,
+    UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{settle_lines, Evidence, Kernel};
 
 /// A hold as the journal wrote it.
 ///
@@ -78,21 +78,24 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     // settled under is the one the record supports, and the table reads the recovery rows first, so
     // the outcome here changes nothing about the amount.
     let outcome = Outcome::Failed(StepName::Route, ReasonCode::TaskLost);
-    let (amount, flags) = settle_amount(&outcome, &evidence);
-    // One line, and the record holds sixteen: this report is within the bound by construction.
-    let usage = Usage::estimate(
-        &UsageToken::mint(kernel.seal()),
-        vec![UsageLine {
-            class: KERNEL_ACCRUAL_CLASS,
-            quantity: amount,
-            // The sweep never saw a destination report anything: this figure is the accrual the
-            // journal recorded, which is the kernel's own count, and the whole report is an
-            // estimate for the same reason.
-            source: QuantitySource::Count,
+    let (lines, flags) = settle_lines(&outcome, &evidence);
+    let amount = lines
+        .iter()
+        .fold(0_u64, |acc, line| acc.saturating_add(line.quantity));
+    // The sweep never saw a destination report anything: this figure is the accrual the journal
+    // recorded, which is the kernel's own count, and the whole report is an estimate for the same
+    // reason — whichever recovery row the table took.
+    let lines: Vec<UsageLine> = lines
+        .into_iter()
+        .map(|line| UsageLine {
             estimated: true,
-        }],
-    )
-    .expect("one usage line is always within the record's bound");
+            ..line
+        })
+        .collect();
+    // One line per dimension, and the record holds sixteen: a recovered unit reports the kernel's
+    // own floor and nothing else, so this report is one line and within the bound by construction.
+    let usage = Usage::estimate(&UsageToken::mint(kernel.seal()), lines)
+        .expect("the kernel's own floor is one usage line and always within the record's bound");
     // The settlement table's `amount` IS the money figure, in the nano-units the hold reserved
     // in; the single usage line above carries the same number as its own class's quantity because
     // that class IS nano-units. The posting takes the money figure from where it is money.

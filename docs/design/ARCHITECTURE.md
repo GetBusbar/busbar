@@ -70,10 +70,15 @@ them). Each axis is blind to the other two; only the kernel composes them.
   memory, the context every step is lent, the two facts Verify seals onto it, the routed body
   it holds as a HANDLE — a lease and what the stream counted, never the bytes — from the Route step
   that took it until the exit path releases it, which is what lets the Meter step read a
-  completion the seam did not fix, and the ANSWER'S HEAD beside it: the status class the transport
+  completion the seam did not fix **and is what the walk returning BEFORE the body is drained makes
+  true rather than vacuous** — and the ANSWER'S HEAD beside it: the status class the transport
   reported, where it reported it, and what the plane made of the ending, written once by the step
   that saw the answer and read by the fee decision at the exit, which is what makes the kernel's
-  dispute arm reachable at all) · pump/scheduler 1.5k ·
+  dispute arm reachable at all. The settlement the exit reads that record into answers with one
+  line PER DIMENSION THE PLANE DECLARED and never one quantity against one class: a dimension is
+  plane data — the model plane declares four classes, the streaming plane seven, the tool plane
+  two, the agent plane one, the control plane none — so a kernel that settled one number was a
+  kernel deciding what a plane declares) · pump/scheduler 1.5k ·
   in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
   arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.6k **of plugin-visible SURFACE** —

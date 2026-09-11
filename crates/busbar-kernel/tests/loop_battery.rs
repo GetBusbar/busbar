@@ -418,7 +418,17 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
         door: Door::Own(100),
         spend: 400,
         evidence: Evidence {
-            located: Some(400),
+            completed: Some(
+                busbar_caps::Completion::of(
+                    1,
+                    0,
+                    vec![busbar_caps::CompletedUnits {
+                        class: busbar_caps::MeterClassId::new("reported"),
+                        units: 400,
+                    }],
+                )
+                .expect("one dimension is inside the usage record's bound"),
+            ),
             ..Evidence::default()
         },
         ..TestUnits::default()

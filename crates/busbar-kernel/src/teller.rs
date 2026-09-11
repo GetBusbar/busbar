@@ -58,10 +58,10 @@ use std::future::Future;
 
 use busbar_caps::{
     Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, DurabilityToken, Encode, ExitToken,
-    Hold, HoldAccrual, HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind,
-    Outcome, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
-    SessionId, StepName, TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage,
+    Authenticated, Canary, Completion, Decision, Decode, DurabilityLost, DurabilityToken, Encode,
+    ExitToken, Hold, HoldAccrual, HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin,
+    OriginKind, Outcome, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal,
+    Route, SessionId, StepName, TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage,
     UsageLine, UsageToken, Verify,
 };
 
@@ -284,8 +284,19 @@ pub use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
 /// tested as one, row by row, with no loop and no clock anywhere near it.
 #[derive(Debug, Clone, Default)]
 pub struct Evidence {
-    /// What the destination reported, where a locator found it.
-    pub located: Option<u64>,
+    /// WHAT THE ANSWER CARRIED, per dimension the plane declared.
+    ///
+    /// This field used to be one quantity against one class, and that shape was the join that
+    /// threw three of a four-dimension plane's numbers away before anything could price them. A
+    /// dimension is not a kernel word — `MeterClassDecl` is plane data, and the declarations are
+    /// not one line each — so what a unit spent is a set of quantities against the plane's own
+    /// declared keys, and the settlement below answers with one line per key.
+    ///
+    /// `None` for a unit that routed nowhere, for one whose destination reported nothing, and for
+    /// one whose exit has already given the body back. It is read off the record's own
+    /// [`completion`](crate::record::UnitRecord::completion) and never re-derived: the bytes were
+    /// the transport's and by the time the settlement runs they are gone.
+    pub completed: Option<Completion>,
     /// What the kernel counted while the unit ran — the floor.
     pub accrued_floor: u64,
     /// Whether a present rate card requires a locator for a class it prices.
@@ -304,8 +315,13 @@ pub struct Evidence {
     pub lane_mismatch: Option<(u64, u64)>,
     /// Whether the settle record itself was lost after value was delivered.
     pub settle_record_lost: bool,
-    /// Which class the settled amount is reported against.
-    pub class: Option<MeterClassId>,
+    /// Which class the KERNEL'S OWN FLOOR is reported against.
+    ///
+    /// Not "which class the settled amount is in", which is what this field used to say and what
+    /// made one class look like enough for every plane: [`accrued_floor`](Evidence::accrued_floor)
+    /// is a quantity, a quantity needs a class, and that is the whole of what this names. What a
+    /// DESTINATION reported arrives on [`completed`](Evidence::completed) with its own keys.
+    pub accrued_class: Option<MeterClassId>,
     /// Whether the verified set contained an upstream candidate, which is what makes a client unit
     /// draw a request slot.
     pub upstream_candidate: bool,
@@ -326,6 +342,12 @@ pub const KERNEL_ACCRUAL_CLASS: MeterClassId = MeterClassId::new("nano_units");
 /// it, and put it where someone will look at it.** Nothing here ever resolves an ambiguity in the
 /// house's favour, and nothing here is silent about having resolved one.
 ///
+/// It answers with LINES, one per dimension the plane declared, because that is what a unit's
+/// spend is. It used to answer with one number against one class, and every plane in the tree that
+/// declares more than one class had three quarters of its answer discarded at this line. The rows
+/// did not change and were not reordered; what changed is that the two rows which post what a
+/// DESTINATION reported now post all of it.
+///
 /// The rows, in the order they are decided:
 ///
 /// 1. **Recovered from a journal record.** If the record shows the unit had dispatched, post the
@@ -334,41 +356,55 @@ pub const KERNEL_ACCRUAL_CLASS: MeterClassId = MeterClassId::new("nano_units");
 /// 2. **A three-way lane mismatch.** The request said one lane, the destination another, the
 ///    response a third. Post the cheaper reading, marked disputed.
 /// 3. **Two reported sources disagreeing beyond tolerance.** Post the lower, marked disputed.
-/// 4. **Completed with a located figure.** Post what the destination reported.
+/// 4. **Completed with a reported answer.** Post what the destination reported, dimension for
+///    dimension.
 /// 5. **Completed with a required locator missing.** Post ZERO — an upstream that reported no usage
 ///    is billed nothing — and keep the kernel's floor as internal evidence on the disputes report.
-/// 6. **A live end that is not completed, with a located figure.** Post it, unless the stream ended
-///    with an error signal, in which case post zero.
-/// 7. **A live end that is not completed, with nothing located.** Post the kernel's own floor,
+/// 6. **A live end that is not completed, with a reported answer.** Post it, unless the stream
+///    ended with an error signal, in which case post zero — and the zero is total, because a
+///    partial refusal would be the house choosing which of a plane's dimensions to keep.
+/// 7. **A live end that is not completed, with nothing reported.** Post the kernel's own floor,
 ///    marked estimated.
 ///
 /// A lost settle record adds its own mark on top of whichever row applied: the posting is retained
 /// and re-appended, and it is not forgotten in the meantime.
-pub fn settle_amount(end: &Outcome, evidence: &Evidence) -> (u64, PostingFlags) {
-    let (amount, flags) = if evidence.recovered {
+pub fn settle_lines(end: &Outcome, evidence: &Evidence) -> (Vec<UsageLine>, PostingFlags) {
+    let (lines, flags) = if evidence.recovered {
         if evidence.dispatched {
-            (evidence.checkpointed, PostingFlags::RECOVERED)
+            (
+                floor_of(evidence, evidence.checkpointed),
+                PostingFlags::RECOVERED,
+            )
         } else {
-            (0, PostingFlags::VOIDED)
+            (floor_of(evidence, 0), PostingFlags::VOIDED)
         }
     } else if let Some((left, right)) = evidence.lane_mismatch {
-        (left.min(right), PostingFlags::METER_DISPUTED)
+        (
+            floor_of(evidence, left.min(right)),
+            PostingFlags::METER_DISPUTED,
+        )
     } else if let Some((left, right)) = evidence.variance {
-        (left.min(right), PostingFlags::METER_DISPUTED)
+        (
+            floor_of(evidence, left.min(right)),
+            PostingFlags::METER_DISPUTED,
+        )
     } else if end.is_completed() {
-        match evidence.located {
-            Some(located) => (located, PostingFlags::NONE),
+        match &evidence.completed {
+            Some(completed) => (reported(completed), PostingFlags::NONE),
             None if evidence.locator_required => (
-                0,
+                floor_of(evidence, 0),
                 PostingFlags::ESTIMATED.with(PostingFlags::METER_DISPUTED),
             ),
-            None => (0, PostingFlags::NONE),
+            None => (floor_of(evidence, 0), PostingFlags::NONE),
         }
     } else {
-        match evidence.located {
-            Some(_) if evidence.terminal_error => (0, PostingFlags::NONE),
-            Some(located) => (located, PostingFlags::NONE),
-            None => (evidence.accrued_floor, PostingFlags::ESTIMATED),
+        match &evidence.completed {
+            Some(_) if evidence.terminal_error => (floor_of(evidence, 0), PostingFlags::NONE),
+            Some(completed) => (reported(completed), PostingFlags::NONE),
+            None => (
+                floor_of(evidence, evidence.accrued_floor),
+                PostingFlags::ESTIMATED,
+            ),
         }
     };
     let flags = if evidence.settle_record_lost {
@@ -376,7 +412,61 @@ pub fn settle_amount(end: &Outcome, evidence: &Evidence) -> (u64, PostingFlags) 
     } else {
         flags
     };
-    (amount, flags)
+    // ESTIMATED IS THE POSTING'S MARK AND EVERY LINE CARRIES IT. Marked once, from the flags the
+    // rows above produced, so a line cannot be an estimate on a posting that is not one or the
+    // other way about. Unflagged, the node's own floor would reach the ledger looking like a
+    // figure a destination stood behind and would never reach the disputes report.
+    let estimated = flags.contains(PostingFlags::ESTIMATED);
+    let lines = lines
+        .into_iter()
+        .map(|line| UsageLine { estimated, ..line })
+        .collect();
+    (lines, flags)
+}
+
+/// The kernel's OWN figure, as one line against the class its floor is reported in.
+///
+/// One line and not none, even at zero: a unit that settled nothing still settled, and a posting
+/// with no lines at all is a different statement from a posting of zero — the first says nobody
+/// looked and the second says somebody did.
+fn floor_of(evidence: &Evidence, quantity: u64) -> Vec<UsageLine> {
+    vec![UsageLine {
+        class: evidence.accrued_class.unwrap_or(KERNEL_ACCRUAL_CLASS),
+        quantity,
+        // What the kernel counted while the unit ran, which is the kernel's own figure and not one
+        // a destination reported.
+        source: QuantitySource::Count,
+        estimated: false,
+    }]
+}
+
+/// WHAT THE DESTINATION REPORTED, dimension for dimension, in the order the plane declared them.
+///
+/// Nothing is folded and nothing is reordered. A `CompletedUnits` carries a class and a quantity
+/// and NOT where the quantity was found, so this cannot claim a locator it was not given; widening
+/// it to carry the pointer is the tariff's join and not this landing's.
+fn reported(completed: &Completion) -> Vec<UsageLine> {
+    completed
+        .dimensions()
+        .iter()
+        .map(|d| UsageLine {
+            class: d.class,
+            quantity: d.units,
+            source: QuantitySource::Count,
+            estimated: false,
+        })
+        .collect()
+}
+
+/// What one settlement comes to as a single figure: the sum of its lines.
+///
+/// The ledger settles ONE amount against the hold, so the lines have to add up somewhere. They add
+/// up here, in the open, rather than inside the table — a table that returned a total would be a
+/// table that had already decided a four-dimension plane is worth one number.
+fn total_of(lines: &[UsageLine]) -> u64 {
+    lines
+        .iter()
+        .fold(0_u64, |acc, line| acc.saturating_add(line.quantity))
 }
 
 /// WHAT THE UNIT IS, for the fee decision. Everything about the ANSWER is the head's.
@@ -1149,7 +1239,7 @@ pub fn exit<U: Units>(
         None => Ended::AlreadySettled,
         Some(mut hold) => {
             let evidence = units.evidence(record);
-            let (amount, table_flags) = settle_amount(&outcome, &evidence);
+            let (lines, table_flags) = settle_lines(&outcome, &evidence);
             let (fee, fee_flags) = fee_count(&evidence.fee, record.head());
             let flags = table_flags.with(fee_flags);
             let requests = requests_settled(
@@ -1162,15 +1252,10 @@ pub fn exit<U: Units>(
             // carried out as an overdraft. There is no arm on this path that refuses — value was
             // delivered, so the only question left is which column it lands in.
             let _spend = hold.spend(run.meter.total(), run.meter.headroom());
-            let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
-            let lines = vec![UsageLine {
-                class,
-                quantity: amount,
-                // The exit path settles what the accrual meter counted while the unit ran, which
-                // is the kernel's own figure, not one a destination reported.
-                source: QuantitySource::Count,
-                estimated: flags.contains(PostingFlags::ESTIMATED),
-            }];
+            // WHAT THE TABLE ANSWERED, LINE FOR LINE, and the money it comes to. The exit
+            // re-derives neither: a second assembly of one settlement is how a unit ends up with
+            // two readings of itself and the ledger reads whichever ran last.
+            let amount = total_of(&lines);
             let usage_token = UsageToken::mint(seal);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {
                 Usage::estimate(&usage_token, lines)

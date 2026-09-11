@@ -22,13 +22,13 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_caps::{
-    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
+    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, ReasonCode, StepName,
+    UnitEnd, Usage, UsageToken,
 };
 
 use crate::inflight::UnitSlot;
 use crate::slice::ConcurrencyGauge;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{settle_lines, Evidence, Kernel};
 use crate::Millis;
 
 /// How long a session may go without a non-tick unit before it is closed.
@@ -295,17 +295,15 @@ pub fn sweep_settle(
             // handed a set that a gone task took with it.
             slot.leases().release_all(gauge);
             taken.map(|hold| {
-                let (amount, flags) = settle_amount(&outcome, evidence);
+                let (lines, flags) = settle_lines(&outcome, evidence);
                 // Estimated or reported is the settlement table's answer, not the sweep's: a unit
-                // whose locator DID arrive before its task disappeared is settled at the figure
-                // the destination reported, unflagged, exactly as the table says.
+                // whose destination DID report before its task disappeared is settled at the
+                // figure it reported, dimension for dimension and unflagged, exactly as the table
+                // says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
-                let lines = vec![UsageLine {
-                    class: KERNEL_ACCRUAL_CLASS,
-                    quantity: amount,
-                    source: QuantitySource::Count,
-                    estimated,
-                }];
+                let amount = lines
+                    .iter()
+                    .fold(0_u64, |acc, line| acc.saturating_add(line.quantity));
                 let token = UsageToken::mint(kernel.seal());
                 let usage = if estimated {
                     Usage::estimate(&token, lines)

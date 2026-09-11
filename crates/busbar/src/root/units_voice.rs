@@ -1756,11 +1756,26 @@ impl Units for VoiceUnit<'_> {
         Evidence {
             // WHAT THE TURN METERED, over every class the plane declares — the same figure the
             // metering step settles the session's lease at, read from the same place. One class of
-            // it is not the turn: a turn that answered in text emitted no audio, and locating only
+            // it is not the turn: a turn that answered in text emitted no audio, and reporting only
             // the emitted audio posted nothing for a completed turn whose lease had already been
-            // drawn down by the whole report. Nothing located is `None` and not a zero, because the
-            // two are different rows of the settlement table.
-            located: Some(self.usage.total()).filter(|total| *total > 0),
+            // drawn down by the whole report. Nothing reported is `None` and not a zero, because
+            // the two are different rows of the settlement table.
+            //
+            // IT IS STILL ONE DIMENSION, and that is now visibly the wrong shape rather than
+            // invisibly it. This plane declares seven-plus classes and this figure is their TOTAL,
+            // reported against the one class the kernel's own floor is counted under — which is a
+            // duration, and a total of tokens and durations is not one. The field that makes that
+            // fixable is here now; filling it with the seven is a widening with no recorded cell
+            // behind it, so it is the streaming plane's own landing and not this one's.
+            completed: Some(self.usage.total())
+                .filter(|total| *total > 0)
+                .map(|total| {
+                    crate::root::spent_in_one_class(
+                        declared_class(meta::CLASS_AUDIO_SECONDS_IN.as_str())
+                            .unwrap_or(busbar_kernel::teller::KERNEL_ACCRUAL_CLASS),
+                        total,
+                    )
+                }),
             // What the kernel counted while the unit ran, IN THE UNIT OF THE CLASS IT IS COUNTED
             // UNDER. The counter is milliseconds of uplink audio; the class the plane declares for
             // the audio a turn takes in is denominated in seconds, and the label is what says which
@@ -1790,10 +1805,10 @@ impl Units for VoiceUnit<'_> {
             // wrong direction, because what the kernel counts here is the audio that came IN, and
             // wrong unit, because that class is tokens and this figure is a duration.
             //
-            // The located figure beside it spans every class the plane declares, and the exit path
-            // posts it as the settled amount rather than pricing it through this label; what the
-            // label is for is saying what the kernel's own counting was OF.
-            class: declared_class(meta::CLASS_AUDIO_SECONDS_IN.as_str()),
+            // The reported figure beside it spans every class the plane declares, and the exit
+            // path posts it as the settled amount rather than pricing it through this label; what
+            // the label is for is saying what the kernel's own counting was OF.
+            accrued_class: declared_class(meta::CLASS_AUDIO_SECONDS_IN.as_str()),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),

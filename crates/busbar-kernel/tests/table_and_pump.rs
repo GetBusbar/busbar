@@ -18,7 +18,7 @@ use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Emission, EmissionClock, NestedPool, Scheduler, Shape,
     SpillBudget, StreamId, TransportKind, MAX_NEEDMORE_FRAMES,
 };
-use busbar_kernel::teller::{settle_amount, Evidence, Kernel};
+use busbar_kernel::teller::{settle_lines, Evidence, Kernel};
 
 use common::{principal, TestDoor};
 
@@ -129,15 +129,16 @@ fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
     let hold = refused.hold;
     assert_eq!(hold.principal(), &principal());
     let evidence = Evidence {
-        located: None,
+        completed: None,
         accrued_floor: 2_500,
         ..Evidence::default()
     };
-    let (amount, flags) = settle_amount(
+    let (lines, flags) = settle_lines(
         &busbar_caps::Outcome::Refused(refused.step, refused.reason),
         &evidence,
     );
-    assert_eq!(amount, 2_500);
+    assert_eq!(lines.len(), 1, "nothing was reported, so this is the floor");
+    assert_eq!(lines[0].quantity, 2_500);
     assert!(flags.contains(PostingFlags::ESTIMATED));
 }
 

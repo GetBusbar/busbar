@@ -112,7 +112,7 @@ fn there_is_no_failover_after_the_first_byte() {
     );
     node.transport.script("b", Script::Frames(ok_frames()));
 
-    let outcome = node.route("primary");
+    let (outcome, relayed) = node.route_and_drain("primary");
     match outcome {
         RouteOutcome::Delivered(delivered) => {
             assert_eq!(
@@ -120,7 +120,7 @@ fn there_is_no_failover_after_the_first_byte() {
                 DestinationId::new(0),
                 "the answer stays with the member that started it"
             );
-            assert_eq!(delivered.frames, 1);
+            assert_eq!(relayed.frames, 1);
         }
         other => panic!("expected the truncated answer to be returned, got {other:?}"),
     }

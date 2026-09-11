@@ -77,3 +77,23 @@ pub mod units_mcp;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
+
+/// WHAT A UNIT SPENT, where the plane that spent it reports ONE declared class.
+///
+/// The kernel's settlement evidence carries a completion — a set of quantities against the keys the
+/// plane declared — because a dimension is plane data and the declarations are not one line each.
+/// Three of this root's legs report exactly one class today, and this is the one spelling of that,
+/// here rather than three times over: three constructions of one shape is three places a class key
+/// or a frame count can drift apart.
+///
+/// The frames and the bytes are the RELAY's own count of what it carried and no leg on this root
+/// has one yet, so they are zero and are stated as zero rather than invented. What settles is the
+/// dimension.
+#[must_use]
+pub(crate) fn spent_in_one_class(
+    class: busbar_caps::MeterClassId,
+    units: u64,
+) -> busbar_caps::Completion {
+    busbar_caps::Completion::of(0, 0, vec![busbar_caps::CompletedUnits { class, units }])
+        .expect("one dimension is always inside the fixed-size usage record's bound")
+}

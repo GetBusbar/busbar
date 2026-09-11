@@ -44,7 +44,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use busbar_caps::{Outcome, PostingFlags, OriginKind};
+use busbar_caps::{OriginKind, Outcome, PostingFlags};
 use busbar_kernel::teller::{
     fee_count, requests_drawn, requests_settled, settle_lines, Evidence, FeeEvidence, FinishClass,
     StatusAt, StatusClass, StatusLeg, KERNEL_ACCRUAL_CLASS,
@@ -214,7 +214,10 @@ fn every_recorded_model_plane_cell_settles_exactly_what_it_recorded() {
         // 4. Nothing on this leg is disputed, because nothing on it has two sources yet.
         let flags = table_flags.with(fee_flags);
         if flags.contains(PostingFlags::METER_DISPUTED) {
-            moved.push(format!("{}: disputed, and nothing recorded a dispute", rec.name));
+            moved.push(format!(
+                "{}: disputed, and nothing recorded a dispute",
+                rec.name
+            ));
         }
 
         if !rec.usage.is_empty() {

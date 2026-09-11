@@ -7,26 +7,66 @@
 //! put it where someone will look at it. These are the rows.
 
 use busbar_caps::OriginKind;
-use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
+use busbar_caps::{
+    CompletedUnits, Completion, MeterClassId, Outcome, PostingFlags, ReasonCode, StepName,
+};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
+    fee_count, requests_drawn, requests_settled, settle_lines, Evidence, FeeEvidence, FinishClass,
     StatusAt, StatusClass, StatusLeg,
 };
+
+/// The one class the rows below report against.
+///
+/// The rows are about WHICH FIGURE a situation settles at, and a plane's class list is not what
+/// they vary — so they vary one quantity against one declared class, exactly as they always did.
+/// What a four-dimension answer settles as is `tests/fee_identity.rs`, which is the cell that
+/// changed the shape.
+const REPORTED: MeterClassId = MeterClassId::new("reported");
+
+/// What a destination reported, as the one dimension these rows are written over.
+fn reported(units: u64) -> Option<Completion> {
+    Some(
+        Completion::of(
+            1,
+            0,
+            vec![CompletedUnits {
+                class: REPORTED,
+                units,
+            }],
+        )
+        .expect("one dimension is inside the usage record's bound"),
+    )
+}
+
+/// What the table settles at, as ONE figure: the sum of the lines it answered with.
+///
+/// The rows read the same as they did when the table answered with a number, which is the point —
+/// a table that posts what a destination reported now posts all of it, and over one dimension "all
+/// of it" is the number that was there before.
+fn settled(end: &Outcome, evidence: &Evidence) -> (u64, PostingFlags) {
+    let (lines, flags) = settle_lines(end, evidence);
+    (
+        lines
+            .iter()
+            .fold(0_u64, |acc, line| acc.saturating_add(line.quantity)),
+        flags,
+    )
+}
 
 fn live_end() -> Outcome {
     Outcome::Failed(StepName::Route, ReasonCode::ClientGone)
 }
 
 #[test]
-fn row_completed_with_a_located_figure_posts_it() {
+fn row_completed_with_a_reported_figure_posts_it() {
     let evidence = Evidence {
-        located: Some(4_200),
+        completed: reported(4_200),
         accrued_floor: 90,
         ..Evidence::default()
     };
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
+        settled(&Outcome::Completed, &evidence),
         (4_200, PostingFlags::NONE)
     );
 }
@@ -34,12 +74,12 @@ fn row_completed_with_a_located_figure_posts_it() {
 #[test]
 fn row_completed_with_a_required_locator_missing_posts_zero_and_disputes_it() {
     let evidence = Evidence {
-        located: None,
+        completed: None,
         accrued_floor: 5_000,
         locator_required: true,
         ..Evidence::default()
     };
-    let (amount, flags) = settle_amount(&Outcome::Completed, &evidence);
+    let (amount, flags) = settled(&Outcome::Completed, &evidence);
     // Zero, not the floor: an upstream that reported no usage is billed nothing, exactly as before.
     assert_eq!(amount, 0);
     assert!(flags.contains(PostingFlags::ESTIMATED));
@@ -50,45 +90,39 @@ fn row_completed_with_a_required_locator_missing_posts_zero_and_disputes_it() {
 fn row_completed_with_no_card_requiring_a_locator_posts_zero_unflagged() {
     let evidence = Evidence::default();
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
+        settled(&Outcome::Completed, &evidence),
         (0, PostingFlags::NONE)
     );
 }
 
 #[test]
-fn row_live_non_completed_with_a_located_figure_posts_it() {
+fn row_live_non_completed_with_a_reported_figure_posts_it() {
     let evidence = Evidence {
-        located: Some(700),
+        completed: reported(700),
         ..Evidence::default()
     };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (700, PostingFlags::NONE)
-    );
+    assert_eq!(settled(&live_end(), &evidence), (700, PostingFlags::NONE));
 }
 
 #[test]
 fn row_live_non_completed_ending_in_a_protocol_error_bills_nothing() {
     let evidence = Evidence {
-        located: Some(700),
+        completed: reported(700),
         terminal_error: true,
         ..Evidence::default()
     };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (0, PostingFlags::NONE)
-    );
+    assert_eq!(settled(&live_end(), &evidence), (0, PostingFlags::NONE));
 }
 
 #[test]
-fn row_live_non_completed_with_nothing_located_posts_the_kernel_floor() {
+fn row_live_non_completed_with_nothing_reported_posts_the_kernel_floor() {
     let evidence = Evidence {
-        located: None,
+        completed: None,
         accrued_floor: 1_234,
         ..Evidence::default()
     };
     assert_eq!(
-        settle_amount(&live_end(), &evidence),
+        settled(&live_end(), &evidence),
         (1_234, PostingFlags::ESTIMATED)
     );
 }
@@ -99,11 +133,11 @@ fn row_recovered_with_a_dispatch_posts_the_last_checkpoint() {
         recovered: true,
         dispatched: true,
         checkpointed: 640,
-        located: Some(999_999),
+        completed: reported(999_999),
         ..Evidence::default()
     };
     assert_eq!(
-        settle_amount(&live_end(), &evidence),
+        settled(&live_end(), &evidence),
         (640, PostingFlags::RECOVERED)
     );
 }
@@ -116,21 +150,18 @@ fn row_recovered_with_no_dispatch_posts_zero_and_voids() {
         checkpointed: 640,
         ..Evidence::default()
     };
-    assert_eq!(
-        settle_amount(&live_end(), &evidence),
-        (0, PostingFlags::VOIDED)
-    );
+    assert_eq!(settled(&live_end(), &evidence), (0, PostingFlags::VOIDED));
 }
 
 #[test]
 fn row_two_reported_sources_disagreeing_posts_the_lower() {
     let evidence = Evidence {
-        located: Some(9_000),
+        completed: reported(9_000),
         variance: Some((9_000, 4_000)),
         ..Evidence::default()
     };
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
+        settled(&Outcome::Completed, &evidence),
         (4_000, PostingFlags::METER_DISPUTED)
     );
 }
@@ -138,7 +169,7 @@ fn row_two_reported_sources_disagreeing_posts_the_lower() {
 #[test]
 fn row_a_three_way_lane_mismatch_posts_the_cheaper_entry() {
     let evidence = Evidence {
-        located: Some(9_000),
+        completed: reported(9_000),
         lane_mismatch: Some((3_000, 8_000)),
         variance: Some((9_000, 4_000)),
         ..Evidence::default()
@@ -146,7 +177,7 @@ fn row_a_three_way_lane_mismatch_posts_the_cheaper_entry() {
     // The lane mismatch is decided before the variance rule: the unit may not even be on the lane
     // the other two figures were priced against.
     assert_eq!(
-        settle_amount(&Outcome::Completed, &evidence),
+        settled(&Outcome::Completed, &evidence),
         (3_000, PostingFlags::METER_DISPUTED)
     );
 }
@@ -154,11 +185,11 @@ fn row_a_three_way_lane_mismatch_posts_the_cheaper_entry() {
 #[test]
 fn row_a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
     let evidence = Evidence {
-        located: Some(500),
+        completed: reported(500),
         settle_record_lost: true,
         ..Evidence::default()
     };
-    let (amount, flags) = settle_amount(&Outcome::Completed, &evidence);
+    let (amount, flags) = settled(&Outcome::Completed, &evidence);
     assert_eq!(amount, 500);
     assert!(flags.contains(PostingFlags::UNPOSTED));
 }
@@ -169,19 +200,19 @@ fn no_row_ever_resolves_upward() {
     // reported. This is the property the whole table exists for.
     let cases = [
         Evidence {
-            located: Some(100),
+            completed: reported(100),
             accrued_floor: 900,
             ..Evidence::default()
         },
         Evidence {
-            located: None,
+            completed: None,
             accrued_floor: 900,
             locator_required: true,
             ..Evidence::default()
         },
         Evidence {
             variance: Some((100, 900)),
-            located: Some(900),
+            completed: reported(900),
             ..Evidence::default()
         },
         Evidence {
@@ -194,10 +225,15 @@ fn no_row_ever_resolves_upward() {
     ];
     for evidence in cases {
         for end in [Outcome::Completed, live_end()] {
-            let (amount, _) = settle_amount(&end, &evidence);
+            let (amount, _) = settled(&end, &evidence);
             let highest = evidence
-                .located
-                .unwrap_or(0)
+                .completed
+                .as_ref()
+                .map_or(0, |c| {
+                    c.dimensions()
+                        .iter()
+                        .fold(0_u64, |acc, d| acc.saturating_add(d.units))
+                })
                 .max(evidence.accrued_floor)
                 .max(evidence.checkpointed);
             assert!(amount <= highest, "{evidence:?} at {end:?} posted {amount}");

@@ -22,7 +22,7 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
-use busbar_caps::{BodyLease, Completion, Route, UnitToken};
+use busbar_caps::{BodyLease, CompletedUnits, Completion, MeterClassId, Route, UnitToken};
 use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
 use busbar_contract_transport::wire::{Conn, StatusClass};
 use futures::StreamExt;
@@ -33,7 +33,7 @@ use crate::ports::{
 };
 use crate::race;
 use crate::select::ProbeGuard;
-use crate::wire::{Delivered, Shed};
+use crate::wire::{Delivered, Relayed, Shed};
 
 /// Everything one hop shares, borrowed and cheap to pass down the stages.
 ///
@@ -41,7 +41,7 @@ use crate::wire::{Delivered, Shed};
 /// so the two postures are data rather than two copies of the code: `degraded` selects the
 /// degraded diagnostics and asks for the relayed upstream answer a degraded caller returns instead
 /// of failing over, and `metric_pool` carries the label the caller resolved.
-pub struct Hop<'a> {
+pub struct Hop<'a, 'm> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
     /// The capability token proving the loop is at the route step for this unit right now, lent
@@ -74,7 +74,12 @@ pub struct Hop<'a> {
     /// The metric label for this hop, which the caller resolved. It is not always the pool name:
     /// on the default cell the previous release labelled by the member's own name so the series
     /// correlated with the request counter.
-    pub metric_pool: &'a str,
+    ///
+    /// Its own lifetime, and shorter than everything else here: on the default cell the label is
+    /// borrowed from the pool's MEMBER LIST, which the walk builds per call and drops when it
+    /// returns. Everything else on this hop outlives the walk because it came off the route
+    /// request, and the body pump — which outlives the walk by construction — may hold only those.
+    pub metric_pool: &'m str,
     /// Which leg of the route plan this is.
     pub leg: u8,
     /// Which attempt of the walk this is, counted from one.
@@ -93,13 +98,21 @@ pub struct Hop<'a> {
     pub stream: busbar_contract::StreamId,
     /// Whether this hop is a degraded one.
     pub degraded: bool,
+    /// The unit, as the plane reads it.
+    ///
+    /// It lives here rather than beside the hop because every stage that calls the plane needs it
+    /// and because it is exactly what the hop is: what this unit shares, borrowed, for the length
+    /// of one attempt.
+    pub unit: &'a Unit<'a>,
+    /// The context the plane is called with.
+    pub ctx: &'a Ctx<'a>,
 }
 
 /// Everything one attempt needs: the hop, the slot it holds, the probe it may own, and the unit
 /// and context the plane is called with.
-pub struct AttemptInput<'a> {
-    /// The hop.
-    pub hop: Hop<'a>,
+pub struct AttemptInput<'a, 'm> {
+    /// The hop, which carries the unit and the context the plane is called with.
+    pub hop: Hop<'a, 'm>,
     /// The concurrency slot the caller took. Held for the life of a delivered answer, dropped at
     /// every failure.
     pub permit: Permit,
@@ -107,10 +120,6 @@ pub struct AttemptInput<'a> {
     /// attempt then owns its release. The one documented breaker bypass passes `None` and so
     /// builds no guard at all, which is what stops it ever reverting a probe a peer won.
     pub probe_epoch: Option<u64>,
-    /// The unit, as the plane reads it.
-    pub unit: &'a Unit<'a>,
-    /// The context the plane is called with.
-    pub ctx: &'a Ctx<'a>,
 }
 
 /// What one attempt produced.
@@ -159,7 +168,7 @@ struct FirstFrame {
 /// bounding it with nothing would let a black-holed upstream hold the send open forever with no
 /// signal to the breaker. Both deadlines are floored at one second, because a zero-length deadline
 /// would fail an attempt before it was tried.
-fn send_deadline_ms(hop: &Hop<'_>) -> u64 {
+fn send_deadline_ms(hop: &Hop<'_, '_>) -> u64 {
     let secs = if hop.wants_stream {
         hop.stream_ceiling_secs.max(1)
     } else {
@@ -247,13 +256,11 @@ impl Drop for JournalGuard<'_> {
 }
 
 /// The one attempt.
-pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
+pub async fn attempt<'a>(input: AttemptInput<'a, '_>) -> (AttemptOutcome, Option<BodyPump<'a>>) {
     let AttemptInput {
         hop,
         permit,
         probe_epoch,
-        unit,
-        ctx,
     } = input;
     let now = hop.clock.now_secs();
 
@@ -276,7 +283,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     };
     if hop.journal.dispatched(&record).is_err() {
         drop(permit);
-        return AttemptOutcome::Bail(Shed::internal());
+        return (AttemptOutcome::Bail(Shed::internal()), None);
     }
     // From here the record exists and something must settle it. The guard is what settles it on
     // the one exit that runs none of this function's own code — a caller that drops this future
@@ -286,12 +293,12 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // 2-5. Assemble: the plane's egress encode, the egress-auth decoration, and the lane
     //      cross-check on the bytes that decoration produced. A failure at any of the three is an
     //      internal failure before any send.
-    let wire = match assemble(&hop, unit, ctx) {
+    let wire = match assemble(&hop) {
         Ok(bytes) => bytes,
         Err(shed) => {
             journal.abandon();
             drop(permit);
-            return AttemptOutcome::Bail(shed);
+            return (AttemptOutcome::Bail(shed), None);
         }
     };
 
@@ -313,12 +320,12 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         SendOutcome::AttemptTimeout(ms) => {
             journal.abandon();
             drop(permit);
-            return attempt_timeout(&hop, ms, now);
+            return (attempt_timeout(&hop, ms, now), None);
         }
         SendOutcome::BudgetTimeout => {
             journal.abandon();
             drop(permit);
-            return transport_failure(&hop, net::TIMEOUT, now);
+            return (transport_failure(&hop, net::TIMEOUT, now), None);
         }
         SendOutcome::Sent(Err(e)) => {
             journal.abandon();
@@ -328,7 +335,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
             } else {
                 net::CONNECT
             };
-            return transport_failure(&hop, label, now);
+            return (transport_failure(&hop, label, now), None);
         }
         SendOutcome::Sent(Ok(first)) => first,
     };
@@ -351,10 +358,10 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // the record settles on that answer however the rest of it goes.
     journal.disarm();
     if !succeeded {
-        return classify_failure(&hop, status, permit, now);
+        return (classify_failure(&hop, status, permit, now), None);
     }
 
-    deliver(&hop, first, permit, &mut probe_guard, ctx, now, anchor_ms).await
+    deliver(&hop, first, permit, &mut probe_guard, now, anchor_ms)
 }
 
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
@@ -375,7 +382,8 @@ struct Wire<'a> {
 /// destination but never holds a credential; the egress-auth unit decorates and substitutes every
 /// secret itself; and the lane cross-check runs on the RESULT, so a decoration cannot quietly move
 /// the request onto a cheaper or a different lane.
-fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a>, Shed> {
+fn assemble<'a>(hop: &Hop<'a, '_>) -> Result<Wire<'a>, Shed> {
+    let (unit, ctx) = (hop.unit, hop.ctx);
     let encoded: EgressBody<'_> = hop
         .plane
         .encode_egress(unit, hop.dest, None, ctx)
@@ -441,7 +449,7 @@ fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a
 ///
 /// Takes the three values it decides from rather than the whole hop, so the rule is exercised
 /// directly instead of through a dialled attempt.
-fn lane_cross_check(hop: &Hop<'_>, request: &OutboundRequest<'_>) -> Result<(), Shed> {
+fn lane_cross_check(hop: &Hop<'_, '_>, request: &OutboundRequest<'_>) -> Result<(), Shed> {
     lane_matches_seal(hop.lane_field, &request.fields, hop.dest.lane())
 }
 
@@ -476,7 +484,7 @@ pub(crate) fn lane_matches_seal(
 
 /// Dial, write and wait for the first answering frame, under both deadlines.
 async fn send(
-    hop: &Hop<'_>,
+    hop: &Hop<'_, '_>,
     wire: &Wire<'_>,
     deadline_ms: u64,
     cap_ms: Option<u64>,
@@ -531,7 +539,7 @@ async fn send(
 
 /// The per-attempt cap fired before any answer arrived: a transient failure on this pool's cell,
 /// counted under its own label so a hang is visible separately from a refusal.
-fn attempt_timeout(hop: &Hop<'_>, _ms: u64, now: u64) -> AttemptOutcome {
+fn attempt_timeout(hop: &Hop<'_, '_>, _ms: u64, now: u64) -> AttemptOutcome {
     let tripped = hop.breaker.observe(
         hop.pool,
         hop.destination,
@@ -557,7 +565,7 @@ fn attempt_timeout(hop: &Hop<'_>, _ms: u64, now: u64) -> AttemptOutcome {
 /// A failure before any answer arrived — refused, reset, a handshake that failed, a deadline that
 /// expired. A transient failure on this pool's cell, with the same timeout-versus-connect split
 /// the previous release made.
-fn transport_failure(hop: &Hop<'_>, label: &'static str, now: u64) -> AttemptOutcome {
+fn transport_failure(hop: &Hop<'_, '_>, label: &'static str, now: u64) -> AttemptOutcome {
     let tripped = hop.breaker.observe(
         hop.pool,
         hop.destination,
@@ -580,7 +588,7 @@ fn transport_failure(hop: &Hop<'_>, label: &'static str, now: u64) -> AttemptOut
 /// An answer that was not a success: ask the breaker what it means, record it, and shape the
 /// outcome.
 fn classify_failure(
-    hop: &Hop<'_>,
+    hop: &Hop<'_, '_>,
     status: UpstreamStatus,
     permit: Permit,
     now: u64,
@@ -604,18 +612,22 @@ fn classify_failure(
     if matches!(disposition, Disposition::ClientFault) {
         return AttemptOutcome::Delivered(Delivered {
             body: body_lease(hop),
-            // A relayed client fault is not a metered answer: the upstream refused the caller's
-            // own request and there is no body of the caller's for a dimension to be counted
-            // against. An EMPTY completion says exactly that, and it is a different statement from
-            // a completion that counted zero of something.
-            carried: Completion::default(),
             destination: hop.destination,
             pool: hop.pool.to_string(),
             status: status.class,
-            frames: 1,
-            finish: None,
             degraded: hop.degraded,
             relayed_error: status.code,
+            // THE ANSWER WAS OVER BEFORE IT GOT HERE, so there is nothing to pump and the relay's
+            // reading is complete on the spot. One frame, no finish the plane ever read — the
+            // upstream refused the caller's own request and this unit relayed the refusal rather
+            // than decoding an answer — and an EMPTY completion, which says there is no body of
+            // the caller's for a dimension to be counted against and is a different statement from
+            // a completion that counted zero of something.
+            relayed: Some(Relayed {
+                frames: 1,
+                finish: None,
+                carried: Completion::default(),
+            }),
         });
     }
 
@@ -626,15 +638,18 @@ fn classify_failure(
         err_type: label,
         relay: hop.degraded.then(|| Delivered {
             body: body_lease(hop),
-            // Same: the walk is failing over and only a degraded caller relays this at all.
-            carried: Completion::default(),
             destination: hop.destination,
             pool: hop.pool.to_string(),
             status: status.class,
-            frames: 1,
-            finish: None,
             degraded: true,
             relayed_error: status.code,
+            // Same: the walk is failing over and only a degraded caller relays this at all, and
+            // what it relays is one frame that is already over.
+            relayed: Some(Relayed {
+                frames: 1,
+                finish: None,
+                carried: Completion::default(),
+            }),
         }),
     }
 }
@@ -654,19 +669,28 @@ fn remaining_ms(clock: &dyn Clock, anchor_ms: u128, budget_ms: u64) -> Option<u6
     (left > 0).then(|| u64::try_from(left).unwrap_or(budget_ms))
 }
 
-/// The delivered answer: record the success, hand the probe over, spend one unit of the
-/// destination's lifetime budget under a refund guard, and relay the frames.
+/// The delivered answer's HEAD: record the success, hand the probe over, spend one unit of the
+/// destination's lifetime budget under a refund guard, and hand the relay back UNRUN.
+///
+/// The relay used to run here, which is why the walk could not return until the last frame of the
+/// answer had gone past. That made the kernel's hold over the routed body a hold over a body that
+/// was already drained — the Meter step "reading a body that is still the unit's" was true only
+/// because nothing could tell the difference — and it is the shape P4 handed back as owed.
+///
+/// It does not run here now. What comes back is the head and a [`BodyPump`], and the ROOT drives
+/// the pump: the root is what already owns the transport runtime the frames are arriving on, and
+/// this crate has no runtime and must not grow one. Nothing is spawned and nothing is joined; the
+/// pump is an ordinary future over the same ports the walk itself awaits.
 ///
 /// `anchor_ms` is the instant the send started, which is what the deadline is measured from.
-async fn deliver(
-    hop: &Hop<'_>,
+fn deliver<'a>(
+    hop: &Hop<'a, '_>,
     first: FirstFrame,
     permit: Permit,
     probe_guard: &mut Option<ProbeGuard<'_>>,
-    ctx: &Ctx<'_>,
     now: u64,
     anchor_ms: u128,
-) -> AttemptOutcome {
+) -> (AttemptOutcome, Option<BodyPump<'a>>) {
     hop.breaker
         .observe(hop.pool, hop.destination, Outcome::Success, now, hop.token);
     // The request now owns the probe through the outcome it just recorded; from here the answer's
@@ -678,9 +702,10 @@ async fn deliver(
     // Cost accounting, not admission: one unit of the destination's lifetime budget, spent after
     // the success is read. The result is BOUND to the refund decision, because the refund on the
     // other side is unconditional and refunding a spend that never happened would push the budget
-    // above its own ceiling.
+    // above its own ceiling. The guard travels WITH the pump, because the window it covers is the
+    // body's and the body has not arrived yet.
     let spent = hop.breaker.spend_budget(hop.destination);
-    let mut budget = BudgetGuard {
+    let budget = BudgetGuard {
         breaker: hop.breaker,
         destination: hop.destination,
         armed: spent,
@@ -689,102 +714,226 @@ async fn deliver(
     let FirstFrame {
         conn,
         frame,
-        mut frames,
+        frames,
     } = first;
     let status = frame.meta.status;
-    let mut relayed = 0_usize;
-    let mut bytes = 0_u64;
-    let mut finish = None;
-    let mut clean = false;
 
-    // The plane reads each frame as it arrives and the answer is relayed under the hold. From the
-    // moment the first frame is relayed there is no failing over: the client already has part of
-    // the answer, so a later failure ends the answer rather than starting another attempt.
-    let mut pending = Some(frame);
-    let budget_ms = send_deadline_ms(hop);
-    loop {
-        let next = match pending.take() {
-            Some(frame) => Some(Ok((hop.stream, frame))),
-            // A deadline that expires while waiting for the next frame ends the answer here; the
-            // client already has what arrived, so there is nothing to fail over to. The wait is
-            // bounded by what is LEFT of the send's deadline, and a spent one ends the answer
-            // without waiting at all — both by the same path, so a cut stream is the same
-            // partial answer it has always been.
-            None => match remaining_ms(hop.clock, anchor_ms, budget_ms) {
-                Some(ms) => race::with_deadline(frames.next(), hop.clock.sleep(ms))
-                    .await
-                    .unwrap_or_default(),
-                None => None,
-            },
-        };
-        let Some(Ok((_, frame))) = next else {
-            break;
-        };
-        // COUNTED, NOT READ. The transport already told this unit how many bytes the frame was;
-        // adding them up as they go past is the whole of the completion this unit can produce, and
-        // it is produced WHILE the stream runs rather than by looking at a body afterwards — there
-        // is no afterwards to look at, because the bytes belong to the connection.
-        bytes = bytes.saturating_add(frame.meta.bytes);
-        let carried = [frame];
-        let mut cursor = busbar_contract::FrameCursor::new(&carried);
-        match hop.plane.decode_response(&mut cursor, hop.dest, None, ctx) {
-            Ok(busbar_contract::Progress::NeedMore) => {
-                relayed += 1;
-            }
-            Ok(busbar_contract::Progress::Frame { r, .. }) => {
-                relayed += 1;
-                finish = Some(r.finish);
-            }
-            Ok(busbar_contract::Progress::Terminal { r, .. }) => {
-                relayed += 1;
-                finish = Some(r.finish);
-                clean = true;
-                break;
-            }
-            Ok(busbar_contract::Progress::Open(_) | busbar_contract::Progress::OneShot(_)) => {
-                relayed += 1;
-                clean = true;
-                break;
-            }
-            Ok(busbar_contract::Progress::Discard { .. }) => {}
-            Err(_) => break,
-        }
-    }
-
-    hop.transport
-        .close(conn, busbar_contract_transport::wire::CloseReason::Normal);
-    drop(permit);
-
-    if clean {
-        // The answer arrived whole: the charge stands.
-        budget.disarm();
-    } else {
-        // The success was recorded on the first frame and the budget was spent there, but the body
-        // never arrived intact. Record a compensating transient failure and let the still-armed
-        // guard give the budget unit back.
-        let tripped = hop.breaker.observe(
-            hop.pool,
-            hop.destination,
-            Outcome::Transient { retry_after: None },
-            hop.clock.now_secs(),
-            hop.token,
-        );
-        if tripped {
-            hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
-        }
-    }
-
-    AttemptOutcome::Delivered(Delivered {
+    let delivered = Delivered {
         body: body_lease(hop),
-        carried: relayed_body(relayed, bytes),
         destination: hop.destination,
         pool: hop.pool.to_string(),
         status,
-        frames: relayed,
-        finish,
         degraded: hop.degraded,
         relayed_error: None,
-    })
+        // NOT YET RELAYED, and said as `None` rather than as a zero. A frame count of zero on an
+        // answer whose body has not started arriving is a lie a reader cannot detect.
+        relayed: None,
+    };
+    let pump = BodyPump {
+        breaker: hop.breaker,
+        token: hop.token,
+        clock: hop.clock,
+        telemetry: hop.telemetry,
+        transport: hop.transport,
+        plane: hop.plane,
+        dest: hop.dest,
+        destination: hop.destination,
+        pool: hop.pool.to_string(),
+        metric_pool: hop.metric_pool.to_string(),
+        unit: hop.unit,
+        ctx: hop.ctx,
+        conn,
+        frames,
+        first: Some(frame),
+        permit,
+        budget,
+        anchor_ms,
+        budget_ms: send_deadline_ms(hop),
+    };
+    (AttemptOutcome::Delivered(delivered), Some(pump))
+}
+
+/// THE RELAY, HANDED BACK RATHER THAN RUN: one answer's body, everything it needs to go past, and
+/// nothing that could read it.
+///
+/// It owns the things that must not outlive the answer — the connection, the stream, the
+/// concurrency permit and the budget's refund guard — and borrows the four seams the loop reads
+/// plus the unit and the context the plane is called with. Every borrow is one the walk already
+/// held, so driving the pump after the walk has returned reads exactly what driving it inside the
+/// walk read.
+///
+/// **It names no runtime.** [`drain`](BodyPump::drain) is an ordinary future over the same ports
+/// the walk itself awaits: a clock that is a port and a stream the transport handed over. A cell
+/// drives it on one thread with no timer wheel, and the root drives it on the runtime the frames
+/// are already arriving on.
+pub struct BodyPump<'a> {
+    breaker: &'a dyn Breaker,
+    token: &'a UnitToken<Route>,
+    clock: &'a dyn Clock,
+    telemetry: &'a dyn Telemetry,
+    transport: &'a dyn Transport,
+    plane: &'a dyn Plane,
+    dest: &'a busbar_contract::VerifiedDestination,
+    destination: DestinationId,
+    pool: String,
+    metric_pool: String,
+    unit: &'a Unit<'a>,
+    ctx: &'a Ctx<'a>,
+    conn: Conn,
+    frames: busbar_contract::transport::FrameStream,
+    first: Option<Frame>,
+    permit: Permit,
+    budget: BudgetGuard<'a>,
+    anchor_ms: u128,
+    budget_ms: u64,
+}
+
+impl std::fmt::Debug for BodyPump<'_> {
+    /// Says which answer it is over, never what is in it. A relay's whole point is that the bytes
+    /// belong to the connection, and a log line that printed them would be this unit reading a body.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyPump")
+            .field("pool", &self.pool)
+            .field("destination", &self.destination)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BodyPump<'_> {
+    /// DRIVE THE RELAY TO THE END OF THE ANSWER, and say what it carried.
+    ///
+    /// The plane reads each frame as it arrives and the answer is relayed under the hold. From the
+    /// moment the first frame was relayed there is no failing over: the client already has part of
+    /// the answer, so a later failure ends the answer rather than starting another attempt.
+    pub async fn drain(mut self) -> Relayed {
+        let mut relayed = 0_usize;
+        let mut bytes = 0_u64;
+        let mut finish = None;
+        let mut dimensions: Vec<CompletedUnits> = Vec::new();
+        let mut clean = false;
+
+        let mut pending = self.first.take();
+        loop {
+            let next = match pending.take() {
+                Some(frame) => Some(Ok((busbar_contract::StreamId(0), frame))),
+                // A deadline that expires while waiting for the next frame ends the answer here;
+                // the client already has what arrived, so there is nothing to fail over to. The
+                // wait is bounded by what is LEFT of the send's deadline, and a spent one ends the
+                // answer without waiting at all — both by the same path, so a cut stream is the
+                // same partial answer it has always been.
+                None => match remaining_ms(self.clock, self.anchor_ms, self.budget_ms) {
+                    Some(ms) => race::with_deadline(self.frames.next(), self.clock.sleep(ms))
+                        .await
+                        .unwrap_or_default(),
+                    None => None,
+                },
+            };
+            let Some(Ok((_, frame))) = next else {
+                break;
+            };
+            // COUNTED, NOT READ. The transport already told this unit how many bytes the frame was;
+            // adding them up as they go past is the whole of the count this unit can produce, and
+            // it is produced WHILE the stream runs rather than by looking at a body afterwards —
+            // there is no afterwards to look at, because the bytes belong to the connection.
+            bytes = bytes.saturating_add(frame.meta.bytes);
+            let carried = [frame];
+            let mut cursor = busbar_contract::FrameCursor::new(&carried);
+            match self
+                .plane
+                .decode_response(&mut cursor, self.dest, None, self.ctx)
+            {
+                Ok(busbar_contract::Progress::NeedMore) => {
+                    relayed += 1;
+                }
+                Ok(busbar_contract::Progress::Frame { r, .. }) => {
+                    relayed += 1;
+                    finish = Some(r.finish);
+                    read_dimensions(self.plane, self.unit, &r, self.ctx, &mut dimensions);
+                }
+                Ok(busbar_contract::Progress::Terminal { r, .. }) => {
+                    relayed += 1;
+                    finish = Some(r.finish);
+                    read_dimensions(self.plane, self.unit, &r, self.ctx, &mut dimensions);
+                    clean = true;
+                    break;
+                }
+                Ok(busbar_contract::Progress::Open(_) | busbar_contract::Progress::OneShot(_)) => {
+                    relayed += 1;
+                    clean = true;
+                    break;
+                }
+                Ok(busbar_contract::Progress::Discard { .. }) => {}
+                Err(_) => break,
+            }
+        }
+
+        self.transport.close(
+            self.conn,
+            busbar_contract_transport::wire::CloseReason::Normal,
+        );
+        drop(self.permit);
+
+        if clean {
+            // The answer arrived whole: the charge stands.
+            self.budget.disarm();
+        } else {
+            // The success was recorded on the first frame and the budget was spent there, but the
+            // body never arrived intact. Record a compensating transient failure and let the
+            // still-armed guard give the budget unit back.
+            let tripped = self.breaker.observe(
+                &self.pool,
+                self.destination,
+                Outcome::Transient { retry_after: None },
+                self.clock.now_secs(),
+                self.token,
+            );
+            if tripped {
+                self.telemetry
+                    .breaker_trip(&self.metric_pool, self.destination);
+            }
+        }
+
+        Relayed {
+            frames: relayed,
+            finish,
+            carried: relayed_body(relayed, bytes, dimensions),
+        }
+    }
+}
+
+/// WHAT THE ANSWER WAS WORTH, as the PLANE's own declared locators read it off the PLANE's own
+/// decoded response.
+///
+/// This unit does not read a body and this is not it reading one. `Plane::meter` is a pure function
+/// of a `Response` the plane itself produced one line above, so what happens here is that the value
+/// the plane made is handed back to the plane and the plane says what is in it. The unit holds the
+/// answer; it never looks inside.
+///
+/// The LAST non-empty reading wins. A dialect that reports its usage on the final chunk reports it
+/// once, and a dialect that repeats it on every chunk is repeating the same number — so replacing
+/// is right and accumulating would double every streamed answer in the tree.
+fn read_dimensions(
+    plane: &dyn Plane,
+    unit: &Unit<'_>,
+    r: &busbar_contract::Response<'_>,
+    ctx: &Ctx<'_>,
+    into: &mut Vec<CompletedUnits>,
+) {
+    let locators = plane.meter(unit, r, ctx);
+    let read: Vec<CompletedUnits> = locators
+        .lines
+        .as_slice()
+        .iter()
+        .filter_map(|line| {
+            line.quantity.map(|units| CompletedUnits {
+                class: MeterClassId::new(line.class.as_str()),
+                units,
+            })
+        })
+        .collect();
+    if !read.is_empty() {
+        *into = read;
+    }
 }
 
 /// The lease the answer's stream is held under.
@@ -793,18 +942,16 @@ async fn deliver(
 /// IS: one stream of one connection, held open by the transport. It is not derived from the bytes
 /// and it is not an index into anything this unit owns — a lease is a name, and the only thing a
 /// name has to do is name the one thing.
-fn body_lease(hop: &Hop<'_>) -> BodyLease {
+fn body_lease(hop: &Hop<'_, '_>) -> BodyLease {
     BodyLease::new(hop.stream.0)
 }
 
-/// What the relay counted while it ran.
+/// What the relay counted while it ran, and what the plane read off it.
 ///
-/// Frames and bytes, both this unit's own count of what went past. The per-class dimensions are
-/// EMPTY here and deliberately so: a quantity against a declared meter class is read by evaluating
-/// the plane's own declared locators over the decoded answer, and this unit does not read a body —
-/// it hands each frame to the plane's codec and counts. A unit that filled those in would be a
-/// unit that had parsed the answer, which is the one thing this crate says it never does.
-fn relayed_body(frames: usize, bytes: u64) -> busbar_caps::Completion {
-    busbar_caps::Completion::of(frames as u64, bytes, Vec::new())
-        .unwrap_or_else(|_| Completion::default())
+/// The frames and the bytes are this unit's OWN count of what went past. The per-class dimensions
+/// are the plane's — its declared locators, evaluated over its own decoded response, by the plane
+/// itself. A unit that filled those in by parsing the answer would be a unit that had read a body,
+/// which is the one thing this crate says it never does.
+fn relayed_body(frames: usize, bytes: u64, dimensions: Vec<CompletedUnits>) -> Completion {
+    Completion::of(frames as u64, bytes, dimensions).unwrap_or_else(|_| Completion::default())
 }
