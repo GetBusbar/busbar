@@ -56,15 +56,16 @@ pub use busbar_substrate_values::proto::{
     write_sse_frame, IrError, BASE62_ALPHABET, HDR_AUTHORIZATION, SIGNAL_IR_PARSE, SSE_DONE_FRAME,
     SSE_DONE_SENTINEL,
 };
-// The registry LOOKUP against the boot-installed registry (`decl_for`, the `registry` accessor
-// module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
-// (`PROTO_*`) and the translation-boundary `max_tokens` fallback. These are core's own items (not
-// re-exports), so they are the one reach this prelude keeps into core.
-pub use busbar_core::proto::{
-    decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
-    PROTO_OPENAI, PROTO_RESPONSES,
-};
-pub use busbar_core::proto::{openai_family, registry};
+// The registry LOOKUP against the boot-installed registry, at its own home: `decl_for`, the
+// `registry` accessor and the OpenAI-family error helpers are the SUBSTRATE's (core re-exports each
+// by identity), and the six dialect-name fixtures are THIS crate's own — `crate::proto_codec`
+// declares them, and the glob above already brings them in.
+pub use busbar_substrate_values::proto::{decl_for, registry};
+// The one item still owned by core: the translation-boundary `max_tokens` fallback, which lives at
+// `busbar_substrate::config::limits` — a crate this pure half may not name (it carries the egress
+// engine). It resolves here through core's re-export until the limits family reaches the values
+// crate.
+pub use busbar_core::proto::DEFAULT_MAX_TOKENS;
 
 // Substrate atoms the suites name bare (breaker signal + the neutral framing seam types).
 pub use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
