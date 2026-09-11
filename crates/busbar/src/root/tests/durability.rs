@@ -919,12 +919,17 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
 }
 
-/// The composition root's audit clock is the node's one production wall clock
-/// (`busbar_substrate::store::now`), not a second implementation of the same idea sitting beside it
-/// in the root. Two independent `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)`
-/// readings agree almost always and diverge exactly when one of them changes how it rounds,
-/// converts, or handles a clock that reads before the epoch — which is the day this test is what
-/// catches it instead of a mismatched audit record.
+/// The composition root's audit clock is the node's one production wall clock, not a second
+/// implementation of the same idea sitting beside it in the root. Two independent
+/// `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)` readings agree almost always and
+/// diverge exactly when one of them changes how it rounds, converts, or handles a clock that reads
+/// before the epoch — which is the day this test is what catches it instead of a mismatched audit
+/// record.
+///
+/// THE BRACKET IS TAKEN THROUGH THE RE-EXPORT ON PURPOSE, now that the clock itself names the
+/// defining crate. `busbar_substrate::store::now` is a `pub use` of that same function, so the
+/// reading is identical — and if the retirement ever makes the re-export something other than a
+/// `pub use` of the clock this root reads, this bracket is what says so.
 #[test]
 fn root_wall_clock_reads_the_one_composition_clock() {
     let before = busbar_substrate::store::now();

@@ -636,23 +636,46 @@ pub fn node_book() -> NodeBook {
     }
 }
 
-/// The root's wall clock, in whole seconds since the Unix epoch: `busbar_substrate::store::now`,
-/// the node's one production wall clock, read here rather than reimplemented.
+/// THE COMPOSITION CLOCK. The node's wall clock, in whole seconds since the Unix epoch, named at
+/// the crate that defines it.
 ///
 /// It lives HERE, in the composition root, because reading the wall clock is the root's job. The
 /// audit unit takes a [`Clock`] and has no implementation of its own — a unit that could read the
 /// clock could produce a different record from the same inputs, and then replaying the inputs would
 /// no longer reproduce the record. What used to sit here was its own
 /// `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)` — a second implementation of
-/// exactly the computation `busbar_substrate::store::now` already is, with the same silent-zero
-/// convention on a clock read that fails. One source, named, is what makes this root's audit
-/// records and every other reading on this path the same clock rather than two clocks that agree by
-/// coincidence.
-struct RootWallClock;
+/// exactly the computation the one source already is, with the same silent-zero convention on a
+/// clock read that fails. One source, named once, is what makes this root's records and every other
+/// reading on this path the same clock rather than two clocks that agree by coincidence.
+///
+/// AND IT IS NAMED AT ITS HOME, not through a re-export of it. `busbar_substrate::store::now` is a
+/// `pub use` of the function below; the function itself is defined in the PURE values half, which
+/// survives the engine half's retirement. Spelling the re-export made the composition root reach
+/// one symbol further into a crate that is being deleted, for a function that does not live in it —
+/// the `legacy-reach` ratchet counts exactly that, and the retirement plan's first wave is
+/// retargeting every such spelling onto the crate that actually defines the item. No byte of the
+/// reading changes: same function, same epoch, same silent-zero convention, one fewer name the
+/// deletion has to move.
+///
+/// ONE INSTANCE, ONE SPELLING. Every reading this binary stamps outside a plane comes through here
+/// — the [`Clock`] the audit ring below is built with, and the operator mount's arrival stamp
+/// through [`RootWallClock::unix_secs`] — so there is a single line in this binary that says which
+/// clock this node has.
+pub(crate) struct RootWallClock;
+
+impl RootWallClock {
+    /// The composition clock, read. Whole seconds since the Unix epoch.
+    ///
+    /// An associated function rather than a free one so that a caller outside this module reads the
+    /// clock by naming the root's clock, not by naming a crate the retirement is emptying.
+    pub(crate) fn unix_secs() -> u64 {
+        busbar_substrate_values::store::now()
+    }
+}
 
 impl Clock for RootWallClock {
     fn now(&self) -> u64 {
-        busbar_substrate::store::now()
+        RootWallClock::unix_secs()
     }
 }
 

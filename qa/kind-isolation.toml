@@ -1371,10 +1371,20 @@ crate = "busbar"
 kind = "store"
 count = "6"
 
+# 9 -> 10, AND IT IS ONE SYMBOL MOVING ITS SPELLING, not a new coupling. The composition root's
+# wall clock read `busbar_substrate::store::now` — a `pub use` in the RETIRING engine half of the
+# function that is defined in `busbar-substrate-values`, the pure values half that survives it.
+# Naming the re-export cost the root one more `busbar_substrate::` symbol (`legacy-reach`
+# 91 -> 92, its substrate sub-row 47 -> 48, both RED) for a function that does not live there.
+# Naming the definition puts both of those back (92 -> 91, 48 -> 47) and adds the one hit below.
+# No byte of the reading changes: same function, same epoch, same silent-zero convention. This is
+# the retirement plan's first wave — retarget a spelling onto the crate that actually defines the
+# item — and the trade it makes is coupling to a crate that is being DELETED for coupling to the
+# crate that is taking the item over. `--write` refused it, correctly: a rise is read by a person.
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "10"
 
 [[cell]]
 crate = "busbar"

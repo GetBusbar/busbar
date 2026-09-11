@@ -113,7 +113,26 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# ONE ENTRY STANDS HERE, and it is a MOVE BY IDENTITY rather than a new coupling: one symbol
+# changing which crate it is spelled through, with the two ratchets that see it moving in opposite
+# directions by the same one.
+[gate.ceiling_raises."cell.13.count"]
+file = "qa/kind-isolation.toml"
+from = 9
+to = 10
+because = """The composition root's wall clock read `busbar_substrate::store::now`. That name is a \
+`pub use` in the RETIRING engine half of a function defined in `busbar-substrate-values`, the pure \
+values half that survives it -- `crates/busbar-substrate/src/store.rs` is the one line of re-export. \
+Naming the re-export made the root reach one symbol further into a crate that is being deleted, for \
+a function that does not live in it: `legacy-reach` 91 -> 92 and its `busbar_substrate` sub-row \
+47 -> 48, both RED. Naming the DEFINITION puts both back (92 -> 91, 48 -> 47) and costs the one \
+`busbar × substrate` vocabulary hit below. Same function, same epoch, same silent-zero convention, \
+byte for byte -- this is the retirement plan's first wave, retargeting a spelling onto the crate \
+that actually defines the item, and the trade is coupling to a crate being DELETED for coupling to \
+the crate taking the item over. `--write` refused the re-pin, correctly: a rise is read by a person."""
+
+# NO OTHER ENTRY STANDS HERE TODAY, and a list this short is this mechanism working rather than
+# resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
 # while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
 # rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
