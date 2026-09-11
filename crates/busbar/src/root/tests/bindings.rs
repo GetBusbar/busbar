@@ -46,6 +46,9 @@ fn bare_node() -> Node {
             .expect("a memory-buffered journal cannot fail to open"),
         ),
         busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+        std::sync::Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
+            crate::root::adapters::root_diagnostics(),
+        )),
     )
 }
 
@@ -64,6 +67,7 @@ fn the_resolver_fills_a_mounted_plane_s_bindings_from_the_node() {
         MountedPlane {
             records: PlaneRecords::of(&adapter, records::operations_for),
             scope_policy: crate::root::policy::ScopePolicy::new(),
+            lanes: 1,
         },
     );
 
@@ -140,6 +144,7 @@ fn two_planes_on_one_node_share_its_units_and_keep_their_own_declarations() {
             MountedPlane {
                 records: PlaneRecords::of(&adapter, records::operations_for),
                 scope_policy: crate::root::policy::ScopePolicy::new(),
+                lanes: 1,
             },
         )
         .mounting(
@@ -147,6 +152,7 @@ fn two_planes_on_one_node_share_its_units_and_keep_their_own_declarations() {
             MountedPlane {
                 records: PlaneRecords::of(&adapter, other_operations),
                 scope_policy: crate::root::policy::ScopePolicy::new(),
+                lanes: 1,
             },
         );
 

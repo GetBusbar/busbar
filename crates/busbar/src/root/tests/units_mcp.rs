@@ -598,62 +598,162 @@ fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard(
     assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
 }
 
-/// The breaker's answer at the seal is the breaker's answer about that lane's position.
-#[test]
-fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
-    struct Open(usize);
-    impl BreakerView for Open {
-        fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
-            lane != self.0
-        }
-        fn try_admit(
-            &self,
-            _pool: &str,
-            _lane: usize,
-            _now: u64,
-        ) -> Result<(), busbar_unit_trust::Unavailable> {
-            Ok(())
-        }
-    }
-    static SERVERS: &[Server] = &[
-        Server {
-            id: "first",
-            lane: LaneId::new("first-lane"),
-            host: "127.0.0.1:9",
-            transport: claims::TRANSPORT_HTTP,
-        },
-        Server {
-            id: "second",
-            lane: LaneId::new("second-lane"),
-            host: "127.0.0.1:10",
-            transport: claims::TRANSPORT_HTTP,
-        },
-    ];
-    let facts = Catalogue::upstream_only(McpPlane::new(SERVERS), seam());
-    let second = DestinationFacts::Upstream {
+/// TWO REGISTRATIONS in one deployment's table, and the two hops that name them.
+///
+/// One table for every cell about lane POSITION, because position is the whole subject: a cell that
+/// declared its own pair could have them in the other order and still pass while the mapping it was
+/// meant to pin had quietly reversed.
+static TWO_SERVERS: &[Server] = &[
+    Server {
+        id: "first",
+        lane: LaneId::new("first-lane"),
+        host: "127.0.0.1:9",
         transport: claims::TRANSPORT_HTTP,
-        address: busbar_contract::UpstreamAddress::socket("127.0.0.1:10"),
+    },
+    Server {
+        id: "second",
         lane: LaneId::new("second-lane"),
-    };
+        host: "127.0.0.1:10",
+        transport: claims::TRANSPORT_HTTP,
+    },
+];
 
-    let open = Open(1);
+/// The hops the two registrations above are reached by, in the table's own order.
+fn two_registered_hops() -> [DestinationFacts; 2] {
+    [
+        DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
+            lane: LaneId::new("first-lane"),
+        },
+        DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("127.0.0.1:10"),
+            lane: LaneId::new("second-lane"),
+        },
+    ]
+}
+
+/// **THE BREAKER'S ANSWER AT THE SEAL IS THE BREAKER'S ANSWER ABOUT THAT LANE'S POSITION** — the
+/// mapping and the answer, proved together against the node's own unit.
+///
+/// This cell REPLACES the one that proved the mapping against a hand-written `Open(lane)` stand-in.
+/// The two claims it made — the second registration is at position one, and a lane that is not that
+/// position is unaffected — are both here, made against the thing that actually decides them: one
+/// breaker unit with one destination tripped on it, reached through the root's production view over
+/// the pool's lane table. A second opinion about lane health living in the root's own tests is how a
+/// mapping comes to be proved against an answer nothing in the node would ever give.
+#[test]
+fn the_production_view_answers_the_seal_with_the_breakers_own_state() {
+    use crate::root::adapters::{LaneMap, PlaneBreakerView, RootBreakerUnit};
+    use busbar_unit_breaker::{BreakerUnit, DestinationId};
+
+    let facts = Catalogue::upstream_only(McpPlane::new(TWO_SERVERS), seam());
+    let [first, second] = two_registered_hops();
+
+    // The node's one breaker, over the two registrations in the table's own order.
+    let unit: std::sync::Arc<RootBreakerUnit> = std::sync::Arc::new(BreakerUnit::with_diagnostics(
+        crate::root::adapters::root_diagnostics(),
+    ));
+    let view = PlaneBreakerView::new(
+        std::sync::Arc::clone(&unit),
+        LaneMap::new(vec![DestinationId::new(0), DestinationId::new(1)]),
+    );
+
+    // Nothing has gone wrong yet, so the second registration seals.
     let at = BreakerQuery {
-        breaker: &open,
+        breaker: &view,
         pool: "second",
         now: 7,
     };
+    assert!(
+        facts.breaker_admits(&second, &at),
+        "a registration with a healthy cell is admitted"
+    );
+
+    // The destination at position one is dialled once through this pool and comes back hard down —
+    // a bad key, a billing wall: a fact about the destination, recorded on the unit and not on this
+    // view. The dial is what puts the pool's cell on the map for the fan-out to reach, which is the
+    // unit's own rule: `hard_down_all` trips every EXISTING cell.
+    assert!(unit.try_admit("second", DestinationId::new(1), 7).is_ok());
+    assert!(unit.hard_down_all(DestinationId::new(1), 7));
+
     assert!(
         !facts.breaker_admits(&second, &at),
         "the second registration is at position one, and that is the open cell"
     );
 
-    let elsewhere = Open(0);
-    let at = BreakerQuery {
-        breaker: &elsewhere,
-        pool: "second",
-        now: 7,
+    // And the OTHER registration is untouched, which is what makes this a lane answer rather than a
+    // pool answer.
+    assert!(facts.breaker_admits(&first, &at));
+}
+
+/// **AN OPEN LANE IS NOT SEALED**, and the verify step says so through the whole unit.
+///
+/// The step does not REFUSE on an excluded lane — a pool with every lane excluded is a legitimate
+/// empty answer at this step, and refusing here would move a charge — so what the exclusion means
+/// is that the down lane does not come back sealed while its healthy sibling does. That is the
+/// reroute: the route step is handed the members that can take the request and none that cannot.
+#[test]
+fn an_open_lane_is_dropped_from_the_seal_and_its_sibling_is_not() {
+    use crate::root::adapters::{LaneMap, PlaneBreakerView, RootBreakerUnit};
+    use busbar_caps::{KernelSeal, TrustToken};
+    use busbar_unit_breaker::{BreakerUnit, DestinationId};
+
+    let plane = McpPlane::new(TWO_SERVERS);
+    let candidates = two_registered_hops();
+
+    let unit: std::sync::Arc<RootBreakerUnit> = std::sync::Arc::new(BreakerUnit::with_diagnostics(
+        crate::root::adapters::root_diagnostics(),
+    ));
+    let view = PlaneBreakerView::new(
+        std::sync::Arc::clone(&unit),
+        LaneMap::new(vec![DestinationId::new(0), DestinationId::new(1)]),
+    );
+    let pools = Pools::new(plane, None, true, false);
+    let kinds = Catalogue::upstream_only(plane, seam());
+    let views = Views {
+        pools: &pools,
+        facts: &kinds,
+        breaker: &view,
     };
-    assert!(facts.breaker_admits(&second, &at));
+
+    // Healthy: both registrations are sealed.
+    let seal = KernelSeal::acquire_for_kernel();
+    let sealed = verify(
+        &Trust,
+        &candidates,
+        "second",
+        views,
+        7,
+        &TrustToken::mint(&seal),
+        &UnitToken::mint(&seal),
+    )
+    .into_result(&seal)
+    .expect("an open breaker is not a refusal at this step");
+    assert_eq!(sealed.len(), 2, "nothing has gone wrong with either member");
+
+    // The second registration's destination is dialled through this pool and goes down.
+    assert!(unit.try_admit("second", DestinationId::new(1), 7).is_ok());
+    assert!(unit.hard_down_all(DestinationId::new(1), 7));
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let sealed = verify(
+        &Trust,
+        &candidates,
+        "second",
+        views,
+        7,
+        &TrustToken::mint(&seal),
+        &UnitToken::mint(&seal),
+    )
+    .into_result(&seal)
+    .expect("an open breaker is still not a refusal at this step");
+    assert_eq!(
+        sealed.iter().map(|s| *s.lane()).collect::<Vec<_>>(),
+        vec![LaneId::new("first-lane")],
+        "the down member is not offered to the route step and the healthy one is"
+    );
 }
 
 /// An explicitly empty scope list denies every registration; an absent one denies none.
@@ -1720,25 +1820,10 @@ struct LegNode {
     trust: Trust,
     pools: Pools,
     kinds: Catalogue<'static>,
-    breaker: AlwaysReady,
+    /// The node's one breaker unit, held here only so the cells can trip a lane on it. The LEG
+    /// reaches it through the resolver's tenth binding and never through this handle.
+    breaker: std::sync::Arc<crate::root::adapters::RootBreakerUnit>,
     chain: BucketChain,
-}
-
-/// A breaker with every position open.
-struct AlwaysReady;
-
-impl BreakerView for AlwaysReady {
-    fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
-        true
-    }
-    fn try_admit(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
-        Ok(())
-    }
 }
 
 /// The one registration a node that answers has.
@@ -1760,6 +1845,10 @@ impl LegNode {
 
     /// The same node, over a plane that has the operator's registrations on it.
     fn registering(store: &StoreAdapter, plane: McpPlane) -> Self {
+        let breaker: std::sync::Arc<crate::root::adapters::RootBreakerUnit> =
+            std::sync::Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
+                crate::root::adapters::root_diagnostics(),
+            ));
         LegNode {
             plane,
             // THE NODE, assembled the way the root assembles one, then MOUNTING this plane under
@@ -1773,18 +1862,23 @@ impl LegNode {
                 crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
                 Mutex::new(memory_durability()),
                 Kernel::new().origin(busbar_caps::OriginKind::Client),
+                // THE NODE'S ONE BREAKER, shared with the egress port the same way the root shares
+                // it: the readiness this plane's seal is judged by is this unit's answer, not a
+                // stand-in's.
+                std::sync::Arc::clone(&breaker),
             )
             .mounting(
                 <McpPlane as PlaneMeta>::KEY,
                 crate::root::bindings::MountedPlane {
                     records: PlaneRecords::of(store, records::operations_for),
                     scope_policy: permissive_scopes(),
+                    lanes: plane.servers().len(),
                 },
             ),
+            breaker,
             trust: Trust,
             pools: Pools::new(plane, None, true, false),
             kinds: Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_GET, seam()),
-            breaker: AlwaysReady,
             // A deployment that configured no group: every caller is attributed and none is capped.
             chain: busbar_unit_admission::GroupTable::default()
                 .chain_for("vk_mcp", None)
@@ -1807,6 +1901,7 @@ impl LegNode {
                 crate::root::bindings::MountedPlane {
                     records: PlaneRecords::of(store, records::operations_for),
                     scope_policy,
+                    lanes: self.plane.servers().len(),
                 },
             ),
             ..self
@@ -1831,7 +1926,10 @@ impl LegNode {
             views: Views {
                 pools: &self.pools,
                 facts: &self.kinds,
-                breaker: &self.breaker,
+                // THE PRODUCTION VIEW. No stub: the readiness the seal is judged by is the node's
+                // one breaker unit, keyed by this plane's own lane table, resolved by the same call
+                // every other binding is resolved by.
+                breaker: boot.breaker,
             },
             door: boot.door,
             pricer: boot.pricer,
