@@ -1373,7 +1373,7 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
         rt,
         cands,
         body,
-        mut v,
+        v,
         req_content_type,
         caller_token,
         resolved_gov_key,
@@ -1406,9 +1406,9 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
     let body_is_json = v.is_some();
     let stage_shape = capture_candidate_stage(
         host,
-        &mut v,
+        v,
         &body,
-        &cands,
+        cands,
         req_content_type,
         pool_name,
         ingress_protocol,
@@ -1447,9 +1447,9 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
         } = match prepare_hop(
             host,
             rt,
-            &cands,
+            cands,
             &mut request_ctx,
-            &mut v,
+            v,
             &body,
             stage_shape.as_ref(),
             &usage_sink,
@@ -1479,7 +1479,7 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
                 rt,
                 lane: i,
                 pool_cell: pool_name,
-                cands: &cands,
+                cands,
                 body: &body,
                 pristine: head_pristine,
                 body_is_json,
@@ -1515,7 +1515,7 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
                 ..
             } => {
                 if matches!(disposition, Disposition::ContextLength) {
-                    narrow_on_context_length(rt, &cands, &mut request_ctx, i);
+                    narrow_on_context_length(rt, cands, &mut request_ctx, i);
                 }
                 // Every failed attempt on this walk is a failover to the next candidate; the
                 // routing-stage tap on the next hop tells the story of why.
@@ -1531,7 +1531,7 @@ async fn run_failover_walk(w: WalkInput<'_>) -> Response {
     Box::pin(handle_exhaustion_for_pool(
         host.clone(),
         rt.clone(),
-        &cands,
+        cands,
         now(),
         pool_name,
         body,
