@@ -13,7 +13,7 @@
 
 use crate::{stage, wire_up_raw, RawPlugin};
 use busbar_plugin::cold::{
-    export::{ExportRequest, ExportResponse, ExportStream},
+    export::{ExportAck, ExportRequest, ExportResponse, ExportStream},
     http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route},
     kind as abi_kind,
 };
@@ -64,9 +64,20 @@ impl DynExport {
         }
     }
 
-    /// Hand one batch for `stream` across the ABI. Returns `Ok(())` on a `Delivered` ack; a transport
-    /// failure or an unexpected response variant is an `Err` naming the plugin.
-    pub fn deliver(&self, stream: ExportStream, payload: &serde_json::Value) -> Result<(), String> {
+    /// Hand one batch for `stream` across the ABI and RELAY WHAT THE SINK SAID ABOUT IT. A
+    /// transport failure or an unexpected response variant is an `Err` naming the plugin.
+    ///
+    /// THE ACK IS RELAYED, NEVER INVENTED. Before ABI v3 this returned `Ok(())` for any `Delivered`
+    /// reply, so a dlopen'd sink that took a record and put it nowhere was indistinguishable here
+    /// from one that took it — the caller was told a delivery happened and had no way to learn
+    /// otherwise. It now answers with the sink's own word, which is the same word an in-tree sink
+    /// answers `Export::receive` with, so a composed sink and a loaded one are the same object on
+    /// this question too.
+    pub fn deliver(
+        &self,
+        stream: ExportStream,
+        payload: &serde_json::Value,
+    ) -> Result<ExportAck, String> {
         let req = ExportRequest::Deliver {
             stream,
             payload: payload.clone(),
@@ -75,7 +86,7 @@ impl DynExport {
             .raw
             .transport_call::<ExportRequest, ExportResponse>(&req)?
         {
-            ExportResponse::Delivered => Ok(()),
+            ExportResponse::Delivered(ack) => Ok(ack),
             other => Err(format!(
                 "export plugin '{}' returned an unexpected response to deliver: {other:?}",
                 self.raw.path

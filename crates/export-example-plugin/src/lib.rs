@@ -8,9 +8,12 @@
 //! `busbar-hook-test-plugin` (hook) — a real, loadable, signable export plugin for the `DynExport`
 //! dlopen seam to round-trip through.
 //!
-//! It does NO real telemetry export: it declares `metrics`, takes every record and drops it, and
+//! It does NO real telemetry export: it declares `metrics`, DROPS every record it is handed, and
 //! declares no route. Config JSON is ignored (this sink has no configurable shape), mirroring
 //! `busbar-store-example-plugin`'s config-less posture.
+//!
+//! AND IT SAYS SO. Reference coverage that lied about its acknowledgement would be teaching every
+//! plugin author to lie about theirs — see [`Export::receive`] below.
 //!
 //! IT IMPLEMENTS THE ONE EXPORT FACE — `busbar_contract::Export`, the same four methods the three
 //! built-in sinks implement — and states all four itself, because that is what makes this crate
@@ -22,7 +25,7 @@ use busbar_plugin_sdk::{
     RouteStatement, ServeRequest, Served, EXPORT_ABI,
 };
 
-/// The trivial sink: carries the metrics stream, takes every record and drops it, serves nothing.
+/// The trivial sink: carries the metrics stream, DROPS every record it is handed, serves nothing.
 struct ExampleExport;
 
 impl Plugin for ExampleExport {
@@ -42,10 +45,17 @@ impl Export for ExampleExport {
         &["metrics"]
     }
 
-    /// Take the record and drop it. [`Ack::Received`] is the honest word for that and `Durable`
-    /// would not be: this sink received it and put it nowhere a crash could not reach.
+    /// DROP THE RECORD, AND SAY SO. [`Ack::Retry`] is the honest word and the other two are not:
+    /// `Received` means "the sink HAS the record and claims no durability for it", and a sink that
+    /// dropped it on the floor does not have it. This plugin used to answer `Received` — which was
+    /// wrong in the same way for the whole of its life and simply could not be seen, because before
+    /// ABI v3 the acknowledgement did not cross the seam and no caller could ever have noticed.
+    ///
+    /// It matters here more than anywhere else in the tree: this crate is REFERENCE coverage, and a
+    /// reference sink that overstates its own acknowledgement teaches every plugin author who reads
+    /// it to overstate theirs. A host's whole ability to act on an ack rests on nobody doing that.
     fn receive(&self, _item: ExportItem<'_>, _host: &dyn ExportHost) -> Ack {
-        Ack::Received
+        Ack::Retry
     }
 
     fn routes(&self) -> &'static [RouteStatement] {

@@ -149,12 +149,16 @@ fn correlation_id_is_pinned_on_every_per_request_stream() {
     }
 }
 
-/// The response round-trips: the streams catalog and the deliver ack.
+/// The response round-trips: the streams catalog and EVERY ONE of the three acknowledgements a
+/// sink can answer `deliver` with. All three, not one: an ack that round-trips for `Received` and
+/// loses `Retry` would be a wire that always says a delivery succeeded.
 #[test]
 fn response_json_roundtrip() {
     for r in [
         ExportResponse::Streams(vec![ExportStream::Metrics, ExportStream::Events]),
-        ExportResponse::Delivered,
+        ExportResponse::Delivered(ExportAck::Durable),
+        ExportResponse::Delivered(ExportAck::Received),
+        ExportResponse::Delivered(ExportAck::Retry),
     ] {
         let j = serde_json::to_vec(&r).unwrap();
         let back: ExportResponse = serde_json::from_slice(&j).unwrap();
@@ -162,11 +166,50 @@ fn response_json_roundtrip() {
     }
 }
 
-/// The export payload schema is at v2 (1.5.3, the projection grammar: expanded vocabulary,
-/// `audit` removed) — pinned so the SDK/loader floor and the wire cannot drift.
+/// THE THREE ACKS ARE THREE DISTINCT BYTE SEQUENCES on the wire. A sink that said `Retry` must not
+/// decode as one that said `Received` — this is the whole point of the v3 bump, and a tagging
+/// change that collapsed two of them would pass a round-trip test and lose the information anyway.
 #[test]
-fn export_abi_version_is_two() {
-    assert_eq!(EXPORT_ABI_VERSION, 2);
+fn the_three_acks_are_distinct_on_the_wire() {
+    let bytes = |a: ExportAck| serde_json::to_vec(&ExportResponse::Delivered(a)).unwrap();
+    let (durable, received, retry) = (
+        bytes(ExportAck::Durable),
+        bytes(ExportAck::Received),
+        bytes(ExportAck::Retry),
+    );
+    assert_ne!(durable, received);
+    assert_ne!(received, retry);
+    assert_ne!(durable, retry);
+    for (encoded, expect) in [
+        (durable, ExportAck::Durable),
+        (received, ExportAck::Received),
+        (retry, ExportAck::Retry),
+    ] {
+        let back: ExportResponse = serde_json::from_slice(&encoded).unwrap();
+        let ExportResponse::Delivered(ack) = back else {
+            panic!("a Delivered reply decodes as one");
+        };
+        assert_eq!(ack, expect);
+    }
+}
+
+/// A v2 SINK'S `Delivered` IS NOT DECODABLE HERE, which is why the floor moves instead of widening.
+/// The old reply was a bare variant; this one carries the sink's word. A host that accepted the old
+/// shape would have to invent an acknowledgement nobody made — the exact fault v3 exists to end.
+#[test]
+fn the_v2_bare_delivered_reply_does_not_decode() {
+    let v2 = br#""Delivered""#;
+    assert!(
+        serde_json::from_slice::<ExportResponse>(v2).is_err(),
+        "a v2 reply must be refused, not guessed at"
+    );
+}
+
+/// The export payload schema is at v3 (1.6.0, the acknowledgement crossing the seam; v2 was 1.5.3's
+/// projection grammar) — pinned so the SDK/loader floor and the wire cannot drift.
+#[test]
+fn export_abi_version_is_three() {
+    assert_eq!(EXPORT_ABI_VERSION, 3);
 }
 
 /// The HTTP-endpoint ops (`routes`/`http_endpoint`) round-trip and carry the stable op tags — the

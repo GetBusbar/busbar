@@ -417,8 +417,54 @@ impl Export for TestExport {
     }
 }
 
+/// A sink that REFUSES every record — the honest answer for a sink that takes a record and puts it
+/// nowhere. It exists to prove the wire carries that answer rather than flattening it.
+struct RefusingExport;
+sink_identity!(RefusingExport, "refusing-export");
+impl Export for RefusingExport {
+    fn streams(&self) -> &'static [&'static str] {
+        &["metrics"]
+    }
+    fn receive(&self, _item: ExportItem<'_>, _host: &dyn ExportHost) -> Ack {
+        Ack::Retry
+    }
+    fn routes(&self) -> &'static [RouteStatement] {
+        &[]
+    }
+    fn serve(&self, _req: &ServeRequest<'_>, _host: &dyn ExportHost) -> Served {
+        Served {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+}
+
+/// A SINK THAT REFUSES SAYS SO ACROSS THE SEAM. `dispatch_export` translates the face's `Ack` into
+/// the wire's `ExportAck` and the translation is TOTAL — three words to three words, no default arm
+/// — so `Retry` crosses as `Retry`. Red before ABI v3: `ExportResponse::Delivered` carried nothing,
+/// and this sink was indistinguishable on the wire from one that took the record.
+#[test]
+fn a_sink_that_refuses_says_retry_across_the_seam() {
+    let ExportResponse::Delivered(ack) = dispatch_export(
+        &RefusingExport,
+        ExportRequest::Deliver {
+            stream: ExportStream::Metrics,
+            payload: serde_json::json!({"reqs": 1}),
+        },
+    ) else {
+        panic!("a Deliver is answered by a Delivered");
+    };
+    assert_eq!(
+        ack,
+        ExportAck::Retry,
+        "a sink that took the record nowhere says Retry, and the wire carries it"
+    );
+}
+
 /// EXPORT glue: `dispatch_export` maps `Streams` onto the face's declared tokens rendered back as
-/// the frozen wire vocabulary, and `Deliver` onto `receive`, running the sink exactly once.
+/// the frozen wire vocabulary, and `Deliver` onto `receive`, running the sink exactly once and
+/// relaying the word it answered with.
 #[test]
 fn export_dispatch_maps_ops() {
     let sink = TestExport {
@@ -435,7 +481,11 @@ fn export_dispatch_maps_ops() {
             payload: serde_json::json!({"reqs": 1}),
         },
     ) {
-        ExportResponse::Delivered => {}
+        ExportResponse::Delivered(ack) => assert_eq!(
+            ack,
+            ExportAck::Received,
+            "the sink's own word, relayed rather than assumed"
+        ),
         other => panic!("expected Delivered, got {other:?}"),
     }
     assert_eq!(sink.delivered.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -532,12 +582,12 @@ fn a_push_only_sink_states_its_empty_route_half_itself() {
 /// coincidental literal) and is pinned at v2 (1.5.3 — the projection grammar: expanded stream
 /// vocabulary, `audit` removed).
 #[test]
-fn export_abi_version_reads_the_shared_const_and_is_two() {
+fn export_abi_version_reads_the_shared_const_and_is_three() {
     assert_eq!(
         export_abi_version(),
         busbar_plugin::cold::export::EXPORT_ABI_VERSION
     );
-    assert_eq!(export_abi_version(), 2);
+    assert_eq!(export_abi_version(), 3);
 }
 
 fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {

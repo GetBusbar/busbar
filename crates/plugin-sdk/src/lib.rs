@@ -846,7 +846,9 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
+pub use busbar_plugin::cold::export::{
+    ExportAck, ExportField, ExportRequest, ExportResponse, ExportStream,
+};
 
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
@@ -913,10 +915,12 @@ pub fn export_abi_version() -> u32 {
 /// already-serialized batch over as an [`ExportItem`]; `Routes` says the sink's declarations in the
 /// wire's `Route` shape; `HttpEndpoint` relays a matched request to `serve`.
 ///
-/// THE ACK IS NOT CARRIED. `ExportResponse::Delivered` has no field for one and
-/// `DynExport::deliver` returns `()`, so nothing upward is told what the sink said — and nothing
-/// upward is INVENTED either, which is the property that matters: teaching the ABI the ack is an
-/// `EXPORT_ABI_VERSION` move and is not done here.
+/// THE ACK IS CARRIED, and translating it is this function's job and nobody else's. The face's
+/// [`Ack`] and the wire's [`ExportAck`] are two spellings of one answer for the same reason a
+/// declared stream is a token here and an enum there: a WIRE WORD-SPACE belongs to the plugin ABI,
+/// which a sink's own crate may not name, and the face belongs to the contract. The translation is
+/// TOTAL and lossless — three words to three words, no default arm — so a sink that says `Retry`
+/// says `Retry` on the wire, and nothing upward is ever invented.
 pub fn dispatch_export(handler: &dyn Export, req: ExportRequest) -> ExportResponse {
     match req {
         ExportRequest::Streams => ExportResponse::Streams(
@@ -928,14 +932,18 @@ pub fn dispatch_export(handler: &dyn Export, req: ExportRequest) -> ExportRespon
         ),
         ExportRequest::Deliver { stream, payload } => {
             let bytes = payload.to_string();
-            let _ack = handler.receive(
+            let ack = handler.receive(
                 ExportItem {
                     stream: stream.as_token(),
                     bytes: bytes.as_bytes(),
                 },
                 &AbiHost,
             );
-            ExportResponse::Delivered
+            ExportResponse::Delivered(match ack {
+                Ack::Durable => ExportAck::Durable,
+                Ack::Received => ExportAck::Received,
+                Ack::Retry => ExportAck::Retry,
+            })
         }
         ExportRequest::Routes => ExportResponse::Routes(
             handler

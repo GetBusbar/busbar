@@ -28,12 +28,23 @@ use serde::{Deserialize, Serialize};
 /// vocabulary was expanded and the `audit` stream REMOVED (an auditor is a projection made of other
 /// streams, not a data type), so a v1 sink that declared `audit` no longer has a stream to declare.
 /// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
-/// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
+/// token the engine can no longer route.
+///
+/// v3 (1.6.0): THE ACKNOWLEDGEMENT CROSSES. `deliver` used to be answered by a bare `Delivered`
+/// that carried nothing, so a dlopen'd sink could take a record, put it nowhere, and say the same
+/// word a sink that took it says — the host was told a delivery happened and had no way to learn
+/// otherwise. The reply now carries an [`ExportAck`], which makes the in-process face and the
+/// out-of-process one the same object: an in-tree sink already answers `Durable`/`Received`/`Retry`
+/// and a dlopen'd one now answers it too. A CHANGED reply shape is a breaking payload change — a v2
+/// sink encodes `Delivered` as a bare variant and a v3 host cannot decode it — so the floor moves
+/// rather than guessing at an acknowledgement nobody made.
+///
+/// This is the per-kind PAYLOAD axis, NOT the transport axis
 /// — an export plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as every other kind, at
 /// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::cold::SECRET_ABI_VERSION`] and
 /// [`crate::cold::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
-pub const EXPORT_ABI_VERSION: u32 = 2;
+pub const EXPORT_ABI_VERSION: u32 = 3;
 
 /// The EXPORT PROJECTION GRAMMAR — `streams:` / `fields:`, its validation, and the record writer
 /// that makes an ungranted field impossible to serialize. It is written entirely over
@@ -466,7 +477,7 @@ pub enum ExportRequest {
     /// [`ExportResponse::Streams`].
     Streams,
     /// `deliver` — hand one batch for `stream` to the sink. `payload` is the engine-built batch as an
-    /// opaque JSON value. Reply: [`ExportResponse::Delivered`].
+    /// opaque JSON value. Reply: [`ExportResponse::Delivered`], carrying the sink's [`ExportAck`].
     Deliver {
         /// The declared stream this batch belongs to.
         stream: ExportStream,
@@ -487,6 +498,30 @@ pub enum ExportRequest {
     },
 }
 
+/// WHAT A SINK SAID ABOUT ONE DELIVERED BATCH, on the wire.
+///
+/// This is the ABI's spelling of the acknowledgement the export face declares, and it is a separate
+/// declaration for exactly the reason [`ExportStream`] is: a WIRE WORD-SPACE belongs to the ABI,
+/// which no other crate may reach through, and the face's own Rust enum lives on the crate a sink is
+/// written against. The tooling that carries a sink across this seam translates the two, in one
+/// place, the same way it renders a declared stream back as a token.
+///
+/// THE THREE WORDS MEAN WHAT THEY SAY AT THE MOMENT THE SINK ANSWERS, and a sink that cannot tell
+/// the difference between enqueued and delivered says `Received` and never `Durable`: an
+/// acknowledgement that carries no information is worse than none, which is the whole reason this
+/// rides the wire at all.
+///
+/// Serialized with serde's default externally-tagged representation, as every type on this wire is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExportAck {
+    /// The record is where a crash on the sink's node cannot lose it.
+    Durable,
+    /// The sink has the record and claims no durability for it.
+    Received,
+    /// The sink did NOT take it. What a host does about that is the host's.
+    Retry,
+}
+
 /// The success payload for an export `call`, matched to the request variant. A module-level FAILURE (a
 /// sink that genuinely errored) rides `STATUS_ERR` with a UTF-8 message, NOT here.
 ///
@@ -498,8 +533,9 @@ pub enum ExportRequest {
 pub enum ExportResponse {
     /// `streams` — the streams this instance carries.
     Streams(Vec<ExportStream>),
-    /// `deliver` — the batch was accepted by the sink (nothing to read back).
-    Delivered,
+    /// `deliver` — WHAT THE SINK SAID ABOUT THE BATCH. v3: this variant used to carry nothing, and
+    /// a reply that carries nothing is a reply a host cannot act on.
+    Delivered(ExportAck),
     /// `routes` — the HTTP routes this instance serves (collected once at load).
     Routes(Vec<Route>),
     /// `http_endpoint` — the plugin's response to a dispatched inbound request, relayed verbatim.

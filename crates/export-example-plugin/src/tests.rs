@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Coverage for the trivial `kind: export` reference plugin: it declares exactly the `metrics`
-//! stream, takes every record and drops it, declares no route, and `open` accepts any config
-//! (including malformed JSON) since this sink has no configurable shape.
+//! stream, DROPS every record it is handed AND SAYS SO, declares no route, and `open` accepts any
+//! config (including malformed JSON) since this sink has no configurable shape.
 
 use super::*;
 use busbar_plugin_sdk::Delivery;
@@ -39,11 +39,12 @@ fn the_sink_declares_exactly_the_metrics_stream() {
     assert_eq!(sink.streams(), &["metrics"]);
 }
 
-/// THE WHOLE FACE, STATED BY THIS PLUGIN. It takes a record for the stream it declared and for one
-/// it did not, drops both, and says [`Ack::Received`] — the honest word for "I have it and it is
-/// nowhere durable". It declares no route and answers an unrouted request with a 404.
+/// THE WHOLE FACE, STATED BY THIS PLUGIN, AND THE ACK IS HONEST. It is handed a record for the
+/// stream it declared and one for a stream it did not, drops BOTH, and says [`Ack::Retry`] to each
+/// — the only true word for a sink that took the record nowhere. `Received` would claim the sink
+/// HAS it. It declares no route and answers an unrouted request with a 404.
 #[test]
-fn the_sink_takes_every_record_drops_it_and_serves_nothing() {
+fn the_sink_drops_every_record_says_retry_and_serves_nothing() {
     let sink = open("").unwrap();
     assert_eq!(
         sink.receive(
@@ -53,7 +54,7 @@ fn the_sink_takes_every_record_drops_it_and_serves_nothing() {
             },
             &NoLoan
         ),
-        Ack::Received
+        Ack::Retry
     );
     assert_eq!(
         sink.receive(
@@ -63,7 +64,7 @@ fn the_sink_takes_every_record_drops_it_and_serves_nothing() {
             },
             &NoLoan
         ),
-        Ack::Received
+        Ack::Retry
     );
     assert!(sink.routes().is_empty());
     assert_eq!(

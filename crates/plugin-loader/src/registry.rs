@@ -72,10 +72,16 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
             busbar_plugin::cold::hook::HOOK_ABI_VERSION,
         ],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
-        // (`open_export`). Payload schema v2 (`streams`/`deliver`): 1.5.3 expanded the stream
-        // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
-        // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
-        // declare, and v1 is not accepted here.
+        // (`open_export`). Payload schema v3, and the range is a POINT: both endpoints read the one
+        // shared const, so the floor moves with it and cannot drift.
+        //
+        // WHY THE FLOOR MOVES RATHER THAN WIDENING. v2 (1.5.3) removed the `audit` stream, so a v1
+        // sink declares a token the engine can no longer route. v3 (1.6.0) changed the SHAPE of the
+        // `deliver` reply: it carries the sink's acknowledgement, and a v2 sink encodes the old
+        // bare `Delivered` that this binary cannot decode. Accepting a v2 sink would mean either
+        // failing every delivery on a decode error or inventing an acknowledgement nobody made, and
+        // inventing one is the exact fault the ack was added to end. So it is refused at LOAD, once
+        // and loudly, instead of per delivery and silently.
         "export" => &[
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,
             busbar_plugin::cold::export::EXPORT_ABI_VERSION,

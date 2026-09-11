@@ -33,6 +33,15 @@ and what is new to write if you want it.
   1.6.0: the durable wire is additive, and the new plane-record verbs (MCP call records, A2A
   tasks) are simply inert on an old plugin, kept in process as under `store: memory`. See
   [Plugins](plugins.md#the-artifact).
+- **An `export` plugin must be rebuilt.** The export payload schema moves `2` -> `3`: the reply to
+  `deliver` now carries the sink's acknowledgement (`durable` / `received` / `retry`) where it used
+  to carry nothing, so a host can tell a sink that took a record from one that dropped it. A
+  changed reply shape is a breaking wire change, so a v2 sink is refused at LOAD with a clear
+  message rather than mis-called per delivery. Rebuild against the 1.6.0 SDK, re-sign, and bump the
+  manifest's `abi_version` to `3`; no other edit is needed, since `export_export_plugin!` and the
+  `Export` face's `receive` signature are unchanged at the call site. This affects `kind: export`
+  only — store, auth, secret and hook plugins are untouched. See
+  [Plugins](plugins.md#the-artifact).
 - **Validation is the same gate.** `--validate` resolves the same `env:` / `file:` references
   boot reads, and no others, exactly as 1.5.5 did. A CI job that passed on 1.5.5 passes on 1.6.0.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5

@@ -2232,7 +2232,7 @@ count = "8"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plane"
-count = "55"
+count = "53"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2292,7 +2292,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "plane"
-count = "11"
+count = "12"
 
 [[cell]]
 crate = "busbar-plugin-sdk"

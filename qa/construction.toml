@@ -1791,3 +1791,13 @@ key = "cell.busbar-contract.plane.count"
 by = 1
 file = "qa/kind-isolation.toml"
 because = "the export face busbar_contract::kinds::Export: its `streams` method, the one word a sink declares what it carries with, read as a plane instance id by a matrix that scores whole text. One line, the same homonym the export projection grammar's +53 already flagged for the owner, and no dependency, type or call against any plane comes with it"
+
+# THE ACKNOWLEDGEMENT CROSSING THE dlopen SEAM (EXPORT_ABI_VERSION 2 -> 3) COSTS ONE MATRIX LINE AND
+# CARRIES NO RAISE ENTRY, because it is not a rise: `cell.busbar-plugin-sdk.plane.count` goes 11 ->
+# 12 on this branch and the BASE carries 12 or more, so the branch is still at or under where it
+# started. Recorded here anyway so the line is not a silent one. It is the SAME HOMONYM the export
+# projection grammar's +53 and the contract face's +1 already flagged for the owner: the SDK-side
+# test sink that proves a dlopen'd sink which REFUSES a record says `Retry` across the seam has to
+# implement `Export::streams`, because every sink states all four methods, and `streams` is also the
+# bare instance id of a plane member of this tree. No dependency, no type and no call against any
+# plane comes with it, and busbar-plugin-loader x plane falls 55 -> 53 in the same commit.
