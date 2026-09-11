@@ -362,9 +362,19 @@ pub struct VirtualKey {
     /// "what is this key's current audience", rather than reconstructing it from nothing. Trailing
     /// `Option` for backward-compatible deserialize: a pre-1.6.0-P2 row (or a store plugin built
     /// before this field existed) reads `None`, which is exactly the correct answer for a key that
-    /// predates the audience-bound mint — unbound. Cleared on `delete_key`/`revoke` for the same
-    /// reason `enabled`/`generation_hash` are stamped there: a dead credential's binding metadata
-    /// should not linger and be read as live by a future caller of this field.
+    /// predates the audience-bound mint — unbound. Cleared on `revoke` (a revoked-but-not-deleted key
+    /// can still be rotated, so a stale audience there is live data, not history) but NOT on
+    /// `delete_key`: a tombstoned row keeps it forever, the same as `idp_subject`/`minted_by`, and a
+    /// tombstoned key can never rotate or authenticate again regardless (`deleted_at.is_some()` gates
+    /// every path that would read it as live).
+    ///
+    /// Keeping it on a tombstone is right ONLY because the value is a CLOSED-SET RFC 8707 identifier
+    /// — one of the resources a mounted plane itself PUBLISHES (`PlaneDispatch::mintable_audiences`),
+    /// never secret and never free text, so a tombstoned row carrying it forever is no different from
+    /// carrying the plane's own public mount path forever. If `resource` is ever widened to accept
+    /// free-form operator-supplied text (rather than being checked against a closed, plane-declared
+    /// set), this field becomes a RETENTION surface on a row that otherwise never forgets, and this
+    /// decision must be re-asked.
     pub bound_audience: Option<String>,
 }
 
