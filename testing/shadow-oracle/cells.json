@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2318,
+    "total": 2322,
     "by_plane": {
       "a2a": 468,
-      "core": 789,
+      "core": 793,
       "llm": 149,
       "mcp": 912
     },
@@ -67,7 +67,7 @@
       "admin.ops": 240,
       "auth.lifecycle": 3,
       "billing": 14,
-      "boot.refusal": 206,
+      "boot.refusal": 209,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
@@ -75,7 +75,7 @@
       "config.migrate": 138,
       "cooldown": 1,
       "crosscut.traps": 5,
-      "documented": 28,
+      "documented": 29,
       "hazard": 2,
       "hooks": 10,
       "http.crosscut": 23,
@@ -13276,6 +13276,51 @@
       "needs_fixture": false
     },
     {
+      "id": "boot.refusal|BOOT-171b|boot",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-171b",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b plugin load failed:",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-171c|boot",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-171c",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b plugin load failed:",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-171d|boot",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-171d",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b plugin load failed:",
+      "needs_fixture": false
+    },
+    {
       "id": "boot.refusal|BOOT-171|boot",
       "plane": "core",
       "family": "boot.refusal",
@@ -17780,6 +17825,24 @@
         "env": {}
       },
       "why": "CHANGELOG:190 (1.5.3) '`advanced.worker_threads: 0` was silently ignored instead of reported.' \u2014 now a boot WARN names the ignored value (main.rs:612-621)"
+    },
+    {
+      "id": "documented|dockerfile|store-persists-across-the-container",
+      "plane": "core",
+      "family": "documented",
+      "driver": "script",
+      "script": {
+        "name": "store-persist-image.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "why": "Dockerfile:26-27 \u2014 the PUBLISHED image with a signed store-sqlite tarball at an absolute plugins.dir and a writable volume: mint, spend, `docker rm -f`, run a NEW container against the SAME volumes, read the key and its usage back",
+      "bindings": [
+        "PB-11",
+        "PB-37",
+        "PB-93"
+      ],
+      "needs_fixture": "BUSBAR_TEST_BUSBAR_IMAGE"
     },
     {
       "id": "documented|readme|config-locked",

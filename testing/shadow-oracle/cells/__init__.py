@@ -1602,6 +1602,23 @@ def documented_cells() -> list[dict]:
                          "(listen port rewritten off 8080 only) boots and answers /healthz + "
                          "/v1/models with only those two env vars set (Dockerfile:33, "
                          "docker/config.yaml:22,30)"})
+    # THE OTHER HALF OF THE SHIPPED IMAGE'S STORY. docker-defaults above proves the image boots on
+    # its own default config; this proves the DURABLE recipe the Dockerfile's own header hands
+    # operators -- "Governance (optional) needs a writable volume for the SQLite file, e.g.
+    # -v busbar-data:/var/lib/busbar with store.settings.db_path" plus "drop a signed plugin tarball
+    # into /etc/busbar/plugins", the image shipping with ZERO plugins. Four moving parts (a
+    # FROM-scratch image with no shell, a tarball the loader must accept, an ABSOLUTE plugins.dir,
+    # and a volume that outlives the container) that nothing in this tree had ever run together --
+    # and the reported operator failure was precisely there. The fixture var names the image for the
+    # same reason store-persist.sh will not invent a backend URL: a cell that ran cannot then have
+    # driven an image other than the one it named.
+    cells.append({"id": "documented|dockerfile|store-persists-across-the-container", "plane": "core", "family": F,
+                  "driver": "script", "script": {"name": "store-persist-image.sh"}, "outcome": "ok", "weight": 10,
+                  "why": "Dockerfile:26-27 — the PUBLISHED image with a signed store-sqlite tarball at an "
+                         "absolute plugins.dir and a writable volume: mint, spend, `docker rm -f`, run a NEW "
+                         "container against the SAME volumes, read the key and its usage back",
+                  "bindings": ["PB-11", "PB-37", "PB-93"],
+                  "needs_fixture": "BUSBAR_TEST_BUSBAR_IMAGE"})
     # CONTRADICTED (README:272, code-wins per PB-71): pins the ACTUAL behaviour.
     cells.append({"id": "documented|readme|contradicted-overlay-boots", "plane": "core", "family": F, "driver": "script",
                   "script": {"name": "documented-overlay-refused.sh", "args": ["overlay-unwritable"]}, "outcome": "ok", "weight": 10,

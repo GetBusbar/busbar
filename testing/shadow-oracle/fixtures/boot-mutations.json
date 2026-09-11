@@ -4260,6 +4260,102 @@
       "notes": "\u00a73.3 BOOT-171 (main.rs:3453). The published busbar-store-sqlite-plugin with db_path in a directory that does not exist, so its own open() fails. Verified against the live 1.5.5 binary: `store 'busbar-store-sqlite-plugin' plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed: unable to open database file: /nonexistent-dir-xyz/db.sqlite`."
     },
     {
+      "id": "BOOT-171b",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "plugin_dir": [
+            "store-mysql"
+          ]
+        },
+        {
+          "set": "store",
+          "value": {
+            "module": "busbar-store-mysql-plugin",
+            "settings": {
+              "url": "not-a-dsn"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "plugin load failed:",
+        "stdout_contains": null
+      },
+      "notes": "\u00a73.3 BOOT-171 (main.rs:3453) \u2014 the SAME inventory row and the SAME message template as BOOT-171, \"store '{}' plugin load failed: {e}\", carried by the published store-mysql plugin instead of sqlite. BOOT-171 proved that ONE store refuses boot when it cannot open; the kind's rule is that EVERY store plugin does, so each published store gets its own cell and the claim stops resting on the one backend that needs no server. No inventory row is added: 171b/c/d are three fixtures for one message, not three messages. THE FIXTURE IS A WRONG URL, NOT AN UNREACHABLE HOST, AND THAT IS THE POINT: it needs no backend, so this cell records on every host the oracle runs on \u2014 a laptop included \u2014 and its recorded bytes carry no OS errno text, so one golden replays on linux and darwin alike. Verified against the live 1.5.5 binary with the published store-mysql tarball staged: `store 'busbar-store-mysql-plugin' plugin load failed: plugin 'busbar-store-mysql-plugin' open failed: URL ParseError { relative URL without a base }`. The unreachable-host twin was measured on the same binary and is deliberately NOT the recorded fixture, because its message embeds a host-specific errno: settings { url: \"mysql://busbar:busbar@127.0.0.1:1/nonexistent_db_xyz\" } gives `plugin 'busbar-store-mysql-plugin' open failed: DriverError { Could not connect to address `127.0.0.1:1': Connection refused (os error 111) }`. Same exit 1, same template, same claim; a cell whose bytes change with the recording host is a divergence about the host."
+    },
+    {
+      "id": "BOOT-171c",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "plugin_dir": [
+            "store-postgres"
+          ]
+        },
+        {
+          "set": "store",
+          "value": {
+            "module": "busbar-store-postgres-plugin",
+            "settings": {
+              "url": "not-a-dsn"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "plugin load failed:",
+        "stdout_contains": null
+      },
+      "notes": "\u00a73.3 BOOT-171 (main.rs:3453) \u2014 the SAME inventory row and the SAME message template as BOOT-171, \"store '{}' plugin load failed: {e}\", carried by the published store-postgres plugin instead of sqlite. BOOT-171 proved that ONE store refuses boot when it cannot open; the kind's rule is that EVERY store plugin does, so each published store gets its own cell and the claim stops resting on the one backend that needs no server. No inventory row is added: 171b/c/d are three fixtures for one message, not three messages. THE FIXTURE IS A WRONG URL, NOT AN UNREACHABLE HOST, AND THAT IS THE POINT: it needs no backend, so this cell records on every host the oracle runs on \u2014 a laptop included \u2014 and its recorded bytes carry no OS errno text, so one golden replays on linux and darwin alike. Verified against the live 1.5.5 binary with the published store-postgres tarball staged: `store 'busbar-store-postgres-plugin' plugin load failed: plugin 'busbar-store-postgres-plugin' open failed: invalid connection string`. The unreachable-host twin was measured on the same binary and is deliberately NOT the recorded fixture, because its message embeds a host-specific errno: settings { url: \"postgres://busbar:busbar@127.0.0.1:1/nonexistent_db_xyz\" } gives `plugin 'busbar-store-postgres-plugin' open failed: error connecting to server`. Same exit 1, same template, same claim; a cell whose bytes change with the recording host is a divergence about the host."
+    },
+    {
+      "id": "BOOT-171d",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        {
+          "set": "plugins.enabled",
+          "value": true
+        },
+        {
+          "plugin_dir": [
+            "store-valkey"
+          ]
+        },
+        {
+          "set": "store",
+          "value": {
+            "module": "busbar-store-valkey-plugin",
+            "settings": {
+              "url": "not-a-dsn"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "plugin load failed:",
+        "stdout_contains": null
+      },
+      "notes": "\u00a73.3 BOOT-171 (main.rs:3453) \u2014 the SAME inventory row and the SAME message template as BOOT-171, \"store '{}' plugin load failed: {e}\", carried by the published store-valkey plugin instead of sqlite. BOOT-171 proved that ONE store refuses boot when it cannot open; the kind's rule is that EVERY store plugin does, so each published store gets its own cell and the claim stops resting on the one backend that needs no server. No inventory row is added: 171b/c/d are three fixtures for one message, not three messages. THE FIXTURE IS A WRONG URL, NOT AN UNREACHABLE HOST, AND THAT IS THE POINT: it needs no backend, so this cell records on every host the oracle runs on \u2014 a laptop included \u2014 and its recorded bytes carry no OS errno text, so one golden replays on linux and darwin alike. Verified against the live 1.5.5 binary with the published store-valkey tarball staged: `store 'busbar-store-valkey-plugin' plugin load failed: plugin 'busbar-store-valkey-plugin' open failed: valkey plugin: failed to connect: valkey connect: Redis URL did not parse - InvalidClientConfig`. The unreachable-host twin was measured on the same binary and is deliberately NOT the recorded fixture, because its message embeds a host-specific errno: settings { url: \"redis://127.0.0.1:1/0\" } gives `plugin 'busbar-store-valkey-plugin' open failed: valkey plugin: failed to connect: valkey connect: Connection refused (os error 111)`. Same exit 1, same template, same claim; a cell whose bytes change with the recording host is a divergence about the host."
+    },
+    {
       "id": "BOOT-172",
       "family": "boot.refusal",
       "mode": "boot",
