@@ -206,6 +206,22 @@ add_phase() { PHASE_IDS+=("$1"); PHASE_NEEDS_BIN+=("$2"); PHASE_DESC+=("$3"); }
 REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
 [ -n "$REGISTRY_LIST" ] || setup_fail "plugin-registry-check.sh --list returned an empty registry: the gate has no plugins to test, which is a broken registry read, not a busbar defect."
 
+# `release_gate` IS READ FOR EVERY PHASE SHAPE, NOT JUST THE SUITE LOOP. The column's own
+# documentation in plugins.yaml says `required` hard-fails a missing sibling checkout and `optional`
+# loud-skips -- but only the Phase 2 suite loop ever read it, so a `gate: binary` or `gate: smoke`
+# entry could say `required` and still be skipped into a green gate. That is a registry field that
+# means one thing in the file and another in the runner, which is worse than not having the field:
+# flipping it looks like it did something. One reader, used by every phase that can skip for a
+# missing sibling, so the column decides the same way wherever it is written.
+#
+# An entry the registry does not name at all is `optional`: this function must never invent a
+# REQUIREMENT out of a typo'd repo name, because that turns a lookup bug into an un-runnable gate.
+registry_release_gate() {  # registry_release_gate <repo> -> required | optional
+  local got
+  got="$(printf '%s\n' "$REGISTRY_LIST" | awk -F'\t' -v r="$1" '$1 == r { print $6; exit }')"
+  case "$got" in required|optional) printf '%s' "$got" ;; *) printf 'optional' ;; esac
+}
+
 # EVERY registry entry maps to exactly one phase id, keyed off its `gate` column. This is what lets
 # `--segment plugin-<repo>` work for ALL TEN registry plugins rather than only the seven `gate: suite`
 # ones: scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
@@ -1403,6 +1419,18 @@ elif [ -d "$STORE_SQLITE_SRC" ]; then
   run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
   ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
   end_phase ran
+elif [ "$(registry_release_gate store-sqlite)" = "required" ]; then
+  # THE SAME RULE THE SUITE LOOP APPLIES, APPLIED HERE. sqlite is `release_gate: required` in
+  # plugins.yaml -- it is the store busbar's own Dockerfile recommends by name and the only durable
+  # store that needs no container -- so a missing sibling checkout is a gate that CANNOT run, not a
+  # gate that ran and passed. Exiting is the whole difference: the arm below used to print the same
+  # three lines and then let the run finish green, which is how a release ships with its one
+  # recommended store unproven.
+  echo "../store-sqlite (GetBusbar/store-sqlite) is not checked out as a sibling of this repo." >&2
+  echo "This is a REQUIRED part of the release gate (release_gate: required in plugins.yaml — it is" >&2
+  echo "the store the Dockerfile recommends, and its phase needs no container) — clone" >&2
+  echo "GetBusbar/store-sqlite to ${STORE_SQLITE_SRC} and re-run." >&2
+  exit 1
 else
   echo "SKIP: ../store-sqlite not present as a sibling checkout on this machine." >&2
   echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2

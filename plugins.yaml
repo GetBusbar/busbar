@@ -75,7 +75,15 @@ plugins:
     crate: busbar-store-sqlite-plugin
     version_line: "1.0"
     service: none
-    release_gate: optional
+    # REQUIRED, not optional. sqlite is the ONLY durable store busbar's own Dockerfile recommends
+    # by name ("Governance (optional) needs a writable volume for the SQLite file ... with
+    # store.settings.db_path"), and it is the one store-persist cell that needs no server and so
+    # runs on every host the oracle records on. A release that could not prove the store its own
+    # image tells operators to use is a release whose durability story was never gated, and
+    # `optional` bought exactly that: release-check.sh's sqlite phase loud-skipped a missing
+    # ../store-sqlite and the gate still went green. It needs no container, so `required` costs a
+    # clone and nothing else.
+    release_gate: required
     gate: binary
   - repo: store-valkey
     kind: store

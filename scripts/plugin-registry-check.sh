@@ -278,6 +278,37 @@ for p in plugins:
             fail.append(f"release-check.sh has no explicit phase touching ../{d} "
                         f"({p['repo']}, gate: {p.get('gate')})")
 
+# ── 3c. `release_gate: required` MEANS THE SAME THING FOR EVERY GATE SHAPE.
+# plugins.yaml documents the column as "release-check.sh hard-fails if the sibling checkout is
+# missing", but only the Phase 2 SUITE loop ever read it (its `$P_RELGATE` arm). A `gate: binary` or
+# `gate: smoke` entry could therefore be marked `required` and still be loud-SKIPPED into a green
+# gate — a field that means one thing in the registry and another in the runner, which is worse than
+# no field at all, because flipping it looks like it did something. Measured: store-sqlite, the one
+# store busbar's own Dockerfile recommends by name.
+#
+# The suite loop is covered by its own `$P_RELGATE` read; every other shape must consult the single
+# reader, `registry_release_gate <repo>`, by NAME — so the honouring cannot be deleted while this
+# check goes on reporting coverage. Comment-stripped, for the reason check 2 gives.
+relgate_reader_present = "registry_release_gate()" in relcheck
+suite_relgate_read = "P_RELGATE" in relcheck
+for p in plugins:
+    if p.get("release_gate") != "required":
+        continue
+    if p.get("gate") == "suite":
+        if not suite_relgate_read:
+            fail.append(f"{p['repo']} is release_gate: required but release-check.sh's suite loop "
+                        "no longer reads the release_gate column ($P_RELGATE) — a missing sibling "
+                        "would be skipped into a green gate")
+        continue
+    if not relgate_reader_present:
+        fail.append("release-check.sh has no `registry_release_gate()` reader, so a "
+                    f"release_gate: required non-suite entry ({p['repo']}, gate: {p.get('gate')}) "
+                    "cannot be honoured — its missing sibling would loud-skip into a green gate")
+    elif not re.search(rf"registry_release_gate\s+{re.escape(p['repo'])}\b", relcheck):
+        fail.append(f"{p['repo']} is release_gate: required (gate: {p.get('gate')}) but "
+                    f"release-check.sh never asks `registry_release_gate {p['repo']}` — its phase "
+                    "would loud-skip a missing sibling checkout instead of failing the gate")
+
 # ── 3b. 1.5.2 token-exchange coverage: every kind:auth plugin must have a token-exchange flow case.
 # Mirrors how check 3 reds a plugin lacking a gate phase — a kind:auth plugin with NO arm in the
 # registry-driven token-exchange matrix (release-check-1.5.2.sh's `auth_plugin_flows()`) is RED, so a
