@@ -47,11 +47,6 @@ getrandom = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-# The shared `busbar_api::Store` contract conformance suite. The dlopen durability test drives the
-# suite's reopen assertion — the claim is written ONCE, against the face, and this crate contributes
-# the opener where both handles are real `dlopen`s of a separately compiled cdylib. Test-only, and
-# no cycle: the testkit depends on `busbar-api` and nothing else in this workspace.
-busbar-plugin-testkit = { path = "../plugin-testkit", features = ["store"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

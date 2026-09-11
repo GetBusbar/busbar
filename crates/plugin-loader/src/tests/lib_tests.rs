@@ -1599,13 +1599,72 @@ fn sample_task_row(task_id: &str, state: &str, updated_at: u64) -> SampleTask {
     }
 }
 
+/// The GOVERNANCE-table fixtures the restart test carries alongside the task rows: a key, the spend
+/// ledger charged against it, and the metering row that bills it. Every field is set to something
+/// distinguishable for the same reason `sample_task_row`'s are — a round trip that zeroes a column
+/// must fail, not pass on a default-constructed row.
+fn sample_key(id: &str) -> VirtualKey {
+    VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("binding:{id}:g1"),
+        name: format!("durable {id}"),
+        enabled: true,
+        created_at: 1_000,
+        group: Some("groups:team".into()),
+        ..Default::default()
+    }
+}
+
+/// The spend ledger written against `sample_key`'s bucket. `models` is left empty deliberately: the
+/// per-model token detail rides the metering row below, which crosses the same ABI, and building a
+/// model row here would make this test name a type the loader does not otherwise use.
+fn sample_ledger() -> UsageLedger {
+    UsageLedger {
+        requests: 7,
+        billable_requests: 5,
+        models: Vec::new(),
+    }
+}
+
+/// The billing row for `key_id`, with every token tier distinct so a transposition fails.
+fn sample_metering(key_id: &str) -> MeteringDelta {
+    MeteringDelta {
+        key_id: key_id.to_string(),
+        bucket: 1_699_920_000,
+        model: "model-7".into(),
+        provider: "provider-7".into(),
+        tokens_input: 11,
+        tokens_output: 13,
+        tokens_cache_read: 3,
+        tokens_cache_write: 2,
+        requests: 4,
+        billable_requests: 3,
+        key_group_at_use: "groups:team".into(),
+        pricing_version: "pv-1".into(),
+    }
+}
+
 /// THE TEST. Load the store as a PLUGIN, write a task (plus its provenance chain and an MCP call
-/// record), then RESTART the plugin — drop the handle, unload the library, `dlopen` it again and
-/// `busbar_open` a fresh instance whose only possible source of state is the bytes on disk — and
-/// read everything back over the same ABI.
+/// record) AND the governance rows an operator's access and money live in — a virtual key, the spend
+/// ledger charged against it, a metering row, and a revoked key's tombstone — then RESTART the
+/// plugin: drop the handle, unload the library, `dlopen` it again and `busbar_open` a fresh instance
+/// whose only possible source of state is the bytes on disk. Then read everything back over the same
+/// ABI.
 ///
 /// Against the ABI as it stood before the ten variants were added this fails at the first
 /// assertion: `get_task` returns `None`, because `DynStore` never sent the write anywhere.
+///
+/// The governance half is the same claim the shared cross-backend conformance suite states once
+/// against the `Store` face (`assert_key_spend_and_metering_survive_a_reopen`), and the same claim
+/// the recorded `plugins.store-persist|*` cells make end to end. It is written out here rather than
+/// wired to that function because this crate names no test-support crate it does not already name —
+/// the isolation ledger counts every such mention, and a dependency bought to save twenty lines of
+/// assertion is a coupling that outlives them. The assertions below must therefore be kept in step
+/// with that function BY HAND; if they drift, the seam-level cell is the one that rules.
+///
+/// It rides this test rather than a second one of its own because it is the same restart, the same
+/// two `dlopen`s and the same file: a separate test would re-pay the whole fixture to prove a claim
+/// about the same two handles.
 #[test]
 fn task_state_written_through_a_plugin_store_survives_a_restart() {
     let Some(lib) = store_example_plugin_path() else {
@@ -1669,6 +1728,22 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         store
             .append_plane_record(&call_record(&call))
             .expect("append call");
+        // The GOVERNANCE tables ride the same restart. Until 1.6.0 the only in-tree backend with a
+        // file behind it delegated all of these to a RAM store, so every one of them returned
+        // `Ok(())` and kept nothing — a mint that vanished at the next boot.
+        store
+            .put_key(&sample_key("vk_durable"))
+            .expect("mint a key");
+        store
+            .put_usage("vk_durable", 1_700_000_000, &sample_ledger())
+            .expect("charge the spend ledger");
+        store
+            .add_metering(&sample_metering("vk_durable"))
+            .expect("charge the metering row");
+        store.put_key(&sample_key("vk_revoked")).expect("mint");
+        store
+            .delete_key("vk_revoked")
+            .expect("revoke it — a TOMBSTONE, which must survive the restart too");
         // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
         // held in memory goes with it.
     }
@@ -1702,6 +1777,81 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         "the boot enumeration must find the principal whose chain this process never saw written"
     );
 
+    // ── THE GOVERNANCE ROWS, AFTER THE RESTART ────────────────────────────────────────────────
+    //
+    // VALUES, never `is_some()`: a backend that answered a default-constructed key, an empty ledger
+    // or a zeroed billing row would satisfy a presence check having kept nothing, and that is the
+    // exact defect shape. `revision` is excluded — the backend owns that stamp.
+    let minted = sample_key("vk_durable");
+    let back = store
+        .get_key("vk_durable")
+        .expect("get_key after restart")
+        .expect(
+            "the key written through the plugin ABI is GONE after the restart — `put_key` returned              Ok and kept nothing, so every key an operator minted dies at the next boot",
+        );
+    assert_eq!(back.id, minted.id);
+    assert_eq!(
+        back.generation_hash, minted.generation_hash,
+        "the rotation fingerprint must survive verbatim — a key whose generation came back empty          invalidates every live token naming it"
+    );
+    assert_eq!(back.name, minted.name);
+    assert_eq!(back.group, minted.group, "the budget-group binding");
+    assert_eq!(back.created_at, minted.created_at);
+    assert!(back.enabled, "the key came back disabled: {back:?}");
+    assert_eq!(back.deleted_at, None, "the live key came back tombstoned");
+    assert!(
+        store
+            .list_keys()
+            .expect("list_keys after restart")
+            .iter()
+            .any(|k| k.id == "vk_durable"),
+        "the key is readable by id but absent from the listing hydration walks at boot"
+    );
+
+    assert_eq!(
+        store
+            .get_usage("vk_durable", 1_700_000_000)
+            .expect("get_usage after restart"),
+        sample_ledger(),
+        "the spend ledger did not survive the restart: every cap the operator set is silently          refunded at each boot"
+    );
+
+    let charge = sample_metering("vk_durable");
+    assert_eq!(
+        store
+            .list_metering(charge.bucket)
+            .expect("list_metering after restart"),
+        vec![MeteringRow {
+            key_id: charge.key_id.clone(),
+            model: charge.model.clone(),
+            provider: charge.provider.clone(),
+            tokens_input: charge.tokens_input,
+            tokens_output: charge.tokens_output,
+            tokens_cache_read: charge.tokens_cache_read,
+            tokens_cache_write: charge.tokens_cache_write,
+            requests: charge.requests,
+            billable_requests: charge.billable_requests,
+            key_group_at_use: charge.key_group_at_use.clone(),
+            pricing_version: charge.pricing_version.clone(),
+        }],
+        "the BILLING row did not survive the restart: everything served before the boot is unbilled"
+    );
+
+    let revoked = store
+        .get_key("vk_revoked")
+        .expect("get_key on the revoked id")
+        .expect(
+            "`delete_key` is a TOMBSTONE, not a remove: the row is kept so billing and audit keep              resolving by key id forever. `None` means the restart lost the attribution",
+        );
+    assert!(
+        revoked.deleted_at.is_some() && !revoked.enabled,
+        "the revoked key came back alive — the restart resurrected a key an operator killed:          {revoked:?}"
+    );
+    assert!(
+        store.put_key(&sample_key("vk_revoked")).is_err(),
+        "after the restart a live-shaped put_key over the tombstoned id was ACCEPTED: every revoked          key is one ordinary rename away from being live again"
+    );
+
     // ── retention over the plugin RPC: the ops route and their COUNT comes from the plugin, not a
     // defaulted `Ok(0)` no-op. This exercises the AGE axis — the `kind: call` "drop all older"
     // contract — against a row whose `ts` reached the plugin over the wire. Both retention axes and
@@ -1730,55 +1880,6 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
         .is_empty());
 
     drop(store);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// THE SAME CLAIM FOR THE GOVERNANCE TABLES, over a true dlopen: mint a virtual key, write its
-/// spend ledger and a metering row through a plugin store loaded over the C ABI, drop the handle
-/// (which unloads the library), `dlopen` it AGAIN at the same `durable_path`, and read all three
-/// back unchanged — tombstone included.
-///
-/// The sibling test above proves the A2A task table survives a restart over this path. This one
-/// proves the tables an operator's money and access live in do, and it does not restate the claim:
-/// it calls the SHARED cross-backend assertion
-/// (`busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen`),
-/// which is the same function `store-memory` and the store-example plugin's in-process `FileStore`
-/// tests call. The claim is written once, against `busbar_api::Store`; what this test contributes is
-/// the HARDEST opener there is — every write and every read crosses the plugin ABI, into a separately
-/// compiled cdylib, and the second handle is a fresh `dlopen` + `busbar_open` whose only possible
-/// source of state is the bytes on disk.
-///
-/// This is the seam-level twin of the recorded `plugins.store-persist|*` oracle cells (mint, spend,
-/// kill, boot, read back over HTTP): same claim, no server.
-#[test]
-fn key_spend_and_metering_written_through_a_plugin_store_survive_a_restart() {
-    let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
-        return;
-    };
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-key-durability-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).expect("create durable dir");
-    let cfg = serde_json::json!({ "durable_path": dir.join("durable.json").to_string_lossy() })
-        .to_string();
-
-    // The opener the shared assertion calls twice. Each call is a genuine `dlopen` + `busbar_open`;
-    // dropping the returned handle unloads the library and takes everything the plugin held in
-    // memory with it, so the second call's store shares nothing with the first but the file.
-    // `Arc::from` on the loader's `Box<dyn Store>` is a move, not a copy — the same plugin handle,
-    // reference-counted so the suite can express the RAM case with the same signature.
-    let open = || -> std::sync::Arc<dyn busbar_api::Store> {
-        std::sync::Arc::from(
-            load_store(&lib, &cfg).expect("dlopen the store example plugin over the ABI"),
-        )
-    };
-    busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen(
-        &open, "dlopen",
-    );
-
     let _ = std::fs::remove_dir_all(&dir);
 }
 

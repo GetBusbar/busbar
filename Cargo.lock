@@ -807,7 +807,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-sign",
- "busbar-plugin-testkit",
  "busbar-unit-ledger",
  "busbar-unit-verbs",
  "busbar-unit-wal",
