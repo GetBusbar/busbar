@@ -523,7 +523,7 @@ def row_pgo_applied(ctx) -> str:
 #
 # The image is a DIFFERENT ARTIFACT CLASS from the release tarballs, and it is the one that has
 # actually broken in production. busbar 1.5.3's image did not boot under ANY documented invocation
-# `USER 65532:65532` against a root-owned `/etc/busbar` in a `FROM scratch` image, so
+# `USER 65532:65532` against a root-owned `/etc/busbar` in what was then a `FROM scratch` image, so
 # the overlay backend was unwritable and boot refused. Every gate was green, because nothing ran the
 # image. These rows run it.
 #

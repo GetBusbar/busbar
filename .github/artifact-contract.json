@@ -58,9 +58,12 @@
         "downloads it, and it is invisible to every check that only executes the binary on the",
         "runner that built it. Parsed straight out of the ELF/Mach-O/PE headers so the check is one",
         "implementation on all three operating systems rather than `file` here and `ldd` there.",
-        "The linkage half folds in docker.yml's hard failure on a dynamically-linked binary where a",
-        "static one was intended (FROM scratch has no loader): linkage is now a declared property of",
-        "the target and a row that applies to every artifact, not an `ldd | grep` in one workflow."
+        "The linkage half folds in docker.yml's hard failure when the binary's linkage is not the",
+        "one the target declares. That assertion used to demand a STATIC image binary (`FROM",
+        "scratch` has no loader) and now demands a DYNAMIC one, because a static musl binary's",
+        "`dlopen` is a stub that always fails and the image could therefore load no plugin of any",
+        "kind. Either way the point stands: linkage is a declared property of the target and a row",
+        "that applies to every artifact, not an `ldd | grep` in one workflow."
       ],
       "applies_when": {
         "kind": "binary"
