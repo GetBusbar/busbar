@@ -9,11 +9,14 @@ This note exists because the work it plans was ordered against `1.6.0-streams-de
 and its remedy is no longer the one §1f proposed.** §1g already records the turn; what §1g does not
 do is say what is therefore left, because it was written before the dialect cuts landed. This note
 is that statement, and it corrects four things a reader of the entries above it would otherwise get
-wrong.
+wrong — plus two more that the LANDING disproved after this note was first written, recorded in
+place at §1a and §5d rather than quietly edited away.
 
 ---
 
 ## 0. THE FOUR CORRECTIONS, before anything is planned
+
+(Two further corrections, §1a's and §5d's, came out of landing commits 1b and 2 and are recorded where they belong.)
 
 ### 0a. THE DRIVER MUST NOT OWN A SOCKET, and that is a decision rather than an omission
 
@@ -93,7 +96,7 @@ exists.** The `Dialect` enum was replaced by the string-keyed row table
 
 ## 1. THE SOCKET: where it is opened, and what opens it
 
-### 1a. It is opened through a ROOT-COMPOSED EGRESS PORT, keyed by the plane's decl
+### 1a. It is opened by a ROOT-COMPOSED EGRESS PORT — and NOT through `composed`
 
 PLANEDECL-3 gave `BuildCtx` a `composed` slice — root-composed ports keyed by the plane decl's own
 `config_section` (`busbar-substrate/src/plane/registry.rs:58-73`, read at `:113-121`). Today it
@@ -105,16 +108,35 @@ carries **exactly one** entry, written at `crates/busbar/src/main.rs:1316-1335`:
 
 `config_section` is `"streams"`. `GovernedCalls` has two methods — `replied` and `expired`
 (`busbar-plane-streams/src/governed.rs:50`/`:57`) — and neither opens anything. **There is no egress
-port.** That is the port this landing adds, and the key is the same key: the decl's, not a plane's
-name spelled in the root.
+port.** That is the port this landing adds. The work order specified it as a `composed` entry keyed
+by the decl; the paragraph below is why that is the one thing it cannot be.
 
-**Why a composed port and not a call.** The composition root registers its wire in exactly one place
-— `kind-isolation:transport-registration` is the rule, and it is green — and a second place that
-named `WsTransport` by its concrete type would be a second registration in everything but the word.
-So the root builds the dialler once, off the seal it already registered the wire on
-(`registry::seal(..).transports.ws`, the same allocation `plane_mount`'s seventh cell asks for by
-identity), and hands it across as a port. `leg_dial.rs`'s own header says the same thing from the
-other side: *"What dials is a WIRE, and this module names none."*
+**CORRECTED BY THE LANDING — IT IS NOT A `composed` PORT, AND TAKING THE WIRE OFF THE SEAL IS NOT
+ENOUGH.** Both halves of the paragraph that stood here were wrong, and both were disproved by
+measurement rather than by argument. They are replaced rather than deleted because the reasoning
+that produced them is the reasoning a next reader would repeat.
+
+*What it said:* the root builds the dialler off the seal and hands it across `composed`, and taking
+the wire off the seal is what keeps `kind-isolation:transport-registration` green.
+
+*What is true:*
+
+1. **`composed` is PLANE-FACING and the root never reads one back.** `grep -rn '\.composed(' crates/`
+   returns exactly one hit — `busbar-voice/src/mount.rs:468`, a plane reading its own port. The
+   dialler's consumer is the ROOT's own arrival mount; the plane's `open_upstream` opens the plane's
+   upstream *codec state*, not a socket, and no plane call wants a dialler. A dialler handed across
+   `composed` would be a port with no reader.
+2. **The registration rule counts NAMING, not construction.** Taking the wire off the seal does not
+   satisfy it. The rule keys on a shipped source file containing BOTH `busbar_transport_ws::` and the
+   `WsTransport` symbol (`xtask/src/gates/kind_isolation.rs:4534`), which is why `leg_dial.rs` and
+   `leg_pump.rs` — which name the path but never the type — are not sites and remain the wire-free
+   seam they advertise. A first cut of this work in `root/leg_egress.rs` reds the rule by name:
+   *"the wire busbar-transport-ws is composed in 2 places"*.
+
+**So the port lives in `root/registry.rs`** — the one file the root already composes the wire in —
+and that is the gate stating the architecture rather than obstructing it. `leg_dial.rs`'s own header
+still says the thing that matters from the other side: *"What dials is a WIRE, and this module names
+none."* Something must name one; exactly one file may.
 
 ### 1b. The shape, end to end, for ONE session
 
@@ -289,7 +311,8 @@ thing "delete legacy, never build beside" names. The commits below are what this
 | # | class | what lands | what of `busbar-voice` dies |
 | --- | --- | --- | --- |
 | 1 | design | this note | nothing |
-| 2 | seam | the root's **egress port**: a `LegDialer` over `mount::dial_session`, built off the boot seal's registered `ws` wire, handed across `composed_ports` keyed by `PLANE_DECL.config_section`. Red-first cells over a lease that is nobody's. | nothing — and that is correct: a dialler with no mount serves no byte and un-serves none |
+| 1b | fix | **LANDED** (`5c08cd2c6`). `root-duplex-serve` did not COMPILE at `6dc9f8192` — two stale call sites, and nothing in CI, scripts or xtask ever builds the feature. Every gate on this branch had been passing over code that had not compiled since ST-4. | nothing |
+| 2 | seam | **LANDED** (`10bfb0022`). The root's **egress port**: `WsLegEgress`, a `LegDialer` over `mount::dial_session`, in `root/registry.rs` for §1a's corrected reason. Two red-first cells — the dial that fails and the secure leg over a cleartext layer — the second proven load-bearing by mutation. | nothing — and that is correct: a dialler with no mount serves no byte and un-serves none |
 | 3 | seam | the root's **gauntlet seam** (§1g item 2) — the composition supplies a `GauntletPlane`, the same shape `LegDialer` is, because `accept_gauntlet` takes one and the root has none | nothing |
 | 4 | **the one commit** | `root/ws_arrival.rs`: specs built off `SURFACE.bindings`, `address`/`open_session` pre-upgrade, `accept_coded` for the close code, the channel adapter, `LegDialing` + `pump_leg`, the operator gate/tap over `SessionParams`, `ComposedUnits` wired into `ProductionUnits::with_duplex_units`, `root-duplex-serve` **default ON** | see 4c — all of it, in this commit |
 
@@ -405,6 +428,34 @@ is installed through the same `install_ws_arrivals` the voice plane uses today a
 into the substrate does not grow by a call it did not already make. If the measurement says otherwise
 at commit 4, the mount is wrong and not the gate.
 
+### 5d. THE GATE SET CANNOT SEE THIS STACK AT ALL — found by landing, not by reading
+
+The most important measurement in this note was not available when its first half was written, and
+it changes how much the green above is worth.
+
+```
+$ cargo check -p busbar --features root-duplex-serve --all-targets   # at 6dc9f8192
+error[E0433]: cannot find module or crate `dialect`   --> root/units_voice.rs:2186
+error[E0308]: mismatched types                         --> root/tests/plane_mount.rs:221
+$ grep -rn "root-duplex-serve" .github/workflows/ scripts/ xtask/src/
+(nothing)
+```
+
+**The whole duplex-serve stack did not compile at the branch tip, and nothing in this repository
+ever builds it.** Both breaks are stale call sites from landings that could not have seen them —
+ST-4's dialect cut, and `duplex_binding_at` growing a third return value — and both had been on the
+tree, unbuilt, through every gate run on this branch.
+
+The mechanism is one word. RAIL 13's `cargo check --workspace --all-targets` builds **default**
+features; `--all-targets` is targets, not features, and `root-duplex-serve` is not in `default`. So
+a stack can be developed, cell-covered and gated green for several landings while not compiling.
+Everything §0b measures — "every one of those has cells and no caller" — was measured against code
+the gate had never built.
+
+Repaired in `5c08cd2c6`. **Still owed, and it is the entry that keeps this note honest**: a CI leg
+that builds the non-default feature set. Without it the next landing rots the same way, and the two
+lines fixed there will be three.
+
 ---
 
 ## 6. THE RECORDING, AND THE NAMED GAP
@@ -442,10 +493,17 @@ pretty-printed array is read as no packages and widens the run to the whole work
 
 ## 7. THE ORDER, AS ONE LIST
 
+0. **The build repair.** `root-duplex-serve` does not compile at the base, and a cell cannot be
+   written red-first against a crate that does not build. `grep -rn "root-duplex-serve"
+   .github/workflows/ scripts/ xtask/src/` returns nothing, which is why it rotted green: RAIL 13's
+   `--all-targets` is targets, not features. **LANDED, `5c08cd2c6`.** Still owed: a CI leg that
+   builds the non-default feature set, or the two fixed lines rot again the same way.
 1. **This note.** (commit 1)
-2. **The egress port** — `LegDialer` over `mount::dial_session`, off the boot seal's wire, across
-   `composed_ports` keyed by `PLANE_DECL.config_section`. Red-first, cells over a nobody's lease.
-   Deletes nothing, and must not pretend to. (commit 2)
+2. **The egress port** — `WsLegEgress`, a `LegDialer` over `mount::dial_session`, in
+   `root/registry.rs` (NOT a module of its own, and NOT across `composed` — §1a, corrected).
+   Red-first. Deletes nothing, and must not pretend to. **LANDED, `10bfb0022`**, with four declared
+   ceiling raises and the two dialect hits declared in the commit message because the column cannot
+   take a declaration. (commit 2)
 3. **The gauntlet seam** — the composition's `GauntletPlane`, §1g item 2, the last of the three
    §1g blockers still open (items 1 and 3 are CLOSED: `SessionParams` and `channel_coded`/`accept_coded`
    are both on this tree). (commit 3)
