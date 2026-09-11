@@ -107,6 +107,55 @@ struct Durable {
     /// a typed column this fixture reads without ever decoding the body.
     #[serde(default)]
     push_configs: Vec<TaskRecord>,
+    /// The VIRTUAL KEY table, keyed by `VirtualKey::id`. Tombstoned rows are KEPT (see
+    /// [`Store::delete_key`]) — the tombstone is a column on the row, never a removal, so it
+    /// persists exactly like any other field and a reopened handle still refuses to resurrect the
+    /// id. `#[serde(default)]` so a `durable.json` written before keys were persisted still opens,
+    /// as an empty key table.
+    #[serde(default)]
+    keys: Vec<VirtualKey>,
+    /// The token ledger, one row per `(bucket_id, window_start)`. `#[serde(default)]` for the same
+    /// backward-compatibility reason as `keys`.
+    #[serde(default)]
+    usage: Vec<UsageWindow>,
+    /// The BILLING ledger, one row per `(bucket, key_id, model, provider)`. `MeteringRow` carries no
+    /// `bucket` of its own, so the bucket is a sidecar column on [`MeteringEntry`].
+    /// `#[serde(default)]` for the same reason.
+    #[serde(default)]
+    metering: Vec<MeteringEntry>,
+    /// The high-water mark of the store-global monotonic key `revision`, persisted so it keeps
+    /// climbing ACROSS a reopen. A counter that restarted at zero would hand a post-restart
+    /// mutation a revision an earlier row already used, and `list_keys_since`'s `revision > since`
+    /// delta would then skip it forever. `#[serde(default)]` — an old file simply starts at 0.
+    #[serde(default)]
+    key_revision: u64,
+}
+
+/// One persisted token-ledger window: its `(bucket_id, window_start)` primary key plus the ledger.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct UsageWindow {
+    bucket_id: String,
+    window_start: u64,
+    ledger: UsageLedger,
+}
+
+/// One persisted metering row plus the `bucket` sidecar that completes its
+/// `(bucket, key_id, model, provider)` primary key — `MeteringRow` itself carries no bucket, since
+/// `list_metering` is always asked for one.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct MeteringEntry {
+    bucket: u64,
+    row: MeteringRow,
+}
+
+/// Wall-clock seconds, for the `deleted_at` stamp `delete_key` writes. A clock that cannot be read
+/// yields 0 rather than panicking: a tombstone stamped at the epoch is still unambiguously a
+/// tombstone (`Some(0)` is not `None`), which is the only property anything reads it for.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// One persisted A2A task: the `PlaneRecord`'s `id` primary key plus the OPAQUE body the seam wrote,
@@ -153,14 +202,23 @@ struct TaskEventBody {
     body: Vec<u8>,
 }
 
-/// A JSON-file-backed store. The A2A task and MCP call-log methods are REAL — they read and write
-/// `path`, so a row written by one plugin handle is found by the next one. Every other `Store`
-/// method delegates to an inner `RamStore` (the required ones) or keeps the trait default: this
-/// fixture exists to prove task durability over the ABI, and pretending to durably store keys and
-/// credentials it never reads back would be exactly the kind of claim this crate is here to catch.
+/// A JSON-file-backed store. Every verb it implements is REAL — it reads and writes `path`, so a row
+/// written by one plugin handle is found by the next one: the plane-record tables (A2A tasks, their
+/// provenance chain, MCP call records, demotions, push configs, the spent-approval ledger) AND the
+/// governance tables (virtual keys, the token ledger, the metering rows).
+///
+/// The key/usage/metering verbs used to delegate to an inner `RamStore` instead, which made the ONLY
+/// in-tree store with a `durable_path` one that did not persist keys, usage or metering across a
+/// reopen: a mint returned `Ok`, the file on disk never grew a key table, and the key was gone at the
+/// next open. That is precisely the claim this crate exists to make checkable, so the delegation is
+/// gone and the inner `RamStore` with it — `RamStore` is now only what the NO-config mode opens.
+///
+/// Verbs still left at the trait default (credentials, audit records, `scrub_key`) keep the honest
+/// posture the fixture started with: a store that pretends to durably hold credentials it never
+/// reads back is the claim this crate is here to catch, and the shared conformance suite skips those
+/// on a backend with no credential support.
 struct FileStore {
     path: PathBuf,
-    inner: RamStore,
     /// Serialises this handle's own read-modify-write cycles. It holds no DATA, deliberately — see
     /// [`FileStore::load`].
     gate: Mutex<()>,
@@ -176,7 +234,6 @@ impl FileStore {
         Self::load_from(&path).map_err(|e| e.0)?;
         Ok(Self {
             path,
-            inner: RamStore::new(),
             gate: Mutex::new(()),
         })
     }
@@ -578,35 +635,168 @@ impl FileStore {
 }
 
 impl Store for FileStore {
-    // ── delegated to the inner RamStore (the methods the trait requires) ─────────────────────
+    // ── THE GOVERNANCE TABLES, ON DISK ───────────────────────────────────────────────────────
+    //
+    // Keys, the token ledger and the metering rows, each persisted through the same read-modify-write
+    // the plane tables use, so a value written through one handle is found by the next one opened on
+    // the same `durable_path`. Held to `busbar_plugin_testkit::store_conformance`'s reopen assertion.
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
-        self.inner.put_key(key)
+        self.mutate(|d| {
+            // The tombstone precondition, tested and applied inside ONE locked read-modify-write so
+            // it is atomic across handles: a live-shaped write over a tombstoned row would resurrect
+            // a key an operator revoked, and a caller-side `deleted_at` check cannot close that.
+            // A write that CARRIES a tombstone clears nothing and stays allowed.
+            if key.deleted_at.is_none()
+                && d.keys
+                    .iter()
+                    .any(|k| k.id == key.id && k.deleted_at.is_some())
+            {
+                return Err(StoreError(format!(
+                    "put_key: '{}' is tombstoned and its id is never reissued; refusing to clear \
+                     the tombstone",
+                    key.id
+                )));
+            }
+            let mut row = key.clone();
+            d.key_revision = d.key_revision.saturating_add(1);
+            row.revision = d.key_revision;
+            match d.keys.iter_mut().find(|k| k.id == row.id) {
+                Some(slot) => *slot = row,
+                None => d.keys.push(row),
+            }
+            Ok(())
+        })?
     }
+
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
+        self.read(|d| d.keys.iter().find(|k| k.id == id).cloned())
     }
+
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
+        // Deliberately UNFILTERED — tombstones included, so the hydrator can observe a revocation
+        // and evict, and the default `list_keys_since` sees it too.
+        self.read(|d| {
+            let mut v = d.keys.clone();
+            v.sort_by_key(|k| k.created_at);
+            v
+        })
     }
+
     fn delete_key(&self, id: &str) -> StoreResult<()> {
-        self.inner.delete_key(id)
+        self.mutate(|d| {
+            let rev = d.key_revision.saturating_add(1);
+            let Some(key) = d.keys.iter_mut().find(|k| k.id == id) else {
+                // NOT the idempotent case: "no such id" means nothing was touched, and `Ok(())`
+                // here would tell an operator who typo'd an id that a key was revoked.
+                return Err(StoreError(format!("delete_key: unknown id '{id}'")));
+            };
+            if key.deleted_at.is_some() {
+                return Ok(()); // idempotent: already tombstoned
+            }
+            // TOMBSTONE: the row SURVIVES so attribution by key id keeps resolving forever and the
+            // id is never reissued. The usage ledger for the key IS dropped. Both happen inside the
+            // one locked RMW, so a concurrent handle cannot resurrect a ledger row in the gap.
+            key.enabled = false;
+            key.deleted_at = Some(now());
+            key.revision = rev;
+            d.key_revision = rev;
+            d.usage.retain(|u| u.bucket_id != id);
+            Ok(())
+        })?
     }
+
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
+        self.read(|d| {
+            d.usage
+                .iter()
+                .find(|u| u.bucket_id == bucket_id && u.window_start == window_start)
+                .map(|u| u.ledger.clone())
+                .unwrap_or_default()
+        })
     }
+
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
+        self.mutate(|d| {
+            match d
+                .usage
+                .iter_mut()
+                .find(|u| u.bucket_id == bucket_id && u.window_start == window_start)
+            {
+                Some(slot) => slot.ledger = ledger.clone(),
+                None => d.usage.push(UsageWindow {
+                    bucket_id: bucket_id.to_string(),
+                    window_start,
+                    ledger: ledger.clone(),
+                }),
+            }
+        })
     }
+
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
-        self.inner.add_metering(delta)
+        self.mutate(|d| {
+            // ACCUMULATE into the one row for this `(bucket, key_id, model, provider)`, never
+            // replace it: one flush can coalesce several responses, and a row that overwrote would
+            // bill only the last of them. Saturating — the counts are upstream-controlled.
+            let row = match d.metering.iter_mut().find(|e| {
+                e.bucket == delta.bucket
+                    && e.row.key_id == delta.key_id
+                    && e.row.model == delta.model
+                    && e.row.provider == delta.provider
+            }) {
+                Some(entry) => &mut entry.row,
+                None => {
+                    d.metering.push(MeteringEntry {
+                        bucket: delta.bucket,
+                        row: MeteringRow {
+                            key_id: delta.key_id.clone(),
+                            model: delta.model.clone(),
+                            provider: delta.provider.clone(),
+                            tokens_input: 0,
+                            tokens_output: 0,
+                            tokens_cache_read: 0,
+                            tokens_cache_write: 0,
+                            requests: 0,
+                            billable_requests: 0,
+                            key_group_at_use: delta.key_group_at_use.clone(),
+                            pricing_version: delta.pricing_version.clone(),
+                        },
+                    });
+                    // `push` above guarantees the last element is the row just created.
+                    &mut d
+                        .metering
+                        .last_mut()
+                        .expect("the row pushed on the line above")
+                        .row
+                }
+            };
+            row.tokens_input = row.tokens_input.saturating_add(delta.tokens_input);
+            row.tokens_output = row.tokens_output.saturating_add(delta.tokens_output);
+            row.tokens_cache_read = row
+                .tokens_cache_read
+                .saturating_add(delta.tokens_cache_read);
+            row.tokens_cache_write = row
+                .tokens_cache_write
+                .saturating_add(delta.tokens_cache_write);
+            row.requests = row.requests.saturating_add(delta.requests);
+            row.billable_requests = row
+                .billable_requests
+                .saturating_add(delta.billable_requests);
+        })
     }
+
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
+        self.read(|d| {
+            d.metering
+                .iter()
+                .filter(|e| e.bucket == bucket)
+                .map(|e| e.row.clone())
+                .collect()
+        })
     }
 
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0, Commit 2) ──────────────────────────

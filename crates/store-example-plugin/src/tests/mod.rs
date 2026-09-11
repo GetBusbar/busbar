@@ -766,3 +766,98 @@ fn the_template_names_no_sibling_store_in_its_manifest() {
         );
     }
 }
+
+/// THE PERSISTENCE CLAIM AT THE SEAM, against a REAL reopen: write a key, its spend ledger and its
+/// metering row through one `FileStore` handle, drop it, open a second handle on the SAME
+/// `durable_path`, and read everything back. The shared cross-backend assertion states the claim;
+/// this wires it to the one in-tree backend that has a backing to reopen, so the durability half of
+/// it is actually earned here rather than degenerating to read-back the way the RAM drivers do.
+///
+/// Red before green: against the FileStore that delegated its key/usage/metering verbs to an inner
+/// `RamStore`, this failed at the first read-back — the second handle's `get_key` was `None`, because
+/// the only state that ever reached the disk was the plane-record tables.
+#[test]
+fn conformance_file_key_spend_and_metering_survive_a_reopen() {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-persist-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    // The opener the assertion calls twice. Each call is a genuine `FileStore::open` on the same
+    // path — the second handle shares nothing in memory with the first, so the only possible source
+    // of what it reads is the bytes the first one committed.
+    let at = path.clone();
+    let open = move || -> std::sync::Arc<dyn Store> {
+        std::sync::Arc::new(
+            FileStore::open(at.clone()).expect("open a FileStore handle at the durable_path"),
+        )
+    };
+    busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen(
+        &open, "file",
+    );
+
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
+
+/// The two shared key rulings, now answered by the DURABLE backend as well as by `RamStore` — the
+/// key verbs are no longer delegated, so `FileStore` has its own answers to get wrong.
+#[test]
+fn conformance_file_put_key_does_not_resurrect_a_tombstone() {
+    let s = store();
+    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
+        &s, "file",
+    );
+}
+
+#[test]
+fn conformance_file_delete_key_unknown_id_is_an_error() {
+    let s = store();
+    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(&s, "file");
+}
+
+/// BACKWARD COMPATIBILITY of the on-disk format: a `durable.json` written before the governance
+/// tables existed — one carrying only the plane-record fields — must still open, with the new tables
+/// empty, and must still serve its old rows. The new fields are `#[serde(default)]` precisely so an
+/// operator's existing file is not a load error after an upgrade; this pins that, since a missing
+/// `default` is a runtime failure and not a compile one.
+#[test]
+fn an_old_durable_file_without_the_governance_tables_still_opens() {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-oldformat-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    // Exactly the shape the pre-governance-tables fixture wrote: no `keys`, no `usage`, no
+    // `metering`, no `key_revision`.
+    let legacy = serde_json::json!({
+        "tasks": [{ "id": "t-old", "ts": 10, "disposition": "Active", "body": [1, 2, 3] }],
+        "task_event_bodies": [],
+        "call_bodies": [],
+        "demotions": [],
+        "spent_ask_states": [],
+        "push_configs": [],
+    });
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).expect("seed the legacy file");
+
+    let s = FileStore::open(path.clone()).expect("an old durable.json must still open");
+    assert_eq!(
+        s.get_plane_record("task", "t-old").unwrap(),
+        Some(vec![1u8, 2, 3]),
+        "the old file's rows must still be served"
+    );
+    assert!(
+        s.list_keys().unwrap().is_empty(),
+        "the absent key table reads as EMPTY, not as a load error"
+    );
+    assert_eq!(s.get_usage("anything", 0).unwrap(), UsageLedger::default());
+    assert!(s.list_metering(0).unwrap().is_empty());
+
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
