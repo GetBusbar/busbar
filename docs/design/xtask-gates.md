@@ -303,20 +303,26 @@ ANSWERS ARE PRINTED.** A finding that survives the serial run is the gate's; a f
 not is named as what it is — a defect in this harness, not in the gate — because "it only fails
 when the box is busy" is how a gate earns a `|| true`.
 
-**WHAT IT MEASURED**, on an 18-core laptop with three other fleet agents on the same box (one
-reading, not a benchmark suite — the ratio is the point, and a contended host understates it):
+**WHAT IT MEASURED**, on an 18-core laptop with other fleet agents on the same box (one reading, not
+a benchmark suite — the ratio is the point, and a contended host understates it). The figures below
+were re-taken on the tree this change actually landed on, so the case counts are that tree's:
 
-| battery | cases | `--jobs 1` | `--jobs N` | speed-up |
-|---|---|---|---|---|
-| `kind-isolation` | 176 | 1621.18 s | **201.01 s** (18) | **8.06×** |
-| `construction` | 53 | 491.75 s | **118.79 s** (18) | **4.14×** |
-| `structure-lint` | 39 | 85.71 s | **19.66 s** (8) | **4.36×** |
+| battery | cases | `--jobs 1` | `--jobs N` | summed case cost | speed-up |
+|---|---|---|---|---|---|
+| `kind-isolation` | 152 | *(owed)* | **153.3 s** (18) | 2405.5 s | — |
+| `construction` | 36 | 346.3 s | **55.7 s** (18) | 504.2 s | **6.22×** |
+| `structure-lint` | 39 | 80.7 s | **13.5 s** (18) | 129.9 s | **5.99×** |
 
-The case count is the same both ways and the printed case list — every name, every GREEN/RED/SKIPPED
-beside it — diffs BYTE-IDENTICAL between the serial and parallel runs of all three. `structure-lint`
-is green both ways; the other two are RED on this base for reasons that have nothing to do with this
-change (the declared raises against the merge-base), and every one of those findings reproduced under
-the automatic `--jobs 1` re-take, which is that mechanism doing exactly what it is for.
+All three batteries are GREEN both ways on this tree. The case count is the same both ways and the
+printed case list — every name, every GREEN/RED/SKIPPED beside it — diffs BYTE-IDENTICAL between the
+serial and parallel runs of `structure-lint`, which is the cheap one and so the one a reader can
+re-take in under two minutes.
+
+THE ONE FIGURE THIS TABLE OWES is `kind-isolation` at `--jobs 1`: a forty-minute serial run that had
+not finished when this landed. The `summed case cost` column is the harness's own ruler and is the
+honest stand-in until it is taken — it is what the battery would cost on one thread up to scheduling,
+and against it the parallel run is 15.7×. It is a work figure, not a wall clock, and is not to be
+quoted as one.
 
 **READ THE PARALLEL FIGURE OFF THE BATTERY, NOT OFF THE PROCESS.** A red battery is re-taken
 serially, so `time cargo xtask gate kind-isolation --selftest` on a red tree reports the parallel
