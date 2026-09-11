@@ -2155,6 +2155,9 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   local key="${2:-$tip}"
   local dir="$tree/target/gate/preprove-$key"
   mkdir -p "$dir"
+  # WHERE THIS SWEEP IS, so the status file can say which line is on which box and for how long
+  # without the reader having to guess a directory name out of a tip (see lq_status_json).
+  printf '%s\n' "$dir" >"$SWEEPPTR"
   # THE LINES THE FLEET OWES AN ANSWER TO GO FIRST (see lq_front_add). The reordering is a copy of
   # the queue, never the queue itself: the queue file is the operator's, and the runner rewrites it
   # only when it pops or parks.
@@ -2255,6 +2258,7 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
     printf '%s\n' "$cand" >"$dir/line-$i.host"
+    date +%s >"$dir/line-$i.start"   # when this line went to that box, for the status file
     # THE CHAIN THIS SLOT IS THE ROOT OF, if it is one (see lq_slot_root_red). A live single's root
     # is itself: when it is proven red alone, the rungs held behind it are empty.
     printf '%s\n' "$(lq_line_payload "$line")" >"$dir/line-$i.root"
@@ -2312,6 +2316,7 @@ EOF
         printf '%s\n' "$cl" >>"$bf2"
       done; }
     printf '%s\n' "$cand" >"$dir/line-$i.host"
+    date +%s >"$dir/line-$i.start"   # when this line went to that box, for the status file
     printf '%s\n' "$ck" >"$dir/line-$i.chainkey"
     printf '%s\n' "$ctext" >"$dir/line-$i.chaintext"
     # THE ROOT OF THE CHAIN THIS RUNG STANDS ON — the first line of the unit, which is what the
@@ -2396,6 +2401,8 @@ $chained" "$hosts" || true
     j=$((j + 1))
   done
   fleet_table_close
+  # NO LINE IS ON A BOX ANY MORE, and the status file must not keep saying one is.
+  rm -f "$SWEEPPTR"
   lq_log "pre-prove: recorded in $PP"
   return 0
 }
@@ -2432,6 +2439,160 @@ lq_status() { # $1 = queue (default $Q), $2 = done ledger (default $D), $3 = tre
     "${live:-0}" "${held:-0}" "${parked:-0}" "${landed:-0}" "${tip:-?}"
 }
 
+
+# THE STATUS FILE'S BODY, kept as one string so the function that writes it stays a function and the
+# shell never has to carry a heredoc through a subshell. Every field is read from a file the runner
+# already writes; nothing here asks the fleet or the network anything.
+LQ_STATUS_PY='
+import json, os, time, glob
+
+E = os.environ
+def rd(p):
+    try:
+        return open(p, encoding="utf-8", errors="replace").read()
+    except Exception:
+        return ""
+def count(p, pred):
+    return sum(1 for l in rd(p).splitlines() if pred(l))
+
+q = E["LQJ_Q"]
+d = {
+    "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "written_epoch": int(time.time()),
+    "pid": int(E.get("LQJ_PID") or 0),
+    "loop": int(E.get("LQJ_LOOP") or 0),
+    "tip": E.get("LQJ_TIP") or "?",
+    "engine_sha": E.get("LQJ_ENGINE") or "?",
+    "prove_per_box": E.get("LQJ_PPB") or "?",
+    "preprove_lines": E.get("LQJ_PPL") or "?",
+    "live": count(q, lambda l: l.startswith("--")),
+    "held": count(q, lambda l: l.startswith("#HOLD")),
+    "parked": count(q, lambda l: l.startswith("#RED") or l.startswith("#PARK")),
+    "landed": count(E["LQJ_D"], lambda l: l.startswith("GREEN ")),
+}
+
+bf = E.get("LQJ_BATCH") or ""
+batch = {"lines": [], "legs": [], "started_epoch": None}
+if bf and os.path.exists(bf):
+    batch["lines"] = [l for l in rd(bf).splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    try:
+        batch["started_epoch"] = int(E.get("LQJ_BSTART") or 0) or int(os.path.getmtime(bf))
+    except Exception:
+        batch["started_epoch"] = None
+    legs, seen = [], set()
+    for l in rd(bf + ".log").splitlines():
+        if l.startswith("land.sh: leg "):
+            n = l.split("land.sh: leg ", 1)[1].split()[0]
+            if n not in seen:
+                seen.add(n); legs.append(n)
+    batch["legs"] = legs
+d["batch"] = batch
+
+sweep = []
+ptr = (rd(E.get("LQJ_SWEEPPTR") or "").strip() or "")
+if ptr and os.path.isdir(ptr):
+    for hf in sorted(glob.glob(os.path.join(ptr, "line-*.host"))):
+        stem = hf[: -len(".host")]
+        if os.path.exists(stem + ".rc") or os.path.exists(stem + ".moot"):
+            continue
+        line = (rd(stem + ".chaintext").strip() or rd(stem + ".batch").split("\n")[0].strip())
+        try:
+            st = int(rd(stem + ".start").strip() or 0) or int(os.path.getmtime(hf))
+        except Exception:
+            st = None
+        sweep.append({"box": rd(hf).strip() or "?", "line": line, "started_epoch": st})
+d["sweep"] = sweep
+
+backoff = {}
+for l in rd(E["LQJ_FAULTS"]).splitlines():
+    f = l.split("\t")
+    if len(f) >= 2 and f[0]:
+        try:
+            backoff[f[0]] = int(f[1])
+        except ValueError:
+            pass
+d["backoff"] = backoff
+faults = []
+for l in rd(E["LQJ_RING"]).splitlines():
+    f = l.split("\t")
+    if len(f) >= 2:
+        faults.append({"at": f[0], "class": f[1], "text": f[2] if len(f) > 2 else ""})
+d["faults"] = faults[-5:]
+
+pages, direct = [], None
+for l in rd(E["LQJ_PAGE"]).splitlines():
+    f = l.split("\t")
+    if len(f) >= 2:
+        pg = {"at": f[0], "kind": f[1], "text": f[2] if len(f) > 2 else ""}
+        pages.append(pg)
+        if pg["kind"] == "direct-edit":
+            direct = "%s %s" % (pg["at"], pg["text"])
+d["pages"] = pages[-5:]
+d["direct_edit"] = direct
+
+out = E["LQJ_OUT"]
+tmp = out + ".tmp"
+fh = open(tmp, "w", encoding="utf-8")
+json.dump(d, fh, indent=1, sort_keys=True)
+fh.write("\n")
+fh.close()
+os.replace(tmp, out)
+'
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ONE STATUS FILE, AND NOTHING TAILS A LOG (F7)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The hourly tick read five symlinked files with tail-headed pipelines and still could not say what
+# the runner was doing; agents were parked on monitors; every "what is it up to" cost somebody a
+# reconstruction from a 40 MB log. So the runner writes ONE file, every loop and at every state
+# change, and `landq-ctl status` renders it in twenty-five lines: nobody needs the log again.
+#
+# WRITTEN TEMP+MV, always. A reader that catches the file half-written does not get a slow answer,
+# it gets a CONFIDENT WRONG one — and a tick that says "live 0" because it read between two writes
+# is how a queue gets declared empty while it is a hundred and twenty deep.
+#
+# WHAT IT CARRIES: the tip and the engine sha that is running; live/held/parked/landed; the batch in
+# flight with its lines, its legs and when it started; every line on a box in the sweep with its box
+# and when it went there; the backoff counter per fault class; the last five faults with their
+# times; the fleet's per-box proof slot count AS READ (never a constant — the fleet is moving from
+# c7a.8xlarge at one proof per box to c7a.16xlarge at two, and a status file that hard-coded either
+# would be lying within the day); and the DIRECT-EDIT page flag.
+STATUSJ="${LANDQ_STATUS_JSON:-$W/target/gate/landq.status.json}"
+SWEEPPTR="${LANDQ_SWEEP_PTR:-$W/target/gate/landq4.sweep}"
+LQ_LOOP=0
+# THE ENGINE THAT IS RUNNING, not the tree it is landing into. The scripts may be a checkout or a
+# staged copy under land-fanout-<sha>/scripts; both are asked, in that order, and neither is guessed.
+lq_engine_sha() {
+  local g b
+  g="$(git -C "$SCRIPTS" rev-parse --short HEAD 2>/dev/null || true)"
+  [ -n "$g" ] && { printf '%s\n' "$g"; return 0; }
+  b="$(basename "$(dirname "$SCRIPTS")" 2>/dev/null || true)"
+  case "$b" in land-fanout-*) printf '%s\n' "$(printf '%.9s' "${b#land-fanout-}")"; return 0 ;; esac
+  printf '?\n'
+}
+# THE FLEET'S PER-BOX PROOF SLOT COUNT, AS READ. The environment wins (it is what the sweep and the
+# power script actually use); failing that, the number the staged library defaults to is read out of
+# the library itself. A constant here would be a measurement nobody took.
+lq_prove_per_box() {
+  local v="${BUSBAR_PROVE_PER_BOX:-}" f
+  [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+  for f in "$W/target/gate/ci-remote-lib.sh" "$SCRIPTS/ci-remote-lib.sh"; do
+    [ -f "$f" ] || continue
+    v="$(sed -n 's/^PROVE_PER_BOX="\${BUSBAR_PROVE_PER_BOX:-\([0-9]*\)}"$/\1/p' "$f" | head -n1)"
+    [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+  done
+  printf '?\n'
+}
+lq_status_json() { # $1 = the batch file in flight (optional), $2 = when it started (epoch, optional)
+  local bf="${1:-}" bstart="${2:-}" out="${STATUSJ}"
+  mkdir -p "$(dirname "$out")" 2>/dev/null || true
+  LQJ_OUT="$out" LQJ_Q="$Q" LQJ_D="$D" LQJ_FAULTS="$FAULTS" LQJ_RING="$FAULTRING" \
+  LQJ_PAGE="$PAGE" LQJ_BATCH="$bf" LQJ_BSTART="$bstart" LQJ_SWEEPPTR="$SWEEPPTR" \
+  LQJ_TIP="$(git -C "$W" rev-parse --short HEAD 2>/dev/null || true)" \
+  LQJ_ENGINE="$(lq_engine_sha)" LQJ_PPB="$(lq_prove_per_box)" LQJ_PPL="$PREPROVE_LINES" \
+  LQJ_LOOP="$LQ_LOOP" LQJ_PID="$$" \
+  python3 -c "$LQ_STATUS_PY" || return 1
+  return 0
+}
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE POPPER
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -4421,6 +4582,99 @@ lq_selftest() {
           -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
 
+  # ── ONE STATUS FILE (F7) ──────────────────────────────────────────────────────────────────────
+  # The file is JSON or it is nothing: a tick that has to parse prose is a tick that is confidently
+  # wrong twice a day. Every key the tick, the integrator and landq-ctl need is asserted present
+  # after ONE loop's worth of writing, and the whole of it is validated by python3's own parser.
+  echo "landq4 selftest: one status file, written temp+mv, valid JSON, every key"
+  local savedSJ="${STATUSJ:-}" savedSP="${SWEEPPTR:-}" savedQ8="$Q" savedD8="$D"
+  local savedF8="${FAULTS:-}" savedR8="${FAULTRING:-}" savedPG8="${PAGE:-}" savedW8="$W"
+  local sroot="$root/statusdir"; mkdir -p "$sroot"
+  STATUSJ="$sroot/landq.status.json"; SWEEPPTR="$sroot/sweep.ptr"
+  Q="$sroot/queue.txt"; D="$sroot/done.txt"
+  FAULTS="$sroot/faults.txt"; FAULTRING="$sroot/ring.txt"; PAGE="$sroot/page.txt"
+  W="$repo"
+  printf -- '--prove A\n--prove B\n#HOLD-after-abc1234 --prove C\n#RED --prove D\n#PARK-owner --prove E\n' >"$Q"
+  printf 'GREEN batch=1 log=x\nGREEN batch=2 log=y\nNONE:box no-result 2026-09-11T20:00:00\n' >"$D"
+  printf 'box-unreachable\t3\t1789155000\tscp: Connection closed\n' >"$FAULTS"
+  printf '2026-09-11T20:00:00Z\tbox-unreachable\tscp: Connection closed\n' >"$FAULTRING"
+  printf '2026-09-11T20:01:00Z\tdirect-edit\tland-queue.txt was written by somebody else\n' >"$PAGE"
+  # A batch in flight, and a sweep with one line on a box and one already judged.
+  local sb="$sroot/batch.txt"; printf -- '--prove A\n#UNIT 1\n' >"$sb"
+  printf 'land.sh: leg gates (4 file(s))\nland.sh: leg oracle\nland.sh: leg gates (again)\n' >"$sb.log"
+  local sd="$sroot/preprove-tip"; mkdir -p "$sd"; printf '%s\n' "$sd" >"$SWEEPPTR"
+  printf 'i-071084387d22ed544\n' >"$sd/line-1.host"; printf -- '--prove C\n' >"$sd/line-1.batch"
+  printf '1789154000\n' >"$sd/line-1.start"
+  printf 'i-0b0e1585e8567d01a\n' >"$sd/line-2.host"; printf -- '--prove D\n' >"$sd/line-2.batch"
+  printf '0\n' >"$sd/line-2.rc"                       # this one has a verdict; it is off its box
+  LQ_LOOP=41
+  _t "the status file is written"              0 "$(lq_status_json "$sb" 1789155000; echo $?)"
+  _t "  ...and it is valid JSON"               0 "$(python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUSJ" >/dev/null 2>&1; echo $?)"
+  _t "  ...written temp+mv, with no temp left" 0 "$([ -f "$STATUSJ.tmp" ] && echo 1 || echo 0)"
+  _t "  ...and the writer is a temp+mv, by construction" 1 "$(grep -c 'os.replace(tmp, out)' "$LQ_SRC")"
+  local jq_; jq_() { python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    d = d[int(k)] if isinstance(d, list) else d[k]
+print("" if d is None else d)' "$STATUSJ" "$1"; }
+  _t "it carries the tip"                      "$(git -C "$repo" rev-parse --short HEAD)" "$(jq_ tip)"
+  _t "  ...the engine sha it is running"       1 "$( [ -n "$(jq_ engine_sha)" ] && echo 1 || echo 0)"
+  _t "  ...the loop number"                    41 "$(jq_ loop)"
+  _t "  ...the live count"                     2  "$(jq_ live)"
+  _t "  ...the held count"                     1  "$(jq_ held)"
+  _t "  ...the parked count, both marks"       2  "$(jq_ parked)"
+  _t "  ...the landed count"                   2  "$(jq_ landed)"
+  _t "  ...the per-box proof slot count it READ" 1 "$( [ -n "$(jq_ prove_per_box)" ] && echo 1 || echo 0)"
+  _t "  ...which is the environment's when it is set" 4 \
+     "$(BUSBAR_PROVE_PER_BOX=4 lq_status_json "$sb" 1789155000; jq_ prove_per_box)"
+  _t "  ...and never a constant in this file"  0 "$(grep -c 'prove_per_box.*: *[0-9]' "$LQ_SRC")"
+  _t "  ...how many lines a sweep wants"       "$PREPROVE_LINES" "$(jq_ preprove_lines)"
+  _t "the batch in flight is named"            "--prove A" "$(jq_ batch.lines.0)"
+  _t "  ...its markers are not lines"          1 "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["batch"]["lines"]))' "$STATUSJ")"
+  _t "  ...when it started"                    1789155000 "$(jq_ batch.started_epoch)"
+  _t "  ...and the legs its log announced, deduped" "gates" "$(jq_ batch.legs.0)"
+  _t "  ...in order"                           "oracle" "$(jq_ batch.legs.1)"
+  _t "the sweep names the box a line is on"    "i-071084387d22ed544" "$(jq_ sweep.0.box)"
+  _t "  ...the line it is proving"             "--prove C" "$(jq_ sweep.0.line)"
+  _t "  ...and when it went there"             1789154000 "$(jq_ sweep.0.started_epoch)"
+  _t "  ...a line that already has a verdict is OFF its box" 1 \
+     "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["sweep"]))' "$STATUSJ")"
+  _t "the backoff counter is per class"        3 "$(jq_ backoff.box-unreachable)"
+  _t "the last faults carry their class"       "box-unreachable" "$(jq_ faults.0.class)"
+  _t "  ...their time"                         "2026-09-11T20:00:00Z" "$(jq_ faults.0.at)"
+  _t "  ...and their text"                     "scp: Connection closed" "$(jq_ faults.0.text)"
+  _t "the DIRECT-EDIT flag is raised"          1 "$( [ -n "$(jq_ direct_edit)" ] && echo 1 || echo 0)"
+  _t "  ...and it says when"                   1 "$(jq_ direct_edit | grep -c '2026-09-11T20:01:00Z')"
+  # …and with nothing happening at all the file is still valid JSON with every key in it.
+  rm -f "$SWEEPPTR" "$PAGE" "$FAULTS" "$FAULTRING"
+  _t "an idle loop writes it too"              0 "$(lq_status_json; echo $?)"
+  _t "  ...still valid JSON"                   0 "$(python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$STATUSJ" >/dev/null 2>&1; echo $?)"
+  _t "  ...with every key present"             0 "$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+want=["written","written_epoch","pid","loop","tip","engine_sha","prove_per_box","preprove_lines",
+      "live","held","parked","landed","batch","sweep","backoff","faults","pages","direct_edit"]
+missing=[k for k in want if k not in d]
+sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
+  _t "  ...no batch, and it says so"           "" "$(jq_ batch.started_epoch)"
+  _t "  ...no line on a box"                   0 "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["sweep"]))' "$STATUSJ")"
+  _t "  ...and no page"                        "" "$(jq_ direct_edit)"
+  # THE SITES: every loop, and at every state change.
+  _t "the runner writes it at the loop top, and when the batch comes back" 2 \
+     "$(grep -c '^  lq_status_json$' "$LQ_SRC")"
+  _t "  ...the loop-top one FIRST"             1 \
+     "$( [ "$(grep -n '^  lq_status_json$' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...counting the loop as it goes"       1 "$(grep -c '^  LQ_LOOP=\$((LQ_LOOP + 1))$' "$LQ_SRC")"
+  _t "  ...when the batch goes to a box"       1 "$(grep -c '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC")"
+  _t "  ...and on every fault"                 3 "$(grep -c 'lq_status_json; sleep\|^    lq_status_json$' "$LQ_SRC")"
+  _t "the sweep says where it is"              1 "$(grep -cF '>"$SWEEPPTR"' "$LQ_SRC")"
+  _t "  ...and takes it back when it is over"  1 "$(grep -c '^  rm -f "\$SWEEPPTR"$' "$LQ_SRC")"
+  _t "  ...each slot's start is written down"  2 "$(grep -cF 'date +%s >"$dir/line-$i.start"' "$LQ_SRC")"
+  STATUSJ="$savedSJ"; SWEEPPTR="$savedSP"; Q="$savedQ8"; D="$savedD8"
+  FAULTS="$savedF8"; FAULTRING="$savedR8"; PAGE="$savedPG8"; W="$savedW8"; LQ_LOOP=0
+
   # ── THE COMMAND GRAMMAR (F3): THE RUNNER IS THE ONLY WRITER OF land-queue.txt ─────────────────
   # Every verb, applied to a real queue through the real fold, and each was RED before the grammar
   # existed — lq_inbox_fold appended every inbox line verbatim, so `PARK <sha> …` went into the
@@ -4673,6 +4927,10 @@ while true; do
   # `tail -n 1 target/gate/landq4.status` rather than the log.
   lq_status >"$W/target/gate/landq4.status"
   lq_log "status: $(cat "$W/target/gate/landq4.status")"
+  # ...AND THE WHOLE OF IT AS JSON (see lq_status_json), every loop and at every state change below.
+  # `landq-ctl status` renders this file; the tick reads nothing else, and no agent tails the log.
+  LQ_LOOP=$((LQ_LOOP + 1))
+  lq_status_json
 
   # A LANDED TIP REACHES ORIGIN WITHIN THE MINUTE, and the sweep is not what it waits for.
   # MEASURED 07:20 on 09-10: K1 landed, the loop went straight into a sweep, and `origin` sat at
@@ -4697,12 +4955,12 @@ while true; do
   if [ "$census_rc" != 0 ]; then
     lq_log "=== $(lq_fault_verdict census-empty): the census saw nothing at all, not even this runner's own chain; batch REFUSED, nothing popped"
     fn="$(lq_fault_record census-empty "the census returned no process at all")"
-    sleep "$(lq_backoff_secs "$fn")"; continue
+    lq_status_json; sleep "$(lq_backoff_secs "$fn")"; continue
   fi
   if ! lq_tree_settled "$W" "$TIPF"; then
     lq_log "=== $(lq_fault_verdict tree-moved): HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF") or the tree is modified; batch REFUSED, nothing popped"
     fn="$(lq_fault_record tree-moved "HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip, or the tree is modified")"
-    sleep "$(lq_backoff_secs "$fn")"; continue
+    lq_status_json; sleep "$(lq_backoff_secs "$fn")"; continue
   fi
   lq_fault_clear census-empty; lq_fault_clear tree-moved
   batch="$W/target/gate/landq4-batch.$$.txt"; keep="$W/target/gate/landq4-keep.$$.txt"
@@ -4794,8 +5052,11 @@ while true; do
   # afterwards and read as the measurement of the tip it produced. No redirection changes: a pipe
   # into `tee` would make `wait` read TEE's exit status and every batch would be green.
   lq_l0="$(wc -c <"$L" 2>/dev/null || echo 0)"; case "$lq_l0" in ''|*[!0-9]*) lq_l0=0 ;; esac
+  bstart="$(date +%s)"
   bash "$W/target/gate/land.run.sh" --batch "$batch" >>"$L" 2>&1 &
   bpid=$!
+  # THE STATE CHANGED: a batch is on a box now, and the status file says which lines and since when.
+  lq_status_json "$batch" "$bstart"
   if [ -n "$predicted" ]; then
     lq_log "overlap: pre-proving the next disjoint lines against the PREDICTED tip $(printf '%.9s' "$predicted") (tree $(printf '%.9s' "$predtree")) while the batch proves"
     # IN A SUBSHELL, AND THAT IS THE WHOLE OF WHY. lq_preprove_sweep ends with a bare `wait`, which
@@ -4854,6 +5115,7 @@ while true; do
     echo "$(lq_fault_verdict "$fcls") no-result $(date +%FT%T)" >>"$D"
     git -C "$W" cherry-pick --abort 2>/dev/null
     rm -f "$batch" "$batch.chain"
+    lq_status_json
     sleep "$fwait"; continue
   fi
   # THE BATCH CAME BACK WITH OUTCOMES IN IT, so the transport works and every class's run of faults
@@ -4918,6 +5180,7 @@ while true; do
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD; tip $(git -C "$W" rev-parse --short HEAD)"
   rm -f "$batch" "$batch.chain" "$red"
+  lq_status_json
 
   if [ "$head_conflict" = 1 ]; then
     consec_head_conflict=$((consec_head_conflict + 1))
