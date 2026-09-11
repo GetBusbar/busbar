@@ -756,18 +756,116 @@ lq_qunlock() { rm -rf "$QLOCK"; }
 #
 # THE REFUSAL GUARD IS UNTOUCHED. A direct edit of land-queue.txt is refused exactly as it was; this
 # is an easier door, not an open one.
-lq_inbox_fold() { # $1 = queue file (default $Q), $2 = inbox (default $INBOX); prints how many lines moved
-  local qf="${1:-$Q}" ib="${2:-$INBOX}" n
-  echo 0 >/dev/null
-  if [ -z "$ib" ] || [ ! -s "$ib" ]; then printf '0\n'; return 0; fi
-  n="$(grep -c '' "$ib" 2>/dev/null || echo 0)"
-  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE INBOX IS A COMMAND FILE, AND THE RUNNER IS THE ONLY WRITER OF THE QUEUE (F3)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# T0-D13's inbox fixed APPENDS: a hand-back written while the runner was mid-loop went to the inbox
+# instead of into the read -> sweep -> pop -> rewrite window, and the pop stopped being thrown away
+# for it. But everything else an integrator does to the queue — a park, an un-park, a supersede, a
+# re-tag, a line moved to the front — still needed a DIRECT EDIT of land-queue.txt, and a direct
+# edit inside that window is refused by the stamp guard and costs the whole loop's pop. Measured
+# 09-09..09-11: five refused rewrites, five dropped pops.
+#
+# SO THE INBOX CARRIES COMMANDS, and there is nothing left that needs a direct edit:
+#
+#     ADD <line>                  put <line> at the tail of the queue
+#     PARK <sha> <reason>         tag the line naming <sha> `#PARK-<reason>`; it stops being live
+#     UNPARK <sha>                take every park tag off it; it is live again
+#     SUPERSEDE <old-sha> <line>  replace the line naming <old-sha> with <line>
+#     RETAG <sha> <tags...>       replace its leading tags; no tags at all means "go live"
+#     FRONT <sha>                 move it to the head of the queue
+#
+# A BARE LINE IS AN `ADD`. That is T0-D13's form and every integrator's fingers already know it;
+# comments, `#HOLD-*` lines and blanks fold to the tail exactly as they did, because a hand-back is
+# usually a comment above a hold and an inbox that dropped either would be a queue somebody has to
+# repair. A command that cannot be carried out — a verb with no sha, a sha no queue line names, a
+# SUPERSEDE with nothing to supersede with — is LOGGED WITH ITS TEXT AND SKIPPED. Never fatal:
+# one mistyped line must not stop a queue of a hundred and twenty.
+#
+# scripts/landq-ctl.sh is the only tool that writes this file, and it appends one line per command.
+lq_slug() { # $1 = free text; prints it as one queue-tag token
+  printf '%s' "${1:-by-hand}" | tr -c '[:alnum:]._-' '-' | sed 's/-\{1,\}/-/g; s/^-//; s/-$//'
+}
+# A QUEUE WHOSE LAST BYTE IS NOT A NEWLINE would take the next line onto the end of its own last
+# line and produce one payload nobody wrote. `$(tail -c1)` is empty exactly when that byte IS a
+# newline (the substitution strips it), which is the cheap way to ask.
+lq_queue_append() { # $1 = queue file, $2 = the line
+  local qf="$1"
   [ -f "$qf" ] || : >"$qf"
-  # A QUEUE WHOSE LAST BYTE IS NOT A NEWLINE would take the first inbox line onto the end of its own
-  # last line and produce one payload nobody wrote. `$(tail -c1)` is empty exactly when that byte IS
-  # a newline (the substitution strips it), which is the cheap way to ask.
   if [ -s "$qf" ] && [ -n "$(tail -c1 "$qf" 2>/dev/null)" ]; then printf '\n' >>"$qf"; fi
-  cat "$ib" >>"$qf" || { printf '0\n'; return 1; }
+  printf '%s\n' "$2" >>"$qf"
+}
+lq_cmd_verb() { # $1 = an inbox line; prints its verb when it is a command, else nothing
+  case "${1%% *}" in
+    ADD|PARK|UNPARK|SUPERSEDE|RETAG|FRONT) printf '%s\n' "${1%% *}" ;;
+  esac
+}
+# THE PARK TAGS COME OFF, AND THE LOG PATH WITH THEM. A pre-proof park is written
+# `#RED-preproof <log> <payload>` — the log is not a `#` token, so a blind "drop leading # tokens"
+# would leave the path behind as the head of the payload and hand a box a line that is not a line.
+lq_line_unpark() { # $1 = a queue line; prints it with every park tag (and their arguments) removed
+  local rest="$1" tok
+  while : ; do
+    tok="${rest%% *}"
+    case "$tok" in
+      '#RED-preproof'|'#PARK-preproof')
+        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac   # the tag
+        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac ;; # the log path
+      '#RED'|'#RED-'*|'#PARK'|'#PARK-'*)
+        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac ;;
+      *) break ;;
+    esac
+  done
+  printf '%s\n' "$rest"
+}
+# ONE COMMAND, APPLIED TO THE QUEUE FILE IN PLACE. rc 0 = applied, 1 = malformed (logged, skipped).
+lq_inbox_apply() { # $1 = queue file, $2 = the command line
+  local qf="$1" cmd="$2" verb rest sha arg line rep front=0
+  verb="$(lq_cmd_verb "$cmd")"
+  rest="${cmd#* }"; [ "$rest" = "$cmd" ] && rest=""
+  if [ -z "$verb" ] || [ "$verb" = ADD ]; then
+    if [ -z "$verb" ]; then lq_queue_append "$qf" "$cmd"; return 0; fi
+    [ -n "$rest" ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — ADD with nothing to add"; return 1; }
+    lq_queue_append "$qf" "$rest"; return 0
+  fi
+  sha="${rest%% *}"
+  arg="${rest#* }"; [ "$arg" = "$rest" ] && arg=""
+  [ -n "$sha" ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — $verb with no sha"; return 1; }
+  line="$(lq_line_naming "$sha" "$qf" 2>/dev/null || true)"
+  [ -n "$line" ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — no queue line names $sha"; return 1; }
+  case "$verb" in
+    PARK)       rep="#PARK-$(lq_slug "$arg") $line" ;;
+    UNPARK)     rep="$(lq_line_unpark "$line")"
+                [ -n "$rep" ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — un-parking leaves no line"; return 1; } ;;
+    SUPERSEDE)  [ -n "$arg" ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — SUPERSEDE with no replacement line"; return 1; }
+                rep="$arg" ;;
+    RETAG)      local t bad=0
+                for t in $arg; do case "$t" in '#'*) ;; *) bad=1 ;; esac; done
+                [ "$bad" = 0 ] || { lq_log "inbox: MALFORMED, skipped: [$cmd] — a tag must begin with #"; return 1; }
+                if [ -n "$arg" ]; then rep="$arg $(lq_line_payload "$line")"
+                else rep="$(lq_line_payload "$line")"; fi ;;
+    FRONT)      rep="$line"; front=1 ;;
+  esac
+  LQ_AWK_OLD="$line" LQ_AWK_NEW="$rep" LQ_AWK_FRONT="$front" \
+  awk 'BEGIN { old = ENVIRON["LQ_AWK_OLD"]; new = ENVIRON["LQ_AWK_NEW"]; fr = ENVIRON["LQ_AWK_FRONT"]
+               if (fr == "1") print new }
+       { if (!done && $0 == old) { done = 1; if (fr != "1") print new; next }
+         print }' "$qf" >"$qf.cmd.tmp" && mv "$qf.cmd.tmp" "$qf"
+  lq_log "inbox: $verb $sha applied — $(printf '%.100s' "$rep")"
+  return 0
+}
+# EVERY COMMAND IN THE FILE, IN THE ORDER IT WAS WRITTEN, UNDER THE QUEUE LOCK, at the loop top and
+# BEFORE the stamp is taken: an append made from that moment on lands in the inbox rather than in
+# the file the stamp describes, so the rewrite at the end of the loop still matches and the pop
+# stands. Prints how many commands were applied; a malformed one is counted by nobody and stops
+# nothing.
+lq_inbox_fold() { # $1 = queue file (default $Q), $2 = inbox (default $INBOX); prints how many applied
+  local qf="${1:-$Q}" ib="${2:-$INBOX}" n=0 cmd
+  if [ -z "$ib" ] || [ ! -s "$ib" ]; then printf '0\n'; return 0; fi
+  [ -f "$qf" ] || : >"$qf"
+  while IFS= read -r cmd || [ -n "$cmd" ]; do
+    lq_inbox_apply "$qf" "$cmd" && n=$((n + 1))
+  done <"$ib"
   : >"$ib"
   printf '%s\n' "$n"
   return 0
@@ -782,6 +880,42 @@ lq_queue_rewrite() { # $1 = candidate file, $2 = stamp taken at the read
     rm -f "$1"; return 2
   fi
   mv "$1" "$Q"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE STAMP GUARD IS A TRIPWIRE NOW, NOT A TRAPDOOR (F3)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The refusal is RIGHT — an edit must never be silently overwritten — but its COST was wrong: the
+# whole loop's pop was thrown away, so a queue of a hundred and twenty lines went nowhere for
+# twenty minutes because somebody typed two lines. Measured 09-09..09-11: five refusals, five
+# dropped pops. With landq-ctl there is no longer any reason to edit land-queue.txt by hand, so a
+# direct edit is an ERROR and not a routine: it is LOGGED with the word DIRECT EDIT, it raises a
+# page in the status file — and then the runner RE-READS the queue as it now stands and takes the
+# popped lines out of THAT, so the edit stands and the pop stands too. Nothing is lost on either
+# side, which is the whole rule.
+PAGE="${LANDQ_PAGE:-$W/target/gate/landq4.page.txt}"
+lq_page() { # $1 = kind, $2 = text
+  mkdir -p "$(dirname "$PAGE")" 2>/dev/null || true
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$PAGE"
+  lq_log "PAGE [$1]: $2"
+}
+lq_page_clear() { rm -f "$PAGE"; }
+# THE POPPED LINES, OUT OF THE QUEUE AS IT NOW READS. The batch file carries the payload of every
+# landing line it took, and the chain map carries the HELD line each chained payload was popped
+# from; both forms are removed, and everything else in the file — including whatever was just
+# edited into it — is kept exactly where it is. Prints how many lines were removed.
+lq_queue_reconcile() { # $1 = batch file, $2 = queue file (default $Q)
+  local bf="$1" qf="${2:-$Q}" before after
+  [ -f "$bf" ] && [ -f "$qf" ] || { printf '0\n'; return 1; }
+  before="$(grep -c '' "$qf" 2>/dev/null || true)"; case "$before" in ''|*[!0-9]*) before=0 ;; esac
+  awk -F"$TAB" -v cf="$bf.chain" '
+      BEGIN { while ((getline l < cf) > 0) { k = split(l, a, "\t"); if (k >= 2) { drop[a[1]] = 1; drop[a[2]] = 1 } } }
+      FILENAME == ARGV[1] { if ($0 !~ /^[[:space:]]*(#|$)/) drop[$0] = 1; next }
+      { if ($0 in drop && !($0 ~ /^[[:space:]]*$/)) { n++; next } print }
+      END { }' "$bf" "$qf" >"$qf.rec.tmp" && mv "$qf.rec.tmp" "$qf"
+  after="$(grep -c '' "$qf" 2>/dev/null || true)"; case "$after" in ''|*[!0-9]*) after=0 ;; esac
+  printf '%s\n' "$((before - after))"
   return 0
 }
 
@@ -2291,7 +2425,7 @@ lq_status() { # $1 = queue (default $Q), $2 = done ledger (default $D), $3 = tre
   local q="${1:-$Q}" d="${2:-$D}" tree="${3:-$W}" live held parked landed tip
   live="$(grep -cE '^--' "$q" 2>/dev/null || true)"
   held="$(grep -cE '^#HOLD' "$q" 2>/dev/null || true)"
-  parked="$(grep -cE '^#RED' "$q" 2>/dev/null || true)"
+  parked="$(grep -cE '^#(RED|PARK)' "$q" 2>/dev/null || true)"
   landed="$(grep -cE '^GREEN ' "$d" 2>/dev/null || true)"
   tip="$(git -C "$tree" rev-parse --short HEAD 2>/dev/null)"
   printf 'live %s held %s parked %s landed %s tip %s\n' \
@@ -3454,8 +3588,8 @@ lq_selftest() {
   lq_qunlock
   _t "unlocking releases it"                   1 "$( [ -d "$QLOCK" ]; echo $?)"
   _t "the main flow takes the lock before it pops" 1 "$(grep -c '^  if ! lq_qlock; then' "$0")"
-  _t "  ...drops its OWN loop when the rewrite is refused" 1 \
-     "$(grep -c '^  if \[ "\$qrc" = 2 \]; then rm -f "\$batch" "\$batch.chain"; sleep 60; continue; fi' "$0")"
+  _t "  ...and a refused rewrite PAGES instead of dropping the pop" 1 \
+     "$(grep -c '^    lq_page direct-edit ' "$LQ_SRC")"
   _t "  ...and never rewrites the queue unconditionally" 0 "$(grep -c '^  mv "\$keep" "\$Q"' "$0")"
   Q="$savedQ5"; QLOCK="$savedQL"
   Q="$savedQ"; W="$savedW"
@@ -4287,6 +4421,107 @@ lq_selftest() {
           -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
 
+  # ── THE COMMAND GRAMMAR (F3): THE RUNNER IS THE ONLY WRITER OF land-queue.txt ─────────────────
+  # Every verb, applied to a real queue through the real fold, and each was RED before the grammar
+  # existed — lq_inbox_fold appended every inbox line verbatim, so `PARK <sha> …` went into the
+  # queue AS A LINE and a park still needed a direct edit.
+  echo "landq4 selftest: the inbox is a COMMAND file, and the runner is the only writer"
+  local savedIB6="${INBOX:-}" savedQ6b="$Q" savedL6="$L"
+  INBOX="$root/cmd-inbox.txt"; Q="$root/cmd-queue.txt"; L="$root/cmd.log"; : >"$L"
+  local c1 c2 c3
+  c1="$(git -C "$repo" rev-parse --short "$ha")"; c2="$(git -C "$repo" rev-parse --short "$hb")"
+  c3="$(git -C "$repo" rev-parse --short "$hc")"
+  printf -- '--prove --tests xtask %s\n--prove --tests xtask %s\n--prove --tests xtask %s\n' "$c1" "$c2" "$c3" >"$Q"
+  # ADD, bare and explicit.
+  printf 'ADD --prove --tests xtask deadbee\n' >"$INBOX"
+  _t "ADD appends to the tail"                 1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...as a line, without its verb"        "--prove --tests xtask deadbee" "$(tail -n1 "$Q")"
+  printf -- '#HOLD-after-%s --prove --tests xtask beadfee\n' "$c1" >"$INBOX"
+  _t "a BARE line is still an ADD (T0-D13's form)" 1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...tags and all"                       1 "$(grep -c -- "^#HOLD-after-$c1 --prove --tests xtask beadfee$" "$Q")"
+  # PARK / UNPARK.
+  printf 'PARK %s the owner has not ruled on it\n' "$c2" >"$INBOX"
+  _t "PARK tags the line that names the sha"   1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...with its reason as one token"       1 "$(grep -c -- "^#PARK-the-owner-has-not-ruled-on-it --prove --tests xtask $c2$" "$Q")"
+  _t "  ...and it is no longer live"           0 "$(grep -c -- "^--prove --tests xtask $c2$" "$Q")"
+  printf 'UNPARK %s\n' "$c2" >"$INBOX"
+  _t "UNPARK takes the tag off"                1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...and the line is live again"         1 "$(grep -c -- "^--prove --tests xtask $c2$" "$Q")"
+  # A PRE-PROOF PARK carries a log path that is not a tag; un-parking must take that with it.
+  _t "un-parking a #RED-preproof drops its log too" "--prove --tests xtask $c2" \
+     "$(lq_line_unpark "#RED-preproof /var/log/line-3.log --prove --tests xtask $c2")"
+  _t "  ...and a plain #RED park too"          "--prove --tests xtask $c2" \
+     "$(lq_line_unpark "#RED --prove --tests xtask $c2")"
+  _t "  ...while a HOLD is not a park and stays" "#HOLD-after-abc1234 --prove x" \
+     "$(lq_line_unpark "#HOLD-after-abc1234 --prove x")"
+  # SUPERSEDE.
+  printf 'SUPERSEDE %s --prove --tests xtask %s recut1\n' "$c3" "$c3" >"$INBOX"
+  _t "SUPERSEDE replaces the line"             1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...with the new one, in place"         1 "$(grep -c -- "^--prove --tests xtask $c3 recut1$" "$Q")"
+  _t "  ...and the old one is gone"            0 "$(grep -c -- "^--prove --tests xtask $c3$" "$Q")"
+  # RETAG.
+  printf 'RETAG %s #HOLD-after-%s #T0-B2-seam\n' "$c1" "$c2" >"$INBOX"
+  _t "RETAG replaces the leading tags"         1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...with exactly the ones given"        1 "$(grep -c -- "^#HOLD-after-$c2 #T0-B2-seam --prove --tests xtask $c1$" "$Q")"
+  printf 'RETAG %s\n' "$c1" >"$INBOX"
+  _t "  ...and RETAG with no tag at all goes LIVE" 1 "$(lq_inbox_fold "$Q" "$INBOX" >/dev/null; grep -c -- "^--prove --tests xtask $c1$" "$Q")"
+  # FRONT.
+  printf 'FRONT %s\n' "$c3" >"$INBOX"
+  _t "FRONT moves the line to the head"        1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...and it is the first line of the file" "--prove --tests xtask $c3 recut1" "$(head -n1 "$Q")"
+  _t "  ...named once and once only"           1 "$(grep -c -- "^--prove --tests xtask $c3 recut1$" "$Q")"
+  # MALFORMED IS LOGGED WITH ITS TEXT AND SKIPPED — never fatal, and never a line in the queue.
+  local qbefore; qbefore="$(cksum <"$Q")"
+  printf 'PARK\nUNPARK 0000000\nSUPERSEDE %s\nRETAG %s notatag\nFRONT zzzz\n' "$c1" "$c1" >"$INBOX"
+  _t "five malformed commands apply none of them" 0 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...and change the queue not at all"    "$qbefore" "$(cksum <"$Q")"
+  _t "  ...the fold still returns 0, never fatal" 0 "$(printf 'FRONT\n' >"$INBOX"; lq_inbox_fold "$Q" "$INBOX" >/dev/null; echo $?)"
+  _t "  ...each is logged with its own text"   1 "$(grep -c 'inbox: MALFORMED, skipped: \[RETAG .* notatag\]' "$L")"
+  _t "  ...a verb with no sha says so"         1 "$(grep -c 'inbox: MALFORMED, skipped: \[PARK\] — PARK with no sha' "$L")"
+  _t "  ...a sha nobody names says so"         1 "$(grep -c 'no queue line names 0000000' "$L")"
+  _t "  ...and the inbox is emptied either way" 0 "$(grep -c . "$INBOX" 2>/dev/null; true)"
+  # A COMMAND APPENDED DURING A SWEEP IS FOLDED NEXT LOOP, AND THE POP THAT LOOP IS TAKEN. This is
+  # the whole reason the grammar exists: the same command written INTO land-queue.txt would have
+  # moved the file under the stamp and cost this loop's pop.
+  printf -- '--prove --tests xtask %s\n--prove --tests xtask %s\n' "$c1" "$c2" >"$Q"
+  local cst; cst="$(lq_qstamp)"                                    # the runner stamps, then sweeps
+  printf 'PARK %s mid-sweep\n' "$c2" >>"$INBOX"                    # the integrator, mid-sweep
+  printf -- '--prove --tests xtask %s\n' "$c2" >"$root/cmd-keep.txt"   # the loop popped c1
+  _t "a command written mid-sweep does not refuse the rewrite" 0 \
+     "$(lq_queue_rewrite "$root/cmd-keep.txt" "$cst"; echo $?)"
+  _t "  ...so the pop STANDS this loop"        1 "$(grep -c -- "^--prove --tests xtask $c2$" "$Q")"
+  _t "  ...and the popped line is gone"        0 "$(grep -c -- "^--prove --tests xtask $c1$" "$Q")"
+  _t "  ...the command is folded at the NEXT loop top" 1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...and it took effect"                 1 "$(grep -c -- "^#PARK-mid-sweep --prove --tests xtask $c2$" "$Q")"
+  # THE TRIPWIRE. A direct edit is refused as it always was — and now the popped lines are taken out
+  # of the queue AS IT NOW READS, so the edit stands AND the pop stands.
+  printf -- '--prove --tests xtask %s\n--prove --tests xtask %s\n' "$c1" "$c2" >"$Q"
+  local dst; dst="$(lq_qstamp)"
+  printf -- '--prove --tests xtask BY-HAND\n' >>"$Q"               # somebody edits the file itself
+  printf -- '--prove --tests xtask %s\n' "$c2" >"$root/cmd-keep2.txt"
+  _t "a DIRECT edit is still refused"          2 "$(lq_queue_rewrite "$root/cmd-keep2.txt" "$dst" >/dev/null 2>&1; echo $?)"
+  printf -- '--prove --tests xtask %s\n' "$c1" >"$root/cmd-batch.txt"; : >"$root/cmd-batch.txt.chain"
+  _t "  ...and the reconcile drops the popped line only" 1 "$(lq_queue_reconcile "$root/cmd-batch.txt" "$Q")"
+  _t "  ...the popped line is gone"            0 "$(grep -c -- "^--prove --tests xtask $c1$" "$Q")"
+  _t "  ...the hand edit SURVIVES"             1 "$(grep -cx -- '--prove --tests xtask BY-HAND' "$Q")"
+  _t "  ...and so does everything else"        1 "$(grep -c -- "^--prove --tests xtask $c2$" "$Q")"
+  # THE PAGE. A direct edit is an error, not a routine, and it is visible without reading a log.
+  local savedPG="${PAGE:-}"; PAGE="$root/page.txt"; rm -f "$PAGE"
+  lq_page direct-edit "land-queue.txt was written by somebody other than the runner"
+  _t "the page is recorded"                    1 "$(grep -c 'direct-edit' "$PAGE")"
+  _t "  ...with a UTC stamp"                   1 "$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z' "$PAGE")"
+  _t "  ...and it is in the log too"           1 "$(grep -c 'PAGE \[direct-edit\]' "$L")"
+  _t "  ...and it clears"                      1 "$(lq_page_clear; [ -f "$PAGE" ] && echo 0 || echo 1)"
+  PAGE="$savedPG"
+  # THE SITE: the runner pages and re-reads; it no longer throws the pop away.
+  _t "the refused rewrite pages"               1 "$(grep -c '^    lq_page direct-edit ' "$LQ_SRC")"
+  _t "  ...re-reads and reconciles"            1 "$(grep -c 'lq_queue_reconcile "\$batch" "\$Q"' "$LQ_SRC")"
+  _t "  ...and only drops the batch when the lock will not come" 1 \
+     "$(grep -c 'and the lock did not come free' "$LQ_SRC")"
+  _t "landq-ctl is the tool, and it is in the tree" 1 \
+     "$([ -f "$(dirname "$0")/landq-ctl.sh" ] && echo 1 || echo 0)"
+  INBOX="$savedIB6"; Q="$savedQ6b"; L="$savedL6"
+
   # ── THE FAULT TAXONOMY (F2) ───────────────────────────────────────────────────────────────────
   # Every class is driven from the SENTENCE the transport really wrote, taken from the running
   # engine's log, and each case was RED before the taxonomy existed: the engine had no class at all
@@ -4513,7 +4748,20 @@ while true; do
   lq_qunlock
   while IFS= read -r s; do [ -n "$s" ] && lq_log "$s"; done <"$W/target/gate/landq4-qrw.$$.txt"
   rm -f "$W/target/gate/landq4-qrw.$$.txt"
-  if [ "$qrc" = 2 ]; then rm -f "$batch" "$batch.chain"; sleep 60; continue; fi
+  if [ "$qrc" = 2 ]; then
+    # DIRECT EDIT (see lq_page and lq_queue_reconcile). The edit stands, and so does the pop: the
+    # popped lines are taken out of the queue AS IT NOW READS rather than the whole loop being
+    # thrown away. landq-ctl is the only tool that should be writing this file, so this is an error
+    # worth paging about — and it is never a reason to drop a pop.
+    lq_page direct-edit "land-queue.txt was written by somebody other than the runner; landq-ctl is the only tool that should write it"
+    if lq_qlock 60; then
+      lq_log "queue: DIRECT EDIT — re-read; $(lq_queue_reconcile "$batch" "$Q") popped line(s) removed from the queue as it now stands; the edit stands and the pop stands"
+      lq_qunlock
+    else
+      lq_log "queue: DIRECT EDIT — and the lock did not come free, so this loop's batch is dropped and re-popped next loop; nothing is lost"
+      rm -f "$batch" "$batch.chain"; sleep 60; continue
+    fi
+  fi
   if [ "${n:-0}" -eq 0 ]; then
     rm -f "$batch" "$batch.chain"; try_push; sleep 60; continue
   fi

@@ -763,7 +763,9 @@ land_gate_battery_wanted() { # $1 = gate name  $2 = the set land_gate_battery_se
 # runner is executing is the STAGED scratch copy (target/gate/land.run.sh, see landq4.sh); the copy
 # whose self-test is evidence about this landing is the one the picks produced, at $here/scripts/.
 land_runner_scripts() {
-  printf 'scripts/land.sh\nscripts/land-remote.sh\nscripts/ci-remote-lib.sh\nscripts/landq4.sh\n'
+  # landq-ctl.sh is one of them from F3 on: it is the integrator's only tool for the queue, so a
+  # tree that breaks it is a tree nobody can park a line on, and that is a landing red like any other.
+  printf 'scripts/land.sh\nscripts/land-remote.sh\nscripts/ci-remote-lib.sh\nscripts/landq4.sh\nscripts/landq-ctl.sh\n'
 }
 land_scripts_touched() {  # $1 = newline-separated touched paths
   printf '%s\n' "$1" | grep -E '^scripts/' || true
@@ -3156,18 +3158,19 @@ land_selftest() {
   _stno   "the two sets do not overlap"            "$root/gs-toml.txt" '[^[:space:]]'
   # THE RUNNER'S OWN FOUR run as a set, from the picked tree, on any line that touches scripts/.
   land_runner_scripts >"$root/rs.txt"
-  _st     "runner scripts: exactly the four are named" 0 bash -c '[ "$(grep -c . "$1")" = 4 ]' _ "$root/rs.txt"
+  _st     "runner scripts: exactly the five are named" 0 bash -c '[ "$(grep -c . "$1")" = 5 ]' _ "$root/rs.txt"
   _stgrep "runner scripts: landq4.sh is one of them"   "$root/rs.txt" '^scripts/landq4\.sh$'
+  _stgrep "  ...and so is landq-ctl.sh, the queue's only tool" "$root/rs.txt" '^scripts/landq-ctl\.sh$'
   land_scripts_touched "scripts/ci-remote-lib.sh" >"$root/st-sh.txt"
   _stgrep "scripts/ touched: any file under scripts/ counts" "$root/st-sh.txt" '^scripts/ci-remote-lib\.sh$'
   land_scripts_touched "qa/construction.toml" >"$root/st-toml.txt"
   _stno   "scripts/ touched: a ceiling file does not"  "$root/st-toml.txt" '[^[:space:]]'
   land_gate_files_to_prove "scripts/ci-remote-lib.sh" >"$root/gfp-one.txt"
-  _st     "one touched sibling: all four are proven"  0 bash -c '[ "$(grep -c . "$1")" = 4 ]' _ "$root/gfp-one.txt"
+  _st     "one touched sibling: all five are proven"  0 bash -c '[ "$(grep -c . "$1")" = 5 ]' _ "$root/gfp-one.txt"
   _stgrep "  ...the untouched landq4.sh among them"    "$root/gfp-one.txt" '^scripts/landq4\.sh$'
   _st     "  ...the touched one first, once"           0 bash -c '[ "$(head -n1 "$1")" = scripts/ci-remote-lib.sh ] && [ "$(grep -c ci-remote-lib "$1")" = 1 ]' _ "$root/gfp-one.txt"
   land_gate_files_to_prove "$(printf 'scripts/foo.txt\ntesting/x.py')" >"$root/gfp-txt.txt"
-  _st     "a non-script under scripts/ still brings the four" 0 bash -c '[ "$(grep -c "^scripts/" "$1")" = 4 ]' _ "$root/gfp-txt.txt"
+  _st     "a non-script under scripts/ still brings the five" 0 bash -c '[ "$(grep -c "^scripts/" "$1")" = 5 ]' _ "$root/gfp-txt.txt"
   _stgrep "  ...beside the touched gate script"        "$root/gfp-txt.txt" '^testing/x\.py$'
   land_gate_files_to_prove "qa/construction.toml" >"$root/gfp-none.txt"
   _stno   "a ceiling-only line proves no script"       "$root/gfp-none.txt" '[^[:space:]]'
