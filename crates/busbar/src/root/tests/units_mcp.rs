@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use busbar_api::Store as AbiStore;
 use busbar_unit_admission::ChainWalk;
 
 /// A resolver that answers every name with one public address.
@@ -1001,7 +1002,7 @@ fn the_plane_mounts() {
 #[test]
 fn an_undeclared_record_leg_never_reaches_the_store() {
     let store = StoreAdapter::native(Arc::new(SilentStore));
-    let records_binding = Records::new(&store);
+    let records_binding = PlaneRecords::of(&store, records::operations_for);
     let leg = RecordLeg {
         schema: records::SCHEMA_CALL,
         op: records::OP_PUT,
@@ -1023,7 +1024,7 @@ fn an_undeclared_record_leg_never_reaches_the_store() {
 #[test]
 fn every_declared_operation_has_an_arm() {
     let store = StoreAdapter::native(Arc::new(SilentStore));
-    let binding = Records::new(&store);
+    let binding = PlaneRecords::of(&store, records::operations_for);
     let leg = |schema, op| RecordLeg {
         schema,
         op,
@@ -1701,6 +1702,11 @@ fn draft_for(method: &str, id: &str, legs: &[Leg]) -> McpDraft {
 }
 
 /// Everything one MCP unit is driven against, as a node assembles it once at boot.
+///
+/// The boot-resolved half is no longer assembled here. It is a real [`crate::root::bindings::Node`]
+/// with this plane MOUNTED on it under the plane's own key, and the nine fields it carries reach
+/// this leg through the root's one resolver — the same call every other plane's leg is resolved by.
+/// What is left beside it is the per-request half, which is per-request in production too.
 struct LegNode {
     /// The registrations this node's operator configured.
     ///
@@ -1709,20 +1715,13 @@ struct LegNode {
     /// deployment that registered nothing. A cell that needs the loop to reach the exit with an
     /// ANSWER hands in a plane with a server on it.
     plane: McpPlane,
-    auth: Auth,
-    auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    /// The node: one door, one book, one chain, and this plane's declaration under its own key.
+    node: crate::root::bindings::Node,
     trust: Trust,
     pools: Pools,
     kinds: Catalogue<'static>,
     breaker: AlwaysReady,
-    door: Door<InMemoryCells>,
-    pricer: Pricer,
     chain: BucketChain,
-    records: Records,
-    meter_policy: crate::root::policy::MeterPolicyHandle,
-    scope_policy: crate::root::policy::ScopePolicy,
-    durability: Mutex<crate::root::durability::Durability>,
-    origin: busbar_caps::Origin,
 }
 
 /// A breaker with every position open.
@@ -1763,54 +1762,92 @@ impl LegNode {
     fn registering(store: &StoreAdapter, plane: McpPlane) -> Self {
         LegNode {
             plane,
-            auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
-            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            // THE NODE, assembled the way the root assembles one, then MOUNTING this plane under
+            // the key the plane itself declares. Nothing here spells "mcp": the key is read off
+            // `PlaneMeta` and the record legs are bound to the plane's own declaration table.
+            node: crate::root::bindings::Node::over(
+                Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+                crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+                Door::new(InMemoryCells::new()),
+                Pricer::flat(0),
+                crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+                Mutex::new(memory_durability()),
+                Kernel::new().origin(busbar_caps::OriginKind::Client),
+            )
+            .mounting(
+                <McpPlane as PlaneMeta>::KEY,
+                crate::root::bindings::MountedPlane {
+                    records: PlaneRecords::of(store, records::operations_for),
+                    scope_policy: permissive_scopes(),
+                },
+            ),
             trust: Trust,
             pools: Pools::new(plane, None, true, false),
             kinds: Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_GET, seam()),
             breaker: AlwaysReady,
-            door: Door::new(InMemoryCells::new()),
-            pricer: Pricer::flat(0),
             // A deployment that configured no group: every caller is attributed and none is capped.
             chain: busbar_unit_admission::GroupTable::default()
                 .chain_for("vk_mcp", None)
                 .expect("a caller bound to no group always resolves"),
-            records: Records::new(store),
-            meter_policy: crate::root::policy::build(
-                &crate::root::policy::MeterPolicyConfig::default(),
+        }
+    }
+
+    /// The same node with a different scope policy for this plane, declared by MOUNTING the plane
+    /// again. A key mounted twice replaces, which is what an operator's later declaration means —
+    /// and it is the only way to change what a plane declares, because the declaration is the
+    /// plane's entry on the node and not a field of the leg.
+    fn declaring(
+        self,
+        store: &StoreAdapter,
+        scope_policy: crate::root::policy::ScopePolicy,
+    ) -> Self {
+        LegNode {
+            node: self.node.mounting(
+                <McpPlane as PlaneMeta>::KEY,
+                crate::root::bindings::MountedPlane {
+                    records: PlaneRecords::of(store, records::operations_for),
+                    scope_policy,
+                },
             ),
-            scope_policy: permissive_scopes(),
-            durability: Mutex::new(memory_durability()),
-            origin: Kernel::new().origin(busbar_caps::OriginKind::Client),
+            ..self
         }
     }
 
     fn bindings(&self) -> McpBindings<'_> {
+        // THE ONE RESOLVER. Nine of the eighteen fields below are filled by the same call every
+        // plane's leg is resolved by, keyed on the plane's own key — not assembled here. What this
+        // file still fills is the per-request half (the views a caller's key scopes produce, the
+        // chain that caller is judged against, the pool the request named, the unit's two pinned
+        // clocks and the lapse of the grant it redeems), which is per-request in production too,
+        // plus the two money fields, whose reader is the rate card's.
+        let boot =
+            crate::root::bindings::resolve_bindings(<McpPlane as PlaneMeta>::KEY, &self.node)
+                .expect("the node mounted this plane under this key");
         McpBindings {
             plane: self.plane,
-            auth: &self.auth,
-            auth_bindings: &self.auth_bindings,
+            auth: boot.auth,
+            auth_bindings: boot.auth_bindings,
             trust: &self.trust,
             views: Views {
                 pools: &self.pools,
                 facts: &self.kinds,
                 breaker: &self.breaker,
             },
-            door: &self.door,
-            pricer: &self.pricer,
+            door: boot.door,
+            pricer: boot.pricer,
             chain: Some(&self.chain),
             prices: ClassPrices::default(),
             fee_nanos: 0,
-            records: &self.records,
-            meter_policy: &self.meter_policy,
-            scope_policy: &self.scope_policy,
-            durability: &self.durability,
+            records: boot.records,
+            meter_policy: boot.meter_policy,
+            scope_policy: boot.scope_policy,
+            durability: boot.durability,
             pool: "fs",
             at: Clocks {
                 wall: 1_700_000_000,
                 mono: 7,
             },
-            origin: self.origin,
+            origin: boot.origin,
             expires_at: 1_700_000_060,
         }
     }
@@ -1906,10 +1943,9 @@ fn a_refused_mcp_request_is_answered_in_the_rigs_own_bytes() {
     use busbar_contract::wire::FrameCursor;
 
     let store = StoreAdapter::native(Arc::new(SilentStore));
-    let mut node = LegNode::new(&store);
     // Silence is a refusal: a deployment whose policy says nothing about this plane's classes has
     // authorized none of them.
-    node.scope_policy = crate::root::policy::ScopePolicy::new();
+    let node = LegNode::new(&store).declaring(&store, crate::root::policy::ScopePolicy::new());
     let kernel = Kernel::new();
     let legs = [catalogue_leg()];
     let unit = McpUnits::new(

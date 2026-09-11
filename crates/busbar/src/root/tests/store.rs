@@ -14,8 +14,7 @@ use std::sync::Arc;
 use busbar_api::{PlaneSelector, Store as AbiStore};
 use busbar_plane_mcp::records;
 
-use crate::root::store::node_adapter;
-use crate::root::units_mcp::{RecordAnswer, RecordLeg, Records};
+use crate::root::store::{node_adapter, PlaneRecords, RecordAnswer, RecordLeg};
 
 /// The RAM default, as a node with no configured store module runs it.
 fn ram_store() -> Arc<dyn AbiStore> {
@@ -54,7 +53,7 @@ fn leg<'a>(
 fn a_record_written_through_the_mcp_leg_is_read_back_through_the_store_face() {
     let store = ram_store();
     let adapter = node_adapter(Arc::clone(&store));
-    let records = Records::new(&adapter);
+    let records = PlaneRecords::of(&adapter, records::operations_for);
 
     let written = records
         .run(&leg(
@@ -106,7 +105,7 @@ fn the_adapter_passes_the_node_s_own_store_handle_through() {
 fn an_appended_record_is_in_the_store_s_own_scan_of_its_parent() {
     let store = ram_store();
     let adapter = node_adapter(Arc::clone(&store));
-    let records = Records::new(&adapter);
+    let records = PlaneRecords::of(&adapter, records::operations_for);
 
     let mut appended = leg(records::SCHEMA_CALL, records::OP_APPEND, "call-1", b"first");
     appended.parent = Some("vk-1");
@@ -128,5 +127,66 @@ fn an_appended_record_is_in_the_store_s_own_scan_of_its_parent() {
         rows,
         vec![b"first".to_vec()],
         "the store's own scan of the parent carries the record the leg appended"
+    );
+}
+
+/// **THE ROOT'S SIX OPERATION WORDS ARE THE PLANE'S OWN SIX, BY TEXT.**
+///
+/// The runner is kind-neutral, so the words it maps onto the published store calls are the root's:
+/// reading one plane's constants to decide which store call to make is what made the neutral runner
+/// name a plane in the first place. Each plane keeps its own spelling, which is what its route plan
+/// is written in. This is the pin that keeps the two sets one set — a rename on either side lands
+/// here rather than quietly routing a leg to a store call nobody meant, or to none at all.
+#[test]
+fn the_root_s_record_operations_are_the_plane_s_own_by_text() {
+    let mut theirs: Vec<&str> = records::OPERATIONS.to_vec();
+    let mut ours: Vec<&str> = crate::root::store::op::ALL.to_vec();
+    theirs.sort_unstable();
+    ours.sort_unstable();
+    assert_eq!(
+        ours, theirs,
+        "the plane's declared operations and the words the root maps onto the store's calls are \
+         the same six"
+    );
+}
+
+/// **A LEG IS REFUSED WHEN THE PLANE'S OWN DECLARATION DOES NOT CARRY IT.**
+///
+/// The one question that could differ between two planes — may this schema do this? — is asked of
+/// the PLANE, through the declaration table the binding was keyed with, and not of a table restated
+/// in the root. The refusal below comes from the plane's data: `redeem` is declared on the approval
+/// schema and on no other, so the same runner refuses it on the catalogue schema without anything
+/// in this file knowing which schema is which.
+#[test]
+fn a_leg_the_plane_s_declaration_does_not_carry_is_refused_by_the_runner() {
+    let store = ram_store();
+    let adapter = node_adapter(Arc::clone(&store));
+    let records = PlaneRecords::of(&adapter, records::operations_for);
+
+    let refused = records
+        .run(&leg(
+            records::SCHEMA_CATALOGUE,
+            records::OP_REDEEM,
+            "fs",
+            b"",
+        ))
+        .expect_err("the plane declares no redeem on its catalogue schema");
+    assert!(
+        matches!(
+            refused,
+            crate::root::store::RecordRefusal::Undeclared { .. }
+        ),
+        "the runner refused the leg on the plane's own declaration: {refused}"
+    );
+
+    let allowed = records.run(&leg(
+        records::SCHEMA_APPROVAL,
+        records::OP_REDEEM,
+        "grant-1",
+        b"",
+    ));
+    assert!(
+        allowed.is_ok(),
+        "the same runner admits the same operation on the schema the plane DOES declare it on"
     );
 }
