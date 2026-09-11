@@ -1724,7 +1724,10 @@ count = "4"
 [[cell]]
 crate = "busbar-kernel"
 kind = "caps"
-count = "68"
+# 68 -> 67: the kernel's own second 4 KiB bump buffer is deleted, and with it the one place that
+# turned its `ArenaFull` refusal into a caps reason code. The production arena answers with the
+# contract's own `ArenaBudget`, and the root already maps that to the same reason.
+count = "67"
 
 [[cell]]
 crate = "busbar-kernel"
