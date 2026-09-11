@@ -5,6 +5,7 @@
 #   ./scripts/prove-remote.sh                       # prove THIS worktree's tip
 #   ./scripts/prove-remote.sh <branch>              # prove a local branch's tip
 #   ./scripts/prove-remote.sh --host i-0abc <branch>
+#   ./scripts/prove-remote.sh --posture ship        # …and the release-time gates as well
 #
 # ── WHY NOT GITHUB ACTIONS ──────────────────────────────────────────────────────────────────────
 # During dev churn the owner's ruling is that Actions judges integration/qa/main and nothing else.
@@ -22,6 +23,13 @@
 # here and a green there are the same sentence about the same tree; that is the whole point of
 # reading the same scope file rather than inventing a second one.
 #
+# ONE LEG IS NOT keep-proof.yml's, AND IT IS THE GATE LEG. `cargo xtask gate --all` includes the
+# release-time gates, which are red on the dev line by design, so every slot pre-proof ended `RED in
+# ship-ready` after a green build/test/clippy and told the slot nothing (measured: exit 1 at 815 s).
+# The gate leg is now the one the LANDING ENGINE runs for a `--to dev` landing — kind-isolation,
+# plus the construction row report judged by land.sh's own land_gate_verdict/land_ceiling_verdict —
+# so a slot's verdict equals the engine's. `--posture ship` puts the release-time rows back.
+#
 # THE EXIT CODE IS THE REMOTE'S. Not "0 if the transport worked" — that is the failure mode where a
 # proof harness reports success because it successfully failed to prove anything.
 set -uo pipefail
@@ -37,6 +45,40 @@ REPO="$(cd "$HERE/.." && pwd)"
 # (loom.sh, profile-lock.sh).
 oracle_golden_path() {
   sed -n 's/.*oracle replay --golden[[:space:]][[:space:]]*\([^ ]*\).*/\1/p' "$HERE/prove-remote.sh" | head -1
+}
+
+# ── WHICH GATES A SLOT'S PROOF RUNS, AND WHY IT IS NOT `gate --all` ─────────────────────────────
+# MEASURED (T0-S-TIP, 2026-09-10): a slot pre-proof exited 1 at 815 s with `RED in ship-ready`
+# after a green build, fmt, clippy and test run, on a tree whose only reds were the tip's STANDING
+# ones. `cargo xtask gate --all` runs the release-time gates — ship-ready, kind-isolation-ship, and
+# design-bindings' PB-0 — and those are red on the dev line BY DESIGN: ship-ready's every row is a
+# claim about a tree ready to promote, the ship twin's added rows are a claim about the ship SHA,
+# and PB-0 cites a retired `scripts/inventory-coverage.sh`. A verdict that is red for all of those
+# reasons tells the slot NOTHING about its own tree, and a red that means nothing is a red nobody
+# reads — which is the exact signal-destroying shape xtask/src/gates/mod.rs's REPORT_ONLY header is
+# itself a record of.
+#
+# SO A SLOT PROVES WHAT THE ENGINE PROVES. land.sh's dev-line plan runs `cargo xtask gate
+# kind-isolation` (the owner's ship criterion, 84 s) and `cargo xtask gate construction --report`
+# judged by land_gate_verdict — every row measured, the reds being EXACTLY the named standing list
+# and no others, no stale name left on it — plus land_ceiling_verdict's proof that the ceiling
+# ratchet was measured at all. A slot's green and the engine's green are then the same sentence.
+#
+# AND THE VERDICT IS land.sh's OWN CODE, NOT A COPY OF IT. The three functions are READ OUT OF
+# scripts/land.sh IN THE TREE UNDER TEST and eval'd — the same "drive the REAL reader" discipline
+# oracle_golden_path above is written for. A copy would drift from the engine silently, and a slot
+# whose gate leg disagrees with the engine's is worse than no slot leg at all.
+prove_gate_verdict_src() { # $1 = a tree; prints land.sh's gate-verdict functions
+  sed -n '/^land_construction_standing_reds() {/,/^}/p;/^land_ceiling_verdict() {/,/^}/p;/^land_gate_verdict() {/,/^}/p' \
+    "${1:-$REPO}/scripts/land.sh"
+}
+# dev (the default) or ship. `ship` is the operator saying "judge this as a promotion": the
+# release-time rows run, and the verdict is `gate --all`'s as well as the dev plan's.
+prove_validate_posture() { # $1 = the value
+  case "${1:-}" in dev|ship) return 0 ;; esac
+  echo "prove-remote: --posture takes 'dev' (the default, exactly what a --to dev landing proves)" >&2
+  echo "prove-remote:   or 'ship' (that, plus the release-time gates). Got: '${1:-}'" >&2
+  return 1
 }
 
 if [ "${1:-}" = "--selftest" ]; then
@@ -61,6 +103,75 @@ if [ "${1:-}" = "--selftest" ]; then
     && say PASS "the golden path exists in-tree at $gp" \
     || say FAIL "the golden path does not exist in-tree at $gp"
 
+  echo "== prove-remote SELF-TEST (a slot proves what a --to dev landing proves) =="
+  # THE POSTURE FLAG.
+  prove_validate_posture dev  2>/dev/null && say PASS "the default posture is a value this script knows" \
+    || say FAIL "dev is not an accepted posture"
+  prove_validate_posture ship 2>/dev/null && say PASS "ship is the other one" \
+    || say FAIL "ship is not an accepted posture"
+  prove_validate_posture promote 2>/dev/null && say FAIL "an unknown posture was accepted" \
+    || say PASS "an unknown posture is refused, not guessed"
+  prove_validate_posture 2>/dev/null && say FAIL "an empty posture was accepted" \
+    || say PASS "an empty posture is refused too"
+
+  # THE LEGS. The dev plan is the engine's two gate legs; the release-time rows are ship's alone.
+  body="$(sed -n "/^rsh_script \"\$HOST\" \"\$REF\"/,/^PROVE$/p" "$HERE/prove-remote.sh")"
+  case "$body" in
+    *"gate kind-isolation"*) say PASS "the dev plan runs the kind-isolation gate, as a landing does" ;;
+    *) say FAIL "the kind-isolation gate is not in the remote plan" ;;
+  esac
+  case "$body" in
+    *"gate construction --report"*) say PASS "  ...and the construction row report it judges" ;;
+    *) say FAIL "the construction report is not in the remote plan" ;;
+  esac
+  shipblock="$(printf '%s\n' "$body" | sed -n '/POSTURE" = ship/,/^fi$/p')"
+  case "$shipblock" in
+    *"gate --all"*) say PASS "the release-time rows run under --posture ship" ;;
+    *) say FAIL "--posture ship does not run the release-time gates" ;;
+  esac
+  # …AND NOWHERE ELSE. Measured: `gate --all` on the dev line exits 1 in ship-ready after a green
+  # build/test/clippy, which is 815 s spent to tell the slot nothing about its own tree.
+  # THE INVOCATION, not the words: this file talks ABOUT `gate --all` in the comment that explains
+  # why it is not the dev leg, and a count that read prose would be satisfied by deleting a comment.
+  n_all="$(printf '%s\n' "$body" | grep -c -- '-- gate --all' || true)"
+  n_ship="$(printf '%s\n' "$shipblock" | grep -c -- '-- gate --all' || true)"
+  [ "$n_all" = "$n_ship" ] && [ "$n_ship" -ge 1 ] \
+    && say PASS "  ...and the DEFAULT posture never runs them ($n_all invocation(s), all of them ship's)" \
+    || say FAIL "gate --all runs outside the ship posture ($n_all invocation(s), $n_ship of them ship's)"
+
+  # THE VERDICT IS land.sh's, READ OUT OF THE TREE — driven here on fixtures, not described.
+  src="$(prove_gate_verdict_src "$REPO")"
+  case "$src" in
+    *"land_gate_verdict()"*) say PASS "land.sh's gate verdict is readable out of the tree" ;;
+    *) say FAIL "land.sh's gate verdict could not be read out of the tree" ;;
+  esac
+  case "$body" in
+    *"prove_gate_verdict_src"*|*"land_gate_verdict"*) say PASS "  ...and the remote plan uses it" ;;
+    *) say FAIL "the remote plan does not use land.sh's verdict" ;;
+  esac
+  # NO SECOND COPY OF THE STANDING LIST. A list spelled twice is a list that goes stale once.
+  # THE PATTERN MUST NOT MATCH ITSELF — a grep for a row name, written in the file it searches, is
+  # its own hit, and this case failed on its own text the first time it ran.
+  [ "$(grep -c 'plane-no[-]money' "$HERE/prove-remote.sh" || true)" = 0 ] \
+    && say PASS "  ...and this file keeps no copy of the standing-red list" \
+    || say FAIL "this file carries its own copy of the standing-red rows"
+  ( eval "$src"
+    fx="$(mktemp -t prove-gate.XXXXXX)"
+    land_construction_standing_reds | sed 's/^/FAIL  /;s/$/  x/' >"$fx"
+    printf 'PASS  ceiling-rose  x\nPASS  ceiling-slack  x\nPASS  something-else  x\n' >>"$fx"
+    land_ceiling_verdict "$fx" >/dev/null 2>&1 || exit 3
+    land_gate_verdict "$fx" '.' >/dev/null 2>&1 || exit 4
+    printf 'FAIL  a-brand-new-red  x\n' >>"$fx"
+    land_gate_verdict "$fx" '.' >/dev/null 2>&1 && exit 5
+    rm -f "$fx" ) ; rc=$?
+  case "$rc" in
+    0) say PASS "  ...and on a fixture it is green on the standing reds and red on a new one" ;;
+    3) say FAIL "the ceiling ratchet read no rows on a fixture that has them" ;;
+    4) say FAIL "the standing reds alone were scored RED (the slot would red on the tip's own rows)" ;;
+    5) say FAIL "a NEW construction red was scored green" ;;
+    *) say FAIL "the extracted verdict could not be driven (rc $rc)" ;;
+  esac
+
   if [ "$fails" -ne 0 ]; then
     echo "[selftest] FAILED: $fails case(s) did not hold." >&2
     exit 1
@@ -69,11 +180,12 @@ if [ "${1:-}" = "--selftest" ]; then
   exit 0
 fi
 
-HOST=""; BRANCH=""; SETUP=0
+HOST=""; BRANCH=""; SETUP=0; POSTURE=dev
 while [ $# -gt 0 ]; do
   case "$1" in
     --setup) SETUP=1; shift ;;
     --host)  HOST="$2"; shift 2 ;;
+    --posture) prove_validate_posture "${2:-}" || exit 2; POSTURE="$2"; shift 2 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     -*) rdie "unknown option $1" ;;
     *) if [ -z "$HOST" ] && [ "$SETUP" = 1 ]; then HOST="$1"; else BRANCH="$1"; fi; shift ;;
@@ -108,6 +220,7 @@ if [ -f "$REPO/.keep-proof.toml" ]; then
 else
   rlog "no .keep-proof.toml at the tree root — the oracle filter is '.' (every family)"
 fi
+rlog "posture:         --posture $POSTURE ($([ "$POSTURE" = ship ] && echo 'the dev plan PLUS the release-time gates' || echo 'exactly what a --to dev landing proves'))"
 rlog "oracle families: $SCOPE_FAM"
 rlog "test packages:   ${SCOPE_TESTS:-<the whole workspace>}"
 
@@ -130,9 +243,9 @@ esac
 
 START=$(date +%s)
 set +e
-rsh_script "$HOST" "$REF" "$SCOPE_FAM" "$SCOPE_TESTS" "$WORK_DIR" <<'PROVE'
+rsh_script "$HOST" "$REF" "$SCOPE_FAM" "$SCOPE_TESTS" "$WORK_DIR" "$POSTURE" <<'PROVE'
 set -uo pipefail
-REF="$1"; FAMILIES="$2"; TESTS="$3"; WORK_DIR="$4"
+REF="$1"; FAMILIES="$2"; TESTS="$3"; WORK_DIR="$4"; POSTURE="${5:-dev}"
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
@@ -194,8 +307,31 @@ else
 fi
 mark tests
 
-step "cargo xtask gate --all"
-cargo run -q -p xtask -- gate --all || exit 1
+step "gates: the legs a --to dev landing runs (posture: $POSTURE)"
+# land.sh's OWN verdict functions, read out of the tree under test and eval'd — so this leg and the
+# landing engine's cannot disagree about what a red means. `gate --all` is NOT this leg: it runs
+# ship-ready, kind-isolation-ship and design-bindings' PB-0, which are red on the dev line by
+# design, and a slot proof that exits 1 in ship-ready after a green build has measured nothing
+# about its own tree (measured: exit 1 at 815 s, T0-S-TIP, on a tree with only standing reds).
+gsrc="$(sed -n '/^land_construction_standing_reds() {/,/^}/p;/^land_ceiling_verdict() {/,/^}/p;/^land_gate_verdict() {/,/^}/p' scripts/land.sh)"
+case "$gsrc" in
+  *"land_gate_verdict()"*) ;;
+  *) echo "prove-remote: RED — land.sh's gate verdict is not readable out of this tree; refusing to invent a second one"; exit 2 ;;
+esac
+eval "$gsrc" || exit 2
+cargo run -q -p xtask -- gate kind-isolation || exit 1
+glog=target/prove-gate-construction.log
+mkdir -p target
+cargo run -q -p xtask -- gate construction --report >"$glog" 2>&1 || true
+land_ceiling_verdict "$glog" || exit 1
+land_gate_verdict "$glog" '.' || exit 1
+if [ "$POSTURE" = ship ]; then
+  # THE RELEASE-TIME ROWS, ON THE OPERATOR'S WORD. ship-ready, kind-isolation-ship and
+  # design-bindings are claims about a tree that is ready to promote; `--posture ship` is a slot
+  # saying it is asking that question.
+  step "cargo xtask gate --all (release-time rows: --posture ship)"
+  cargo run -q -p xtask -- gate --all || exit 1
+fi
 mark gate
 
 step "cargo xtask selftest"
