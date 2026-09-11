@@ -1,9 +1,9 @@
 {
   "binary": "<oracle-cache>/1.5.5/busbar",
   "version": "busbar 1.5.5",
-  "recorded": 927,
+  "recorded": 928,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5",
+  "harness_rev": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -83,6 +83,11 @@
         "from": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "to": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5",
         "why": "2026-09-10 ADDITIVE + documentation-only: the llm.stream family landed (cells/__init__.py's new builder, 12 rows in cells.json, scripts/llm-stream-fault.sh, one accepted-gaps entry), which moved the tree's harness revision. The 12 new cells were RECORDED under this revision from the pinned aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb); no cell of the existing 915 was re-recorded and no existing cell's bytes changed."
+      },
+      {
+        "from": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5",
+        "to": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb",
+        "why": "2026-09-11 ADDITIVE + documentation-only, and it closes a stamp that was ALREADY STALE. Three things moved this tree's revision since the golden was last stamped, and only the third of them is this line's: (a) the two a2a reachability cells and the two accepted-gaps entries that landed with them, which moved the revision d63a7c5e -> 3e039aec and were never re-stamped — so the committed golden claimed a revision nothing in this tree computed, and the skew guard would have refused it against every candidate recorded from here; (b) oracle.pin moving v0.3.7 -> v0.3.14, which is in the harness-rev set by design so a tool upgrade shows up in every recording made after it; (c) one cells.json byte, the `needs_fixture` lifted off llm|responses|responses|request|ok_citation. ONE cell was recorded under the new revision — that one — and it had no bytes before: it was a SKIP. Not one of the 927 existing cells was re-recorded and not one of their bytes changed, which is measured rather than asserted: the aggregate sha256 over the 927 committed cells/*.json is bea3c8aee8a5e9b22c5b3b3de49d6bde1bf39d9efe25e1e121621302cb8830be before this merge and over the same 927 after it."
       }
     ],
     "merges": [
@@ -116,10 +121,34 @@
           }
         ],
         "host_triple_note_at_merge": "the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e — the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved."
+      },
+      {
+        "at": "2026-09-11",
+        "why": "recorded llm|responses|responses|request|ok_citation, which had been a named gap (a SKIP row with no cell behind it) only because the recorder never wrote the cell's own mock_control on the llm driver — the hole busbar-oracle v0.3.14 closed",
+        "parts": [
+          {
+            "part": "t3-goldpart",
+            "recorded": 927,
+            "at": "2026-09-07T22:16:53Z",
+            "binary": "<oracle-cache>/1.5.5/busbar",
+            "harness_rev": "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5"
+          },
+          {
+            "part": "t3-llm-1",
+            "recorded": 1,
+            "at": "2026-09-11T03:36:18Z",
+            "binary": "<oracle-cache>/1.5.5/busbar",
+            "harness_rev": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb"
+          }
+        ],
+        "harness_rev_history_at_merge": [
+          "d63a7c5ece5100ff565192a95a33f0ad8bd1b64e4b475d47606158c45664d5f5"
+        ],
+        "harness_rev_recorded_at_merge": "13842917f0c0f28712cc899f56565a71f5e12232ff0e864b3e32b18c053b81cb"
       }
     ]
   },
-  "harness_rev_note": "2026-09-10 RE-NORMALISED PROVENANCE to a single revision d63a7c5e (the tree's own ./bin/oracle harness-rev) after the llm.stream merge. The merge's own history — both parts, both revisions, both host triples and the merge note — is kept verbatim under `provenance_history.merges`, a field the tool does not read. `host_triple` and `at` are restored to the 915-cell part's, because they say which machine and when the BULK of this recording was made; the 12 new cells' own host and time are in `provenance_history.merges`. NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED. | the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e — the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved. | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev — merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 — and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0…), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed — every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
+  "harness_rev_note": "llm|responses|responses|request|ok_citation recorded on x86_64-unknown-linux-gnu from the published 1.5.5 (84bde0a0), the SAME file and the same host_triple the 927-cell golden part was recorded from, under harness_rev 13842917 — this tree plus the v0.3.14 pin and the one cells.json byte that lifted the cell's needs_fixture. It supersedes the golden's SKIP row (a named gap, no cell behind it), so recorded rises 927 -> 928 and no existing cell is touched. The 927 were recorded under d63a7c5e; the provenance is re-normalised to the one revision this tree computes and the merge history kept in provenance_history. | Earlier note: 2026-09-10 RE-NORMALISED PROVENANCE to a single revision d63a7c5e (the tree's own ./bin/oracle harness-rev) after the llm.stream merge. The merge's own history — both parts, both revisions, both host triples and the merge note — is kept verbatim under `provenance_history.merges`, a field the tool does not read. `host_triple` and `at` are restored to the 915-cell part's, because they say which machine and when the BULK of this recording was made; the 12 new cells' own host and time are in `provenance_history.merges`. NO EXISTING CELL WAS RE-RECORDED AND NO EXISTING CELL'S BYTES CHANGED. | the 12 llm.stream|<dialect>|<fault> mid-stream-upstream-failure cells, recorded on aarch64-apple-darwin from the pinned busbar-aarch64-apple-darwin build of 1.5.5 (48e2800cc1fb) under harness d63a7c5e — the revision this tree computes. The 915 cells of the golden part were recorded on x86_64-unknown-linux-gnu from that release's other pinned build (84bde0a0) under bba66fd7, and NOT ONE of them was re-recorded: the cells.json change behind d63a7c5e is purely additive (12 rows added, 0 removed, 0 changed) plus one accepted-gaps entry, so no existing cell's definition, request or normalization moved. | Earlier note: 2026-09-07: RE-NORMALISED PROVENANCE to a single revision 785f6b673 (the tree's own ./bin/oracle harness-rev at busbar-oracle v0.3.0). The recording was mixed-rev — merged from a 913-cell part recorded at f2094498a and a 2-cell part recorded at 3fea00879, stamped 2ef756c92 — and the v0.3.0 skew guard compares provenance SETS, so no candidate recorded from this tree could ever match it without --allow-harness-skew, a flag that would then hide real skew as well. The merge history is kept verbatim under `provenance_history` (a field the tool does not read). NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. Earlier history, in order: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0…), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed — every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded. | re-stamped 2ef756c92 -> 785f6b673: busbar-oracle pin moved to v0.3.0 (script cells now PASS only on a driver exit 0), three drivers gained a give-up path, all 24 drivers say exit 0 out loud, and the gemini tool-use cell dropped a mock_control the mock resolves to no verb; no cell re-recorded.",
   "binary_sha256_pins": [
     {
       "part": "golden-part",
