@@ -125,13 +125,15 @@ on:
   # image, which is how `getbusbar/busbar:1.5.5` shipped unable to load any plugin of any kind and
   # stayed that way until an operator hit it. `build-binaries` (and therefore `publish`) is guarded
   # off this event explicitly; `promote` guards itself on a non-empty `promote_to`.
+  # THE INTEGRATION LINE AND THE THREE STAGE BRANCHES, and deliberately NOT `keep-**`. Every agent
+  # keep branch touches `crates/**`, so including them would fire a build-and-run-a-container job on
+  # each of a dozen parallel branches for a property that only has to hold where they LAND.
   push:
     branches:
       - dev
       - qa
       - main
       - 'integration/**'
-      - 'keep-**'
     paths:
       - 'Dockerfile'
       - 'docker/**'
