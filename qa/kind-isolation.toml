@@ -1727,7 +1727,12 @@ kind = "caps"
 # 68 -> 67: the kernel's own second 4 KiB bump buffer is deleted, and with it the one place that
 # turned its `ArenaFull` refusal into a caps reason code. The production arena answers with the
 # contract's own `ArenaBudget`, and the root already maps that to the same reason.
-count = "67"
+#
+# 67 -> 64: the per-unit record lands and names this crate once, its cell names it once, and the
+# loop stops path-spelling it five times. `Kernel::durability_token`, `Kernel::ledger_token` and the
+# exit path's durability refusal each wrote the package name inline beside a symbol the file's own
+# import list already carries or can carry; they now write the symbol. Five spellings out, two in.
+count = "64"
 
 [[cell]]
 crate = "busbar-kernel"

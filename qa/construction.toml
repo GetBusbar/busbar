@@ -120,48 +120,62 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
-# THE ONE RAISE THIS LANDING NEEDS, and it is one edit in three rows because three ceilings measure
-# the same 44 lines. The tree's first production `busbar_contract::bounded::Arena` lands in the
-# kernel — the buffer and the bump cursor over one lease of it — and the kernel's OWN second bump
-# buffer is deleted in the same commit: 116 lines that implemented nothing of that trait and had no
-# caller outside this crate's own test. +126 for the arena the tree did not have, -82 for the arena
-# it had twice, +44 net, and the same +44 in each of the three rows that can see it.
+# P1'S THREE ENTRIES HAVE EXPIRED BY THEMSELVES, and that is the paragraph above working rather
+# than an omission here. The arena landed in the commits this line is stacked on, so at THIS
+# branch's base `kernel_ceiling` already reads 5423, `union_ceiling` reads 23509 and
+# `kernel_files.arena.ceiling` reads 222. The rises those three entries were written to excuse no
+# longer exist, and `ceiling-rose` matches a declaration on BOTH numbers — so an entry re-stating
+# P1's would be refused twice over: as the wrong pair, and as a declaration that describes no rise
+# at this base. The arena row is not this landing's to raise, is not raised here, and its entry is
+# struck exactly the way the `busbar_substrate` calibration above it was struck.
 #
-# WHY THE KERNEL AND NOT THE CONTRACT. An arena is the loop's memory. `busbar-caps` +
-# `busbar-contract` is measured as what a PLUGIN AUTHOR has to read, and an author reads the trait
-# and never the cursor behind it, so a ceiling that had to be raised to hold the implementation
-# would be a ceiling that had stopped measuring its own sentence — and that pair had zero headroom.
-# The design's own figures for the rows below are unchanged and still hold: `busbar-kernel` at 8k
-# and arena/masking at 0.3k. Nothing in ARCHITECTURE.md moves for this. These three are ratchets
-# pinned at yesterday's measurement, not the design's numbers, which is exactly what a ratchet is
-# for and exactly why a raise of one is declared rather than typed.
+# THE RAISE THIS LANDING NEEDS, and it is one edit in two rows because two ceilings can see the
+# same 114 lines. The per-unit record arrives: `busbar-kernel/src/record.rs`, the unit's own
+# memory, the contract `Ctx` the loop builds ONCE per unit at its entry over one lease of that
+# memory, the kind-neutral views bundle the ROOT fills, and the two facts Verify seals onto the
+# unit — the verified set and the generation's key handle.
 #
-# WHAT THE FIFTEEN REMAINING TEST DOUBLES DO ABOUT IT: NOTHING YET, AND THE GATE IS WHY. The
-# obvious rail is a re-export in `busbar-plugin-testkit`, which the kind boundaries do leave open
-# in principle — tooling may name the kernel and the kernel names no tooling. It was built and
-# refused, twice and categorically: `kind-isolation:matrix` refuses the `[[cell]]
-# busbar-plugin-testkit x kernel` the re-export mints, because the `kernel` column already has rows
-# and a minted row in a column that exists is a 0 -> N raise wearing the clothes of a first
-# measurement; and `kind-isolation:test-deps` refuses `busbar-contract -> busbar-plugin-testkit`
-# outright as an edge this branch INTRODUCED, with no verdict, count or citation able to make it
-# admissible. Both refusals are correct. The route through them is the gate's own instruction — a
-# rail crate of its own, whose column has no row at the base and whose every cell is therefore a
-# first measurement by construction — and a new crate needs a kind, which is an owner's ruling and
-# not a raise's.
+# WHAT IT BUYS, and why it is not a convenience. `Units`' twelve methods used to take six scalars.
+# A step that needed anything the loop had already established had no way to reach it, so Route
+# and Meter could not see the destinations Verify sealed AT ALL — and `walk()` indexes that set by
+# destination id, which makes a re-derivation a different index space and a hop charged against a
+# lane it was not sealed for. The set now travels on the unit, written once under the same
+# `TrustToken` the step sealed it with, and Approve and Admit stop taking it as a parameter.
+#
+# WHY THE KERNEL AND NOT THE CONTRACT. The record is the loop's own value. `busbar-caps` +
+# `busbar-contract` is measured as what a PLUGIN AUTHOR has to read, and what an author reads here
+# is `Ctx`, `ConfigView`, `SessionView`, `TransportView` and `Labels` — every one of which the
+# contract already declared and none of which changes. `caps_contract_ceiling` does NOT move, and
+# the design's own figure for `busbar-kernel` — 8k — is unchanged and still holds.
+#
+# WHAT IT COST THE FILE THAT WAS ALREADY PINNED: nothing. `teller.rs` is 606 -> 605, DOWN, and the
+# row below is re-pinned to today's measurement rather than left with a line of slack. The six
+# scalars' readers MOVED by identity onto the record's accessors, and the principal that was being
+# threaded through two closures alongside the destinations stopped being threaded the moment the
+# thing beside it lived on the unit.
+#
+# WHY A NEW PER-FILE ROW RATHER THAN A WIDER TELLER ONE: section 1.1 gives a NAMED per-file split
+# of the kernel's 8k, and a file with no row is a file with no pin. The record is named inside the
+# Teller loop's own 1.5k in that section -- amended in the same commit -- and pinned here on its
+# own row, so the loop and the record can each be read against their own measurement instead of one
+# number covering both. It is a first measurement: the key does not exist at the base, so there is
+# no rise for it to declare.
+#
+# WHAT THE REMAINING TEST DOUBLES DO ABOUT IT: the two that a root cell carried are GONE, deleted
+# rather than re-homed, because a root cell may name the kernel and now builds its context from the
+# root's one constructor over the kernel's own arena. The eleven inside plane, transport and
+# contract crates stay: those crates may name `busbar-contract` and may NOT name `busbar-kernel`,
+# so no re-export reaches them, and they die where ROUTE-2 puts each plane's cells on the served
+# path rather than by being moved somewhere first.
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-from = 5379
-to = 5423
-because = """The tree's first production implementor of the contract's `Arena` trait — `ArenaBuf`, the 4 KiB buffer, and `UnitArena`, the bump cursor over one lease of it — minus this crate's own second bump buffer, which implemented none of that trait and had no caller outside its own test. +126 and -82. Every other implementor of the trait in this tree is a test double that leaks, so what the arena's own doc claims — the same 4 KiB at hour one — was measured by nothing until now."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.arena.ceiling"]
-from = 178
-to = 222
-because = """The same 44 lines as `rules.loc-ceilings.kernel_ceiling`, all of them in this file: the production arena arrives and the second bump buffer is deleted rather than left beside it. The design's own figure for this row is 0.3k and does not move."""
+from = 5423
+to = 5537
+because = """The per-unit record: `busbar-kernel/src/record.rs`, 114 lines, plus one line back off `teller.rs`, which goes 606 -> 605 because the destinations and the principal stopped being threaded through the loop's closures the moment the unit carried them. It is the tree's first production `busbar_contract::unit::Ctx` — built once per unit at loop entry over one lease of the unit's own 4 KiB, lent to all twelve steps, and carrying what Verify established so that Route and Meter, which could not see the verified set at all before this, read the set that was SEALED rather than one they derived again. The generation's transport key handle rides beside it as a handle and never as bytes."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23465
-to = 23509
-because = """The same 44 lines again, seen from the union. `caps_contract_ceiling` does NOT move for this landing: the arena is the loop's memory and is measured against the kernel's ceiling, not against what a plugin author has to read."""
+from = 23509
+to = 23623
+because = """The same 114 lines, seen from the union. `caps_contract_ceiling` does NOT move for this landing: the record is the loop's own value and is measured against the kernel's ceiling, not against what a plugin author has to read — and everything a plugin author reads here (`Ctx`, `ConfigView`, `SessionView`, `TransportView`, `Labels`) was already declared before it."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -387,7 +401,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5423
+kernel_ceiling = 5537
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -395,7 +409,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23509
+union_ceiling = 23623
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -404,7 +418,14 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 606
+ceiling = 605
+
+# The loop's memory and the loop's record, pinned on their own row. section 1.1 names them inside the
+# Teller loop's 1.5k; the two are pinned separately here so a line added to either has to say which.
+[rules.loc-ceilings.kernel_files.record]
+label = "per-unit record"
+patterns = ["record.rs"]
+ceiling = 114
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

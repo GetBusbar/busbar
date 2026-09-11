@@ -80,6 +80,7 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use crate::root::unit_views::UnitRecord;
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
@@ -555,6 +556,15 @@ impl LlmNode {
                     admin_listener: false,
                     kernel_verb_only: false,
                 };
+                // THE VIEWS THIS UNIT IS RUN OVER, filled here because they are the root's to
+                // fill: the stack it arrived on, the block the deployment declared for this plane,
+                // and the clock read once at the top. The loop builds the unit's `Ctx` from them.
+                let view_set = crate::root::unit_views::UnitViewSet::new(
+                    crate::root::unit_views::Block::default(),
+                    TRANSPORT_CHAIN[0],
+                    &TRANSPORT_CHAIN,
+                );
+                let views = view_set.views(view_set.clock(), None, None);
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
                     &unit,
@@ -566,6 +576,7 @@ impl LlmNode {
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
+                        views: &views,
                     },
                     &unit,
                 )
@@ -1101,7 +1112,7 @@ impl LlmUnit<'_> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for LlmUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitRecord<'_>) -> Decision<Arrival> {
         let record = ArrivalRecord {
             source: String::new(),
             port: 0,
@@ -1161,7 +1172,7 @@ impl Units for LlmUnit<'_> {
         }
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitRecord<'_>) -> Decision<Decode> {
         let refuse = |refusal: decode::DecodeRefusal| {
             self.walk
                 .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
@@ -1217,7 +1228,7 @@ impl Units for LlmUnit<'_> {
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate> {
         // The read of the auth middleware's already-resolved outcome. It cannot refuse — every
         // refusal this step could raise is the middleware's, upstream of the plane — and it is still
@@ -1230,7 +1241,7 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
         let model = self.model();
@@ -1278,10 +1289,13 @@ impl Units for LlmUnit<'_> {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        _ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        // WHAT VERIFY SEALED, off the unit. The set is not re-derived here and cannot be: this step
+        // holds no trust token, so the only destinations in scope are the ones that came back from
+        // the one call that did.
+        let destinations = ctx.verified();
         // THE SEATS, as the node was composed with them. The step's only refusal is a seated gate's
         // veto, and [`NATIVE_SEATS`] is empty on every deployment today — so on every deployment
         // today this step proceeds, which is the same unit-for-unit behaviour as the live path. It
@@ -1318,14 +1332,16 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Admit>,
         admit_token: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
         // This plane's door is the shipped release's, which keeps its group gauges on its own
         // registration and names none of them here. The unit is counted on the node-wide gauge
         // exactly as it always has been.
         _leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
+        // The same sealed set Approve read, and the same one Route will dial into: `walk()` indexes
+        // it by destination id, so a second derivation here would be a different index space.
+        let destinations = ctx.verified();
         let model = self.model();
         // THE DOOR, taken without its terminal: `admission_check` is the check-and-charge that
         // `admission_door` wraps its refusing arm in a posting. So a refusal here is BYTES rather
@@ -1352,7 +1368,7 @@ impl Units for LlmUnit<'_> {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _meter: &AccrualMeter,
     ) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
@@ -1367,7 +1383,7 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
@@ -1400,7 +1416,7 @@ impl Units for LlmUnit<'_> {
     fn audit(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
@@ -1415,7 +1431,7 @@ impl Units for LlmUnit<'_> {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
         // THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded — and the label is
@@ -1431,7 +1447,7 @@ impl Units for LlmUnit<'_> {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
         // The terminal already produced the bytes and the transport already owns the envelope: this
@@ -1448,7 +1464,7 @@ impl Units for LlmUnit<'_> {
         )
     }
 
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
             // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
@@ -1485,7 +1501,7 @@ impl Units for LlmUnit<'_> {
                 // nested unit — and the sibling planes, which read the same field off the same
                 // context, would price the same traffic differently. The origin the kernel sealed is
                 // the one fact that answers this, so it is the one thing read.
-                client_open_or_one_shot: ctx.origin == OriginKind::Client,
+                client_open_or_one_shot: ctx.origin() == OriginKind::Client,
                 selected_upstream: self.walk.upstream_candidate(),
                 relayed_first_response_frame: status.is_some(),
                 // This transport reports no status leg of its own: the response IS the status, and
@@ -1514,7 +1530,7 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
-        _ctx: &'a UnitCtx,
+        _ctx: &'a UnitRecord<'_>,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         // The destination the charge actually LANDED on — post-downgrade, never the requested one.

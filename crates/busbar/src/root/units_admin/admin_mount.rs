@@ -107,7 +107,7 @@ impl AdminNode {
             // reason that is not capacity. It is still an answer rather than a panic.
             Err(_refused) => unavailable_answer(),
             Ok(slot) => {
-                let ctx = UnitCtx {
+                let ctx = busbar_kernel::teller::UnitCtx {
                     key,
                     origin: busbar_caps::OriginKind::Client,
                     session: None,
@@ -119,6 +119,14 @@ impl AdminNode {
                     kernel_verb_only: true,
                 };
                 let meter = busbar_kernel::teller::AccrualMeter::new();
+                // This surface's own stack, and the block the deployment declared for it — which
+                // is none, and none is an answer: the plane served here declares no schema.
+                let view_set = crate::root::unit_views::UnitViewSet::new(
+                    crate::root::unit_views::Block::default(),
+                    super::TRANSPORT_STACK[0],
+                    &super::TRANSPORT_STACK,
+                );
+                let views = view_set.views(view_set.clock(), None, None);
                 let ended = busbar_kernel::teller::run_unit(
                     &self.kernel,
                     &self.units,
@@ -130,6 +138,7 @@ impl AdminNode {
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
+                        views: &views,
                     },
                 );
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route

@@ -986,7 +986,8 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        crate::open_record!(record, &ctx);
+        busbar_kernel::teller::fee_count(&unit.evidence(&record).fee).0
     };
     assert_eq!(
         fee(OriginKind::Client),
@@ -1083,6 +1084,8 @@ async fn drive_keeping_the_unit<'n>(
         admin_listener: false,
         kernel_verb_only: false,
     };
+    let view_set = crate::root::harness::view_set();
+    let views = view_set.views(view_set.clock(), None, None);
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
         &unit,
@@ -1094,6 +1097,7 @@ async fn drive_keeping_the_unit<'n>(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            views: &views,
         },
         &unit,
     )

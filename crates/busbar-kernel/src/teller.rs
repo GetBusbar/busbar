@@ -58,13 +58,14 @@ use std::future::Future;
 
 use busbar_caps::{
     Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
-    HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
-    PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
-    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    Authenticated, Canary, Decision, Decode, DurabilityLost, DurabilityToken, Encode, ExitToken,
+    Hold, HoldAccrual, HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind,
+    Outcome, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
+    SessionId, StepName, TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken, Verify,
 };
 
+use crate::record::{UnitMemory, UnitRecord, UnitViews};
 use crate::registry::Generation;
 use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_FLIGHT};
 
@@ -151,8 +152,8 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn durability_token(&self) -> busbar_caps::DurabilityToken {
-        busbar_caps::DurabilityToken::mint(&self.seal)
+    pub fn durability_token(&self) -> DurabilityToken {
+        DurabilityToken::mint(&self.seal)
     }
 
     /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
@@ -169,8 +170,8 @@ impl Kernel {
     ///
     /// Kept beside the other three and named the same way, so the source scan that accounts for
     /// every mint sees this one too.
-    pub fn ledger_token(&self) -> busbar_caps::LedgerToken {
-        busbar_caps::LedgerToken::mint(&self.seal)
+    pub fn ledger_token(&self) -> LedgerToken {
+        LedgerToken::mint(&self.seal)
     }
 
     /// The usage record's token, as the composition root lends it to a report assembled after the exit.
@@ -473,16 +474,16 @@ pub fn requests_settled(reached_admitted: bool, drawn: u32) -> u32 {
 // contract: the sealed unit traits (auth, trust, scope, admission, egress, usage, ledger, audit)
 pub trait Units {
     /// The kernel's own gate: size, rate, source and the budgets, before any plane is known.
-    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival>;
+    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitRecord<'_>) -> Decision<Arrival>;
 
     /// The plane says what shape arrived.
-    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode>;
+    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitRecord<'_>) -> Decision<Decode>;
 
     /// Who is calling.
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate>;
 
     /// Where the unit may go.
@@ -497,7 +498,7 @@ pub trait Units {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
 
@@ -505,9 +506,8 @@ pub trait Units {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
     ) -> Decision<Approve>;
 
     /// The door.
@@ -528,9 +528,8 @@ pub trait Units {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
     ) -> Decision<Admit>;
 
@@ -538,7 +537,7 @@ pub trait Units {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route>;
 
@@ -547,18 +546,23 @@ pub trait Units {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         provisional: &Outcome,
     ) -> Decision<Meter>;
 
     /// Seal the end for the record. The door a unit that PASSED the door leaves through.
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit>;
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitRecord<'_>,
+        outcome: &Outcome,
+    ) -> Decision<Audit>;
 
     /// Seal the end of a unit that never passed the door. Nothing was charged.
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         refusal: &Refusal,
     ) -> Decision<Audit>;
 
@@ -566,12 +570,12 @@ pub trait Units {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         outcome: &Outcome,
     ) -> Decision<Encode>;
 
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence;
+    fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence;
 }
 
 /// The Route step, as the loop AWAITS it.
@@ -597,7 +601,7 @@ pub trait RouteAwait {
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
-        ctx: &'a UnitCtx,
+        ctx: &'a UnitRecord<'_>,
         meter: &'a AccrualMeter,
     ) -> RouteLeg<'a>;
 }
@@ -616,7 +620,7 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
     fn route_leg<'a>(
         &'a self,
         token: &'a UnitToken<Route>,
-        ctx: &'a UnitCtx,
+        ctx: &'a UnitRecord<'_>,
         meter: &'a AccrualMeter,
     ) -> RouteLeg<'a> {
         Box::pin(std::future::ready(self.0.route(token, ctx, meter)))
@@ -646,6 +650,14 @@ pub struct Run<'r> {
     pub canary: &'r Canary,
     /// What the unit has spent so far.
     pub meter: &'r AccrualMeter,
+    /// THE VIEWS THE ROOT FILLS, which the loop builds this unit's context from.
+    ///
+    /// Data and not a handle: four read-only views the contract declares, the node's clock and the
+    /// generation's key handle. The loop builds one [`Ctx`](busbar_contract::unit::Ctx) from them
+    /// at entry and lends it to every step for the unit's life, so a step reads a configuration
+    /// block, a session's facts or a transport's chain through the same face a plugin does — and
+    /// the kernel names no plane to do it.
+    pub views: &'r UnitViews<'r>,
 }
 
 /// How a unit finished, from the loop's point of view.
@@ -708,18 +720,24 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
+    // THE UNIT'S MEMORY AND THE UNIT'S RECORD, both made once, here, and kept until the unit ends.
+    // The memory is the loop frame's because a value cannot lend its own bytes to a context it also
+    // holds; the record is what every step is handed in place of the six scalars it used to get.
+    let mut memory = UnitMemory::new();
+    let arena = memory.lease();
+    let record = &UnitRecord::open(ctx, run.views, &arena);
     let opened = units
-        .arrival(&UnitToken::<Arrival>::mint(seal), ctx)
+        .arrival(&UnitToken::<Arrival>::mint(seal), record)
         .into_result(seal)
         .and_then(|_| {
             units
-                .decode(&UnitToken::<Decode>::mint(seal), ctx)
+                .decode(&UnitToken::<Decode>::mint(seal), record)
                 .into_result(seal)
         })
         .and_then(|_| {
             run.canary.draft_accepted();
             units
-                .authenticate(&UnitToken::<Authenticate>::mint(seal), ctx)
+                .authenticate(&UnitToken::<Authenticate>::mint(seal), record)
                 .into_result(seal)
         })
         // A challenge is not a decision about this unit: it is a request for one more round before
@@ -729,32 +747,27 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // on to verify.
         .and_then(|authenticated| match authenticated {
             Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
-            Authenticated::Principal(principal) => units
-                .verify(
-                    &UnitToken::<Verify>::mint(seal),
-                    &TrustToken::mint(seal),
-                    ctx,
-                    &principal,
-                )
-                .into_result(seal)
-                .map(|destinations| (principal, destinations))
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+            Authenticated::Principal(principal) => {
+                // The trust token is minted ONCE and outlives the call it was lent to, by exactly
+                // one line: the step seals its destinations with it, and the next line seals THOSE
+                // destinations onto the unit under the same token. Nothing else holds it.
+                let trust = TrustToken::mint(seal);
+                units
+                    .verify(&UnitToken::<Verify>::mint(seal), &trust, record, &principal)
+                    .into_result(seal)
+                    // WHAT VERIFY ESTABLISHED, ONTO THE UNIT. Approve, Admit, Route and Meter read
+                    // it from here, so no later step re-derives a set it would then index by — and
+                    // the principal stops being threaded through two closures, because the one
+                    // thing they were threading it alongside now lives on the unit.
+                    .map(|destinations| record.seal_verified(&trust, destinations))
+                    .and_then(|()| {
                         units
-                            .approve(
-                                &UnitToken::<Approve>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                            )
+                            .approve(&UnitToken::<Approve>::mint(seal), record, &principal)
                             .into_result(seal)
-                            .map(|_| (principal, destinations))
-                    },
-                )
-                .and_then(
-                    |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                    })
+                    .and_then(|_| {
                         // The slip the door names its capped groups on, for the length of the one
-                        // call. It lives here rather than on the unit's context because it is not
+                        // call. It lives here rather than on the unit's record because it is not
                         // something the unit IS: it is what the door said, read once, on the next
                         // line, by the draw.
                         let groups = GroupLeaseSlip::new();
@@ -762,9 +775,8 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                             .admit(
                                 &UnitToken::<Admit>::mint(seal),
                                 &AdmitToken::<Admit>::mint(seal),
-                                ctx,
+                                record,
                                 &principal,
-                                &destinations,
                                 &groups,
                             )
                             .into_result(seal);
@@ -774,11 +786,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                         // count — and a unit that never reached this step, a challenge round, is
                         // never here to draw one.
                         if admitted.is_ok() {
-                            draw_lease(ctx, &run, &groups);
+                            draw_lease(record, &run, &groups);
                         }
                         admitted
-                    },
-                ),
+                    })
+            }
         });
 
     match opened {
@@ -791,12 +803,12 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
             let _sealed = units
-                .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
+                .audit_refused(&UnitToken::<Audit>::mint(seal), record, &refusal)
                 .into_result(seal);
             let _bytes = units
-                .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&UnitToken::<Encode>::mint(seal), record, &outcome)
                 .into_result(seal);
-            exit(kernel, units, ctx, run, outcome, false)
+            exit(kernel, units, record, run, outcome, false)
         }
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
         // cell, and what the end is settled against. Everything after it — the walk, the meter, the
@@ -839,13 +851,13 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             match refused_cell {
                 // A unit that never reached the wire, so there is nothing to await and nothing a
                 // caller going away could interrupt. It still ends where every admitted unit ends.
-                Some(outcome) => terminal(kernel, units, ctx, run, outcome, settling),
+                Some(outcome) => terminal(kernel, units, record, run, outcome, settling),
                 None => {
                     let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
-                    let outcome = under_hold(kernel, units, route, ctx, meter).await;
+                    let mut abandoned = Abandoned::arm(kernel, units, record, run, settling);
+                    let outcome = under_hold(kernel, units, route, record, meter).await;
                     abandoned.reached(outcome)
                 }
             }
@@ -886,8 +898,8 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
 /// admitted has done anything, and the N+1th unit is measured against a gauge that has already
 /// forgotten the N in flight. So the slot holds it, beside the leases, and the same two ends give
 /// it back.
-fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
-    if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
+fn draw_lease(record: &UnitRecord<'_>, run: &Run<'_>, groups: &GroupLeaseSlip) {
+    if !takes_lease(record.origin(), record.unit().kernel_verb_only) {
         return;
     }
     for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
@@ -938,7 +950,7 @@ enum Settling {
 struct Abandoned<'k, 'r, U: Units> {
     kernel: &'k Kernel,
     units: &'k U,
-    ctx: &'k UnitCtx,
+    record: &'k UnitRecord<'k>,
     /// The terminal, until somebody runs it. `None` once one of the two callers has.
     ending: Option<(Run<'r>, Settling)>,
 }
@@ -948,14 +960,14 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
     fn arm(
         kernel: &'k Kernel,
         units: &'k U,
-        ctx: &'k UnitCtx,
+        record: &'k UnitRecord<'k>,
         run: Run<'r>,
         settling: Settling,
     ) -> Self {
         Abandoned {
             kernel,
             units,
-            ctx,
+            record,
             ending: Some((run, settling)),
         }
     }
@@ -964,7 +976,7 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
     fn reached(&mut self, outcome: Outcome) -> Ended {
         match self.ending.take() {
             Some((run, settling)) => {
-                terminal(self.kernel, self.units, self.ctx, run, outcome, settling)
+                terminal(self.kernel, self.units, self.record, run, outcome, settling)
             }
             // Unreachable: this is called exactly once, on the one path out of the await, and the
             // only other taker is the drop below — which cannot have run while this borrow exists.
@@ -984,7 +996,7 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
             let _ended = terminal(
                 self.kernel,
                 self.units,
-                self.ctx,
+                self.record,
                 run,
                 Outcome::Aborted(Abort::Kernel {
                     reason: ReasonCode::ClientGone,
@@ -1004,21 +1016,21 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
 fn terminal<U: Units>(
     kernel: &Kernel,
     units: &U,
-    ctx: &UnitCtx,
+    record: &UnitRecord<'_>,
     run: Run<'_>,
     outcome: Outcome,
     settling: Settling,
 ) -> Ended {
     let seal = &kernel.seal;
     let _sealed = units
-        .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
+        .audit(&UnitToken::<Audit>::mint(seal), record, &outcome)
         .into_result(seal);
     let _bytes = units
-        .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
+        .encode(&UnitToken::<Encode>::mint(seal), record, &outcome)
         .into_result(seal);
     match settling {
         Settling::Exit(reached_admitted) => {
-            exit(kernel, units, ctx, run, outcome, reached_admitted)
+            exit(kernel, units, record, run, outcome, reached_admitted)
         }
         Settling::Parent(accrual) => {
             // The child opened no reservation of its own, but the table minted it an arrival hold
@@ -1065,12 +1077,16 @@ async fn under_hold<U: Units, R: RouteAwait>(
     kernel: &Kernel,
     units: &U,
     route: &R,
-    ctx: &UnitCtx,
+    record: &UnitRecord<'_>,
     meter: &AccrualMeter,
 ) -> Outcome {
     let seal = &kernel.seal;
     let token = UnitToken::<Route>::mint(seal);
-    match route.route_leg(&token, ctx, meter).await.into_result(seal) {
+    match route
+        .route_leg(&token, record, meter)
+        .await
+        .into_result(seal)
+    {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
         }
@@ -1080,7 +1096,7 @@ async fn under_hold<U: Units, R: RouteAwait>(
                 .meter(
                     &UnitToken::<Meter>::mint(seal),
                     &UsageToken::mint(seal),
-                    ctx,
+                    record,
                     &provisional,
                 )
                 .into_result(seal)
@@ -1108,7 +1124,7 @@ fn drop_arrival(_hold: Hold) {}
 pub fn exit<U: Units>(
     kernel: &Kernel,
     units: &U,
-    ctx: &UnitCtx,
+    record: &UnitRecord<'_>,
     run: Run<'_>,
     outcome: Outcome,
     reached_admitted: bool,
@@ -1119,13 +1135,13 @@ pub fn exit<U: Units>(
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
-            let evidence = units.evidence(ctx);
+            let evidence = units.evidence(record);
             let (amount, table_flags) = settle_amount(&outcome, &evidence);
             let (fee, fee_flags) = fee_count(&evidence.fee);
             let flags = table_flags.with(fee_flags);
             let requests = requests_settled(
                 reached_admitted,
-                requests_drawn(ctx.origin, evidence.upstream_candidate),
+                requests_drawn(record.origin(), evidence.upstream_candidate),
             );
             // What the unit spent while it ran is applied to the hold here, where the hold is
             // owned. The spend lands in full: past the end of the reservation it grows out of
@@ -1163,7 +1179,7 @@ pub fn exit<U: Units>(
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &busbar_caps::DurabilityToken::mint(seal),
+                        &DurabilityToken::mint(seal),
                         StepName::Meter,
                     ))
                 }

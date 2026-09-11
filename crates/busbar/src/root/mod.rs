@@ -65,6 +65,7 @@ pub mod migration;
 pub mod policy;
 pub mod registry;
 pub mod transports;
+pub mod unit_views;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;
 #[cfg(feature = "root-admin")]

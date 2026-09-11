@@ -54,6 +54,7 @@ use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 use std::sync::Arc;
 
 use busbar_caps::{TransportKeyHandle, TransportKeyToken};
+use busbar_kernel::teller::Kernel;
 use busbar_unit_transport_key::{
     provision_client, provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink,
     TlsLocations,
@@ -311,12 +312,11 @@ pub fn provision_dial(
 /// ## What this driver does NOT do yet, said plainly
 ///
 /// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
-/// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
+/// carry no body — and there is now exactly ONE reason left, where there were two:
 ///
-/// 1. **There is no per-unit arena that ships.** `busbar_contract::Arena` is `Send + Sync` and its
-///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
-///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
-///    call needs one, so there is nothing to build a `Ctx` around.
+/// 1. **The per-unit arena and the `Ctx` over it ship.** The loop builds both at its entry, over
+///    the views this driver hands it, and lends the record to every step. That was the missing
+///    half; it is not missing any more.
 /// 2. **`ProductionUnits` answers every non-admin step with a refusal.** That is deliberate — the
 ///    bodies arrive one plane at a time and admin is the one that has landed — so a unit driven
 ///    here today ends at Arrival whatever the bytes were.
@@ -326,10 +326,17 @@ pub fn provision_dial(
 /// and the body is empty because no plane was asked.
 #[cfg(feature = "root-admin")]
 pub struct LoopDriver<'n> {
-    kernel: &'n busbar_kernel::teller::Kernel,
+    kernel: &'n Kernel,
     units: &'n crate::root::kernel::ProductionUnits,
     gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
     canary: &'n busbar_caps::Canary,
+    /// The views this listener's units are run over, and the one place they are assembled.
+    views: crate::root::unit_views::UnitViewSet,
+    /// The handle the transport under this driver was provisioned with, where it has one.
+    ///
+    /// Offered to every unit and PINNED at its Verify step, so a unit finishes against the material
+    /// it started on while a reload installs a replacement. A handle, never material.
+    keys: Option<&'n TransportKeyHandle>,
     next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -349,16 +356,20 @@ impl<'n> LoopDriver<'n> {
     /// balancing its own books beside the node's.
     #[must_use]
     pub fn new(
-        kernel: &'n busbar_kernel::teller::Kernel,
+        kernel: &'n Kernel,
         units: &'n crate::root::kernel::ProductionUnits,
         gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
         canary: &'n busbar_caps::Canary,
+        views: crate::root::unit_views::UnitViewSet,
+        keys: Option<&'n TransportKeyHandle>,
     ) -> Self {
         Self {
             kernel,
             units,
             gauge,
             canary,
+            views,
+            keys,
             next_key: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -434,6 +445,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
             admin_listener: false,
             kernel_verb_only: false,
         };
+        let views = self.views.views(self.views.clock(), None, self.keys);
         // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
         // loop, the ten steps below it are the node's own.
         let ended = busbar_kernel::teller::run_unit(
@@ -447,6 +459,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
                 gauge: self.gauge,
                 canary: self.canary,
                 meter: &meter,
+                views: &views,
             },
         );
         busbar_contract::transport::Answer::empty(outcome_of(&ended))

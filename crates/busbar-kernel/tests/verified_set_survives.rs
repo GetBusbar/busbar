@@ -21,20 +21,21 @@
 //! never material. Drop either from the record and this cell reds — there is nowhere else a step
 //! could get them from.
 
+mod common;
+
 use std::sync::Mutex;
 
 use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Authenticated, Canary,
-    Decision, Decode, Encode, Hold, HoldCell, LaneId, Meter, Outcome, PrincipalId, Refusal, Route,
-    RoutePlan, ScopeFacts, StepName, TransportKeyHandle, TrustToken, UnitKey, UnitToken, UsageToken,
-    Verify, VerifiedDestination,
+    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
+    Authenticated, Canary, Decision, Decode, Encode, Frame, Hold, HoldCell, LaneId, Meter,
+    OpClassId, Outcome, PrincipalId, Refusal, Route, RoutePlan, ScopeFacts, StepName,
+    TransportKeyHandle, TrustToken, UnitToken, Usage, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::bounded::Labels;
-use busbar_contract::unit::{Clock, ConfigView, TransportView};
-use busbar_kernel::record::{UnitMemory, UnitRecord, UnitViews};
-use busbar_kernel::registry::Generation;
+use busbar_contract::unit::Clock;
+use busbar_kernel::record::{UnitRecord, UnitViews};
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
-use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, Run, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, Run, Units};
 
 /// The two lanes this unit's Verify seals, in this order. Order is part of the property: the set is
 /// an index space, so a step that saw the same two lanes the other way round is a step that would
@@ -66,9 +67,7 @@ impl Seen {
     }
 
     fn handle(record: &UnitRecord<'_>) -> Option<(u64, &'static str)> {
-        record
-            .key_handle()
-            .map(|h| (h.slot(), h.fingerprint()))
+        record.key_handle().map(|h| (h.slot(), h.fingerprint()))
     }
 }
 
@@ -81,7 +80,7 @@ impl Units for Sealing {
     fn arrival(&self, token: &UnitToken<Arrival>, _record: &UnitRecord<'_>) -> Decision<Arrival> {
         Decision::proceed(
             token,
-            busbar_caps::ArrivalRecord {
+            ArrivalRecord {
                 source: "127.0.0.1:9".into(),
                 port: 9,
                 alpn: None,
@@ -93,7 +92,7 @@ impl Units for Sealing {
     }
 
     fn decode(&self, token: &UnitToken<Decode>, _record: &UnitRecord<'_>) -> Decision<Decode> {
-        Decision::proceed(token, busbar_caps::OpClassId::new("cell"))
+        Decision::proceed(token, OpClassId::new("cell"))
     }
 
     fn authenticate(
@@ -169,7 +168,7 @@ impl Units for Sealing {
         *self.seen.meter_handle.lock().unwrap() = Seen::handle(record);
         Decision::proceed(
             token,
-            busbar_caps::Usage::report(usage, Vec::new()).expect("an empty report is within bound"),
+            Usage::report(usage, Vec::new()).expect("an empty report is within bound"),
         )
     }
 
@@ -181,8 +180,8 @@ impl Units for Sealing {
     ) -> Decision<Audit> {
         Decision::proceed(
             token,
-            busbar_caps::AuditFacts {
-                op_class: busbar_caps::OpClassId::new("cell"),
+            AuditFacts {
+                op_class: OpClassId::new("cell"),
                 finish: busbar_contract::FinishClass::Complete,
             },
         )
@@ -196,8 +195,8 @@ impl Units for Sealing {
     ) -> Decision<Audit> {
         Decision::proceed(
             token,
-            busbar_caps::AuditFacts {
-                op_class: busbar_caps::OpClassId::new("cell"),
+            AuditFacts {
+                op_class: OpClassId::new("cell"),
                 finish: busbar_contract::FinishClass::Error,
             },
         )
@@ -211,7 +210,7 @@ impl Units for Sealing {
     ) -> Decision<Encode> {
         Decision::proceed(
             token,
-            busbar_caps::Frame {
+            Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -225,43 +224,15 @@ impl Units for Sealing {
     }
 }
 
-/// A configuration block that answers nothing, which is what a unit with no plugin block has.
-struct NoConfig;
-
-impl ConfigView for NoConfig {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-/// One transport stack, named the way the node composes one.
-struct Stack;
-
-impl TransportView for Stack {
-    fn key(&self) -> &'static str {
-        "cell"
-    }
-    fn chain(&self) -> &[&'static str] {
-        &["cell"]
-    }
-    fn fact(&self, _key: &str) -> Option<&str> {
-        None
-    }
-}
-
 /// Run one unit through the whole loop and hand back what every step could see.
 fn run_one() -> Seen {
     let kernel = Kernel::new();
-    let units = Sealing { seen: Seen::default() };
+    let units = Sealing {
+        seen: Seen::default(),
+    };
     let handle = TransportKeyHandle::issue(&kernel.transport_key_token(), SLOT, FINGERPRINT);
-    let config = NoConfig;
-    let transport = Stack;
+    let config = common::NoConfig;
+    let transport = common::Stack;
     let labels = Labels::new();
     let views = UnitViews {
         clock: Clock {
@@ -274,14 +245,7 @@ fn run_one() -> Seen {
         labels: &labels,
         key_handle: Some(&handle),
     };
-    let ctx = UnitCtx {
-        key: UnitKey::new(1),
-        origin: busbar_caps::OriginKind::Client,
-        session: None,
-        generation: Generation::FIRST,
-        admin_listener: false,
-        kernel_verb_only: false,
-    };
+    let ctx = common::ctx(1);
     let cell = HoldCell::new(Hold::open(
         &kernel.admit_token(),
         PrincipalId::new("acct:cell"),

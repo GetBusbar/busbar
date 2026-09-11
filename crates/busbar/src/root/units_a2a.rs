@@ -68,6 +68,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::root::unit_views::UnitRecord;
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
@@ -77,7 +78,7 @@ use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
-use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, Units};
 use busbar_plane_a2a::{ops, records};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
 use busbar_unit_audit::{Audit as _, AuditInputs};
@@ -964,7 +965,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// The audit record one ending seals.
     fn audit_inputs(
         &self,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         outcome: Outcome,
         principal: Option<&PrincipalId>,
     ) -> AuditInputs {
@@ -974,7 +975,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         // says none cannot both be true of one unit.
         let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
             &self.draft,
-            ctx.origin,
+            ctx.origin(),
             progress.metered.is_some(),
         ));
         AuditInputs {
@@ -1100,11 +1101,11 @@ fn arrival_answer(draft: &A2aDraft, token: &UnitToken<Arrival>) -> Decision<Arri
 }
 
 impl<S: CellStore> Units for A2aUnits<'_, S> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitRecord<'_>) -> Decision<Arrival> {
         arrival_answer(&self.draft, token)
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitRecord<'_>) -> Decision<Decode> {
         // The plane read the bytes; this is its answer. A body carrying a method this plane does
         // not name is a refusal at the step that read it, not a guess at the nearest class.
         match self.draft.op {
@@ -1116,7 +1117,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate> {
         let request = auth_request(&self.draft, self.bindings.now);
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
@@ -1140,7 +1141,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
         {
@@ -1150,7 +1151,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             progress.principal = Some(principal.clone());
             progress.grants = Some(self.grants);
         }
-        match self.verified_lanes(trust_origin(ctx.origin)) {
+        match self.verified_lanes(trust_origin(ctx.origin())) {
             Err(refusal) => Decision::refuse(token, refusal),
             Ok(lanes) => {
                 read_through_poison(&self.progress).lanes = lanes.clone();
@@ -1171,9 +1172,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
         let Some(op) = self.draft.op else {
             return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
@@ -1204,9 +1204,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // The decision is the shipped release's, evaluated by the unit that owns it: pass one
@@ -1228,7 +1227,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             self.bindings.pool,
             self.bindings.now,
         );
-        let decision = unit.admit(&self.estimate(ctx.origin), principal, chain, admit, token);
+        let decision = unit.admit(&self.estimate(ctx.origin()), principal, chain, admit, token);
         // What the door counted, said out loud. The names are the interned ones the root handed the
         // chain's groups at registration; the loop records one lease per name on this unit's slot,
         // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
@@ -1251,7 +1250,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
         // The plan has to FIT before any of it happens. The route plan the loop carries is bounded,
@@ -1359,7 +1358,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
@@ -1397,7 +1396,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitRecord<'_>,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
         let inputs = self.audit_inputs(ctx, *outcome, None);
         let record = {
             let mut durability = read_through_poison(self.bindings.durability);
@@ -1418,7 +1422,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
@@ -1445,7 +1449,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
         // The plane's encoders take the unit's arena, and this signature carries neither an arena
@@ -1470,7 +1474,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         let progress = read_through_poison(&self.progress);
         Evidence {
             located: progress.metered,
@@ -1489,7 +1493,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
-            fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
+            fee: fee_evidence(&self.draft, ctx.origin(), progress.metered.is_some()),
         }
     }
 }

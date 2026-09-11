@@ -51,6 +51,7 @@ fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary:
             gauge: &gauge,
             canary,
             meter: &meter,
+            views: common::views(),
         },
     )
 }
@@ -229,21 +230,24 @@ fn every_unit_end_leaves_through_the_one_exit() {
         let gauge = ConcurrencyGauge::new();
         let leases = LeaseCell::new();
         let meter = AccrualMeter::new();
-        let ended = exit(
-            &kernel,
-            &units,
-            &ctx(2),
-            Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: &gauge,
-                canary: &canary,
-                meter: &meter,
-            },
-            outcome,
-            true,
-        );
+        let ended = common::with_record(&ctx(2), |record| {
+            exit(
+                &kernel,
+                &units,
+                record,
+                Run {
+                    cell: &cell,
+                    parent: None,
+                    leases: &leases,
+                    gauge: &gauge,
+                    canary: &canary,
+                    meter: &meter,
+                    views: common::views(),
+                },
+                outcome,
+                true,
+            )
+        });
         match ended {
             Ended::Settled { end, .. } => assert_eq!(end.outcome(), outcome),
             other => panic!("{outcome:?} did not settle: {other:?}"),
@@ -263,21 +267,24 @@ fn a_unit_is_settled_exactly_once() {
     let gauge = ConcurrencyGauge::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
-    let second = exit(
-        &kernel,
-        &units,
-        &ctx(1),
-        Run {
-            cell: &cell,
-            parent: None,
-            leases: &leases,
-            gauge: &gauge,
-            canary: &canary,
-            meter: &meter,
-        },
-        Outcome::Completed,
-        true,
-    );
+    let second = common::with_record(&ctx(1), |record| {
+        exit(
+            &kernel,
+            &units,
+            record,
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+                views: common::views(),
+            },
+            Outcome::Completed,
+            true,
+        )
+    });
     assert!(matches!(second, Ended::AlreadySettled));
     assert_eq!(canary.counts().settlements, 1);
 }
@@ -334,6 +341,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: common::views(),
         },
     );
     // The child ends like every other unit: one sealed end carrying one posting. It reserved
@@ -448,21 +456,24 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
         let cell = cell(&kernel);
         let canary = Canary::new();
         let meter = AccrualMeter::new();
-        exit(
-            &kernel,
-            &units,
-            &ctx(3),
-            Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: &gauge,
-                canary: &canary,
-                meter: &meter,
-            },
-            outcome,
-            true,
-        );
+        common::with_record(&ctx(3), |record| {
+            exit(
+                &kernel,
+                &units,
+                record,
+                Run {
+                    cell: &cell,
+                    parent: None,
+                    leases: &leases,
+                    gauge: &gauge,
+                    canary: &canary,
+                    meter: &meter,
+                    views: common::views(),
+                },
+                outcome,
+                true,
+            )
+        });
         assert_eq!(gauge.count(&bucket), 0, "after {outcome:?}");
     }
 }
@@ -547,6 +558,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
             &route,
         ));
@@ -666,6 +678,7 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
             &route,
         ));
@@ -732,6 +745,7 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
             &route,
         ));
@@ -811,6 +825,7 @@ fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
             &route,
         ));
@@ -842,6 +857,7 @@ fn a_unit_the_door_refused_draws_no_lease() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: common::views(),
         },
     );
     assert!(matches!(ended, Ended::Settled { .. }));
@@ -894,6 +910,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
             &route,
         ));
@@ -921,6 +938,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                views: common::views(),
             },
         );
         assert!(matches!(ended, Ended::Settled { .. }));
@@ -958,6 +976,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: common::views(),
         },
     );
     assert!(matches!(ended, Ended::Settled { .. }));

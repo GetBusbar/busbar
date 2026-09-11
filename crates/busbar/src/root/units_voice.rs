@@ -121,6 +121,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::root::unit_views::UnitRecord;
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
     Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
@@ -132,7 +133,7 @@ use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
 use busbar_contract::ClaimKey;
 use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
-use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, Units};
 use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
@@ -1393,9 +1394,13 @@ impl<'n> VoiceUnit<'n> {
     }
 
     /// Everything the flat fee is decided from, for this unit.
-    fn fee(&self, ctx: &UnitCtx, finish: Option<busbar_contract::FinishClass>) -> FeeEvidence {
+    fn fee(
+        &self,
+        ctx: &UnitRecord<'_>,
+        finish: Option<busbar_contract::FinishClass>,
+    ) -> FeeEvidence {
         let (selected_upstream, relayed) = self.upstream_leg();
-        fee_evidence(self.shape, ctx.origin, selected_upstream, relayed, finish)
+        fee_evidence(self.shape, ctx.origin(), selected_upstream, relayed, finish)
     }
 }
 
@@ -1404,14 +1409,14 @@ impl<'n> VoiceUnit<'n> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for VoiceUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitRecord<'_>) -> Decision<Arrival> {
         // The kernel's own gate, over the configured budgets. There is no unit behind this step and
         // there was never meant to be: what it answers is the connection's own arrival record, which
         // the transport built and this file carries.
         Decision::proceed(token, self.arrival.clone())
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitRecord<'_>) -> Decision<Decode> {
         // The plane already read the frame; the pump already turned what it read into a shape. What
         // reaches the loop here is the operation class that shape is, and re-reading the frame to
         // re-derive it would advance the codec's per-session sequence a second time.
@@ -1421,7 +1426,7 @@ impl Units for VoiceUnit<'_> {
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate> {
         let request = AuthRequest {
             candidate: self.credential.as_deref(),
@@ -1460,7 +1465,7 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
         // THE FIRST STEP THAT IS HANDED THE PRINCIPAL IS THE FIRST THAT CAN RECORD IT, and the
@@ -1479,7 +1484,7 @@ impl Units for VoiceUnit<'_> {
                 .tool_calls
                 .planned(
                     self.session,
-                    ctx.key,
+                    ctx.key(),
                     TOOL_REPLY_LEG,
                     self.correlation_out(),
                     self.now_ms,
@@ -1510,9 +1515,8 @@ impl Units for VoiceUnit<'_> {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
         // A handshake unit's scope is kernel-granted, for every principal including the anonymous
         // one. That is what lets a node hand shake before it has authenticated anybody, and it is
@@ -1543,9 +1547,8 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // A SESSION WHOSE LEASE RAN DRY GETS NO FURTHER FRAME. The turn that emptied it was
@@ -1626,7 +1629,7 @@ impl Units for VoiceUnit<'_> {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
@@ -1635,7 +1638,7 @@ impl Units for VoiceUnit<'_> {
         // is the difference between a hold that closes and a hold that is held open by a client that
         // simply never replied.
         if matches!(self.shape, UnitShape::ToolCall)
-            && self.node.tool_calls.ending(self.session, ctx.key) == Some(CallEnd::Unanswered)
+            && self.node.tool_calls.ending(self.session, ctx.key()) == Some(CallEnd::Unanswered)
         {
             return Decision::refuse(token, Refusal::new(ReasonCode::DeadlineExceeded));
         }
@@ -1671,7 +1674,7 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         let lines = self.usage.lines();
@@ -1697,14 +1700,19 @@ impl Units for VoiceUnit<'_> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitRecord<'_>,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
         self.seal(token, ctx, *outcome, outcome_finish(outcome))
     }
 
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the door and was charged nothing. It still gets
@@ -1720,7 +1728,7 @@ impl Units for VoiceUnit<'_> {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
         // The plane renders the bytes; what the loop needs here is the frame they travel in. A voice
@@ -1737,7 +1745,7 @@ impl Units for VoiceUnit<'_> {
         )
     }
 
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         // The ending the audit step already sealed, read once for the two answers below that turn
         // on it. Deciding it a second time here is how a record that says a turn errored ends up
         // beside a posting that charged for it.
@@ -1862,7 +1870,7 @@ impl VoiceUnit<'_> {
     fn seal(
         &self,
         token: &UnitToken<Audit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         outcome: Outcome,
         finish: busbar_contract::FinishClass,
     ) -> Decision<Audit> {
@@ -1889,7 +1897,7 @@ impl VoiceUnit<'_> {
     /// can be read back, rather than a literal buried under a lock.
     fn audit_inputs(
         &self,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         outcome: Outcome,
         finish: busbar_contract::FinishClass,
     ) -> busbar_unit_audit::record::AuditInputs {
@@ -1914,7 +1922,7 @@ impl VoiceUnit<'_> {
                 None => busbar_unit_audit::record::Subject::Arrival,
             },
             what: busbar_unit_audit::record::What {
-                unit_key: ctx.key,
+                unit_key: ctx.key(),
                 op_class: busbar_unit_audit::record::OpClassId::new(self.shape.op_class().as_str()),
                 destination: None,
                 parent: None,
