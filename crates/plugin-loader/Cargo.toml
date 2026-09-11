@@ -10,6 +10,10 @@ license = "Apache-2.0"
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
+# The structured error and the catalog shape: the loader READS a plugin's catalog at load and holds
+# it to its own declaration. Named for the error module and the catalog and nothing else of the
+# crate — no face type, no reference type.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this

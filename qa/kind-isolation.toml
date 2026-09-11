@@ -4279,6 +4279,16 @@ why     = "busbar-plugin-pack names busbar-secret-ref: declared normal in the sh
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base. ARCHITECTURE.md 1.2 manifest allow-list names busbar-contract as the ONE crate a plugin of any kind may depend on, so this is the allowed edge rather than an excused one."
+why     = "busbar-plugin-loader names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The loader READS a plugin's error catalog at load and holds the plugin to its own declaration, so it names `busbar_contract::error` — the structured error and the catalog shape — and nothing else of the crate: no face type, no reference type, so no kind vocabulary rides with the edge. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
 from    = "busbar-plugin-sdk"
 to      = "busbar-contract"
 half    = "shipped"

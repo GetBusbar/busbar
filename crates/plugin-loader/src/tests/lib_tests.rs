@@ -2310,3 +2310,151 @@ mod plane_sidecar_tests;
 mod store_adapter_migration_tests;
 #[path = "store_adapter_tests.rs"]
 mod store_adapter_tests;
+
+// ── the catalog the loader reads at load ──────────────────────────────────────────────────────
+
+/// A CATALOG THAT DOES NOT CHECK IS REFUSED AT LOAD, BY NAME.
+///
+/// The moment a host discovers a plugin's declaration of its own codes is malformed matters. It can
+/// discover it at load, when an operator is standing there and the plugin can simply not be
+/// admitted, or on the first failure of a live request, when the thing that is already going wrong
+/// gets a second, unrelated fault on top of it. Every refusal below names the plugin, because a
+/// load that fails without saying whose fault it is is a load nobody can fix.
+#[test]
+fn a_catalog_that_does_not_check_is_refused_at_load_by_name() {
+    let cases: &[(&str, &[u8], &str)] = &[
+        (
+            "not a catalog document",
+            br#"{"entries": 7}"#,
+            "not a catalog document",
+        ),
+        ("not JSON at all", b"busbar_catalog", "not a catalog document"),
+        (
+            "not UTF-8",
+            &[0x7b, 0xff, 0xfe, 0x7d],
+            "not a catalog document",
+        ),
+        (
+            "no default locale",
+            br#"{"default_locale":"","entries":[]}"#,
+            "refused at load",
+        ),
+        (
+            "a code with no template in the default locale",
+            br#"{"default_locale":"en","entries":[{"code":"p.x","templates":[{"locale":"de","text":"x"}]}]}"#,
+            "refused at load",
+        ),
+        (
+            "the same code twice",
+            br#"{"default_locale":"en","entries":[{"code":"p.x","templates":[{"locale":"en","text":"a"}]},{"code":"p.x","templates":[{"locale":"en","text":"b"}]}]}"#,
+            "refused at load",
+        ),
+    ];
+    for (what, bytes, fragment) in cases {
+        let err = catalog_from_bytes(bytes, "libsecret.so")
+            .expect_err(&format!("a catalog that is {what} must refuse the load"));
+        assert!(
+            err.contains("libsecret.so"),
+            "the refusal for {what} does not name the plugin: {err}"
+        );
+        assert!(
+            err.contains(fragment),
+            "the refusal for {what} does not say what is wrong: {err}"
+        );
+    }
+    // And the well-formed one is accepted, so the cell is about the check and not about refusing.
+    let ok = catalog_from_bytes(
+        br#"{"default_locale":"en","entries":[{"code":"p.x","templates":[{"locale":"en","text":"x"}]}]}"#,
+        "libsecret.so",
+    )
+    .expect("a catalog that checks is accepted");
+    assert_eq!(ok.template("p.x", "fr"), Some("x"));
+}
+
+/// A PLUGIN THAT SHIPS NO CATALOG IS NOT REFUSED — it renders through the wire's own codes.
+///
+/// The symbol is optional on purpose: an installed third-party cdylib built before the catalog
+/// existed must keep loading. What it gets instead is [`wire_catalog`], which DECLARES the five
+/// `wire.*` codes the loader mints from the frozen token, so an old plugin's failures render
+/// through the same table as a new plugin's rather than down a second path.
+#[test]
+fn the_wire_catalog_declares_every_code_the_loader_can_mint() {
+    let wire = wire_catalog();
+    wire.check().expect("the wire catalog checks");
+    for kind in [
+        SecretErrorKind::NotFound,
+        SecretErrorKind::Unavailable,
+        SecretErrorKind::Denied,
+        SecretErrorKind::Invalid,
+        SecretErrorKind::Internal,
+    ] {
+        let code = secret_wire_code(kind);
+        assert!(
+            wire.entry(code).is_some(),
+            "the loader mints `{code}` and its own catalog does not declare it"
+        );
+        assert!(wire.template(code, "en").is_some());
+    }
+    assert_eq!(wire.entries.as_slice().len(), 5, "five tokens, five codes");
+    // The token -> class map is the ONLY one, and it keeps a denial apart from a miss.
+    assert_eq!(
+        secret_wire_class(SecretErrorKind::Denied),
+        busbar_contract::ErrorClass::Denied
+    );
+    assert_ne!(
+        secret_wire_class(SecretErrorKind::Denied),
+        secret_wire_class(SecretErrorKind::NotFound)
+    );
+}
+
+/// AN EMITTED CODE THE CATALOG DOES NOT DECLARE IS REFUSED AT FIRST USE, BY NAME.
+///
+/// A cdylib cannot be asked what it will say, so this is the one refusal that cannot happen at
+/// load. When it happens the answer is replaced rather than annotated: nothing downstream may be
+/// handed a code it has no template for, and the contradiction goes on the record with the plugin's
+/// name and the offending code as parameters.
+#[test]
+fn an_uncatalogued_code_is_refused_at_first_use_by_name() {
+    use busbar_contract::{ErrorClass, ParamValue, PluginError};
+    let catalog = catalog_from_bytes(
+        br#"{"default_locale":"en","entries":[{"code":"vault.declared","templates":[{"locale":"en","text":"declared"}]}]}"#,
+        "libvault.so",
+    )
+    .expect("a catalog that checks");
+
+    // Declared: through untouched, verbatim.
+    let declared = PluginError::new(ErrorClass::NotFound, "vault.declared").with_message("gone");
+    assert_eq!(
+        admit_code(&catalog, "libvault.so", declared.clone()),
+        declared
+    );
+
+    // The wire's own codes are declared by the wire's catalog, so a minted code is admitted even
+    // though the plugin's own catalog says nothing about it.
+    let minted = PluginError::new(ErrorClass::Unavailable, "wire.unavailable");
+    assert_eq!(admit_code(&catalog, "libvault.so", minted.clone()), minted);
+
+    // Undeclared: refused, and what comes back is the refusal rather than the plugin's claim.
+    let undeclared =
+        PluginError::new(ErrorClass::NotFound, "vault.invented").with_message("made up");
+    let refused = admit_code(&catalog, "libvault.so", undeclared);
+    assert_eq!(refused.class, ErrorClass::Internal);
+    assert_eq!(refused.code, "wire.internal");
+    assert_eq!(
+        refused.param("uncatalogued_code"),
+        Some(&ParamValue::Str("vault.invented".into()))
+    );
+    assert_eq!(
+        refused.param("plugin"),
+        Some(&ParamValue::Str("libvault.so".into()))
+    );
+    assert!(
+        refused.developer_message.contains("libvault.so")
+            && refused.developer_message.contains("vault.invented"),
+        "the record does not name the plugin and the code: {refused:?}"
+    );
+    assert!(
+        wire_catalog().entry(&refused.code).is_some(),
+        "the refusal itself must be a code the host can render"
+    );
+}
