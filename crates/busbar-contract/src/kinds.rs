@@ -205,6 +205,17 @@ pub struct KeyFacts {
     /// The tombstone, in seconds: `Some` is a key that was hard-deleted and whose id will never be
     /// reissued, kept so attribution by id keeps resolving. `None` is live.
     pub deleted_at: Option<u64>,
+    /// The key's configured group — the TIER the principal it resolves to is on. `None` for a key
+    /// bound to no group, which is every key in a deployment that configures none.
+    ///
+    /// THE GROUP IS NOT AN EXCEPTION to the rule that this shape carries identity and not policy,
+    /// it is the rule applied. A key binds to at most one group and a key with no group is authed
+    /// and untiered, so the group IS part of who is calling — the same binding row the id came out
+    /// of, read in the same lookup, and the authenticate step still acts on none of it. What acts
+    /// on it is the tariff, four steps later, at the one site that prices. Resolving it there would
+    /// be a second lookup of one binding on a different code path, which is how a unit is admitted
+    /// against one group and billed against another.
+    pub tier: Option<String>,
 }
 
 /// The virtual-key directory the authenticate step reaches inside the loop.

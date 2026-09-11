@@ -1010,3 +1010,80 @@ fn client(key: u64) -> Enter {
         now: 0,
     }
 }
+
+/// **THE TIER THE AUTHENTICATE STEP SEALED REACHES EVERY LATER STEP, AND IT IS ONE VALUE.**
+///
+/// The tariff scopes tier over pool over plane over default and the tier is the principal's, so the
+/// tier has to be established where the principal is — at Authenticate — and be readable where the
+/// money is decided, at Meter. Between those two there are four steps, and the claim this cell
+/// makes is not that the last one can see it but that ALL of them see the SAME thing: five legs
+/// each resolving a caller's group for themselves is five chances for a unit to be admitted against
+/// one group and billed against another.
+///
+/// So the fixture reads `record.tier()` at Verify, Approve, Admit, Route, Meter and Audit and keeps
+/// what it got, and the cell asserts the six readings are the one the step sealed. The kernel does
+/// not price it, does not name a tariff and cannot read what it is worth; it carries it, which is
+/// the whole of its part.
+///
+/// Mutate `run_unit_async` to seal `None` instead of the step's own answer and the first half goes
+/// red at all six steps at once.
+#[test]
+fn the_sealed_tier_reaches_every_step_after_authenticate() {
+    const AFTER: [StepName; 6] = [
+        StepName::Verify,
+        StepName::Approve,
+        StepName::Admit,
+        StepName::Route,
+        StepName::Meter,
+        StepName::Audit,
+    ];
+
+    // A caller on a tier: every step after the seal reads that tier, and no step reads another.
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let units = TestUnits {
+        tier: Some(busbar_caps::TierId::new("gold")),
+        ..TestUnits::passing()
+    };
+    let _ended = run(&units, &kernel, &cell(&kernel), &canary);
+    assert_eq!(
+        units.tiers_seen(),
+        AFTER
+            .iter()
+            .map(|s| (*s, Some("gold".to_string())))
+            .collect::<Vec<_>>(),
+        "every step after the seal reads the tier the authenticate step settled on"
+    );
+
+    // A caller on NO tier: the same six steps read absence, which is a real answer and not a
+    // missing one. This is every unit in a deployment that configures no tier, and it is what makes
+    // the money path byte-identical for one.
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let untiered = TestUnits::passing();
+    let _ended = run(&untiered, &kernel, &cell(&kernel), &canary);
+    assert_eq!(
+        untiered.tiers_seen(),
+        AFTER.iter().map(|s| (*s, None)).collect::<Vec<_>>(),
+        "a caller on no tier reads as absent at every step, not as a default"
+    );
+
+    // A CHALLENGE ROUND SEALS NOTHING, because it established no identity: there is no principal,
+    // so there is no group, so there is no tier. The round reaches no step that could read one
+    // either, which is what the empty log says.
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let handshake = TestUnits {
+        challenge: true,
+        tier: Some(busbar_caps::TierId::new("gold")),
+        ..TestUnits::passing()
+    };
+    let _ended = run(&handshake, &kernel, &cell(&kernel), &canary);
+    assert!(
+        handshake
+            .tiers_seen()
+            .iter()
+            .all(|(_, seen)| seen.is_none()),
+        "a challenge round establishes no identity, so it seals no tier"
+    );
+}

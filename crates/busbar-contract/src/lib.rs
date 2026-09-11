@@ -44,9 +44,9 @@ pub use ids::{
     AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
     ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
     MeterClassId, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt, SchemeKey,
-    SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, CLASS_CACHE_READ, CLASS_CACHE_WRITE,
-    CLASS_TOKENS_IN, CLASS_TOKENS_OUT, DIM_CACHE_READ, DIM_CACHE_WRITE, DIM_TOKENS_IN,
-    DIM_TOKENS_OUT, MAX_VOCABULARY, TOKEN_CLASSES, TOKEN_DIMENSIONS,
+    SessionId, StreamId, TierId, TransportId, UnitKey, UpstreamIdx, CLASS_CACHE_READ,
+    CLASS_CACHE_WRITE, CLASS_TOKENS_IN, CLASS_TOKENS_OUT, DIM_CACHE_READ, DIM_CACHE_WRITE,
+    DIM_TOKENS_IN, DIM_TOKENS_OUT, MAX_VOCABULARY, TOKEN_CLASSES, TOKEN_DIMENSIONS,
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,

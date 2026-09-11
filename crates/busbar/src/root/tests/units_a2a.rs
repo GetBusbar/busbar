@@ -376,6 +376,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
                     enabled: true,
                     expires_at: None,
                     deleted_at: None,
+                    tier: None,
                 }),
                 "burned" => Some(KeyFacts {
                     id: "key-a2a-burned".to_string(),
@@ -384,6 +385,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
                     enabled: true,
                     expires_at: None,
                     deleted_at: None,
+                    tier: None,
                 }),
                 _ => None,
             }
@@ -465,7 +467,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
 
     // And the arm does open, for the one credential it was given.
     match decide("tok") {
-        Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-a2a-1"),
+        Ok(Authenticated::Principal { id, .. }) => assert_eq!(id.as_str(), "key-a2a-1"),
         other => panic!("the bound seams did not reach the arm: {other:?}"),
     }
 }

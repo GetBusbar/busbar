@@ -290,5 +290,6 @@ fn principal_from_key(key: &KeyFacts) -> Principal {
         name: Some(key.name.clone()),
         roles: Vec::new(),
         ttl_secs: None,
+        tier: key.tier.clone(),
     }
 }

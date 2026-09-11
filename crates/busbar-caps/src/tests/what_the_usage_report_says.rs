@@ -195,7 +195,10 @@ fn an_authenticate_step_that_asked_for_another_round_names_no_principal() {
     // round before one can be made. A step that answered with a principal anyway would have the loop
     // proceeding past authentication on an identity nobody established; one that answered with none
     // where an identity WAS established would send an authenticated caller back round for ever.
-    let established = Authenticated::Principal(PrincipalId::new("acct-4"));
+    let established = Authenticated::Principal {
+        id: PrincipalId::new("acct-4"),
+        tier: None,
+    };
     assert_eq!(
         established.principal(),
         Some(&PrincipalId::new("acct-4")),

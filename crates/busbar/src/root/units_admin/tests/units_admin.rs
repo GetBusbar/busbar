@@ -832,6 +832,7 @@ impl busbar_contract::VirtualKeyDirectory for Denylist {
             enabled: true,
             expires_at: None,
             deleted_at: None,
+            tier: None,
         })
     }
 

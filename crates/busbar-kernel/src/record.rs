@@ -43,8 +43,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use busbar_caps::{
-    BodyLease, Completion, ExitToken, OriginKind, Route, SessionId, TransportKeyHandle, TrustToken,
-    UnitKey, UnitToken, VerifiedDestination,
+    BodyLease, Completion, ExitToken, OriginKind, Route, SessionId, TierId, TransportKeyHandle,
+    TrustToken, UnitKey, UnitToken, VerifiedDestination,
 };
 use busbar_contract::bounded::{Arena, Labels, Span, MAX_KEYS};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, StatusLeg, TransportView};
@@ -173,6 +173,7 @@ pub struct UnitRecord<'u> {
     ctx: Ctx<'u>,
     offered_key: Option<&'u TransportKeyHandle>,
     verified: OnceLock<Vec<VerifiedDestination>>,
+    tier: OnceLock<Option<TierId>>,
     pinned_key: OnceLock<TransportKeyHandle>,
     body: OnceLock<BodyLease>,
     carried: OnceLock<Completion>,
@@ -200,6 +201,7 @@ impl<'u> UnitRecord<'u> {
             ),
             offered_key: views.key_handle,
             verified: OnceLock::new(),
+            tier: OnceLock::new(),
             pinned_key: OnceLock::new(),
             body: OnceLock::new(),
             carried: OnceLock::new(),
@@ -261,6 +263,41 @@ impl<'u> UnitRecord<'u> {
         if let Some(handle) = self.offered_key {
             let _ = self.pinned_key.set(handle.clone());
         }
+    }
+
+    /// SEAL THE TIER THE AUTHENTICATE STEP ESTABLISHED onto the unit, once.
+    ///
+    /// The tier is a fact about WHO is calling, so the step that decided who is calling is the only
+    /// step that may state it. The kernel takes it off that step's own answer — it does not ask a
+    /// second time and there is no seam here it could ask through — and seals it before Verify runs,
+    /// so every step from Verify onward reads ONE value.
+    ///
+    /// It is sealed under the trust token for the same reason the verified set is: the token is
+    /// what says the caller is the loop at the instant the identity was settled, and a tier a later
+    /// step could write would be a tier the fee site reads whichever of two writers ran last.
+    ///
+    /// `Option<TierId>` and not `TierId`, because a caller on no tier is a real answer and not a
+    /// missing one: the anonymous principal, a module that asserts no group, and every key in a
+    /// deployment that configures none. Sealing `None` is what makes "nobody wrote a tier" and
+    /// "the tier is nothing" the same reading, which is the reading that prices at the next scope
+    /// out.
+    ///
+    /// A second call writes nothing.
+    pub fn seal_tier(&self, _trust: &TrustToken, tier: Option<TierId>) {
+        let _ = self.tier.set(tier);
+    }
+
+    /// THE TIER THE CALLER IS ON, as every step from Verify onward reads it.
+    ///
+    /// READ-ONLY, and the same field on every plane. A leg that resolved a tier of its own would be
+    /// a second answer to a question the authenticate step already answered, and two answers to
+    /// that question is one unit admitted against one group and billed against another.
+    ///
+    /// `None` before the authenticate step has answered, for a challenge round (which establishes
+    /// no identity at all), and for a caller on no tier.
+    #[must_use]
+    pub fn tier(&self) -> Option<&TierId> {
+        self.tier.get().and_then(Option::as_ref)
     }
 
     /// WHAT VERIFY ESTABLISHED, as Approve, Admit, Route and Meter read it.

@@ -46,6 +46,7 @@ fn a_directory() -> Arc<Directory> {
                 enabled: true,
                 expires_at: None,
                 deleted_at: None,
+                tier: None,
             },
         )],
         revoked: vec!["vk_gone".to_string()],
@@ -99,6 +100,7 @@ fn the_bound_directory_is_the_one_the_unit_is_handed() {
             enabled: true,
             expires_at: None,
             deleted_at: None,
+            tier: None,
         })
     );
     assert_eq!(keys.verify("tok-unknown", 10, None), None);

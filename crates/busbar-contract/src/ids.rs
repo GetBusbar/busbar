@@ -156,6 +156,42 @@ impl fmt::Display for PrincipalId {
     }
 }
 
+/// WHICH TIER A PRINCIPAL IS ON — the key's configured group, as the tariff scopes on it.
+///
+/// A tier is not a second identity and it is not a policy: it is one more fact about WHO is
+/// calling, and it is the authenticate step's to establish for the same reason the id is. The
+/// alternative — resolving it again at the step that prices — is a second lookup of the same
+/// binding on a different code path, and two lookups of one binding is how a request gets admitted
+/// against one group and billed against another.
+///
+/// A `String` and not a `&'static str`, because a tier's name comes from a deployment's own
+/// configuration and is minted at boot, exactly as [`PrincipalId`]'s is. Absent — the
+/// `Option<TierId>` every carrier of it uses — is a principal on no tier at all, which prices at
+/// whatever the next scope out says and is what every key in a deployment that configures no tier
+/// is.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct TierId(String);
+
+impl TierId {
+    /// Name a tier.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The tier as the journal prints it and the tariff keys on it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TierId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The value found under a correlation's declared fact key.
 ///
 /// Two shapes, because two shapes is what arrives. A protocol whose request identifier is a whole

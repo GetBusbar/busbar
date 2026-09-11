@@ -56,7 +56,17 @@ pub fn authenticate(
     token: &UnitToken<Authenticate>,
     gov: &busbar_api::PlaneRequestCtx,
 ) -> Decision<Authenticate> {
-    Decision::proceed(token, Authenticated::Principal(principal_id(gov)))
+    Decision::proceed(
+        token,
+        // NO TIER ON THIS LEG, and it is a fact about the leg rather than a default. This is the
+        // legacy authenticate step: it reads a governance handle directly and never resolves the
+        // key's binding, so there is no tier here to seal. A leg that sealed one it had not
+        // resolved would be inventing the caller's tier.
+        Authenticated::Principal {
+            id: principal_id(gov),
+            tier: None,
+        },
+    )
 }
 
 /// The identity the rest of the loop attributes to, as the loop spells identities.

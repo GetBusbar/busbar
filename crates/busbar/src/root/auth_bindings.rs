@@ -153,6 +153,10 @@ impl VirtualKeyDirectory for GovernanceDirectory {
                 enabled: key.enabled,
                 expires_at: key.expires_at,
                 deleted_at: key.deleted_at,
+                // THE TIER, off the binding the verifier just resolved. The group is a field of the
+                // key row itself, so this is the same read the id and the label are — not a second
+                // lookup, and not a second opinion about which group a key is in.
+                tier: key.group.clone(),
             })
     }
 

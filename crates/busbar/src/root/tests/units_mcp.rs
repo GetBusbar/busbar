@@ -368,6 +368,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
                 enabled: true,
                 expires_at: None,
                 deleted_at: None,
+                tier: None,
             })
         }
 
@@ -397,7 +398,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
     let decision = authenticate_bound(&auth, &arriving, &bindings, &UnitToken::mint(&seal));
 
     match decision.into_result(&seal) {
-        Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-mcp-1"),
+        Ok(Authenticated::Principal { id, .. }) => assert_eq!(id.as_str(), "key-mcp-1"),
         other => panic!("the bound seams did not reach the arm: {other:?}"),
     }
 }

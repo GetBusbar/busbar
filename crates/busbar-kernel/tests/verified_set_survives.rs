@@ -102,7 +102,10 @@ impl Units for Sealing {
     ) -> Decision<Authenticate> {
         Decision::proceed(
             token,
-            Authenticated::Principal(PrincipalId::new("acct:cell")),
+            Authenticated::Principal {
+                id: PrincipalId::new("acct:cell"),
+                tier: None,
+            },
         )
     }
 

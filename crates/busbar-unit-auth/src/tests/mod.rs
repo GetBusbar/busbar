@@ -83,6 +83,8 @@ pub(crate) fn entry(provider: &str, module: Box<dyn AuthModule>) -> ChainEntry {
 pub(crate) struct OneKey {
     pub(crate) token: &'static str,
     pub(crate) aud: Option<&'static str>,
+    /// The group the one key is bound to — the tier the principal it resolves to is on.
+    pub(crate) tier: Option<String>,
 }
 
 impl busbar_contract::VirtualKeyDirectory for OneKey {
@@ -103,6 +105,7 @@ impl busbar_contract::VirtualKeyDirectory for OneKey {
             enabled: true,
             expires_at: None,
             deleted_at: None,
+            tier: self.tier.clone(),
         })
     }
 }

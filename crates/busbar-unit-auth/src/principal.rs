@@ -32,6 +32,14 @@ pub struct Principal {
     pub roles: Vec<String>,
     /// The module's suggested cache lifetime for this identification, in seconds.
     pub ttl_secs: Option<u64>,
+    /// WHICH TIER THIS CALLER IS ON — the key's configured group, where the identifying arm
+    /// resolved one.
+    ///
+    /// It sits beside `id` rather than beside `roles` because it is not an assertion a module
+    /// makes and it grants nothing: it is the second half of the same binding the id came out of,
+    /// read in the same lookup. `None` for the anonymous principal, for a boxed module's answer
+    /// (whose type has no shape for a group), and for a key bound to none.
+    pub tier: Option<String>,
 }
 
 impl Principal {
@@ -42,6 +50,7 @@ impl Principal {
             name: None,
             roles: Vec::new(),
             ttl_secs: None,
+            tier: None,
         }
     }
 
