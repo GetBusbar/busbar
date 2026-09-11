@@ -141,7 +141,7 @@ pub type LegacySnapshot = BTreeMap<RowKey, LegacyRow>;
 pub fn accumulate(snapshot: &mut LedgerSnapshot, row: RowKey, priced: &Priced) {
     let entry = snapshot.entry(row).or_default();
     entry.priced_nanos = entry.priced_nanos.saturating_add(priced.priced_nanos);
-    entry.fee_count = entry.fee_count.saturating_add(priced.fee_count);
+    entry.fee_count = entry.fee_count.saturating_add(priced.transaction_count);
 }
 
 /// The two snapshots of one row, in the terms the unit's identity function reads.

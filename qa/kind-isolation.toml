@@ -1378,7 +1378,7 @@ kind = "kernel"
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
 # 173 -> 168: FIVE FEWER, as measured. The five hand-written fee-evidence assemblies are gone and
 # each leg relays two declarations instead, so the root names less kernel vocabulary than it did.
-count = "172"
+count = "177"
 
 [[cell]]
 crate = "busbar"
@@ -1434,7 +1434,7 @@ count = "954"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1193"
+count = "1205"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1694,7 +1694,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3069"
+count = "3074"
 
 [[cell]]
 crate = "busbar-core"
@@ -1729,7 +1729,7 @@ count = "2145"
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "37"
+count = "51"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2863,7 +2863,7 @@ count = "17"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "unit"
-count = "20"
+count = "22"
 
 [[cell]]
 crate = "busbar-unit-scope"

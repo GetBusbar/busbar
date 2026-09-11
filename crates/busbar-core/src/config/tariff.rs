@@ -26,8 +26,7 @@
 //!
 //! **COUNTS FOR THE KERNEL, AMOUNTS FOR THE CARD, AND THE TWO NEVER MEET IN A STORED FIGURE.** This
 //! section says how many entries and how many transactions a unit owes and whether the meter's
-//! quantities are charged for — that half goes to `busbar_kernel::teller`, which counts and never
-//! prices. It also says what one of each is WORTH, in the currency's minor units — that half goes
+//! quantities are charged for — that half goes to the teller, which counts and never prices. It also says what one of each is WORTH, in the currency's minor units — that half goes
 //! onto the dated card, and it is applied at the ONE pricing site in `busbar_unit_cost` and nowhere
 //! else. The ledger stores the counts; the money is what the card in force makes of them at the
 //! moment somebody asks, so an amount written here is a figure a later reader re-derives rather

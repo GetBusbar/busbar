@@ -434,7 +434,9 @@ fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     // the clamp is part of what has to agree; with no card every class prices at nothing and the
     // fee is the whole of what a request bills.
     assert_eq!(
-        unit.card().per_request_fee(CurrencyCode::USD),
+        unit.card()
+            .fee_schedule(CurrencyCode::USD)
+            .map_or(0, |s| s.transaction_minor),
         fee.max(0),
         "the clamped fee diverged"
     );

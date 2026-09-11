@@ -1561,6 +1561,59 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     ));
                 }
             }
+            // **AN AMOUNT AT A SCOPE THE CARD CANNOT CARRY IS REFUSED, NOT IGNORED.**
+            //
+            // The COUNTS resolve at all four scopes, per unit, at the moment the unit runs. The
+            // AMOUNTS live on the dated card, because spend is re-priced at read time by whichever
+            // card was in force and an amount held anywhere else is a figure no later reader can
+            // re-derive. A card is the NODE's: one card, one history, one entry per apply. So a
+            // per-pool or per-tier amount could only be applied at read time if the POSTING carried
+            // which scope it was charged under — and the ledger's posting carries its lane, its
+            // tier multiplier and its quantities, and no scope. Until it does, a schedule written
+            // here would be a number an operator believes is in force that nothing will ever apply.
+            // That is exactly the refusal the scope-name check above makes for a pool nobody
+            // defined, for the same reason, and it is made loudly rather than resolved into a zero.
+            if scope != "default" {
+                let set_amounts: Vec<&str> = [
+                    (
+                        "entry_fee.amount_cents",
+                        cell.entry_fee
+                            .as_ref()
+                            .and_then(|e| e.amount_cents)
+                            .is_some(),
+                    ),
+                    (
+                        "transaction_fee.flat_cents",
+                        cell.transaction_fee
+                            .as_ref()
+                            .and_then(|t| t.flat_cents)
+                            .is_some(),
+                    ),
+                    (
+                        "transaction_fee.per_units",
+                        cell.transaction_fee
+                            .as_ref()
+                            .and_then(|t| t.per_units.as_ref())
+                            .is_some(),
+                    ),
+                    ("minimum_cents", cell.minimum_cents.is_some()),
+                    ("maximum_cents", cell.maximum_cents.is_some()),
+                    ("rounding", cell.rounding.is_some()),
+                ]
+                .into_iter()
+                .filter_map(|(k, set)| set.then_some(k))
+                .collect();
+                if !set_amounts.is_empty() {
+                    errors.push(format!(
+                        "tariff.{scope} sets {} at a scope the rate card cannot carry: amounts live \
+                         on the dated card so that spend is re-derivable at read time, a card is the \
+                         node's, and a posting records no scope to resolve one by — so nothing would \
+                         ever charge these figures. Move them to tariff.default, or keep only the \
+                         counts (entry_fee.enabled, dispute_policy) at this scope",
+                        set_amounts.join(", ")
+                    ));
+                }
+            }
             let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
             for unit in cell
                 .transaction_fee

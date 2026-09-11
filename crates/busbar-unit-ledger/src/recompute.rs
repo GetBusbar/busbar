@@ -540,7 +540,13 @@ pub fn price_line(
             .collect(),
         // The origin rule, applied by charging no fees rather than by a branch further down: a line
         // the node did for its own reasons carries no client request to charge one for.
-        fee_count: match posting.origin {
+        // THE LEDGER'S OWN POSTING CARRIES NO VISIT COUNT. Its rows predate the entry fee and
+        // record how many billable requests a line held and nothing else; re-deriving a visit count
+        // out of that would be inventing one. A line re-priced here is therefore charged the
+        // transaction fee it was charged, and the visit's fee reaches a bucket through the postings
+        // the settle path writes, where the count is a fact rather than a guess.
+        entry_count: 0,
+        transaction_count: match posting.origin {
             PostingOrigin::Client => posting.fee_count,
             PostingOrigin::Internal => 0,
         },

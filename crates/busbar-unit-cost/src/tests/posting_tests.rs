@@ -26,10 +26,18 @@ fn pre_tier_amount_is_the_sum_of_the_lines_including_the_fee() {
         .collect();
     assert_eq!(
         amounts,
-        vec![(INPUT, 6_000), (OUTPUT, 20_000), (FEE_CLASS, 30_000_000)]
+        vec![
+            (INPUT, 6_000),
+            (OUTPUT, 20_000),
+            // THE VISIT'S OWN LINE STANDS EVEN AT NOTHING. A deployment that does not charge for
+            // the door charged nothing for it, and a charge of nothing that was decided is written
+            // down rather than left out: a missing line and a zero line are different statements.
+            (crate::ENTRY_CLASS, 0),
+            (FEE_CLASS, 30_000_000)
+        ]
     );
     assert_eq!(posted.pre_tier_nanos, 30_026_000);
-    assert_eq!(posted.fee_count, 1);
+    assert_eq!(posted.transaction_count, 1);
     assert_eq!(
         posted.priced_nanos, posted.pre_tier_nanos,
         "the neutral tier changes nothing"
@@ -139,8 +147,8 @@ fn an_adversarial_class_name_cannot_collide_with_the_fee_line() {
     assert_eq!(posted.pre_tier_nanos, 6_000 + 50 + 30_000_000);
     assert_eq!(
         posted.lines.len(),
-        3,
-        "the reported line and the fee line both stand"
+        4,
+        "the reported line, the visit's line and the transaction's fee line all stand"
     );
 }
 

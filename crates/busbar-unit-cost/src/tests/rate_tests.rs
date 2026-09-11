@@ -92,21 +92,27 @@ fn lane_lookup_has_exactly_three_outcomes() {
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
     let c = RateCard::absent(-5);
-    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 0);
+    let s = c
+        .fee_schedule(CurrencyCode::USD)
+        .expect("the card names USD");
+    assert_eq!((s.transaction_minor, s.entry_minor), (0, 0));
 }
 
-/// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
-/// which is what makes summing it in before the single truncation give the same cents as adding it
-/// afterwards.
+/// The fee is charged in MINOR UNITS and lifted to nano-units once, at the pricing site — so every
+/// fee amount is an exact multiple of ten million nano-units, which is what makes summing it in
+/// before the single truncation give the same cents as adding it afterwards.
 #[test]
-fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
+fn a_fee_amount_is_an_exact_multiple_of_one_minor_unit() {
     let c = RateCard::absent(3);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 30_000_000);
-    assert_eq!(
-        c.fee_unit_price_nanos(CurrencyCode::USD) % crate::NANOS_PER_CENT,
-        0
+    let priced = crate::tests::priced(
+        &c,
+        "m",
+        &crate::tests::usage(&[]),
+        1,
+        crate::STANDARD_TIER_BP,
     );
+    assert_eq!(priced.pre_tier_nanos, 30_000_000);
+    assert_eq!(priced.pre_tier_nanos % crate::NANOS_PER_CENT, 0);
 }
 
 /// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
@@ -137,8 +143,8 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     );
 
     let report = usage(&[(INPUT, 1_000_000)]);
-    let before = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 4_999, 4_999);
-    let after = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 5_000, 5_000);
+    let before = Posting::from_usage("m", &report, 0, 0, STANDARD_TIER_BP, 4_999, 4_999);
+    let after = Posting::from_usage("m", &report, 0, 0, STANDARD_TIER_BP, 5_000, 5_000);
 
     let view = history.current();
     let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");

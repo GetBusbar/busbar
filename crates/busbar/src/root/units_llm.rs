@@ -858,7 +858,7 @@ fn priced_posting(
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
-    fee: u32,
+    charged: busbar_kernel::teller::Charge,
 ) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -885,10 +885,13 @@ fn priced_posting(
     let mut posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
         &folded.usage,
-        // THE FEE IS THE KERNEL'S ANSWER, handed in. The report says what the unit CONSUMED — the
-        // classes and their quantities — and it no longer says how many billable requests it is,
-        // because deciding that is not the plane's to do. See [`fee_evidence`].
-        u64::from(fee),
+        // THE COUNTS ARE THE KERNEL'S ANSWER, handed in. The report says what the unit CONSUMED —
+        // the classes and their quantities — and it does not say how many visits or how many
+        // transactions it is, because deciding that is not the plane's to do. See [`fee_evidence`].
+        // Two counts, not one: a visit and a transaction are two things, and what each is worth is
+        // the card's to say at the pricing site.
+        u64::from(charged.entry),
+        u64::from(charged.transaction),
         busbar_unit_cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
@@ -920,9 +923,9 @@ fn priced_amount(
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
-    fee: u32,
+    charged: busbar_kernel::teller::Charge,
 ) -> u64 {
-    let (_posting, priced) = priced_posting(history, arrived, token, report, fee);
+    let (_posting, priced) = priced_posting(history, arrived, token, report, charged);
     priced
         .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -1021,8 +1024,7 @@ impl LateAccrual {
             &fee_evidence(&walk, origin),
             head_facts(walk.served_status(), Some(report.finish)).as_ref(),
             &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
-        )
-        .transaction;
+        );
         let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
             return;
@@ -1607,8 +1609,7 @@ impl Units for LlmUnit<'_> {
             &fee_evidence(&self.walk, ctx.origin()),
             ctx.head(),
             &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
-        )
-        .transaction;
+        );
         self.walk.meter(token, usage, &|report| {
             self.history
                 .as_ref()

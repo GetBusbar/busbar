@@ -222,7 +222,11 @@ fn the_flat_fee_saturates_and_is_gated_by_the_flag() {
 fn a_negative_fee_can_never_credit_a_bucket() {
     let c = RateCard::absent(-5);
     let l = lines(&[]);
-    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
+    assert_eq!(
+        c.fee_schedule(CurrencyCode::USD)
+            .map_or(0, |s| s.transaction_minor),
+        0
+    );
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 100, true),
         0

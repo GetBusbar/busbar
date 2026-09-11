@@ -184,7 +184,7 @@ impl CellPrices {
 pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,
-    fees: BTreeMap<CurrencyCode, i64>,
+    schedules: BTreeMap<CurrencyCode, crate::schedule::FeeSchedule>,
     currencies: BTreeSet<CurrencyCode>,
 }
 
@@ -194,15 +194,11 @@ impl RateCard {
     /// This is the deployment with no pricing configured at all. Nothing is "unpriced" here,
     /// because there is no card to be missing from — attribution only. The fee is in the given
     /// currency's minor units, and that currency is the one currency such a card names.
-    pub fn absent_in(currency: CurrencyCode, per_request_fee: i64) -> Self {
-        let mut fees = BTreeMap::new();
-        // A negative configured fee is clamped here, once: no request may ever bill a negative
-        // amount, which would credit a budget back toward headroom.
-        fees.insert(currency, per_request_fee.max(0));
+    pub fn absent_in(currency: CurrencyCode, schedule: crate::schedule::FeeSchedule) -> Self {
         RateCard {
             present: false,
             prices: BTreeMap::new(),
-            fees,
+            schedules: BTreeMap::from([(currency, schedule)]),
             currencies: BTreeSet::from([currency]),
         }
     }
@@ -213,7 +209,10 @@ impl RateCard {
     /// migration reads it as a card naming exactly [`CurrencyCode::USD`], whose minor unit is the
     /// cent every 1.5.5 figure was already projected through.
     pub fn absent(per_request_fee: i64) -> Self {
-        RateCard::absent_in(CurrencyCode::USD, per_request_fee)
+        RateCard::absent_in(
+            CurrencyCode::USD,
+            crate::schedule::FeeSchedule::flat(per_request_fee),
+        )
     }
 
     /// Resolve a card from configured micro-unit rates in ONE currency. Each rate converts to
@@ -221,7 +220,7 @@ impl RateCard {
     pub fn from_micro_rates_in(
         currency: CurrencyCode,
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
-        per_request_fee: i64,
+        schedule: crate::schedule::FeeSchedule,
     ) -> Self {
         let mut prices: BTreeMap<String, BTreeMap<String, CellPrices>> = BTreeMap::new();
         for (cell, micro) in entries {
@@ -232,12 +231,10 @@ impl RateCard {
                 .or_default()
                 .set(currency, nano_rate(micro));
         }
-        let mut fees = BTreeMap::new();
-        fees.insert(currency, per_request_fee.max(0));
         RateCard {
             present: true,
             prices,
-            fees,
+            schedules: BTreeMap::from([(currency, schedule)]),
             currencies: BTreeSet::from([currency]),
         }
     }
@@ -247,7 +244,11 @@ impl RateCard {
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         per_request_fee: i64,
     ) -> Self {
-        RateCard::from_micro_rates_in(CurrencyCode::USD, entries, per_request_fee)
+        RateCard::from_micro_rates_in(
+            CurrencyCode::USD,
+            entries,
+            crate::schedule::FeeSchedule::flat(per_request_fee),
+        )
     }
 
     /// **THE CARD A DEPLOYMENT CONFIGURED**, built here and nowhere else.
@@ -273,7 +274,11 @@ impl RateCard {
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
     ) -> Self {
-        RateCard::from_config_in(CurrencyCode::USD, lanes, per_request_fee)
+        RateCard::from_config_in(
+            CurrencyCode::USD,
+            lanes,
+            crate::schedule::FeeSchedule::flat(per_request_fee),
+        )
     }
 
     /// [`RateCard::from_config`], in a named currency.
@@ -288,10 +293,10 @@ impl RateCard {
     pub fn from_config_in<'a>(
         currency: CurrencyCode,
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
-        per_request_fee: i64,
+        schedule: crate::schedule::FeeSchedule,
     ) -> Self {
         let Some(lanes) = lanes else {
-            return RateCard::absent_in(currency, per_request_fee);
+            return RateCard::absent_in(currency, schedule);
         };
         let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
             tiers
@@ -299,7 +304,7 @@ impl RateCard {
                 .into_iter()
                 .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
         });
-        RateCard::from_micro_rates_in(currency, entries, per_request_fee)
+        RateCard::from_micro_rates_in(currency, entries, schedule)
     }
 
     /// Add one currency's rate to one cell, and record the currency on the card.
@@ -317,10 +322,10 @@ impl RateCard {
             .set(currency, nano_rate(micro_per_unit));
     }
 
-    /// Set the flat per-request fee in one currency's minor units, clamped at zero.
-    pub fn set_fee(&mut self, currency: CurrencyCode, per_request_fee: i64) {
+    /// Set one currency's whole fee schedule — the amounts half of the deployment's tariff.
+    pub fn set_schedule(&mut self, currency: CurrencyCode, schedule: crate::schedule::FeeSchedule) {
         self.currencies.insert(currency);
-        self.fees.insert(currency, per_request_fee.max(0));
+        self.schedules.insert(currency, schedule);
     }
 
     /// Whether a card is configured at all (token pricing active).
@@ -342,25 +347,16 @@ impl RateCard {
         self.currencies.contains(&currency)
     }
 
-    /// **THE FLAT PER-REQUEST FEE**, in the given currency's MINOR units, clamped at resolve so it is
-    /// never negative. Zero for a currency the card does not name a fee in.
+    /// **THE FEE SCHEDULE THIS CARD CARRIES**, in one currency: what one visit, one transaction
+    /// and one unit of each named dimension cost, with the floor, the cap and the rounding the
+    /// deployment declared.
     ///
-    /// One spelling. The configuration calls it `per_request_fee`, and so does this: the card used
-    /// to spell it `per_request_fee_cents` and the admission unit `price_per_request_cents`, three
-    /// names for one number, each of which had to be kept in step with the other two by hand.
-    pub fn per_request_fee(&self, currency: CurrencyCode) -> i64 {
-        self.fees.get(&currency).copied().unwrap_or(0)
-    }
-
-    /// The flat fee as the unit price of its own usage line: minor units lifted to nano-units.
-    ///
-    /// An exact multiple of one minor unit, which is the property that makes summing the fee in
-    /// before the single truncation give the same answer as truncating the usage first and adding
-    /// the fee afterwards.
-    pub fn fee_unit_price_nanos(&self, currency: CurrencyCode) -> u128 {
-        u128::try_from(self.per_request_fee(currency))
-            .unwrap_or(0)
-            .saturating_mul(currency.nanos_per_minor())
+    /// `None` is a currency this card names no schedule in, and it is NOT a schedule of zeroes: a
+    /// caller that reaches it charges nothing for the counts and says so, rather than inventing a
+    /// free tariff for a currency nobody priced. Every amount on the returned schedule is in that
+    /// currency's MINOR units; the lift to nano-units happens once, at the pricing site.
+    pub fn fee_schedule(&self, currency: CurrencyCode) -> Option<&crate::schedule::FeeSchedule> {
+        self.schedules.get(&currency)
     }
 
     /// Whether a request on this lane must be refused because a card is present and has no entry
