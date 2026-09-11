@@ -179,9 +179,9 @@ exception that matters, and section 2.5 says how its semantics survive.
 ### 2.1 One subcommand, one registry
 
 ```
-cargo xtask gate <name> [--selftest] [--check|--report] [--format=tsv]
+cargo xtask gate <name> [--selftest [--jobs N]] [--check|--report] [--format=tsv]
 cargo xtask gate --list
-cargo xtask selftest [<name>]
+cargo xtask selftest [<name>] [--jobs N]
 cargo xtask land [--tests …] [--families …] [--gate …] [--prove] <hash>…
 cargo xtask qa <verb> …
 cargo xtask release <verb> …
@@ -249,6 +249,91 @@ bash step names use — becomes a type, not a convention.
 `Report::failures` non-empty ⇒ exit 1. `Verdict::red` ⇒ exit 1. Infrastructure failure (unwritable
 scratch dir, missing `git`) ⇒ **exit 3**, keeping `full-gate.sh`'s distinction between "the gate failed"
 and "the gate could not run".
+
+### 2.2a The self-test batteries run their cases ACROSS THE CORES
+
+`cargo xtask selftest` is the slowest leg of the release, and it was slow for a reason that had
+nothing to do with what any case proves: the cases were taken ONE AT A TIME. Each one plants an
+overlay and drives the whole gate over the planted tree — over a 660k-line tree, a hundred and
+twenty times for `kind-isolation` — on a single thread, while the other thirty-one sat idle.
+
+**THE WORK WAS ALWAYS EMBARRASSINGLY PARALLEL, AND THE PLANT MECHANISM IS WHY.** A case does not
+copy the tree, and it does not write a fixture onto it either. It builds an [`Overlay`] and calls
+`Ctx::with_overlay`, which returns a NEW `Ctx` and never mutates the base — the property section
+3.5 was written around when `scripts/construction-gate/plant.py` (428 lines of saboteur, a `tar`
+of the tree into scratch, a `TOUCHED` list, a restore step and a `mktemp` race) was deleted rather
+than ported. So no case can observe another case's plant however many run at once, and no scratch
+copy of the tree is needed to make that true. **THE COPY STRATEGY IS THAT THERE IS NO COPY**: the
+per-case cost of isolation is one `Arc<Overlay>` and a `BTreeMap` of the paths that case edits,
+which is bytes, not the 2.8 GB a tree copy would be and not the seconds a `cp -al` would be.
+
+That is an argument, and an argument is not a proof, so the harness's own unit tests carry
+`two_cases_planted_at_the_same_path_never_see_each_other`: two conflicting fixtures at the SAME
+path, taken concurrently, against a gate that reads the path twice with a sleep in between, and
+each case must see only its own bytes both times. Run against a harness that plants on the tree in
+place it fails exactly as it should — the case that planted `FIXTURE-A` reports `FIXTURE-B`.
+
+**HOW IT IS WIRED, in three pieces.**
+
+* `prove_red` / `prove_rows_red` / `prove_rows_green` / `prove_rows_red_at` / `prove_green` return
+  a `CasePlan` — THE WORK — instead of a finished `Case`. Nothing at the three hundred-odd call
+  sites changed: `report.push(prove_rows_red(cx, self, …))` reads the same, and a `Case` built by
+  hand still pushes, because `Case: Into<CasePlan>`.
+* `Report::resolve` takes the plans across a worker pool that pulls from ONE queue — so a battery
+  whose cases differ by a factor of fifty in cost finishes near its longest case rather than near
+  its slowest shard — and writes each answer back into the slot its plan was pushed into. **THE
+  CASE LIST IS PUSH ORDER, NEVER FINISH ORDER**, so the printed report, the coverage
+  reconciliation and the verdict do not depend on which thread won. Resolution happens on the
+  first read, through `OnceLock`, so there is no way to read a report whose cases were never taken
+  and see "0 cases, all green".
+* `Gate: Sync`, because a case reaches its gate through `&dyn Gate` from another thread. Nothing
+  had to change to meet it: the gates are unit structs and flag-carrying structs read through
+  `&self`.
+
+**THE COST IS SUMMED PER CASE, NOT TAKEN OFF THE WALL CLOCK.** `SELFTEST_BUDGETS` is about a rule
+that grew a whole-tree scan per plant, which is a property of the WORK; dividing by the cores would
+hide exactly that regression behind a bigger box. So a battery's `work units` figure means the same
+thing at `--jobs 1` and at `--jobs 32`, up to the contention the ruler (`work_unit`) also feels.
+
+**`--jobs N`.** `cargo xtask gate <name> --selftest --jobs N` and `cargo xtask selftest [<name>]
+--jobs N`; `XTASK_SELFTEST_JOBS` is the environment form; the default is the box's own
+`available_parallelism`. `--jobs 1` is the serial harness exactly as it was, and it is not there
+for nostalgia: **A BATTERY THAT GOES RED AT MORE THAN ONE JOB IS TAKEN AGAIN AT ONE, AND BOTH
+ANSWERS ARE PRINTED.** A finding that survives the serial run is the gate's; a finding that does
+not is named as what it is — a defect in this harness, not in the gate — because "it only fails
+when the box is busy" is how a gate earns a `|| true`.
+
+**WHAT IT MEASURED**, on an 18-core laptop with three other fleet agents on the same box (one
+reading, not a benchmark suite — the ratio is the point, and a contended host understates it):
+
+| battery | cases | `--jobs 1` | `--jobs N` | speed-up |
+|---|---|---|---|---|
+| `kind-isolation` | 176 | 1621.18 s | **201.01 s** (18) | **8.06×** |
+| `construction` | 53 | 491.75 s | **118.79 s** (18) | **4.14×** |
+| `structure-lint` | 39 | 85.71 s | **19.66 s** (8) | **4.36×** |
+
+The case count is the same both ways and the printed case list — every name, every GREEN/RED/SKIPPED
+beside it — diffs BYTE-IDENTICAL between the serial and parallel runs of all three. `structure-lint`
+is green both ways; the other two are RED on this base for reasons that have nothing to do with this
+change (the declared raises against the merge-base), and every one of those findings reproduced under
+the automatic `--jobs 1` re-take, which is that mechanism doing exactly what it is for.
+
+**READ THE PARALLEL FIGURE OFF THE BATTERY, NOT OFF THE PROCESS.** A red battery is re-taken
+serially, so `time cargo xtask gate kind-isolation --selftest` on a red tree reports the parallel
+battery PLUS a whole serial one (1234.97 s, of which 201.01 s is the battery). The numbers above are
+the battery: the wall clock from process start to the first printed case, which is the point the
+report resolves.
+
+**IT COMPOSES WITH SHARDING RATHER THAN COMPETING WITH IT.** The two axes are orthogonal and stay
+that way: a shard partitions the CASE LIST across boxes, and `--jobs` takes one box's share across
+that box's cores. A shard selector filters what is pushed; `--jobs` decides how what was pushed is
+taken. Neither reads the other's setting, and both preserve push order within what they run.
+
+**Two gates build the gate their cases are proven through** — `changelog` and `changelog-register`
+have release arms that are the same gate with a flag the registry does not carry. Their gates are
+built ABOVE the report, and their reports are `sealed()` (taken where those locals still live)
+before being returned, so those families are taken in parallel like every other rather than being
+held serial by one borrow.
 
 ### 2.3 `Ctx` — the shared context and the repo walk
 
