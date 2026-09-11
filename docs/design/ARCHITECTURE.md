@@ -1689,9 +1689,18 @@ about a kind boundary, this register and that spec win.)*
   measurement — a declared raise moves the ratchet, it does not loosen it.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
-  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-openai-realtime`) — which is the "dialect → own plane only"
+  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-gemini`) — which is the "dialect → own plane only"
   edge expressed in the name. The gate reads the kind from segment two, so directory name and
-  `package.name` must agree.
+  `package.name` must agree. **FOUR SEGMENTS IS THE CAP, AND IT BINDS THE EXAMPLES TOO.**
+  `MAX_NAME_SEGMENTS = 4` (`xtask/src/gates/kind_isolation.rs`) refuses a fifth outright, so a
+  dialect whose WIRE NAME is more than one word is spelled short in the crate name and in full
+  exactly once, as a `NAME` constant on its own row — `busbar-plane-streams-twilio` carries
+  `twilio-media-streams`, `busbar-plane-streams-gemini` carries `gemini-live`. This clause is an
+  AMENDMENT: the example this line used to carry was `busbar-plane-streams-openai-realtime`, which
+  is five segments and which no gate in this tree would admit, and the choice on meeting it was to
+  widen the cap or to shorten the name. Widening it would be the naming scheme bending around a
+  vendor's product wording, which is the drift the cap exists to stop, so the example is corrected
+  rather than the rule.
 - **DIALECT is its own kind.** One crate per wire vocabulary, under its plane. The plane owns the
   IR and is dialect-neutral; a dialect's only workspace dependencies are `busbar-contract` and its
   own plane. This SUPERSEDES the 2026-09-06 row "one crate per plane: the codec folds into its

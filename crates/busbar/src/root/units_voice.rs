@@ -209,7 +209,7 @@ impl ProviderEndpoints {
             live: Upstream {
                 lane: live_lane,
                 host: live_host,
-                dialect: &dialect::GEMINI_LIVE,
+                dialect: &busbar_plane_streams_gemini::GEMINI_LIVE,
             },
         }
     }

@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "593"
+count = "620"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1794"
+count = "1826"
 
 [[cell]]
 crate = "busbar"
@@ -2343,6 +2343,11 @@ count = "43"
 crate = "busbar-plane-streams"
 kind = "transport"
 count = "105"
+
+[[cell]]
+crate = "busbar-plane-streams-gemini"
+kind = "codec"
+count = "5"
 
 [[cell]]
 crate = "busbar-plane-streams-twilio"
@@ -3522,6 +3527,36 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-streams-gemini"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and the only place a plugin INSTANCE may be named."
+why     = "the root links the plane to its second dialect: 1 declaration(s) at this commit, one `register` call behind the same feature the plane itself is behind. The plane declares a dialect FACE and a registry and never names a dialect, and the dialect names its plane — so the ONLY party that can put the two together is the composition root. This is the SECOND declaration of the granted `root -> dialect` class, which is what the carrier's own row said a second dialect would be."
+drain   = "none: ARCHITECTURE.md grants this class, and a registration is the shape a composition root's knowledge is supposed to take. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-plane-streams-gemini"
+to      = "busbar-plane-streams"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / xtask/src/gates/kind_isolation.rs — the dialect names its plane; the plane never names a dialect, and the plane-to-dialect edge never can be."
+why     = "the dialect names the plane it is a dialect OF, and names its dialect FACE: 1 declaration(s) at this commit. This is the direction rule itself, in the one direction it runs. The registry that puts this crate's row in front of the plane is filled at boot BY THE COMPOSITION ROOT, so no edge runs the other way and `scripts/plane-delete-test.sh` can remove this crate physically."
+drain   = "none: this is the kind's defining edge. Draining it would be deleting the dialect."
+
+[[dep]]
+from    = "busbar-plane-streams-gemini"
+to      = "busbar-voice-codec"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 — the pre-split dialect half of a plane is that plane's own, and the plane-to-codec edge is already in the measured graph for the same reason."
+why     = "the dialect names the shared duplex IR and, inside it, its OWN reader/writer — the pair that used to be chosen by an `if dialect.name ==` in the neutral plane: 1 declaration(s) at this commit. The class `dialect -> codec` was added and stated by the carrier's mint; this is its second measurement. It is granted toward this dialect's OWN plane's codec half; a sibling plane's codec is the same fusion one level down and is refused by the instance rule."
+drain   = "the codec half is PRE-SPLIT. When busbar-voice-codec is split into its plane's dialect crates, this crate is where this dialect's half LANDS, and the edge is re-expressed against whatever the split leaves."
 
 [[dep]]
 from    = "busbar"

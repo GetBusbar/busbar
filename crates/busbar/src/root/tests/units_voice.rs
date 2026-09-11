@@ -21,7 +21,7 @@ static UPSTREAMS: &[Upstream] = &[
     Upstream {
         lane: LIVE,
         host: "generativelanguage.googleapis.com",
-        dialect: &dialect::GEMINI_LIVE,
+        dialect: &busbar_plane_streams_gemini::GEMINI_LIVE,
     },
 ];
 
@@ -643,8 +643,8 @@ fn each_dialect_dials_its_own_composed_endpoint() {
         realtime.target().map(|t| t.url),
         Some("wss://api.openai.com".to_string())
     );
-    let live =
-        VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0).on_dialect(&dialect::GEMINI_LIVE);
+    let live = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 0)
+        .on_dialect(&busbar_plane_streams_gemini::GEMINI_LIVE);
     assert_eq!(
         live.target().map(|t| t.url),
         Some("wss://generativelanguage.googleapis.com".to_string())
@@ -678,7 +678,7 @@ fn the_two_endpoints_compose_from_borrowed_names() {
     );
     let pair = endpoints.as_slice();
     assert_eq!(pair[0].dialect, &dialect::OPENAI_REALTIME);
-    assert_eq!(pair[1].dialect, &dialect::GEMINI_LIVE);
+    assert_eq!(pair[1].dialect, &busbar_plane_streams_gemini::GEMINI_LIVE);
     assert!(pair.iter().all(|u| u.dialect.duplex_upstream));
 }
 

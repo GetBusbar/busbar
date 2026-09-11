@@ -115,6 +115,16 @@ pub const TTS: &str = "tts";
 /// on this line and needs the constant to become a declaration the root can fill.
 pub const CARRIER: &str = "twilio-media-streams";
 
+/// The Gemini Live dialect's name — the same `&'static str` its own crate declares as `NAME`, and
+/// the same one the session fact carries.
+///
+/// A NAME AND NOTHING ELSE, for the reason [`CARRIER`] states above it: naming a dialect is not
+/// depending on one. It was `crate::dialect::NAME_GEMINI_LIVE` until that dialect got a crate, and
+/// a claim table that kept reaching into the dialect TABLE for a name would have made the table the
+/// place a claim's spelling lived — which is the plane holding an instance's word again, one
+/// indirection further out.
+pub const GEMINI_LIVE: &str = "gemini-live";
+
 /// The browser sideband socket: one level under `/v1/realtime/sideband`, which is the call.
 const SIDEBAND: Selector = Selector::PrefixOneLevel("/v1/realtime/sideband");
 
@@ -178,7 +188,7 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
         claim: claim(WS_TRANSPORT, SIDEBAND, WS_SCHEME_ALTS),
     },
     DialectClaim {
-        dialect: crate::dialect::NAME_GEMINI_LIVE,
+        dialect: GEMINI_LIVE,
         claim: claim(WS_TRANSPORT, GEMINI, WS_SCHEME_ALTS),
     },
     // THE CARRIER, on `ws` — the transport that was always underneath it — and at the TELEPHONY URL

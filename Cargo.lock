@@ -346,6 +346,7 @@ dependencies = [
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streams",
+ "busbar-plane-streams-gemini",
  "busbar-plane-streams-twilio",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -787,6 +788,14 @@ dependencies = [
  "busbar-voice-codec",
  "bytes",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-plane-streams-gemini"
+version = "1.6.0"
+dependencies = [
+ "busbar-plane-streams",
+ "busbar-voice-codec",
 ]
 
 [[package]]

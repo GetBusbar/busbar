@@ -466,6 +466,11 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
     // THE ONE PLACE A DIALECT INSTANCE IS NAMED. Linking instances is what a composition root is
     // for, and a registration rather than a manifest edge is what keeps the delete test honest.
+    // REGISTRATION ORDER IS THE TABLE'S ORDER, and the table's first row is the plane's own "no
+    // dialect was negotiated" answer, so this list is the operator-visible declaration order and not
+    // an accident of how the lines were typed.
+    #[cfg(feature = "plane-voice")]
+    busbar_plane_streams::dialect::register(&busbar_plane_streams_gemini::GEMINI_LIVE);
     #[cfg(feature = "plane-voice")]
     busbar_plane_streams::dialect::register(&busbar_plane_streams_twilio::TWILIO_MEDIA_STREAMS);
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);

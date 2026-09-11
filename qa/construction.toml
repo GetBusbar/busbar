@@ -194,6 +194,22 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 12
 because = "The SAME projector-pair face again, counted in the union the caps/contract pair belongs to (23,478 -> 23,490). Twelve rather than eleven because the union's own base is 23,465 and the unit-view raise above already declares the 13 this branch rose it by; this entry is the pair's 12 on top of that, which is the whole of what this landing added. The kernel did not move and no reachable busbar-unit-* file moved: the projector is spelled in the contract's own vocabulary and names nothing behind a unit's trait"
 
+# ── declared raises: THE SECOND DIALECT CRATE'S REGISTRATION. The composition root is the ONE place
+# a plugin INSTANCE may be named (ARCHITECTURE.md 1.1 / 3.1), so a second dialect is a second
+# manifest edge, a second `register` call and a cell that proves the table answers with the PLUGIN'S
+# row rather than one the neutral plane wrote. Both entries expire when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 27
+because = "busbar x dialect: the streams plane's SECOND dialect crate is linked, registered and proved by the composition root. A dialect is a PLUGIN KIND and the root is the only crate in the tree permitted to name a plugin instance, which is what the carrier's own [[dep]] row said a second dialect would cost: one optional manifest edge, one feature forward, one `register` call beside the carrier's, the two upstream rows that name the dialect a configured endpoint speaks, and one cell that composes the registry and asserts BY ADDRESS that the table answers this dialect's name with the dialect crate's own static rather than with a row the neutral plane wrote for itself. The rise is the price of the ruling it enforces: every hit is the root naming an instance, which is the one place instance-naming is not a finding, and the neutral plane paid for it by losing the row, the name constant and the two `if dialect.name ==` bodies that used to pick a codec (593 -> 620)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 32
+because = "busbar x plane: the SAME second-dialect registration, counted a second time under the plane kind. A dialect's INSTANCE IS ITS PLANE — the matrix says so in the carrier's own edge rows — so every spelling of `busbar-plane-streams-<dialect>` that the root writes is one dialect hit and one plane hit, and the two columns rise together by construction rather than for two different reasons. There is no line here that is not already declared above: the manifest edge, the feature forward, the registration, the two upstream rows and the registry cell are the whole of it, and no new plane vocabulary enters the root by any other route. The plane's own crate fell in the same landing, which is the half of this that is not a raise (1794 -> 1826)"
+
 # ── declared raise: THE CLOSE SLOT. The neutral duplex acceptor gains a third value out of its own
 # seam and the cells that prove it, both inside the crate that owns the acceptor. Expires when the
 # base carries the number.

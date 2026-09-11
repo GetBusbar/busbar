@@ -1,7 +1,8 @@
 //! The `Plane`/`SessionPlane` implementation.
 //!
 //! Every method here is a thin adapter over `busbar_voice_codec::ir`'s shared duplex codec
-//! ([`OpenAiRealtimeCodec`], [`GeminiLiveCodec`]), this crate's own Twilio reader/writer
+//! ([`OpenAiRealtimeCodec`], which is also the SHARED duplex IR every dialect that declares no
+//! reader of its own rides), this crate's own Twilio reader/writer
 //! ([`crate::twilio`]) and its own µ-law transform ([`crate::ulaw`]). None of the three inputs the
 //! design brief names is skipped: a turn is the unit (opened on the first audio frame of a session,
 //! closed on the upstream's `response.done` usage report or an upstream error); a provider tool call
@@ -82,7 +83,7 @@ use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
 use busbar_voice_codec::ir::media::AudioFormat;
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
-    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
+    DecodeState, DuplexReader, DuplexWriter, OpenAiRealtimeCodec, WireRef,
 };
 
 use crate::claims;
@@ -111,22 +112,28 @@ pub const FACT_TOOL_CORRELATION: &str = meta::FACT_CALL_ID;
 /// this deadline reads the plane's own figure rather than restating it.
 pub const TOOL_REPLY_DEADLINE_SECS: u32 = 30;
 
-/// Both duplex dialects' reader, boxed so the same call site works for either without a generic
-/// parameter leaking into every method signature. Cheap: both codecs are zero-sized.
-fn reader_for(dialect: &Dialect) -> Box<dyn DuplexReader> {
-    if dialect.name == dialect::NAME_GEMINI_LIVE {
-        Box::new(GeminiLiveCodec)
-    } else {
-        Box::new(OpenAiRealtimeCodec)
+/// A DIALECT'S READER, TAKEN OFF ITS OWN ROW — boxed so the same call site works for any dialect
+/// without a generic parameter leaking into every method signature. Cheap: every codec is
+/// zero-sized.
+///
+/// This used to be `if dialect.name == <one vendor> { that codec } else { the other }`, which is
+/// instance dispatch with a string comparison in front of it, in the crate the dialect kind's
+/// direction rule makes the NEUTRAL party. A row that declares no reader of its own
+/// ([`Dialect::reader`] is `None`) is declaring that its frames ARE the shared duplex IR, and the
+/// shared IR is what it gets — named here as the IR it is, which is the one thing this crate is
+/// entitled to know about frames.
+pub(crate) fn reader_for(dialect: &Dialect) -> Box<dyn DuplexReader> {
+    match dialect.reader {
+        Some(f) => f(),
+        None => Box::new(OpenAiRealtimeCodec),
     }
 }
 
 /// See [`reader_for`].
-fn writer_for(dialect: &Dialect) -> Box<dyn DuplexWriter> {
-    if dialect.name == dialect::NAME_GEMINI_LIVE {
-        Box::new(GeminiLiveCodec)
-    } else {
-        Box::new(OpenAiRealtimeCodec)
+pub(crate) fn writer_for(dialect: &Dialect) -> Box<dyn DuplexWriter> {
+    match dialect.writer {
+        Some(f) => f(),
+        None => Box::new(OpenAiRealtimeCodec),
     }
 }
 

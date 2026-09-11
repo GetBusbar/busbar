@@ -714,3 +714,62 @@ fn every_planes_claims_name_a_registered_transport() {
         );
     }
 }
+
+/// EVERY DIALECT THIS NODE SERVES IS A REGISTERED PLUGIN, AND THE PLANE DECLARES NONE OF THEM
+/// ITSELF.
+///
+/// The owner's ruling of 2026-09-10: the plane is the streams plane, the dialects are exactly three,
+/// and nothing dialect-specific lives in the plane beyond the kind's face. A row the NEUTRAL plane
+/// wrote for itself is that ruling's exact violation — an instance the plane knows about without
+/// anyone composing it, and one `scripts/plane-delete-test.sh` cannot take away.
+///
+/// RED BEFORE THE CUT: on the base the plane's own declared table answers for this dialect whether
+/// or not a composition root ever ran, so the address comparison below fails against a row that is
+/// the plane's and not the plugin's. Green after, because the only way the name resolves at all is
+/// the registration `register_all` makes.
+///
+/// Each dialect crate is named ONCE, through an alias. The matrix counts every spelling of an
+/// instance's name in this file, and a cell that spent forty of the root's ceiling to say one thing
+/// ten times would be buying its own assertion with the budget the ruling exists to protect.
+#[test]
+#[cfg(feature = "plane-voice")]
+fn every_dialect_this_node_serves_is_a_registered_plugin() {
+    use busbar_plane_streams::dialect::Dialect;
+    use busbar_plane_streams::{claims, dialect};
+    use busbar_plane_streams_gemini as live;
+    use busbar_plane_streams_twilio as carrier;
+
+    // COMPOSE. `register_all` is the ONE place in the tree that names a dialect instance.
+    let transports = compose_transports(ClientSettings::default());
+    let _ = register_all(&transports).expect("the composition registers its planes");
+
+    // Every dialect with a crate of its own, paired with the claim URL the plane serves it at.
+    let rows: [(&str, &Dialect, &str); 2] = [
+        (live::NAME, &live::GEMINI_LIVE, "/v1/realtime/gemini/c-0001"),
+        (
+            carrier::NAME,
+            &carrier::TWILIO_MEDIA_STREAMS,
+            "/v1/realtime/telephony/c-0001",
+        ),
+    ];
+
+    for (name, plugin_row, served) in rows {
+        // (1) THE TABLE ANSWERS, AND ANSWERS WITH THE PLUGIN'S OWN ROW. Compared by ADDRESS, so a
+        // row the neutral plane wrote itself under the same name would not satisfy it — which is
+        // exactly the state this cell was red in.
+        let resolved =
+            dialect::dialect(name).expect("a registered dialect resolves in the plane's table");
+        assert!(
+            core::ptr::eq(resolved, plugin_row),
+            "the table answered for `{name}` with a row that is not the dialect crate's own              static; the neutral plane is declaring an instance again"
+        );
+
+        // (2) AND THE CLAIM TABLE AGREES WITH THE REGISTRY. A claim naming a dialect no plugin
+        // registered is a URL this node advertises and cannot read a frame of.
+        assert_eq!(
+            claims::dialect_for(served),
+            Some(name),
+            "the leg served at `{served}` must name the dialect its plugin registers under"
+        );
+    }
+}

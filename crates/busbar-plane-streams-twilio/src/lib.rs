@@ -375,6 +375,13 @@ pub static TWILIO_MEDIA_STREAMS: Dialect = Dialect {
     meters_own_uplink: true,
     envelope: Some(&ENVELOPE),
     locked_session_config: Some(g711_config),
+    // DECLARED `None`, not left blank. This carrier brings its own frame ENVELOPE (above) and its
+    // own sample format; what rides INSIDE the envelope, once the µ-law transform at the relay seam
+    // has widened it, is the plane's shared duplex IR, and the IR's own reader is the reader for it.
+    // There is no second reader here to name, and saying so on the row is what lets the neutral
+    // plane pick without an `if` about a vendor.
+    reader: None,
+    writer: None,
 };
 
 /// This dialect's own row, for the two places its reader has to name it.

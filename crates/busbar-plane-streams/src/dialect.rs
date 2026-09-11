@@ -31,12 +31,21 @@
 //!
 //! ## What is in the table today, and what is deliberately not
 //!
-//! Two rows are still declared BY this crate — `openai-realtime` and `gemini-live` — because
-//! neither has a crate of its own yet. That is a stated remainder, not a design: each becomes its
-//! own dialect crate and its row leaves this file the way the carrier's already has. The third
-//! duplex dialect, the carrier, is not here at all: it lives in its own crate and reaches this
-//! table through [`register`], which is what the direction rule requires and what lets the delete
-//! test remove it and get an honest absence.
+//! ONE row is still declared BY this crate — `openai-realtime` — because it has no crate of its own
+//! yet. That is a stated remainder, not a design: it becomes its own dialect crate and its row
+//! leaves this file the way the carrier's and the Gemini Live dialect's already have. The other two
+//! duplex dialects are not here at all: each lives in its own crate and reaches this table through
+//! [`register`], which is what the direction rule requires and what lets the delete test remove one
+//! and get an honest absence.
+//!
+//! AND THE ROW NOW CARRIES ITS OWN READER. Until the Gemini dialect was cut, this crate held two
+//! functions whose whole body was `if dialect.name == <that vendor> { one codec } else { the
+//! other }` — instance dispatch with a string comparison in front of it, in the crate the direction
+//! rule makes the neutral party, which is the same shape the deleted `Dialect` enum was. The reader
+//! and the writer are FIELDS of the row now ([`Dialect::reader`], [`Dialect::writer`]), filled by
+//! whoever declared the row. `None` on either means "the SHARED IR reads this dialect's frames" —
+//! a declared answer, not a missing one — and it is what every dialect whose frames ARE that IR
+//! says.
 //!
 // The two one-shot operations are NOT rows here and are not dialects of this plane's duplex
 // sessions: they are single request/response operations that leave this crate in a later pass.
@@ -50,7 +59,19 @@ use std::sync::RwLock;
 use busbar_contract::plane::Ingress;
 use busbar_contract::unit::Ctx;
 use busbar_contract::wire::{Decode, Encode, FrameCursor};
-use busbar_voice_codec::ir::{config::SessionConfig, event::IrClientEvent};
+/// THE VOCABULARY THIS FACE IS WRITTEN IN, RE-EXPORTED RATHER THAN RE-REACHED.
+///
+/// A dialect crate implements the face in this module, so it needs the face's own types — and the
+/// place to get them is the face, not the crate the face happens to borrow them from. Re-exporting
+/// here is what lets a dialect crate name its PLANE for the types its plane's face is written in,
+/// which is the direction rule's own shape; without it every dialect would reach past its plane into
+/// the pre-split codec half for a trait its plane already knows, and the codec half would end up in
+/// each dialect's dependency line for a reason that has nothing to do with reading a wire.
+pub use busbar_voice_codec::ir::{
+    config::SessionConfig,
+    event::{IrClientEvent, IrServerEvent},
+    DecodeState, DuplexReader, DuplexWriter, WireEvent, WireRef,
+};
 
 use crate::session::VoiceSessionState;
 
@@ -113,6 +134,16 @@ pub struct Dialect {
     /// `None` means the dialect opens on the deployment's own declared defaults. A carrier leg that
     /// is µ-law end to end locks its posture here and nothing may resample it.
     pub locked_session_config: Option<fn() -> SessionConfig>,
+    /// THE READER FOR THIS DIALECT'S FRAMES, when it brings one of its own.
+    ///
+    /// `None` means the SHARED duplex IR reads them — which is a DECLARED answer and not a missing
+    /// one: a dialect whose frames ARE that IR has no second reader to name, and saying so is how
+    /// this crate knows it may use its own without asking a vendor. The field exists because the
+    /// alternative, measured, was `if dialect.name == <one vendor>` in [`crate::plane`]'s own body.
+    pub reader: Option<fn() -> Box<dyn DuplexReader>>,
+    /// THE WRITER FOR THIS DIALECT'S FRAMES. See [`Dialect::reader`]; the same rule, the other
+    /// direction.
+    pub writer: Option<fn() -> Box<dyn DuplexWriter>>,
 }
 
 impl PartialEq for Dialect {
@@ -134,9 +165,6 @@ impl core::fmt::Debug for Dialect {
 /// The OpenAI Realtime dialect's name.
 pub const NAME_OPENAI_REALTIME: &str = "openai-realtime";
 
-/// The Gemini Live dialect's name.
-pub const NAME_GEMINI_LIVE: &str = "gemini-live";
-
 /// The OpenAI Realtime (GA) dialect — PCM16 frames, tool calls, full duplex.
 ///
 /// Declared by this crate because no dialect crate of its own exists yet. See the module header.
@@ -147,22 +175,14 @@ pub static OPENAI_REALTIME: Dialect = Dialect {
     meters_own_uplink: false,
     envelope: None,
     locked_session_config: None,
-};
-
-/// The Google Gemini Live (`BidiGenerateContent`) dialect — JSON frames, tool calls.
-///
-/// Declared by this crate because no dialect crate of its own exists yet. See the module header.
-pub static GEMINI_LIVE: Dialect = Dialect {
-    name: NAME_GEMINI_LIVE,
-    duplex_upstream: true,
-    authenticates_from_session: true,
-    meters_own_uplink: false,
-    envelope: None,
-    locked_session_config: None,
+    // DECLARED `None`, not left blank: this dialect's frames ARE the shared duplex IR, so the IR's
+    // own reader is the reader and there is no second one to name.
+    reader: None,
+    writer: None,
 };
 
 /// The rows this crate declares itself, in claim-declaration order.
-static DECLARED: &[&Dialect] = &[&OPENAI_REALTIME, &GEMINI_LIVE];
+static DECLARED: &[&Dialect] = &[&OPENAI_REALTIME];
 
 /// The rows a composition root registered at boot, in registration order.
 ///
