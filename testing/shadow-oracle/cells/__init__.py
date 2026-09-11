@@ -300,7 +300,8 @@ def llm_cells(inv: dict) -> list[dict]:
         cells.append(c)
     # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. Same SKIP-able posture as the mid-stream
     # failure above: definitions only, `needs_fixture` until the integrator records them from the
-    # published 1.5.5 binary, so each reads as a NAMED golden gap rather than a silent pass.
+    # published 1.5.5 binary. OR-OP-2 (busbar-oracle v0.3.18) recorded all three from that binary,
+    # twice, byte-identically, so they carry no `needs_fixture` below any more.
     #
     # THE CITATION, on the DIAGONAL (responses -> responses). The annotation is a property of the
     # ANSWER, so the egress dialect is what decides its shape; the diagonal is the striking case
@@ -309,7 +310,6 @@ def llm_cells(inv: dict) -> list[dict]:
     # the mock's `citation` verb, which answers with the published flat `UrlCitationBody`.
     if "responses" in dialects:
         c = cell("responses", "responses", *RESPONSES_CITATION_OUTCOME)
-        c["needs_fixture"] = True
         c["mock_control"] = {"citation": True}
         cells.append(c)
     # THE cachePoint-BEFORE-A-DOCUMENT REQUEST. Bedrock-shaped both ends: `cachePoint` and the native
@@ -319,7 +319,6 @@ def llm_cells(inv: dict) -> list[dict]:
     # the fixture is the request body, built by build-request.py.
     if "bedrock" in dialects:
         c = cell("bedrock", "bedrock", *BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME)
-        c["needs_fixture"] = True
         cells.append(c)
     # THE TOOL-USE TOKEN TERM, on the DIAGONAL (gemini -> gemini). Google reports
     # `usageMetadata.toolUsePromptTokenCount` as a FOURTH ADDITIVE term beside `promptTokenCount`,
@@ -327,24 +326,21 @@ def llm_cells(inv: dict) -> list[dict]:
     # (crates/busbar-llm-codec/src/tests/proto/golden/vendor/, and
     # docs/design/gemini-usage-metadata-spec-discrepancy.md). 1.5.5 read it as a slice and dropped
     # it from the bill, under-counting every server-tool Gemini turn by exactly that term; 1.6.0
-    # bills it in the input tier. NOT ONE RECORDED CELL SEES THAT: the mock's happy-path answer
-    # carries no tool-use term at all, so the whole money surface is invisible to the differ, which
-    # is precisely how a 14% under-count survived a full golden. The diagonal is the striking case
-    # because a same-dialect hop reads back bytes it has just written, so it pins the wire shape
-    # (the term BESIDE the prompt count, `totalTokenCount` reconciling) and the ledger row together.
-    # Same SKIP-able posture as the citation and cachePoint cells above — but WITH NO mock_control,
-    # and that absence is the point. This cell used to declare `{"tool-use": true}`, a verb the
-    # pinned mock does not implement; the mock's fallback for a control it cannot resolve is a
-    # HEALTHY 200, so the cell would have recorded the tool-less happy path while claiming to pin the
-    # tool-use token term. Rather than invent a verb here, the control is dropped and the cell stays
-    # `needs_fixture`, exactly like the bedrock cachePoint cell above whose fixture is also the only
-    # thing it is waiting on. The gap is NAMED in accepted-gaps.json ("needs a tool-use verb in the
-    # pinned mock; product decision on the six-dialect tool-use response shape"): recording it needs
-    # both a mock that answers with `usageMetadata.toolUsePromptTokenCount` AND that product
-    # decision, neither of which the oracle may make for itself.
+    # bills it in the input tier. NOT ONE RECORDED CELL SAW THAT before this cell: the mock's
+    # happy-path answer carried no tool-use term at all, so the whole money surface was invisible to
+    # the differ, which is precisely how a 14% under-count survived a full golden. The diagonal is
+    # the striking case because a same-dialect hop reads back bytes it has just written, so it pins
+    # the wire shape (the term BESIDE the prompt count, `totalTokenCount` reconciling) and the
+    # ledger row together. This cell used to declare `{"tool-use": true}`, a verb the pinned mock
+    # did not implement; the mock's fallback for a control it cannot resolve is a HEALTHY 200, so
+    # the cell would have recorded the tool-less happy path while claiming to pin the tool-use token
+    # term. OR-OP-2 (busbar-oracle v0.3.18) added a `tool-use-tokens` verb the mock DOES implement
+    # (gemini-only, chat-only; every other dialect and gemini op is byte-identical under it) and
+    # this cell now declares it, closing the accepted-gaps.json entry
+    # (`gemini-tool-use-token-term`) that named the gap.
     if "gemini" in dialects:
         c = cell("gemini", "gemini", *GEMINI_TOOL_USE_TOKENS_OUTCOME)
-        c["needs_fixture"] = True
+        c["mock_control"] = {"tool-use-tokens": True}
         cells.append(c)
     return cells
 
