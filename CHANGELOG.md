@@ -149,6 +149,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   to set it to ([the storage model](docs/storage-model.md#deployment-guidance)) rather than only the
   problem. Additive: the WARN log record is unchanged byte for byte, and the banner is one more
   stderr line.
+- **A malformed first-party rollback pin names the floor it actually replaces.** The warning raised
+  by a `plugins.first_party_floors` entry that is not a bare MAJOR.MINOR.PATCH version said the pin
+  "REPLACES the binary-version floor". There is no binary-version floor on a first-party plugin, and
+  deliberately so: first-party plugins version on their own lines, so flooring them at the engine's
+  version would reject every correctly-signed current release, and that floor was removed before
+  1.5.0 shipped. The floor a pin does displace is the automatic per-name one — the highest version
+  of that plugin this deployment has already loaded. The warning now names that floor, so an
+  operator reading it looks at the control that exists. The refusal itself is unchanged: a floor that
+  cannot be parsed cannot be satisfied, and the named plugin stays refused until the entry is fixed
+  or removed.
 - **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
   `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`

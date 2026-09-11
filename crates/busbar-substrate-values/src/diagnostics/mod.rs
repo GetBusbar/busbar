@@ -546,8 +546,9 @@ pub const CONFIG_FIRSTPARTY_FLOOR_INVALID: Diagnostic = Diagnostic {
     title: "plugins.first_party_floors floor is not valid semver (plugin refused unconditionally)",
     severity: Severity::Actionable,
     summary: "A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It \
-              cannot be satisfied, and because a first-party floor REPLACES the binary-version floor, \
-              the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure \
+              cannot be satisfied, and because a rollback pin REPLACES the automatic first-party \
+              floor (the highest version of that plugin this deployment has already loaded), the \
+              named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure \
               than an invalid `min_versions` floor.",
     action: "Fix or remove the named `plugins.first_party_floors` entry so the floor is a bare \
              MAJOR.MINOR.PATCH version. Until then that first-party plugin is refused on every boot.",

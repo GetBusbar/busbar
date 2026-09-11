@@ -1644,9 +1644,10 @@ impl PluginsCfg {
                     key = %format!("plugins.first_party_floors['{name}']"),
                     value = %floor,
                     "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
-                     'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
-                     REPLACES the binary-version floor, so the plugin is refused unconditionally \
-                     until this is fixed. Fix or remove the entry."
+                     'v'); it cannot be satisfied, so this plugin will be refused — and this \
+                     rollback pin REPLACES the automatic first-party floor (the highest version of \
+                     this plugin this deployment has already loaded), so the plugin is refused \
+                     unconditionally until this is fixed. Fix or remove the entry."
                 );
             }
         }

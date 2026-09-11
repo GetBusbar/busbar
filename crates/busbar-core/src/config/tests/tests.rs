@@ -2325,6 +2325,71 @@ fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
     );
 }
 
+/// The WARN a malformed `plugins.first_party_floors` pin raises must name the floor the pin
+/// actually replaces. `busbar_plugin_sign::evaluate` applies NO binary-version floor to a
+/// first-party plugin (it was removed before 1.5.0: first-party plugins version on their own
+/// lines); the floor a pin displaces is the AUTOMATIC per-name one — the highest version of that
+/// plugin this deployment has already loaded (`TrustPolicy::first_party_high_water`). An operator
+/// told the pin replaces a "binary-version floor" is told about a control that does not exist.
+#[test]
+fn first_party_floor_warning_names_the_floor_the_pin_actually_replaces() {
+    use std::sync::{Arc, Mutex};
+
+    /// Records the WARN `message` field itself, not just the event name: the sentence IS the
+    /// operator-facing claim under test.
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+    struct Visit<'a>(&'a mut String);
+    impl tracing::field::Visit for Visit<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                *self.0 = format!("{value:?}");
+            }
+        }
+    }
+    impl tracing::Subscriber for MessageCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                let mut msg = String::new();
+                event.record(&mut Visit(&mut msg));
+                self.0.lock().unwrap().push(msg);
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sub = MessageCapture(messages.clone());
+    let mut cfg = PluginsCfg::default();
+    cfg.first_party_floors
+        .insert("oracle-plugin".to_string(), "not-semver".to_string());
+    tracing::subscriber::with_default(sub, || {
+        let _ = cfg.to_policy_with_floor("1.6.0");
+    });
+    let warns = messages.lock().unwrap().clone();
+    assert_eq!(warns.len(), 1, "exactly one WARN for one malformed pin");
+    let warn = &warns[0];
+    assert!(
+        warn.contains(
+            "this rollback pin REPLACES the automatic first-party floor (the highest version of \
+             this plugin this deployment has already loaded)"
+        ),
+        "the WARN must name the floor the pin displaces: {warn}"
+    );
+    assert!(
+        !warn.contains("binary-version"),
+        "there is no binary-version floor for a first-party plugin: {warn}"
+    );
+}
+
 /// `auth.role_bindings:` parses as a module-nested map: module -> role -> grant, with the
 /// allowed_pools semantics preserved at the type level (omitted = None = ALL pools; `[]` =
 /// Some(empty) = NO pools).
