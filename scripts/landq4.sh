@@ -901,6 +901,47 @@ lq_page() { # $1 = kind, $2 = text
   lq_log "PAGE [$1]: $2"
 }
 lq_page_clear() { rm -f "$PAGE"; }
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE EXIT-CODE CONTRACT (F1) — WHAT THIS RUNNER'S EXIT STATUS MEANS TO THE SUPERVISOR
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# scripts/landq-supervisor.sh decides what to do next by reading nothing but the number this
+# process exits with, so the number is a CONTRACT and not an accident. Four codes, and they are
+# the only ways out of the loop:
+#
+#   0   the STOP marker was seen at the loop top (an integrator asked for a boundary), or
+#       --preprove-once/--selftest finished. THE SUPERVISOR EXITS TOO: a stop is a stop.
+#   1   HALT head-conflict-twice — the first queue line would not apply twice in a row. A FACT
+#       ABOUT THE TREE: it needs re-picking by hand. The supervisor PAGES and waits.
+#   2   another runner already holds the host lock. Not a fault and not a HALT: somebody else is
+#       landing on this host. The supervisor exits without paging — restarting would only race.
+#   3   HALT tree-moved — HEAD has not been the last landed tip (or the tree has been modified)
+#       for LANDQ_TREE_MOVED_HALT_AFTER loops in a row. The other tree fact; pages and waits.
+#
+# ANY OTHER STATUS IS INFRASTRUCTURE — a crash, a kill, a signal, a driver that escaped its own
+# taxonomy — and infrastructure is never a HALT (see THE FAULT TAXONOMY). The supervisor restarts
+# on the 60/120/240/480/900 s ladder and counts it in the status file. No infrastructure failure
+# inside the loop exits at all: it is classed, counted, backed off and retried.
+LQ_EXIT_STOP=0; LQ_EXIT_HALT_HEAD=1; LQ_EXIT_LOCKED=2; LQ_EXIT_HALT_TREE_MOVED=3
+export LQ_EXIT_STOP LQ_EXIT_HALT_HEAD LQ_EXIT_LOCKED LQ_EXIT_HALT_TREE_MOVED
+# HOW MANY TREE-MOVED REFUSALS IN A ROW ARE A FACT ABOUT THE TREE rather than a stray process the
+# census is about to kill. Four backoffs (1+2+4+8 min) pass before the fifth, so a tree that is
+# still moved a quarter of an hour later is moved because somebody moved it.
+LQ_TREE_MOVED_HALT_AFTER="${LANDQ_TREE_MOVED_HALT_AFTER:-5}"
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE BOUNDARY SIGNAL (F1) — THE ONE FILE THAT SAYS "A BATCH JUST ENDED, AT THIS TIP"
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# The supervisor adopts a new engine AT A BOUNDARY and never in the middle of a batch: a batch is
+# an hour of a fleet box's time and killing it wastes exactly that. So the runner SIGNALS its
+# boundaries — one line, `<epoch> <tip>`, rewritten temp+mv at the end of every batch and on the
+# way out through the STOP marker — and the supervisor watches that file rather than the log.
+# It is a signal and not a queue: only the newest boundary matters, and a reader that misses one
+# reads the next.
+BOUNDARY="${LANDQ_BOUNDARY:-$W/target/gate/landq.boundary}"
+lq_boundary() { # $1 = the tip the tree is at now
+  local tip="${1:-}"
+  mkdir -p "$(dirname "$BOUNDARY")" 2>/dev/null || true
+  printf '%s %s\n' "$(date +%s)" "$tip" >"$BOUNDARY.tmp" && mv "$BOUNDARY.tmp" "$BOUNDARY"
+}
 # THE POPPED LINES, OUT OF THE QUEUE AS IT NOW READS. The batch file carries the payload of every
 # landing line it took, and the chain map carries the HELD line each chained payload was popped
 # from; both forms are removed, and everything else in the file — including whatever was just
@@ -5003,9 +5044,18 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
   _t "  ...and the requeue still happens first" 1 \
      "$( [ "$(grep -n 'cat "\$batch.requeue" "\$Q"' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n 'fn="\$(lq_fault_record "\$fcls"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
-  _t "exactly ONE HALT is left in the engine"  1 "$(grep -c '=== HALT:' "$LQ_SRC")"
-  _t "  ...and it is head-conflict-twice"      1 "$(grep -c 'HALT head-conflict-twice' "$LQ_SRC")"
+  # TWO HALTS ARE LEFT, AND BOTH ARE FACTS ABOUT THE TREE (see THE EXIT-CODE CONTRACT): a head
+  # line that will not apply twice, and a tree that stays moved. Nothing else leaves the loop.
+  _t "exactly TWO HALTs are left in the engine" 2 "$(grep -c '=== HALT:' "$LQ_SRC")"
+  _t "  ...one is head-conflict-twice"         1 "$(grep -c 'echo "HALT head-conflict-twice' "$LQ_SRC")"
   _t "  ...and it is the only exit 1 there is" 1 "$(grep -c '^      exit 1$' "$LQ_SRC")"
+  _t "  ...the other is a tree that stays moved" 1 "$(grep -c 'echo "HALT tree-moved' "$LQ_SRC")"
+  _t "  ...and it is the only exit 3 there is" 1 "$(grep -c '^      exit 3$' "$LQ_SRC")"
+  _t "  ...and it waits for a run of refusals, not one" 1 \
+     "$(grep -c 'fn:-0}" -ge "\$LQ_TREE_MOVED_HALT_AFTER"' "$LQ_SRC")"
+  _t "both HALTs raise a page"                 2 "$(grep -c 'lq_page halt-' "$LQ_SRC")"
+  _t "the lock held by a live runner is exit 2, not a HALT" 1 \
+     "$(grep -c 'only one runner lands on this host" >&2; exit 2' "$LQ_SRC")"
   _t "a batch with outcomes clears the counters" 1 "$(grep -c '^  lq_fault_clear$' "$LQ_SRC")"
   _t "the census's empty answer is a counted class" 1 "$(grep -c 'lq_fault_record census-empty' "$LQ_SRC")"
   _t "  ...and so is a tree that moved"        1 "$(grep -c 'lq_fault_record tree-moved' "$LQ_SRC")"
@@ -5013,6 +5063,28 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
      "$(grep -cF 'lq_pid_start "$me")" >"$LOCK"' "$LQ_SRC")"
   _t "  ...and the queue lock does too"        1 "$(grep -c 'lq_pid_start "\$\$" >"\$QLOCK/start"' "$LQ_SRC")"
   FAULTS="$savedF"; FAULTRING="$savedR"
+
+  # ── THE EXIT-CODE CONTRACT AND THE BOUNDARY SIGNAL (F1) ───────────────────────────────────────
+  echo "landq4 selftest: the exit-code contract and the boundary the supervisor reads"
+  _t "the contract names four codes, once"     1 "$(grep -c '^LQ_EXIT_STOP=0; LQ_EXIT_HALT_HEAD=1; LQ_EXIT_LOCKED=2; LQ_EXIT_HALT_TREE_MOVED=3$' "$LQ_SRC")"
+  _t "the STOP marker exits 0"                 1 "$(grep -c '^    exit 0; }$' "$LQ_SRC")"
+  _t "  ...and signals the boundary on the way out" 1 \
+     "$(grep -c 'lq_log "STOP marker seen"; lq_boundary' "$LQ_SRC")"
+  local savedB="${BOUNDARY:-}"; BOUNDARY="$root/boundary.txt"
+  lq_boundary deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+  _t "a boundary is ONE line"                  1 "$(grep -c . "$BOUNDARY")"
+  _t "  ...carrying the tip it landed at"      1 "$(grep -c 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$BOUNDARY")"
+  _t "  ...behind an epoch, so a reader can age it" 1 \
+     "$(awk '{print ($1 ~ /^[0-9]{10}$/) ? 1 : 0}' "$BOUNDARY")"
+  lq_boundary cafe123cafe123cafe123cafe123cafe123cafe1
+  _t "the signal is rewritten, never appended" 1 "$(grep -c . "$BOUNDARY")"
+  _t "  ...and it is the newest boundary"      1 "$(grep -c 'cafe123' "$BOUNDARY")"
+  _t "  ...written temp+mv, so no reader sees half of it" 1 \
+     "$(grep -c 'mv "\$BOUNDARY.tmp" "\$BOUNDARY"' "$LQ_SRC")"
+  _t "  ...and nothing is left behind"         0 "$([ -e "$BOUNDARY.tmp" ] && echo 1 || echo 0)"
+  _t "a batch signals its boundary at the tip it landed" 1 \
+     "$(grep -c '^  lq_boundary "\$newtip"' "$LQ_SRC")"
+  BOUNDARY="$savedB"
 
   # ── NO SCRATCH UNDER /tmp (owner rule, 2026-09-11) ────────────────────────────────────────────
   # The pattern is built from a variable so that this assertion is not itself the thing it counts.
@@ -5063,7 +5135,11 @@ fi
 
 consec_head_conflict=0
 while true; do
-  [ -f "$W/target/gate/STOP" ] && { lq_log "STOP marker seen"; exit 0; }
+  # A STOP IS A BOUNDARY (see lq_boundary): the supervisor's adoption check reads this signal, and
+  # an engine adopted by an integrator's own STOP must not look like a runner that vanished.
+  [ -f "$W/target/gate/STOP" ] && {
+    lq_log "STOP marker seen"; lq_boundary "$(git -C "$W" rev-parse HEAD 2>/dev/null || true)"
+    exit 0; }
 
   # THE STATE OF THE QUEUE IN ONE LINE (see lq_status), first thing, every loop: a tick reads
   # `tail -n 1 target/gate/landq4.status` rather than the log.
@@ -5102,6 +5178,15 @@ while true; do
   if ! lq_tree_settled "$W" "$TIPF"; then
     lq_log "=== $(lq_fault_verdict tree-moved): HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF") or the tree is modified; batch REFUSED, nothing popped"
     fn="$(lq_fault_record tree-moved "HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip, or the tree is modified")"
+    # ...AND A TREE THAT STAYS MOVED IS THE SECOND TREE FACT (see THE EXIT-CODE CONTRACT). The
+    # first four refusals are a stray process the census kills; the fifth is somebody's checkout.
+    if [ "${fn:-0}" -ge "$LQ_TREE_MOVED_HALT_AFTER" ]; then
+      lq_log "=== HALT: the tree has been moved under the runner $fn loops in a row; it needs an integrator"
+      lq_page halt-tree-moved "HEAD $(git -C "$W" rev-parse --short HEAD) is not the last landed tip $(cut -c1-9 "$TIPF" 2>/dev/null || true), $fn loops in a row"
+      echo "HALT tree-moved $(date +%FT%T)" >>"$D"
+      lq_status_json
+      exit 3
+    fi
     lq_status_json; sleep "$(lq_backoff_secs "$fn")"; continue
   fi
   lq_fault_clear census-empty; lq_fault_clear tree-moved
@@ -5336,6 +5421,7 @@ while true; do
       && lq_base_red_result "$newtip" "$batch.log" "$batch.base-detail" || true
   fi
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
+  lq_boundary "$newtip"              # A BATCH ENDED HERE (see lq_boundary): the supervisor may adopt
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED, $nheld back to HELD, $nnone requeued live as NONE; tip $(git -C "$W" rev-parse --short HEAD)"
   rm -f "$batch" "$batch.chain" "$red"
   lq_status_json
@@ -5344,7 +5430,9 @@ while true; do
     consec_head_conflict=$((consec_head_conflict + 1))
     if [ "$consec_head_conflict" -ge 2 ]; then
       lq_log "=== HALT: the first queue line conflicted twice in a row; it needs re-picking by hand"
+      lq_page halt-head-conflict-twice "the first queue line conflicted twice in a row; it needs re-picking by hand"
       echo "HALT head-conflict-twice $(date +%FT%T)" >>"$D"
+      lq_status_json
       exit 1
     fi
   else
