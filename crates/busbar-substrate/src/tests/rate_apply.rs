@@ -13,7 +13,7 @@ struct Recorder(Mutex<Vec<Seen>>);
 /// flag.
 type Seen = (
     Vec<(String, RawTierRates)>,
-    busbar_contract::tariff::FeeTerms,
+    busbar_contract::tariff::ScopedFeeTerms,
     bool,
 );
 
@@ -28,11 +28,24 @@ impl RateApply for Recorder {
 
 /// Terms with one figure on them, used on both sides of the comparison so that the assertion is
 /// about what the seam CARRIED rather than about a literal written twice.
-fn eleven() -> busbar_contract::tariff::FeeTerms {
-    busbar_contract::tariff::FeeTerms {
+///
+/// A SECOND figure at a POOL's scope rides beside the node's, because the seam's whole job is to
+/// deliver the resolved schedule verbatim: a seam that carried only the node's would drop every
+/// scoped figure between the engine that resolved it and the card that applies it, and the drop
+/// would be invisible — every unit would price at the node's schedule, which is what it priced at
+/// before anybody scoped anything.
+fn eleven() -> busbar_contract::tariff::ScopedFeeTerms {
+    busbar_contract::tariff::ScopedFeeTerms::node(busbar_contract::tariff::FeeTerms {
         transaction: 11,
         ..busbar_contract::tariff::FeeTerms::default()
-    }
+    })
+    .with(
+        busbar_contract::tariff::TariffScope::pool("busy"),
+        busbar_contract::tariff::FeeTerms {
+            transaction: 13,
+            ..busbar_contract::tariff::FeeTerms::default()
+        },
+    )
 }
 
 /// The whole of the seam, in the order the process actually sees it: silent before an install, and
@@ -51,10 +64,10 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     );
     rates_applied(&RawRates {
         lanes: &[],
-        terms: busbar_contract::tariff::FeeTerms {
+        terms: busbar_contract::tariff::ScopedFeeTerms::node(busbar_contract::tariff::FeeTerms {
             transaction: 7,
             ..busbar_contract::tariff::FeeTerms::default()
-        },
+        }),
         present: false,
     });
 

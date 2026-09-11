@@ -304,6 +304,7 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            scope: at.scope.clone(),
         };
         // The overdraft's own record. Reserved and settled are zero on it deliberately: the
         // settlement above already carries both, and repeating them here would double every figure
@@ -318,6 +319,7 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            scope: at.scope.clone(),
         });
         // ONE BATCH, both records. A batch is the unit of durability — one store round trip
         // memory-buffered, one fsync on disk — and the settlement and its carry are two entries of
@@ -389,6 +391,14 @@ pub struct Settling<'a> {
     pub step: StepName,
     /// What the record carries beyond the figures.
     pub stamp: PostingStamp,
+    /// **THE SCOPE THE UNIT'S SCHEDULE WAS RESOLVED AT**, written onto the journal row.
+    ///
+    /// Borrowed rather than stamped, because [`PostingStamp`] is three fixed-width numbers a caller
+    /// could get in the wrong order and this is a name. It rides here rather than beside the
+    /// figures for the reason the window does: which schedule a unit was charged under and which
+    /// balance it moved are two halves of one settlement, and a row that recorded one without the
+    /// other could not be re-priced.
+    pub scope: &'a busbar_contract::tariff::TariffScope,
 }
 
 /// What one settlement moved and what it left on the chain.
@@ -425,6 +435,9 @@ pub struct Posting {
     pub wall: u64,
     /// The node's monotonic clock.
     pub mono: u64,
+    /// The scope the unit's amounts were resolved at. `default` for a unit no narrower schedule
+    /// applied to, and for every row the previous release wrote.
+    pub scope: busbar_contract::tariff::TariffScope,
 }
 
 impl Posting {
@@ -438,6 +451,11 @@ impl Posting {
         body.figure(self.settled);
         body.figure(self.overdraft);
         body.num(self.rate_card_version);
+        // **ADDITIVE, AND LAST.** A length-prefixed field appended after every field the previous
+        // release wrote, so a row written before this existed is byte-identical up to its own end
+        // and reads back as `default` — which is the only schedule it could have been charged
+        // under. Nothing above it moves, so no existing reader's offsets change.
+        body.text(&self.scope.encoded());
         body.finish()
     }
 }

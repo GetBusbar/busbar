@@ -1378,7 +1378,7 @@ kind = "kernel"
 # the lines up instead of reading a field, and they name the kernel's own `settle_lines` to do it.
 # 173 -> 168: FIVE FEWER, as measured. The five hand-written fee-evidence assemblies are gone and
 # each leg relays two declarations instead, so the root names less kernel vocabulary than it did.
-count = "183"
+count = "181"
 
 [[cell]]
 crate = "busbar"
@@ -1400,7 +1400,7 @@ kind = "plane"
 # registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
 # asks the same question of all five in the same words, and a sixth answers it without this file
 # changing.
-count = "1904"
+count = "1902"
 
 [[cell]]
 crate = "busbar"
@@ -1434,7 +1434,7 @@ count = "954"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1199"
+count = "1201"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -2863,7 +2863,7 @@ count = "17"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "unit"
-count = "22"
+count = "20"
 
 [[cell]]
 crate = "busbar-unit-scope"

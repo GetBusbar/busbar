@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{
-    Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard,
+    Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard, TariffScope,
 };
 
 use crate::identity::residual;
@@ -81,6 +81,7 @@ fn archive_of(history: History) -> SealedHistory {
 /// A line arriving at `arrived_ms`, with its cache filled from the history it is settled under.
 fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
     let mut line = Posting {
+        scope: TariffScope::node(),
         node: 1,
         node_seq,
         key: key("b"),
