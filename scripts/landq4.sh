@@ -43,6 +43,9 @@ D="${LANDQ_DONE:-$W/target/gate/land-done.txt}"
 L="${LANDQ_LOG:-$W/target/gate/landq.out}"
 PP="${LANDQ_PREPROVED:-$W/target/gate/preproved.txt}"
 QLOCK="${LANDQ_QUEUE_LOCK:-$W/target/gate/land-queue.lock}"
+# THE INBOX (see lq_inbox_fold). The one file an integrator appends to; land-queue.txt itself is
+# only ever written by the runner, under the lock, at a moment of its own choosing.
+INBOX="${LANDQ_INBOX:-$W/target/gate/land-queue.inbox.txt}"
 # THE LINES THE FLEET OWES AN ANSWER TO. A line whose box was reclaimed mid-proof, or whose proof
 # died of a harness failure, learned NOTHING about itself — and it has already spent an hour or
 # three waiting for that nothing. It goes back to the FRONT of the next sweep's list rather than to
@@ -676,6 +679,45 @@ lq_qlock() { # $1 = seconds to wait (default 30); 0 when this shell holds the qu
   return 0
 }
 lq_qunlock() { rm -rf "$QLOCK"; }
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE INBOX: WHERE A HAND-BACK GOES WHILE THE RUNNER IS MID-LOOP
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MEASURED 2026-09-10: lq_queue_rewrite REFUSED twice in one day, both times because the integrator
+# appended a hand-back line to land-queue.txt while the runner was inside its read -> sweep -> pop
+# -> rewrite window. A sweep is six to ten minutes, so that window is very nearly the whole loop:
+# the refusal is not a rare race, it is the ordinary outcome of typing. And the refusal is RIGHT —
+# an edit must never be silently overwritten — so the cost lands on the other side: the loop's whole
+# pop is thrown away and taken again, and a queue of 120 lines goes nowhere for twenty minutes
+# because two lines were handed back.
+#
+# THE FIX IS A SECOND DOOR, NOT A WEAKER GUARD. The integrator only ever APPENDS to
+# target/gate/land-queue.inbox.txt and never touches land-queue.txt; nobody reads the inbox but the
+# runner, at the top of its loop, UNDER THE QUEUE LOCK, BEFORE the stamp is taken. Every line moves
+# to the TAIL of the queue in the order it was written — comments, `#HOLD-*` lines and blanks
+# included, because a hand-back is usually a comment above a hold and an inbox that dropped either
+# would be a queue the integrator has to repair — the inbox is truncated, and only then is the
+# stamp taken. An append made at any point after that moment lands in the inbox rather than in the
+# file the stamp describes, so the rewrite at the end of the loop still matches, the pop stands, and
+# the line joins the queue at the next loop top a minute later.
+#
+# THE REFUSAL GUARD IS UNTOUCHED. A direct edit of land-queue.txt is refused exactly as it was; this
+# is an easier door, not an open one.
+lq_inbox_fold() { # $1 = queue file (default $Q), $2 = inbox (default $INBOX); prints how many lines moved
+  local qf="${1:-$Q}" ib="${2:-$INBOX}" n
+  echo 0 >/dev/null
+  if [ -z "$ib" ] || [ ! -s "$ib" ]; then printf '0\n'; return 0; fi
+  n="$(grep -c '' "$ib" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  [ -f "$qf" ] || : >"$qf"
+  # A QUEUE WHOSE LAST BYTE IS NOT A NEWLINE would take the first inbox line onto the end of its own
+  # last line and produce one payload nobody wrote. `$(tail -c1)` is empty exactly when that byte IS
+  # a newline (the substitution strips it), which is the cheap way to ask.
+  if [ -s "$qf" ] && [ -n "$(tail -c1 "$qf" 2>/dev/null)" ]; then printf '\n' >>"$qf"; fi
+  cat "$ib" >>"$qf" || { printf '0\n'; return 1; }
+  : >"$ib"
+  printf '%s\n' "$n"
+  return 0
+}
 lq_queue_rewrite() { # $1 = candidate file, $2 = stamp taken at the read
   # rc 0 = rewritten, 1 = nothing to write (identical), 2 = REFUSED, the file moved under us
   local now
@@ -3059,6 +3101,59 @@ lq_selftest() {
   _t "  ...and it SURVIVES"                    1 "$(grep -cx -- '--prove THREE-by-hand' "$Q" || true)"
   _t "  ...with every line it had"             3 "$(grep -c . "$Q" || true)"
   _t "  ...and the refusal is logged, in words" 1 "$(grep -c 'REFUSED to rewrite land-queue.txt' "$root/qrw.txt" || true)"
+
+  # ── THE INBOX: WHERE AN INTEGRATOR APPENDS WITHOUT RACING THE RUNNER ──────────────────────────
+  # MEASURED 2026-09-10 on T0-D12: lq_queue_rewrite REFUSED twice in one day, both times because
+  # the integrator appended a hand-back line to land-queue.txt while the runner was inside its
+  # read -> sweep -> pop -> rewrite window. A sweep is six to ten minutes, so that window is very
+  # nearly the whole loop: the refusal is not a rare race, it is the normal outcome of typing. The
+  # refusal itself is right — an edit must never be silently overwritten — and its cost is that the
+  # loop's whole pop is thrown away and taken again, which is how a queue of 120 lines goes nowhere
+  # for twenty minutes because two lines were handed back.
+  #
+  # So there is a file the integrator appends to INSTEAD: target/gate/land-queue.inbox.txt. Nothing
+  # reads it but the runner, at the top of its loop, under the queue lock, before the stamp is
+  # taken — every line moved to the TAIL of land-queue.txt in the order it was written, the inbox
+  # truncated, and only THEN the stamp. An append made at any point after that lands in the inbox,
+  # not in the file the stamp describes, so the rewrite at the end of the loop still matches and the
+  # pop stands. The line is folded in at the next loop top, one minute later.
+  echo "landq4 selftest: the inbox (an append that does not race the runner's rewrite)"
+  local savedIB="${INBOX:-}"; INBOX="$root/inbox.txt"; : >"$INBOX"
+  printf -- '--prove A\n--prove B\n' >"$Q"
+  _t "an empty inbox folds nothing"            0 "$(lq_inbox_fold "$Q" "$INBOX")"
+  local ist; ist="$(lq_qstamp)"                                   # the runner stamps AFTER the fold
+  printf -- '--prove C-handed-back\n' >>"$INBOX"                  # the integrator, mid-sweep
+  printf -- '--prove B\n' >"$root/inbox-keep.txt"                 # the loop pops A
+  _t "an inbox append mid-loop does not refuse the rewrite" 0 "$(lq_queue_rewrite "$root/inbox-keep.txt" "$ist"; echo $?)"
+  _t "  ...so the pop is taken THIS loop"      "--prove B" "$(cat "$Q")"
+  _t "the next loop top folds it"              1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...to the TAIL of the queue"           "--prove C-handed-back" "$(tail -n1 "$Q")"
+  _t "  ...and the inbox is truncated"         0 "$(grep -c . "$INBOX" 2>/dev/null || true)"
+  # COMMENTS AND HOLDS TOO, IN ORDER. A hand-back is usually a `#HOLD-after-<sha>` line with a
+  # comment above it; an inbox that dropped either would be a queue the integrator has to repair.
+  printf '# K5 hand-back\n#HOLD-after-abc1234 --prove held-one\n--prove live-one\n' >"$INBOX"
+  _t "comments and holds fold too"             3 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...in the order they were written"     "# K5 hand-back|#HOLD-after-abc1234 --prove held-one|--prove live-one" \
+     "$(tail -n3 "$Q" | tr '\n' '|' | sed 's/|$//')"
+  # A QUEUE WITH NO FINAL NEWLINE. Appending to it blind would graft the first inbox line onto the
+  # last queue line and produce one payload nobody wrote.
+  printf -- '--prove A' >"$Q"; printf -- '--prove B\n' >"$INBOX"
+  _t "a queue with no final newline gains one" 1 "$(lq_inbox_fold "$Q" "$INBOX")"
+  _t "  ...so the folded line is its own line" 2 "$(grep -c . "$Q" || true)"
+  # AND THE REFUSAL STILL STANDS FOR A DIRECT EDIT. The inbox is an easier door, not an open one.
+  printf -- '--prove A\n--prove B\n' >"$Q"; ist="$(lq_qstamp)"
+  printf -- '--prove BY-HAND\n' >>"$Q"
+  printf -- '--prove B\n' >"$root/inbox-direct.txt"
+  _t "a DIRECT edit of land-queue.txt is still refused" 2 "$(lq_queue_rewrite "$root/inbox-direct.txt" "$ist" >/dev/null 2>&1; echo $?)"
+  _t "  ...and that edit survives"             1 "$(grep -cx -- '--prove BY-HAND' "$Q" || true)"
+  INBOX="$savedIB"
+  _t "the runner folds the inbox at the loop top" 1 "$(grep -c '^  infold="$(lq_inbox_fold ' "$LQ_SRC")"
+  _t "  ...under the queue lock"               1 \
+     "$( [ "$(grep -n '^  if ! lq_qlock; then' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n '^  infold="$(lq_inbox_fold ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and the stamp is taken AFTER the fold" 1 \
+     "$( [ "$(grep -n '^  infold="$(lq_inbox_fold ' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n '^  qstamp="\$(lq_qstamp)"' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   # ONE WRITER.
   rm -rf "$QLOCK"
   _t "the queue lock is taken"                 0 "$(lq_qlock 2; echo $?)"
@@ -3926,6 +4021,12 @@ while true; do
   # A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) — before the head is read, so a
   # line freed by the last batch can be this batch's head, base fix and all.
   lq_release_holds "$W" | while IFS= read -r s; do [ -n "$s" ] && lq_log "queue: $s"; done
+  # THE INBOX, FOLDED TO THE TAIL BEFORE THE STAMP IS TAKEN (see lq_inbox_fold). This is the only
+  # reader of it, and the stamp below is what makes the fold worth anything: an append made from
+  # here on goes to the inbox, not to the file this stamp describes, so the rewrite at the end of
+  # this loop cannot be refused for it.
+  infold="$(lq_inbox_fold "$Q" "$INBOX")"
+  [ "${infold:-0}" = 0 ] || lq_log "queue: $infold line(s) folded in from the inbox to the tail of land-queue.txt"
   qstamp="$(lq_qstamp)"
   headline="$(lq_head_line "$Q")"
   if [ -n "$headline" ] && lq_line_is_base_fix "$headline" "$W"; then
