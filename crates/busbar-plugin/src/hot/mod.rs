@@ -20,6 +20,14 @@
 //! * **Sized-struct / append-only discipline** — every cross-boundary POD struct here LEADS with a
 //!   `size: u32` and a `version: u16`; a receiver reads a field only when `size` proves the sender
 //!   wrote it (see [`read_sized_field`](crate::read_sized_field)). New fields may ONLY be appended.
+//! # The one WIRED tier: [`pipe`]
+//!
+//! [`pipe`] is this lane's one non-stub module: the governed byte-DUPLEX tier (a child process whose
+//! stdin/stdout are the duplex), whose `pipe_read`/`pipe_write` bodies an engine points its
+//! [`host::PlaneHostVtable`] slots straight at. It lives HERE because it names nothing but this lane's
+//! own PODs and `std` — no engine type appears in it, which is why it could leave the engine at all.
+//! The dispatch arena and the referenced-value resolver both stay the CALLER's (see the module).
+//!
 //! * **`extern "C-unwind"` fn-pointer vtables** ([`host::PlaneHostVtable`], [`decl::PlaneDecl`]) —
 //!   POD args by pointer, small results by value, large results into a caller
 //!   `&mut MaybeUninit<Out>` written INSIDE a `catch_unwind` and marked init only on Ok (the
@@ -34,6 +42,7 @@
 
 pub mod decl;
 pub mod host;
+pub mod pipe;
 pub mod pod;
 pub mod workitem;
 

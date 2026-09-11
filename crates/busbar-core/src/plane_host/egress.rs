@@ -60,6 +60,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::JoinHandle;
@@ -528,11 +529,267 @@ pub(crate) fn egress_open(
             // A governed child process, its stdin/stdout the duplex `PipeId` — spawned ONLY under the
             // HOST program allowlist. FFI-F3: no operator config wires a subprocess program allowlist
             // over the FFI seam today, so the host authorizes NO program (`&[]`) and every plane-driven
-            // subprocess open is REFUSED at the allowlist. See [`super::pipe`].
-            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, &[], out),
+            // subprocess open is REFUSED at the allowlist. See [`open_subprocess`].
+            EgressKind::Subprocess => open_subprocess(state.scope, d, &[], out),
         }
     }))
     .unwrap_or(StatusClass::Fault)
+}
+
+/// Decode the packed `program + argv` blob the [`EgressDesc::target`](EgressDesc) carries for a
+/// subprocess open: a sequence of records, each `u32 len` (LE) then `len` bytes. The FIRST record is
+/// the program path; the rest are argv. Malformed input yields `None` (fail-closed — an undecodable
+/// command is refused, never guessed into a spawn).
+///
+/// # Safety
+/// `(ptr, len)` MUST describe a live, initialized byte range for the call.
+unsafe fn decode_command(ptr: *const u8, len: usize) -> Option<(String, Vec<String>)> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut tokens: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let end = i.checked_add(4)?;
+        let word = bytes.get(i..end)?;
+        i = end;
+        let n = u32::from_le_bytes(word.try_into().ok()?) as usize;
+        let tok_end = i.checked_add(n)?;
+        let tok = bytes.get(i..tok_end)?;
+        i = tok_end;
+        tokens.push(String::from_utf8_lossy(tok).into_owned());
+    }
+    let mut it = tokens.into_iter();
+    let program = it.next()?;
+    Some((program, it.collect()))
+}
+
+/// The result of resolving the child's environment: the fully-resolved `(name, value)` pairs the child
+/// will get, or a fail-closed refusal (a malformed record, or a secret reference the host could not
+/// resolve — the child is NOT spawned with a missing variable).
+enum EnvOutcome {
+    /// The child's whole environment, resolved. Applied under `env_clear()` so it is the ONLY
+    /// environment the child sees.
+    Ready(Vec<(String, String)>),
+    /// A record was malformed or a secret could not be resolved — refuse the spawn.
+    Refuse,
+}
+
+/// The child-environment VALUE-KIND byte in a packed env record: a literal value, or a host-resolved
+/// secret reference (see [`EgressDesc::env_ptr`]).
+const ENV_KIND_PLAIN: u8 = 0;
+const ENV_KIND_SECRET: u8 = 1;
+
+/// Decode + RESOLVE the packed subprocess environment the [`EgressDesc::env_ptr`] tail carries. Each
+/// record is `u32 name_len` (LE), `name_len` name bytes, a `u8` value-kind, a `u32 value_len` (LE),
+/// then `value_len` value bytes. A literal value is taken verbatim; a secret reference is the opaque
+/// JSON of a host secret-ref the host turns into plaintext HERE (never off a plane POD), through the
+/// SAME built-in resolver the in-process stdio transport uses — so a rotated secret needs no restart
+/// and the plaintext never crosses the seam. Fail-closed: a malformed record or an unresolvable secret
+/// refuses the whole spawn rather than starting the child with a missing variable.
+///
+/// # Safety
+/// `(ptr, len)`, when non-null, MUST describe a live, initialized byte range for the call.
+unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
+    if ptr.is_null() || len == 0 {
+        return EnvOutcome::Ready(Vec::new()); // no records ⇒ an empty (cleared) child environment.
+    }
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let Some(name) = read_len_prefixed(bytes, &mut i) else {
+            return EnvOutcome::Refuse;
+        };
+        let Some(&kind) = bytes.get(i) else {
+            return EnvOutcome::Refuse;
+        };
+        i += 1;
+        let Some(value_bytes) = read_len_prefixed_bytes(bytes, &mut i) else {
+            return EnvOutcome::Refuse;
+        };
+        let value = match kind {
+            ENV_KIND_PLAIN => String::from_utf8_lossy(value_bytes).into_owned(),
+            ENV_KIND_SECRET => {
+                // The value is the OPAQUE JSON of a host secret-ref; deserialize and resolve it HERE
+                // through the built-in resolver — the same `resolve_builtin_string` the in-process
+                // stdio spawn reads a `ChildEnvValue::Secret` with. A failure refuses the spawn.
+                let Ok(secret_ref) =
+                    serde_json::from_slice::<crate::config::SecretRef>(value_bytes)
+                else {
+                    return EnvOutcome::Refuse;
+                };
+                match crate::config::secret::resolve_builtin_string(&secret_ref) {
+                    Ok(plaintext) => plaintext,
+                    Err(_) => return EnvOutcome::Refuse, // unresolvable secret ⇒ fail-closed.
+                }
+            }
+            _ => return EnvOutcome::Refuse, // an unknown value-kind is never guessed.
+        };
+        out.push((String::from_utf8_lossy(name).into_owned(), value));
+    }
+    EnvOutcome::Ready(out)
+}
+
+/// Read a `u32 len` (LE) then `len` bytes as a borrowed slice, advancing `*i`; `None` on truncation.
+fn read_len_prefixed_bytes<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    let end = i.checked_add(4)?;
+    let word = bytes.get(*i..end)?;
+    *i = end;
+    let n = u32::from_le_bytes(word.try_into().ok()?) as usize;
+    let tok_end = i.checked_add(n)?;
+    let slice = bytes.get(*i..tok_end)?;
+    *i = tok_end;
+    Some(slice)
+}
+
+/// As [`read_len_prefixed_bytes`], but the name arm — kept a distinct helper for the read site's
+/// readability (a record reads its name, its kind, then its value).
+fn read_len_prefixed<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    read_len_prefixed_bytes(bytes, i)
+}
+
+/// Read the subprocess working directory off the [`EgressDesc`] tail: `Some(dir)` when a non-empty cwd
+/// was written, `None` (⇒ inherit the host's cwd) when the field is absent or empty. Read only behind
+/// the sized-struct guard so a sender that predates the tail leaves the host's cwd untouched.
+fn read_child_cwd(d: &EgressDesc) -> Option<String> {
+    let ptr = read_sized_field!(d, d.size, EgressDesc, cwd_ptr)?;
+    let len = read_sized_field!(d, d.size, EgressDesc, cwd_len)?;
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(cwd_ptr, cwd_len)` is a live borrowed range for the call (ABI discipline).
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND it is
+/// explicitly named on the HOST-supplied program allowlist. This is policy the HOST owns end to end —
+/// the plane's [`EgressDesc`] carries only DATA (never a capability), so the plane's `allowlist_scope`
+/// bit is IGNORED here (FFI-F2/F3): a plane cannot self-grant the subprocess tier.
+///
+/// The FFI vtable slot passes an EMPTY allowlist (`&[]`) because no operator config wires a subprocess
+/// program allowlist over the FFI seam today — so every plane-driven subprocess open is REFUSED
+/// (fail-closed by denial; the capability is disabled at the seam, not merely narrowed). A caller that
+/// legitimately owns a host-authored allowlist (the in-core stdio-transport posture, exercised in
+/// tests) passes it explicitly and only its named absolute programs are admissible.
+fn command_admissible(program: &str, program_allowlist: &[String]) -> bool {
+    std::path::Path::new(program).is_absolute() && program_allowlist.iter().any(|p| p == program)
+}
+
+/// Open a governed SUBPROCESS pipe. Decodes + allowlist-checks the command, spawns the child with piped
+/// stdio, hands the spawned duplex to [`busbar_plugin::hot::pipe::open_duplex`], registers the ARENA
+/// closer, and writes an [`EgressOpen`] whose `pipe` is the duplex [`PipeId`]. Called from
+/// [`egress_open`] for [`EgressKind::Subprocess`]; the caller owns the `catch_unwind` and the null
+/// checks.
+///
+/// Everything above the spawn is POLICY and PRIVILEGE — what a plane may cause to run on this host,
+/// and which of the operator's secrets the child is handed — so it stays in the engine. What crosses
+/// to the plane is only the ABI's own `PipeId` and two byte verbs, which is why the DUPLEX half of
+/// this tier could leave for `busbar_plugin::hot::pipe` and this half could not. Takes the dispatch
+/// `scope` directly (never the wider [`HostState`] — the egress family reads no `App`), exactly as
+/// [`open_http`] does.
+fn open_subprocess(
+    scope: &DispatchScope,
+    d: &EgressDesc,
+    program_allowlist: &[String],
+    out: *mut MaybeUninit<EgressOpen>,
+) -> StatusClass {
+    // SAFETY: `(target_ptr, target_len)` is a live borrowed range for the call (ABI discipline).
+    let Some((program, argv)) = (unsafe { decode_command(d.target_ptr, d.target_len) }) else {
+        return StatusClass::Refused;
+    };
+    if !command_admissible(&program, program_allowlist) {
+        // Not absolute, or not on the HOST program allowlist. The FFI seam passes an empty allowlist,
+        // so this REFUSES every plane-driven subprocess spawn (FFI-F3).
+        return StatusClass::Refused;
+    }
+    // THE CHILD'S ENVIRONMENT, resolved host-side and applied under `env_clear()` so the child gets
+    // ONLY these variables — NEVER the host's own environment, which holds provider API keys, store
+    // credentials and admin tokens. Inheriting them (as this path once did) would make every governed
+    // subprocess a silent credential-exfiltration primitive; clearing first is the fix the in-process
+    // stdio transport already applies, restated at the seam. A malformed record or an unresolvable
+    // secret refuses the spawn rather than starting the child with a missing variable.
+    // The packed-environment tail, read only behind the sized-struct guard (a sender that predates it
+    // gets an empty, cleared child environment). Read OUTSIDE the `unsafe` below so the guard macro's
+    // own pointer read is not nested under it.
+    let env_ptr = read_sized_field!(d, d.size, EgressDesc, env_ptr).unwrap_or(std::ptr::null());
+    let env_len = read_sized_field!(d, d.size, EgressDesc, env_len).unwrap_or(0);
+    // SAFETY: `(env_ptr, env_len)`, when present, is a live borrowed range for the call (ABI).
+    let env = match unsafe { resolve_child_env(env_ptr, env_len) } {
+        EnvOutcome::Ready(env) => env,
+        EnvOutcome::Refuse => return StatusClass::Refused,
+    };
+    // The working directory (empty ⇒ inherit the host's own) and the stderr disposition (default
+    // discard; inherit sends the child's diagnostics to the host's stderr where an operator reads
+    // them), both read only behind the sized-struct guard so a sender that predates the tail keeps the
+    // pre-enrichment shape (an empty environment, the host's cwd, a discarded stderr).
+    let cwd = read_child_cwd(d);
+    let stderr = if read_sized_field!(d, d.size, EgressDesc, stderr_inherit) == Some(1) {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    };
+    // NO SHELL: the program goes to `Command::new` and argv as a vector — never a shell string, so a
+    // metacharacter in an arg has no meaning.
+    let mut builder = Command::new(&program);
+    builder
+        .args(&argv)
+        // THE WHOLE environment, not additions to the host's — `env_clear()` first, then only the
+        // resolved records. See the note above.
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr);
+    if let Some(dir) = &cwd {
+        builder.current_dir(dir);
+    }
+    let child = builder.spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(_) => return StatusClass::Fault, // spawn failed (e.g. ENOENT) — a host-side fault.
+    };
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return StatusClass::Fault;
+    };
+    // From here the child's lifecycle is the DUPLEX's, not this function's.
+    let pipe = busbar_plugin::hot::pipe::open_duplex(child, stdin, stdout);
+    // The arena reclaims on dispatch-drop: kill + reap the child, so a cancelled dispatch cannot leak a
+    // process. (We hand the plane the global id and ignore the arena's own id, like `register_egress`.)
+    let _ = scope.register_pipe(Box::new(move || {
+        busbar_plugin::hot::pipe::close_pipe(pipe);
+    }));
+
+    let open = EgressOpen {
+        size: std::mem::size_of::<EgressOpen>() as u32,
+        version: POD_VERSION,
+        _reserved: 0,
+        // A subprocess is a duplex byte channel, not a one-shot egress: the plane drives the PipeId.
+        id: EgressId::NONE,
+        pipe,
+        head: EgressHead {
+            size: std::mem::size_of::<EgressHead>() as u32,
+            version: POD_VERSION,
+            status_code: 0, // a raw byte channel has no HTTP status.
+            observed_spki_ptr: std::ptr::null(),
+            observed_spki_len: 0,
+            resp_headers_ptr: std::ptr::null(), // a raw byte channel surfaces no response headers.
+            resp_headers_len: 0,
+            client_identity_offered: 0, // a raw byte channel offers no client identity.
+            _reserved4: [0; 7],
+        },
+    };
+    // SAFETY: `out` is non-null (checked by the caller) and writable for one `EgressOpen`; written on Ok.
+    unsafe {
+        (*out).write(open);
+    }
+    StatusClass::Ok
 }
 
 /// The HTTP open: resolve-then-pin (or honor the plane's already-judged pin — Design A), connect over
@@ -1612,3 +1869,11 @@ pub(crate) fn drive_close(id: EgressId) -> StatusClass {
 #[cfg(test)]
 #[path = "egress_tests.rs"]
 mod tests;
+
+// The PIPE-tier battery drives `pipe_read`/`pipe_write` (now `busbar_plugin::hot::pipe`'s) through the
+// REAL host vtable over a live engine snapshot, and the governed spawn through [`open_subprocess`]
+// above — a SERVED-PATH battery, which only the crate that composes the vtable can construct. It
+// follows the open it drives.
+#[cfg(test)]
+#[path = "tests/pipe_tests.rs"]
+mod pipe_tests;

@@ -13,7 +13,7 @@
 //! untrusted seam refuses the spawn outright.
 
 use super::*;
-use crate::plane_host::{recover, with_dispatch_scope, HostState};
+use crate::plane_host::with_dispatch_scope;
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{EgressDesc, EgressKind, EgressOpen, PipeId, StatusClass};
@@ -70,15 +70,17 @@ fn subprocess_desc(command: &[u8]) -> EgressDesc {
 
 /// Open a governed subprocess over the HOST-AUTHORED program allowlist — the in-core posture a
 /// first-party host holds (the FFI vtable slot, by contrast, passes an EMPTY allowlist and refuses).
+/// Drives the engine's own [`open_subprocess`] so the child is registered for reclaim exactly as a
+/// served open registers it; the duplex under it is `busbar_plugin::hot::pipe`'s.
 fn host_open_subprocess(
     host: HostCtx,
     desc: &EgressDesc,
     program_allowlist: &[String],
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
-    // SAFETY: live HostState minted by with_dispatch_scope.
-    let state: &HostState = unsafe { recover(host) };
-    open_subprocess(state, desc, program_allowlist, out)
+    // SAFETY: live HostState minted by with_dispatch_scope (the scope the arena half registers into).
+    let state: &HostState = unsafe { crate::plane_host::recover(host) };
+    open_subprocess(state.scope, desc, program_allowlist, out)
 }
 
 /// A packed child-environment record: `u32 name_len | name | u8 kind | u32 value_len | value`.
@@ -333,11 +335,19 @@ fn arena_drop_reclaims_and_kills_an_unclosed_subprocess() {
             StatusClass::Ok
         );
         // SAFETY: Ok ⇒ initialized. Deliberately do NOT close — the dispatch ends with it open.
-        unsafe { out.assume_init() }.pipe
+        let pipe = unsafe { out.assume_init() }.pipe;
+        // OPEN here, so the post-drop assertion below is a reclaim and not a vacuity.
+        assert!(
+            busbar_plugin::hot::pipe::is_open(pipe),
+            "a live subprocess is open in the registry until its arena reclaims it"
+        );
+        pipe
     });
-    // The dispatch scope dropped: its arena Closer killed the child and removed the backend.
+    // The dispatch scope dropped: its arena Closer killed the child and removed the backend. Asked of
+    // the module that OWNS the pipe registry (`busbar_plugin::hot::pipe`), never of a same-named
+    // registry next door — a reclaim proof that reads the wrong map is a proof of nothing.
     assert!(
-        !REGISTRY.lock().unwrap().contains_key(&leaked.0),
+        !busbar_plugin::hot::pipe::is_open(leaked),
         "arena drop reclaims (kills + reaps) a subprocess the plane never closed"
     );
 }

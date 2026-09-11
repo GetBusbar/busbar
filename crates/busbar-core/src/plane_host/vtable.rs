@@ -79,9 +79,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         verify_decide: Some(trust::verify_decide_q),
         approval_redeem_q: Some(trust::approval_redeem_q),
         // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
-        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
-        pipe_read: Some(super::pipe::pipe_read),
-        pipe_write: Some(super::pipe::pipe_write),
+        //    keyed by a `PipeId`, wired over the real governed child process the ABI crate now owns
+        //    (`busbar_plugin::hot::pipe` — the tier named no engine type, so it left). ─────────────
+        pipe_read: Some(busbar_plugin::hot::pipe::pipe_read),
+        pipe_write: Some(busbar_plugin::hot::pipe::pipe_write),
         // ── The DURABLE journal seam (minor-9): UNWIRED. Every record this host lands is a
         //    kernel-held record leg of the composition root's, which holds its own chain position
         //    and reaches the published store protocol directly; nothing registers a stream here any
