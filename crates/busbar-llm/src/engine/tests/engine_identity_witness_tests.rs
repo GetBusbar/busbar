@@ -87,3 +87,57 @@ fn engine_never_branches_on_operation_identity() {
         }
     }
 }
+
+/// ONE SHELL AROUND THE ENGINE, NOT TWO.
+///
+/// `forward_with_pool_parsed` is the shell that wraps the dispatch core
+/// (`forward_with_pool_parsed_inner`): it stamps the per-request correlation id, opens the `forward`
+/// span, captures the completion shape before the parsed body moves into the core, times the
+/// `WrapSetup` profiler stage, and fires the response-stage taps once the head is known. Every one
+/// of those is a STEP, and a step is served once.
+///
+/// When the LLM plane was switched onto the composition root, the Route step re-implemented that
+/// shell beside the original and called the dispatch core directly — the same span, the same
+/// `next_request_id`, the same completion-shape capture, the same `fire_stage_taps` projection,
+/// written twice. Two copies of one step is exactly the shape that drifts, and it already had:
+/// the copy omitted `profile::Stage::WrapSetup`, so the SHIPPED leg (`root-llm`, default on)
+/// reported zero samples for a stage the legacy leg timed, and no oracle cell could see it because
+/// the profiler is not on the wire.
+///
+/// The invariant that makes that class of drift impossible: the dispatch core has exactly ONE
+/// caller, and it is the shell. Anything else reaching past the shell is a second shell growing
+/// beside the first.
+#[test]
+fn the_dispatch_core_has_exactly_one_caller() {
+    // Production source only — a test may call the core directly to probe it in isolation.
+    let production = [
+        ("src/engine/pipeline.rs", include_str!("../pipeline.rs")),
+        ("src/unit/route.rs", include_str!("../../unit/route.rs")),
+    ];
+    const CORE: &str = "forward_with_pool_parsed_inner(";
+    // The definition site is not a call.
+    const DEF: &str = "async fn forward_with_pool_parsed_inner(";
+
+    let mut callers: Vec<String> = Vec::new();
+    for (file, src) in production {
+        for (i, line) in src.lines().enumerate() {
+            // `//` and `//!` lines name the core in prose all over this engine; prose is not a call.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if line.contains(CORE) && !line.contains(DEF) {
+                callers.push(format!("{file}:{}", i + 1));
+            }
+        }
+    }
+    assert_eq!(
+        callers.len(),
+        1,
+        "the dispatch core must have exactly ONE caller — the shell that stamps the request id, \
+         times WrapSetup and fires the response taps. Found {}: {:?}. A second caller is a second \
+         shell, and the two drift in exactly the fields no wire byte records.",
+        callers.len(),
+        callers
+    );
+}

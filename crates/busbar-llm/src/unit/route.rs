@@ -59,26 +59,27 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use serde_json::Value;
 
 use busbar_caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
-use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;
 
 use crate::unit::meter::MeterFacts;
 
-// R4-0a. THE ALREADY-NEUTRAL HALF, NAMED AT ITS TRUE HOME. `fire_stage_taps`, `APPLICATION_JSON`
-// and `KIND_NOT_FOUND` are defined in the neutral substrate and were reaching this step only
-// because `engine/mod.rs` re-exports them into the flattened engine namespace. Naming the substrate
-// directly is a BY-IDENTITY repoint — the very same items, resolved one hop earlier — so the bytes
-// this step emits cannot change, and one more engine name leaves the step files.
-use busbar_substrate::proxy::proxy_vocab::fire_stage_taps;
+// R4-0a. THE ALREADY-NEUTRAL HALF, NAMED AT ITS TRUE HOME. `APPLICATION_JSON` and `KIND_NOT_FOUND`
+// are defined in the neutral substrate and were reaching this step only because `engine/mod.rs`
+// re-exports them into the flattened engine namespace. Naming the substrate directly is a
+// BY-IDENTITY repoint — the very same items, resolved one hop earlier — so the bytes this step
+// emits cannot change, and one more engine name leaves the step files.
+//
+// `fire_stage_taps` was named here too, for the response-stage taps this step used to fire out of
+// its own copy of the engine's shell. The shell is called now rather than copied, so the tap fires
+// where it always did — inside `forward_with_pool_parsed` — and the name has left this file.
 use busbar_substrate::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
 
 use crate::engine::{
-    capture_stage_shape, forwardable_client_header_names, EngineTables, GateRejected, LazyBody,
-    NativeRuntime, TapCell, UsageSink, WeightedLane,
+    forwardable_client_header_names, EngineTables, LazyBody, NativeRuntime, TapCell, UsageSink,
+    WeightedLane,
 };
 use crate::native_ingress::affinity_header_for;
 
@@ -273,7 +274,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         destination,
         headers,
         body,
-        mut parsed,
+        parsed,
         caller_token,
         resolved_gov_key,
         usage_sink,
@@ -339,104 +340,32 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // else. Recorded here, before the move, because after it there is nothing left to ask.
     let accrued = usage_sink.is_some();
 
-    let span = tracing::span!(
-        HOTPATH_LEVEL,
-        "forward",
-        pool = %pool_name,
-        ingress = %proto,
-        op = op.name(),
-        transport = op.transport().name(),
-        request_id = tracing::field::Empty
-    );
-    let resp = {
-        use tracing::Instrument;
-        async move {
-            // THE CORRELATION STAMP, taken exactly once and only here. Every routing message the
-            // walk emits and the completion tap fired below carry this same value; that identity is
-            // the whole join-key contract, and it is why the read is not repeated after the walk
-            // has returned and the walk's own context has gone out of scope.
-            let request_id = host.next_request_id();
-            tracing::Span::current().record("request_id", request_id);
-            // The completion shape is captured BEFORE the parsed body moves into the walk. Zero cost
-            // when no response tap is configured — the empty-list branch builds nothing and never
-            // materializes the body tree.
-            let completion_shape = if host.tap_hooks_response().is_empty() {
-                None
-            } else {
-                let stream = parsed
-                    .as_ref()
-                    .and_then(|b| b.probe().get("stream"))
-                    .and_then(|s| s.as_bool())
-                    .unwrap_or(false);
-                let dom: Option<&Value> = match parsed.as_mut() {
-                    Some(l) => l.ensure_dom().ok().map(|m| &*m),
-                    None => None,
-                };
-                Some(capture_stage_shape(
-                    dom,
-                    &body,
-                    req_content_type,
-                    pool_name,
-                    proto,
-                    Some(op.operation),
-                    stream,
-                    request_id,
-                ))
-            };
-
-            // THE WALK: the deadline check per hop, the one pick site, the one attempt, the
-            // context-length narrowing and the exhaustion hand-off. Called, not copied.
-            let resp = crate::engine::pipeline::forward_with_pool_parsed_inner(
-                host,
-                rt,
-                cands,
-                body,
-                parsed,
-                req_content_type,
-                caller_token,
-                resolved_gov_key,
-                pool_name,
-                affinity_key.as_deref(),
-                proto,
-                op,
-                usage_sink,
-                request_id,
-                client_fwd,
-            )
-            .await;
-
-            if let Some(shape) = completion_shape {
-                // A gate-produced rejection is its own synthetic outcome; otherwise the served
-                // status decides. For a streaming response this fires at head time — the status is
-                // known, the body is still flowing.
-                let outcome = if resp.extensions().get::<GateRejected>().is_some() {
-                    "rejected_by_gate"
-                } else if resp.status().is_success() {
-                    "ok"
-                } else {
-                    "failed"
-                };
-                fire_stage_taps(
-                    host.tap_hooks_response(),
-                    &shape,
-                    busbar_substrate::hooks::wire::HookStageProjection {
-                        at: "response",
-                        model: None,
-                        attempt_number: None,
-                        remaining_candidates: None,
-                        previous_failure: None,
-                        outcome: Some(outcome),
-                        status: Some(resp.status().as_u16()),
-                    },
-                    resolved_gov_key.and_then(|k| k.group.as_deref()),
-                    &**host,
-                );
-            }
-            resp
-        }
-        .instrument(span)
-        .await
-    };
+    // THE ONE SHELL AROUND THE ENGINE, CALLED RATHER THAN COPIED. The correlation-id stamp, the
+    // `forward` span, the completion shape captured before the parsed body moves into the dispatch
+    // core, the `WrapSetup` profiler stage and the response-stage taps fired on the head are ONE
+    // step — and a step is served once, by the function that owns it. This step used to be written
+    // out a second time here, beside the original, so that the Route step could call the dispatch
+    // core directly; the two copies then drifted in exactly the place nothing on the wire records
+    // (the copy never timed `WrapSetup`, so the shipped leg reported zero samples for a stage the
+    // plane's own shell timed). Calling it is what makes the two legs the same shell instead of two
+    // that agree today.
+    let resp = crate::engine::forward_with_pool_parsed(
+        host,
+        rt,
+        cands,
+        body,
+        parsed,
+        req_content_type,
+        caller_token,
+        resolved_gov_key,
+        pool_name,
+        affinity_key.as_deref(),
+        proto,
+        op,
+        usage_sink,
+        client_fwd,
+    )
+    .await;
     // THE TAP'S REPORT-BACK, taken off the response the walk handed back. The serving lane, the
     // usage the dialect's reader found and the terminal-error fact are resolved INSIDE the walk, at
     // the tap that accrues them — the walk answers with a response, not with a lane — so this is how

@@ -1,23 +1,24 @@
 # WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
-# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
-# it is a keep-branch artefact, and this branch is a keep branch.
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch, and
+# by scripts/prove-remote.sh when the same legs are run on a fleet box. It scopes the two expensive
+# legs of the run to what the branch actually touched, so a verdict says something specific instead
+# of "everything, slowly". The INTEGRATION tree carries no such file — it is a keep-branch artefact,
+# and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch collapses the two
+#              copies of the engine's forward SHELL (the correlation-id stamp, the `forward` span,
+#              the completion-shape capture, the `WrapSetup` profiler stage and the response-stage
+#              taps) into the one function that owns it, so the Route step CALLS the shell instead of
+#              re-implementing it beside the original. That is the whole money path of the LLM plane:
+#              every dialect, every outcome class, the failover walk, the breaker's cooldown, and the
+#              billing/ledger rows the served request settles onto. `neutrality` and `boot` are in
+#              scope because the shipped leg (`root-llm`, default on) is the one being changed and a
+#              deployment must still not be able to tell from a route set or a boot line which way
+#              the binary was built.
+#   tests    — the plane and everything that compiles against its step files: the binary crate that
+#              composes the leg (`busbar`, which carries the switch-over's own identity proof), the
+#              plane crate itself, its codec, the egress unit that holds the moved engine, the plane
+#              crate the parse half is moving to, and `xtask` for the construction gates.
+families = '^(llm|billing|ledger|route\.failover|cooldown|neutrality|boot)([|.]|$)'
+tests = ["busbar", "busbar-llm", "busbar-llm-codec", "busbar-unit-egress", "busbar-plane-llm", "xtask"]
