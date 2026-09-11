@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "653"
+count = "705"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1861"
+count = "1920"
 
 [[cell]]
 crate = "busbar"
@@ -1552,7 +1552,7 @@ count = "1090"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1167"
+count = "1171"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -3207,7 +3207,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "717"
+count = "718"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3217,7 +3217,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "838"
+count = "839"
 
 [[cell]]
 crate = "busbar-voice"

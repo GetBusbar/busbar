@@ -2077,6 +2077,10 @@
         "session_max_secs": {
           "optional": true,
           "type": "u32"
+        },
+        "upstreams": {
+          "optional": true,
+          "type": "Vec<UpstreamRow>"
         }
       },
       "kind": "struct",
@@ -2191,6 +2195,25 @@
         "own",
         "passthrough"
       ]
+    },
+    "UpstreamRow": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "dialect": {
+          "optional": false,
+          "type": "String"
+        },
+        "host": {
+          "optional": false,
+          "type": "String"
+        },
+        "lane": {
+          "optional": false,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
     },
     "UrlFetch": {
       "deny_unknown_fields": true,

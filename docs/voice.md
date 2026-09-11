@@ -78,6 +78,7 @@ this never fires.
 | `session_max_secs` | u32 | no | `3600` (60 min) | Hard session wall-clock ceiling. |
 | `context_window_tokens` | u32 | no | `32768` | Context-window ceiling. |
 | `max_output_tokens` | u32 | no | `4096` | Per-response output-token ceiling. |
+| `upstreams` | list | no | empty | The upstreams this plane may dial, one row per configured dialect, in declaration order. Each row is `dialect:` (the dialect's registered name), `host:` and `lane:` (the priced lane it is charged on). An absent or empty list composes nothing, which is byte-identically the posture a deployment that wrote no block already had. Declaration order is load-bearing: the first row is what a session whose own dialect has no configured upstream dials. |
 
 An absent `streams:` block decodes byte-identically to `StreamsCfg::default()`
 (`crates/busbar-voice/src/config.rs:176-181`), so a deployment that writes nothing still gets this
@@ -108,7 +109,26 @@ streams:
   session_max_secs: 1800
   context_window_tokens: 16384
   max_output_tokens: 2048
+  upstreams:
+    - dialect: openai-realtime
+      host: api.openai.com
+      lane: voice-realtime
+    - dialect: gemini-live
+      host: generativelanguage.googleapis.com
+      lane: voice-live
 ```
+
+**A row naming a dialect this build does not carry refuses to boot**, and so does one naming a
+dialect that can only be *served* (the carrier leg) rather than *dialled*. Both are the same rule:
+a row the composition cannot resolve would be a leg the operator declared and the node would serve as
+silence, and silence on a claimed URL is worse than a 404
+(`crates/busbar/src/root/units_voice.rs`, `UpstreamRefusal`). The composition root resolves each
+written name in the dialect table it registered at boot and interns each `host:`/`lane:` exactly once
+(`crates/busbar/src/main.rs`, `composed_upstreams`).
+
+**Until this section carried `upstreams:`, the root composed the plane with an EMPTY list** — and an
+empty list settles no destination, so every session opened through the composition root had no leg to
+dial at all. That is the blocker this key closes.
 
 `streams:` carries no secret reference of any kind — there is no credential field in this grammar at
 all (`crates/busbar-voice/src/config.rs:105-113`), and it does not need one. The realtime provider's
@@ -126,6 +146,8 @@ name a model with no provider entry — and no provider is composed, which is th
 | Refusal | Condition |
 |---|---|
 | an unknown key under `streams:` | `deny_unknown_fields` |
+| an `upstreams:` row naming a dialect this build did not register | `UpstreamRefusal::Unregistered` |
+| an `upstreams:` row naming an ingress-only dialect (the carrier leg) | `UpstreamRefusal::NotDialable` |
 | `streams:` is configured but this build was compiled without the voice plane | `crates/busbar-core/src/config/mod.rs:5040-5053` |
 
 There is no equivalent of MCP's empty-`auth.chain` boot refusal on this plane, and no `config_validate`

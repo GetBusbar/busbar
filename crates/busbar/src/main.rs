@@ -789,6 +789,7 @@ fn register_ws_arrivals() {
 #[cfg(feature = "root-voice")]
 fn mount_root_voice(
     limits: &busbar_substrate::config::limits::LimitsResolved,
+    written: &[busbar_voice::config::UpstreamRow],
 ) -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
@@ -819,7 +820,44 @@ fn mount_root_voice(
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls()
+    compose_voice_governed_calls(written)
+}
+
+/// THE SECTION'S ROWS, COMPOSED INTO THE LIST THE MOUNTED NODE IS BUILT WITH.
+///
+/// Three steps and none of them names an instance: the block is read through its owner's own config
+/// face, each written name is resolved in the table `root::registry::seal` registered, and every
+/// host and lane is interned once.
+///
+/// LEAKED ONCE, HERE. The composed row is borrowed for the life of the program because the list
+/// outlives every unit that reads it, and this runs once per process at boot — the same fixed
+/// registration-time term the interner is. A caller that ran it per dial would be a leak per
+/// session, which is why there is exactly one call site.
+///
+/// A ROW THAT DOES NOT COMPOSE REFUSES THE BOOT, with a non-zero exit, for the reason the seal's own
+/// refusal is one: a declared leg this node cannot dial is a claimed URL served as silence, and
+/// finding that out from a caller is finding it out too late.
+#[cfg(feature = "root-voice")]
+fn composed_upstreams(
+    written: &[busbar_voice::config::UpstreamRow],
+) -> &'static [busbar_plane_streams::Upstream] {
+    if written.is_empty() {
+        // An unwritten list, or a grammar carrying no such block at all — a build with its owner
+        // compiled out. The two are one answer here and should be: nothing is configured.
+        //
+        // Every question the loop asks is still answered, and the answer to "where does this go" is
+        // the destination the trust unit refuses — the honest answer for a deployment that
+        // configured no upstream, not a panic and not a fabricated host. Nothing is leaked for it.
+        return &[];
+    }
+    let mut interner = root::kernel::new_registration();
+    match root::units_voice::configured_upstreams(written, &mut interner) {
+        Ok(rows) => Vec::leak(rows),
+        Err(refusal) => {
+            eprintln!("busbar: the composition root did not compose: {refusal}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
@@ -832,9 +870,11 @@ fn mount_root_voice(
 /// node's door, its pricer, its auth chain or its journal.
 ///
 /// So the parts below are the ones the table's own two answers need, and the rest are the root's
-/// unbound posture: the plane with the upstream list configuration composed (none today — the
-/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
-/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// unbound posture: THIS DEPLOYMENT'S OWN UPSTREAM ROWS composed on ([`composed_upstreams`]),
+/// a flat pricer, an unbound auth chain, and a memory-buffered journal. The rows are the half of
+/// that posture that is no longer unbound, and they are what lets unit zero settle a destination at
+/// all: an empty list seals nothing, so `pending_leg` was `None` on every session, and a mount
+/// landed on that composition would have served its claimed URLs as a socket that relays nothing. That posture is honest for
 /// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
 /// the switch that routes a frame through it is the one that has to thread the deployment's real
 /// auth, rate cards and data directory in, and it fails to compile until it does.
@@ -842,7 +882,9 @@ fn mount_root_voice(
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
 #[cfg(feature = "root-voice")]
-fn compose_voice_governed_calls() -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
+fn compose_voice_governed_calls(
+    written: &[busbar_voice::config::UpstreamRow],
+) -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
 
     let durability = match root::durability::build(
@@ -857,7 +899,7 @@ fn compose_voice_governed_calls() -> std::sync::Arc<dyn busbar_voice::runtime::G
         }
     };
     let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_streams::VoicePlane::new(&[]),
+        plane: busbar_plane_streams::VoicePlane::new(composed_upstreams(written)),
         // No group reaches this node's door: the table's two answers read no cap, and the served
         // sessions' admissions are the sealed root's, not this stub's.
         groups: root::policy::group_table(
@@ -1306,7 +1348,12 @@ async fn run(data_workers: usize) {
     // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
-    let voice_calls = mount_root_voice(&cfg.limits);
+    let voice_upstreams = cfg
+        .plane_section(busbar_voice::PLANE_DECL.config_section)
+        .map(busbar_voice::config::upstream_rows)
+        .unwrap_or_default();
+    #[cfg(feature = "root-voice")]
+    let voice_calls = mount_root_voice(&cfg.limits, &voice_upstreams);
     // THE ROOT-COMPOSED PORTS this build hands across the plane-build seam, keyed by the OWNING
     // PLANE'S config section. The voice node's open-call table is one: the root builds it (it is the
     // root's node, its journal and its origin) and the plane cannot, so it crosses HERE, into the

@@ -237,7 +237,14 @@ fn gate(args: &[String]) -> i32 {
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
         // reader can diff rather than as a message on stderr.
-        if reg.name == "kind-isolation" {
+        // `config-schema --write` REGENERATES ITS SNAPSHOT the same way, and for the same reason it
+        // is here rather than in the table below: the write arm is INSIDE the gate (one derivation,
+        // two arms — `gates::config_schema` writes `fresh_text` where it would otherwise diff it),
+        // so the repairing arm and the judging arm cannot disagree about what the config surface
+        // renders to. Without this name the gate's own `REGEN` line — the command its STALE row
+        // tells the author to run — fell through to "this gate has nothing to write", which left no
+        // way at all to land a config-surface change.
+        if reg.name == "kind-isolation" || reg.name == "config-schema" {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);

@@ -144,6 +144,31 @@ fn node_behind(
     auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
 ) -> VoiceNode {
+    node_on_plane(io, VoicePlane::new(UPSTREAMS), groups, auth, auth_bindings)
+}
+
+/// The same node, composed over a plane the caller supplies.
+///
+/// Split out of [`node_behind`] rather than duplicated because the ONE thing a boot-composition
+/// cell may vary is the plane's own upstream list: a fixture that also swapped the door, the pricer
+/// or the journal would be asserting about a different node than every other cell in this file.
+fn node_on(io: VoiceIo, plane: VoicePlane) -> VoiceNode {
+    node_on_plane(
+        io,
+        plane,
+        busbar_unit_admission::GroupTable::default(),
+        Auth::new(AuthChain::new(Vec::new(), false)),
+        crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+    )
+}
+
+fn node_on_plane(
+    io: VoiceIo,
+    plane: VoicePlane,
+    groups: busbar_unit_admission::GroupTable,
+    auth: Auth,
+    auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+) -> VoiceNode {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_unit_wal::NullShipper::new()),
@@ -151,7 +176,7 @@ fn node_behind(
     )
     .expect("a memory-buffered journal cannot fail to open");
     VoiceNode::new(VoiceNodeParts {
-        plane: VoicePlane::new(UPSTREAMS),
+        plane,
         groups,
         pricer: Pricer::flat(0),
         auth,
@@ -1153,7 +1178,10 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     // way `main()` does and hands it ACROSS the plane-build seam, keyed by the plane's own declared
     // section — so what this cell reads back is the slot the composition actually mounted, not a
     // process-wide cell whichever caller reached first.
-    let calls = crate::compose_voice_governed_calls();
+    // No rows: this cell is about the TABLE the composition writes onto the served door, and a
+    // deployment that configured none composes the same table a deployment that configured ten
+    // does. The rows themselves are asserted in `booted` below.
+    let calls = crate::compose_voice_governed_calls(&[]);
     let ports: [(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -2575,5 +2603,155 @@ mod driven {
             node.bound(session.0).is_none(),
             "the settlement went with the session"
         );
+    }
+}
+
+/// THE CONFIGURED ROWS FILL THE MOUNTED NODE AT BOOT — the composition's own inputs, read through
+/// the config face and resolved in the table the composition table registered.
+///
+/// What the root composed was `VoicePlane::new(&[])`, and an empty list settles no destination:
+/// `ComposedUnits::destination` answers off the binding unit zero sealed, unit zero seals off
+/// `self.upstream()`, and that walks the configured list. So every session on that composition had
+/// `pending_leg == None` — an upgraded socket that relays nothing, which is worse than a 404. These
+/// cells are the other end.
+mod booted {
+    use super::*;
+    use busbar_contract::dest::DestinationFacts;
+    use busbar_plane_streams::dialect;
+    use busbar_voice::config::{upstream_rows, StreamsCfg, UpstreamRow};
+
+    /// The rows this build links, registered the way the composition table registers them.
+    /// Idempotent by name, so a cell that runs after the root's own registration gets one entry.
+    fn register_the_linked_rows() {
+        dialect::register(&busbar_plane_streams_openai::OPENAI_REALTIME);
+        dialect::register(&busbar_plane_streams_gemini::GEMINI_LIVE);
+        dialect::register(&busbar_plane_streams_twilio::TWILIO_MEDIA_STREAMS);
+    }
+
+    /// The posture a deployment wrote, with two rows under it.
+    fn two_row_section() -> StreamsCfg {
+        StreamsCfg {
+            upstreams: vec![
+                UpstreamRow {
+                    dialect: busbar_plane_streams_openai::OPENAI_REALTIME
+                        .name
+                        .to_string(),
+                    host: "realtime.example.invalid".to_string(),
+                    lane: "voice-realtime".to_string(),
+                },
+                UpstreamRow {
+                    dialect: busbar_plane_streams_gemini::GEMINI_LIVE.name.to_string(),
+                    host: "live.example.invalid".to_string(),
+                    lane: "voice-live".to_string(),
+                },
+            ],
+            ..StreamsCfg::default()
+        }
+    }
+
+    /// A CONFIG WITH TWO ROWS BOOTS A COMPOSITION WHOSE `destination` FOR EACH SETTLES TO THAT ROW.
+    ///
+    /// The second half is the one that matters: a composition that filled the list with both rows
+    /// but sealed every session onto the first would pass a length check and dial one leg's traffic
+    /// at the other's endpoint.
+    #[test]
+    fn two_configured_rows_each_settle_their_own_destination() {
+        register_the_linked_rows();
+        let section = two_row_section();
+        // READ THROUGH THE CONFIG FACE, never through a type of the root's own and never by naming
+        // an instance: the rows arrive as the operator wrote them, and the table is what turns a
+        // written name into a row.
+        let written = upstream_rows(&section);
+        assert_eq!(
+            written.len(),
+            2,
+            "the section carries the operator's two rows"
+        );
+
+        let mut interner = busbar_contract::Registration::new();
+        let composed = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("both rows name something this build registered");
+        assert_eq!(composed.len(), 2);
+        let configured = VoicePlane::new(Vec::leak(composed));
+
+        for (row, expected) in written.iter().zip(configured.upstreams().iter()) {
+            let resolved = dialect::dialect(&row.dialect).expect("the row names a registered row");
+            let node = node_on(serviceable(), configured);
+            let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000)
+                .on_dialect(resolved);
+            let kernel = Kernel::new();
+            assert!(matches!(run(&kernel, &unit), Ended::Settled { .. }));
+
+            let bound = node.bound(7).expect("unit zero settled at Verify");
+            let sealed = bound
+                .destination
+                .expect("the leg was sealed for the upstream half");
+            let DestinationFacts::Upstream { address, lane, .. } = sealed.facts() else {
+                panic!(
+                    "a configured row seals an upstream leg, got {:?}",
+                    sealed.facts()
+                );
+            };
+            assert_eq!(
+                address,
+                busbar_contract::UpstreamAddress::socket(expected.host),
+                "the session arriving on `{}` sealed its own row's host",
+                row.dialect
+            );
+            assert_eq!(lane, expected.lane, "and its own row's priced lane");
+        }
+    }
+
+    /// A ROW THIS BUILD DOES NOT CARRY REFUSES, rather than composing a list one row short.
+    ///
+    /// A dropped row is a deployment whose configured leg is silently unserved, which is the exact
+    /// posture this line exists to end. The refusal names what the operator wrote.
+    #[test]
+    fn a_row_naming_an_unregistered_name_refuses_the_composition() {
+        register_the_linked_rows();
+        let written = vec![UpstreamRow {
+            dialect: "no-such-row".to_string(),
+            host: "nowhere.example.invalid".to_string(),
+            lane: "voice-realtime".to_string(),
+        }];
+        let mut interner = busbar_contract::Registration::new();
+        let refusal = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect_err("a row this build cannot resolve is a boot refusal");
+        assert!(
+            refusal.to_string().contains("no-such-row"),
+            "the refusal names what the operator wrote, got: {refusal}"
+        );
+    }
+
+    /// AND THE BOOT PATH ITSELF FILLS IT — the same reader `main` calls, off a section PARSED FROM
+    /// YAML rather than built by hand. A reader that worked on a hand-built value and dropped the
+    /// rows on a parsed one would be a grammar whose keys nobody had ever written.
+    #[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+    #[test]
+    fn the_boot_reader_fills_the_composition_from_a_written_block() {
+        register_the_linked_rows();
+        let written: StreamsCfg = serde_yaml::from_str(concat!(
+            "upstreams:\n",
+            "  - dialect: openai-realtime\n",
+            "    host: parsed.example.invalid\n",
+            "    lane: voice-realtime\n",
+        ))
+        .expect("the grammar reads the keys an operator writes");
+        let rows = crate::composed_upstreams(&upstream_rows(&written));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].host, "parsed.example.invalid");
+        assert_eq!(rows[0].dialect.name, "openai-realtime");
+        // AND WHAT IS COMPOSED WITH THEM ANSWERS WITH THEM. `new(&[])` was the whole blocker.
+        assert_eq!(VoicePlane::new(rows).upstreams().len(), 1);
+        // A build with the owner compiled out — no section in the grammar — composes none.
+        assert!(crate::composed_upstreams(&[]).is_empty());
+    }
+
+    /// AN ABSENT LIST COMPOSES NOTHING, which is the posture every deployment that wrote no block
+    /// already had.
+    #[test]
+    fn an_unwritten_upstream_list_composes_no_row() {
+        let section = StreamsCfg::default();
+        assert!(upstream_rows(&section).is_empty());
     }
 }

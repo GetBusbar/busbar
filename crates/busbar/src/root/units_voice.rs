@@ -221,6 +221,113 @@ impl ProviderEndpoints {
     }
 }
 
+/// WHY A CONFIGURED UPSTREAM ROW DID NOT COMPOSE.
+///
+/// A boot refusal and not a dropped row, which is the point: a row the composition cannot resolve
+/// is a leg the operator declared and this node would serve as silence, and silence on a claimed
+/// URL is the one outcome worse than a refusal. Each arm names the value the operator wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamRefusal {
+    /// The row names a wire vocabulary no linked crate registered.
+    Unregistered {
+        /// The name as the operator wrote it.
+        wrote: String,
+    },
+    /// The row names one that can be SERVED but never DIALLED — a carrier or one-shot leg.
+    ///
+    /// [`Upstream`]'s own declaration says a row is "always one whose `duplex_upstream` is true",
+    /// so a row that is not is refused here rather than composed into a list whose type says it
+    /// cannot contain one.
+    NotDialable {
+        /// The name as the operator wrote it.
+        wrote: String,
+    },
+    /// The host or the lane could not be interned: the image's vocabulary is frozen or full.
+    Vocabulary {
+        /// The value that could not be interned.
+        wrote: String,
+    },
+}
+
+impl std::fmt::Display for UpstreamRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (wrote, why) = match self {
+            UpstreamRefusal::Unregistered { wrote } => (
+                wrote,
+                "which this build did not register — the row would compose an upstream nothing \
+                 can read, so boot refuses rather than serving that leg as silence",
+            ),
+            UpstreamRefusal::NotDialable { wrote } => (
+                wrote,
+                "which this node can SERVE but never DIAL — an ingress-only leg is routed TO a \
+                 dialable upstream, never dialled as one",
+            ),
+            UpstreamRefusal::Vocabulary { wrote } => (
+                wrote,
+                "which could not be interned: the image's vocabulary is frozen or past capacity",
+            ),
+        };
+        write!(f, "`{}` names `{wrote}`, {why}", CONFIGURED_UPSTREAMS)
+    }
+}
+
+impl std::error::Error for UpstreamRefusal {}
+
+/// The configuration key every [`UpstreamRefusal`] points the operator at.
+const CONFIGURED_UPSTREAMS: &str = "streams.upstreams:";
+
+/// THE CONFIGURED ROWS, AS THE PLANE TAKES THEM — the composition's one turn of what a deployment
+/// wrote into the list [`VoicePlane::new`] is composed with.
+///
+/// **NOTHING IS NAMED HERE.** The operator writes a name, [`busbar_plane_streams::dialect`] is the
+/// table it resolves in, and that table's rows are the ones the composition table registered. That
+/// is the direction rule's own shape: the root links instances in exactly one place, and this is a
+/// reader of that place rather than a second copy of it.
+///
+/// **AND EVERY NAME IS INTERNED EXACTLY ONCE.** [`Upstream`]'s host is borrowed for the life of the
+/// program because the list outlives every unit that reads it; the interner is the composition
+/// root's, taken at boot, and a per-dial leak would be a defect rather than a variant of the rule.
+///
+/// # Errors
+///
+/// See [`UpstreamRefusal`]: every one is a boot refusal.
+pub fn configured_upstreams(
+    written: &[busbar_voice::config::UpstreamRow],
+    interner: &mut busbar_contract::Registration,
+) -> Result<Vec<Upstream>, UpstreamRefusal> {
+    written
+        .iter()
+        .map(|row| {
+            let resolved =
+                busbar_plane_streams::dialect::dialect(&row.dialect).ok_or_else(|| {
+                    UpstreamRefusal::Unregistered {
+                        wrote: row.dialect.clone(),
+                    }
+                })?;
+            if !resolved.duplex_upstream {
+                return Err(UpstreamRefusal::NotDialable {
+                    wrote: row.dialect.clone(),
+                });
+            }
+            let host = interner
+                .key(&row.host)
+                .ok_or_else(|| UpstreamRefusal::Vocabulary {
+                    wrote: row.host.clone(),
+                })?;
+            let lane = interner
+                .lane(&row.lane)
+                .ok_or_else(|| UpstreamRefusal::Vocabulary {
+                    wrote: row.lane.clone(),
+                })?;
+            Ok(Upstream {
+                lane,
+                host,
+                dialect: resolved,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------------------------
 // The seams to the I/O half
 // ---------------------------------------------------------------------------------------------

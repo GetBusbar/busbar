@@ -57,6 +57,29 @@ fn default_session() -> SessionConfig {
     crate::ir::config::default_session()
 }
 
+/// ONE CONFIGURED UPSTREAM THIS SECTION DECLARES — what it speaks, the host it is reached at, and
+/// the priced lane it is charged on.
+///
+/// **THE FIRST FIELD IS A NAME AND NOTHING ELSE**, exactly as a claim's is: this grammar links no
+/// crate, and the name an operator writes is resolved in the composition root's own table at boot.
+/// A name the build does not carry is a BOOT REFUSAL there, not a row this grammar drops — a
+/// deployment whose configured leg is quietly unserved is the posture this whole line exists to end.
+///
+/// **AND IT CARRIES NO CREDENTIAL**, for the reason the section around it carries none: the
+/// provider secret is resolved through the deployment's ordinary `models:`/`providers:` catalog and
+/// the same secret seam every other lane's key is, and a field here would be a second place it
+/// lives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // a typo'd key is refused HERE exactly as the file refuses it
+pub struct UpstreamRow {
+    /// Which wire vocabulary this upstream speaks, by the name its own crate declares.
+    pub dialect: String,
+    /// The host to dial.
+    pub host: String,
+    /// The priced lane this upstream is reached on.
+    pub lane: String,
+}
+
 /// THE `streams:` SECTION — the voice plane's owned config. Its VAD/session/media shape IS the GA
 /// `session` object ([`SessionConfig`]); the three limits are the only plane-imposed ceilings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +99,14 @@ pub struct StreamsCfg {
     /// Output-token ceiling per response. Default 4096.
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: u32,
+    /// THE UPSTREAMS THIS SECTION DECLARES, one row per configured wire, in declaration order.
+    ///
+    /// Declaration order is load-bearing the same way the registration order it resolves against is:
+    /// the answer to "this session's wire has no configured upstream" is the FIRST row, so
+    /// re-ordering this list moves where an un-matched session dials. An ABSENT or empty list
+    /// composes nothing at all, byte-identically the posture a deployment that wrote no block had.
+    #[serde(default)]
+    pub upstreams: Vec<UpstreamRow>,
 }
 
 // MANUAL `Default`, not derived: the serde field defaults above are non-trivial (the three ceilings
@@ -89,6 +120,7 @@ impl Default for StreamsCfg {
             session_max_secs: default_session_max_secs(),
             context_window_tokens: default_context_window_tokens(),
             max_output_tokens: default_max_output_tokens(),
+            upstreams: Vec::new(),
         }
     }
 }
@@ -103,6 +135,11 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
             session_max_secs: _,
             context_window_tokens: _,
             max_output_tokens: _,
+            // No row carries a credential, by [`UpstreamRow`]'s own declaration: the provider
+            // secret is resolved through the deployment's `models:`/`providers:` catalog and never
+            // written here. The destructure is exhaustive so the day a row grows a secret-bearing
+            // field, this line fails to compile until somebody decides HERE.
+            upstreams: _,
         } = self;
         Vec::new()
     }
@@ -183,6 +220,22 @@ pub fn session_model(section: &dyn busbar_substrate::plane::config::PlaneCfg) ->
         .as_any()
         .downcast_ref::<StreamsCfg>()
         .and_then(|parsed| parsed.session.model.clone())
+}
+
+/// THE UPSTREAM ROWS A PARSED POSTURE CONFIGURES, in the order the operator wrote them.
+///
+/// The composition root's read, and the exact shape [`session_model`] beside it is: it takes the
+/// section the root already resolved, behind the neutral carrier the root already holds it in, so
+/// the root reads THIS deployment's posture without naming a type of this crate's or the erasure
+/// seam's. A section the root cannot downcast — a build with this crate compiled out — configures
+/// no row, which is the same answer an unwritten list gives.
+#[must_use]
+pub fn upstream_rows(section: &dyn busbar_substrate::plane::config::PlaneCfg) -> Vec<UpstreamRow> {
+    section
+        .as_any()
+        .downcast_ref::<StreamsCfg>()
+        .map(|parsed| parsed.upstreams.clone())
+        .unwrap_or_default()
 }
 
 /// PLANE_DECL.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the

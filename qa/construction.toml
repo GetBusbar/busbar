@@ -1606,3 +1606,38 @@ key = "cell.busbar.kernel.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar x kernel (busbar, kernel): two hits, and both are the battery refusing to forge a seal. The dial-side `TransportKeyHandle` and the sealed destination the cells dial to are both minted through `Kernel::transport_key_token()` — the token this kernel already lends the composition — rather than through a sealing marker this battery implemented for itself. `construction:kernel-seal-impls` counts every crate that implements the contract's sealing marker, so a test double here would have been a rise in the exact number that rule exists to hold down (176 -> 178)"
+
+# ── declared raises: THE BOOT COMPOSITION'S OWN INPUTS. The composition root is the one place a
+# plugin INSTANCE may be named (ARCHITECTURE.md 1.1 / 3.1), and what rises here is the root reading
+# the deployment's own configured upstream rows through the declaring crate's config face and
+# resolving each written name in the table the composition table already registered. Every entry
+# expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 59
+because = "busbar x plane (busbar, plane): THE BOOT COMPOSITION'S UPSTREAM ROWS. The root composed `VoicePlane::new(&[])` — the empty list — so no session could ever settle a destination: unit zero seals off the configured list, an empty list seals nothing, and every session on that composition had `pending_leg == None`, which is an upgraded socket that relays nothing rather than a 404. What this landing adds is the reader that fills it: `composed_upstreams` in main.rs (the section read through `busbar_voice::config::upstream_rows`, the neutral `PlaneCfg` carrier the root already holds it in, interned once and leaked once), `configured_upstreams` in root/units_voice.rs with its refusal enum, and the `booted` battery that drives a two-row configuration through unit zero and asserts each row settles its OWN host and lane. The vocabulary is the root naming what it composes BY IDENTITY, which is the one clause that lets this number move at all; no instance is named anywhere but the composition table it resolves through (1861 -> 1920)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 52
+because = "busbar x dialect (busbar, dialect): the SAME boot-composition reader, counted a second time under the dialect kind. A dialect's INSTANCE IS ITS PLANE — the matrix says so in the carrier's own edge rows — so every spelling of the configured row's resolved name is one dialect hit and one plane hit, and the two columns rise together by construction rather than for two different reasons. There is no line here that is not already declared above: the config face, the composer, the boot call site and the battery are the whole of it, and the root resolves a written name through `busbar_plane_streams::dialect::dialect` rather than comparing one, so no instance enters the root by any other route (653 -> 705)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x unit (busbar, unit): four hits, all of them the boot-composition battery saying WHICH unit settles a configured row. The cells run unit zero — the opening unit, the only one that seals a session's leg — against a composition built from two written rows, and read back the binding it settled; a battery that could not name the unit it drives would be asserting about a destination with no statement about what produced it. Nothing in the composer itself names a unit (1167 -> 1171)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-voice x plane (busbar-voice, plane): one hit, in the `streams:` grammar's own new upstream-row type. The row names what it speaks as a NAME AND NOTHING ELSE — the same rule the claim table states — so the grammar links no crate and the single hit is the doc sentence that says so, beside the field it is about. The alternative was a typed reference to the row it resolves to, which would have put an instance in a config grammar that is parsed in the default feature-off build (838 -> 839)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-voice x dialect (busbar-voice, dialect): the SAME one hit, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction. It is the upstream row's own field name, which is the word an operator writes in the file and therefore the one the grammar must spell; renaming it to keep this number still would rename a configuration key (717 -> 718)"
