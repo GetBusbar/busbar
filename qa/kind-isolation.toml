@@ -1689,7 +1689,7 @@ count = "1"
 [[cell]]
 crate = "busbar-export-example-plugin"
 kind = "plane"
-count = "3"
+count = "1"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2189,7 +2189,7 @@ count = "8"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "plane"
-count = "55"
+count = "53"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2249,7 +2249,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "plane"
-count = "20"
+count = "15"
 
 [[cell]]
 crate = "busbar-plugin-sdk"

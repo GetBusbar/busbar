@@ -420,6 +420,85 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 }
 
 // ------------------------------------------------------------------------------------------------
+// the frozen-vocabulary rule — a plane's identifiers, not the ABI's method names
+// ------------------------------------------------------------------------------------------------
+
+/// THE COLLISION CENSUS: a bare plane id / alias / config-section key that is ALSO a method name in
+/// `busbar-contract`'s `kinds.rs` or the plugin ABI's own token tables (`busbar-plugin::cold::*`,
+/// the frozen per-kind request/response enums and their `Handler` traits) — measured by hand across
+/// every plane id (`llm`, `mcp`, `a2a`, `admin`, the `voice`/`streams` alias) against every method
+/// name those two places declare. `streams` is the one hit: [`ExportStream`] is the export-plugin
+/// kind's own frozen wire vocabulary ([`crate::gates::kind_isolation`]'s `busbar-plugin::cold::export`),
+/// `ExportHandler::streams` is the sync trait method every export plugin implements, and
+/// `ExportRequest::Streams`/`ExportResponse::Streams` are its op-tag. None of `llm`, `mcp`, `a2a` or
+/// `admin` names a method anywhere in either place, so widening this list is a fact about the ABI to
+/// re-measure, never a guess.
+///
+/// A SHORT, CLOSED LIST — not a per-file `[[unmasked]]` entry, and not "every bare word": the two
+/// shapes below are cheap to compute for any word, but only run on a word this census actually
+/// cleared, or `.mcp(&mcp_cfg())`'s test-builder pattern and `code.http()`/`code.grpc()`'s accessor
+/// calls — real builder/accessor methods that happen to share a plane's or a transport's bare id, and
+/// name nothing about the ABI at all — would silently stop scoring too. AUDIT-2047-pass26.md NOTE-48.
+const FROZEN_ABI_WORDS: &[&str] = &["streams"];
+
+/// A PLANE IS SCORED BY ITS IDENTIFIERS: a crate name segment, a module path (`busbar_plane_streams::`),
+/// a type/const/static identifier, or a config-section key. A METHOD NAME is none of those four —
+/// `fn streams(&self)` on `ExportHandler` and `handler.streams()` at its call site spell the frozen
+/// six-symbol export ABI's own op name, which happens to collide with the streams plane's alias. The
+/// crate that owns that trait does not thereby name a plane, and neither does anything that calls it.
+///
+/// This only ever applies to a BARE, single-segment needle ON [`FROZEN_ABI_WORDS`]: a dashed or
+/// kind-qualified spelling (`plane-streams`, `busbar-plane-voice`) cannot syntactically BE a Rust `fn`
+/// name or a method call at all, so there is nothing here for it to be mistaken for, and a word this
+/// census did not clear is never checked against either shape below.
+fn frozen_method_hits(raw: &str, parts: &[String]) -> usize {
+    let [word] = parts else { return 0 };
+    if !FROZEN_ABI_WORDS.contains(&word.as_str()) {
+        return 0;
+    }
+    frozen_definition_hits(raw, word) + frozen_call_hits(raw, word)
+}
+
+/// `fn streams(&self)` / `fn streams(self: ...)` / `fn streams(mut self)` — a METHOD definition,
+/// never a free function: `fn streams() -> &'static Mutex<...>` (no `self` at all) is `busbar-core`'s
+/// own internal registry, not a method on anybody's ABI face, and stays a real hit. `pub`, `async`
+/// and generics ahead of the name never change the boundary this checks — they sit before `fn`, and
+/// what is checked is only what comes after the name's own `(`.
+fn frozen_definition_hits(raw: &str, word: &str) -> usize {
+    let needle = format!("fn {word}(");
+    let mut count = 0usize;
+    let mut start = 0usize;
+    while let Some(idx) = raw[start..].find(needle.as_str()) {
+        let abs = start + idx;
+        let before_ok = raw[..abs]
+            .chars()
+            .next_back()
+            .map(|c| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(true);
+        let after = &raw[abs + needle.len()..];
+        let t = after
+            .trim_start()
+            .strip_prefix('&')
+            .unwrap_or(after.trim_start());
+        let t = t.trim_start();
+        let t = t.strip_prefix("mut ").unwrap_or(t);
+        let is_method = t.starts_with("self");
+        if before_ok && is_method {
+            count += 1;
+        }
+        start = abs + needle.len();
+    }
+    count
+}
+
+/// `handler.streams()` / `sink.streams()` — a METHOD CALL, the receiver's own dot immediately before
+/// the name. The dot is itself a boundary on both scanners' own terms, so nothing here duplicates a
+/// hit the boundary rule would not otherwise have counted; this only ever REMOVES one.
+fn frozen_call_hits(raw: &str, word: &str) -> usize {
+    raw.matches(&format!(".{word}(")).count()
+}
+
+// ------------------------------------------------------------------------------------------------
 // the measurement
 // ------------------------------------------------------------------------------------------------
 
@@ -705,7 +784,7 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         // an ASCII line has nothing to fold.
         let decoded = decoded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
-            (line_segments(&t), c)
+            (line_segments(&t), c, t)
         });
         let folded = folded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
@@ -738,11 +817,31 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         let segs = line_segments(raw);
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts);
-            let by_windows = count_by_windows(&chars, &n.parts);
+            let raw_segments = count_by_segments(&segs, &n.parts);
+            let raw_windows = count_by_windows(&chars, &n.parts);
+            // THE FROZEN-VOCABULARY RULE, applied once per reading, and only when the reading
+            // already found something: `frozen_method_hits` is 0 for every multi-segment needle
+            // and for every word this census did not clear (see [`FROZEN_ABI_WORDS`]), so gating
+            // it on a real match first is a cost cut, not a different answer — a line with no
+            // plain hit has nothing for either shape to subtract from.
+            let frozen_raw = if raw_segments > 0 || raw_windows > 0 {
+                frozen_method_hits(raw, &n.parts)
+            } else {
+                0
+            };
+            let by_segments = raw_segments.saturating_sub(frozen_raw);
+            let by_windows = raw_windows.saturating_sub(frozen_raw);
             let by_decoded = decoded
                 .as_ref()
-                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .map(|(s, c, t)| {
+                    let raw = count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts));
+                    let frozen = if raw > 0 {
+                        frozen_method_hits(t, &n.parts)
+                    } else {
+                        0
+                    };
+                    raw.saturating_sub(frozen)
+                })
                 .unwrap_or(0);
             let by_folded = folded
                 .as_ref()
@@ -1684,6 +1783,35 @@ pub fn selftest(
             "// gRPC status codes are not the kernel's business.\n",
         ),
         &["measurement-disagreement", "busbar-kernel × transport"],
+    ));
+
+    // -- THE FROZEN-VOCABULARY RULE: A METHOD NAME IS NOT A PLANE SPEAKING ITS OWN NAME -----------
+    //
+    // `streams` is both the streams plane's bare alias and the export ABI's own frozen op name
+    // (`ExportHandler::streams`, `AUDIT-2047-pass26.md` NOTE-48). A `fn streams(&self)` on a
+    // contract face is the ABI's method, not the plane, and must cost ZERO — the same tree stays at
+    // its recorded ceiling. A real module path spelling the plane, `busbar_plane_streams::`, is
+    // still the plane's own identifier and must still cost ONE.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a `fn streams(&self)` on a contract face is the frozen ABI's method name, not the plane — zero hits",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-kernel/src/leak.rs",
+            "pub trait ExportHandler {\n    fn streams(&self) -> Vec<u8>;\n}\n\nfn call_it(h: &dyn ExportHandler) {\n    h.streams();\n}\n",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a real module path spelling the plane (`busbar_plane_streams::`) still costs one hit",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-kernel/src/leak.rs",
+            "use busbar_plane_streams::claims::Dialect;\n",
+        ),
+        &["ratchet", "busbar-kernel × plane", "RAISED"],
     ));
 
     // AN EDGE CLASS NOBODY WROTE DOWN.
