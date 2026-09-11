@@ -429,6 +429,30 @@ fn jobs_arg(args: &[String]) -> Option<usize> {
 /// how a gate earns a `|| true`. So a battery that goes red at more than one job is TAKEN AGAIN AT
 /// ONE, and BOTH answers are printed: a finding that survives the serial run is the gate's, and a
 /// finding that does not is named as what it is — a defect in this harness, not in the gate.
+/// THE SERIAL FRACTION OF A BATTERY, PRINTED BESIDE ITS TOTAL.
+///
+/// Every case's gate run is taken across the cores; the plant it is driven over is built where the
+/// case is pushed, on one thread, because that is where the argument was written. So this number is
+/// the part of the battery that more cores cannot touch — and, when it is a large share, the name
+/// of the case that owns most of it is the next thing to make lazy. It is printed rather than
+/// derived from two runs because deriving it needs a serial run, which is the thing nobody wants to
+/// wait for.
+fn planting(report: &gates::Report<'_>) -> String {
+    let planting = report.planting();
+    if planting.as_secs_f64() < 0.05 {
+        return String::new();
+    }
+    let dearest = report
+        .dearest_plant()
+        .filter(|(_, t)| t.as_secs_f64() >= 0.05)
+        .map(|(n, t)| format!(", dearest plant {:.1}s ({n})", t.as_secs_f64()))
+        .unwrap_or_default();
+    format!(
+        ", {:.1}s of that PLANTING on one thread{dearest}",
+        planting.as_secs_f64()
+    )
+}
+
 fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     println!("xtask selftest {}", gate.name());
     // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
@@ -461,11 +485,12 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
                 .unwrap_or_default();
             println!(
-                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest} — the gate is proven RED-able",
+                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest}{} — the gate is proven RED-able",
                 report.cases().len(),
                 report.skipped(),
                 report.total().as_secs_f64(),
-                report.units()
+                report.units(),
+                planting(&report),
             );
             0
         }
@@ -484,6 +509,7 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                     .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
                     .unwrap_or_default(),
             );
+            println!("  {}", planting(&report).trim_start_matches(", "));
             println!("xtask selftest {} FAILED:", gate.name());
             for e in &errs {
                 println!("  - {e}");
