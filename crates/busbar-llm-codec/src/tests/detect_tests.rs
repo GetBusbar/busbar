@@ -4,16 +4,16 @@
 //! Detection tests for the LLM plugin — RELOCATED from `busbar-core`'s `proto/detect.rs` and
 //! `proto/tests/tests.rs` because they NAME DIALECTS, which a neutral crate's tests must not.
 //!
-//! They exercise the generic detection fold (`busbar_core::proto::detect_protocol` /
-//! `residual_dialect_for_path`) through THIS plugin's registered `ProtocolDecl::claims` /
+//! They exercise the generic detection fold (`busbar_substrate_values::proto::detect_protocol` /
+//! `residual_protocol_for_path`) through THIS plugin's registered `ProtocolDecl::claims` /
 //! `residual_claims` predicates — the same registry a shipped binary folds. The assertions are
 //! BYTE-IDENTICAL to the ones the core `if`-ladder carried: this is the proof the ladder→predicate
 //! move changed no routing. (The registry the test sees is core's `test-support` built-in table,
 //! whose netted dialect rows carry these very predicates.)
 
 use busbar_api::operation::Operation;
-use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
 use busbar_substrate_values::handlers::request_handler;
+use busbar_substrate_values::proto::{detect_protocol, residual_protocol_for_path};
 use http::{HeaderMap, HeaderValue};
 
 /// Seed the process-global protocol registry with THIS plugin's declarations.
@@ -180,36 +180,36 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
     seeded();
     // OpenAI fine-tuned model id (multiple colons) on the model.retrieve path → OpenAI.
     assert_eq!(
-        residual_dialect_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
+        residual_protocol_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
         Some("openai"),
         "a colon-bearing OpenAI fine-tuned model id must stay OpenAI"
     );
     // Azure-style deployment id with a colon → OpenAI.
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gpt-4o:deployment"),
+        residual_protocol_for_path("/v1/models/gpt-4o:deployment"),
         Some("openai")
     );
     // Plain model id (no colon) → OpenAI.
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gpt-4o"),
+        residual_protocol_for_path("/v1/models/gpt-4o"),
         Some("openai")
     );
     // A genuine Gemini action suffix → Gemini.
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gemini-pro:generateContent"),
+        residual_protocol_for_path("/v1/models/gemini-pro:generateContent"),
         Some("gemini"),
         "the Gemini :generateContent action suffix still classifies as Gemini"
     );
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gemini-pro:streamGenerateContent"),
+        residual_protocol_for_path("/v1/models/gemini-pro:streamGenerateContent"),
         Some("gemini")
     );
     assert_eq!(
-        residual_dialect_for_path("/v1/models/text-embedding-004:embedContent"),
+        residual_protocol_for_path("/v1/models/text-embedding-004:embedContent"),
         Some("gemini")
     );
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gemini-pro:countTokens"),
+        residual_protocol_for_path("/v1/models/gemini-pro:countTokens"),
         Some("gemini")
     );
 }
@@ -226,7 +226,7 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     // for every path — so this test passed for the wrong reason, and would have kept passing if
     // production had regressed to the old `else { openai }` default. Prove the fold is live first.
     assert_eq!(
-        residual_dialect_for_path("/v1/models/gpt-4o"),
+        residual_protocol_for_path("/v1/models/gpt-4o"),
         Some("openai"),
         "the residual fold must be live, or the `None` assertions below prove nothing"
     );
@@ -241,7 +241,7 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
         "/model/foo/bar",
     ] {
         assert_eq!(
-            residual_dialect_for_path(path),
+            residual_protocol_for_path(path),
             None,
             "`{path}` names no LLM dialect — the classifier must say so, not answer `openai`"
         );

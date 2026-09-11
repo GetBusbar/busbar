@@ -792,11 +792,9 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
-        .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_substrate::config::auth::AuthCfg::with_chain(vec![
-                busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
-            ]),
-        )))
+        .auth_cfg(&busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+            busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+        ]))
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
@@ -830,11 +828,9 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     busbar_substrate::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
-        .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
-            &busbar_substrate::config::auth::AuthCfg::with_chain(vec![
-                busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
-            ]),
-        )))
+        .auth_cfg(&busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+            busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+        ]))
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")

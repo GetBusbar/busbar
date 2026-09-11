@@ -1342,6 +1342,20 @@ impl TestApp {
         self.auth = Some(a);
         self
     }
+    /// Install an `AuthMiddleware` built from a RESOLVED `auth:` config — the neutral
+    /// `busbar_substrate::config::auth::AuthCfg` in, the built middleware out.
+    ///
+    /// This exists so a PLANE's test kit can choose its own chain shape without naming
+    /// `busbar_core::auth::AuthMiddleware`: a plane reaches core through the substrate/api ABI, and a
+    /// test that hand-builds core's middleware pins the plane to core's private shape exactly as
+    /// production code would. The construction belongs here, beside every other half of the App this
+    /// fixture builds.
+    pub fn auth_cfg(mut self, cfg: &crate::config::AuthCfg) -> Self {
+        self.auth = Some(std::sync::Arc::new(
+            crate::auth::AuthMiddleware::new_builtin(cfg),
+        ));
+        self
+    }
     /// Install an `AuthMiddleware` whose data-plane chain is `[keys]` (the built-in signed-key
     /// verifier). This is what makes a data-plane request REQUIRE and resolve a virtual key: since
     /// 1.5.2 vkey enforcement is driven by the chain shape, not the admin token. Pair with

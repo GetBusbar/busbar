@@ -1,7 +1,6 @@
 use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
-use busbar_core::auth::AuthMiddleware;
 use busbar_substrate::config::auth::AuthCfg;
 use busbar_substrate::store::now;
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
@@ -919,9 +918,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
         busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
     ]);
-    let app = TestApp::new()
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .build();
+    let app = TestApp::new().auth_cfg(&auth_cfg).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -2393,7 +2390,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
             .api_key("busbar-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_token)))
+        .auth_cfg(&auth_cfg_token)
         .build();
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();

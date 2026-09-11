@@ -116,7 +116,7 @@ fn responses_multi_part_reasoning_text_concatenates() {
 /// `ingress_error` seam), while the dialect mapping's identity is proven here beside the codec.
 #[test]
 fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
-    use busbar_core::proxy::{
+    use busbar_substrate_values::proxy::{
         KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_PERMISSION, KIND_RATE_LIMIT,
     };
     assert_eq!(

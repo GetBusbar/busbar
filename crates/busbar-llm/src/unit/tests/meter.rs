@@ -419,7 +419,7 @@ fn priced_card() -> busbar_core::cost::CostModel {
     busbar_core::cost::CostModel::resolve_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_substrate::config::sections::RateEntryCfg {
                 input_utok: 2.0,
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
