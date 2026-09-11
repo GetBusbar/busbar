@@ -283,6 +283,53 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     .instrument(span)
 }
 
+/// A refusal on its way out of a PREPARE step. BOXED: a refusal is the cold arm of every step
+/// below, and an unboxed `Response` in the `Err` variant widens the `Ok` path's return by 128 bytes
+/// on a request path whose future size is measured.
+type Refusal = Box<Response>;
+
+/// The caller's three STREAM-INTENT point reads, taken off the ingress body BEFORE any rewrite or
+/// cross-protocol translation can touch it. Grouped because they are one fact about one request and
+/// every consumer downstream wants all three.
+#[derive(Clone, Copy)]
+pub(crate) struct StreamIntent {
+    pub(crate) wants_stream: bool,
+    pub(crate) client_include_usage: bool,
+    pub(crate) client_has_stream_options: bool,
+}
+
+/// What PREPARE resolved for this dispatch: the per-pool knobs the failover walk reads on every hop
+/// and the request's own deadline/exclusion ledger. Resolved ONCE, before the loop.
+pub(crate) struct DispatchPrep {
+    pub(crate) gemini_json_array: bool,
+    pub(crate) affinity_key_hash: Option<u64>,
+    pub(crate) max_cap: usize,
+    pub(crate) breaker_cfg: std::sync::Arc<busbar_substrate::store::BreakerCfg>,
+    pub(crate) request_ctx: RequestCtx,
+}
+
+/// Everything the failover walk carries. One struct rather than twenty parameters: the walk is the
+/// second half of one function that was split at the PREPARE/DISPATCH seam, and the struct IS that
+/// seam written down.
+pub(crate) struct WalkInput<'a> {
+    pub(crate) host: &'a Arc<dyn EngineHost>,
+    pub(crate) rt: &'a Arc<NativeRuntime>,
+    pub(crate) cands: &'a [WeightedLane],
+    pub(crate) body: Bytes,
+    pub(crate) v: &'a mut Option<LazyBody>,
+    pub(crate) req_content_type: &'a str,
+    pub(crate) caller_token: Option<&'a str>,
+    pub(crate) resolved_gov_key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
+    pub(crate) pool_name: &'a str,
+    pub(crate) ingress_protocol: &'a str,
+    pub(crate) op: busbar_substrate::handlers::Op,
+    pub(crate) usage_sink: Option<UsageSink>,
+    pub(crate) intent: StreamIntent,
+    pub(crate) prep: DispatchPrep,
+    pub(crate) policy_order: Option<Vec<usize>>,
+    pub(crate) chosen_policy_name: Option<&'static str>,
+}
+
 /// The dispatch core behind [`forward_with_pool_parsed`] (the thin wrapper exists only to fire the
 /// response-stage taps around the whole request).
 //
@@ -316,7 +363,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // spec, never its identity; core's `handlers::CHAT` reproduces today's behavior byte-for-byte.
     op: busbar_substrate::handlers::Op,
     // `mut`: borrowed by each attempt, consumed only by the one that delivers a body.
-    mut usage_sink: Option<UsageSink>,
+    usage_sink: Option<UsageSink>,
     // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
     // before this fn was called — carried as a plain `Copy` scalar for the whole dispatch (stored on
     // `RequestCtx::request_id` below, and threaded into every hook projection built in here) rather
@@ -337,12 +384,140 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
     // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
     // the await loop.
-    // EGRESS deletion switch: every candidate
-    // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
-    // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
-    // silent dispatch. Dormant while all six protocols serve chat; load-bearing the moment one is
-    // removed (the deletion test).
-    let mut cands: Vec<WeightedLane> = {
+    let mut cands = match filter_candidates_for_op(rt, cands, op, ingress_protocol) {
+        Ok(c) => c,
+        Err(resp) => return *resp,
+    };
+    // `v` is the PRISTINE parsed request body (parsed once by the caller). Never mutated after this
+    // point: each failover hop derives a fresh per-hop `hop_v` (the first hop consumes `v`; hops 2+
+    // re-parse the retained `body` bytes) before translating/rewriting, so a cross-protocol hop never
+    // re-translates a body already rewritten into a previous egress lane's shape (the bug: mutating a
+    // shared `v` in place made hop N+1 read hop N's egress-shaped body with the ingress reader,
+    // misparsing or skipping translation entirely on a mixed-protocol pool).
+
+    let intent = read_client_stream_intent(&v, op);
+    if let Err(resp) = apply_request_rewrites(
+        host,
+        &mut v,
+        &mut body,
+        pool_name,
+        ingress_protocol,
+        op,
+        intent.wants_stream,
+        request_id,
+    )
+    .await
+    {
+        return *resp;
+    }
+    fire_request_stage_hooks(
+        host,
+        &mut v,
+        &body,
+        req_content_type,
+        pool_name,
+        ingress_protocol,
+        op,
+        intent.wants_stream,
+        request_id,
+        resolved_gov_key,
+    );
+    let mut prep = prepare_dispatch(
+        rt,
+        &v,
+        &mut cands,
+        pool_name,
+        affinity_key,
+        op,
+        ingress_protocol,
+        request_id,
+        client_fwd,
+    );
+    let gate_order = match reconcile_decision_gates(
+        host,
+        rt,
+        &mut v,
+        &mut cands,
+        &mut prep.request_ctx,
+        &body,
+        req_content_type,
+        pool_name,
+        ingress_protocol,
+        op,
+        intent.wants_stream,
+        caller_token,
+        resolved_gov_key,
+    )
+    .await
+    {
+        Ok(g) => g,
+        Err(resp) => return *resp,
+    };
+    let (policy_order, chosen_policy_name) = match resolve_policy_order(
+        host,
+        rt,
+        gate_order,
+        &mut v,
+        &mut cands,
+        &mut prep.request_ctx,
+        &body,
+        req_content_type,
+        pool_name,
+        ingress_protocol,
+        op,
+        intent.wants_stream,
+        caller_token,
+        resolved_gov_key,
+    )
+    .await
+    {
+        Ok(x) => x,
+        Err(resp) => return *resp,
+    };
+    // PREPARE ends here; the dispatch walk begins.
+    drop(_prep);
+    // Box::pin: THE WALK IS THE SECOND HALF OF THIS FUNCTION, and a nested future's state does not
+    // union with its caller's the way two halves of one flat coroutine did. Awaited inline, the walk
+    // added ~1.6 KB on top of everything PREPARE still owns, and every await-boundary transition on
+    // the request path memcpys the lot (see `engine_tests/future_size_probe.rs`). Boxed, the outermost
+    // forward future is 1,600 bytes instead of 4,512 — well under the pre-split 3,680 — at the cost of
+    // ONE allocation per request, which the forward-path allocation gate measures and accepts. This is
+    // the remedy the size tripwire itself names: shrink it, never raise the bound.
+    Box::pin(run_failover_walk(WalkInput {
+        host,
+        rt,
+        cands: &cands,
+        body,
+        v: &mut v,
+        req_content_type,
+        caller_token,
+        resolved_gov_key,
+        pool_name,
+        ingress_protocol,
+        op,
+        usage_sink,
+        intent,
+        prep,
+        policy_order,
+        chosen_policy_name,
+    }))
+    .await
+}
+
+// ── PREPARE, one named step per function ────────────────────────────────────────────────────────
+
+/// EGRESS deletion switch: every candidate
+/// lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
+/// not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
+/// silent dispatch. Dormant while all six protocols serve chat; load-bearing the moment one is
+/// removed (the deletion test).
+fn filter_candidates_for_op(
+    rt: &Arc<NativeRuntime>,
+    cands: Vec<WeightedLane>,
+    op: busbar_substrate::handlers::Op,
+    ingress_protocol: &str,
+) -> Result<Vec<WeightedLane>, Refusal> {
+    Ok({
         let supports = |wl: &WeightedLane| {
             busbar_substrate::handlers::request_handler(
                 EngineTables::new(rt).lanes()[wl.idx].protocol,
@@ -360,30 +535,29 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         } else {
             let kept: Vec<WeightedLane> = cands.into_iter().filter(|wl| supports(wl)).collect();
             if kept.is_empty() {
-                return ingress_error(
+                return Err(Box::new(ingress_error(
                     ingress_protocol,
                     StatusCode::NOT_FOUND,
                     KIND_NOT_FOUND,
                     DETAIL_MODEL_UNSUPPORTED_OPERATION,
-                );
+                )));
             }
             kept
         }
-    };
-    // `v` is the PRISTINE parsed request body (parsed once by the caller). Never mutated after this
-    // point: each failover hop derives a fresh per-hop `hop_v` (the first hop consumes `v`; hops 2+
-    // re-parse the retained `body` bytes) before translating/rewriting, so a cross-protocol hop never
-    // re-translates a body already rewritten into a previous egress lane's shape (the bug: mutating a
-    // shared `v` in place made hop N+1 read hop N's egress-shaped body with the ingress reader,
-    // misparsing or skipping translation entirely on a mixed-protocol pool).
+    })
+}
 
-    // capture the caller's stream intent from the ingress body BEFORE any cross-protocol
-    // translation rewrites `v` (Gemini routes streaming requests to a different upstream endpoint).
-    // Delegated to the operation: chat reads the OpenAI-family `stream` boolean (byte-identical to
-    // the previous inline read); a non-streaming op always returns false.
-    // `probe()` answers this from the head projection (chat reads only the top-level `stream`
-    // boolean — a captured head key) without materializing the DOM; once a DOM exists, `probe()` IS
-    // the DOM, so the read is byte-identical either way.
+/// capture the caller's stream intent from the ingress body BEFORE any cross-protocol
+/// translation rewrites `v` (Gemini routes streaming requests to a different upstream endpoint).
+/// Delegated to the operation: chat reads the OpenAI-family `stream` boolean (byte-identical to
+/// the previous inline read); a non-streaming op always returns false.
+/// `probe()` answers this from the head projection (chat reads only the top-level `stream`
+/// boolean — a captured head key) without materializing the DOM; once a DOM exists, `probe()` IS
+/// the DOM, so the read is byte-identical either way.
+fn read_client_stream_intent(
+    v: &Option<LazyBody>,
+    op: busbar_substrate::handlers::Op,
+) -> StreamIntent {
     let wants_stream = v
         .as_ref()
         .map(|l| op.wants_stream(l.probe()))
@@ -417,17 +591,34 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         && v.as_ref()
             .map(|l| l.probe().get("stream_options").is_some())
             .unwrap_or(false);
+    StreamIntent {
+        wants_stream,
+        client_include_usage,
+        client_has_stream_options,
+    }
+}
 
-    // ── GLOBAL REWRITE (transform) PASS ─────────────────────────────────────────────────────────
-    // Fire the global `prompt: rw` gates (compression/redaction) BEFORE dispatch AND before the
-    // routing decision, so the decision + upstream both see the rewritten body. Priority-ordered
-    // transform chain; fail-safe throughout (a broken hook is skipped, a non-chat body is untouched).
-    // ZERO COST when no rewrite hook is configured — the common case is a single always-false branch.
-    // The pool's own rewrite chain (rw gates in its `hooks: [...]` list) fires AFTER the globals —
-    // each chain internally priority-ordered, globals always first.
-    // The pool's resolved rewrite chain, read through the core-side pool-hook facade (money-path
-    // Phase 3-4 C): the resolved `Arc<dyn RoutingPolicy>` objects live core-side keyed by pool, not on
-    // this plane's `PoolRuntime` (they cannot cross the `build_runtime` downcast). Byte-identical.
+/// ── GLOBAL REWRITE (transform) PASS ─────────────────────────────────────────────────────────
+/// Fire the global `prompt: rw` gates (compression/redaction) BEFORE dispatch AND before the
+/// routing decision, so the decision + upstream both see the rewritten body. Priority-ordered
+/// transform chain; fail-safe throughout (a broken hook is skipped, a non-chat body is untouched).
+/// ZERO COST when no rewrite hook is configured — the common case is a single always-false branch.
+/// The pool's own rewrite chain (rw gates in its `hooks: [...]` list) fires AFTER the globals —
+/// each chain internally priority-ordered, globals always first.
+/// The pool's resolved rewrite chain, read through the core-side pool-hook facade (money-path
+/// Phase 3-4 C): the resolved `Arc<dyn RoutingPolicy>` objects live core-side keyed by pool, not on
+/// this plane's `PoolRuntime` (they cannot cross the `build_runtime` downcast). Byte-identical.
+#[allow(clippy::too_many_arguments)]
+async fn apply_request_rewrites(
+    host: &Arc<dyn EngineHost>,
+    v: &mut Option<LazyBody>,
+    body: &mut Bytes,
+    pool_name: &str,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    wants_stream: bool,
+    request_id: u64,
+) -> Result<(), Refusal> {
     let pool_rewrites: &[(
         std::time::Duration,
         std::sync::Arc<dyn busbar_api::RoutingPolicy>,
@@ -460,7 +651,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     "materializing the validated request body for the rewrite pass failed; \
                      rejecting rather than forwarding un-rewritten"
                 );
-                return reject(500, "request rewrite could not be applied".to_string());
+                return Err(Box::new(reject(
+                    500,
+                    "request rewrite could not be applied".to_string(),
+                )));
             };
             let mut applied = match apply_global_rewrites(
                 host.rewrite_hooks(),
@@ -474,7 +668,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             .await
             {
                 Ok(a) => a,
-                Err((status, message)) => return reject(status, message),
+                Err((status, message)) => return Err(Box::new(reject(status, message))),
             };
             applied |= match apply_global_rewrites(
                 pool_rewrites,
@@ -488,7 +682,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             .await
             {
                 Ok(a) => a,
-                Err((status, message)) => return reject(status, message),
+                Err((status, message)) => return Err(Box::new(reject(status, message))),
             };
             // A committed rewrite makes the RETAINED bytes stale: the same-protocol pristine
             // short-circuit re-emits them verbatim, and failover hops 2+ re-parse them — either
@@ -497,7 +691,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // Cost only on the rewrite path (a no-op request never reaches this serialize).
             if applied {
                 match busbar_substrate::json::to_vec(parsed) {
-                    Ok(bytes) => body = Bytes::from(bytes),
+                    Ok(bytes) => *body = Bytes::from(bytes),
                     // A `prompt: rw` rewrite is a TRUSTED, possibly security-critical transform. If it
                     // cannot be serialized into the retained bytes, the first hop carries it but every
                     // FAILOVER hop (which re-parses `body`) would forward the ORIGINAL un-rewritten
@@ -506,13 +700,34 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // defense-in-depth for the rewrite invariant.)
                     Err(e) => {
                         diag_error!(REWRITE_RESERIALIZE_FAILED, error = %e, "re-serializing a committed rewrite failed; rejecting to avoid forwarding the un-rewritten request on failover");
-                        return reject(500, "request rewrite could not be applied".to_string());
+                        return Err(Box::new(reject(
+                            500,
+                            "request rewrite could not be applied".to_string(),
+                        )));
                     }
                 }
             }
         }
     }
+    Ok(())
+}
 
+/// The two request-stage hook seams that observe (never refuse) the effective body: the IR parse a
+/// content-granting deployment needs, and the fire-and-forget global taps. Both are zero-cost on a
+/// deployment that configures neither.
+#[allow(clippy::too_many_arguments)]
+fn fire_request_stage_hooks(
+    host: &Arc<dyn EngineHost>,
+    v: &mut Option<LazyBody>,
+    body: &Bytes,
+    req_content_type: &str,
+    pool_name: &str,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    wants_stream: bool,
+    request_id: u64,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) {
     // ── REQUEST IR ───────────────────────────────────────────────────────────────────────────────
     // Parse the EFFECTIVE request (post-rewrite) into the IR, once, here — before the taps, before
     // the gates, and before a lane (and therefore an egress protocol) has been chosen. That ordering
@@ -544,7 +759,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             fire_global_taps(
                 host,
                 dom,
-                &body,
+                body,
                 req_content_type,
                 op.operation,
                 pool_name,
@@ -555,17 +770,30 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         }
     }
+}
 
-    // Gemini ingress streaming WITHOUT `?alt=sse`: the native client expects a JSON-array streamed
-    // body, not SSE. The route layer signals this via a router shim key (read here; stripped from the
-    // body unconditionally before forwarding). GATED on `uses_array_stream_shim()` (true only for
-    // GeminiWriter): only a genuine Gemini client can want JSON-array response framing. Without the
-    // gate a body-model client (openai/cohere/responses) that sent `{"__busbar_gemini_json_array":true}`
-    // in its own fully-controlled body would have its SSE stream silently reframed as a JSON array
-    // under `Content-Type: application/json` — undecodable by the official SDK and a router behavior
-    // no native backend exhibits. False for every other protocol and for the `?alt=sse` gemini variant.
-    // Additionally gated on `op.streaming()`: a non-streaming operation never frames a JSON-array
-    // stream (chat streams, so this is a no-op for chat — `true && x == x`).
+/// Gemini ingress streaming WITHOUT `?alt=sse`: the native client expects a JSON-array streamed
+/// body, not SSE. The route layer signals this via a router shim key (read here; stripped from the
+/// body unconditionally before forwarding). GATED on `uses_array_stream_shim()` (true only for
+/// GeminiWriter): only a genuine Gemini client can want JSON-array response framing. Without the
+/// gate a body-model client (openai/cohere/responses) that sent `{"__busbar_gemini_json_array":true}`
+/// in its own fully-controlled body would have its SSE stream silently reframed as a JSON array
+/// under `Content-Type: application/json` — undecodable by the official SDK and a router behavior
+/// no native backend exhibits. False for every other protocol and for the `?alt=sse` gemini variant.
+/// Additionally gated on `op.streaming()`: a non-streaming operation never frames a JSON-array
+/// stream (chat streams, so this is a no-op for chat — `true && x == x`).
+#[allow(clippy::too_many_arguments)]
+fn prepare_dispatch(
+    rt: &Arc<NativeRuntime>,
+    v: &Option<LazyBody>,
+    cands: &mut Vec<WeightedLane>,
+    pool_name: &str,
+    affinity_key: Option<&str>,
+    op: busbar_substrate::handlers::Op,
+    ingress_protocol: &str,
+    request_id: u64,
+    client_fwd: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+) -> DispatchPrep {
     let ingress_decl = busbar_substrate::proto::decl_for(ingress_protocol);
     let gemini_json_array = op.streaming()
         && ingress_decl.is_some_and(|d| d.uses_array_stream_shim)
@@ -642,41 +870,181 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .any(|m| m == &EngineTables::new(rt).lanes()[wl.idx].model)
         });
     }
+    DispatchPrep {
+        gemini_json_array,
+        affinity_key_hash,
+        max_cap,
+        breaker_cfg,
+        request_ctx,
+    }
+}
 
-    // ── ROUTING-POLICY SEAM ───────────────────────────────────────────────────────────────────────
-    // Resolve this pool's routing policy ONCE, here, before the failover loop. The policy (when
-    // present) produces a ranked member preference that the loop's `pick_among` walks instead of the
-    // blind SWRR pick — composing with the unchanged breaker filter + already-tried exclusion.
-    //
-    // ZERO-COST DEFAULT: a `route: weighted` (default / absent) pool has `policy == None`, so this is
-    // a single predictable always-false branch — no `RoutingRequest`/`Candidate` projection is built,
-    // no async policy is entered, and `policy_order` stays `None`, leaving the loop on today's exact
-    // inline `select_weighted_in` path. The projection + async decision + ordered-walk only ever run
-    // for a pool that resolved a non-default policy.
-    //
-    // `chosen_policy_name` is the policy that actually produced `policy_order` (for the
-    // `x-busbar-route-policy` transparency header). It stays `None` on the default path AND when a
-    // configured policy Abstains / errors-to-weighted (both fall through to SWRR, which is not a
-    // "policy choice" worth advertising).
-    // ── PHASE-2 DECISION GATES (concurrent at t0) ───────────────────────────────────────────────
-    // Fire the GLOBAL decision gates and this pool's OWN gates for a verdict on this request,
-    // BEFORE pool routing. All gates fire CONCURRENTLY against the same t0 candidate set — reject
-    // and restrict COMMUTE (veto; intersect), and an order is re-validated against the FINAL
-    // (post-restrict) set — then the outcomes reconcile deterministically over ONE chain, sorted by
-    // ascending `priority` (stable: globals before pool gates on ties, then config order):
-    //   1. any reject ⇒ reject wins. The FIRST rejecting gate in chain order (the priority
-    //      tie-break) supplies the surfacing status/message; nothing is dispatched.
-    //   2. else restricts INTERSECT, applied in chain order; a gate whose intersection empties the
-    //      set applies ITS `on_empty` (weighted = advisory escape, that gate's restriction is
-    //      skipped; the fail-closed default rejects with a 503).
-    //   3. else the LAST ordering gate in the chain wins, filtered to the surviving candidate set
-    //      (an order captured at t0 may name members a restrict excluded — the filter is what makes
-    //      the concurrent firing sound). Empty after filtering = abstain (the pool's base ordering
-    //      below applies).
-    // The restriction persists across failover (hops select from the shrunk `cands`). ZERO COST
-    // when no gate is configured (both sources empty ⇒ the pass is skipped).
-    // The pool's resolved decision gates, read through the core-side pool-hook facade (see the rewrite
-    // chain above for why these live core-side rather than on the plane's `PoolRuntime`).
+/// WHICH SEAT produced a restrict. The decision-gate seat and the pool's own routing-policy seat
+/// reconcile a restrict identically — intersect, honour `on_empty`, persist across a fallback hop —
+/// and differ only in the operator-visible diagnostics and the refusal copy. They were written
+/// twice and drifted once (the gate seat learned to persist a restrict across a `fallback_pool` hop
+/// while the policy seat was still leaking one at the pool boundary), so they share a body now and
+/// this enum is the only thing that tells them apart.
+#[derive(Clone, Copy)]
+enum RestrictSeat {
+    Gate,
+    RoutingPolicy,
+}
+
+/// Intersect the candidate set with the members carrying one of `tags_any`, and record the
+/// constraint so it PERSISTS across a `fallback_pool` hop (which rebuilds candidates from an
+/// independent pool). `Ok(true)` = the restriction was committed and `cands` shrank; `Ok(false)` =
+/// the advisory `on_empty: weighted` escape left `cands` untouched; `Err` = the fail-closed refusal.
+#[allow(clippy::too_many_arguments)]
+fn apply_restrict(
+    seat: RestrictSeat,
+    rt: &Arc<NativeRuntime>,
+    cands: &mut Vec<WeightedLane>,
+    request_ctx: &mut RequestCtx,
+    pool_name: &str,
+    ingress_protocol: &str,
+    tags_any: &[String],
+    name: &'static str,
+    on_empty: &busbar_substrate::config::PolicyOnError,
+) -> Result<bool, Refusal> {
+    request_ctx.active_restricts.push(RestrictConstraint {
+        tags_any: tags_any.to_vec(),
+        on_empty: on_empty.clone(),
+        name,
+    });
+    let members = EngineTables::new(rt)
+        .pool_runtime()
+        .get(pool_name)
+        .map(|r| &r.members);
+    // Filter into a temp so the ORIGINAL `cands` survives a weighted `on_empty` escape; only commit
+    // the restriction when the intersection is non-empty.
+    let restricted: Vec<WeightedLane> = cands
+        .iter()
+        .filter(|wl| {
+            members
+                .and_then(|m| m.get(&wl.idx))
+                .is_some_and(|meta| meta.tags.iter().any(|t| tags_any.iter().any(|w| w == t)))
+        })
+        .cloned()
+        .collect();
+    if restricted.is_empty() {
+        // Empty intersection → the restrict's own `on_empty`. `Weighted` is the advisory escape
+        // (leave `cands` as the full pool → SWRR); the default is fail-closed reject.
+        if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
+            match seat {
+                RestrictSeat::Gate => diag_debug!(
+                    DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
+                    policy = name,
+                    pool = pool_name,
+                    "decision gate restrict left no eligible lane; on_empty: weighted escape — \
+                     this gate's restriction is skipped"
+                ),
+                RestrictSeat::RoutingPolicy => diag_debug!(
+                    ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
+                    policy = name,
+                    pool = pool_name,
+                    "routing policy restrict left no eligible lane; on_empty: weighted escape to \
+                     full-pool SWRR"
+                ),
+            }
+            return Ok(false);
+        }
+        metrics::counter!(
+            busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
+            "policy" => name,
+            "pool" => pool_name.to_string(),
+            "status" => "503".to_string(),
+        )
+        .increment(1);
+        let detail = match seat {
+            RestrictSeat::Gate => {
+                diag_debug!(
+                    DECISION_GATE_RESTRICT_REJECT,
+                    policy = name,
+                    pool = pool_name,
+                    "decision gate restrict left no eligible lane (on_empty: reject)"
+                );
+                "No upstream satisfies a required gate's restriction. Please retry shortly."
+            }
+            RestrictSeat::RoutingPolicy => {
+                diag_debug!(
+                    ROUTING_POLICY_RESTRICT_REJECT,
+                    policy = name,
+                    pool = pool_name,
+                    "routing policy restrict left no eligible lane (on_empty: reject)"
+                );
+                "No upstream satisfies the routing policy's restriction. Please retry shortly."
+            }
+        };
+        return Err(Box::new(gate_rejected(ingress_error(
+            ingress_protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            detail,
+        ))));
+    }
+    // Commit the restriction: shrink `cands` to the survivors so it PERSISTS across every failover
+    // hop, then let the pick walk them.
+    *cands = restricted;
+    metrics::counter!(
+        busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
+        "policy" => name,
+        "pool" => pool_name.to_string(),
+    )
+    .increment(1);
+    Ok(true)
+}
+
+/// ── ROUTING-POLICY SEAM ───────────────────────────────────────────────────────────────────────
+/// Resolve this pool's routing policy ONCE, here, before the failover loop. The policy (when
+/// present) produces a ranked member preference that the loop's `pick_among` walks instead of the
+/// blind SWRR pick — composing with the unchanged breaker filter + already-tried exclusion.
+//
+/// ZERO-COST DEFAULT: a `route: weighted` (default / absent) pool has `policy == None`, so this is
+/// a single predictable always-false branch — no `RoutingRequest`/`Candidate` projection is built,
+/// no async policy is entered, and `policy_order` stays `None`, leaving the loop on today's exact
+/// inline `select_weighted_in` path. The projection + async decision + ordered-walk only ever run
+/// for a pool that resolved a non-default policy.
+///
+/// `chosen_policy_name` is the policy that actually produced `policy_order` (for the
+/// `x-busbar-route-policy` transparency header). It stays `None` on the default path AND when a
+/// configured policy Abstains / errors-to-weighted (both fall through to SWRR, which is not a
+/// "policy choice" worth advertising).
+// ── PHASE-2 DECISION GATES (concurrent at t0) ───────────────────────────────────────────────
+// Fire the GLOBAL decision gates and this pool's OWN gates for a verdict on this request,
+// BEFORE pool routing. All gates fire CONCURRENTLY against the same t0 candidate set — reject
+// and restrict COMMUTE (veto; intersect), and an order is re-validated against the FINAL
+// (post-restrict) set — then the outcomes reconcile deterministically over ONE chain, sorted by
+// ascending `priority` (stable: globals before pool gates on ties, then config order):
+//   1. any reject ⇒ reject wins. The FIRST rejecting gate in chain order (the priority
+//      tie-break) supplies the surfacing status/message; nothing is dispatched.
+//   2. else restricts INTERSECT, applied in chain order; a gate whose intersection empties the
+//      set applies ITS `on_empty` (weighted = advisory escape, that gate's restriction is
+//      skipped; the fail-closed default rejects with a 503).
+//   3. else the LAST ordering gate in the chain wins, filtered to the surviving candidate set
+//      (an order captured at t0 may name members a restrict excluded — the filter is what makes
+//      the concurrent firing sound). Empty after filtering = abstain (the pool's base ordering
+//      below applies).
+// The restriction persists across failover (hops select from the shrunk `cands`). ZERO COST
+// when no gate is configured (both sources empty ⇒ the pass is skipped).
+// The pool's resolved decision gates, read through the core-side pool-hook facade (see the rewrite
+// chain above for why these live core-side rather than on the plane's `PoolRuntime`).
+#[allow(clippy::too_many_arguments)]
+async fn reconcile_decision_gates(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    v: &mut Option<LazyBody>,
+    cands: &mut Vec<WeightedLane>,
+    request_ctx: &mut RequestCtx,
+    body: &Bytes,
+    req_content_type: &str,
+    pool_name: &str,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    wants_stream: bool,
+    caller_token: Option<&str>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) -> Result<Option<(Vec<usize>, &'static str)>, Refusal> {
     let pool_gates: &[(u16, busbar_substrate::hooks::ResolvedPolicy)] = host.pool_gates(pool_name);
     let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
     if !host.global_gates().is_empty() || !pool_gates.is_empty() {
@@ -705,10 +1073,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     host,
                     rt,
                     gate,
-                    &cands,
-                    &request_ctx,
+                    &cands[..],
+                    request_ctx,
                     gate_body,
-                    &body,
+                    body,
                     req_content_type,
                     pool_name,
                     ingress_protocol,
@@ -746,19 +1114,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         message = %message,
                         "decision gate rejected the request"
                     );
-                    return gate_rejected(ingress_error(
+                    return Err(Box::new(gate_rejected(ingress_error(
                         ingress_protocol,
                         StatusCode::from_u16(*status).unwrap_or(StatusCode::FORBIDDEN),
                         reject_kind_for_status(*status),
                         message,
-                    ));
+                    ))));
                 }
                 PolicyOutcome::Reject => {
                     // The refusal a load-bearing hook's FAILED call produces — the SAME status,
                     // kind and message the read-write (transform) seat renders for the same
                     // condition, from the same constants, so a caller cannot tell which seat's
                     // hook was down.
-                    return gate_rejected(ingress_error(
+                    return Err(Box::new(gate_rejected(ingress_error(
                         ingress_protocol,
                         StatusCode::from_u16(
                             busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
@@ -766,7 +1134,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         .unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
                         KIND_OVERLOADED,
                         busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-                    ));
+                    ))));
                 }
                 _ => {}
             }
@@ -783,69 +1151,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 on_empty,
             } = outcome
             {
-                // Capture this restrict so it PERSISTS across a `fallback_pool` hop (which rebuilds
-                // candidates from an independent pool). Recorded for every restrict regardless of
-                // whether it narrows here — the fail-closed reject case returns below before any
-                // fallback, so a stray record is harmless.
-                request_ctx.active_restricts.push(RestrictConstraint {
-                    tags_any: tags_any.clone(),
-                    on_empty: on_empty.clone(),
+                apply_restrict(
+                    RestrictSeat::Gate,
+                    rt,
+                    cands,
+                    request_ctx,
+                    pool_name,
+                    ingress_protocol,
+                    tags_any,
                     name,
-                });
-                let members = EngineTables::new(rt)
-                    .pool_runtime()
-                    .get(pool_name)
-                    .map(|r| &r.members);
-                let restricted: Vec<WeightedLane> = cands
-                    .iter()
-                    .filter(|wl| {
-                        members.and_then(|m| m.get(&wl.idx)).is_some_and(|meta| {
-                            meta.tags.iter().any(|t| tags_any.iter().any(|w| w == t))
-                        })
-                    })
-                    .cloned()
-                    .collect();
-                if restricted.is_empty() {
-                    if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted) {
-                        diag_debug!(
-                            DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-                            policy = name,
-                            pool = pool_name,
-                            "decision gate restrict left no eligible lane; on_empty: weighted \
-                             escape — this gate's restriction is skipped"
-                        );
-                        // leave `cands` unchanged and continue reconciling the next restrict.
-                    } else {
-                        metrics::counter!(
-                            busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
-                            "pool" => pool_name.to_string(),
-                            "status" => "503".to_string(),
-                        )
-                        .increment(1);
-                        diag_debug!(
-                            DECISION_GATE_RESTRICT_REJECT,
-                            policy = name,
-                            pool = pool_name,
-                            "decision gate restrict left no eligible lane (on_empty: reject)"
-                        );
-                        return gate_rejected(ingress_error(
-                            ingress_protocol,
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            KIND_OVERLOADED,
-                            "No upstream satisfies a required gate's restriction. Please retry \
-                             shortly.",
-                        ));
-                    }
-                } else {
-                    cands = restricted;
-                    metrics::counter!(
-                        busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => *name,
-                        "pool" => pool_name.to_string(),
-                    )
-                    .increment(1);
-                }
+                    on_empty,
+                )?;
             }
         }
 
@@ -878,7 +1194,29 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             .increment(1);
         }
     }
+    Ok(gate_order)
+}
 
+/// The pool's BASE ordering decision: a phase-2 gate's reconciled order when one survived, else the
+/// pool's own resolved `route:` policy, else `None` (today's exact SWRR). Returns the ranked order
+/// and the policy name the `x-busbar-route-policy` transparency header advertises.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_policy_order(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    gate_order: Option<(Vec<usize>, &'static str)>,
+    v: &mut Option<LazyBody>,
+    cands: &mut Vec<WeightedLane>,
+    request_ctx: &mut RequestCtx,
+    body: &Bytes,
+    req_content_type: &str,
+    pool_name: &str,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    wants_stream: bool,
+    caller_token: Option<&str>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) -> Result<(Option<Vec<usize>>, Option<&'static str>), Refusal> {
     let mut chosen_policy_name: Option<&'static str> = None;
     let policy_order: Option<Vec<usize>> = if let Some((order, name)) = gate_order {
         // A phase-2 gate ORDERED: it overrides the pool's base ordering (a gate's abstain was the
@@ -916,10 +1254,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     host,
                     rt,
                     resolved,
-                    &cands,
-                    &request_ctx,
+                    &cands[..],
+                    request_ctx,
                     policy_body,
-                    &body,
+                    body,
                     req_content_type,
                     pool_name,
                     ingress_protocol,
@@ -947,13 +1285,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // on_error == reject (and the policy errored/timed out / saturated): fail closed with a
                     // 503 rather than silently degrading. Never strands as a hang — a clean rejection.
                     PolicyOutcome::Reject => {
-                        return gate_rejected(ingress_error(
+                        return Err(Box::new(gate_rejected(ingress_error(
                             ingress_protocol,
                             StatusCode::SERVICE_UNAVAILABLE,
                             KIND_OVERLOADED,
                             "The routing policy could not select an upstream. Please retry \
                              shortly.",
-                        ));
+                        ))));
                     }
                     // The hook's REJECT verb: a deliberate, first-class policy decision (a guardrail /
                     // PII screen said no) — a 4xx to the caller, no upstream dispatched, and an
@@ -986,12 +1324,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             message = %message,
                             "routing policy rejected the request"
                         );
-                        return gate_rejected(ingress_error(
+                        return Err(Box::new(gate_rejected(ingress_error(
                             ingress_protocol,
                             StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
                             reject_kind_for_status(status),
                             &message,
-                        ));
+                        ))));
                     }
                     // The hook's RESTRICT verb: intersect the failover candidate set with members
                     // carrying one of `tags_any`, then let SWRR pick among the survivors. Shrinking
@@ -1004,133 +1342,81 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         name,
                         on_empty,
                     } => {
-                        // Capture this restrict so it PERSISTS across a `fallback_pool` hop, exactly
-                        // as the GATE reconcile arm does. Shrinking `cands` below only covers in-pool
-                        // failover; the fallback pool rebuilds candidates independently and consults
-                        // `enforce_restricts`. The gate arm was fixed first; this BASE routing-policy
-                        // arm (pool `route:` hook) is the sibling path that was still leaking a
-                        // compliance restrict at the pool boundary.
-                        request_ctx.active_restricts.push(RestrictConstraint {
-                            tags_any: tags_any.clone(),
-                            on_empty: on_empty.clone(),
+                        if apply_restrict(
+                            RestrictSeat::RoutingPolicy,
+                            rt,
+                            cands,
+                            request_ctx,
+                            pool_name,
+                            ingress_protocol,
+                            &tags_any,
                             name,
-                        });
-                        let members = EngineTables::new(rt)
-                            .pool_runtime()
-                            .get(pool_name)
-                            .map(|r| &r.members);
-                        // Filter into a temp so the ORIGINAL `cands` survives for a weighted on_empty
-                        // escape; only commit the restriction when the intersection is non-empty.
-                        let restricted: Vec<WeightedLane> = cands
-                            .iter()
-                            .filter(|wl| {
-                                members.and_then(|m| m.get(&wl.idx)).is_some_and(|meta| {
-                                    meta.tags.iter().any(|t| tags_any.iter().any(|w| w == t))
-                                })
-                            })
-                            .cloned()
-                            .collect();
-                        if restricted.is_empty() {
-                            // Empty intersection → the gate's `on_empty`. `Weighted` is the advisory escape
-                            // (leave `cands` as the full pool → SWRR); default (and `First`, which has no
-                            // eligible "first") is fail-closed reject.
-                            if matches!(on_empty, busbar_substrate::config::PolicyOnError::Weighted)
-                            {
-                                diag_debug!(
-                                ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
-                                policy = name,
-                                pool = pool_name,
-                                "routing policy restrict left no eligible lane; on_empty: weighted \
-                                 escape to full-pool SWRR"
-                            );
-                                None
-                            } else {
-                                metrics::counter!(
-                                    busbar_substrate::metrics::ROUTE_POLICY_REJECTIONS_TOTAL,
-                                    "policy" => name,
-                                    "pool" => pool_name.to_string(),
-                                    "status" => "503".to_string(),
-                                )
-                                .increment(1);
-                                diag_debug!(
-                                ROUTING_POLICY_RESTRICT_REJECT,
-                                policy = name,
-                                pool = pool_name,
-                                "routing policy restrict left no eligible lane (on_empty: reject)"
-                            );
-                                return gate_rejected(ingress_error(
-                                    ingress_protocol,
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    KIND_OVERLOADED,
-                                    "No upstream satisfies the routing policy's restriction. \
-                                     Please retry shortly.",
-                                ));
-                            }
-                        } else {
-                            // Commit the restriction: shrink `cands` to the survivors so it PERSISTS
-                            // across every failover hop, then let SWRR pick among them.
-                            cands = restricted;
+                            &on_empty,
+                        )? {
                             chosen_policy_name = Some(name);
-                            metrics::counter!(
-                                busbar_substrate::metrics::ROUTE_POLICY_SELECTIONS_TOTAL,
-                                "policy" => name,
-                                "pool" => pool_name.to_string(),
-                            )
-                            .increment(1);
-                            None
                         }
+                        None
                     }
                 }
             }
         }
     };
+    Ok((policy_order, chosen_policy_name))
+}
 
-    // The pristine `v` is consumed by the FIRST hop (it is unmutated after the field reads above), so
-    // the common no-failover path parses the body ONCE, not twice. Failover hops (2+) re-parse from
-    // the retained `body` bytes — never from a previous hop's egress-shaped Value — preserving the
-    // mixed-protocol-pool correctness the per-hop re-parse was introduced for.
+/// THE FAILOVER WALK — the dispatch half of the request path: the per-hop deadline check, the one
+/// pick site, the one attempt, the context-length narrowing and the exhaustion hand-off. Everything
+/// it reads was resolved by PREPARE and is carried in [`WalkInput`].
+async fn run_failover_walk(w: WalkInput<'_>) -> Response {
+    let WalkInput {
+        host,
+        rt,
+        cands,
+        body,
+        mut v,
+        req_content_type,
+        caller_token,
+        resolved_gov_key,
+        pool_name,
+        ingress_protocol,
+        op,
+        mut usage_sink,
+        intent,
+        prep,
+        policy_order,
+        chosen_policy_name,
+    } = w;
+    let StreamIntent {
+        wants_stream,
+        client_include_usage,
+        client_has_stream_options,
+    } = intent;
+    let DispatchPrep {
+        gemini_json_array,
+        affinity_key_hash,
+        max_cap,
+        breaker_cfg,
+        mut request_ctx,
+    } = prep;
+
+    // The pristine `v` is consumed by the FIRST hop (it is unmutated after the field reads in
+    // PREPARE), so the common no-failover path parses the body ONCE, not twice. Failover hops (2+)
+    // re-parse from the retained `body` bytes — never from a previous hop's egress-shaped Value —
+    // preserving the mixed-protocol-pool correctness the per-hop re-parse was introduced for.
     let body_is_json = v.is_some();
-    // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
-    // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
-    // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
-    let stage_shape =
-        if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
-            None
-        } else {
-            // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
-            // configured, so this request always paid the parse).
-            let dom: Option<&Value> = match v.as_mut() {
-                Some(l) => l.ensure_dom().ok().map(|m| &*m),
-                None => None,
-            };
-            Some(capture_stage_shape(
-                dom,
-                &body,
-                req_content_type,
-                pool_name,
-                ingress_protocol,
-                Some(op.operation),
-                wants_stream,
-                request_ctx.request_id,
-            ))
-        };
-    if let Some(shape) = &stage_shape {
-        fire_stage_taps(
-            host.tap_hooks_candidate(),
-            shape,
-            busbar_substrate::hooks::wire::HookStageProjection {
-                at: "candidate",
-                model: None,
-                attempt_number: None,
-                remaining_candidates: Some(cands.len()),
-                previous_failure: None,
-                outcome: None,
-                status: None,
-            },
-            resolved_gov_key.and_then(|k| k.group.as_deref()),
-            &**host,
-        );
-    }
+    let stage_shape = capture_candidate_stage(
+        host,
+        &mut v,
+        &body,
+        &cands,
+        req_content_type,
+        pool_name,
+        ingress_protocol,
+        op,
+        wants_stream,
+        request_ctx.request_id,
+        resolved_gov_key,
+    );
     // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
     let mut last_failure: Option<&'static str> = None;
 
@@ -1148,173 +1434,41 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // the retained `body` bytes. (This used to be a `first_hop_v = v` rebind for the name alone —
     // dropped because the extra binding cost the coroutine a second 80-byte `Option<LazyBody>` slot
     // held across every await of the attempt loop; wave-8a future-shrink.)
-    drop(_prep);
-    for attempt_no in 0..=max_cap {
-        // Check deadline first (propagated across hops)
-        if request_ctx.expired(now()) {
-            return ingress_error(
-                ingress_protocol,
-                StatusCode::SERVICE_UNAVAILABLE,
-                KIND_OVERLOADED,
-                DETAIL_REQUEST_TIMEOUT,
-            );
-        }
 
-        let _pick = busbar_substrate::profile::start(busbar_substrate::profile::Stage::LanePick);
-        // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
-        // synchronously by `pick_among` before any await), `None` for a Closed-ready no-op admit that
-        // won none. The `probe_guard` built right below turns this into a RAII release that covers the
-        // WHOLE dispatch window — including a dropped future — so this path no longer scatters explicit
-        // (and formerly unowned) `release_probe_*` calls across its early-return arms.
-        let (i, permit, probe_epoch) = match pick_among(
+    for attempt_no in 0..=max_cap {
+        let HopStart {
+            i,
+            permit,
+            probe_epoch,
+            metric_pool,
+            egress_name,
+            head_pristine,
+            hop_v,
+        } = match prepare_hop(
             host,
             rt,
             &cands,
             &mut request_ctx,
+            &mut v,
+            &body,
+            stage_shape.as_ref(),
+            &usage_sink,
             affinity_key_hash,
-            pool_name,
             policy_order.as_deref(),
+            pool_name,
+            ingress_protocol,
+            op,
+            req_content_type,
+            caller_token,
+            resolved_gov_key,
+            attempt_no,
+            last_failure,
+            body_is_json,
         )
         .await
         {
-            Some(x) => x,
-            None => {
-                if cands.is_empty() {
-                    // Pool has no members at all — nothing to do.
-                    return ingress_error(
-                        ingress_protocol,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        KIND_OVERLOADED,
-                        "The service is temporarily overloaded. Please retry shortly.",
-                    );
-                }
-                // No usable lane — whether the members were tripped before this request
-                // arrived or excluded during its failover attempts, apply the configured
-                // exhaustion mode (Status503 / FallbackPool / LeastBad) with loop prevention.
-                // Box::pin: the exhaustion future (~2.1 KB) is COLD (no usable lane), but awaited
-                // inline it alone sets this fn's coroutine union max — boxing it shrinks the
-                // per-request future every happy-path request carries; the alloc only happens on
-                // the already-degraded path. (Same pattern as the fallback pool's recursive box.)
-                return Box::pin(handle_exhaustion_for_pool(
-                    host.clone(),
-                    rt.clone(),
-                    &cands,
-                    now(),
-                    pool_name,
-                    body,
-                    caller_token,
-                    &mut request_ctx,
-                    ingress_protocol,
-                    op,
-                    req_content_type,
-                    usage_sink.clone(),
-                ))
-                .await;
-            }
-        };
-        // LANE_PICK ends here (a lane + permit are in hand).
-        drop(_pick);
-        // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt — exclude, routing
-        // taps (light path: none), metric-pool label, upstream-attempt telemetry.
-        let _asetup =
-            busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
-
-        // Mark this lane as excluded for future attempts in this request
-        request_ctx.exclude(i);
-
-        // ── STAGE TAPS: routing ── the full failover story, per dispatch attempt: which lane,
-        // which attempt number, how many candidates remain untried, and why the previous attempt
-        // failed (None on the first).
-        if let Some(shape) = &stage_shape {
-            let remaining = cands
-                .iter()
-                .filter(|wl| !request_ctx.excluded.contains(&wl.idx))
-                .count();
-            fire_stage_taps(
-                host.tap_hooks_routing(),
-                shape,
-                busbar_substrate::hooks::wire::HookStageProjection {
-                    at: "routing",
-                    model: Some(&EngineTables::new(rt).lanes()[i].model),
-                    attempt_number: Some(
-                        u32::try_from(attempt_no.saturating_add(1)).unwrap_or(u32::MAX),
-                    ),
-                    remaining_candidates: Some(remaining),
-                    previous_failure: last_failure,
-                    outcome: None,
-                    status: None,
-                },
-                resolved_gov_key.and_then(|k| k.group.as_deref()),
-                &**host,
-            );
-        }
-
-        // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
-        // Resolves to the routed lane's model name on the default (`""`) cell so these series
-        // correlate with REQUESTS_TOTAL (which labels model-routed traffic by model, not `""`);
-        // the breaker-cell key stays `pool_name` (`""`) — only the metric LABEL is decoupled.
-        let metric_pool: &str = metric_pool_label(rt, pool_name, i);
-
-        // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
-        host.telemetry_upstream_attempt(metric_pool, i);
-        tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
-
-        let egress_name = EngineTables::new(rt).lanes()[i].protocol;
-        drop(_asetup);
-        // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
-        // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
-        // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
-        // parsed `Value` tree per hop: a single JSON parse is far cheaper in time and peak heap than
-        // an O(n) `Value::clone` of a large request, which under sustained failover compounded to
-        // O(n × max_cap) allocations.
-        //
-        // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol JSON dispatch whose head
-        // projection PROVES no same-proto invalidator fires re-emits the retained bytes verbatim —
-        // the exact bytes the translate seam's own pristine short-circuit would emit — without ever
-        // materializing the `Value` tree. `head_provably_pristine` is one-sided (see its docs +
-        // parity test): any doubt falls through to the unchanged materialize-and-translate path, so
-        // the wire bytes are byte-identical on every branch. When the DOM was already materialized
-        // (hooks/taps/gates/path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and
-        // `body` was re-serialized in lockstep by the rewrite pass — the check stays sound.
-        let head_pristine = ingress_protocol == egress_name
-            && v.as_ref()
-                .is_some_and(|l| head_provably_pristine(rt, i, l.probe()));
-        let hop_v: Option<Value> = if head_pristine {
-            // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
-            // from the retained pristine bytes, unchanged.
-            v = None;
-            None
-        } else if !body_is_json {
-            None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
-        } else {
-            let parsed = match v.take() {
-                // First hop: consume the carried body — the memoized DOM when one was
-                // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
-                // bytes (the parse the old eager path performed at ingress).
-                Some(l) => l.into_value(),
-                // Failover hops: re-parse from the retained pristine bytes (SIMD parse).
-                None => busbar_substrate::json::parse(&body).map_err(|_| ()),
-            };
-            match parsed {
-                Ok(v) => Some(v),
-                // `body` already validated/parsed once successfully above; this is infallible.
-                Err(()) => {
-                    // Pre-dispatch bail (no breaker outcome recorded): nothing was dispatched, so
-                    // any single-flight probe this pick won is released here, owner-checked, and
-                    // a recovering lane never wedges HalfOpen on this early exit.
-                    if let Some(epoch) = probe_epoch {
-                        host.lane_store()
-                            .release_probe_owned_in(pool_name, i, epoch);
-                    }
-                    drop(permit);
-                    return ingress_error(
-                        ingress_protocol,
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        KIND_API_ERROR,
-                        DETAIL_INTERNAL_ERROR,
-                    );
-                }
-            }
+            Ok(h) => h,
+            Err(resp) => return *resp,
         };
 
         // THE ONE ATTEMPT: assemble, send, classify, deliver — the same function the degraded
@@ -1361,22 +1515,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 ..
             } => {
                 if matches!(disposition, Disposition::ContextLength) {
-                    // The request is too large for THIS model's context window: exclude every
-                    // candidate whose known `context_max` is at or below the failed lane's (they
-                    // share or undercut the limit that just failed), so failover lands on a
-                    // larger-context or unknown-context member. An unknown limit on the failed lane
-                    // excludes only the failed lane itself (already excluded above).
-                    let failed_context_max = EngineTables::new(rt).lanes()[i].context_max;
-                    for cand in &cands {
-                        if let (Some(cand_context_max), Some(failed_limit)) = (
-                            EngineTables::new(rt).lanes()[cand.idx].context_max,
-                            failed_context_max,
-                        ) {
-                            if cand_context_max <= failed_limit {
-                                request_ctx.exclude(cand.idx);
-                            }
-                        }
-                    }
+                    narrow_on_context_length(rt, &cands, &mut request_ctx, i);
                 }
                 // Every failed attempt on this walk is a failover to the next candidate; the
                 // routing-stage tap on the next hop tells the story of why.
@@ -1404,6 +1543,392 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         usage_sink,
     ))
     .await
+}
+
+/// No usable lane for this pick: either the pool has no members at all, or every one of them is
+/// tripped or already tried. Applies the pool's configured exhaustion mode with loop prevention.
+#[allow(clippy::too_many_arguments)]
+async fn on_no_usable_lane(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    cands: &[WeightedLane],
+    pool_name: &str,
+    body: Bytes,
+    caller_token: Option<&str>,
+    request_ctx: &mut RequestCtx,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    req_content_type: &str,
+    usage_sink: Option<UsageSink>,
+) -> Response {
+    if cands.is_empty() {
+        // Pool has no members at all — nothing to do.
+        return ingress_error(
+            ingress_protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            "The service is temporarily overloaded. Please retry shortly.",
+        );
+    }
+    // No usable lane — whether the members were tripped before this request
+    // arrived or excluded during its failover attempts, apply the configured
+    // exhaustion mode (Status503 / FallbackPool / LeastBad) with loop prevention.
+    // Box::pin: the exhaustion future (~2.1 KB) is COLD (no usable lane), but awaited
+    // inline it alone sets this fn's coroutine union max — boxing it shrinks the
+    // per-request future every happy-path request carries; the alloc only happens on
+    // the already-degraded path. (Same pattern as the fallback pool's recursive box.)
+    Box::pin(handle_exhaustion_for_pool(
+        host.clone(),
+        rt.clone(),
+        cands,
+        now(),
+        pool_name,
+        body,
+        caller_token,
+        request_ctx,
+        ingress_protocol,
+        op,
+        req_content_type,
+        usage_sink,
+    ))
+    .await
+}
+
+/// The routing-stage tap: the full failover story, per dispatch attempt — which lane, which attempt
+/// number, how many candidates remain untried, and why the previous attempt failed (`None` on the
+/// first). Zero cost when no stage tap is configured.
+#[allow(clippy::too_many_arguments)]
+fn fire_routing_stage_tap(
+    host: &Arc<dyn EngineHost>,
+    rt: &Arc<NativeRuntime>,
+    stage_shape: Option<&StageShape<'_>>,
+    cands: &[WeightedLane],
+    request_ctx: &RequestCtx,
+    i: usize,
+    attempt_no: usize,
+    last_failure: Option<&'static str>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) {
+    // failed (None on the first).
+    if let Some(shape) = stage_shape {
+        let remaining = cands
+            .iter()
+            .filter(|wl| !request_ctx.excluded.contains(&wl.idx))
+            .count();
+        fire_stage_taps(
+            host.tap_hooks_routing(),
+            shape,
+            busbar_substrate::hooks::wire::HookStageProjection {
+                at: "routing",
+                model: Some(&EngineTables::new(rt).lanes()[i].model),
+                attempt_number: Some(
+                    u32::try_from(attempt_no.saturating_add(1)).unwrap_or(u32::MAX),
+                ),
+                remaining_candidates: Some(remaining),
+                previous_failure: last_failure,
+                outcome: None,
+                status: None,
+            },
+            resolved_gov_key.and_then(|k| k.group.as_deref()),
+            &**host,
+        );
+    }
+}
+
+/// Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite starting
+/// from the ORIGINAL request, never from a previous hop's egress-shaped body. Returns the
+/// same-protocol pristine short-circuit verdict alongside the body; `Err(())` is the (unreachable in
+/// practice) re-parse failure of bytes this request already validated.
+#[allow(clippy::too_many_arguments)]
+fn derive_hop_body(
+    rt: &Arc<NativeRuntime>,
+    v: &mut Option<LazyBody>,
+    body: &Bytes,
+    i: usize,
+    ingress_protocol: &str,
+    egress_name: &str,
+    body_is_json: bool,
+) -> Result<(bool, Option<Value>), ()> {
+    // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
+    // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
+    // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
+    // parsed `Value` tree per hop: a single JSON parse is far cheaper in time and peak heap than
+    // an O(n) `Value::clone` of a large request, which under sustained failover compounded to
+    // O(n × max_cap) allocations.
+    //
+    // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol JSON dispatch whose head
+    // projection PROVES no same-proto invalidator fires re-emits the retained bytes verbatim —
+    // the exact bytes the translate seam's own pristine short-circuit would emit — without ever
+    // materializing the `Value` tree. `head_provably_pristine` is one-sided (see its docs +
+    // parity test): any doubt falls through to the unchanged materialize-and-translate path, so
+    // the wire bytes are byte-identical on every branch. When the DOM was already materialized
+    // (hooks/taps/gates/path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and
+    // `body` was re-serialized in lockstep by the rewrite pass — the check stays sound.
+    let head_pristine = ingress_protocol == egress_name
+        && v.as_ref()
+            .is_some_and(|l| head_provably_pristine(rt, i, l.probe()));
+    let hop_v: Option<Value> = if head_pristine {
+        // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
+        // from the retained pristine bytes, unchanged.
+        *v = None;
+        None
+    } else if !body_is_json {
+        None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
+    } else {
+        let parsed = match v.take() {
+            // First hop: consume the carried body — the memoized DOM when one was
+            // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
+            // bytes (the parse the old eager path performed at ingress).
+            Some(l) => l.into_value(),
+            // Failover hops: re-parse from the retained pristine bytes (SIMD parse).
+            None => busbar_substrate::json::parse(body).map_err(|_| ()),
+        };
+        match parsed {
+            Ok(v) => Some(v),
+            // `body` already validated/parsed once successfully above; this is infallible. The
+            // caller owns the permit and the single-flight probe, so it — not this pure derivation
+            // — performs the pre-dispatch bail.
+            Err(()) => return Err(()),
+        }
+    };
+    Ok((head_pristine, hop_v))
+}
+
+/// The request is too large for THIS model's context window: exclude every candidate whose known
+/// `context_max` is at or below the failed lane's (they share or undercut the limit that just
+/// failed), so failover lands on a larger-context or unknown-context member. An unknown limit on the
+/// failed lane excludes only the failed lane itself (already excluded by the walk).
+fn narrow_on_context_length(
+    rt: &Arc<NativeRuntime>,
+    cands: &[WeightedLane],
+    request_ctx: &mut RequestCtx,
+    i: usize,
+) {
+    let failed_context_max = EngineTables::new(rt).lanes()[i].context_max;
+    for cand in cands {
+        if let (Some(cand_context_max), Some(failed_limit)) = (
+            EngineTables::new(rt).lanes()[cand.idx].context_max,
+            failed_context_max,
+        ) {
+            if cand_context_max <= failed_limit {
+                request_ctx.exclude(cand.idx);
+            }
+        }
+    }
+}
+
+/// What a hop needs in hand before THE ONE ATTEMPT runs: the picked lane and its permit, the
+/// single-flight probe epoch the pick may have won, the bounded metric label, the egress dialect and
+/// the per-hop request body. Produced by [`prepare_hop`], consumed by the attempt.
+struct HopStart<'h> {
+    i: usize,
+    permit: Permit,
+    probe_epoch: Option<u64>,
+    metric_pool: &'h str,
+    egress_name: &'h str,
+    head_pristine: bool,
+    hop_v: Option<Value>,
+}
+
+/// ONE HOP'S PROLOGUE: the propagated deadline check, the one pick site, the exclusion bookkeeping,
+/// the routing-stage tap, the metric label + upstream-attempt telemetry, and the fresh per-hop body.
+/// Everything between "the walk decided to try again" and "the attempt may run". Returns the
+/// caller's refusal when the deadline has passed, when no lane is usable, or when the retained bytes
+/// will not re-parse.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_hop<'h>(
+    host: &'h Arc<dyn EngineHost>,
+    rt: &'h Arc<NativeRuntime>,
+    cands: &[WeightedLane],
+    request_ctx: &mut RequestCtx,
+    v: &mut Option<LazyBody>,
+    body: &Bytes,
+    stage_shape: Option<&StageShape<'_>>,
+    usage_sink: &Option<UsageSink>,
+    affinity_key_hash: Option<u64>,
+    policy_order: Option<&[usize]>,
+    pool_name: &'h str,
+    ingress_protocol: &str,
+    op: busbar_substrate::handlers::Op,
+    req_content_type: &str,
+    caller_token: Option<&str>,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+    attempt_no: usize,
+    last_failure: Option<&'static str>,
+    body_is_json: bool,
+) -> Result<HopStart<'h>, Refusal> {
+    // Check deadline first (propagated across hops)
+    if request_ctx.expired(now()) {
+        return Err(Box::new(ingress_error(
+            ingress_protocol,
+            StatusCode::SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            DETAIL_REQUEST_TIMEOUT,
+        )));
+    }
+
+    let _pick = busbar_substrate::profile::start(busbar_substrate::profile::Stage::LanePick);
+    // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
+    // synchronously by `pick_among` before any await), `None` for a Closed-ready no-op admit that
+    // won none. The `probe_guard` built right below turns this into a RAII release that covers the
+    // WHOLE dispatch window — including a dropped future — so this path no longer scatters explicit
+    // (and formerly unowned) `release_probe_*` calls across its early-return arms.
+    let (i, permit, probe_epoch) = match pick_among(
+        host,
+        rt,
+        cands,
+        request_ctx,
+        affinity_key_hash,
+        pool_name,
+        policy_order,
+    )
+    .await
+    {
+        Some(x) => x,
+        None => {
+            return Err(Box::new(
+                on_no_usable_lane(
+                    host,
+                    rt,
+                    cands,
+                    pool_name,
+                    body.clone(),
+                    caller_token,
+                    request_ctx,
+                    ingress_protocol,
+                    op,
+                    req_content_type,
+                    usage_sink.clone(),
+                )
+                .await,
+            ))
+        }
+    };
+    // LANE_PICK ends here (a lane + permit are in hand).
+    drop(_pick);
+    // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt — exclude, routing
+    // taps (light path: none), metric-pool label, upstream-attempt telemetry.
+    let _asetup = busbar_substrate::profile::start(busbar_substrate::profile::Stage::AttemptSetup);
+
+    // Mark this lane as excluded for future attempts in this request
+    request_ctx.exclude(i);
+
+    // ── STAGE TAPS: routing ── the full failover story, per dispatch attempt: which lane,
+    // which attempt number, how many candidates remain untried, and why the previous attempt
+    fire_routing_stage_tap(
+        host,
+        rt,
+        stage_shape,
+        cands,
+        request_ctx,
+        i,
+        attempt_no,
+        last_failure,
+        resolved_gov_key,
+    );
+
+    // The bounded `pool` LABEL for THIS hop's upstream/failover/breaker metrics.
+    // Resolves to the routed lane's model name on the default (`""`) cell so these series
+    // correlate with REQUESTS_TOTAL (which labels model-routed traffic by model, not `""`);
+    // the breaker-cell key stays `pool_name` (`""`) — only the metric LABEL is decoupled.
+    let metric_pool: &str = metric_pool_label(rt, pool_name, i);
+
+    // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
+    host.telemetry_upstream_attempt(metric_pool, i);
+    tracing::debug!(pool = %pool_name, lane = %EngineTables::new(rt).lanes()[i].model, "upstream attempt");
+
+    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
+    drop(_asetup);
+    let (head_pristine, hop_v) =
+        match derive_hop_body(rt, v, body, i, ingress_protocol, egress_name, body_is_json) {
+            Ok(x) => x,
+            Err(()) => {
+                // Pre-dispatch bail (no breaker outcome recorded): nothing was dispatched, so any
+                // single-flight probe this pick won is released here, owner-checked, and a
+                // recovering lane never wedges HalfOpen on this early exit.
+                if let Some(epoch) = probe_epoch {
+                    host.lane_store()
+                        .release_probe_owned_in(pool_name, i, epoch);
+                }
+                drop(permit);
+                return Err(Box::new(ingress_error(
+                    ingress_protocol,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    KIND_API_ERROR,
+                    DETAIL_INTERNAL_ERROR,
+                )));
+            }
+        };
+    Ok(HopStart {
+        i,
+        permit,
+        probe_epoch,
+        metric_pool,
+        egress_name,
+        head_pristine,
+        hop_v,
+    })
+}
+
+/// The candidate-stage shape, captured ONCE (scalars only, so it survives `v` moving into the first
+/// hop) and the `candidate` stage taps fired off it: the decision reconcile + base ordering produced
+/// the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
+#[allow(clippy::too_many_arguments)]
+fn capture_candidate_stage<'s>(
+    host: &Arc<dyn EngineHost>,
+    v: &mut Option<LazyBody>,
+    body: &Bytes,
+    cands: &[WeightedLane],
+    req_content_type: &str,
+    pool_name: &'s str,
+    ingress_protocol: &'s str,
+    op: busbar_substrate::handlers::Op,
+    wants_stream: bool,
+    request_id: u64,
+    resolved_gov_key: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+) -> Option<StageShape<'s>> {
+    // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
+    // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
+    // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
+    let stage_shape =
+        if host.tap_hooks_candidate().is_empty() && host.tap_hooks_routing().is_empty() {
+            None
+        } else {
+            // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
+            // configured, so this request always paid the parse).
+            let dom: Option<&Value> = match v.as_mut() {
+                Some(l) => l.ensure_dom().ok().map(|m| &*m),
+                None => None,
+            };
+            Some(capture_stage_shape(
+                dom,
+                body,
+                req_content_type,
+                pool_name,
+                ingress_protocol,
+                Some(op.operation),
+                wants_stream,
+                request_id,
+            ))
+        };
+    if let Some(shape) = &stage_shape {
+        fire_stage_taps(
+            host.tap_hooks_candidate(),
+            shape,
+            busbar_substrate::hooks::wire::HookStageProjection {
+                at: "candidate",
+                model: None,
+                attempt_number: None,
+                remaining_candidates: Some(cands.len()),
+                previous_failure: None,
+                outcome: None,
+                status: None,
+            },
+            resolved_gov_key.and_then(|k| k.group.as_deref()),
+            &**host,
+        );
+    }
+    stage_shape
 }
 
 /// GLOBAL TAP (observe) stage of the forward pipeline. Fires the global request-stage `kind: tap`

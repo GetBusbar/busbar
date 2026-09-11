@@ -9,11 +9,13 @@
 //! CI red instead of shaving throughput invisibly. Re-baseline DOWNWARD freely; raise only with
 //! a written reason in the same commit.
 
-/// Committed bound: measured 3,352 bytes after the wave-8a shrink (was 5,152 when this tripwire
-/// landed — the cold policy-decision and buffered cross-protocol-translate arms are boxed off the
-/// union, the `first_hop_v` rebind slot is gone, and the two wrapper layers no longer double-store
-/// their parameters), +448 headroom for legitimate small growth. Re-baseline DOWNWARD freely.
-const FORWARD_FUTURE_MAX_BYTES: usize = 3_800;
+/// Committed bound: measured 2,456 bytes after the PREPARE/WALK split (was 3,680 on this base, and
+/// 5,152 when this tripwire landed). The dispatch walk is now its own future, boxed at the seam, so
+/// the outermost forward future carries PREPARE's state and a pointer instead of PREPARE's state
+/// and the whole walk; the cold policy-decision and buffered cross-protocol-translate arms are still
+/// boxed off the union and the `first_hop_v` rebind slot is still gone. +144 headroom for legitimate
+/// small growth. Re-baseline DOWNWARD freely.
+const FORWARD_FUTURE_MAX_BYTES: usize = 2_600;
 
 #[test]
 fn forward_future_size_is_pinned() {
