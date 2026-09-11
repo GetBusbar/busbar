@@ -66,7 +66,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `busbar-unit-*` file reachable from the Teller loop **without crossing a sealed unit-trait boundary**
   — helpers the loop calls directly, not the units behind their traits — counts against the kernel
   ceiling): `busbar-kernel`
-  ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
+  ≤ 8k — Teller loop 1.5k (the loop and the per-unit record it builds at its entry: the unit's own
+  memory, the context every step is lent, and the two facts Verify seals onto it) · pump/scheduler 1.5k ·
+  in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
   arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and

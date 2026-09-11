@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use crate::root::unit_views::UnitCtx;
 
 /// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
 #[derive(Debug)]
@@ -297,27 +298,28 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
             admin_listener: true,
             kernel_verb_only: true,
         };
+        crate::open_record!(record, &ctx);
         let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
-        let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
+        let _ = decode(&binding, &decode_token, &record).into_result(&seal);
         let verify_token: UnitToken<Verify> = UnitToken::mint(&seal);
         let _ = verify(
             &binding,
             &verify_token,
-            &ctx,
+            &record,
             &PrincipalId::new("key_operator_7"),
         )
         .into_result(&seal);
 
         let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
         if completed {
-            let _ =
-                audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
+            let _ = audit(&binding, &log, &audit_token, &record, &Outcome::Completed)
+                .into_result(&seal);
         } else {
             let _ = audit_refused(
                 &binding,
                 &log,
                 &audit_token,
-                &ctx,
+                &record,
                 &Refusal::new(ReasonCode::ScopeDenied),
             )
             .into_result(&seal);
@@ -381,8 +383,9 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             admin_listener: true,
             kernel_verb_only: true,
         };
+        crate::open_record!(record, &ctx);
         let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
-        decode(&binding, &decode_token, &ctx)
+        decode(&binding, &decode_token, &record)
             .into_result(&seal)
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
@@ -392,7 +395,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
             Arc::new(crate::root::kernel::RefusingStore),
             &admin,
             &token,
-            &ctx,
+            &record,
             &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
@@ -577,10 +580,11 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
         admin_listener: true,
         kernel_verb_only: true,
     };
-    let evidence = evidence(&ctx);
+    crate::open_record!(record, &ctx);
+    let evidence = evidence(&record);
     assert!(!evidence.upstream_candidate);
     assert_eq!(
-        busbar_kernel::teller::requests_drawn(ctx.origin, evidence.upstream_candidate),
+        busbar_kernel::teller::requests_drawn(record.origin(), evidence.upstream_candidate),
         0
     );
     assert_eq!(busbar_kernel::teller::fee_count(&evidence.fee).0, 0);
@@ -1080,10 +1084,11 @@ fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::K
         admin_listener: true,
         kernel_verb_only: true,
     };
+    crate::open_record!(record, &ctx);
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
     // asserting over a row the loop never wrote.
-    let _ = decode(&binding, &UnitToken::mint(&seal), &ctx);
+    let _ = decode(&binding, &UnitToken::mint(&seal), &record);
     (binding, ctx, seal)
 }
 
@@ -1166,8 +1171,9 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
 
     // The step's own answer, for the unit that got through.
     let (binding, ctx, seal) = a_bound_unit(a_request());
+    crate::open_record!(record, &ctx);
     assert!(ctx.admin_listener, "the fixture is on the admin listener");
-    let record = arrival(&binding, &UnitToken::mint(&seal), &ctx)
+    let record = arrival(&binding, &UnitToken::mint(&seal), &record)
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
     assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
@@ -1196,22 +1202,24 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     let mut unknown = a_request();
     unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
     let (binding, ctx, seal) = a_bound_unit(unknown);
+    crate::open_record!(record, &ctx);
     assert!(
         binding.units.verb(ctx.key).is_none(),
         "the fixture must be a path the table never resolved"
     );
-    let refusal = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let refusal = verify(&binding, &UnitToken::mint(&seal), &record, &principal)
         .into_result(&seal)
         .expect_err("a verb that resolved to nothing has nowhere to go");
     assert_eq!(refusal.reason(), ReasonCode::NoDestination);
 
     // A real operation: it proceeds, and it proceeds to nowhere PRICED.
     let (binding, ctx, seal) = a_bound_unit(a_request());
+    crate::open_record!(record, &ctx);
     assert!(
         binding.units.verb(ctx.key).is_some(),
         "the fixture must be a path the table did resolve"
     );
-    let destinations = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let destinations = verify(&binding, &UnitToken::mint(&seal), &record, &principal)
         .into_result(&seal)
         .expect("a resolved verb has somewhere to go");
     assert!(
@@ -1250,6 +1258,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/operator-key".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
+    crate::open_record!(record, &ctx);
     let resolved = binding
         .units
         .verb(ctx.key)
@@ -1267,7 +1276,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
         &binding,
         &legacy,
         &UnitToken::mint(&seal),
-        &ctx,
+        &record,
         &Outcome::Completed,
     );
     assert_eq!(legacy.len(), before + 1, "one unit, one entry");
@@ -1282,6 +1291,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
 
     // A read changes nothing and records nothing.
     let (binding, ctx, seal) = a_bound_unit(a_request());
+    crate::open_record!(record, &ctx);
     assert!(
         binding
             .units
@@ -1295,7 +1305,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
         &binding,
         &legacy,
         &UnitToken::mint(&seal),
-        &ctx,
+        &record,
         &Outcome::Completed,
     );
     assert_eq!(legacy.len(), before, "a read is not a mutation");
@@ -1305,6 +1315,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/operator-key".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
+    crate::open_record!(record, &ctx);
     binding
         .units
         .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
@@ -1313,7 +1324,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
         &binding,
         &legacy,
         &UnitToken::mint(&seal),
-        &ctx,
+        &record,
         &Refusal::new(ReasonCode::OverBudget),
     );
     assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
@@ -1331,6 +1342,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/operator-key".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
+    crate::open_record!(record, &ctx);
     assert!(
         binding.units.principal(ctx.key).is_none(),
         "the fixture must be a unit no identity was resolved for"
@@ -1340,7 +1352,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
         &binding,
         &legacy,
         &UnitToken::mint(&seal),
-        &ctx,
+        &record,
         &Refusal::new(ReasonCode::Unauthenticated),
     );
     assert_eq!(
@@ -1489,7 +1501,8 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             admin_listener: true,
             kernel_verb_only: true,
         };
-        decode(&binding, &UnitToken::mint(&seal), &ctx)
+        crate::open_record!(record, &ctx);
+        decode(&binding, &UnitToken::mint(&seal), &record)
             .into_result(&seal)
             .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         binding.units.set_granted(key, VerbScope::Full);
@@ -1500,7 +1513,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
             &admin,
             &token,
-            &ctx,
+            &record,
             &busbar_kernel::teller::AccrualMeter::new(),
         )
         .into_result(&seal);
@@ -1722,6 +1735,7 @@ fn the_refused_door_seals_the_refusal_that_happened() {
     unrouted.method = "DELETE".to_string();
     unrouted.path = "/api/v1/admin/nothing-declares-this".to_string();
     let (binding, ctx, seal) = a_bound_unit(unrouted);
+    crate::open_record!(record, &ctx);
     assert!(
         binding.units.verb(ctx.key).is_none(),
         "the fixture must be a unit whose verb never resolved"
@@ -1731,7 +1745,7 @@ fn the_refused_door_seals_the_refusal_that_happened() {
         &binding,
         &legacy,
         &UnitToken::mint(&seal),
-        &ctx,
+        &record,
         &Refusal::new(ReasonCode::Unauthenticated),
     )
     .into_result(&seal)
@@ -2595,14 +2609,14 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             admin_listener: true,
             kernel_verb_only: true,
         };
+        crate::open_record!(record, &ctx);
         let token: UnitToken<Approve> = UnitToken::mint(&seal);
         let decision = approve(
             &binding,
             Some(granted),
             &token,
-            &ctx,
+            &record,
             &PrincipalId::new("admin"),
-            &[],
         );
         binding.units.close(key);
         decision.into_result(&seal).is_ok()

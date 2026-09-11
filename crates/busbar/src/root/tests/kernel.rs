@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use crate::root::unit_views::UnitCtx;
 
 /// The fee an apply carries reaches the head, and the snapshot a reader already pinned is
 /// unmoved.
@@ -277,8 +278,9 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
         admin_listener: false,
         kernel_verb_only: false,
     };
+    crate::open_record!(record, &ctx);
     assert!(
-        !units.is_admin(&ctx),
+        !units.is_admin(&record),
         "the fixture must be a unit the admin plane never claimed"
     );
     let admin_read = busbar_contract::ids::OpClassId::new("admin_read");
@@ -287,7 +289,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     let refused = units
         .audit_refused(
             &token,
-            &ctx,
+            &record,
             &Refusal::new(busbar_caps::ReasonCode::NoDestination),
         )
         .into_result(&seal)
@@ -301,7 +303,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
 
     let token: UnitToken<Audit> = UnitToken::mint(&seal);
     let ended = units
-        .audit(&token, &ctx, &Outcome::Completed)
+        .audit(&token, &record, &Outcome::Completed)
         .into_result(&seal)
         .expect("the other door seals one too");
     assert_ne!(ended.op_class, admin_read);

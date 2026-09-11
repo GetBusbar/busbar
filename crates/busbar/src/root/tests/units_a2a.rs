@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use crate::root::unit_views::UnitCtx;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// **The metered line's direction is the side its quantity was measured on.**
@@ -61,9 +62,10 @@ fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
+    crate::open_record!(unit_record, &a2a_ctx());
     let record = |now| {
         deployment.calling_at(chain.as_ref(), now).audit_inputs(
-            &a2a_ctx(),
+            &unit_record,
             Outcome::Completed,
             Some(&who),
         )
@@ -107,10 +109,11 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
+    crate::open_record!(unit_record, &a2a_ctx());
     let record = || {
         deployment
             .calling_at(chain.as_ref(), ONE_SECOND)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_record, Outcome::Completed, Some(&who))
     };
 
     let first = record();
@@ -1763,13 +1766,13 @@ fn ask_the_door_as(
 ) {
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let slip = GroupLeaseSlip::new();
+    crate::open_record!(unit_record, &a2a_ctx_from(origin));
     let decision = Units::admit(
         unit,
         &busbar_caps::UnitToken::mint(&seal),
         &busbar_caps::AdmitToken::mint(&seal),
-        &a2a_ctx_from(origin),
+        &unit_record,
         who,
-        &[],
         &slip,
     );
     (decision.into_result(&seal), slip)

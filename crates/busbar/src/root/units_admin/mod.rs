@@ -40,13 +40,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::root::unit_views::UnitRecord;
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Audit, Authenticate, Decision, Decode, Encode, Meter,
-    Outcome, PrincipalId, ReasonCode, Refusal, Route, UnitToken, Usage, UsageToken,
-    VerifiedDestination, Verify,
+    Outcome, PrincipalId, ReasonCode, Refusal, Route, UnitToken, Usage, UsageToken, Verify,
 };
 use busbar_contract::UnitKey;
-use busbar_kernel::teller::UnitCtx;
 use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_unit_auth::unit::AuthRequest;
 use busbar_unit_scope::Scope;
@@ -61,6 +60,12 @@ use busbar_unit_verbs::{
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
 const ADMIN_TRANSPORT: &str = "http";
+
+/// The same stack as a chain, for the transport view one of this surface's units is run over.
+///
+/// Spelled once, beside the name it is made of: the view wants the top transport AND the composed
+/// stack, and two independent literals for one word is exactly how the two stop agreeing.
+const TRANSPORT_STACK: [&str; 1] = [ADMIN_TRANSPORT];
 
 /// The scheme the admin claim declares, and the one this plane's units narrow to.
 const ADMIN_SCHEME: &str = "admin-token";
@@ -1307,7 +1312,7 @@ pub fn mutation_class(verb: KernelVerb) -> MutationClass {
 pub(crate) fn arrival(
     binding: &AdminBinding,
     token: &UnitToken<busbar_caps::Arrival>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
 ) -> Decision<busbar_caps::Arrival> {
     let _ = binding;
     Decision::proceed(
@@ -1318,7 +1323,7 @@ pub(crate) fn arrival(
             alpn: None,
             sni: None,
             peer_cert: None,
-            transport_chain: vec![ADMIN_TRANSPORT],
+            transport_chain: TRANSPORT_STACK.to_vec(),
         },
     )
     .tap_admin(ctx)
@@ -1332,15 +1337,15 @@ pub(crate) fn arrival(
 pub(crate) fn decode(
     binding: &AdminBinding,
     token: &UnitToken<Decode>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
 ) -> Decision<Decode> {
-    let Some(request) = binding.units.request(ctx.key) else {
+    let Some(request) = binding.units.request(ctx.key()) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
     };
     match busbar_plane_admin::verbs::resolve(&request.method, &request.path) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         Some(resolved) => {
-            binding.units.set_verb(ctx.key, resolved);
+            binding.units.set_verb(ctx.key(), resolved);
             Decision::proceed(token, resolved.op_class())
         }
     }
@@ -1363,9 +1368,9 @@ pub(crate) fn authenticate(
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     token: &UnitToken<Authenticate>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
 ) -> Decision<Authenticate> {
-    let Some(request) = binding.units.request(ctx.key) else {
+    let Some(request) = binding.units.request(ctx.key()) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
     };
     auth.resolve(
@@ -1403,14 +1408,14 @@ pub(crate) fn authenticate(
 pub(crate) fn verify(
     binding: &AdminBinding,
     token: &UnitToken<Verify>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     principal: &PrincipalId,
 ) -> Decision<Verify> {
     // The first step the loop hands the resolved identity to, so it is the step that keeps it. Every
     // later step that has to say WHO reads it from here rather than from the request, because the
     // request carries the presented credential and a credential is not an identity.
-    binding.units.set_principal(ctx.key, principal.clone());
-    match binding.units.verb(ctx.key) {
+    binding.units.set_principal(ctx.key(), principal.clone());
+    match binding.units.verb(ctx.key()) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::NoDestination)),
         Some(_resolved) => Decision::proceed(token, Vec::new()),
     }
@@ -1425,9 +1430,8 @@ pub(crate) fn approve(
     binding: &AdminBinding,
     granted: Option<VerbScope>,
     token: &UnitToken<Approve>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     _principal: &PrincipalId,
-    _destinations: &[VerifiedDestination],
 ) -> Decision<Approve> {
     // A caller holding no grant at all is refused here, before the operation is reached. An absent
     // grant is not a narrow one: there is no scope to compare the matrix against, so there is
@@ -1435,11 +1439,11 @@ pub(crate) fn approve(
     let Some(granted) = granted else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
-    let Some(request) = binding.units.request(ctx.key) else {
+    let Some(request) = binding.units.request(ctx.key()) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
     let needed = busbar_unit_scope::admin_required_scope(&request.method, &request.path);
-    binding.units.set_granted(ctx.key, granted);
+    binding.units.set_granted(ctx.key(), granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     }
@@ -1467,11 +1471,10 @@ pub(crate) fn admit(
     binding: &AdminBinding,
     token: &UnitToken<Admit>,
     _admit: &AdmitToken<Admit>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     _principal: &PrincipalId,
-    _destinations: &[VerifiedDestination],
 ) -> Decision<Admit> {
-    let Some(resolved) = binding.units.verb(ctx.key) else {
+    let Some(resolved) = binding.units.verb(ctx.key()) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     let Some(verb) = kernel_verb(&resolved) else {
@@ -1502,12 +1505,13 @@ pub(crate) fn route(
     store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     admin: &busbar_caps::AdminToken,
     token: &UnitToken<Route>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     _meter: &busbar_kernel::teller::AccrualMeter,
 ) -> Decision<Route> {
-    let (Some(request), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
-    else {
+    let (Some(request), Some(resolved)) = (
+        binding.units.request(ctx.key()),
+        binding.units.verb(ctx.key()),
+    ) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
     };
     let Some(verb) = kernel_verb(&resolved) else {
@@ -1515,7 +1519,7 @@ pub(crate) fn route(
     };
     let granted = binding
         .units
-        .granted(ctx.key)
+        .granted(ctx.key())
         .unwrap_or(scope_as_verb_scope(
             busbar_unit_scope::admin_required_scope(&request.method, &request.path),
         ));
@@ -1526,7 +1530,7 @@ pub(crate) fn route(
     // with a test on it instead of a condition to re-read.
     if mints_its_own_identity(verb) {
         let answer = binding.dispatch.execute(verb, &request);
-        binding.units.set_answer(ctx.key, answer);
+        binding.units.set_answer(ctx.key(), answer);
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
     }
 
@@ -1546,7 +1550,7 @@ pub(crate) fn route(
     // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
     // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
     // instead let one principal be two by presenting a second token.
-    let actor = actor_of(binding, ctx.key);
+    let actor = actor_of(binding, ctx.key());
     // Both gates come from the seam, together, because they are one question about one fleet asked
     // at one moment. An unresolvable posture travels as `None` and the verbs unit refuses the verb
     // for it: the two gates exist to stop an irreversible money operation, so a node that cannot say
@@ -1596,7 +1600,7 @@ pub(crate) fn route(
         };
         return match ran {
             Ok(()) => {
-                binding.units.set_answer(ctx.key, applied_answer());
+                binding.units.set_answer(ctx.key(), applied_answer());
                 Decision::proceed(token, busbar_contract::RoutePlan::default())
             }
             Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
@@ -1615,7 +1619,7 @@ pub(crate) fn route(
     ) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
             Some(answer) => {
-                binding.units.set_answer(ctx.key, answer);
+                binding.units.set_answer(ctx.key(), answer);
                 Decision::proceed(token, busbar_contract::RoutePlan::default())
             }
             // The only producer of these bytes is this file's own packer, so a shape that does not
@@ -1785,7 +1789,7 @@ fn verbs_reason(reason: busbar_unit_verbs::ReasonCode) -> ReasonCode {
 pub(crate) fn meter(
     token: &UnitToken<Meter>,
     usage: &UsageToken,
-    _ctx: &UnitCtx,
+    _ctx: &UnitRecord<'_>,
     _provisional: &Outcome,
 ) -> Decision<Meter> {
     match Usage::report(usage, Vec::new()) {
@@ -1804,18 +1808,19 @@ pub(crate) fn audit(
     binding: &AdminBinding,
     legacy: &busbar_unit_audit::AuditLog,
     token: &UnitToken<Audit>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     outcome: &Outcome,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
-    else {
+    let (Some(request), Some(resolved)) = (
+        binding.units.request(ctx.key()),
+        binding.units.verb(ctx.key()),
+    ) else {
         return Decision::proceed(
             token,
             unresolved_facts(
                 binding
                     .units
-                    .request(ctx.key)
+                    .request(ctx.key())
                     .map(|request| request.method)
                     .as_deref(),
                 outcome,
@@ -1823,7 +1828,7 @@ pub(crate) fn audit(
         );
     };
     if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
+        if let Some(actor) = resolved_actor(binding, ctx.key()) {
             legacy.record_by(resolved.verb, &request.path, outcome_word(outcome), &actor);
         }
     }
@@ -1842,12 +1847,13 @@ pub(crate) fn audit_refused(
     binding: &AdminBinding,
     legacy: &busbar_unit_audit::AuditLog,
     token: &UnitToken<Audit>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     refusal: &Refusal,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
-    else {
+    let (Some(request), Some(resolved)) = (
+        binding.units.request(ctx.key()),
+        binding.units.verb(ctx.key()),
+    ) else {
         // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
         // unit as a decode failure raised at Decode, whatever it had actually been refused for: a
         // revoked credential, a denied scope and a saturated store all left one record, saying the
@@ -1859,7 +1865,7 @@ pub(crate) fn audit_refused(
             unresolved_facts(
                 binding
                     .units
-                    .request(ctx.key)
+                    .request(ctx.key())
                     .map(|request| request.method)
                     .as_deref(),
                 &Outcome::Refused(
@@ -1878,7 +1884,7 @@ pub(crate) fn audit_refused(
     // refusal the caller receives and the sealed facts below — it is simply not attributed to
     // somebody who was not there.
     if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
+        if let Some(actor) = resolved_actor(binding, ctx.key()) {
             legacy.record_by(
                 resolved.verb,
                 &request.path,
@@ -1959,12 +1965,12 @@ fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
 pub(crate) fn encode(
     binding: &AdminBinding,
     token: &UnitToken<Encode>,
-    ctx: &UnitCtx,
+    ctx: &UnitRecord<'_>,
     _outcome: &Outcome,
 ) -> Decision<Encode> {
     let bytes = binding
         .units
-        .answer(ctx.key)
+        .answer(ctx.key())
         .map(|answer| answer.body)
         .unwrap_or_default();
     Decision::proceed(
@@ -1991,7 +1997,7 @@ pub(crate) fn encode(
 /// which is exactly what makes its `requests` draw and its flat fee both zero under a configured
 /// non-zero fee.
 #[must_use]
-pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
+pub(crate) fn evidence(_ctx: &UnitRecord<'_>) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
         upstream_candidate: false,
         ..Default::default()
@@ -2000,7 +2006,7 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
 
 /// A small extension used only to keep the arrival step's shape readable; it changes nothing.
 trait TapAdmin: Sized {
-    fn tap_admin(self, _ctx: &UnitCtx) -> Self {
+    fn tap_admin(self, _ctx: &UnitRecord<'_>) -> Self {
         self
     }
 }

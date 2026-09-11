@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use crate::root::unit_views::UnitCtx;
 use busbar_caps::Canary;
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit, Ended, Kernel, Run};
@@ -199,6 +200,8 @@ fn ctx(key: u64) -> UnitCtx {
 }
 
 fn run(kernel: &Kernel, unit: &VoiceUnit<'_>) -> Ended {
+    let view_set = crate::root::harness::view_set();
+    let views = view_set.views(view_set.clock(), None, None);
     let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
         &kernel.admit_token(),
         PrincipalId::new("acct:voice"),
@@ -219,6 +222,7 @@ fn run(kernel: &Kernel, unit: &VoiceUnit<'_>) -> Ended {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: &views,
         },
     )
 }
@@ -390,13 +394,14 @@ fn the_declared_alternatives_are_the_claims_own() {
 /// hand shake before it has authenticated anybody.
 #[test]
 fn a_caller_who_holds_less_than_the_class_requires_is_refused() {
+    crate::open_record!(unit_record, &ctx(1));
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let node = node(serviceable());
 
     let decide = |shape: UnitShape, held: Grants| -> bool {
         let unit = VoiceUnit::new(&node, shape, 7, 1_700_000_000).holding(held);
         let token: UnitToken<busbar_caps::step::Approve> = UnitToken::mint(&seal);
-        unit.approve(&token, &ctx(1), &PrincipalId::new("acct:voice"), &[])
+        unit.approve(&token, &unit_record, &PrincipalId::new("acct:voice"))
             .into_result(&seal)
             .is_ok()
     };
@@ -677,6 +682,7 @@ fn the_two_endpoints_compose_from_borrowed_names() {
 /// of its own: the record's shape is fixed for every plane and a plane contributes two ids.
 #[test]
 fn the_opening_unit_seals_under_the_declared_operation_class() {
+    crate::open_record!(unit_record, &ctx(1));
     let kernel = Kernel::new();
     let node = node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
@@ -699,7 +705,7 @@ fn the_opening_unit_seals_under_the_declared_operation_class() {
     // touches: `UnitShape::op_class()` and `meta::OP_SESSION_OPEN` are the same expression on both
     // sides of that comparison, so it cannot see a class written wrong onto the record's own field.
     let inputs = unit.audit_inputs(
-        &ctx(1),
+        &unit_record,
         busbar_caps::Outcome::Completed,
         busbar_contract::FinishClass::Complete,
     );
@@ -807,18 +813,19 @@ fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
 /// that spells every ending "completed" is a chain an operator cannot ask why anything stopped.
 #[test]
 fn a_refused_units_record_carries_the_refusal_and_its_step() {
+    crate::open_record!(unit_record, &ctx(1));
     let node = node(serviceable());
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     let refused = Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied);
-    let inputs = unit.audit_inputs(&ctx(1), refused, busbar_contract::FinishClass::Error);
+    let inputs = unit.audit_inputs(&unit_record, refused, busbar_contract::FinishClass::Error);
     assert_eq!(inputs.outcome.unit_end, refused);
     assert_eq!(inputs.outcome.step, Some(busbar_caps::StepName::Approve));
 
     // And a turn that ran is still recorded as one: threading the ending through did not turn
     // every record into a refusal.
     let done = unit.audit_inputs(
-        &ctx(1),
+        &unit_record,
         Outcome::Completed,
         busbar_contract::FinishClass::TurnComplete,
     );
@@ -895,6 +902,8 @@ fn plan_on(
     let canary = Canary::new();
     let leases = busbar_kernel::slice::LeaseCell::new();
     let meter = AccrualMeter::new();
+    let view_set = crate::root::harness::view_set();
+    let views = view_set.views(view_set.clock(), None, None);
     run_unit(
         kernel,
         &unit,
@@ -906,6 +915,7 @@ fn plan_on(
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: &views,
         },
     )
 }
@@ -1448,6 +1458,7 @@ fn a_three_turn_session_pays_one_flat_fee() {
 /// been drawn down by the same report in full. The lease and the posting read ONE number here.
 #[test]
 fn a_text_only_turn_settles_the_text_it_metered() {
+    crate::open_record!(unit_record, &ctx(1));
     use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
@@ -1459,7 +1470,7 @@ fn a_text_only_turn_settles_the_text_it_metered() {
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
         .reporting(usage);
-    let evidence = unit.evidence(&ctx(1));
+    let evidence = unit.evidence(&unit_record);
     assert_eq!(
         evidence.located,
         Some(100),
@@ -1481,6 +1492,7 @@ fn a_text_only_turn_settles_the_text_it_metered() {
 /// recorded at the first step the loop hands it over on, and read back here.
 #[test]
 fn a_paid_turns_record_names_its_principal() {
+    crate::open_record!(unit_record, &ctx(1));
     use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
     use busbar_unit_audit::record::Subject;
 
@@ -1540,7 +1552,7 @@ fn a_paid_turns_record_names_its_principal() {
         end.outcome()
     );
     let inputs = unit.audit_inputs(
-        &ctx(1),
+        &unit_record,
         Outcome::Completed,
         busbar_contract::FinishClass::TurnComplete,
     );
@@ -1555,7 +1567,7 @@ fn a_paid_turns_record_names_its_principal() {
     // arrival, which is the one thing `Arrival` is the honest answer to.
     let unseen = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
     let refused = unseen.audit_inputs(
-        &ctx(1),
+        &unit_record,
         Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed),
         busbar_contract::FinishClass::Error,
     );
@@ -1570,6 +1582,7 @@ fn a_paid_turns_record_names_its_principal() {
 /// emitted-audio token class it is a duration priced at a token rate, in the wrong direction.
 #[test]
 fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
+    crate::open_record!(unit_record, &ctx(1));
     use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
@@ -1583,7 +1596,7 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
             ..TurnUsage::default()
         });
     let _ = run(&kernel, &unit);
-    let evidence = unit.evidence(&ctx(1));
+    let evidence = unit.evidence(&unit_record);
     assert_eq!(
         evidence.accrued_floor, 3,
         "2_500 ms is three seconds of billable audio, not 2_500 of anything"
@@ -1620,6 +1633,7 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
 /// already sealed, so the record and the posting cannot tell two stories about one turn.
 #[test]
 fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
+    crate::open_record!(unit_record, &ctx(1));
     use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
@@ -1632,9 +1646,9 @@ fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let token: UnitToken<Audit> = UnitToken::mint(&seal);
     let refusal = Refusal::new(ReasonCode::DeadlineExceeded);
-    let _ = unit.audit_refused(&token, &ctx(1), &refusal);
+    let _ = unit.audit_refused(&token, &unit_record, &refusal);
 
-    let evidence = unit.evidence(&ctx(1));
+    let evidence = unit.evidence(&unit_record);
     assert!(
         evidence.terminal_error,
         "the plane sealed an error ending and the evidence says so"
@@ -1655,8 +1669,8 @@ fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
             audio_tokens_out: 120,
             ..TurnUsage::default()
         });
-    let _ = clean.audit(&token, &ctx(1), &Outcome::Completed);
-    assert!(!clean.evidence(&ctx(1)).terminal_error);
+    let _ = clean.audit(&token, &unit_record, &Outcome::Completed);
+    assert!(!clean.evidence(&unit_record).terminal_error);
 }
 
 /// A turn that reported no output relayed no answer; one that emitted tokens did.
@@ -1684,6 +1698,7 @@ fn an_answered_turn_is_one_that_emitted_something() {
 /// straight back at settlement.
 #[test]
 fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
+    crate::open_record!(unit_record, &ctx(1));
     let node = priced_node(serviceable());
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
@@ -1703,9 +1718,8 @@ fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
         .admit(
             &token,
             &admit,
-            &ctx(1),
+            &unit_record,
             &PrincipalId::new("acct:voice"),
-            &[],
             &GroupLeaseSlip::new(),
         )
         .into_result(&seal)
@@ -1741,6 +1755,7 @@ fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
 /// group the chain names.
 #[test]
 fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
+    crate::open_record!(unit_record, &ctx(1));
     let node = priced_node(serviceable());
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
@@ -1753,9 +1768,8 @@ fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
         .admit(
             &token,
             &admit,
-            &ctx(1),
+            &unit_record,
             &PrincipalId::new("acct:voice"),
-            &[],
             &leases,
         )
         .into_result(&seal)
@@ -1783,6 +1797,7 @@ fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
 /// reaches the chain at all.
 #[test]
 fn an_admission_that_never_reaches_the_chain_hands_over_no_count() {
+    crate::open_record!(unit_record, &ctx(1));
     let node = priced_node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
@@ -1794,9 +1809,8 @@ fn an_admission_that_never_reaches_the_chain_hands_over_no_count() {
         .admit(
             &token,
             &admit,
-            &ctx(1),
+            &unit_record,
             &PrincipalId::new("acct:voice"),
-            &[],
             &leases,
         )
         .into_result(&seal)
@@ -2080,6 +2094,7 @@ fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
 /// under a class nobody decoded.
 #[test]
 fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
+    crate::open_record!(unit_record, &ctx(1));
     use busbar_caps::KernelSeal;
     use busbar_contract::bounded::Labels;
     use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
@@ -2122,7 +2137,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     assert_eq!(
-        unit.decode(&UnitToken::mint(&seal), &ctx(1))
+        unit.decode(&UnitToken::mint(&seal), &unit_record)
             .into_result(&seal)
             .expect("a turn proceeds"),
         opened
@@ -2184,6 +2199,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
 /// to reach: an audience that is declared and never checked is not an audience.
 #[test]
 fn a_credential_is_resolved_against_this_planes_own_audience() {
+    crate::open_record!(unit_record, &ctx(1));
     use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
     use busbar_caps::{Authenticated, KernelSeal};
 
@@ -2245,7 +2261,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
         if let Some(credential) = credential {
             unit = unit.with_credential(credential);
         }
-        unit.authenticate(&UnitToken::mint(&seal), &ctx(1))
+        unit.authenticate(&UnitToken::mint(&seal), &unit_record)
             .into_result(&seal)
     };
 
@@ -2312,14 +2328,14 @@ fn ask_the_door(
     unit: &VoiceUnit<'_>,
     who: &PrincipalId,
 ) -> (Result<Admission, busbar_caps::Refusal>, GroupLeaseSlip) {
+    crate::open_record!(unit_record, &ctx(1));
     let slip = GroupLeaseSlip::new();
     let decision = Units::admit(
         unit,
         &busbar_caps::UnitToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
         &kernel.admit_token(),
-        &ctx(1),
+        &unit_record,
         who,
-        &[],
         &slip,
     );
     (

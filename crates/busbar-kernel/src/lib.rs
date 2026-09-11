@@ -77,6 +77,7 @@ pub mod arena;
 pub mod grammar;
 pub mod inflight;
 pub mod pump;
+pub mod record;
 pub mod recovery;
 pub mod registry;
 pub mod reply;

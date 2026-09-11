@@ -44,8 +44,11 @@
 //! already build a unit, and the cross-leg table cannot be closed.
 
 use busbar_caps::{Canary, Hold, HoldCell, PrincipalId};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
-use busbar_kernel::teller::{run_unit, AccrualMeter, Ended, Kernel, Run, UnitCtx, Units};
+use busbar_kernel::{
+    record::UnitMemory,
+    slice::{ConcurrencyGauge, LeaseCell},
+    teller::{run_unit, AccrualMeter, Ended, Kernel, Run, UnitCtx, Units},
+};
 use std::sync::Mutex;
 
 /// One posting the run made, as the harness observed it.
@@ -98,6 +101,43 @@ impl RecordingLedger {
     }
 }
 
+/// The stack a harnessed unit arrives on. Named, because the transport view answers with it and a
+/// leg that read a different chain from its siblings would not be the same driver.
+const HARNESS_TRANSPORT_KEY: &str = "harness";
+
+/// The chain under it.
+const HARNESS_TRANSPORT_CHAIN: [&str; 1] = ["harness"];
+
+/// THE VIEWS A CELL'S UNIT IS RUN OVER, from the root's own constructor.
+///
+/// Public because [`open_record!`](crate::open_record) needs it, and named here rather than
+/// assembled at each cell for the reason the macro exists: a cell that built its own bundle would
+/// be driving a step over a context the node never hands it.
+/// A unit's memory, as the cells take one.
+#[must_use]
+pub fn unit_memory<'u>() -> UnitMemory<'u> {
+    UnitMemory::new()
+}
+
+/// Open the record over one lease of it.
+#[must_use]
+pub fn open<'u>(
+    views: &crate::root::unit_views::UnitViews<'u>,
+    ctx: &UnitCtx,
+    arena: &'u dyn busbar_contract::bounded::Arena,
+) -> crate::root::unit_views::UnitRecord<'u> {
+    crate::root::unit_views::UnitRecord::open(ctx, views, arena)
+}
+
+#[must_use]
+pub fn view_set() -> crate::root::unit_views::UnitViewSet {
+    crate::root::unit_views::UnitViewSet::new(
+        crate::root::unit_views::Block::default(),
+        HARNESS_TRANSPORT_KEY,
+        &HARNESS_TRANSPORT_CHAIN,
+    )
+}
+
 /// Drive one unit through the REAL kernel loop and record what it settled.
 ///
 /// The loop is `busbar_kernel::teller::run_unit` itself, not a re-implementation of it: the whole
@@ -122,6 +162,15 @@ pub fn run<U: Units>(
     let canary = Canary::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
+    // THE VIEWS, from the root's own constructor and not a second set beside it. A harness that
+    // assembled its own would be driving the loop over a context the node never builds, which is
+    // the one thing a cross-leg table must not do.
+    let view_set = crate::root::unit_views::UnitViewSet::new(
+        crate::root::unit_views::Block::default(),
+        HARNESS_TRANSPORT_KEY,
+        &HARNESS_TRANSPORT_CHAIN,
+    );
+    let views = view_set.views(view_set.clock(), None, None);
 
     let ended = run_unit(
         kernel,
@@ -134,6 +183,7 @@ pub fn run<U: Units>(
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            views: &views,
         },
     );
 
@@ -146,4 +196,25 @@ pub fn run<U: Units>(
         });
     }
     ended
+}
+
+/// OPEN A UNIT'S RECORD IN THE CALLER'S OWN FRAME, the way the loop opens one.
+///
+/// THE one constructor a cell reaches for. Every step the loop calls is handed a
+/// [`UnitRecord`](crate::root::unit_views::UnitRecord), built once at the loop's entry over the
+/// unit's own memory and the root's own views — so a cell driving a step directly has to build the
+/// same thing the same way, or it is measuring a step against a context the node never hands it.
+///
+/// A macro rather than a function because of what the record IS: the memory is owned by a frame
+/// and the record borrows one lease of it, so the two cannot be returned together. The macro puts
+/// both in the caller's frame, which is exactly where the loop puts them.
+#[macro_export]
+macro_rules! open_record {
+    ($record:ident, $ctx:expr) => {
+        let view_set = $crate::root::harness::view_set();
+        let views = view_set.views(view_set.clock(), None, None);
+        let mut memory = $crate::root::harness::unit_memory();
+        let arena = memory.lease();
+        let $record = $crate::root::harness::open(&views, $ctx, &arena);
+    };
 }

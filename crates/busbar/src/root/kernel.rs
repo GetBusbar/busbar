@@ -55,14 +55,14 @@ pub use super::auth_bindings;
 
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::root::unit_views::UnitRecord;
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
-    Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
-    Verify,
+    Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, Units};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::{Auth, AuthChain};
 use busbar_unit_egress::EgressUnit;
@@ -769,8 +769,8 @@ impl ProductionUnits {
     /// what put it there, so a unit that is in the table is one this root composed and a unit that
     /// is not is one it did not.
     #[cfg(feature = "root-admin")]
-    fn is_admin(&self, ctx: &UnitCtx) -> bool {
-        self.admin.units.holds(ctx.key)
+    fn is_admin(&self, ctx: &UnitRecord<'_>) -> bool {
+        self.admin.units.holds(ctx.key())
     }
 }
 
@@ -780,7 +780,7 @@ impl ProductionUnits {
 // for that one build rather than silencing an unread argument in a build that does drive a plane.
 #[cfg_attr(not(feature = "root-admin"), allow(unused_variables))]
 impl Units for ProductionUnits {
-    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitRecord<'_>) -> Decision<Arrival> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::arrival(&self.admin, token, ctx);
@@ -788,7 +788,7 @@ impl Units for ProductionUnits {
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitRecord<'_>) -> Decision<Decode> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::decode(&self.admin, token, ctx);
@@ -799,7 +799,7 @@ impl Units for ProductionUnits {
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
@@ -821,7 +821,7 @@ impl Units for ProductionUnits {
         &self,
         token: &UnitToken<Verify>,
         _trust: &busbar_caps::TrustToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
         #[cfg(feature = "root-admin")]
@@ -834,9 +834,8 @@ impl Units for ProductionUnits {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
@@ -846,7 +845,6 @@ impl Units for ProductionUnits {
                 token,
                 ctx,
                 principal,
-                destinations,
             );
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::ScopeDenied))
@@ -856,23 +854,15 @@ impl Units for ProductionUnits {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
         // The administrative surface charges through no configured group — a kernel verb is exempt
         // from the gauge entirely — so this door names none.
         _leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
-            return crate::root::units_admin::admit(
-                &self.admin,
-                token,
-                admit,
-                ctx,
-                principal,
-                destinations,
-            );
+            return crate::root::units_admin::admit(&self.admin, token, admit, ctx, principal);
         }
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
     }
@@ -880,7 +870,7 @@ impl Units for ProductionUnits {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
         #[cfg(feature = "root-admin")]
@@ -901,7 +891,7 @@ impl Units for ProductionUnits {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         provisional: &Outcome,
     ) -> Decision<Meter> {
         #[cfg(feature = "root-admin")]
@@ -911,7 +901,12 @@ impl Units for ProductionUnits {
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::Unpriced))
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitRecord<'_>,
+        outcome: &Outcome,
+    ) -> Decision<Audit> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
@@ -929,7 +924,7 @@ impl Units for ProductionUnits {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         refusal: &Refusal,
     ) -> Decision<Audit> {
         #[cfg(feature = "root-admin")]
@@ -958,7 +953,7 @@ impl Units for ProductionUnits {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         outcome: &Outcome,
     ) -> Decision<Encode> {
         #[cfg(feature = "root-admin")]
@@ -968,7 +963,7 @@ impl Units for ProductionUnits {
         Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
     }
 
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitRecord<'_>) -> Evidence {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::evidence(ctx);

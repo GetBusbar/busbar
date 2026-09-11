@@ -18,6 +18,7 @@ use busbar_caps::{
     Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
+use busbar_kernel::record::{UnitRecord, UnitViews};
 use busbar_kernel::registry::Generation;
 use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
 
@@ -224,7 +225,7 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
     fn route_leg<'a>(
         &'a self,
         _token: &'a UnitToken<Route>,
-        _ctx: &'a UnitCtx,
+        _ctx: &'a UnitRecord<'_>,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         self.units.note(StepName::Route);
@@ -283,6 +284,70 @@ pub fn principal() -> PrincipalId {
     PrincipalId::new("acct:battery")
 }
 
+/// The configuration block a battery unit reads: none. Every key answers `None`, which is what a
+/// unit whose plane declared no schema is given.
+pub struct NoConfig;
+
+impl busbar_contract::unit::ConfigView for NoConfig {
+    fn get_str(&self, _key: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, _key: &str) -> Option<i64> {
+        None
+    }
+    fn get_bool(&self, _key: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// The one-layer stack a battery unit arrives on.
+pub struct Stack;
+
+impl busbar_contract::unit::TransportView for Stack {
+    fn key(&self) -> &'static str {
+        "battery"
+    }
+    fn chain(&self) -> &[&'static str] {
+        &["battery"]
+    }
+    fn fact(&self, _key: &str) -> Option<&str> {
+        None
+    }
+}
+
+static NO_CONFIG: NoConfig = NoConfig;
+static STACK: Stack = Stack;
+static LABELS: busbar_contract::bounded::Labels<'static> = busbar_contract::bounded::Labels::new();
+
+/// The views a battery unit is run over, as the loop builds its context from them.
+///
+/// Fixed rather than varied: what every cell in this battery measures is the loop, and a view that
+/// differed between two cells would be a second variable in a table that has one.
+pub fn views() -> &'static UnitViews<'static> {
+    static VIEWS: std::sync::OnceLock<UnitViews<'static>> = std::sync::OnceLock::new();
+    VIEWS.get_or_init(|| UnitViews {
+        clock: busbar_contract::unit::Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        config: &NO_CONFIG,
+        session: None,
+        transport: &STACK,
+        labels: &LABELS,
+        key_handle: None,
+    })
+}
+
+/// Open a unit's record over the battery's own memory and views, and run one thing against it.
+///
+/// A closure and not a value, for the reason the record's own module gives: the memory is owned by
+/// the frame and the record borrows one lease of it, so the two cannot leave together.
+pub fn with_record<R>(ctx: &UnitCtx, body: impl FnOnce(&UnitRecord<'_>) -> R) -> R {
+    let mut memory = busbar_kernel::record::UnitMemory::new();
+    let arena = memory.lease();
+    body(&UnitRecord::open(ctx, views(), &arena))
+}
+
 /// A context for a client unit.
 pub fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
@@ -325,11 +390,11 @@ macro_rules! step {
 }
 
 impl Units for TestUnits {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitRecord<'_>) -> Decision<Arrival> {
         step!(self, token, Arrival, StepName::Arrival, arrival_record())
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitRecord<'_>) -> Decision<Decode> {
         step!(
             self,
             token,
@@ -342,7 +407,7 @@ impl Units for TestUnits {
     fn authenticate(
         &self,
         token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
     ) -> Decision<Authenticate> {
         let facts = if self.challenge {
             busbar_caps::Authenticated::Challenge(busbar_contract::Challenge {
@@ -360,7 +425,7 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Verify>,
         trust: &busbar_caps::TrustToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
         self.note(StepName::Verify);
@@ -382,14 +447,16 @@ impl Units for TestUnits {
     fn approve(
         &self,
         token: &UnitToken<Approve>,
-        _ctx: &UnitCtx,
+        ctx: &UnitRecord<'_>,
         _principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        // What Verify sealed, read off the unit. The battery records it so the cells that assert
+        // which lanes reached the door are asserting against the set the loop carried, not against
+        // a parameter the loop re-derived on its way there.
         self.approved_lanes
             .lock()
             .unwrap()
-            .extend(destinations.iter().map(|d| *d.lane()));
+            .extend(ctx.verified().iter().map(|d| *d.lane()));
         step!(
             self,
             token,
@@ -403,9 +470,8 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
         leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
@@ -448,7 +514,7 @@ impl Units for TestUnits {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
         self.note(StepName::Route);
@@ -463,7 +529,7 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Meter>,
         usage_token: &UsageToken,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         self.note(StepName::Meter);
@@ -476,7 +542,7 @@ impl Units for TestUnits {
     fn audit(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Audit> {
         self.note(StepName::Audit);
@@ -487,7 +553,7 @@ impl Units for TestUnits {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
         self.calls.lock().unwrap().push(StepName::Audit);
@@ -498,14 +564,14 @@ impl Units for TestUnits {
     fn encode(
         &self,
         token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
+        _ctx: &UnitRecord<'_>,
         _outcome: &Outcome,
     ) -> Decision<Encode> {
         self.note(StepName::Encode);
         Decision::proceed(token, encoded_frame())
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, _ctx: &UnitRecord<'_>) -> Evidence {
         self.evidence.clone()
     }
 }
