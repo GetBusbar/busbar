@@ -636,20 +636,23 @@ pub fn node_book() -> NodeBook {
     }
 }
 
-/// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
-/// path spells it: a clock that reads before the epoch gives zero rather than panicking.
+/// The root's wall clock, in whole seconds since the Unix epoch: `busbar_substrate::store::now`,
+/// the node's one production wall clock, read here rather than reimplemented.
 ///
 /// It lives HERE, in the composition root, because reading the wall clock is the root's job. The
 /// audit unit takes a [`Clock`] and has no implementation of its own — a unit that could read the
 /// clock could produce a different record from the same inputs, and then replaying the inputs would
-/// no longer reproduce the record.
+/// no longer reproduce the record. What used to sit here was its own
+/// `SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, ...)` — a second implementation of
+/// exactly the computation `busbar_substrate::store::now` already is, with the same silent-zero
+/// convention on a clock read that fails. One source, named, is what makes this root's audit
+/// records and every other reading on this path the same clock rather than two clocks that agree by
+/// coincidence.
 struct RootWallClock;
 
 impl Clock for RootWallClock {
     fn now(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
+        busbar_substrate::store::now()
     }
 }
 

@@ -202,6 +202,7 @@ impl ConstructionGate {
             "unit-no-wall-clock",
             "ts-reads-the-clock",
             "ts-reads-the-clock:default-derive",
+            "ts-reads-the-clock:second-clock",
             "unit-no-finding-ids",
             "plane-no-money",
             "one-pricing-site",

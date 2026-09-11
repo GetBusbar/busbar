@@ -1918,6 +1918,22 @@ pub fn ts_reads_the_clock(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         }
     }
 
+    // HALF THREE: a second wall-clock IMPLEMENTATION beside the one this node has —
+    // `SystemTime::now()` read directly, in a file scanned above, rather than through
+    // `busbar_substrate::store::now`. Scanned separately from HALF ONE/TWO because it is a
+    // different shape entirely: those two are about a STORED field, this is about which function
+    // read the clock in the first place.
+    let second_clock_files = scoped_files(tree, &c.list_of("second_clock_scope_globs"));
+    let second_clock_exempt = c.list_of("second_clock_exempt_sites");
+    let max_second_clocks = need_int(c, "max_second_clocks", "ts-reads-the-clock")?;
+    let systemtime_rx = Regex::new(r"SystemTime\s*::\s*now\s*\(\s*\)")?;
+    let second_clocks: Vec<String> = tree
+        .grep(&systemtime_rx, true, Some(&second_clock_files))
+        .into_iter()
+        .map(|(rel, l)| format!("{rel}:{}", l.no))
+        .filter(|site| !second_clock_exempt.contains(site))
+        .collect();
+
     let vacuous = files.is_empty();
     let zero_detail = if vacuous {
         format!("{VACUOUS}no scanned source is present in the tree")
@@ -1938,6 +1954,17 @@ pub fn ts_reads_the_clock(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             join_or_none(&derived)
         )
     };
+    let second_clock_detail = if second_clock_files.is_empty() {
+        format!("{VACUOUS}no scanned source is present in the tree")
+    } else {
+        format!(
+            "{} direct SystemTime::now() read(s) outside busbar_substrate::store::now (ceiling \
+             {max_second_clocks}): {}",
+            second_clocks.len(),
+            join_or_none(&second_clocks)
+        )
+    };
+
     Ok(vec![
         plain(
             "ts-reads-the-clock",
@@ -1956,6 +1983,16 @@ pub fn ts_reads_the_clock(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             derived.len() as i64,
             max_defaults,
             derived,
+        ),
+        plain(
+            "ts-reads-the-clock:second-clock",
+            second_clocks.len() as i64 <= max_second_clocks,
+            "a plane or root file that can name busbar_substrate reads its clock through \
+             busbar_substrate::store::now, never a second SystemTime::now()",
+            second_clock_detail,
+            second_clocks.len() as i64,
+            max_second_clocks,
+            second_clocks,
         ),
     ])
 }
