@@ -49,6 +49,22 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE SCOPE MODEL, named once. `Scope`, `Grants` and the method+path authorization matrix used to
+# exist twice — here, in the admin contract, and again in the unit, whose own doc comment says it was
+# "ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope`". Two encodings of
+# one authorization rule is a rule that can be tightened in one place and not the other, on the one
+# surface where that is least survivable. The unit is the copy that stays (deciding whether a held
+# grant satisfies a requirement is what a unit DOES); core names it and keeps its own call sites
+# spelling `Scope` exactly as they always did.
+busbar-unit-scope = { path = "../busbar-unit-scope" }
+# THE CONTRACT FACE, and it is the ONLY new face this crate names. The v1 error taxonomy — ten
+# variants, ten frozen `code` strings, ten statuses, and the two-key envelope they render into — is
+# the structured error a face carries when it refuses a caller, so it lives in the contract every
+# kind is written against. It does NOT live in the administrative plane: core naming a plane crate
+# would be plane-specific knowledge in core, which is the one thing this retirement is for, and the
+# plane-purity rule refuses it by name. Core reaches the taxonomy through the contract; so does the
+# plane; neither reaches the other.
+busbar-contract = { path = "../busbar-contract" }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
