@@ -4,13 +4,16 @@
 //! whole of how a request becomes a unit. One row per method, one class per row, and the class is
 //! what the draft declares and what the unit is priced at.
 //!
-//! ## Why the table is written here rather than read from the codec
+//! ## Why the table is here, and why there is only one of it
 //!
-//! The codec crate holds this list too, in the constant its dispatch is checked against. That
-//! constant is visible to its own crate only, and this crate may not widen it. So the table is
-//! written once more here and then PINNED — the tests read the codec's own source and the
-//! conformance battery's own suites and assert that neither of them names a method this table does
-//! not. A copy that is checked is not a second opinion; a copy that is not checked is.
+//! The codec crate held this list too, in the constant the server half dispatched over and
+//! advertised. The two were kept in agreement by a cell — and a checked copy is still a copy: it can
+//! only ever catch a disagreement that a test happened to look for, and the disagreement it could not
+//! catch is a name added to one and not the other between the test being written and being read. The
+//! codec's constant is gone. This table is the one table: the server half selects its handler on the
+//! CLASS a row states and advertises the `Sender::Client` rows, so a method this node answers and
+//! this table does not carry cannot exist. The conformance battery's own suites remain the pin from
+//! OUTSIDE the tree, which is the one that could never be a copy.
 //!
 //! ## Three kinds of row
 //!

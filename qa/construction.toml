@@ -1741,11 +1741,11 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "the scope the settled class REQUIRES, named by the composition that grants it: `busbar_unit_scope::{Grants, Scope}` at `Grants::of(Scope::ReadOnly)`. `Grants::default` holds nothing, and a caller holding nothing is refused at approve before any answer is composed -- so a cell that wanted to reach the answer branch and did not say which scope the caller holds would be proving the refusal branch a second time."
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-mcp.codec.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by this crate's own cell so the serve path's result document is asserted against the codec's rather than against a literal this crate keeps a second copy of. The plane crate reads the same constant from the same place; that is what makes the two framings comparable without either crate naming the other."
+# STRUCK by MCP-M1's plan-line-2 landing (the method table's collapse onto the plane's face). The
+# entry declared `cell.busbar-mcp.codec.count` 42 -> 43 for `RESULT_COMPLETION_EMPTY`; this crate's
+# dispatch stopped naming the codec's retired `IMPLEMENTED_METHODS` and the cell now measures 40,
+# BELOW the base 468bad13's 42. A declared raise over a ceiling that did not rise is refused by
+# `ceiling-rose` by name, so the entry goes rather than the measurement.
 
 # NO RAISE ROW FOR `cell.busbar-mcp.plane.count`, DELIBERATELY. It moves 3297 -> 3301 on this branch
 # and is re-pinned in qa/kind-isolation.toml, but it is still FAR BELOW the base 468bad13's 3345: the
@@ -1755,8 +1755,7 @@ because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by this crat
 # says which plane composes the same envelope out of the same codec document -- neither crate names
 # the other in code, and the comment is what makes the two assertions a pin rather than two literals.
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-plane-mcp.codec.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "`busbar_mcp_codec::codec::RESULT_COMPLETION_EMPTY`, read by `ops::settled_document` -- the face by which the plane hands a mounted leg a settled unit's document. The codec is the pure half this plane already names (`busbar-mcp-codec`, NOT `busbar-mcp`), and the document lives there rather than here for the same reason every other method name and refusal code does: it is a fact about the protocol that both framings must read from one place."
+# STRUCK by MCP-M1's plan-line-2 landing, same cause one crate over. The entry declared
+# `cell.busbar-plane-mcp.codec.count` 33 -> 34 for `ops::settled_document`'s read of the codec's
+# document; the cell that compared this plane's method table against the codec's second copy of the
+# list went with the copy, and the count is back at the base 468bad13's 33.

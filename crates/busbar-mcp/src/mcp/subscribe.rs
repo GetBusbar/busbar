@@ -98,12 +98,6 @@ use rmcp::model::{
     SubscriptionsListenResultMeta, ToolListChangedNotificationMethod,
 };
 
-/// The wire name of this method. It is the codec's now — `IMPLEMENTED_METHODS` moved to
-/// `busbar-mcp-codec` so a pure plane kind can read the dispatch list, and this name is on it. The
-/// SDK still holds the pin, one test over (`crate::tests::sdk_vocabulary_tests`), for the same
-/// reason the other five method names do: `rmcp` hard-depends on `tokio` and cannot cross the seam.
-pub(crate) use busbar_mcp_codec::codec::METHOD_SUBSCRIPTIONS_LISTEN;
-
 /// How often the pin generation is re-read. Short enough that a client learns of a registration
 /// change within a human's idea of "immediately", long enough that a held stream is one atomic load
 /// four times a second and nothing else.

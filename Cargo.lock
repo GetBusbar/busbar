@@ -704,6 +704,7 @@ dependencies = [
  "busbar-core",
  "busbar-llm",
  "busbar-mcp-codec",
+ "busbar-plane-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",

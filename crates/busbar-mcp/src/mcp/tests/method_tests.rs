@@ -390,7 +390,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
         .iter()
         .map(|m| m.as_str().unwrap().to_string())
         .collect();
-    let implemented: std::collections::BTreeSet<String> = crate::mcp::method::IMPLEMENTED_METHODS
+    let implemented: std::collections::BTreeSet<String> = crate::mcp::method::implemented_methods()
         .iter()
         .map(|m| (*m).to_string())
         .collect();

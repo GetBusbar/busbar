@@ -49,6 +49,13 @@ busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
 # pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
 # closure. Every module that moved is re-exported from this crate's `lib.rs` under its old name.
 busbar-mcp-codec = { path = "../busbar-mcp-codec" }
+# THE PLANE'S FACE. One method table in the tree, and it is the plane's: `ops::METHODS` carries a row
+# per method with the sender, the streaming flag and the name pointer, and this crate's dispatch reads
+# it rather than re-spelling the thirteen names in a `match`. The edge is the LEGACY DRAIN's own
+# direction (legacy engine -> the plane it is draining into, the shape `busbar-voice -> busbar-plane-voice`
+# already has) and it is named as such in qa/kind-isolation.toml's `[[transitional]]` table. Nothing
+# crosses back: `busbar-plane-mcp` does not name this crate and may not.
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
