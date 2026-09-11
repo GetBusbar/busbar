@@ -207,8 +207,7 @@ scope. The plane key `streams` (formerly `voice`) is matched by the scan as the 
 `busbar-contract`, the compile boundary in both directions, the ceiling row, the testkit battery, the
 uniform crate skeleton, the single registration seam, the naming rule, and the procedure for adding a
 kind. There are **ten plugin kinds** — plane, dialect, transport, **control**, auth, egress-auth,
-store, secret, hook, export — and one core row, `unit`, which is never loadable. `loader` and `abi` are TCB crates,
-not kinds. "Rate card" below is CONFIG, not a kind: it has no trait, no `Kind` variant and no crate,
+store, secret, hook, export — and one core row, `unit`, which is never loadable. `loader`, `abi` and the plugin tooling — every `busbar-plugin-*` crate: `busbar-plugin-loader`, `busbar-plugin-pack`, `busbar-plugin-sdk`, `busbar-plugin-sign` and `busbar-plugin-testkit` — are TCB crates, not kinds; the contract is granted to the whole set because the tooling a plugin author writes against carries the contract's types across the cdylib boundary for them. "Rate card" below is CONFIG, not a kind: it has no trait, no `Kind` variant and no crate,
 and is listed here only because the pricing surface is read alongside them.
 
 **`control` is the tenth, ruled 2026-09-08**, and the metering is the whole of the split. There are
