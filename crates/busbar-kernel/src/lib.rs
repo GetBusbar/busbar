@@ -15,6 +15,8 @@
 //!
 //! - [`teller`] — the loop. Ten steps, the two audit doors, the settlement table as a pure
 //!   function, and the single exit path that takes the hold out of its cell.
+//! - [`profile`] — the loop's own stage profiler: one env-guarded timer per STEP, plus the
+//!   transport wait. The table is the loop's, so a row means the same thing for every plane.
 //! - [`pump`] — frames in, frames out: which frame belongs to which unit, one open unit per
 //!   direction, a bounded number of one-shots, the emission clock.
 //! - [`inflight`] — the node-global sharded table of live units (hold cell, accrual count,
@@ -73,6 +75,7 @@
 pub mod arena;
 pub mod grammar;
 pub mod inflight;
+pub mod profile;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
