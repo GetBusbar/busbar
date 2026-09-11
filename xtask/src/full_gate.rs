@@ -145,6 +145,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate construction --posture",
     "cargo xtask gate design-bindings --selftest",
     "cargo xtask gate design-bindings",
+    "cargo xtask gate feature-sets --selftest",
+    "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",
     "cargo xtask gate field-inventory",
     "cargo xtask gate inventory-ref --selftest",
@@ -184,6 +186,8 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo test -p busbar-llm --lib alloc_gate -- --nocapture", "the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same tests are also executed by 'cargo test --workspace --locked' above, which DOES run locally. (It read '-p busbar-core' here for as long as ci.yml did, matching zero tests in both places — a libtest filter that selects nothing exits 0.)"),
     ("cargo xtask gate ship-ready --selftest", "the SHIP-criterion gate's self-proof. It drives its own `run()` end to end, which means running the construction gate and the kind-isolation SHIP twin over the whole tree AND asking the GitHub checks API for the mutation verdict. The network read is the reason it is not local: `full-gate` is what an agent runs on a laptop before handing back, and a gate leg that needs an authenticated `gh` would make the local runner red for the operator's credentials rather than for the tree. ci.yml's `ship-ready` job runs it on every push, with a token."),
     ("cargo xtask gate ship-ready", "the SHIP criterion itself, and the integration line is not the ship SHA -- the kind-isolation ship twin is red on HEAD by design and the standing-red list is not empty, so this gate is red here for exactly the reasons `gates::REPORT_ONLY` names it. It is a REQUIRED CHECK on `qa` and `main` (scripts/ci-branch-protection.sh), which is the event it is about; running it as part of a local full-gate would red every dev-line run for being on the dev line. DELETE this entry when CONSTRUCTION_STANDING_REDS is empty and the ship twin is green on HEAD."),
+    ("cargo clippy --workspace --all-targets --features \"${{ matrix.features }}\" --locked -- -D warnings", "the FEATURE-SETS matrix clippy. '${{ matrix.features }}' expands per feature set -- a CI matrix construct with no single local form, and the literal string is not a runnable command. Its rows are mirrored locally by 'cargo xtask gate feature-sets', which asserts that every non-default feature in the tree is in that matrix or declared covered: the gate holds the matrix's CONTENTS here, and only CI can run its six expansions."),
+    ("cargo test ${{ matrix.tests }} --features \"${{ matrix.features }}\" --locked", "the same FEATURE-SETS matrix's test step; '${{ matrix.tests }}' is the row's own package list. Same reason, same local mirror."),
     ("cargo xtask gate construction", "the SCORED-AGAINST-ZERO form of the construction gate, which is RED BY DESIGN on HEAD while the construction work it measures is in flight; running it here would red the whole local gate on a fact nothing scores that way. ci.yml and keep-proof.yml no longer run this form at all: they run 'cargo xtask gate construction --posture' as a BLOCKING step, which is green while the gate is red on exactly the rows gates::REPORT_ONLY names and red on any other row — and that form IS in CARGO_LOCAL and does run locally, alongside '--report'. DELETE this entry when CONSTRUCTION_STANDING_REDS is empty and the bare form is green on HEAD."),
 ];
 
