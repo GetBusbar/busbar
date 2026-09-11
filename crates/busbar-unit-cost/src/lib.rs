@@ -68,6 +68,7 @@ mod model;
 mod posting;
 mod project;
 mod rate;
+mod schedule;
 
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
@@ -87,6 +88,7 @@ pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT, RESERVED_CLASSES,
 };
+pub use schedule::{FeeSchedule, PerUnitFee, Rounding, ScheduleCharge, BOUND_CLASS, ENTRY_CLASS};
 
 /// Nano-units in one cent. A cent is a hundredth of one United States dollar, and a nano-unit is a
 /// billionth of one, so ten million nano-units make a cent.

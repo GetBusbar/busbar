@@ -46,15 +46,28 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
     );
 }
 
-/// The flat fee the entry in force at `at` names, in the node's currency. The one reading the
-/// tests below compare cards by, so that a comparison is a lookup rather than a field peek.
+/// The transaction fee the entry in force at `at` names, lifted to nano-units in the node's
+/// currency. The one reading the tests below compare cards by, so that a comparison is a lookup
+/// rather than a field peek.
+///
+/// Spelled here rather than on the card because the card holds the deployment's amounts in MINOR
+/// units and lifts them once, at the pricing site; a second lift living on the card would be a
+/// second place a fee becomes nano-units.
+fn fee_of(card: &busbar_unit_cost::RateCard) -> u128 {
+    card.fee_schedule(node_currency()).map_or(0, |sched| {
+        u128::from(sched.transaction_minor.unsigned_abs()) * node_currency().nanos_per_minor()
+    })
+}
+
+/// The same reading, resolved through the history at one instant.
 fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
-    pinned
-        .view()
-        .card_at(at)
-        .expect("an entry covers the instant")
-        .1
-        .fee_unit_price_nanos(node_currency())
+    fee_of(
+        pinned
+            .view()
+            .card_at(at)
+            .expect("an entry covers the instant")
+            .1,
+    )
 }
 
 /// **APPEND, NEVER REWRITE.** A reload puts a SECOND entry on the history and leaves the first
@@ -83,7 +96,7 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let view = head.view();
     let entries = view.entries();
     assert_eq!(
-        entries[0].card().fee_unit_price_nanos(node_currency()),
+        fee_of(entries[0].card()),
         30_000_000,
         "the entry the first apply wrote was rewritten by a later one"
     );
@@ -92,14 +105,8 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
         busbar_unit_cost::HistorySeq(0),
         "the first entry was renumbered, which unmakes every invoice that named a snapshot"
     );
-    assert_eq!(
-        entries[1].card().fee_unit_price_nanos(node_currency()),
-        110_000_000
-    );
-    assert_eq!(
-        entries[2].card().fee_unit_price_nanos(node_currency()),
-        290_000_000
-    );
+    assert_eq!(fee_of(entries[1].card()), 110_000_000);
+    assert_eq!(fee_of(entries[2].card()), 290_000_000);
 }
 
 /// **AN ENTRY PRICES WHAT HAPPENS AFTER IT.** An instant before a reload resolves to the entry
@@ -179,7 +186,10 @@ fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
     holder.apply(
         super::card_from_config(
             std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
-            7,
+            &busbar_substrate::rate_apply::RawSchedule {
+                transaction: 7,
+                ..busbar_substrate::rate_apply::RawSchedule::default()
+            },
             true,
             node_currency(),
         ),

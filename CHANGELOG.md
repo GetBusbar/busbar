@@ -157,6 +157,15 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   roundings; the default schedule reaches it on no charge at all, since nothing produces a fraction
   of a minor unit until a deployment writes a `per_units` rate.
 
+  The amounts apply at the ONE pricing site: a posting now carries a visit count beside its
+  transaction count, the rate card carries the schedule, and the figure a bill shows decomposes into
+  the line that produced it — including the line a floor or a cap moved, which is never folded
+  silently into another. Amounts are accepted at `tariff.default` only and a narrower scope is
+  refused at boot: they live on the dated card so that spend stays re-derivable at read time, a card
+  is the node's, and a posting records no scope to resolve a per-pool schedule by. The counts go on
+  resolving at all four scopes, because a count is decided while the unit is running, where the pool
+  and the tier are known.
+
 - **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
   "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,
   so a task for which no agent was configured resolved to an upstream-shaped destination with no

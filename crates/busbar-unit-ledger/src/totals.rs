@@ -365,7 +365,7 @@ pub fn totals_as_of<'a>(
                 row.priced_nanos = row
                     .priced_nanos
                     .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
-                row.fee_count = row.fee_count.saturating_add(priced.fee_count);
+                row.fee_count = row.fee_count.saturating_add(priced.transaction_count);
                 row.lines += 1;
             }
             Err(why) => unpriceable.push(Unpriced {

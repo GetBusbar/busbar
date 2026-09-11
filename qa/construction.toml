@@ -385,6 +385,62 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "the fee schedule's install and its holder in the composition root: boot closes over the deployment's `tariff:` section and hands the root a resolver, and the holder answers it. Both lines are control vocabulary because the root is where a deployment's configuration becomes a running node, and there is nowhere else the schedule could be installed from without a plane or a unit reading configuration for itself."
 
+# ── THE AMOUNTS: what the counts are worth, applied where the card lives ─────────────────────────
+#
+# The tariff shipped its counts with `per_request_fee:` still holding every amount. These raises are
+# the amounts landing beside them: the config grammar's five new keys, the card's own fee schedule,
+# and the deletion of the four production reads of a fee field outside the crate that owns the card.
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 1
+because = "busbar_substrate::rate_apply::RawSchedule, named once in the composition root's card relay. The seam carried one scalar fee and the root read it by its config spelling; it now carries the whole schedule, which is what takes one-pricing-site:fee-fields from four production readers to zero. The rounding rule crosses as what it DOES to a remainder rather than as its own enum, so this is +1 rather than +2."
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.ceiling"
+by = 1
+because = "the same one name, counted on the root's total reach into the retiring crates. Nothing else about the root's reach moves on this commit."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "busbar_kernel::teller::Charge, carried WHOLE into the llm leg's pricing instead of `.transaction` being picked off at the call site. A visit and a transaction are two counts and the pricing site needs both; handing one of them over and re-deriving the other would be the plane deciding a count again, which is the thing FEE-1 deleted. Three production sites and the cells' own `charge_of`."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "busbar_unit_cost::{FeeSchedule, PerUnitFee, Rounding} in the composition root's ONE card relay and in the cells that drive it. The amounts are the card's vocabulary and the relay is the single hop that lifts the deployment's neutral figures into it; a root that named fewer of these names would be a root that had derived a price out of the parts instead."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = "`busbar_core::cost::fee_schedule_of` — the one translation from the `tariff:` section's resolved figures into the card's schedule, so that no second reading of an amount can disagree with it. Named through a single `use` rather than fully-qualified at every field, which is why the figure is 14 and not the 22 the first writing measured."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.plane.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = "the amounts half of the `tariff:` section, whose subject is per-scope billing and whose scope vocabulary is the plane's: the module says in its own words that a dimension exists exactly when a plane declared it and that the plane scope is keyed by the registry key. Doc text on the file that defines the grammar, not a new reach."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 167
+because = "crates/busbar-unit-cost/src/schedule.rs and the amounts it added to posting.rs and rate.rs: the fee schedule, the three rounding rules and the bounded charge, in the crate that owns the card. There is nowhere else they could live — a price applied outside the crate that holds the dated card is a second pricing policy, which is the one thing the one-pricing-site row exists to refuse — and landing them is what took that row's fee-field reads from four to zero. Measured 14992 -> 15159; the ceiling rises by the 167 this landing measured and NOT to the measurement, so the 59-line overage this tree already carried stays visible and stays somebody's to drain."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 167
+because = "the same 167 lines, counted on the union. Neither the kernel nor the caps/contract pair moves on this commit: the amounts are the card's and the counts were already the kernel's."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-ledger.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar_unit_cost::FeeSchedule in the recompute cells' card construction: the card's constructor takes a schedule where it took a scalar, and a cell that built the card another way would be proving something about a card the node never builds."
+
 # ── THE TARIFF'S CELLS: one knob, one count, every plane ─────────────────────────────────────────
 #
 # The knobs are proven ONCE and driven over the plane DECLARATIONS, never once per plane: a cell per
@@ -663,10 +719,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3513
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14933
+unit_total_ceiling = 15100
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23879
+union_ceiling = 24046
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1249,7 +1305,15 @@ max_extra_sites = 0
 # offenders, but both name `fee_cents`, the config/substrate spelling, and NOT ONE read of the
 # card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
 # still caught.
-fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
+# The tariff's own amount spellings join the list, in the commit that introduced them, exactly as
+# this row's `why` requires. They are the CONFIGURATION's names for a fee -- what an operator writes
+# -- and only the crate that parses configuration may read them. The card's own vocabulary for the
+# same amounts is `_minor`, not `_cents`, because the figures are in whatever the currency's minor
+# unit is and `_cents` was a lie on any non-USD deployment; the relay that lifts one into the other
+# is the composition root's single `card_from_config`, which names the card's spelling and not the
+# config's, so the lift is visible here as exactly one hop and not as a second reader.
+fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents",
+              "amount_cents", "flat_cents", "minimum_cents", "maximum_cents"]
 fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
 max_fee_readers = 0
 
@@ -1296,7 +1360,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 92
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1335,7 +1399,15 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # that the root had never spelled before is `busbar_substrate::ingress::arrival::install_path_ingress`.
 # The move is why the TOTAL fell (91 -> 90) and core's own prefix fell (27 -> 25) in the same commit:
 # this is the sideways step the per-crate rows exist to make visible, not a regression.
-figure = 49
+#
+# 49 -> 50 (declared below): `busbar_substrate::rate_apply::RawSchedule`. The rate-apply seam used
+# to carry ONE scalar for the fee, and the root read it by its config spelling — which is four of the
+# four production reads of a fee field outside the crate that owns the card. The seam now carries the
+# whole schedule and the root names the type once, in the relay's signature. The rule that says a
+# price may not be derived where nobody can see it and this ratchet point the same way: this name is
+# what took `one-pricing-site:fee-fields` from four offenders to zero, and the rounding rule crosses
+# as WHAT IT DOES rather than as its own enum precisely so that this is +1 and not +2.
+figure = 50
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

@@ -264,7 +264,7 @@ fn a_corrupted_cache_never_becomes_the_bill() {
     let history = History::opening(card_at(2.0), 0);
     let view = history.current();
     let mut posting =
-        Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
+        Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, 0, STANDARD_TIER_BP, 0, 0);
 
     let honest = price(&view, &posting, CurrencyCode::USD).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);

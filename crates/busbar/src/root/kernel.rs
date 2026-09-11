@@ -405,7 +405,7 @@ pub(crate) fn default_fee(
 /// drift.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    per_request_fee: i64,
+    schedule: &busbar_substrate::rate_apply::RawSchedule,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,
 ) -> busbar_unit_cost::RateCard {
@@ -424,7 +424,37 @@ pub(crate) fn card_from_config<'r>(
             )
         })
     });
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, per_request_fee)
+    // The deployment's AMOUNTS, lifted the same way and for the same reason: the raw view's
+    // numbers copied across a crate boundary with nothing computed on the way. What they MEAN — a
+    // count times an amount, the floor, the cap, which way a fraction goes — is decided where the
+    // card lives, at the one pricing site, and this relay could not disagree with it because there
+    // is no arithmetic here to disagree with.
+    busbar_unit_cost::RateCard::from_config_in(
+        currency,
+        lanes,
+        busbar_unit_cost::FeeSchedule {
+            entry_minor: schedule.entry,
+            transaction_minor: schedule.transaction,
+            per_units: schedule
+                .per_units
+                .iter()
+                .map(|(class, per, minor)| busbar_unit_cost::PerUnitFee {
+                    class: class.clone(),
+                    per: *per,
+                    minor: *minor,
+                })
+                .collect(),
+            minimum_minor: schedule.minimum,
+            maximum_minor: schedule.maximum,
+            // The rule, as WHAT IT DOES to a remainder rather than as which rule it is — so the
+            // root learns no spelling from the retiring crate that it would have to unlearn.
+            rounding: match schedule.rounding_choice() {
+                (true, _) => busbar_unit_cost::Rounding::Up,
+                (_, true) => busbar_unit_cost::Rounding::Down,
+                (false, false) => busbar_unit_cost::Rounding::Bankers,
+            },
+        },
+    )
 }
 
 /// The root, answering the engine's rate-apply seam.
@@ -445,7 +475,7 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
         ROOT_CARD.apply(
             card_from_config(
                 rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-                rates.fee_cents,
+                &rates.schedule,
                 rates.present,
                 node_currency(),
             ),

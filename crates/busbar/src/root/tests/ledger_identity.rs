@@ -155,7 +155,7 @@ fn drive(
         let usage = Usage::report(&usage_token(), lines(s.input, s.output))
             .expect("the usage report is within the line limit");
         let fee_count = u64::from(s.billable);
-        let quantities = Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
+        let quantities = Posting::from_usage(s.lane, &usage, 0, fee_count, STANDARD_TIER_BP, 0, 0);
         let posting = price(&view, &quantities, CurrencyCode::USD)
             .expect("the opening entry covers instant zero and names USD");
 
@@ -244,6 +244,7 @@ fn every_dual_written_row_carries_the_figures_its_posting_moved() {
         let quantities = Posting::from_usage(
             settlement.lane,
             &usage,
+            0,
             u64::from(settlement.billable),
             STANDARD_TIER_BP,
             0,

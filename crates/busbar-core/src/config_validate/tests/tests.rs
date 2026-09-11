@@ -5579,3 +5579,69 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
+
+/// **A FEE NAMED TWICE FOR ONE SCOPE IS A BOOT REFUSAL, AND BOTH FIGURES ARE IN THE MESSAGE.**
+///
+/// The whole compatibility promise depends on there being no arm anywhere that picks between two
+/// configured numbers for one fee. This is that arm's absence, stated as a refusal an operator
+/// reads — with both keys and both amounts, so they delete the one they did not mean rather than
+/// discovering next month which one won.
+#[test]
+fn the_tariff_refuses_a_fee_the_previous_releases_key_already_names() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.per_request_fee = 3;
+    cfg.tariff = Some(
+        serde_yaml::from_str("default:\n  transaction_fee: { flat_cents: 5 }\n")
+            .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg).expect_err("two numbers for one fee");
+    let named = errors
+        .iter()
+        .find(|e| e.contains("transaction_fee.flat_cents"))
+        .expect("the refusal names the tariff key");
+    assert!(named.contains('5') && named.contains("per_request_fee") && named.contains('3'));
+
+    // …and the same configuration with the old key at its own default is accepted: a zero is the
+    // key's absence, not a second number.
+    cfg.per_request_fee = 0;
+    assert!(crate::config_validate::validate(&cfg).is_ok());
+}
+
+/// **AN AMOUNT AT A SCOPE THE CARD CANNOT CARRY IS REFUSED RATHER THAN SILENTLY UNAPPLIED.**
+///
+/// The counts resolve at all four scopes; the amounts live on the node's dated card, and a posting
+/// records no scope to resolve one by. A schedule that would therefore never be applied is a
+/// refusal, in the same words and for the same reason a scope naming an undefined pool is.
+#[test]
+fn an_amount_at_a_pool_or_a_tier_scope_is_refused_and_the_counts_there_are_not() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.pools.insert(
+        "pool-a".to_string(),
+        serde_yaml::from_str("members: []\n").expect("an empty pool is a pool"),
+    );
+    cfg.tariff = Some(
+        serde_yaml::from_str("pool:\n  pool-a:\n    maximum_cents: 40\n")
+            .expect("the fragment is the grammar"),
+    );
+    let errors = crate::config_validate::validate(&cfg).expect_err("an amount nothing would apply");
+    assert!(
+        errors.iter().any(|e| e.contains("maximum_cents")
+            && e.contains("tariff.pool.pool-a")
+            && e.contains("Move them to tariff.default")),
+        "{errors:?}"
+    );
+
+    // The COUNTS at the same scope are not refused: they are resolved per unit, at the moment the
+    // unit runs, which is a place the pool is known.
+    cfg.tariff = Some(
+        serde_yaml::from_str("pool:\n  pool-a:\n    entry_fee: { enabled: true }\n")
+            .expect("the fragment is the grammar"),
+    );
+    let remaining = crate::config_validate::validate(&cfg)
+        .err()
+        .unwrap_or_default();
+    assert!(
+        !remaining.iter().any(|e| e.contains("tariff.pool.pool-a")),
+        "a count at a pool scope is resolvable per unit and is not refused: {remaining:?}"
+    );
+}

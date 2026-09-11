@@ -441,7 +441,7 @@ pub fn adjusting_entries<'a>(
                 None => entry.quantities.push(line.clone()),
             }
         }
-        entry.fee_count = entry.fee_count.saturating_add(old.fee_count);
+        entry.fee_count = entry.fee_count.saturating_add(old.transaction_count);
         entry.old_nanos = entry
             .old_nanos
             .saturating_add(i128::try_from(old.priced_nanos).unwrap_or(i128::MAX));

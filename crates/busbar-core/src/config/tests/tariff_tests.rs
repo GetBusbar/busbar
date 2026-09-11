@@ -247,6 +247,13 @@ fn an_unset_amount_inherits_the_previous_releases_own_fee() {
 
 /// **THE AMOUNTS RESOLVE BY THE SAME FOUR SCOPES, FIELD BY FIELD**, and a scope that names one
 /// number keeps every other number it had.
+///
+/// The FOLD is total over all four scopes, and that is what is under test here. What a deployment
+/// is allowed to WRITE is narrower today and is refused at boot rather than silently unapplied:
+/// amounts live on the node's dated card and a posting records no scope to resolve one by, so an
+/// amount outside `default` is a configuration error (`config_validate`'s own cell). The fold is
+/// written total anyway, because the day a posting carries its scope the resolver is the thing that
+/// must already be right, not the thing that then has to be taught the other three scopes.
 #[test]
 fn an_amount_set_at_a_scope_moves_that_number_and_no_other() {
     let scoped = crate::plane::plane_keys()

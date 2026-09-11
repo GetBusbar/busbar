@@ -211,8 +211,13 @@ fn minor_of_derived(
 ) -> i64 {
     let mut minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
     if include_request_fee {
+        // THE TRANSACTION FEE, and deliberately only that one. This derivation is handed a count
+        // of billable requests and nothing else: it never sees how many visits a bucket held, so
+        // charging the visit's own fee here would be inventing a count. The entry fee reaches a
+        // bucket through the postings, at the lookup, where the count is a fact.
         let fee = card
-            .per_request_fee(currency)
+            .fee_schedule(currency)
+            .map_or(0, |s| s.transaction_minor)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         minor = minor.saturating_add(fee);
     }
@@ -233,7 +238,8 @@ fn micros_of_derived(
         let micros_per_minor =
             i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
         let fee_micros = card
-            .per_request_fee(currency)
+            .fee_schedule(currency)
+            .map_or(0, |s| s.transaction_minor)
             .saturating_mul(micros_per_minor)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         micros.saturating_add(fee_micros)

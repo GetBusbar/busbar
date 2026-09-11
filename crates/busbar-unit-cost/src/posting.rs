@@ -23,8 +23,10 @@ use crate::rate::RateCard;
 /// The neutral tier multiplier, in basis points: one times the price, so no tier at all.
 pub const STANDARD_TIER_BP: u32 = 10_000;
 
-/// The meter class the flat per-request fee posts under. It is a usage line like any other, which
-/// is what lets the whole posting be one sum instead of a sum plus a special case.
+/// The meter class the TRANSACTION fee posts under. It is a usage line like any other, which is
+/// what lets the whole posting be one sum instead of a sum plus a special case. The visit's own fee
+/// posts under [`crate::schedule::ENTRY_CLASS`] beside it, and a floor or a cap that moved the
+/// total posts its difference under [`crate::schedule::BOUND_CLASS`].
 pub const FEE_CLASS: &str = "fee";
 
 /// One quantity against one declared class. No money in it.
@@ -75,8 +77,14 @@ pub struct Posting {
     pub lane: String,
     /// One entry per reported meter class.
     pub quantities: Vec<Quantity>,
-    /// How many flat fees this posting carries — one for a billable client request, zero otherwise.
-    pub fee_count: u64,
+    /// How many VISITS this posting carries — one for an admitted unit on a deployment that
+    /// charges for the door, zero otherwise. A visit and a transaction are two things and they are
+    /// counted separately: a caller admitted at the door made a visit whether or not the visit went
+    /// on to reach anything.
+    pub entry_count: u64,
+    /// How many completed TRANSACTIONS this posting carries — one for a billable client request,
+    /// zero otherwise.
+    pub transaction_count: u64,
     /// The chain's tier multiplier, in basis points.
     pub tier_bp: u32,
     /// The instant, as a wall clock reads it, in milliseconds. A wall clock DATES a record and
@@ -102,7 +110,8 @@ impl Posting {
     pub fn from_usage(
         lane: impl Into<String>,
         usage: &Usage,
-        fee_count: u64,
+        entry_count: u64,
+        transaction_count: u64,
         tier_bp: u32,
         arrived_ms: u64,
         arrived_mono: u64,
@@ -114,7 +123,8 @@ impl Posting {
                 .iter()
                 .map(|l| Quantity::new(l.class.as_str(), l.quantity))
                 .collect(),
-            fee_count,
+            entry_count,
+            transaction_count,
             tier_bp,
             arrived_ms,
             arrived_mono,
@@ -192,8 +202,10 @@ pub struct Priced {
     pub lane_unpriced: bool,
     /// The tier multiplier in basis points that produced the priced amount.
     pub tier_bp: u32,
-    /// How many flat fees the posting carried.
-    pub fee_count: u64,
+    /// How many visits the posting carried.
+    pub entry_count: u64,
+    /// How many completed transactions the posting carried.
+    pub transaction_count: u64,
     /// Whether the quantities were the kernel's own floor.
     pub estimated: bool,
 }
@@ -324,21 +336,85 @@ pub fn price_at_card(
         });
     }
 
-    // The fee is a usage line, not a scalar bolted onto the total. Its unit price is an exact
-    // multiple of one minor unit of its currency, which is why summing it in before the single
-    // truncation gives the same answer as truncating the quantities first and adding the fee after.
-    let fee_unit_price_nanos = card.fee_unit_price_nanos(currency);
-    lines.push(PricedLine {
-        class: FEE_CLASS.to_string(),
-        quantity: posting.fee_count,
-        unit_price_nanos: fee_unit_price_nanos,
-        amount_nanos: u128::from(posting.fee_count).saturating_mul(fee_unit_price_nanos),
-        unpriced: false,
+    // **THE TARIFF'S OWN CHARGE, APPLIED HERE AND NOWHERE ELSE.** The counts came from the kernel
+    // and carry no amount; the schedule came from the card and carries no count; this is the one
+    // expression in the workspace where the two meet. Every fee line is a usage line rather than a
+    // scalar bolted onto the total, which is what lets the whole posting be one sum — and each
+    // amount is an exact multiple of one minor unit, so summing them in before the single
+    // truncation gives the same answer as truncating the quantities first and adding the fees after.
+    //
+    // A currency the card names no schedule in charges NOTHING for the counts, and the lines say
+    // so: a zero that was decided is written down, never left out.
+    let schedule = card.fee_schedule(currency);
+    let charged = schedule.map(|s| {
+        s.charge_minor(posting.entry_count, posting.transaction_count, &|class| {
+            posting
+                .quantities
+                .iter()
+                .find(|q| q.class == class)
+                .map_or(0, |q| q.amount)
+        })
     });
+    let minor_to_nanos = |minor: i128| -> u128 {
+        u128::try_from(minor.max(0))
+            .unwrap_or(0)
+            .saturating_mul(currency.nanos_per_minor())
+    };
+    match &charged {
+        Some(charge) => {
+            for (class, count, minor) in &charge.lines {
+                lines.push(PricedLine {
+                    class: class.clone(),
+                    quantity: *count,
+                    // What one of them cost, which for a count is the schedule's own figure and for
+                    // a per-N-units rate is the rounded amount over the quantity it was charged on.
+                    unit_price_nanos: if *count == 0 {
+                        0
+                    } else {
+                        minor_to_nanos(*minor) / u128::from(*count)
+                    },
+                    amount_nanos: minor_to_nanos(*minor),
+                    unpriced: false,
+                });
+            }
+            // A FLOOR OR A CAP THAT MOVED THE TOTAL IS A LINE SAYING SO. Folding the difference
+            // into somebody else's figure would make a bounded bill indistinguishable from an
+            // unbounded one at the same total.
+            if charge.bound_adjustment_minor != 0 {
+                lines.push(PricedLine {
+                    class: crate::schedule::BOUND_CLASS.to_string(),
+                    quantity: 1,
+                    unit_price_nanos: minor_to_nanos(charge.bound_adjustment_minor.abs()),
+                    amount_nanos: minor_to_nanos(charge.bound_adjustment_minor.abs()),
+                    unpriced: false,
+                });
+            }
+        }
+        None => {
+            for class in [crate::schedule::ENTRY_CLASS, FEE_CLASS] {
+                lines.push(PricedLine {
+                    class: class.to_string(),
+                    quantity: 0,
+                    unit_price_nanos: 0,
+                    amount_nanos: 0,
+                    unpriced: true,
+                });
+            }
+        }
+    }
 
-    let pre_tier_nanos = lines
+    // THE SUM IS THE QUANTITY LINES PLUS THE TARIFF'S BOUNDED TOTAL. Adding the fee lines up
+    // again here would double-count a capped charge: the bound is applied over the schedule's own
+    // lines, in the schedule, and this reads the figure it produced.
+    let tariff_nanos = charged
+        .as_ref()
+        .map_or(0, |c| minor_to_nanos(c.total_minor));
+    let pre_tier_nanos = posting
+        .quantities
         .iter()
-        .fold(0u128, |acc, l| acc.saturating_add(l.amount_nanos));
+        .zip(lines.iter())
+        .fold(0u128, |acc, (_, l)| acc.saturating_add(l.amount_nanos))
+        .saturating_add(tariff_nanos);
 
     Ok(Priced {
         card_seq,
@@ -348,7 +424,8 @@ pub fn price_at_card(
         priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
         lane_unpriced: rates.is_none(),
         tier_bp: posting.tier_bp,
-        fee_count: posting.fee_count,
+        entry_count: posting.entry_count,
+        transaction_count: posting.transaction_count,
         estimated: posting.estimated,
     })
 }
