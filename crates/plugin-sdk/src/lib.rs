@@ -764,34 +764,12 @@ pub use busbar_contract::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 
-/// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
-/// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
-/// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
-/// sink implements only `streams`.
-pub trait ExportHandler: Send + Sync {
-    /// The [`ExportStream`]s this instance carries. Asked once at load; the engine only routes
-    /// deliveries for streams named here.
-    fn streams(&self) -> Vec<ExportStream>;
-    /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
-    /// Default: no-op (a sink that reports streams but drops batches).
-    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
-    /// The HTTP [`Route`]s this instance serves — its OWN compiled-in declarations, collected once at
-    /// load (a metrics sink declares `GET /metrics`). Default: none (a push-only sink has no HTTP
-    /// surface). The engine collision-checks + namespace-confines these before mounting.
-    fn routes(&self) -> Vec<Route> {
-        Vec::new()
-    }
-    /// Serve one inbound HTTP request matched to a declared route. Fires only for a matched route (the
-    /// engine already enforced the route's auth). Default: `404` — the fallback for a sink that
-    /// declared no routes / a partial impl.
-    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        HttpEndpointResponse {
-            status: 404,
-            headers: Vec::new(),
-            body: Vec::new(),
-        }
-    }
-}
+/// Re-export the `kind: export` WIRE FACE at the path this SDK has always published it under. The
+/// one definition is `busbar_contract::export`'s now — see
+/// `docs/design/1.6.0-one-face-per-kind.md` section 2. This SDK keeps the C glue and the
+/// op-dispatch match ([`export_abi_version`], [`dispatch_export`], [`export_dispatch`],
+/// [`ExportHandle`]) and nothing else.
+pub use busbar_contract::export::ExportHandler;
 
 /// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
 /// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.

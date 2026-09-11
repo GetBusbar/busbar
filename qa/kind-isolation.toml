@@ -1569,7 +1569,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "30"
+count = "31"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1589,7 +1589,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "43"
+count = "55"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1599,7 +1599,7 @@ count = "6"
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "85"
+count = "96"
 
 [[cell]]
 crate = "busbar-contract-transport"
@@ -2124,7 +2124,7 @@ count = "58"
 [[cell]]
 crate = "busbar-plugin"
 kind = "control"
-count = "25"
+count = "24"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2134,7 +2134,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plugin"
 kind = "plane"
-count = "80"
+count = "75"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2144,7 +2144,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin"
 kind = "transport"
-count = "107"
+count = "106"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2249,7 +2249,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "plane"
-count = "20"
+count = "13"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2259,7 +2259,7 @@ count = "7"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "transport"
-count = "37"
+count = "30"
 
 [[cell]]
 crate = "busbar-plugin-sign"

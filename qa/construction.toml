@@ -130,20 +130,20 @@ busbar-voice = ["busbar-voice-codec"]
 [gate.ceiling_raises."cell.52.count"]
 file = "qa/kind-isolation.toml"
 from = 20
-to = 30
-because = "busbar-contract x control: the plugin HTTP-endpoint face moves in from busbar-plugin by identity, and `RouteAuth::Admin` (the level the operator admin chain enforces before a matched request is forwarded) is control vocabulary wherever the file lives. Eight of the ten new hits are crates/busbar-contract/src/http_endpoint.rs; the mirror is busbar-plugin x control falling 35 -> 25 in this same commit. Not one word changed -- the file moved"
+to = 31
+because = "busbar-contract x control, cumulative over three identity moves off this base. The http_endpoint move took it 20 -> 30: `RouteAuth::Admin` (the level the operator admin chain enforces before a matched request is forwarded) is control vocabulary wherever the file lives, eight of the ten new hits in crates/busbar-contract/src/http_endpoint.rs; the mirror was busbar-plugin x control falling 35 -> 25 in that commit. The export-face move (ordered-plan step 3) takes it 30 -> 31: one hit in the new crates/busbar-contract/src/export.rs (the sink's declared-routes admin surface); the mirror is busbar-plugin x control falling 25 -> 24 in the export-face commit"
 
 [gate.ceiling_raises."cell.56.count"]
 file = "qa/kind-isolation.toml"
 from = 42
-to = 43
-because = "busbar-contract x plane: the same identity move, one hit, in crates/busbar-contract/src/http_endpoint.rs -- the namespace-confinement sentence that says a matched inbound request is forwarded to the plugin and never to the data-plane paths. The mirror is busbar-plugin x plane falling 81 -> 80 in this same commit"
+to = 55
+because = "busbar-contract x plane, cumulative over three identity moves off this base. The http_endpoint move took it 42 -> 43: one hit in crates/busbar-contract/src/http_endpoint.rs -- the namespace-confinement sentence that says a matched inbound request is forwarded to the plugin and never to the data-plane paths; the mirror was busbar-plugin x plane falling 81 -> 80 in that commit. The export-face move (ordered-plan step 3) takes it 43 -> 55: twelve hits in the new crates/busbar-contract/src/export.rs -- the frozen `ExportStream` vocabulary IS data-plane vocabulary (metrics/logs/traces/prompts/completions are the plane's own stream names); the mirror is busbar-plugin x plane falling 80 -> 75 in the export-face commit"
 
 [gate.ceiling_raises."cell.58.count"]
 file = "qa/kind-isolation.toml"
 from = 41
-to = 85
-because = "busbar-contract x transport, cumulative over two identity moves off this base. The http_endpoint move (see cell.52/56 above) took it 41 -> 76: twenty-two of the new hits are crates/busbar-contract/src/http_endpoint.rs and twelve are its battery, which moved with it to crates/busbar-contract/tests/http_endpoint.rs; the mirror was busbar-plugin x transport falling 137 -> 107 in that commit. The hook-face move (ordered-plan step 2, docs/design/1.6.0-one-face-per-kind.md §3) takes it 76 -> 85: nine hits in the new crates/busbar-contract/src/hook.rs, transport vocabulary from the Route/HttpEndpointRequest/HttpEndpointResponse types the moved HookHandler trait names in its own signatures. The mirror is busbar-plugin-sdk x transport falling 43 -> 37 in the hook-face commit; the two do not net to zero because the trait's doc comments carry transport vocabulary the SDK's re-export line does not"
+to = 96
+because = "busbar-contract x transport, cumulative over three identity moves off this base. The http_endpoint move took it 41 -> 76: twenty-two of the new hits are crates/busbar-contract/src/http_endpoint.rs and twelve are its battery, which moved with it to crates/busbar-contract/tests/http_endpoint.rs; the mirror was busbar-plugin x transport falling 137 -> 107 in that commit. The hook-face move (step 2) took it 76 -> 85: nine hits in the new crates/busbar-contract/src/hook.rs, transport vocabulary the moved HookHandler trait's own signatures carry; the mirror was busbar-plugin-sdk x transport falling 43 -> 37 in that commit. The export-face move (step 3) takes it 85 -> 96: eleven hits in the new crates/busbar-contract/src/export.rs -- the wire field vocabulary (ingress_protocol, latency_ms, status) the frozen ExportField enum carries; the mirror is busbar-plugin x transport falling 107 -> 106 and busbar-plugin-sdk x transport falling 37 -> 30 in the export-face commit; the three do not net to zero because the trait/enum doc comments carry transport vocabulary the re-export lines do not"
 
 # THE PLUGIN HTTP-ENDPOINT FACE MOVED HOME (busbar-plugin -> busbar-contract), BY IDENTITY.
 # `Route`, `RouteAuth`, `RouteMethod`, `HttpEndpointRequest`, `HttpEndpointResponse` and
@@ -156,18 +156,18 @@ because = "busbar-contract x transport, cumulative over two identity moves off t
 # is counted by none of these three rows, which is why a move shows here as a rise.
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3480
-to = 3582
-because = "cumulative over two identity moves off this base. The HTTP-endpoint move (see surface-ceiling entry below) took busbar-contract 2327 -> 2389 (+62, busbar-caps 1153 unmoved), pair 3480 -> 3542. The hook-face move (ordered-plan step 2) adds the moved HookHandler trait -- busbar-contract measures 2389 -> 2429 under this rule's own counter (+40, the whole of crates/busbar-contract/src/hook.rs), busbar-caps still unmoved, so the pair measures 3542 -> 3582. busbar-plugin-sdk sheds the identical lines and is counted by no loc-ceilings row, which is why an identity move reads as a rise here"
+to = 3884
+because = "cumulative over three identity moves off this base. The HTTP-endpoint move (see surface-ceiling entry below) took busbar-contract 2327 -> 2389 (+62), pair 3480 -> 3542. The hook-face move (step 2) took busbar-contract 2389 -> 2429 (+40, crates/busbar-contract/src/hook.rs), pair 3542 -> 3582. The export-face move (step 3, ordered-plan §3) adds the moved ExportStream/ExportField/ExportHandler -- busbar-contract measures 2429 -> 2731 under this rule's own counter (+302, the whole of crates/busbar-contract/src/export.rs), busbar-caps 1153 unmoved throughout, so the pair measures 3582 -> 3884. busbar-plugin and busbar-plugin-sdk shed the identical lines and are counted by no loc-ceilings row, which is why an identity move reads as a rise here"
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23567
-because = "the same two identity moves seen through the union, which sums the kernel (5379, unmoved), caps/contract and the units (14606, unmoved): neither the HTTP-endpoint face nor the hook face lands in a kernel or unit crate, so the union's total rise (23465 -> 23567, +102) is exactly the caps/contract rise (+62 then +40) by arithmetic and nothing else"
+to = 23869
+because = "the same three identity moves seen through the union, which sums the kernel (5379, unmoved), caps/contract and the units (14606, unmoved): none of the HTTP-endpoint, hook or export faces land in a kernel or unit crate, so the union's total rise (23465 -> 23869, +404) is exactly the caps/contract rise (+62, then +40, then +302) by arithmetic and nothing else"
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
-to = 3580
-because = "cumulative over two identity moves off this base. The HTTP-endpoint move took the plugin-visible surface 3478 -> 3540: Route, RouteAuth, RouteMethod, HttpEndpointRequest, HttpEndpointResponse, safe_relay_status and HttpEndpointResponse::safe_status, all of it already plugin-visible one crate over. The hook-face move (ordered-plan step 2) takes it 3540 -> 3580: HookHandler and its nine methods (decide, decide_result, transform, transform_result, notify, configure, describe, status, routes, handle_http), already plugin-visible at busbar_plugin_sdk::HookHandler and re-exported from there unchanged"
+to = 3882
+because = "cumulative over three identity moves off this base. The HTTP-endpoint move took the plugin-visible surface 3478 -> 3540: Route, RouteAuth, RouteMethod, HttpEndpointRequest, HttpEndpointResponse, safe_relay_status and HttpEndpointResponse::safe_status, all of it already plugin-visible one crate over. The hook-face move (step 2) took it 3540 -> 3580: HookHandler and its nine methods, already plugin-visible at busbar_plugin_sdk::HookHandler. The export-face move (step 3) takes it 3580 -> 3882: ExportStream (9 variants + 5 methods), ExportField (39 variants + 3 methods) and ExportHandler (3 methods), every one of them already plugin-visible one crate over at busbar_plugin::cold::export / busbar_plugin_sdk::ExportHandler and re-exported from there unchanged"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -175,7 +175,7 @@ because = "cumulative over two identity moves off this base. The HTTP-endpoint m
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3580
+contract_caps = 3882
 grammar = 388
 contract_transport = 845
 
@@ -396,12 +396,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3582
+caps_contract_ceiling = 3884
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23567
+union_ceiling = 23869
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
