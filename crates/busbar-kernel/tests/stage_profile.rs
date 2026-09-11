@@ -3,7 +3,7 @@
 
 //! THE STAGE REPORT PROMISES NO ATTRIBUTION THE LOOP DOES NOT MAKE.
 //!
-//! The profiler's table is the loop's own steps plus the transport wait, and an operator reading
+//! The profiler's table is the loop's own steps plus the wait inside Route, and an operator reading
 //! `BUSBAR_PROFILE` is entitled to read it as "this is where the request's time went". That claim
 //! is only true if every row the report ENUMERATES is a row something actually TIMED — the defect
 //! this cell exists against is a table with rows nothing fires, which is an operator surface that
@@ -19,12 +19,11 @@
 
 mod common;
 
-use busbar_caps::Canary;
 use busbar_kernel::profile::{self, Stage};
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit, AccrualMeter, Ended, Kernel, Run};
 
-use common::{cell, ctx, TestUnits};
+use common::{cell, ctx, Canary, TestUnits};
 
 #[test]
 fn every_declared_stage_fires_exactly_once_per_request() {

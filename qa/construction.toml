@@ -1240,3 +1240,17 @@ to = 23679
 because = """The kernel's own rise, carried into the union arithmetic unchanged: the stage \
 profiler's move into `busbar-kernel` (176 lines) and the loop's per-step taps (28). Neither \
 `busbar-caps`/`busbar-contract` nor the `busbar-unit-*` union moved a line on this landing."""
+
+# The kind-isolation matrix moved with the same landing, and in the same direction the MOVE implies:
+# the composition root's periodic stage dump used to name `busbar_substrate::profile` and now names
+# `busbar_kernel::profile`, because that is where the profiler is. Four cells fall with it and are
+# re-pinned down in the same commit (busbar-core x plane 3067->3066, busbar-substrate x legacy
+# 298->295, x plane 770->769, x transport 1140->1139 — the deleted profile.rs and its taps); the one
+# that rises is the two lines of that dump, and it is declared here.
+[gate.ceiling_raises."cell.7.count"]
+file = "qa/kind-isolation.toml"
+from = 158
+to = 160
+because = """The root's two `busbar_kernel::profile::{enabled,dump}` lines — the operator's periodic \
+stage dump, which named `busbar_substrate::profile` until the profiler MOVED into the kernel because \
+the table it reports is the loop's own steps. Four substrate/plane cells fall in the same commit."""

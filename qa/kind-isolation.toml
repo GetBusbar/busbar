@@ -1344,7 +1344,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+count = "160"
 
 [[cell]]
 crate = "busbar"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3066"
 
 [[cell]]
 crate = "busbar-core"
@@ -2399,12 +2399,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "298"
+count = "295"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "770"
+count = "769"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2434,7 +2434,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1140"
+count = "1139"
 
 [[cell]]
 crate = "busbar-substrate-values"

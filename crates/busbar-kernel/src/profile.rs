@@ -11,9 +11,9 @@
 //! row here means the same thing whichever plane served the unit, and an operator reading the
 //! report is reading the loop rather than one plane's inner shape.
 //!
-//! That is a deliberate replacement of what this profiler used to be. The old table named an HTTP
-//! egress pipeline's internals (`lane_pick`, `client_build`, `rb_finish`, …), so it could only ever
-//! describe one plane's Route step, it grew a row per refactor of that plane, and three of its rows
+//! That is a deliberate replacement of what this profiler used to be. The old table named one
+//! plane's egress pipeline internals (`lane_pick`, `client_build`, `rb_finish`, …), so it could
+//! only ever describe that plane's Route step, it grew a row per refactor of it, and three of its rows
 //! — `inbound_parse`, `upstream_send`, `post_send` — had NO call site anywhere in the workspace and
 //! were enumerated by the report regardless. A report that promises an attribution the code never
 //! makes is an operator surface that lies, so the table is now the one thing every request actually
@@ -23,8 +23,8 @@
 //!
 //! Every row is recorded from `crate::teller` and from nowhere else. A stage is not something a
 //! plane opts into: the loop calls the step, so the loop times the step. A plane that wants finer
-//! attribution inside its own Route step uses the per-method timers (`busbar-timing`), which nest
-//! inside these stages rather than adding rows to them.
+//! attribution inside its own Route step uses the workspace's per-method timers, which nest inside
+//! these stages rather than adding rows to them.
 //!
 //! ## Cost when unset
 //!

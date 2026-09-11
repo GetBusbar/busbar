@@ -8,14 +8,18 @@
 //! real one, the money types are the real ones, and only the units are fakes.
 
 #![allow(dead_code)]
+// The `pub use` below re-exports the capability names the battery's cells build units out of, so a
+// cell in a sibling test binary reaches them through this one module rather than naming the
+// capability crate a second time. A binary that uses only some of them is the normal case.
+#![allow(unused_imports)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
-    Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal,
-    Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
+pub use busbar_caps::{
+    Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Canary, Decision, Decode,
+    Encode, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode,
+    Refusal, Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
     VerifiedDestination, Verify,
 };
 use busbar_kernel::registry::Generation;
