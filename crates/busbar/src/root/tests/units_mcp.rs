@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use crate::root::unit_views::{Block, UnitViewSet};
 
 /// A resolver that answers every name with one public address.
 ///
@@ -184,70 +185,18 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
 // than mocked away, because a decode cell that did not hand the plane a real arena would not be
 // driving the step that can run out of one.
 
-/// A leaking arena. Test-only, run a bounded number of times per process: the trait's
-/// allocators hand back borrowed slices, so an honest double either leaks or is unsafe, and
-/// this crate's tests do not reach for unsafe.
-struct CellArena;
+/// The stack this surface's units arrive on, as the transport view names it.
+const STACK: [&str; 3] = ["tcp", "tls", "http"];
 
-impl busbar_contract::bounded::Arena for CellArena {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
-    {
-        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
-    }
-
-    fn alloc_str<'a>(
-        &'a self,
-        src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::bounded::Span)],
-    ) -> Result<
-        &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
-    > {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
-struct CellConfig;
-
-impl busbar_contract::unit::ConfigView for CellConfig {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-/// The document surface, composed the way the node composes it.
-struct CellTransport;
-
-impl busbar_contract::unit::TransportView for CellTransport {
-    fn key(&self) -> &'static str {
-        claims::TRANSPORT_HTTP
-    }
-    fn chain(&self) -> &[&'static str] {
-        &["tcp", "tls", "http"]
-    }
-    fn fact(&self, _key: &str) -> Option<&str> {
-        None
-    }
+/// The views a cell on this surface drives a step over.
+///
+/// The ROOT'S OWN constructor, not a set of hand-written views beside it. Before the per-unit
+/// record landed there was no other way: `Ctx::new` takes an arena, every arena in the tree was a
+/// double that leaked, and a cell that wanted to drive a decode had to write one. It does not have
+/// to now — the loop builds its context from this bundle over the kernel's own 4 KiB, and so does
+/// this cell, which is what makes the step it measures the step the node runs.
+fn views() -> UnitViewSet {
+    UnitViewSet::new(Block::default(), STACK[2], &STACK)
 }
 
 /// One inbound frame carrying `body`.
@@ -273,20 +222,12 @@ fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
 #[test]
 fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     use busbar_caps::KernelSeal;
-    use busbar_contract::bounded::{FactValue, Labels};
-    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::bounded::FactValue;
     use busbar_contract::wire::FrameCursor;
     use busbar_plane_mcp::facts as f;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
-    let config = CellConfig;
-    let transport = CellTransport;
-    let labels = Labels::new();
-    let clock = Clock {
-        unix_secs: 1_700_000_000,
-        monotonic_nanos: 0,
-    };
+    crate::open_record!(record, &crate::root::harness::cell_ctx(1), views());
     let plane = McpPlane::EMPTY;
 
     // A well-formed call, carrying the caller's own metadata block. Both members the loop reads
@@ -294,8 +235,8 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"grep","_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18","progressToken":"p-42"}}}"#;
     let frames = one_frame(body);
     let mut cursor = FrameCursor::new(&frames);
-    let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
-    let read = read_ingress(&plane, &mut cursor, &ctx);
+    let ctx = record.ctx();
+    let read = read_ingress(&plane, &mut cursor, ctx);
     let Ok(Read::Unit(decoded)) = &read else {
         panic!("a well-formed call is a unit: {read:?}");
     };
@@ -355,8 +296,8 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     ] {
         let frames = one_frame(malformed);
         let mut cursor = FrameCursor::new(&frames);
-        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
-        let read = read_ingress(&plane, &mut cursor, &ctx);
+        let ctx = record.ctx();
+        let read = read_ingress(&plane, &mut cursor, ctx);
         assert_eq!(read, Err(ReasonCode::DecodeFailed), "{malformed} was read");
         let refusal = decode(&read, &UnitToken::mint(&seal))
             .into_result(&seal)
@@ -369,8 +310,8 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     // protocol forbids answering a message that carries no identifier.
     let frames = one_frame(r#"{"jsonrpc":"2.0","method":"notifications/unheard-of"}"#);
     let mut cursor = FrameCursor::new(&frames);
-    let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
-    assert_eq!(read_ingress(&plane, &mut cursor, &ctx), Ok(Read::Dropped));
+    let ctx = record.ctx();
+    assert_eq!(read_ingress(&plane, &mut cursor, ctx), Ok(Read::Dropped));
 }
 
 /// The plane declares one scheme with two alternatives, and the authenticate binding offers the

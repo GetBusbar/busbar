@@ -189,13 +189,11 @@ fn ungoverned() -> &'static busbar_unit_admission::BucketChain {
 }
 
 fn ctx(key: u64) -> UnitCtx {
+    // The root's own identity value, with the ONE field this surface differs on. A cell that wrote
+    // all six out would be restating five facts it does not care about, and a sixth it does.
     UnitCtx {
-        key: busbar_caps::UnitKey::new(key),
-        origin: busbar_caps::OriginKind::Client,
         session: Some(Kernel::new().session_id(7)),
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: false,
-        kernel_verb_only: false,
+        ..crate::root::harness::cell_ctx(key)
     }
 }
 
@@ -2003,69 +2001,22 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
 // handed a real frame.
 
-/// A leaking arena. Test-only, run a bounded number of times per process: the trait's
-/// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
-struct CellArena;
+/// The stack a voice session arrives on, as the transport view names it.
+const STACK: [&str; 4] = ["tcp", "tls", "http", "ws"];
 
-impl busbar_contract::bounded::Arena for CellArena {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
-    {
-        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
-    }
-
-    fn alloc_str<'a>(
-        &'a self,
-        src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::bounded::Span)],
-    ) -> Result<
-        &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
-    > {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
-struct CellConfig;
-
-impl busbar_contract::unit::ConfigView for CellConfig {
-    fn get_str(&self, _key: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _key: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-/// The socket surface, composed the way a voice session arrives on it.
-struct CellTransport;
-
-impl busbar_contract::unit::TransportView for CellTransport {
-    fn key(&self) -> &'static str {
-        "ws"
-    }
-    fn chain(&self) -> &[&'static str] {
-        &["tcp", "tls", "http", "ws"]
-    }
-    fn fact(&self, _key: &str) -> Option<&str> {
-        None
-    }
+/// The views a cell on this surface drives a step over.
+///
+/// The ROOT'S OWN constructor, not a set of hand-written views beside it. Before the per-unit
+/// record landed there was no other way: `Ctx::new` takes an arena, every arena in the tree was a
+/// double that leaked, and a cell that wanted to drive a decode had to write one. It does not have
+/// to now — the loop builds its context from this bundle over the kernel's own 4 KiB, and so does
+/// this cell, which is what makes the step it measures the step the node runs.
+fn views() -> crate::root::unit_views::UnitViewSet {
+    crate::root::unit_views::UnitViewSet::new(
+        crate::root::unit_views::Block::default(),
+        STACK[3],
+        &STACK,
+    )
 }
 
 /// One inbound frame carrying `body`.
@@ -2096,21 +2047,12 @@ fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
 fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     crate::open_record!(unit_record, &ctx(1));
     use busbar_caps::KernelSeal;
-    use busbar_contract::bounded::Labels;
     use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
-    use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
     use busbar_plane_voice::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
-    let config = CellConfig;
-    let transport = CellTransport;
-    let labels = Labels::new();
-    let clock = Clock {
-        unix_secs: 1_700_000_000,
-        monotonic_nanos: 0,
-    };
+    crate::open_record!(plane_record, &crate::root::harness::cell_ctx(1), views());
     let plane = VoicePlane::new(UPSTREAMS);
     let mut state = PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
 
@@ -2118,9 +2060,9 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     // first, and it opens the turn.
     let frames = one_frame(r#"{"type":"session.update","session":{}}"#);
     let mut cursor = FrameCursor::new(&frames);
-    let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let pctx = plane_record.ctx();
     let ingress = plane
-        .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+        .decode_ingress(&mut cursor, Some(&mut state), pctx)
         .expect("a client event this dialect names is readable");
     let Ingress::Open(draft) = ingress else {
         panic!("the first client event opens a turn, got {ingress:?}");
@@ -2159,9 +2101,9 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         r#"{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"c-1","output":"42"}}"#,
     );
     let mut cursor = FrameCursor::new(&frames);
-    let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let pctx = plane_record.ctx();
     let ingress = plane
-        .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+        .decode_ingress(&mut cursor, Some(&mut state), pctx)
         .expect("a tool result is a client event this dialect names");
     let Ingress::Frame { for_, .. } = ingress else {
         panic!("a later client event relays, got {ingress:?}");
@@ -2182,9 +2124,9 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::TwilioMediaStreams));
     let frames = one_frame("not a carrier frame at all");
     let mut cursor = FrameCursor::new(&frames);
-    let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let pctx = plane_record.ctx();
     assert_eq!(
-        plane.decode_ingress(&mut cursor, Some(&mut telephony), &pctx),
+        plane.decode_ingress(&mut cursor, Some(&mut telephony), pctx),
         Err(busbar_contract::wire::Decode::Malformed)
     );
 }
