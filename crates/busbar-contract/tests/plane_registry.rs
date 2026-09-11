@@ -16,6 +16,7 @@ const fn decl(key: &'static str, config_section: &'static str) -> PlaneDeclarati
         card_signing_domain: None,
         card_kid_prefix: None,
         owned_config_sections: &[],
+        operator_routes: &[],
     }
 }
 const ONE: PlaneDeclaration = PlaneDeclaration {
@@ -100,4 +101,79 @@ fn the_process_slot_freezes_on_first_read_and_indexes_scope_kinds_base_first() {
         Some("two")
     );
     assert!(plane_decl_for("none").is_none());
+}
+
+// ── THE OPERATOR ROUTE ROWS ─────────────────────────────────────────────────────────────────────────
+
+const CONNECT: OperatorRoute = OperatorRoute {
+    method: "POST",
+    path: "things/{name}/connect",
+    summary: "Connect one thing",
+    ok_description: "Connected",
+};
+const HEALTH: OperatorRoute = OperatorRoute {
+    method: "GET",
+    path: "things/{name}/health",
+    summary: "One thing's reachability",
+    ok_description: "OK (`reachable` may be null)",
+};
+const ONE_ROUTED: PlaneDeclaration = PlaneDeclaration {
+    operator_routes: &[CONNECT, HEALTH],
+    ..decl("one", "ones")
+};
+const TWO_ROUTED: PlaneDeclaration = PlaneDeclaration {
+    operator_routes: &[HEALTH],
+    ..decl("two", "twos")
+};
+
+/// A declaration's routes survive the fold in its own declared order, and the fold's order across
+/// planes is the fold's — which is what a renderer folding one document out of the whole list needs,
+/// because the document's order is then the list's order rather than a hash map's.
+#[test]
+fn operator_route_rows_fold_in_declaration_order_across_the_whole_list() {
+    let fold = merged_boot_plane_decls(&[], &[ONE_ROUTED, decl("two", "twos")]);
+    let rendered: Vec<(&str, &str, &str, &str)> = fold
+        .decls
+        .iter()
+        .flat_map(|d| d.operator_routes)
+        .map(|r| (r.method, r.path, r.summary, r.ok_description))
+        .collect();
+    assert_eq!(
+        rendered,
+        [
+            (
+                "POST",
+                "things/{name}/connect",
+                "Connect one thing",
+                "Connected"
+            ),
+            (
+                "GET",
+                "things/{name}/health",
+                "One thing's reachability",
+                "OK (`reachable` may be null)"
+            ),
+        ]
+    );
+}
+
+/// TWO PLANES MAY NOT ANSWER ONE ROUTE. A fold that inserts by path keeps whichever row it met last,
+/// so the document would then name a surface the router does not mount — the refusal names both
+/// planes so the composition root's author knows which two.
+#[test]
+fn two_planes_claiming_one_route_is_refused_and_names_both() {
+    let err = check_operator_route_claims(&[ONE_ROUTED, TWO_ROUTED])
+        .expect_err("two planes claim GET things/{name}/health");
+    assert!(err.contains("GET things/{name}/health"), "{err}");
+    assert!(err.contains("`one`") && err.contains("`two`"), "{err}");
+}
+
+/// The same set with the collision removed passes, so the test above is measuring the collision and
+/// not the guard refusing everything it is handed.
+#[test]
+fn distinct_routes_across_planes_are_accepted() {
+    assert_eq!(
+        check_operator_route_claims(&[ONE_ROUTED, decl("two", "twos")]),
+        Ok(())
+    );
 }

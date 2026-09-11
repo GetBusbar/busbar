@@ -8,7 +8,7 @@ pub mod registry;
 /// The plane DECLARATION, re-exported at the `plane` module's own root: `PlaneDeclaration` is the
 /// plane axis's one data type, and a reader that wants the facts a plane states should not have to
 /// know which submodule folds them. [`registry`] keeps the fold, the slot and the readers.
-pub use registry::PlaneDeclaration;
+pub use registry::{OperatorRoute, PlaneDeclaration};
 
 use crate::bounded::{ArenaBytes, Facts, Ir};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};

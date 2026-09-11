@@ -69,12 +69,15 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
   arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.7k **of plugin-visible SURFACE** (3.5k
-  plus the measured 188 lines of `busbar_contract::plane::registry`: the plane declaration LIST — a
+  plus the measured 216 lines of `busbar_contract::plane::registry`: the plane declaration LIST — a
   plain declaration struct carrying every plain-data fact a plane states, the boot and section folds,
   the claim guard and the process slot with its readers — is contract DATA per D33 §7.2, because the
   config grammar that resolves a section to its plane may name no plane and no layer that does; the
   rows stay with the composition root that installs them and a plane's behaviour stays in the layer
-  that runs it, keyed by the same key, so the face names no plane) —
+  that runs it, keyed by the same key, so the face names no plane; and the ADMIN ROUTE ROWS a plane
+  states about its own verbs — method, path relative to the host's admin base, summary, ok
+  description — so one kind-neutral renderer folds every plane's admin surface out of data instead
+  of each engine carrying a copy of the renderer) —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
