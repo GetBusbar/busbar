@@ -639,7 +639,7 @@ impl Store for FileStore {
     //
     // Keys, the token ledger and the metering rows, each persisted through the same read-modify-write
     // the plane tables use, so a value written through one handle is found by the next one opened on
-    // the same `durable_path`. Held to `busbar_plugin_testkit::store_conformance`'s reopen assertion.
+    // the same `durable_path`. Held to the shared testkit's reopen assertion, driven from `tests`.
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
         self.mutate(|d| {
             // The tombstone precondition, tested and applied inside ONE locked read-modify-write so
@@ -740,8 +740,8 @@ impl Store for FileStore {
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
         self.mutate(|d| {
             // ACCUMULATE into the one row for this `(bucket, key_id, model, provider)`, never
-            // replace it: one flush can coalesce several responses, and a row that overwrote would
-            // bill only the last of them. Saturating — the counts are upstream-controlled.
+            // replace it: one flush can coalesce more than one completed call, and a row that
+            // overwrote would bill only the last of them. Saturating — counts are upstream-supplied.
             let row = match d.metering.iter_mut().find(|e| {
                 e.bucket == delta.bucket
                     && e.row.key_id == delta.key_id

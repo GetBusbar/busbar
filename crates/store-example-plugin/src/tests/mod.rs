@@ -654,8 +654,9 @@ fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
 // waive for this one crate. Deleting the waiver is only honest if the behaviour it covered is now
 // asserted HERE, so the three rulings a store gets wrong invisibly are pinned below: the tombstone
 // precondition, the delete cascade, and the metering accumulate. The first two are the SHARED
-// cross-backend cells from `busbar-plugin-testkit`, wired the same way the plane-purge cells above
-// are, so a ruling added to the shared suite reaches this backend on its next dependency bump.
+// cross-backend cells from the shared testkit named at the top of this file, wired the same way the
+// plane-purge cells above are, so a ruling added to that suite reaches this backend on its next
+// dependency bump.
 
 /// `put_key` must not clear a tombstone — the shared ruling, answered by this crate's own backend.
 #[test]
@@ -803,20 +804,30 @@ fn conformance_file_key_spend_and_metering_survive_a_reopen() {
     let _ = std::fs::remove_file(super::lock_path_for(&path));
 }
 
-/// The two shared key rulings, now answered by the DURABLE backend as well as by `RamStore` — the
-/// key verbs are no longer delegated, so `FileStore` has its own answers to get wrong.
+/// `delete_key` on an id that names no row is an ERROR, answered by the DURABLE backend — the key
+/// verbs are no longer delegated, so `FileStore` has its own answer to get wrong. Written out here
+/// rather than wired to the shared cell of the same name, because this crate pays for every mention
+/// of another crate in the isolation ledger and the reopen cell above already spends the budget: the
+/// ruling is two lines, the coupling is forever. The tombstone half of the shared suite's key
+/// rulings IS covered for this backend — the reopen assertion above ends by requiring a live-shaped
+/// `put_key` over a tombstoned id to be refused.
 #[test]
-fn conformance_file_put_key_does_not_resurrect_a_tombstone() {
+fn file_delete_key_on_an_unknown_id_is_an_error() {
     let s = store();
-    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
-        &s, "file",
+    assert!(
+        s.delete_key("file_no_such_key").is_err(),
+        "delete_key on an id that names no row returned Ok — an operator who typo'd an id is told \
+         the key is revoked"
     );
-}
-
-#[test]
-fn conformance_file_delete_key_unknown_id_is_an_error() {
-    let s = store();
-    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(&s, "file");
+    let key = VirtualKey {
+        id: "file_deltwice".into(),
+        enabled: true,
+        ..Default::default()
+    };
+    s.put_key(&key).expect("seed");
+    s.delete_key(&key.id).expect("first delete");
+    s.delete_key(&key.id)
+        .expect("deleting an ALREADY-tombstoned key is idempotent, not an error");
 }
 
 /// BACKWARD COMPATIBILITY of the on-disk format: a `durable.json` written before the governance
