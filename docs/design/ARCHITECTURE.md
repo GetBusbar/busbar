@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3510`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3571`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -103,7 +103,46 @@ them). Each axis is blind to the other two; only the kernel composes them.
   kernel's status in with "none", the two sources collapsed into one, and the arm that exists for a
   stream that dies after a good head was unreachable on every plane at once. A locator and never a
   value — a plane that reported the class as well as the place would be a plane deciding its own
-  fee. Two crates carry their own surface ceilings beside it, because
+  fee. The fourth is **`busbar_contract::tariff`** (`FeeTerms`, `PerUnitTerm`, `Rounding`; 60
+  measured lines, `contract_caps` 3511 -> 3571): WHAT A DEPLOYMENT AGREED TO CHARGE, as figures. A
+  tariff has two halves that must never meet in one type — the COUNTS (how many visits, how many
+  transactions, whether the meter's quantities are charged for) belong to the Teller and carry no
+  amount; the AMOUNTS belong to the dated card and carry no count, because spend is re-priced at
+  read time by whichever card was in force and a stored amount is a second answer to what one unit
+  was charged that no later reader can re-derive. `FeeTerms` is the amounts: what one visit and one
+  completed transaction cost, what one `per` units of a dimension some PLANE declared costs
+  (`PerUnitTerm`), the floor, the cap and the rounding rule, every figure in the currency's minor
+  units and no currency, no lane and no count anywhere in it.
+
+  It is CONTRACT DATA and not the property of any of the three crates that handle it, and that is
+  the whole reason it is on this line rather than in one of them. Three crates touch one set of
+  figures: the engine that PARSES a deployment's configuration, the seam that CARRIES the resolved
+  result, and the unit that APPLIES it against the card. None of them may name the others. A record
+  declared in the retiring engine is a name the other two learn and then unlearn when that engine
+  goes; a record declared in the unit that prices makes the seam depend on the shape of a card,
+  which is the holder's business and not the wire's; a record declared in the substrate is a line a
+  frozen crate may not grow. Declared here, spoken by everyone and owned by nobody, each of those is
+  arithmetic that never happens — and the alternative is not "one of them wins", it is THREE SHAPES
+  for one set of figures, free to disagree about what a deployment agreed to charge with every side
+  internally consistent. `Rounding::divide` sits on the declaration rather than beside it for the
+  same reason the overlap proof sits on the selector forms: a rule that says which way a fraction of
+  a minor unit goes and the function that sends it there are ONE thing, and two readers each
+  carrying their own division is how a request comes to be judged at one figure and billed at
+  another. What the figures COME TO is not here and may not be — the sum, the floor, the cap and the
+  per-dimension division over a unit's counts are `busbar_unit_cost::charge_minor`, beside the card
+  they price against, because a contract that could add up a bill would be a second pricing site.
+
+  The default is **banker's rounding** — half to even — and it is DECLARED rather than implied. A
+  rate of "amount per N units" produces a fraction of a minor unit whenever the quantity is not a
+  multiple of N, and somebody has to decide the direction: rounding up is the house taking a
+  systematic cut of every fraction it ever sees, rounding down is the customer taking the same cut
+  back, and half-to-even is the only one of the three with no bias over many roundings, which is why
+  it is the rule a till uses. It is written into the grammar so that an operator who wants a
+  different rule NAMES it and an auditor reading a bill can read which one produced it. Nothing in
+  the module names a plane, a dialect, a provider or a protocol: every plugin of a kind is billed
+  identically to every other of that kind, and a dimension exists exactly when some plane's own
+  `METER_CLASSES` says it does. Nothing is added to what a plugin author must read — no trait takes
+  these types and no plugin is handed one. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
