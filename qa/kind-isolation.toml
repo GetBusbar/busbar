@@ -1316,10 +1316,17 @@ crate = "busbar"
 kind = "auth"
 count = "25"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 12 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "302"
+count = "314"
 
 [[cell]]
 crate = "busbar"
@@ -1331,30 +1338,51 @@ crate = "busbar"
 kind = "contract-transport"
 count = "18"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 1 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1100"
+count = "1101"
 
 [[cell]]
 crate = "busbar"
 kind = "hooks"
 count = "5"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 4 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "161"
+count = "165"
 
 [[cell]]
 crate = "busbar"
 kind = "legacy"
 count = "93"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 51 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1900"
+count = "1951"
 
 [[cell]]
 crate = "busbar"
@@ -1376,15 +1404,29 @@ crate = "busbar"
 kind = "substrate"
 count = "9"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 6 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+count = "945"
 
+# RAISED by ROOT COMPOSITION (MCP-T, 1.6.0): root/units_mcp.rs gains McpDraft/McpBindings/McpUnits and
+# the `impl Units` behind them, so an MCP request enters the Teller loop and the seven steps are served
+# ONCE by the units. A composition root is the ONE kind entitled to name a plane, the kernel's loop, the
+# units and the capability vocabulary in one file -- that is what a composition root IS -- and this rise
+# is that file and its cells, nothing else. Net, not gross: the caps and kernel spellings were taken
+# through the file's existing imports rather than fully qualified, which is why the rise is 8 and not
+# larger. The count is TODAY'S MEASUREMENT, exact in both directions.
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1191"
+count = "1199"
 
 [[cell]]
 crate = "busbar-a2a"

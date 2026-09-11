@@ -1177,7 +1177,7 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
 fn the_settlement_and_the_record_read_one_fee_decision() {
     use busbar_caps::OriginKind as CameFrom;
     use busbar_kernel::teller::fee_count;
-    let origin = busbar_kernel::teller::Kernel::new().origin(CameFrom::Client);
+    let origin = Kernel::new().origin(CameFrom::Client);
     let at = Clocks {
         wall: 1_700_000_000,
         mono: Mono::new().tick(),
@@ -1207,7 +1207,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
 #[test]
 fn the_record_names_the_caller_the_class_and_the_resource() {
     let who = PrincipalId::new("vk_mcp");
-    let origin = busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client);
+    let origin = Kernel::new().origin(busbar_caps::OriginKind::Client);
     let at = Clocks {
         wall: 1_700_000_000,
         mono: 7,
@@ -1601,4 +1601,350 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         .expect("reads back")
         .expect("verifies");
     assert_eq!(replayed.len(), 2, "the posting, then the carry");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// THE LEG — an MCP request, answered through the loop every plane is answered by
+// ─────────────────────────────────────────────────────────────────────────
+
+use busbar_caps::{Canary, Hold, HoldCell};
+use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+use busbar_kernel::teller::{run_unit, Ended as LoopEnd, Kernel, Run};
+
+/// One request, built the way the conformance rig's own request builder builds one.
+///
+/// The rig is the oracle for this plane until the recorder can drive it, so the fixture is the
+/// rig's shape rather than a convenient one: the metadata block is always sent, and a cell that
+/// omitted it would be exercising a body no run ever produces.
+fn rig_request(id: &str, method: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{"_meta":{{"{}":"2026-07-28"}}}}}}"#,
+        busbar_plane_mcp::facts::META_PROTOCOL_VERSION
+    )
+}
+
+/// The scope table a deployment that permits this plane's classes declares.
+fn permissive_scopes() -> crate::root::policy::ScopePolicy {
+    let mut policy = crate::root::policy::ScopePolicy::new();
+    for (op, scope) in required_scopes() {
+        policy = policy.declaring(claim_key(), op, scope);
+    }
+    policy
+}
+
+/// The one catalogue leg every listing of this plane reaches.
+fn catalogue_leg() -> Leg {
+    Leg {
+        destination: DestinationFacts::PlaneRecord {
+            schema: records::SCHEMA_CATALOGUE,
+            op: records::OP_GET,
+        },
+    }
+}
+
+/// Read one rig-shaped request into the owned draft the loop's steps are answered from.
+///
+/// This is the production read: [`McpDraft::read`] drives `read_ingress`, which drives the plane's
+/// own ingress decoder. Nothing in this cell parses this protocol.
+fn draft_for(method: &str, id: &str, legs: &[Leg]) -> McpDraft {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let body = rig_request(id, method);
+    let frames = one_frame(&body);
+    let arena = CellArena;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let ctx = Ctx::new(
+        Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        &config,
+        None,
+        &transport,
+        &labels,
+        &arena,
+    );
+    let mut cursor = FrameCursor::new(&frames);
+    let record = ArrivalRecord {
+        source: "198.51.100.7:52344".to_string(),
+        port: 8443,
+        alpn: Some("h2".to_string()),
+        sni: Some("mcp.example".to_string()),
+        peer_cert: None,
+        transport_chain: vec!["tcp", "tls", claims::TRANSPORT_HTTP],
+    };
+    McpDraft::read(
+        &McpPlane::EMPTY,
+        &mut cursor,
+        &ctx,
+        Wire {
+            arrival: &record,
+            claim_transport: claims::TRANSPORT_HTTP,
+            // The document surface declares a scheme; the chain these cells run is the empty one,
+            // which is the open front door, so the unit authenticates as the anonymous principal.
+            under_scheme: false,
+            from_session: false,
+            credential: None,
+            destination: legs
+                .first()
+                .map_or(catalogue_leg().destination, |l| l.destination),
+            legs,
+            record_keys: &[""],
+            record_body: &[],
+            request_bytes: body.len() as u64,
+        },
+    )
+}
+
+/// Everything one MCP unit is driven against, as a node assembles it once at boot.
+struct LegNode {
+    auth: Auth,
+    auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    trust: Trust,
+    pools: Pools,
+    kinds: Catalogue<'static>,
+    breaker: AlwaysReady,
+    door: Door<InMemoryCells>,
+    pricer: Pricer,
+    chain: BucketChain,
+    records: Records,
+    meter_policy: crate::root::policy::MeterPolicyHandle,
+    scope_policy: crate::root::policy::ScopePolicy,
+    durability: Mutex<crate::root::durability::Durability>,
+    origin: busbar_caps::Origin,
+}
+
+/// A breaker with every position open.
+struct AlwaysReady;
+
+impl BreakerView for AlwaysReady {
+    fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+        true
+    }
+    fn try_admit(
+        &self,
+        _pool: &str,
+        _lane: usize,
+        _now: u64,
+    ) -> Result<(), busbar_unit_trust::Unavailable> {
+        Ok(())
+    }
+}
+
+impl LegNode {
+    fn new(store: &StoreAdapter) -> Self {
+        LegNode {
+            auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            trust: Trust,
+            pools: Pools::new(McpPlane::EMPTY, None, true, false),
+            kinds: Catalogue::new(
+                McpPlane::EMPTY,
+                records::SCHEMA_CATALOGUE,
+                records::OP_GET,
+                seam(),
+            ),
+            breaker: AlwaysReady,
+            door: Door::new(InMemoryCells::new()),
+            pricer: Pricer::flat(0),
+            // A deployment that configured no group: every caller is attributed and none is capped.
+            chain: busbar_unit_admission::GroupTable::default()
+                .chain_for("vk_mcp", None)
+                .expect("a caller bound to no group always resolves"),
+            records: Records::new(store),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            scope_policy: permissive_scopes(),
+            durability: Mutex::new(memory_durability()),
+            origin: Kernel::new().origin(busbar_caps::OriginKind::Client),
+        }
+    }
+
+    fn bindings(&self) -> McpBindings<'_> {
+        McpBindings {
+            plane: McpPlane::EMPTY,
+            auth: &self.auth,
+            auth_bindings: &self.auth_bindings,
+            trust: &self.trust,
+            views: Views {
+                pools: &self.pools,
+                facts: &self.kinds,
+                breaker: &self.breaker,
+            },
+            door: &self.door,
+            pricer: &self.pricer,
+            chain: Some(&self.chain),
+            prices: ClassPrices::default(),
+            fee_nanos: 0,
+            records: &self.records,
+            meter_policy: &self.meter_policy,
+            scope_policy: &self.scope_policy,
+            durability: &self.durability,
+            pool: "fs",
+            at: Clocks {
+                wall: 1_700_000_000,
+                mono: 7,
+            },
+            origin: self.origin,
+            expires_at: 1_700_000_060,
+        }
+    }
+}
+
+/// Drive one unit through the REAL loop.
+fn run_leg(kernel: &Kernel, unit: &McpUnits<'_>) -> LoopEnd {
+    let cell = HoldCell::new(Hold::open(
+        &kernel.admit_token(),
+        PrincipalId::new("vk_mcp"),
+        0,
+    ));
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    run_unit(
+        kernel,
+        unit,
+        &UnitCtx {
+            key: busbar_caps::UnitKey::new(1),
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        },
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    )
+}
+
+/// **AN MCP REQUEST ENTERS THE TELLER LOOP.**
+///
+/// The whole of what "the MCP plane is on the kernel" means, stated as a run rather than as a
+/// sentence: a request the rig's own builder would send is read by the plane, and then the ten
+/// steps are answered by the node's units — authenticate, verify, approve, admit, route, meter,
+/// audit — in the loop's order and by nothing else. `Settled` is the exit path having taken the
+/// hold, and there is no second taker in this run.
+///
+/// The head is the second assertion and it is not a detail: it is recorded at the AUDIT step,
+/// which is the step that sees it. Before this plane entered the loop there was no step that saw
+/// one at all.
+#[test]
+fn an_mcp_request_is_answered_through_the_loop_by_the_units() {
+    let store = StoreAdapter::native(Arc::new(SilentStore));
+    let node = LegNode::new(&store);
+    let kernel = Kernel::new();
+    let legs = [catalogue_leg()];
+    let unit = McpUnits::new(
+        node.bindings(),
+        draft_for("tools/list", "1", &legs),
+        Grants::default(),
+    );
+
+    assert_eq!(
+        unit.draft().op,
+        Ok(ops::OP_TOOLS_LIST),
+        "the plane's own method table named the class"
+    );
+
+    let ended = run_leg(&kernel, &unit);
+    assert!(
+        matches!(ended, LoopEnd::Settled { .. }),
+        "the unit reached the exit and settled exactly once: {ended:?}"
+    );
+    assert!(
+        unit.head().is_some(),
+        "the audit step is the step that sees the head, and it recorded one"
+    );
+}
+
+/// **THE BYTES ARE THE RIG'S, BYTE FOR BYTE.**
+///
+/// A caller the deployment's policy has not authorized is refused by the SCOPE UNIT at the approve
+/// step of the real loop, and the refusal a caller reads is that refusal rendered by the PLANE —
+/// never an envelope this file writes out by hand. The literal below is the conformance rig's own
+/// expected error envelope for a policy refusal on this protocol: member order, the always-written
+/// identifier echoed off the caller's own request, the code table's own number and the dialect's
+/// own words. A single byte's difference here is a wire change, and a wire change is a release
+/// that breaks every peer that already works.
+#[test]
+fn a_refused_mcp_request_is_answered_in_the_rigs_own_bytes() {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::plane::Plane as _;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let store = StoreAdapter::native(Arc::new(SilentStore));
+    let mut node = LegNode::new(&store);
+    // Silence is a refusal: a deployment whose policy says nothing about this plane's classes has
+    // authorized none of them.
+    node.scope_policy = crate::root::policy::ScopePolicy::new();
+    let kernel = Kernel::new();
+    let legs = [catalogue_leg()];
+    let unit = McpUnits::new(
+        node.bindings(),
+        draft_for("tools/call", "8", &legs),
+        Grants::default(),
+    );
+
+    let ended = run_leg(&kernel, &unit);
+    let refusal = refusal_of(&ended).expect("the loop refused this unit");
+    assert_eq!(
+        refusal.step,
+        busbar_contract::unit::Step::Approve,
+        "the scope unit is what said no, and the envelope names the step it said it at"
+    );
+    assert_eq!(
+        refusal.reason,
+        busbar_contract::unit::RefusalReason::ScopeMissing
+    );
+
+    // And the plane renders it, over the caller's own request, into the caller's own dialect.
+    let body = rig_request("8", "tools/call");
+    let frames = one_frame(&body);
+    let arena = CellArena;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let ctx = Ctx::new(
+        Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        },
+        &config,
+        None,
+        &transport,
+        &labels,
+        &arena,
+    );
+    let mut cursor = FrameCursor::new(&frames);
+    let plane = McpPlane::EMPTY;
+    let busbar_contract::plane::Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the rig's own request decodes")
+    else {
+        panic!("a call is one shot");
+    };
+    let out = plane
+        .encode_refusal(&refusal, Some(&draft), None, &ctx)
+        .expect("a refusal renders");
+
+    assert_eq!(
+        core::str::from_utf8(out.as_slice()).expect("the dialect is text"),
+        r#"{"error":{"code":-32000,"message":"the caller may not perform this operation"},"id":8,"jsonrpc":"2.0"}"#,
+        "the refusal a caller reads is the rig's own envelope, byte for byte"
+    );
+    // And the number in those bytes is the code table's own, never a literal that drifted from it.
+    assert_eq!(busbar_plane_mcp::jsonrpc::CODE_REFUSED, -32000);
 }
