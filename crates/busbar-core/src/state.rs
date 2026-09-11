@@ -537,13 +537,19 @@ pub struct App {
     /// leaves a stale route. Empty until an export/hook plugin declares a route; an empty table
     /// is inert (no mounts, `declared_auth` returns `None`, so the auth middleware is unaffected).
     pub(crate) plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
+    /// HOW THIS GENERATION LEARNED WHAT ITS SINKS SERVE, carried forward so the next one can ask
+    /// again. The composition root states it once, at boot; a config apply happens inside the engine
+    /// with no root on the stack, and re-deriving the declarations from the NEW `export:` block is
+    /// what makes removing a sink take its route away. Carrying the answer instead of the question
+    /// would leave an apply mounting what the previous config declared.
+    pub(crate) route_declarer: crate::plugin_routes::RouteDeclarer,
     /// The plugin-route PATHS this PROCESS can actually serve: the [`plugin_routes`] table's path set
     /// as it stood at BOOT, carried forward byte-identical through every rebuild
     /// (`build_app_from_config` inherits it from `prior`; only a fresh boot, `prior == None`, seeds it).
     ///
     /// It is deliberately NOT `plugin_routes.paths()` of the current snapshot: each declared path is
     /// registered on the axum router once, at boot, and a config apply swaps only `Arc<App>` — the
-    /// router is never rebuilt. So a config that ADDS a path (an `export:` prometheus instance where
+    /// router is never rebuilt. So a config that ADDS a path (a scrape instance under `export:` where
     /// none existed at boot) is durably stored and live on the snapshot, yet the path keeps 404ing
     /// until a restart. This is the only thing that knows the difference, and it is what lets a config
     /// mutation tell the operator "restart required" instead of silently no-opping

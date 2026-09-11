@@ -450,6 +450,12 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
+// One over the default threshold: the ONE construction path takes the operator's document, the
+// deployment facts around it, the generation it is succeeding, and — since the engine stopped
+// deciding what it serves — what the composition root declared for this configuration. Bundling any
+// of those into a struct would hide from a reader which of them an apply carries forward and which
+// it re-derives, which is the distinction this signature exists to make visible.
+#[allow(clippy::too_many_arguments)]
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -458,6 +464,7 @@ pub fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
+    route_declarer: crate::plugin_routes::RouteDeclarer,
 ) -> Result<(state::App, Option<GovCredentialRotation>), String> {
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
@@ -540,8 +547,11 @@ pub fn build_app_from_config(
         &cfg.identity_providers,
         &cfg.hooks,
         &plugins_cfg,
-        &cfg.export,
     )?);
+    // The route-collision half of the pre-flight, run on the SAME registry with the SAME declarer
+    // the table below is built from — the check `--validate` runs, run here so boot and `--validate`
+    // refuse the same configuration for the same reason.
+    crate::preflight::route_collisions(&plugin_registry, &cfg.export, &route_declarer)?;
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
     // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
@@ -1356,19 +1366,21 @@ pub fn build_app_from_config(
     // the prior generation's runtime through the neutral `PlaneSlots` seam. Core no longer names
     // `health::ProbeSchedule` here.
 
-    // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
-    // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
-    // configured. Rebuilt on every config apply. A collision (a future loaded export/hook plugin
-    // claiming a built-in's path) is a LOUD build failure naming the owner, never last-writer-wins.
+    // Plugin HTTP routes: the composition root's DECLARER is asked what the sinks it composes from
+    // THIS `export:` block serve, and whatever comes back is confined, collision-checked and mounted
+    // — by kind, never by name. The engine knows no sink here: it does not know that a `prometheus`
+    // sink exists, that `/metrics` is the path one of them claims, or that any of them is built in.
+    // Re-asked on every config apply. A collision (a loaded export/hook plugin claiming a path a
+    // composed sink already owns) is a LOUD build failure naming the owner, never last-writer-wins.
     //
     // The rebuilt TABLE is not the same thing as what the ROUTER serves: each path is registered on
-    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING `export.prometheus`
+    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING the scrape instance
     // takes effect immediately (`plugin_route_dispatch` resolves the owner from the current snapshot
     // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
     // paths the router actually has, so a config mutation can SAY so instead of
     // reporting success for a route that will keep 404ing.
     let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
-        crate::export::route_decls(&cfg_export),
+        route_declarer(&cfg_export),
     )?);
     // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
     // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
@@ -1882,6 +1894,7 @@ pub fn build_app_from_config(
         ),
         plugin_routes,
         boot_route_paths,
+        route_declarer,
     };
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune

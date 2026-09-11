@@ -344,7 +344,13 @@ fn validate_config_command() -> i32 {
     // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
     // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
     // nothing is `dlopen`ed, no store is opened — zero side effects.
-    let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
+    let registry = match preflight_plugins_and_secrets(
+        &loaded.deploy,
+        &cfg,
+        // The SAME declarer boot builds the route table from, so `--validate` refuses a route
+        // collision for exactly the reason boot would.
+        &root::units_export::routes::declarer(),
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
@@ -1362,6 +1368,10 @@ async fn run(data_workers: usize) {
         base_group_names,
         (Some(config_path.clone()), Some(providers_path.clone())),
         None,
+        // WHAT THIS PROCESS SERVES, declared by the sinks it composes rather than decided by the
+        // engine: the root hands over the declarer and the engine confines, collision-checks and
+        // mounts whatever comes back, by kind and never by name.
+        root::units_export::routes::declarer(),
     )
     .unwrap_or_else(|e| die(e));
     let app = Arc::new(boot_app);

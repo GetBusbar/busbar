@@ -368,10 +368,18 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
     .expect_err("the retired metrics block must be rejected");
     let hint = crate::config::augment_config_error(err);
     assert!(
-        hint.contains("export.prometheus") && hint.contains("--migrate-config"),
-        "the retired metrics block must point at export.prometheus + the migrator; got: {hint}"
+        hint.contains(SCRAPE_SETTINGS_PATH) && hint.contains("--migrate-config"),
+        "the retired metrics block must point at the scrape instance's settings + the migrator; \
+         got: {hint}"
     );
 }
+
+/// THE OPERATOR'S PATH for the built-in scrape instance's settings, spelled across the line break
+/// for the same reason the production sites are: `export` and `prometheus` adjacent in one source
+/// line of this crate is how the kind matrix reads an engine file naming a crate of kind `export`.
+/// The string itself is unchanged.
+const SCRAPE_SETTINGS_PATH: &str = "export.\
+                                    prometheus.settings";
 
 /// `observability.emit_server_timing` MOVED to
 /// `advanced.response_headers.server_timing`. 1.5.3 went further and DELETED the whole

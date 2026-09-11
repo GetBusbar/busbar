@@ -514,6 +514,7 @@ async fn apply(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    snapshot.route_declarer.clone(),
                 )
             })();
             let (built, gov_rotate) = match built {

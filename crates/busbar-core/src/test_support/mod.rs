@@ -740,10 +740,71 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the built-in `prometheus` exporter's `GET /metrics`
-/// route when the recorder is installed (`metrics::init()`), else empty. Mirrors production, where the
-/// route is built from `export.prometheus` presence — here the recorder handle is the stand-in switch
-/// (the harness has no `export:` config surface).
+/// THE HARNESS STANDING IN FOR A COMPOSITION ROOT. Production's scrape route is declared by a
+/// crate of kind `export` that the composition root composes and hands to the engine; a test `App`
+/// is built without a root on the stack, so the harness declares the same route itself. It is a
+/// STAND-IN for the root, not for the sink: what it exercises is the engine's side of the
+/// face — confinement, collision, mount, dispatch — over a declaration that arrived the way every
+/// declaration arrives.
+struct HarnessScrape;
+
+use busbar_plugin_loader::{
+    HttpDispatch, HttpEndpointRequest, HttpEndpointResponse, ProcessSnapshot, Route, RouteAuth,
+    RouteDecl, RouteKind, RouteMethod,
+};
+
+impl HttpDispatch for HarnessScrape {
+    /// The same two answers the shipped sink gives, over the same face: the process's registry
+    /// under the exposition's content type, or a refusal with a retry hint when there is no
+    /// registry to serve.
+    fn handle_http(
+        &self,
+        _req: &HttpEndpointRequest,
+        process: &dyn ProcessSnapshot,
+    ) -> HttpEndpointResponse {
+        match process.metrics() {
+            Some(exposition) => HttpEndpointResponse {
+                status: 200,
+                headers: vec![(
+                    "content-type".to_string(),
+                    busbar_substrate::metrics::PROMETHEUS_CONTENT_TYPE.to_string(),
+                )],
+                body: exposition.into_bytes(),
+            },
+            None => HttpEndpointResponse {
+                status: 503,
+                headers: vec![("retry-after".to_string(), "1".to_string())],
+                body: Vec::new(),
+            },
+        }
+    }
+}
+
+/// The declarer a test `App` carries: a `GET /metrics` whenever the config names a `prometheus`
+/// instance, which is production's rule spelled with the harness's own sink behind it.
+pub(crate) fn harness_route_declarer() -> crate::plugin_routes::RouteDeclarer {
+    std::sync::Arc::new(|cfg: &crate::config::ExportCfg| {
+        cfg.prometheus
+            .as_ref()
+            .map(|_| RouteDecl {
+                owner: crate::config::EXPORT_MODULE_PROMETHEUS.to_string(),
+                kind: RouteKind::Export,
+                route: Route {
+                    path: "/metrics".to_string(),
+                    method: RouteMethod::Get,
+                    auth: RouteAuth::Key,
+                },
+                dispatch: std::sync::Arc::new(HarnessScrape),
+            })
+            .into_iter()
+            .collect()
+    })
+}
+
+/// The plugin route table a test `App` carries: the harness's `GET /metrics` when the recorder is
+/// installed (`metrics::init()`), else empty. Mirrors production, where the route is declared from
+/// the presence of a scrape instance — here the recorder handle is the stand-in switch (the harness has
+/// no `export:` config surface).
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
     if crate::metrics::recorder_installed() {
         let cfg = crate::config::ExportCfg {
@@ -754,7 +815,7 @@ fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
             }),
             ..Default::default()
         };
-        crate::plugin_routes::build_route_table(crate::export::route_decls(&cfg))
+        crate::plugin_routes::build_route_table(harness_route_declarer()(&cfg))
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()
@@ -1950,6 +2011,7 @@ impl TestApp {
             // test's "metrics on" signal), preserving the auth-gated `/metrics` behavior these tests
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
             plugin_routes,
+            route_declarer: harness_route_declarer(),
             boot_route_paths,
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.

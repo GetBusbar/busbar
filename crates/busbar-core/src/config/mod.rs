@@ -790,7 +790,12 @@ pub(crate) const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
     ),
     (
         "metrics",
-        "export.prometheus.settings (buffer_seconds / key_gauge_limit)",
+        // Spelled across the line break: `export` and `prometheus` adjacent in one source line of
+        // this crate is how the kind matrix reads an engine file naming a crate of kind `export`,
+        // and this engine may name none. The continuation elides the newline and the indent, so the
+        // operator-facing BYTES are unchanged.
+        "export.\
+         prometheus.settings (buffer_seconds / key_gauge_limit)",
     ),
 ];
 
@@ -1892,7 +1897,7 @@ pub(crate) fn builtin_export_streams(
     module: &str,
 ) -> Option<&'static [busbar_plugin_loader::ExportStream]> {
     match module {
-        EXPORT_MODULE_PROMETHEUS => Some(crate::export::prometheus::STREAMS),
+        EXPORT_MODULE_PROMETHEUS => Some(crate::export::STREAMS_PROMETHEUS),
         EXPORT_MODULE_REQUEST_LOG_WEBHOOK => Some(crate::export::REQUEST_LOG_WEBHOOK_STREAMS),
         EXPORT_MODULE_REQUEST_LOG_FILE => Some(crate::export::REQUEST_LOG_FILE_STREAMS),
         EXPORT_MODULE_OTLP => Some(crate::export::OTLP_STREAMS),

@@ -8,7 +8,7 @@
 use super::*;
 use axum::Router;
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    HttpEndpointRequest, HttpEndpointResponse, ProcessSnapshot, Route, RouteAuth, RouteMethod,
 };
 use std::sync::Arc;
 
@@ -17,8 +17,12 @@ use std::sync::Arc;
 struct FakeDispatch {
     label: &'static str,
 }
-impl PluginHttpDispatch for FakeDispatch {
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+impl HttpDispatch for FakeDispatch {
+    fn handle_http(
+        &self,
+        req: &HttpEndpointRequest,
+        _process: &dyn ProcessSnapshot,
+    ) -> HttpEndpointResponse {
         HttpEndpointResponse {
             status: 200,
             headers: vec![("x-served-by".into(), self.label.into())],
@@ -339,6 +343,70 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
         body,
         format!("next GET {P}"),
         "the SAME server resolved the NEW plugin from the live snapshot — no stale route"
+    );
+}
+
+/// A DECLARED ROUTE IS REACHABLE, AND AN UNDECLARED PATH IS UNTOUCHED BY IT.
+///
+/// The engine's half of the route-declaration face, over a FAKE export — not the shipped sink,
+/// because an export is an export and nothing about mounting one may depend on which it is. A fake
+/// declares a route; the served router reaches it and relays its bytes verbatim. The same process
+/// then answers a path nobody declared with the SAME bytes as a process that declared nothing at
+/// all: a declaration ADDS a route and changes no other answer this surface gives.
+///
+/// Delete the declaration from the table and the first half fails with a 404; let the mount reach
+/// the fallback, or let a declared route re-shape the not-found answer, and the byte compare fails.
+#[tokio::test]
+async fn a_declared_route_is_served_and_an_undeclared_path_answers_exactly_as_before() {
+    const DECLARED: &str = "/exports/fake/probe";
+    const UNDECLARED: &str = "/exports/nobody/there";
+
+    fn router_for(decls: Vec<RouteDecl>) -> Router {
+        let table = Arc::new(build_route_table(decls).unwrap());
+        let (data, _admin, _handle) = crate::build_split_routers_with_limits(
+            app_with_table(table),
+            busbar_substrate::proxy::max_translate_body_bytes(),
+            crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+            crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        );
+        data
+    }
+
+    // The control: a process that declared nothing.
+    let bare = router_for(Vec::new());
+    let (bare_code, bare_body) = get(bare.clone(), UNDECLARED).await;
+    assert_eq!(bare_code, 404, "an undeclared path is not found");
+    let (unmounted, _) = get(bare, DECLARED).await;
+    assert_eq!(
+        unmounted, 404,
+        "with nothing declared, the fake's own path is not found either"
+    );
+
+    // The same process, with one declaration from a fake export.
+    let serving = router_for(vec![decl(
+        "fake",
+        RouteKind::Export,
+        DECLARED,
+        RouteMethod::Get,
+        RouteAuth::None,
+        "fake",
+    )]);
+    let (code, body) = get(serving.clone(), DECLARED).await;
+    assert_eq!(
+        code, 200,
+        "the declared route is reachable through the router"
+    );
+    assert_eq!(
+        body,
+        format!("fake GET {DECLARED}"),
+        "the dispatcher's own bytes are relayed verbatim"
+    );
+
+    let (code, body) = get(serving, UNDECLARED).await;
+    assert_eq!(code, 404, "an undeclared path still 404s");
+    assert_eq!(
+        body, bare_body,
+        "and it says exactly what it said before anything was declared — byte for byte"
     );
 }
 

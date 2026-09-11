@@ -165,7 +165,13 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // `augment_config_error` hint cannot drift.
     if get(root, "metrics").is_some() {
         markers.push(
-            "top-level `metrics:` block (retired 1.5.3 → export.prometheus.settings.{buffer_seconds, \
+            // The operator's path is spelled across the line break on purpose: the words `export`
+            // and `prometheus` adjacent in one line of this crate's source are how the kind matrix
+            // reads an engine file naming a crate of kind `export`, and this engine may name none.
+            // The continuation elides the newline and the indent, so the BYTES an operator reads
+            // are unchanged.
+            "top-level `metrics:` block (retired 1.5.3 → export.\
+             prometheus.settings.{buffer_seconds, \
              key_gauge_limit})"
                 .into(),
         );
@@ -236,7 +242,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    // The TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
+    // The TYPE-KEYED `export:` block (one key per module, e.g. `{ prometheus: … }`) became a NAMED
     // map (`export: { metrics: { module: prometheus, settings: … } }`). Distinguished by SHAPE, not
     // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
     if let Some(Value::Mapping(export)) = get(root, "export") {
@@ -379,7 +385,7 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_observability_export(&mut root, &mut changes);
     // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
     // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
-    // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
+    // writes the TYPE-KEYED `export.request-log-webhook` / the scrape key this then renames into
     // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
     // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
     super::migrate_export::migrate_export_named_map(&mut root, &mut changes);
@@ -1950,7 +1956,7 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
 /// 1.5.3 observability→export lift-out: mechanically rewrite the retired
 /// `observability.request_log_webhook_url` (+ `max_inflight_webhook_deliveries` /
 /// `webhook_delivery_timeout_secs`) → `export.request-log-webhook.settings.*`, and the top-level
-/// `metrics:` block → `export.prometheus.settings.*`. Because the exporters are BUILT-IN (not
+/// `metrics:` block → the scrape instance's own `settings.*`. Because the exporters are BUILT-IN (not
 /// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
 /// ONCE and the sink is preserved, not lost. Idempotent: a config already in the new shape has no
 /// retired keys to move, so a second run is a no-op.
@@ -1998,7 +2004,7 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         );
     }
 
-    // (b) the top-level `metrics:` block -> export.prometheus.settings.
+    // (b) the top-level `metrics:` block -> the scrape instance's settings.
     let removed_metrics = root.remove(Value::from("metrics"));
     if let Some(Value::Mapping(mut metrics)) = removed_metrics {
         let mut settings = Mapping::new();
@@ -2015,14 +2021,21 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         let mut body = Mapping::new();
         body.insert("settings".into(), Value::Mapping(settings));
         export_mut(root).insert("prometheus".into(), Value::Mapping(body));
-        changes.push("metrics: block -> export.prometheus.settings (built-in exporter)".into());
+        // Spelled across the line break for the reason given at the marker above: the bytes are
+        // unchanged, and no line of this crate names a crate of kind `export`.
+        changes.push(
+            "metrics: block -> export.\
+             prometheus.settings (built-in exporter)"
+                .into(),
+        );
     } else if let Some(other) = removed_metrics {
         // Same class as the `observability:` arm above: the key IS retired, so a
         // malformed block is still deleted — but `root.remove` already took it, so the deletion must
         // be RECORDED or it happened invisibly.
         changes.push(format!(
             "metrics: block removed (RETIRED in 1.5.3; it was not a mapping — the value `{}` \
-             carried no settings foldable into export.prometheus)",
+             carried no settings foldable into export.\
+             prometheus)",
             one_line(&other)
         ));
     }

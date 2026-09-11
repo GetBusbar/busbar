@@ -1371,12 +1371,12 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1801"
+count = "1787"
 
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "28"
+count = "29"
 
 [[cell]]
 crate = "busbar"
@@ -1396,7 +1396,7 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "964"
+count = "976"
 
 [[cell]]
 crate = "busbar"
@@ -1666,7 +1666,7 @@ count = "2985"
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "265"
+count = "267"
 
 [[cell]]
 crate = "busbar-core"
@@ -1691,12 +1691,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2009"
+count = "1979"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "45"
+count = "44"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2226,7 +2226,7 @@ count = "66"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "transport"
-count = "41"
+count = "69"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2976,7 +2976,7 @@ count = "19"
 [[cell]]
 crate = "busbar"
 kind = "export"
-count = "26"
+count = "41"
 
 [[disagreement]]
 crate = "busbar"

@@ -353,7 +353,7 @@ pub(crate) fn base_data_router(
             RouteAuth::None,
             endpoints::healthz,
         );
-    // METRICS ARE OPT-IN (the built-in `prometheus` EXPORTER, `export.prometheus`). 1.5.3: busbar's
+    // METRICS ARE OPT-IN (a `prometheus` instance under the `export:` block). 1.5.3: busbar's
     // OWN `/metrics` exposition is no longer a core route here — it is served by the built-in
     // prometheus exporter through the plugin HTTP endpoint registration (`mount_plugin_routes` below,
     // the well-known `/metrics` exception), resolved at scrape time so a hot-swap never leaves it

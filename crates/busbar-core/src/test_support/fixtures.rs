@@ -88,6 +88,7 @@ pub fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
+        crate::plugin_routes::no_declared_routes(),
     )?;
     if let Some(rotate) = gov_rotate {
         rotate();

@@ -40,6 +40,7 @@ pub mod hook;
 mod hostlog;
 mod legacy_usage;
 pub mod registry;
+pub mod routes;
 mod stage;
 pub mod store_adapter;
 pub mod tarball;
@@ -57,12 +58,16 @@ pub use export::{load_export_from_bytes, DynExport};
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
+// THE ROUTE-DECLARATION FACE: what a plugin of a kind that serves HTTP says about the HTTP it
+// serves, and how a host hands it a matched request. Re-exported at the crate root beside the wire
+// types it is written over, so a host names one path for the whole face.
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
+pub use routes::{HttpDispatch, ProcessSnapshot, RouteDecl, RouteKind};
 pub use stage::sweep_dead_staging;
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.

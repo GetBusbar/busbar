@@ -71,7 +71,7 @@ pub(crate) use busbar_substrate::metrics::recorder_internals::{
 pub(crate) use busbar_substrate::metrics::{
     enabled, recorder_installed, BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL,
     METERING_PENDING_COALESCED_TOTAL, PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
-    PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL, PROMETHEUS_CONTENT_TYPE, TRANSLATIONS_TOTAL,
+    PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL, TRANSLATIONS_TOTAL,
 };
 /// FIVE COUNTER NAMES THE COMPOSITION ROOT EMITS, re-exported PUBLICLY for it.
 ///
@@ -434,12 +434,13 @@ fn emit_lane_gauges(
     }
 }
 
-// `GET /metrics` (the Prometheus text exposition) is no longer served by a core route here: 1.5.3
-// lifted the DISTRIBUTION half out to the built-in `prometheus` EXPORTER
-// ([`crate::export::prometheus`]), which serves it via the plugin HTTP endpoint registration
-// (`handle_http`) and renders the SAME registry through [`render`] after refreshing the scrape-time
-// gauges via [`refresh_scrape_gauges`]. COLLECTION (this recorder + the emit sites + the gauge
-// derivation) stays core.
+// `GET /metrics` (the Prometheus text exposition) is not served from this crate at all: the
+// DISTRIBUTION half is a sink of kind `export`, declared to the engine by the composition root and
+// dispatched through the route-declaration face. It reads the SAME registry this module renders,
+// through [`render`], after this module's [`refresh_scrape_gauges`] has run — both of them reached
+// through [`crate::plugin_routes::EngineProcess`], which is the whole of what a mounted route may
+// ask of this process. COLLECTION (this recorder + the emit sites + the gauge derivation) stays
+// core.
 
 #[cfg(test)]
 #[path = "tests/metrics_tests.rs"]

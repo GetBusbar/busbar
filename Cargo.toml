@@ -57,6 +57,7 @@ members = [
     "crates/store-example-plugin",
     "crates/export-example-plugin",
     "crates/busbar-export-file",
+    "crates/busbar-export-prometheus",
     "crates/busbar-export-webhook",
     "crates/hooks-ranking",
     "crates/store-memory",

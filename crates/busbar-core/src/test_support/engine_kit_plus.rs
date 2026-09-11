@@ -31,15 +31,25 @@ impl EngineTestKitPlus for CoreEngineKit {
     }
 
     fn scrape_exposition(&self) -> (u16, String) {
-        use crate::plugin_routes::PluginHttpDispatch;
-        let resp = crate::export::prometheus::PrometheusExport.handle_http(
-            &busbar_plugin_loader::HttpEndpointRequest {
+        // The harness's own declared scrape route, run over a reading of this process that does NOT
+        // refresh the observation-time gauges — there is no `App` here to derive them from, which is
+        // exactly the reading the app-less arm of the retired in-engine dispatcher took.
+        use busbar_plugin_loader::{HttpDispatch, HttpEndpointRequest, ProcessSnapshot};
+        struct RegistryOnly;
+        impl ProcessSnapshot for RegistryOnly {
+            fn metrics(&self) -> Option<String> {
+                crate::metrics::recorder_installed().then(crate::metrics::render)
+            }
+        }
+        let resp = super::HarnessScrape.handle_http(
+            &HttpEndpointRequest {
                 method: "GET".into(),
                 path: "/metrics".into(),
                 query: String::new(),
                 headers: vec![],
                 body: vec![],
             },
+            &RegistryOnly,
         );
         (
             resp.status,

@@ -1678,6 +1678,7 @@ pub(crate) async fn reset_overlay_section(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    snapshot.route_declarer.clone(),
                 )
             })
             .map_err(AdminError::Validation)?;
@@ -2378,6 +2379,7 @@ pub(crate) fn rebuild_app_from_disk(
         base_group_names,
         (Some(config_path), Some(providers_path)),
         Some(current.as_ref()),
+        current.route_declarer.clone(),
     )
 }
 
@@ -2625,6 +2627,7 @@ pub(crate) async fn apply_config(
                             snapshot.providers_path.clone(),
                         ),
                         Some(&snapshot),
+                        snapshot.route_declarer.clone(),
                     )
                 })
                 .map_err(AdminError::Validation)?;
@@ -3155,6 +3158,7 @@ pub(crate) async fn put_config_settings(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    snapshot.route_declarer.clone(),
                 )
             })
             .map_err(AdminError::Validation)?;

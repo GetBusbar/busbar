@@ -273,7 +273,6 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
     let mw = AuthMiddleware::new(
@@ -353,7 +352,6 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .expect(
         "preflight resolves the kind:auth plugin, whose manifest declares `token` as a \
@@ -417,7 +415,6 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .expect("preflight resolves the kind:auth plugin");
 
@@ -496,7 +493,6 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .expect("preflight");
     let mw = AuthMiddleware::new(
@@ -615,7 +611,6 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &Default::default(),
         &Default::default(),
         &strict,
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("oidc"), "names the auth module: {err}");
@@ -666,7 +661,6 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("oidc"), "names the missing module: {err}");
@@ -715,7 +709,6 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
@@ -740,7 +733,6 @@ fn keys_module_is_not_a_plugin_ref() {
         &Default::default(),
         &Default::default(),
         &plugins,
-        &Default::default(),
     )
     .expect("keys needs no plugin");
     let mw = AuthMiddleware::new(

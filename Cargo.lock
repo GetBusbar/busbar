@@ -339,6 +339,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core",
  "busbar-export-file",
+ "busbar-export-prometheus",
  "busbar-export-webhook",
  "busbar-kernel",
  "busbar-llm",
@@ -607,6 +608,10 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-file"
+version = "1.6.0"
+
+[[package]]
+name = "busbar-export-prometheus"
 version = "1.6.0"
 
 [[package]]

@@ -35,8 +35,13 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
 use busbar_plugin_loader::{
-    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+    HttpEndpointRequest, HttpEndpointResponse, ProcessSnapshot, Route, RouteAuth, RouteMethod,
 };
+// THE ROUTE-DECLARATION FACE, named where it lives. The kind word, the dispatcher and the
+// declaration are the SAME face for a dlopen'd sink and for one the composition root builds, so
+// they are declared once, on the kind-neutral loader, and the engine names them there rather than
+// keeping a second spelling of its own that only the built-ins could reach.
+pub(crate) use busbar_plugin_loader::{HttpDispatch, RouteDecl, RouteKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -77,39 +82,7 @@ fn reserved_exact_paths() -> [&'static str; 6] {
     ]
 }
 
-/// The plugin KIND that declared a route — drives namespace confinement (a hook is confined more
-/// tightly than an export sink, which alone may claim the well-known `/metrics`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RouteKind {
-    /// A `kind: export` sink (may claim `/metrics`; otherwise `/exports/<name>/*`).
-    Export,
-    /// A `kind: hook` policy (confined to `/hooks/<name>/*`).
-    Hook,
-}
-
-/// A plugin that can serve a dispatched inbound HTTP request. Object-safe so the live table can hold
-/// `Arc<dyn PluginHttpDispatch>` and resolve it at request time from the App snapshot. The production
-/// implementor wraps a loader `DynExport`/hook handle; tests supply a fake.
-pub trait PluginHttpDispatch: Send + Sync {
-    /// Serve one inbound request the engine already auth-gated + matched to this plugin's route.
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse;
-
-    /// The app-aware serve arm: BUILT-IN export/hook dispatchers that need the LIVE `App` snapshot
-    /// (the built-in `prometheus` exporter's scrape-time gauge refresh) override this; a
-    /// loaded out-of-tree plugin (which cannot receive the app across the ABI) uses the default, which
-    /// ignores the app and calls [`PluginHttpDispatch::handle_http`]. Called on a blocking thread (see
-    /// [`plugin_route_dispatch`]), so a synchronous read (SQLite) inside an override cannot stall the
-    /// async executor.
-    fn handle_http_with_app(
-        &self,
-        _app: &crate::state::App,
-        req: &HttpEndpointRequest,
-    ) -> HttpEndpointResponse {
-        self.handle_http(req)
-    }
-}
-
-/// A loader `DynExport` presented as a [`PluginHttpDispatch`]: the production bridge from the engine's
+/// A loader `DynExport` presented as an [`HttpDispatch`]: the production bridge from the engine's
 /// route table to the ABI. A transport failure (the plugin panicked / returned an unexpected arm) is
 /// relayed as a `502` rather than tearing anything down — the route is off the data-plane hot path.
 ///
@@ -118,8 +91,17 @@ pub trait PluginHttpDispatch: Send + Sync {
 #[allow(dead_code)]
 pub(crate) struct ExportDispatch(pub(crate) Arc<busbar_plugin_loader::DynExport>);
 
-impl PluginHttpDispatch for ExportDispatch {
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+impl HttpDispatch for ExportDispatch {
+    /// The process snapshot is IGNORED here, and that is the shape of the ABI rather than an
+    /// oversight: a dlopen'd sink lives in another address space and can be handed bytes, never a
+    /// reading of this process. A built-in sink is handed the same snapshot every other declared
+    /// route gets and reads it over the face — the difference between the two is what crosses the
+    /// process boundary, never what the face offers.
+    fn handle_http(
+        &self,
+        req: &HttpEndpointRequest,
+        _process: &dyn ProcessSnapshot,
+    ) -> HttpEndpointResponse {
         match self.0.handle_http(req) {
             Ok(resp) => resp,
             Err(msg) => HttpEndpointResponse {
@@ -131,23 +113,56 @@ impl PluginHttpDispatch for ExportDispatch {
     }
 }
 
-/// One plugin's route registration input, BEFORE collision + confinement resolution.
-pub(crate) struct RouteDecl {
-    /// The declaring plugin's config name (the namespace root for confinement + the collision owner).
-    pub(crate) owner: String,
-    /// The declaring plugin's kind (drives the confinement rule).
-    pub(crate) kind: RouteKind,
-    /// The declared route.
-    pub(crate) route: Route,
-    /// The live dispatcher for the owning plugin (resolved per request from the App snapshot).
-    pub(crate) dispatch: Arc<dyn PluginHttpDispatch>,
+/// HOW THE COMPOSITION ROOT TELLS THE ENGINE WHAT ITS SINKS SERVE: a function of the resolved
+/// `export:` block to the routes the sinks composed from it declare.
+///
+/// It is a FUNCTION and not a list because "remove a sink from the block and it stops being
+/// answered" is a property of the running configuration, so the declarations have to be re-derived
+/// from the config every time an `App` is built — including on an apply, which happens inside the
+/// engine with no root on the stack. The `App` therefore carries the declarer forward
+/// ([`crate::state::App::route_declarer`]) and the apply path re-asks it, rather than the engine
+/// keeping a copy of an answer that has gone stale.
+///
+/// The engine never looks inside what comes back. It confines it, collision-checks it, mounts it and
+/// dispatches to it — by kind, and never by name.
+pub type RouteDeclarer =
+    Arc<dyn Fn(&crate::config::ExportCfg) -> Vec<RouteDecl> + Send + Sync + 'static>;
+
+/// A declarer that declares nothing — the engine's own default, and what a test `App` that composes
+/// no sink carries. Production always receives the composition root's.
+pub fn no_declared_routes() -> RouteDeclarer {
+    Arc::new(|_cfg| Vec::new())
+}
+
+/// THE KIND-NEUTRAL SNAPSHOT the engine hands a declared route's dispatcher: this generation's
+/// `App`, read through the face and never handed over as itself.
+///
+/// It exists for exactly as long as one dispatch: it borrows the snapshot the mounted handler
+/// already resolved, so what a dispatcher reads is current as of the request, and nothing it is
+/// given can outlive the call.
+pub(crate) struct EngineProcess<'a>(pub(crate) &'a crate::state::App);
+
+impl ProcessSnapshot for EngineProcess<'_> {
+    /// Refresh whatever this process derives at observation time, then render the registry.
+    ///
+    /// `None` when no recorder is installed — the engine reports the FACT and takes no view on what
+    /// a caller should say about it. The refresh runs here, on the answering path only, on a
+    /// blocking thread (the mounted handler wraps every dispatch in one), so the synchronous store
+    /// reads behind it cannot stall an async worker.
+    fn metrics(&self) -> Option<String> {
+        if !crate::metrics::recorder_installed() {
+            return None;
+        }
+        crate::metrics::refresh_scrape_gauges(self.0);
+        Some(crate::metrics::render())
+    }
 }
 
 /// A registered, collision-checked, confinement-validated route entry.
 struct Registered {
     auth: RouteAuth,
     owner: String,
-    dispatch: Arc<dyn PluginHttpDispatch>,
+    dispatch: Arc<dyn HttpDispatch>,
 }
 
 /// The live plugin route table: the {path, method} → owning-plugin index the mounted handler and the
@@ -167,8 +182,8 @@ pub(crate) struct PluginRouteTable {
 
 impl PluginRouteTable {
     /// The EMPTY table — used by test harnesses that build an `App` with no exporters. Production
-    /// builds the table from the built-in exporters (`crate::export::route_decls`), so this is
-    /// test-only now.
+    /// builds the table from whatever the composition root's declarer stated for this config, so
+    /// this is test-only now.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn empty() -> Self {
         Self::default()
@@ -224,19 +239,14 @@ impl PluginRouteTable {
         &self,
         path: &str,
         method: RouteMethod,
-        app: &crate::state::App,
+        process: &dyn ProcessSnapshot,
         req: &HttpEndpointRequest,
     ) -> Option<(String, HttpEndpointResponse)> {
         self.by_path
             .get(path)?
             .iter()
             .find(|(m, _)| *m == method)
-            .map(|(_, reg)| {
-                (
-                    reg.owner.clone(),
-                    reg.dispatch.handle_http_with_app(app, req),
-                )
-            })
+            .map(|(_, reg)| (reg.owner.clone(), reg.dispatch.handle_http(req, process)))
     }
 }
 
@@ -454,13 +464,16 @@ async fn plugin_route_dispatch(
         headers: project_request_headers(&headers),
         body: body.to_vec(),
     };
-    // Resolve + serve on a BLOCKING thread: a plugin's `handle_http` (and the built-in prometheus
-    // exporter's scrape-time SQLite gauge refresh) may block, and this is off the data-plane hot path,
-    // so it must not run on an async worker. `app` is an `Arc<App>` moved into the closure; the table
+    // Resolve + serve on a BLOCKING thread: a plugin's `handle_http` (and the scrape-time SQLite
+    // reads behind `EngineProcess::metrics`) may block, and this is off the data-plane hot path, so
+    // it must not run on an async worker. `app` is an `Arc<App>` moved into the closure; the table
     // + dispatcher are resolved from the CURRENT snapshot at serve time (no baked handle).
     let served = tokio::task::spawn_blocking(move || {
+        // The kind-neutral reading of THIS generation, built here and dropped when the dispatch
+        // returns. The dispatcher is handed the reading, never the snapshot it was taken from.
+        let process = EngineProcess(&app);
         app.plugin_routes
-            .dispatch(&path, rm, &app, &ep_req)
+            .dispatch(&path, rm, &process, &ep_req)
             .map(|(owner, resp)| relay_response(&owner, &path, resp))
     })
     .await;

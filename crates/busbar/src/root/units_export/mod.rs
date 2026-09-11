@@ -36,6 +36,7 @@
 
 pub(crate) mod admission;
 mod reports;
+pub mod routes;
 
 use admission::AdmissionGate;
 // MODULE-LEVEL, deliberately. The `legacy-reach` ratchet counts DISTINCT symbols the root spells

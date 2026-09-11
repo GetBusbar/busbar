@@ -2104,7 +2104,9 @@ impl AdminService {
         // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
         // whose module is neither built-in nor installed -- so an operator could dry-run a config
         // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-        if let Err(e) = crate::preflight_plugins_and_secrets(&deploy, &root) {
+        if let Err(e) =
+            crate::preflight_plugins_and_secrets(&deploy, &root, &self.app.route_declarer)
+        {
             return Ok(ConfigValidateView {
                 ok: false,
                 errors: vec![e],

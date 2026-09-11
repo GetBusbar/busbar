@@ -908,7 +908,6 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, false),
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
@@ -920,7 +919,6 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "absent block: {err}");
@@ -942,7 +940,6 @@ fn disabled_plugins_are_inert_even_when_present() {
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, false),
-        &Default::default(),
     )
     .expect("inert");
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
@@ -969,7 +966,6 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
-        &Default::default(),
     )
     .unwrap_err();
     assert!(
@@ -990,7 +986,6 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         &Default::default(),
         &Default::default(),
         &cfg,
-        &Default::default(),
     )
     .expect("allow_unsigned permits the unsigned store plugin at boot");
     assert!(reg.resolve("sqlite").is_some(), "alias resolves");
@@ -1004,7 +999,6 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         &Default::default(),
         &Default::default(),
         &cfg,
-        &Default::default(),
     )
     .expect("the canonical name is equally valid as governance.store");
     assert!(reg2.resolve("busbar-store-sqlite").is_some());
@@ -1026,7 +1020,6 @@ fn unknown_store_name_is_a_clear_boot_error() {
         &Default::default(),
         &Default::default(),
         &cfg,
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("'dynamo'"), "names the missing store: {err}");
@@ -1050,7 +1043,6 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("junk.tar.gz"), "names the file: {err}");
@@ -1068,7 +1060,6 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
-        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("integrity"), "names the sha mismatch: {err}");
@@ -1089,15 +1080,8 @@ fn alias_conflict_fails_boot_naming_both() {
     let b = unsigned_tarball(plugin_manifest("acme-store-valkey", "valkey", "acme"), b"b");
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
-    let err = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap_err();
+    let err = crate::plugins_preflight(None, None, &Default::default(), &Default::default(), &cfg)
+        .unwrap_err();
     assert!(
         err.contains("busbar-store-valkey-plugin") && err.contains("acme-store-valkey"),
         "names both plugins: {err}"
@@ -1128,15 +1112,8 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
     std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .expect("allow_unsigned permits the unsigned secret plugin");
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &Default::default(), &cfg)
+        .expect("allow_unsigned permits the unsigned secret plugin");
     (dir, reg)
 }
 
@@ -1196,15 +1173,8 @@ fn secrets_block_rejects_non_secret_kind() {
     // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &Default::default(), &cfg)
+        .unwrap();
     let err = validate_secret_module(&reg, "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
@@ -1374,15 +1344,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     cfg.trust.allow_unsigned = true;
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let reg = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &Default::default(), &cfg)
+        .unwrap();
     let root = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "x".to_string(),
         settings: serde_json::Map::new(),
@@ -2267,6 +2230,7 @@ fn fetch_cached_pin_boots_without_network() {
         std::collections::HashSet::new(),
         (None, None),
         None,
+        crate::plugin_routes::no_declared_routes(),
     );
     // Ok carries a non-Debug App; collapse to the Err string for the assert message.
     let err = res.err();
@@ -2497,6 +2461,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
             std::collections::HashSet::new(),
             (None, None),
             prior,
+            crate::plugin_routes::no_declared_routes(),
         )
         .expect("boot must succeed")
         .0

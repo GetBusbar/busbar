@@ -11,10 +11,11 @@
 //! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
-//! - [`prometheus`] — PULL. Serves `/metrics` via the endpoint-registration `handle_http` path (the
-//!   well-known-`/metrics` exception), rendering the recorder registry. When `export.prometheus` is
-//!   present the recorder is installed (collection on) and a `GET /metrics` plugin route is
-//!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
+//! - the `prometheus` sink is GONE from this crate too, and with it the last reason this module
+//!   knew what a ROUTE was. What a configured scrape instance still decides HERE is collection: the
+//!   recorder is installed and the emit sites are live; absent ⇒ no recorder and every emit site a
+//!   true no-op. What it serves, and what it says when it cannot, is a crate of kind `export`
+//!   declaring a route to the composition root, which mounts it like any other plugin's.
 //! - the `request-log-webhook` and `request-log-file` sinks are GONE from this crate: each body is
 //!   a crate of kind `export`, which this crate may not name. What is left here is the config
 //!   layer's own job — resolving the operator's `module:` token, the settings under it and, for a
@@ -29,10 +30,7 @@
 //! operator's document into INSTANCES and hands them over, which is the only half of a built-in
 //! sink a config layer ever owned.
 
-pub mod prometheus;
-
 use crate::config::ExportCfg;
-use crate::plugin_routes::{RouteDecl, RouteKind};
 /// The projection grammar, re-exported for the COMPOSITION ROOT. The grammar itself lives in the
 /// plugin ABI beside its vocabulary (`busbar_plugin::cold::export::projection`); the root reaches it
 /// through here rather than naming the ABI crate directly, because the root's edge into this crate
@@ -40,7 +38,6 @@ use crate::plugin_routes::{RouteDecl, RouteKind};
 /// undeclared dependency for a re-export.
 pub use busbar_plugin::cold::export::projection::{build_request_log, Projection, RequestLogFacts};
 use busbar_plugin_loader::ExportStream;
-use busbar_plugin_loader::Route;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
@@ -51,44 +48,15 @@ use tokio::sync::OwnedSemaphorePermit;
 /// It moves out with the config layer, not with the sink.
 pub(crate) const REQUEST_LOG_FILE_STREAMS: &[ExportStream] = &[ExportStream::Logs];
 
+/// The streams the `prometheus` sink carries. Its BODY is a crate of kind `export`, which this
+/// crate may not name; what stays here is the config layer's own job — deciding which sink an
+/// operator's `module:` token names and what that sink was therefore granted.
+pub(crate) const STREAMS_PROMETHEUS: &[ExportStream] = &[ExportStream::Metrics];
+
 /// The streams the `otlp` sink carries. It has no module of its own in this crate — its config
 /// surface is `ExportCfg::otlp` and its span pipeline is the tracing subscriber — so its
 /// declaration sits here beside its siblings'. It moves to `busbar-export-otlp` with the pipeline.
 pub(crate) const OTLP_STREAMS: &[ExportStream] = &[ExportStream::Traces];
-
-/// The live plugin-route declarations the built-in exporters contribute — today just the
-/// `prometheus` exporter's `GET /metrics`. Built at App construction from the resolved `export:` block
-/// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
-///
-/// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
-/// version of this comment claimed they were:
-///
-/// - **Removing** `export.prometheus` takes effect immediately. The path stays registered on the
-///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
-///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
-/// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
-///   router once, at boot (`plugin_routes.rs`, `on(filter, plugin_route_dispatch)`), and a config
-///   apply swaps only `Arc<App>` — the router is never rebuilt. If no `prometheus` instance existed
-///   at boot, `/metrics` was never registered, so it keeps 404ing however many times the operator
-///   PUTs the config. The metrics recorder is additionally `OnceLock`-guarded and installed once.
-///
-/// This is the SAME boot-frozen mechanism already documented for `max_inbound_concurrent` in
-/// [`crate::admin::v1::json::handlers`]'s `reload_to_apply_fields`, and the
-/// `export:` named map REPORTS it the same way: a mutation that introduces a route path the router
-/// never registered at boot answers with `reload_to_apply` naming that path plus a `note` saying a
-/// restart is required ([`crate::plugin_routes::paths_awaiting_restart`]). The apply is still a no-op
-/// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
-/// longer a SILENT one.
-pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    prometheus::route_decl(cfg).into_iter().collect()
-}
-
-/// The manifest-level `(owner, kind, route)` mirror of [`route_decls`] for the `--validate`/boot
-/// collision preflight — WITHOUT the live dispatchers, so a loaded third-party export plugin claiming
-/// a path a built-in exporter already owns (e.g. `GET /metrics`) fails loudly before boot.
-pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
-    prometheus::route_owner(cfg).into_iter().collect()
-}
 
 /// The streams the `request-log-webhook` sink carries. Its BODY is a crate of kind `export`, which
 /// this crate may not name — the same split as the file sink's below: resolving which sink an

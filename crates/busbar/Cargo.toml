@@ -57,6 +57,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # The built-in `request-log-file` export sink. A crate of kind `export`, composed here like every
 # other plugin the root loads: the root builds it, sheds for it and calls it.
 busbar-export-file = { path = "../busbar-export-file" }
+busbar-export-prometheus = { path = "../busbar-export-prometheus" }
 busbar-export-webhook = { path = "../busbar-export-webhook" }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────

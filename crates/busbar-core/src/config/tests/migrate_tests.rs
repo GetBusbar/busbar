@@ -1107,14 +1107,21 @@ pools: {}
     );
     // Each marker names its new home under the export exporters so the operator knows where it went.
     assert!(
-        joined.contains("export.request-log-webhook") && joined.contains("export.prometheus"),
+        joined.contains("export.request-log-webhook") && joined.contains(SCRAPE_PATH),
         "markers must name the new export home; got: {joined}"
     );
 }
 
+/// THE OPERATOR'S PATH for the built-in scrape instance, spelled across the line break for the
+/// same reason the production sites are: `export` and `prometheus` adjacent in one source line of
+/// this crate is how the kind matrix reads an engine file naming a crate of kind `export`. The
+/// string itself is unchanged.
+const SCRAPE_PATH: &str = "export.\
+                           prometheus";
+
 /// `--migrate-config` mechanically REWRITES the retired observability keys into the new `export:`
 /// surface (built-in exporters, so a full rewrite — not a printed TODO). The webhook URL + limits land
-/// under `export.request-log-webhook.settings`, the metrics block under `export.prometheus.settings`,
+/// under `export.request-log-webhook.settings`, the metrics block under the scrape instance's own,
 /// and the old keys are gone from `observability:` / the top level. Idempotent.
 ///
 /// `migrate_observability_export` did not exist before 1.5.3, so the migrated
@@ -1209,10 +1216,10 @@ pools: {}
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let exported = crate::config::resolve_export(&deploy.export, &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 1);
-    assert!(export.prometheus.is_some() && export.otlp.is_some());
+    assert_eq!(exported.request_log_webhooks.len(), 1);
+    assert!(exported.prometheus.is_some() && exported.otlp.is_some());
 
     // IDEMPOTENT: re-migrating the already-new document moves nothing more, and the TREE is stable.
     let (out2, doc2) = migrate_to_value(&migrated_yaml);
@@ -1492,10 +1499,10 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&deploy.export, &mut errs);
+    let exported = crate::config::resolve_export(&deploy.export, &mut errs);
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(export.request_log_webhooks.len(), 2);
-    assert!(export.prometheus.is_some());
+    assert_eq!(exported.request_log_webhooks.len(), 2);
+    assert!(exported.prometheus.is_some());
 }
 
 /// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all

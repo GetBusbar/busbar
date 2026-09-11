@@ -13068,7 +13068,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 /// then watch the DELETE get refused because the reference would be left dangling. Every other
 /// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
 /// `base_export == false` writes a config that declares NO exporter at all — the deployment that
-/// booted without `export.prometheus`, so `/metrics` was never registered on the router.
+/// booted with no scrape instance configured, so `/metrics` was never registered on the router.
 fn write_named_map_fixture(
     tag: &str,
     reference_corp_ad: bool,
