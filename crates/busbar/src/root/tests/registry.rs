@@ -799,3 +799,86 @@ fn every_dialect_this_node_serves_is_a_registered_plugin() {
         );
     }
 }
+
+/// THE SERVED DEFAULT IS `openai-realtime`, AND THE ORDER OF THREE LINES IS WHY.
+///
+/// `dialect::first()` — the plane's table's FIRST ROW — is what a session opens on when the request
+/// path matched no claim, and what an unresolvable upstream is read as speaking. The table's order
+/// is the order `register_all` registered in, so the three registration lines above are not a list:
+/// re-order them, or put a fourth dialect at the top, and the dialect a caller's frames are read by
+/// changes, on a wire, with nothing else in the diff to say so.
+///
+/// Until the GA realtime dialect was cut, that default was a `&'static` the NEUTRAL plane wrote and
+/// named — `unwrap_or(&dialect::OPENAI_REALTIME)`, four times. Replacing a name with a POSITION is
+/// the right move and it reproduces the deleted answer byte for byte TODAY; what it does not do by
+/// itself is say that it must keep reproducing it. This cell is that sentence, as arithmetic: it
+/// pins the NAME, so the day a re-order or a new first registration changes the served default, the
+/// change is RED here and argued rather than discovered on a socket.
+///
+/// It asserts the NAME and nothing else, deliberately. That the row is the PLUGIN'S and not one the
+/// neutral plane wrote for itself is already proved, by address, in
+/// `every_dialect_this_node_serves_is_a_registered_plugin`; repeating it here would be a second
+/// copy of that assertion and would cost this file a second spelling of a dialect crate's name to
+/// buy nothing. What an operator and a caller experience is the NAME, and a cell that only compared
+/// pointers would stay green through a rename.
+#[test]
+#[cfg(feature = "plane-voice")]
+fn the_first_registered_dialect_is_the_served_default() {
+    use busbar_plane_streams::dialect;
+
+    let transports = compose_transports(ClientSettings::default());
+    let _ = register_all(&transports).expect("the composition registers its planes");
+
+    let served = dialect::first().expect("a composed node answers for a dialect");
+    assert_eq!(
+        served.name, "openai-realtime",
+        "the plane's served default is `{}`, not `openai-realtime`. `dialect::first()` is the \
+         table's first row and the table's order is the order `register_all` registered in, so \
+         this is a re-order of those three lines — or a fourth dialect registered above them — and \
+         it changes which reader a session with no matched claim opens on. If that is intended, \
+         say so here and in the comment beside the registrations; it is not a formatting change.",
+        served.name
+    );
+}
+
+/// A REGISTRATION THAT DID NOT TAKE IS A BOOT REFUSAL, and it says both names.
+///
+/// The other half of the same worry: the table can disagree with the list for reasons that are not
+/// a re-order — a row lost to a poisoned lock, a name registered twice by two crates, a `register`
+/// that returned early. The plane's own registry no longer reports an absence for a poisoned guard
+/// (it recovers the rows and the guard's poison is someone else's fact), so what is left is caught
+/// HERE, at the altitude that knows what was supposed to be in the table, and it is caught at boot
+/// rather than at the first request that would have needed it.
+///
+/// This cell drives the refusal's rendering rather than its trigger: the trigger needs a table that
+/// disagrees with the composition, which a composed process cannot be made to have without a
+/// panicking thread. What it pins is that an operator gets BOTH names — the one registered and
+/// whatever answered — because a refusal that says only "a dialect is missing" sends them reading
+/// three identical-looking lines.
+#[test]
+#[cfg(feature = "plane-voice")]
+fn a_dialect_registration_that_did_not_take_names_both_sides() {
+    let absent = BootRefusal::DialectRegistration {
+        dialect: "openai-realtime",
+        answered: None,
+    };
+    let text = absent.to_string();
+    assert!(text.contains("openai-realtime"), "got: {text}");
+    assert!(text.contains("nothing"), "got: {text}");
+    assert!(
+        text.contains("served default"),
+        "the refusal must say WHY an absent dialect is not merely a missing route: the first row \
+         is the served default, so the absence moves a wire. got: {text}"
+    );
+
+    let wrong = BootRefusal::DialectRegistration {
+        dialect: "openai-realtime",
+        answered: Some("gemini-live"),
+    };
+    let text = wrong.to_string();
+    assert!(
+        text.contains("openai-realtime") && text.contains("gemini-live"),
+        "an operator reading this has three near-identical registration lines to choose between; \
+         the refusal names both sides or it names nothing useful. got: {text}"
+    );
+}

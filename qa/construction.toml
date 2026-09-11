@@ -206,7 +206,7 @@ because = "The SAME projector-pair face again, counted in the union the caps/con
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
-by = 28
+by = 26
 because = "busbar x plane: the SAME second-dialect registration, counted a second time under the plane kind. A dialect's INSTANCE IS ITS PLANE — the matrix says so in the carrier's own edge rows — so every spelling of `busbar-plane-streams-<dialect>` that the root writes is one dialect hit and one plane hit, and the two columns rise together by construction rather than for two different reasons. There is no line here that is not already declared above: the manifest edge, the feature forward, the registration, the two upstream rows and the registry cell are the whole of it, and no new plane vocabulary enters the root by any other route. The plane's own crate fell in the same landing, which is the half of this that is not a raise (1794 -> 1826)"
 
 # ── declared raise: THE THIRD AND LAST DIALECT CRATE'S REGISTRATION. With this one the neutral

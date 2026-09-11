@@ -129,6 +129,21 @@ pub enum BootRefusal {
     },
     /// The registry itself refused an entry.
     Registry(busbar_kernel::registry::RegistryError),
+    /// A dialect this binary links and registers is not what the plane's table answers with.
+    ///
+    /// The dialect analogue of [`Self::UnregisteredClaimTransport`], and the reason it is a refusal
+    /// rather than a warning is that "absent" does not read as a 404 here. The table's FIRST ROW is
+    /// the served default — the dialect a session opens on when no claim matched — so a row that
+    /// did not take does not remove a behaviour, it SLIDES the default onto a different wire, and
+    /// the first sign of it is a caller's frames being read by the wrong reader some way into an
+    /// open call. An operator sees this once, at start-up, with the name that was registered and
+    /// whatever the table said instead, and the process does not go on to serve.
+    DialectRegistration {
+        /// The dialect the composition registered.
+        dialect: &'static str,
+        /// What the table answered for that name instead — `None` when it answered nothing at all.
+        answered: Option<&'static str>,
+    },
 }
 
 impl std::fmt::Display for BootRefusal {
@@ -141,6 +156,16 @@ impl std::fmt::Display for BootRefusal {
                 "plane `{plane}` claims on transport `{transport}`, which no crate provides"
             ),
             Self::Registry(err) => write!(f, "{err:?}"),
+            Self::DialectRegistration { dialect, answered } => write!(
+                f,
+                "dialect `{dialect}` was registered but the plane's table answered {} for it; \
+                 the table's first row is the served default, so a registration that did not take \
+                 moves which wire a session opens on",
+                match answered {
+                    Some(name) => format!("`{name}`"),
+                    None => "nothing".to_string(),
+                }
+            ),
         }
     }
 }
@@ -466,19 +491,59 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
     // THE ONE PLACE A DIALECT INSTANCE IS NAMED. Linking instances is what a composition root is
     // for, and a registration rather than a manifest edge is what keeps the delete test honest.
-    // REGISTRATION ORDER IS THE TABLE'S ORDER, and the table's first row is the plane's own "no
-    // dialect was negotiated" answer, so this list is the operator-visible declaration order and not
-    // an accident of how the lines were typed.
-    // FIRST, and the order is load-bearing: the table's first row is the plane's own answer to "no
-    // dialect was negotiated", and this is the dialect that answer used to be spelled as, by name,
-    // inside the neutral plane. Registering it first is what makes that answer byte-identical while
-    // its REASON stops being a vendor's name.
+    //
+    // ORDER IS LOAD-BEARING, AND THIS IS NOT A LIST OF INDEPENDENT LINES. Registration order IS the
+    // dialect table's order, and `dialect::first()` — THE TABLE'S FIRST ROW — is the plane's answer
+    // to "no dialect was negotiated": the dialect a session opens on when the path matched no claim,
+    // and the dialect an unresolvable upstream is read as speaking. Re-order these three, or put a
+    // fourth dialect above them, and THE SERVED DEFAULT CHANGES — on a wire, for a caller, with
+    // nothing else in the diff to say so. The neutral plane used to spell that default as one
+    // vendor's row BY NAME; registering that vendor FIRST is what makes the answer byte-identical
+    // while its reason stops being a name, and it is the whole reason this array is ordered rather
+    // than assembled. `the_first_registered_dialect_is_the_served_default` is the cell that goes RED
+    // when this order moves.
+    // ONE cfg BLOCK AND NOT FIVE, because these lines are one statement: the array, the loop that
+    // registers it and the two checks that ask the table back are a single fact about this
+    // composition, and an attribute per line invites exactly the edit this block exists to catch —
+    // a line moved, or added, on its own.
     #[cfg(feature = "plane-voice")]
-    busbar_plane_streams::dialect::register(&busbar_plane_streams_openai::OPENAI_REALTIME);
-    #[cfg(feature = "plane-voice")]
-    busbar_plane_streams::dialect::register(&busbar_plane_streams_gemini::GEMINI_LIVE);
-    #[cfg(feature = "plane-voice")]
-    busbar_plane_streams::dialect::register(&busbar_plane_streams_twilio::TWILIO_MEDIA_STREAMS);
+    {
+        use busbar_plane_streams::dialect;
+
+        let dialects: [&'static dialect::Dialect; 3] = [
+            // FIRST — THE SERVED DEFAULT. Moving this line is a behaviour change.
+            &busbar_plane_streams_openai::OPENAI_REALTIME,
+            &busbar_plane_streams_gemini::GEMINI_LIVE,
+            &busbar_plane_streams_twilio::TWILIO_MEDIA_STREAMS,
+        ];
+        for d in dialects {
+            dialect::register(d);
+        }
+        // AND THE TABLE IS ASKED BACK, LOUDLY. A registration that did not take leaves a dialect
+        // this binary was built to serve ABSENT — and absent, in this table, is not a 404: it is
+        // the served DEFAULT sliding onto whichever row is first instead, which is a different wire
+        // read for the same bytes. The plane's own registry recovers a poisoned guard rather than
+        // reporting an absence for one, so there is no quiet path left inside it; this is the arm
+        // that catches every other way the table and this array can disagree, and it catches it AT
+        // BOOT with both names in the message, the same discipline `UnregisteredClaimTransport`
+        // above is written in.
+        for expected in dialects {
+            let answered = dialect::dialect(expected.name);
+            if !answered.is_some_and(|got| core::ptr::eq(got, expected)) {
+                return Err(BootRefusal::DialectRegistration {
+                    dialect: expected.name,
+                    answered: answered.map(|d| d.name),
+                });
+            }
+        }
+        let served = dialect::first();
+        if !served.is_some_and(|d| core::ptr::eq(d, dialects[0])) {
+            return Err(BootRefusal::DialectRegistration {
+                dialect: dialects[0].name,
+                answered: served.map(|d| d.name),
+            });
+        }
+    }
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;

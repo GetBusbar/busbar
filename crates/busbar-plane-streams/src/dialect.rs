@@ -64,7 +64,7 @@
 //! Nothing in this module parses, writes, allocates or reads a clock. A row is data and three
 //! function pointers, and the functions belong to whoever declared the row.
 
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use busbar_contract::plane::Ingress;
 use busbar_contract::unit::Ctx;
@@ -186,15 +186,45 @@ static DECLARED: &[&Dialect] = &[];
 /// makes them one at a time; reads are lock-free-ish and never allocate.
 static REGISTERED: RwLock<Vec<&'static Dialect>> = RwLock::new(Vec::new());
 
+/// THE REGISTERED ROWS, READ — and a poisoned lock is RECOVERED, never answered as an ABSENCE.
+///
+/// Every read of this table used to end `.ok()?`, which turns a poisoned lock into `None`: "this
+/// node has no such dialect", "this node has no dialects at all". That is the loudest possible
+/// lie the quietest possible way. A panic anywhere else in the process would have changed WHICH
+/// DIALECT A SESSION OPENS ON — [`first`] is the served default — and changed it to nothing, with
+/// no line in the log and no refusal at the door, at the first request after the panic rather than
+/// at boot.
+///
+/// Recovery is sound here and not a shrug at a real invariant: the only mutation this lock guards
+/// is a `push` of a `&'static Dialect` onto a `Vec`, by [`register`], at boot. There is no
+/// multi-step update that can be caught half-done, so the data behind a poisoned guard is the data
+/// — `PoisonError::into_inner` hands back exactly the rows the root registered. The thing poison
+/// tells you (a thread panicked while holding this) is a fact about THAT thread, and this table
+/// answering `None` because of it is this crate inventing a second failure out of someone else's.
+///
+/// What poison must still not do is pass unnoticed, and it does not: the COMPOSITION ROOT verifies
+/// after registering that this table answers with the rows it registered, in the order it
+/// registered them, and REFUSES THE BOOT when it does not. That is the loud arm, and it is at the
+/// altitude that knows what was supposed to be here.
+fn registered() -> RwLockReadGuard<'static, Vec<&'static Dialect>> {
+    REGISTERED.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// THE REGISTERED ROWS, WRITTEN. See [`registered`]; the same rule, the other direction, and the
+/// stake is higher: a `register` that returned early on a poisoned lock left the dialect the root
+/// wired ABSENT from the table with no error anywhere, which is the exact shape of "the served
+/// default silently became a different dialect".
+fn registered_mut() -> RwLockWriteGuard<'static, Vec<&'static Dialect>> {
+    REGISTERED.write().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// REGISTER ONE DIALECT. The composition root's call, and the only way a row this crate did not
 /// write itself reaches the table.
 ///
 /// Idempotent by name: registering the same name twice keeps the first row, so a root that wires a
 /// dialect twice gets one table entry rather than a shadowed second opinion about a wire.
 pub fn register(d: &'static Dialect) {
-    let Ok(mut rows) = REGISTERED.write() else {
-        return;
-    };
+    let mut rows = registered_mut();
     if DECLARED.iter().any(|r| r.name == d.name) || rows.iter().any(|r| r.name == d.name) {
         return;
     }
@@ -209,26 +239,34 @@ pub fn dialect(name: &str) -> Option<&'static Dialect> {
     if let Some(d) = DECLARED.iter().find(|d| d.name == name) {
         return Some(d);
     }
-    let rows = REGISTERED.read().ok()?;
+    let rows = registered();
     rows.iter().find(|d| d.name == name).copied()
 }
 
-/// THE FIRST ROW THE TABLE ANSWERS FOR, or `None` on a node with no dialect registered at all.
+/// THE FIRST ROW THE TABLE ANSWERS FOR — **THE SERVED DEFAULT** — or `None` on a node with no
+/// dialect registered at all.
 ///
 /// The plane's own "no dialect was negotiated" answer, and it is a POSITION rather than a vendor.
-/// Five call sites in [`crate::plane`] used to spell that answer as one particular row, by name — a
+/// Four call sites in [`crate::plane`] used to spell that answer as one particular row, by name — a
 /// neutral crate defaulting to an instance, which is the same fusion an `if name ==` is and only
-/// quieter because that vendor was written first. The position is the declaration order the
-/// composition root registered in, which is the order the operator wrote; choosing among several
-/// when more than one qualifies is not this table's job, and neither is inventing a name when none
-/// was negotiated.
+/// quieter because that vendor was written first.
+///
+/// **REGISTRATION ORDER IS LOAD-BEARING, AND THIS IS THE SENTENCE THAT SAYS SO.** The position is
+/// the order the composition root registered in. That order is not a formatting choice and the
+/// three `register` lines are not a list of independent statements: re-order them, or put a fourth
+/// dialect above them, and THE DIALECT A SESSION OPENS ON CHANGES — on a wire, for a caller, with
+/// no other line in the diff. The root says so beside those lines, a root cell asserts which name
+/// comes back here so a re-order is RED rather than a surprise, and the root refuses the boot if
+/// this table does not answer with what it registered.
+///
+/// Choosing among several when more than one qualifies is not this table's job, and neither is
+/// inventing a name when none was negotiated.
 #[must_use]
 pub fn first() -> Option<&'static Dialect> {
     if let Some(d) = DECLARED.first() {
         return Some(d);
     }
-    let rows = REGISTERED.read().ok()?;
-    rows.first().copied()
+    registered().first().copied()
 }
 
 /// HOW MANY ROWS THIS CRATE DECLARES ITSELF. Zero, and it is a function rather than a comment so a
@@ -245,5 +283,5 @@ pub fn declared_count() -> usize {
 /// it could.
 #[must_use]
 pub fn count() -> usize {
-    DECLARED.len() + REGISTERED.read().map(|r| r.len()).unwrap_or(0)
+    DECLARED.len() + registered().len()
 }
