@@ -882,15 +882,7 @@ second_clock_exempt_sites = [
   "crates/store-example-plugin/src/ram.rs:47",
   "crates/plugin-loader/src/store_adapter.rs:181",
 ]
-# Ratchet, not zero: two sites read `SystemTime::now()` directly from a crate that already names
-# `busbar-substrate` for other reasons (so the one source is reachable) without going through it —
-# `busbar-voice`'s sweep-deadline clock and `busbar-core/src/oauth_as/plane.rs`'s expiry sweep. Both
-# are ephemeral (never written to a stamped field the HALF ONE/TWO checks above would catch) rather
-# than the silent-zero-on-failure shape the admin mount and the root's audit clock were fixed for in
-# this same pass, so they are counted rather than fixed here: fixing them is a change to a plane and
-# to busbar-core this pass did not otherwise touch. Tightens to 0 when they route through
-# `busbar_substrate::store::now` like every other reading on their own path already does.
-max_second_clocks = 2
+max_second_clocks = 0
 
 [gate.ceiling_raises."rules.ts-reads-the-clock.max_default_derives"]
 from = 0
