@@ -938,9 +938,18 @@ lq_pop_head_alone() { # $1 = batch file out, $2 = keep file out; the head live l
 #     is handed a batch line with NO HASHES — `--prove --families <the sweep's union>` — which is
 #     the tip itself, proven. It takes a box only after every line in the sweep has one.
 # Until a tip is measured, NOTHING is laundered: an unmeasured tip scores an oracle red RED.
-lq_oracle_fail_rows() { # $1 = a proof log; prints the cell ids of its FAIL rows, in order, deduped
+# A FAIL ROW IS NOT JUST A ROW NAME. The report writes `<cell id>  FAIL  <class list>  <first
+# divergence>` (xtask/src/ledger.rs, Row::tsv), and the last two columns are the whole of WHY the
+# row is red: which classes diverged, and the first one spelled out. The base-red set is keyed on
+# all three, because a row that is red at the base for reason A and red under a line for reason B
+# is the LINE'S red — see lq_line_red_is_base_oracle.
+lq_oracle_fail_detail() { # $1 = a proof log; prints `<id>TAB<classes>TAB<detail>` per FAIL row, deduped by id
   [ -n "${1:-}" ] && [ -f "$1" ] || return 0
-  sed -n "s/^\( *| \)\{0,1\}\([^$TAB]*\)${TAB}FAIL${TAB}.*/\2/p" "$1" | awk '!seen[$0]++'
+  sed -n "s/^\( *| \)\{0,1\}\([^$TAB]*\)${TAB}FAIL${TAB}\(.*\)/\2${TAB}\3/p" "$1" \
+    | awk -F"$TAB" '!seen[$1]++'
+}
+lq_oracle_fail_rows() { # $1 = a proof log; prints the cell ids of its FAIL rows, in order, deduped
+  lq_oracle_fail_detail "${1:-}" | cut -f1
 }
 # THE ORACLE LEG REPORTED — green or red. A proof that died before it (a failed build, a lost box)
 # measures nothing, and recording "measured, no red rows" from it would launder every base red at
@@ -957,6 +966,13 @@ lq_base_red_rows() { # $1 = tip; prints the cell ids red at it
   [ -s "$BASERED" ] || return 0
   awk -F"$TAB" -v tp="$1" '$1 == tp && $2 != "#measured" { print $2 }' "$BASERED"
 }
+# WHAT THAT ROW'S RED WAS, as the report said it: `<class list>TAB<first divergence>`. Nothing at
+# all for a row a set written before this existed recorded without one — which is not "the same
+# detail" but NO measurement, and is scored as the line's own red rather than laundered.
+lq_base_red_detail() { # $1 = tip, $2 = cell id
+  [ -s "$BASERED" ] || return 0
+  awk -F"$TAB" -v tp="$1" -v r="$2" '$1 == tp && $2 == r { if (NF >= 4) printf "%s\t%s\n", $3, $4; else if (NF == 3) printf "%s\t\n", $3; exit }' "$BASERED"
+}
 lq_base_red_learn() { # $1 = tip, $2 = the log of a proof taken AT that tip
   local tip="$1" log="$2" r
   [ -n "$tip" ] || return 1
@@ -964,8 +980,10 @@ lq_base_red_learn() { # $1 = tip, $2 = the log of a proof taken AT that tip
   lq_base_red_known "$tip" && return 0
   mkdir -p "$(dirname "$BASERED")"
   printf '%s%s#measured\n' "$tip" "$TAB" >>"$BASERED"
+  # `$r` is already the row's three columns — id, classes, first divergence — so the set is keyed
+  # on the RED, not on the row name.
   while IFS= read -r r; do [ -n "$r" ] && printf '%s%s%s\n' "$tip" "$TAB" "$r" >>"$BASERED"; done <<EOF
-$(lq_oracle_fail_rows "$log")
+$(lq_oracle_fail_detail "$log")
 EOF
   lq_log "base state: $(printf '%.9s' "$tip") measured — $(lq_base_red_rows "$tip" | grep -c . || true) oracle row(s) red at the tip itself"
 }
@@ -974,21 +992,39 @@ lq_base_red_prune() { # $1 = the tip to keep; every other tip's rows go
   awk -F"$TAB" -v tp="$1" '$1 == tp' "$BASERED" >"$BASERED.tmp" && mv -f "$BASERED.tmp" "$BASERED"
 }
 # THE LINE'S RED IS THE BASE'S when the tip is measured, the log's reds are the ORACLE's alone, it
-# has at least one failing row, and EVERY failing row was already red at the tip. One row that was
-# PASS at the base is the line's own red and the whole line is RED.
+# has at least one failing row, and EVERY failing row was already red at the tip WITH THE SAME
+# DIVERGENCE. One row that was PASS at the base is the line's own red; so is one that was red at
+# the base for a different reason.
+#
+# WHY THE DETAIL AND NOT THE ROW NAME (pass-22 RED-24). Keyed on row identity alone, a line that
+# broke an already-base-red row FURTHER had its only red row in the set and was recorded
+# NONE:base — no colour, no park, still live. The rows in that set are exactly the rows the queue
+# exists to REPAIR, with a repair line already queued against them, so the second breakage stayed
+# invisible until the repairing line made the row green and found a fault it did not cause. That is
+# the expensive way to learn it. The report has carried the answer all along: the FAIL row's class
+# list and its first divergence.
 lq_line_red_is_base_oracle() { # $1 = tip, $2 = log
-  local tip="${1:-}" log="${2:-}" r n=0
+  local tip="${1:-}" log="${2:-}" row r d bd n=0
   [ -n "$tip" ] && [ -n "$log" ] && [ -f "$log" ] || return 1
   lq_base_red_known "$tip" || return 1
   # Every red this proof declared must be an oracle red: a test, a clippy or a gate red at the same
   # time is the line's, whatever the oracle rows say.
   grep -E 'land[.]sh: RED — ' "$log" 2>/dev/null | grep -qvE 'land[.]sh: RED — oracle' && return 1
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
     n=$((n + 1))
+    r="${row%%$TAB*}"; d="${row#*$TAB}"
     lq_base_red_rows "$tip" | grep -qxF -- "$r" || return 1
+    bd="$(lq_base_red_detail "$tip" "$r")"
+    if [ "$d" != "$bd" ]; then
+      # BOTH DETAILS GO IN THE LOG, because the next question anybody asks is "different how".
+      lq_log "base state: $r is red at the tip and red here, but NOT the same divergence — this is the line's OWN red"
+      lq_log "base state:   base: $(printf '%s' "$bd" | tr "$TAB" ' ')"
+      lq_log "base state:   line: $(printf '%s' "$d" | tr "$TAB" ' ')"
+      return 1
+    fi
   done <<EOF
-$(lq_oracle_fail_rows "$log")
+$(lq_oracle_fail_detail "$log")
 EOF
   [ "$n" -gt 0 ]
 }
@@ -2434,6 +2470,48 @@ lq_selftest() {
   _t "  ...and with no tip at all the rule does not run" RED "$(lq_preproof_verdict 1 "$root/orc1.log")"
   _t "a GREEN outcome still outranks it"            GREEN "$(lq_preproof_verdict 1 "$root/orc1.log" "$root/pl5.batch.result" "$tipA")"
   # The ledger is keyed by the tip and pruned with it, exactly like the pre-proof ledger.
+  # ── THE SAME ROW, A DIFFERENT DIVERGENCE, IS THE LINE'S OWN RED (pass-22 RED-24) ─────────────
+  # The predicate above matched a base red by ROW IDENTITY and nothing else, so a line that broke
+  # an already-base-red row FURTHER — same cell, a different divergence — had its only red row in
+  # the base-red set and was recorded NONE:base: no colour, no park, still live. The rows in that
+  # set are exactly the rows the queue is there to REPAIR, so the second breakage stayed invisible
+  # until the repairing line tried to make the row green and found a second fault it did not cause.
+  # THE REPORT ALREADY CARRIES WHAT SETTLES IT. A FAIL row is
+  # `<cell id>  FAIL  <class list>  <first divergence>` (xtask/src/ledger.rs's Row::tsv), so the
+  # set records the DETAIL beside the row, and a red is the base's only when its detail matches.
+  _t "the detail is read off the FAIL row, not just the id" \
+     "$(printf 'boot.refusal|BOOT-P29|validate\teffects.stderr\tadditive: not a superset')" \
+     "$(lq_oracle_fail_detail "$root/orc1.log" | head -1)"
+  _t "  ...and the base remembers it"          "$(printf 'effects.stderr\tadditive: not a superset')" \
+     "$(lq_base_red_detail "$tipA" 'boot.refusal|BOOT-P29|validate')"
+  _t "  ...for every row it measured"          2 "$(lq_base_red_rows "$tipA" | while IFS= read -r r; do lq_base_red_detail "$tipA" "$r"; done | grep -c 'additive: not a superset')"
+  # THE SAME ROW, THE SAME DIVERGENCE: still the base's.
+  _t "the same rows for the same reason are still NONE:base" "NONE:base" "$(lq_preproof_verdict 1 "$root/orc1.log" "" "$tipA")"
+  # THE SAME ROW, A DIFFERENT DIVERGENCE: the line's.
+  printf '  | boot.refusal|BOOT-P29|validate\tFAIL\tbody,effects.stderr\tbody /refusal/code: 3 -> 7\n' >"$root/orc5.log"
+  printf '  | boot.refusal|BOOT-P30|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >>"$root/orc5.log"
+  printf 'land.sh: RED — oracle families: ^(boot)[|]\n' >>"$root/orc5.log"
+  _t "a base-red row broken DIFFERENTLY is the line's own RED" RED "$(lq_preproof_verdict 1 "$root/orc5.log" "" "$tipA")"
+  _t "  ...and the log carries the BASE's detail"  1 \
+     "$(: >"$L"; lq_preproof_verdict 1 "$root/orc5.log" "" "$tipA" >/dev/null; grep -c 'base: effects.stderr additive: not a superset' "$L")"
+  _t "  ...and the LINE's beside it"               1 \
+     "$(grep -c 'line: body,effects.stderr body /refusal/code: 3 -> 7' "$L")"
+  _t "  ...naming the row they disagree about"     1 \
+     "$(grep -c 'boot.refusal|BOOT-P29|validate is red at the tip and red here, but NOT the same divergence' "$L")"
+  # A ROW WHOSE CLASS LIST ALONE MOVED is a different divergence too: the classes are the report's
+  # own account of WHAT diverged, and a row that grew a second one is not the row that was there.
+  printf '  | boot.refusal|BOOT-P29|validate\tFAIL\teffects.stderr,effects.exit\tadditive: not a superset\n' >"$root/orc6.log"
+  printf '  | boot.refusal|BOOT-P30|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >>"$root/orc6.log"
+  printf 'land.sh: RED — oracle families: ^(boot)[|]\n' >>"$root/orc6.log"
+  _t "a wider class list on a base-red row is the line's RED too" RED "$(lq_preproof_verdict 1 "$root/orc6.log" "" "$tipA")"
+  # AND A SET LEARNED BEFORE THE DETAIL EXISTED LAUNDERS NOTHING. An old file's rows carry no
+  # detail at all; that is not "the same detail", it is no measurement, and the safe direction is
+  # the line's own RED until the tip is measured again (which the prune below forces anyway).
+  printf '  | boot.refusal|BOOT-P29|validate\tFAIL\teffects.stderr\tadditive: not a superset\n' >"$root/orc7.log"
+  printf 'land.sh: RED — oracle families: ^(boot)[|]\n' >>"$root/orc7.log"
+  printf '%s%s#measured\n%s%sboot.refusal|BOOT-P29|validate\n' "$tipB" "$TAB" "$tipB" "$TAB" >>"$BASERED"
+  _t "a detail-less row from an older set cannot launder" RED "$(lq_preproof_verdict 1 "$root/orc7.log" "" "$tipB")"
+  awk -F"$TAB" -v tp="$tipB" '$1 != tp' "$BASERED" >"$BASERED.t" && mv -f "$BASERED.t" "$BASERED"
   _t "a tip move drops every other tip's rows"  1 "$(lq_base_red_prune "$tipA"; lq_base_red_known "$tipB"; echo $?)"
   _t "  ...and keeps the tip it was pruned to"   0 "$(lq_base_red_known "$tipA"; echo $?)"
   BASERED="$savedBR"; L="$savedL9"
