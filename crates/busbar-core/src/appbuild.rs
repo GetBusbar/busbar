@@ -367,8 +367,8 @@ pub fn load_config_from_disk(
     // The 1.6.0-additive keys come off the document FIRST (see `config::prepass`), so what the
     // frozen 1.5.5-shaped structs parse — and what they name in an unknown-key refusal — is the
     // 1.5.5 document and nothing else.
-    let deploy: config::DeployCfg =
-        config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
+    let mut deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated_config)
+        .map_err(|e| {
             format!(
                 "config.yaml: invalid YAML: {}",
                 config::augment_config_error(e)
@@ -395,6 +395,23 @@ pub fn load_config_from_disk(
             None => config_dir.join("providers.yaml"),
         },
     };
+    // 1.6.0: a RELATIVE `plugins.dir` resolves against the CONFIG FILE'S DIRECTORY, the same rule
+    // `providers_file` (just above) and `config.overlay.file` already follow. The default is the bare
+    // relative string `plugins`, and joining that to the process working directory made the answer to
+    // "which tarballs is this deployment trusting?" depend on how busbar was STARTED — a unit file's
+    // `WorkingDirectory`, a container entrypoint, an operator's shell — rather than on the config file
+    // that names them. Same file, same machine, two different plugin sets, and the mismatch is silent,
+    // because a directory that is not there reads as zero tarballs. Resolved ONCE, here, so every
+    // consumer (boot, `--validate`, `--list-plugins`, the admin reload) sees the same resolved path and
+    // reports it; an ABSOLUTE `dir:` is untouched, which is what a deployment that pins one already
+    // writes. An empty config_dir (a bare `config.yaml` argument) joins to the same relative path this
+    // produced before, so the one case where CWD *was* the config's directory is unchanged.
+    {
+        let d = std::path::Path::new(&deploy.plugins.dir);
+        if d.is_relative() && !deploy.plugins.dir.is_empty() {
+            deploy.plugins.dir = config_dir.join(d).to_string_lossy().into_owned();
+        }
+    }
     let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
         format!(
             "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",

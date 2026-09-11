@@ -62,8 +62,8 @@ use axum::Router;
 use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, validate_plugins_dir_exists,
+    LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
@@ -344,6 +344,17 @@ fn validate_config_command() -> i32 {
     // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
     // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
     // nothing is `dlopen`ed, no store is opened — zero side effects.
+    // …and before that pre-flight even runs: the DIRECTORY it is about to scan must exist. A missing
+    // one scans clean as zero tarballs, so without this check the plugin pre-flight below reports
+    // success over a deployment that will load none of its plugins. `--validate` only — boot keeps
+    // tolerating it (see the function's own note on why).
+    if let Err(e) = validate_plugins_dir_exists(&loaded.deploy.plugins) {
+        eprintln!(
+            "[error] {}: {e}",
+            busbar_substrate::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+        );
+        return 1;
+    }
     let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
         Ok(r) => r,
         Err(e) => {

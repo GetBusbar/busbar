@@ -255,6 +255,7 @@ pub use appbuild::{
 };
 pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+    validate_plugins_dir_exists,
 };
 pub use router::{
     build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,

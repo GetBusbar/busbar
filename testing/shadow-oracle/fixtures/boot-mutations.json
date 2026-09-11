@@ -4021,6 +4021,27 @@
       "notes": "\u00a73.3 BOOT-141 (main.rs:2729, :2743-2745): a loopback fetch to port 9 (nothing listens) is refused deterministically; boot is fatal-on-miss. Only the joined error text after the colon can vary by OS (connection refused wording) \u2014 compare the first line only."
     },
     {
+      "id": "BOOT-142",
+      "family": "boot.refusal",
+      "mode": "validate",
+      "target": "config",
+      "op": [
+        {
+          "set": "plugins",
+          "value": {
+            "enabled": true,
+            "dir": "/nonexistent/oracle-plugins-boot-142"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "does not exist (or is not a directory), but plugins.enabled is true",
+        "stdout_contains": null
+      },
+      "notes": "1.6.0, no 1.5.5 inventory row (preflight.rs validate_plugins_dir_exists). A plugins directory that is not there reads as ZERO tarballs -- busbar_plugin_loader::discover maps NotFound to an empty list, on purpose, because drop-is-inert is the right posture at boot -- so 1.5.5 answered a typo'd `dir:` or a volume mounted one level off with a clean `ok: config valid` over a deployment carrying none of the plugins the operator installed. With plugins enabled that can mean no store, no auth module and no hook. 1.6.0 refuses it under --validate ONLY, which is why mode is `validate` and not `both`: boot keeps tolerating an absent directory (a plugins volume that mounts a moment later is a legitimate shape, and refusing it would turn a warning into an outage), exactly as validate_builtin_secrets_resolve is stricter than boot about secrets. That asymmetry is also why every EXISTING mode=boot cell that drives a nonexistent plugins.dir -- BOOT-134, BOOT-137c, BOOT-138c, BOOT-W25, BOOT-W26 -- is untouched by this. The path is ABSOLUTE on purpose: 1.6.0 also resolves a RELATIVE plugins.dir against the config file's own directory rather than the working directory, and this cell must pin the refusal, not that resolution. Will report missing.golden until the 1.5.5 golden is re-recorded; 1.5.5 has no such refusal to record."
+    },
+    {
       "id": "BOOT-150",
       "family": "boot.refusal",
       "mode": "both",

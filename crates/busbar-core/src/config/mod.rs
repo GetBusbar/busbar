@@ -1362,8 +1362,11 @@ pub struct PluginsCfg {
     /// while disabled (`store.module:` other than `memory`) is a BOOT ERROR naming this flag.
     #[serde(default)]
     pub enabled: bool,
-    /// Directory the signed plugin tarballs live in. Default `plugins` (relative to the working
-    /// directory).
+    /// Directory the signed plugin tarballs live in. Default `plugins`. A RELATIVE value resolves
+    /// against the CONFIG FILE'S OWN DIRECTORY — the same rule `config.providers_file` and
+    /// `config.overlay.file` follow — so which tarballs a deployment trusts is decided by the config
+    /// file that names them, never by the working directory busbar happened to be started in.
+    /// Resolved once in `appbuild::load_config_from_disk`; every reader sees the resolved path.
     #[serde(default = "default_plugins_dir")]
     pub dir: String,
     /// Trust policy for plugin signatures. busbar's OWN release key is EMBEDDED in the binary —

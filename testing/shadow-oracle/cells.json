@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2318,
+    "total": 2319,
     "by_plane": {
       "a2a": 468,
-      "core": 789,
+      "core": 790,
       "llm": 149,
       "mcp": 912
     },
@@ -67,7 +67,7 @@
       "admin.ops": 240,
       "auth.lifecycle": 3,
       "billing": 14,
-      "boot.refusal": 206,
+      "boot.refusal": 207,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
@@ -13132,6 +13132,23 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b plugins.fetch failed:",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-142|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:BOOT-142",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b does not exist (or is not a directory), but plugins.enabled is true",
       "needs_fixture": false
     },
     {

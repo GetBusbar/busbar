@@ -1340,7 +1340,7 @@ plugins:
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `enabled` | bool | no | `false` | Master switch. `false`/absent = NO plugin loads (drop-is-inert). A non-`memory` `store.module` with plugins disabled is a boot error naming this flag. |
-| `dir` | string | no | `plugins` | Directory holding the signed plugin tarballs (`*.tar.gz`), relative to the working directory. Filenames are irrelevant: identity comes from each tarball's signed manifest. |
+| `dir` | string | no | `plugins` | Directory holding the signed plugin tarballs (`*.tar.gz`). A relative value resolves **against the config file's own directory** (like `providers_file` and `config.overlay.file`), not the working directory. Filenames are irrelevant: identity comes from each tarball's signed manifest. With `enabled: true`, `busbar --validate` refuses a `dir` that does not exist. |
 | `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. |
 | `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. |
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |

@@ -745,6 +745,43 @@ pub(crate) fn validate_secret_refs(
     Ok(())
 }
 
+/// REFUSE a `plugins.dir` that does not exist while `plugins.enabled` is true — for `--validate`
+/// ONLY.
+///
+/// A directory that is not there reads as ZERO tarballs: `busbar_plugin_loader::discover` maps
+/// `NotFound` to an empty list on purpose, because drop-is-inert is the right posture at boot. The
+/// cost is that a typo in `dir:`, or a volume mounted one level off, produced a clean
+/// `ok: config valid` over a deployment carrying none of the plugins the operator installed — and
+/// with plugins enabled, "none of them" can mean no store, no auth module and no hook.
+///
+/// DELIBERATELY NOT IN `plugins_preflight`, for exactly the reason
+/// [`validate_builtin_secrets_resolve`] is not: that pre-flight is SHARED with boot and with the
+/// admin apply/reload path, and boot must keep tolerating an absent directory (a deployment whose
+/// plugins volume mounts a moment later is a legitimate shape, and refusing it would turn a warning
+/// into an outage). The operator running `--validate` is asking whether the config is good, and over
+/// a directory that is not there the answer is no.
+///
+/// `dir` is already RESOLVED by `load_config_from_disk` (a relative spelling against the config
+/// file's own directory), so the message names the path busbar actually looked at rather than the
+/// relative string, which is the whole point of reporting it.
+pub fn validate_plugins_dir_exists(plugins_cfg: &config::PluginsCfg) -> Result<(), String> {
+    if !plugins_cfg.enabled {
+        return Ok(());
+    }
+    let dir = std::path::Path::new(&plugins_cfg.dir);
+    if dir.is_dir() {
+        return Ok(());
+    }
+    Err(format!(
+        "plugins.dir: '{}' does not exist (or is not a directory), but plugins.enabled is true. A \
+         missing directory reads as zero plugins, so busbar would start with NONE of the plugins \
+         this config expects — no store, no auth module, no hook. Create the directory and place \
+         the signed tarballs in it, or set plugins.enabled: false. A relative `dir:` resolves \
+         against the config file's own directory, not the working directory.",
+        dir.display()
+    ))
+}
+
 /// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
 ///
 /// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the

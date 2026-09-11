@@ -603,6 +603,17 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   one, so a skewed kernel accept distribution cannot pin hot connections onto one core. Non-unix
   builds keep the classic single work-stealing runtime; no config change is needed anywhere. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- **A relative `plugins.dir` resolves against the config file's directory, not the working
+  directory**, which is the rule `config.providers_file` and `config.overlay.file` already follow.
+  The default is the bare relative string `plugins`, so until now "which tarballs is this deployment
+  trusting?" was answered by however busbar was *started* — a unit file's `WorkingDirectory`, a
+  container entrypoint, an operator's shell — rather than by the config file that names them; the
+  same file on the same machine could mean two different plugin sets, silently, because a directory
+  that is not there reads as zero tarballs. An absolute `dir:` is untouched. If you relied on the
+  working-directory join, write the path you meant: `busbar --list-plugins` and `busbar --validate`
+  both print the resolved directory. Relatedly, `busbar --validate` now REFUSES a `plugins.dir` that
+  does not exist while `plugins.enabled` is true, naming the resolved path — boot still tolerates it,
+  so a plugins volume that mounts a moment late is not an outage.
 - **Hooks fire on the normalized IR**, the same representation the upstream request is built
   from, so a screening hook can no longer be shown a different payload than the provider receives.
   A client's in-band `{role: "system"}` turn arrives in `system` while `message_count` still

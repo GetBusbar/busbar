@@ -1308,3 +1308,86 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A RELATIVE `plugins.dir` resolves against the CONFIG FILE'S DIRECTORY, not the process working
+/// directory.
+///
+/// The default is the bare relative string `plugins`, and until 1.6.0 it was joined to whatever the
+/// process happened to be `chdir`ed into. That makes the answer to "which tarballs is this
+/// deployment trusting?" depend on how the unit file, the container entrypoint or the operator's
+/// shell started busbar — the same config file, the same machine, two different plugin sets, and the
+/// mismatch is SILENT because a missing directory reads as zero tarballs. Every other path in the
+/// config file already resolves against the config file's own directory (`config.providers_file`,
+/// `config.overlay.file`); this is that rule, applied to the one path that was missing it.
+///
+/// Driven from a working directory that is NOT the fixture (the test binary's own cwd), so a pass
+/// can only mean the config file's directory was used.
+#[cfg(feature = "proto-llm")]
+#[test]
+fn validate_resolves_a_relative_plugins_dir_against_the_config_file_dir() {
+    let dir = fixture_dir("relative-plugins-dir");
+    // A real tarball in <fixture>/plugins — the directory the config file's own `dir: plugins`
+    // must name. The process cwd has no `plugins/` sibling, so resolving against cwd finds nothing.
+    write_tarball(&dir, "a.tar.gz", "acme-store-a", "a", b"lib-a");
+    write_configs(
+        &dir,
+        "plugins:\n  enabled: true\n  dir: plugins\n  trust:\n    allow_unsigned: true\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("1 validated"),
+        "the relative `dir: plugins` must find the tarball beside the CONFIG FILE; got {stdout}"
+    );
+    assert!(
+        stdout.contains(&dir.join("plugins").display().to_string()),
+        "--validate must report the RESOLVED directory, so the operator can see which one it is; \
+         got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--validate` REFUSES a `plugins.dir` that does not exist while `plugins.enabled` is true.
+///
+/// A missing directory reads as zero tarballs (`discover` maps `NotFound` to an empty list, on
+/// purpose — drop-is-inert), so an operator who typoed the path, or mounted the volume at the wrong
+/// place, got a clean `ok: config valid` and a deployment with none of the plugins they installed.
+/// `--validate` is the question "is this config good", and the answer there is no. Boot still
+/// tolerates it, exactly as `validate_builtin_secrets_resolve` is stricter than boot about secrets.
+#[cfg(feature = "proto-llm")]
+#[test]
+fn validate_refuses_a_plugins_dir_that_does_not_exist() {
+    let dir = fixture_dir("missing-plugins-dir");
+    write_configs(
+        &dir,
+        "plugins:\n  enabled: true\n  dir: not-a-real-dir\n  trust:\n    allow_unsigned: true\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "a missing plugins dir is not a valid config: {stdout}"
+    );
+    assert!(
+        stderr.contains("plugins.dir") && stderr.contains("does not exist"),
+        "the refusal must name the setting and the condition: {stderr}"
+    );
+    assert!(
+        stderr.contains(&dir.join("not-a-real-dir").display().to_string()),
+        "the refusal must name the RESOLVED path it looked at, not the relative spelling: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// …and ONLY while plugins are enabled. With `plugins.enabled: false` nothing in the directory is
+/// ever read (drop-is-inert), so its absence is not a problem to report — refusing there would make
+/// the default posture un-validatable.
+#[cfg(feature = "proto-llm")]
+#[test]
+fn validate_ignores_a_missing_plugins_dir_when_plugins_are_disabled() {
+    let dir = fixture_dir("missing-plugins-dir-disabled");
+    write_configs(&dir, "plugins:\n  enabled: false\n  dir: not-a-real-dir\n");
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -675,7 +675,7 @@ the published docs site, so a relative path resolves in a checkout and 404s for 
 
 ```sh
 $ busbar --list-plugins
-plugins dir: plugins (plugins.enabled: true)
+plugins dir: /etc/busbar/plugins (plugins.enabled: true)
 FILE                               NAME                        ALIAS    KIND   VERSION   SIGNATURE                STATUS
 busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey-plugin  valkey   store  1.5.0     first-party              LOADS (store.module: valkey)
 busbar-store-sqlite-1.5.0.tar.gz   busbar-store-sqlite-plugin  sqlite   store  1.5.0     first-party              ready
