@@ -1752,6 +1752,17 @@ file = "qa/kind-isolation.toml"
 by = 18
 because = "THE CATALOGUE VIEW, and this is the legacy engine reading the face it MOVED ONTO: `busbar_plane_mcp::view::{cacheable, tools_result, prompts_result, resources_result, resource_templates_result, tool, prompt, resource, resource_template, ToolView, PromptView, ResourceView, CACHE_SCOPE}` at the four listing handlers, the four `CatalogueItem::render` bodies and the one `resources/read` content result. Every one of those bodies is DELETED here, not left beside the face: the four render impls now state only which of an entry's fields answer the wire and that the description is normalised first, the `cache_hints` helper and the `CACHE_SCOPE`/`CACHE_TTL_MS` pair are gone from this crate entirely, and busbar-mcp falls 22684 -> 22587 against it. The rise over the merge-base 468bad13's 3345 is 18, which is what is declared; the other 29 of the 47-count move is slack this branch had already drained at plan line 2."
 
+# ── MCP-M2 (1.6.0), PLAN LINE 5: THE ANSWER-FRAMING TWIN ─────────────────────────────────────────
+#
+# One success envelope for this protocol, on the plane's face, for both legs that compose one. See
+# docs/design/1.6.0-mcp-engine.md section 7 line 5.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "THE SUCCESS ENVELOPE, and this is the legacy engine reading the face it MOVED ONTO: one `use busbar_plane_mcp::jsonrpc;` in `crates/busbar-mcp/src/mcp/method.rs`, which is the whole of the rise — the three constructors below it name `jsonrpc::success_envelope` and `jsonrpc::RESULT_TYPE_{COMPLETE,INPUT_REQUIRED,TASK}` through that one import rather than three times at full path. What it replaces is DELETED, not left beside the face: `result`, `input_required_result` and `task_result` each built the `jsonrpc`/`id`/`result` envelope themselves and each stamped the discriminator themselves, and this crate's own `RESULT_TYPE_COMPLETE`/`RESULT_TYPE_INPUT_REQUIRED`/`RESULT_TYPE_TASK` constants -- twins of the plane's three, which the codec leg already wrote its answers from -- are gone from this crate entirely. busbar-mcp falls 22587 -> 22562 against it."
+
 # STRUCK by MCP-M1's plan-line-2 landing (the method table's collapse onto the plane's face). The
 # entry declared `cell.busbar-mcp.codec.count` 42 -> 43 for `RESULT_COMPLETION_EMPTY`; this crate's
 # dispatch stopped naming the codec's retired `IMPLEMENTED_METHODS` and the cell now measures 40,

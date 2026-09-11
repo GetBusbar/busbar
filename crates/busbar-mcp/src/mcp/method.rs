@@ -51,6 +51,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
+use busbar_plane_mcp::jsonrpc;
 use busbar_substrate::catalogue::CatalogueItem;
 
 use super::callerask::{self, AskDecision, Bind, Retry};
@@ -71,26 +72,19 @@ pub(crate) fn implemented_methods() -> Vec<&'static str> {
         .collect()
 }
 
-/// `resultType` on every result this server returns: `complete`, never `input_required`.
-///
-/// This is an INVARIANT of the dispatch design, not a default. An upstream's `input_required` ask
-/// TERMINATES at busbar — [`super::inputreq`] either satisfies it under the caller's grant or
-/// refuses the call — so the caller is never handed a half-finished result to answer. There is
-/// therefore no code path on which busbar has an incomplete result to describe, and the one place
-/// that stamps this ([`result`]) is the one place that would have to change if that ever stopped
-/// being true.
-const RESULT_TYPE_COMPLETE: &str = "complete";
-
-/// The one other `resultType` this server returns, and it is returned ONLY by
-/// [`input_required_result`], only for an ask busbar itself composed from operator configuration.
-/// An upstream's `input_required` never reaches this constant — see [`super::inputreq`].
-const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
-
-/// SEP-2663's discriminator, returned ONLY by [`task_result`] and only for a task busbar itself
-/// just created. Like `input_required`, it can never carry an upstream's value: an upstream answers
-/// busbar's own request, and busbar's decision to answer its caller asynchronously is taken before
-/// the upstream is contacted at all.
-const RESULT_TYPE_TASK: &str = "task";
+// WHICH DISCRIMINATOR EACH ANSWER CARRIES — the three words are the PLANE'S
+// ([`jsonrpc::RESULT_TYPE_COMPLETE`] and its two siblings), and which of them a caller receives is
+// decided here, at three visible call sites.
+//
+// `complete` on every result this server hands over as finished is an INVARIANT of the dispatch
+// design, not a default: an upstream's `input_required` ask TERMINATES at busbar
+// ([`super::inputreq`] either satisfies it under the caller's grant or refuses the call), so the
+// caller is never handed a half-finished result to answer, and [`result`] stamps `complete`
+// unconditionally. `input_required` is written ONLY by [`input_required_result`], only for an ask
+// busbar itself composed from operator configuration. SEP-2663's `task` is written ONLY by
+// [`task_result`], only for a task busbar itself just created — an upstream answers busbar's own
+// request, and the decision to answer the caller asynchronously is taken before the upstream is
+// contacted at all.
 
 /// Everything a method needs, gathered once so no handler reaches for a global.
 pub(crate) struct Ctx<'a> {
@@ -2585,22 +2579,22 @@ fn not_found(id: Option<serde_json::Value>, message: &str) -> Response {
 /// constructors mean the `resultType` a caller sees is always one busbar chose, and which one is
 /// visible at the call site rather than dependent on what arrived from a third party.
 fn result(id: Option<serde_json::Value>, value: serde_json::Value) -> Response {
+    answer(jsonrpc::success_envelope(
+        id.as_ref(),
+        value,
+        jsonrpc::RESULT_TYPE_COMPLETE,
+    ))
+}
+
+/// FRAME ONE COMPOSED ENVELOPE, and that is the whole of what is left here.
+///
+/// The envelope itself is the PLANE'S ([`jsonrpc::success_envelope`]) — which
+/// members it carries, whether the identifier is written, which discriminator is stamped. What this
+/// crate still owns is the carriage: the `200` and the media type, because a status code is a
+/// statement about the exchange this crate is serving over and not a fact about the protocol.
+fn answer(envelope: serde_json::Value) -> Response {
     use axum::response::IntoResponse as _;
-    let mut value = value;
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("resultType".into(), RESULT_TYPE_COMPLETE.into());
-    }
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("jsonrpc".into(), "2.0".into());
-    if let Some(id) = id {
-        envelope.insert("id".into(), id);
-    }
-    envelope.insert("result".into(), value);
-    (
-        StatusCode::OK,
-        axum::Json(serde_json::Value::Object(envelope)),
-    )
-        .into_response()
+    (StatusCode::OK, axum::Json(envelope)).into_response()
 }
 
 /// `resultType: "input_required"` — the ONE result busbar returns that is not `complete`, and the
@@ -2621,7 +2615,6 @@ fn input_required_result(
     asks: &[callerask::CallerAsk],
     request_state: &str,
 ) -> Response {
-    use axum::response::IntoResponse as _;
     let mut requests = serde_json::Map::new();
     for ask in asks {
         requests.insert(
@@ -2630,20 +2623,13 @@ fn input_required_result(
         );
     }
     let mut value = serde_json::Map::new();
-    value.insert("resultType".into(), RESULT_TYPE_INPUT_REQUIRED.into());
     value.insert("inputRequests".into(), serde_json::Value::Object(requests));
     value.insert("requestState".into(), request_state.into());
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("jsonrpc".into(), "2.0".into());
-    if let Some(id) = id {
-        envelope.insert("id".into(), id);
-    }
-    envelope.insert("result".into(), serde_json::Value::Object(value));
-    (
-        StatusCode::OK,
-        axum::Json(serde_json::Value::Object(envelope)),
-    )
-        .into_response()
+    answer(jsonrpc::success_envelope(
+        id.as_ref(),
+        serde_json::Value::Object(value),
+        jsonrpc::RESULT_TYPE_INPUT_REQUIRED,
+    ))
 }
 
 /// `resultType: "task"` — the THIRD and last discriminator busbar returns, and the third separate
@@ -2655,22 +2641,11 @@ fn input_required_result(
 /// `complete` unconditionally, [`input_required_result`] can only be called with operator-composed
 /// asks, and this one can only be called with a task busbar itself just created.
 fn task_result(id: Option<serde_json::Value>, created: serde_json::Value) -> Response {
-    use axum::response::IntoResponse as _;
-    let mut value = created;
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("resultType".into(), RESULT_TYPE_TASK.into());
-    }
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("jsonrpc".into(), "2.0".into());
-    if let Some(id) = id {
-        envelope.insert("id".into(), id);
-    }
-    envelope.insert("result".into(), value);
-    (
-        StatusCode::OK,
-        axum::Json(serde_json::Value::Object(envelope)),
-    )
-        .into_response()
+    answer(jsonrpc::success_envelope(
+        id.as_ref(),
+        created,
+        jsonrpc::RESULT_TYPE_TASK,
+    ))
 }
 
 /// A refusal from the CALLER-ASK decision, rendered and audited under its own reason word.

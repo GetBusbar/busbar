@@ -347,8 +347,38 @@ pub fn success(
     result_bytes: &[u8],
     result_type: &str,
 ) -> Result<Vec<u8>, Encode> {
-    let mut result: serde_json::Value =
+    let result: serde_json::Value =
         serde_json::from_slice(result_bytes).map_err(|_| Encode::Unrepresentable)?;
+    serde_json::to_vec(&success_envelope(id, result, result_type))
+        .map_err(|_| Encode::Unrepresentable)
+}
+
+/// ONE SUCCESSFUL ANSWER, as the DOCUMENT it is, before anything frames it — the one place this
+/// protocol's success envelope is composed, for every leg that composes one.
+///
+/// [`success`] is this function plus a read and a write; a serving leg that already holds the result
+/// as a document, and frames the envelope itself, calls this directly rather than round-tripping
+/// through bytes to reach the same three members. Both legs therefore agree on the
+/// envelope by CONSTRUCTION — the member set, the identifier rule and the discriminator are decided
+/// here once — instead of by two copies that a test has to keep in step.
+///
+/// THE DISCRIMINATOR IS STAMPED, replacing anything a server said about its own result: a server
+/// that answered with a demand for the caller's authority would otherwise have that demand handed on
+/// under this node's name and this node's authentication. WHICH discriminator is the caller's word,
+/// taken at a visible call site — [`RESULT_TYPE_COMPLETE`] for a result this node is handing over as
+/// finished, [`RESULT_TYPE_INPUT_REQUIRED`] for an ask this node composed itself,
+/// [`RESULT_TYPE_TASK`] for a task it just created — and never a value that arrived from a third
+/// party.
+///
+/// THE IDENTIFIER IS OMITTED when there is none, which is the success path's half of the asymmetry
+/// this module's header describes: on an error the member is always written.
+#[must_use]
+pub fn success_envelope(
+    id: Option<&serde_json::Value>,
+    result: serde_json::Value,
+    result_type: &str,
+) -> serde_json::Value {
+    let mut result = result;
     if let Some(object) = result.as_object_mut() {
         object.insert("resultType".into(), result_type.into());
     }
@@ -359,7 +389,7 @@ pub fn success(
         envelope.insert("id".into(), id.clone());
     }
     envelope.insert("result".into(), result);
-    serde_json::to_vec(&serde_json::Value::Object(envelope)).map_err(|_| Encode::Unrepresentable)
+    serde_json::Value::Object(envelope)
 }
 
 /// One refused or failed answer, as bytes.
