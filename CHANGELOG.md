@@ -139,6 +139,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `agent:`-prefixed member line. Both rows carry `requests: 1` and zero tokens, because a verb
   answered out of Busbar's own state selects no upstream and relays no frame. Additive: no existing
   row changed shape, and no other verb's attribution moved.
+- **The ephemeral-store default is announced like every other deployment posture.** `store.module`
+  defaults to `memory`, so a deployment that never wrote a `store:` block keeps virtual keys,
+  groups' usage, ledgers and MCP/A2A task state in RAM and loses all of it on restart. That fact was
+  carried by a `tracing::warn!` alone — which `RUST_LOG=error`, the level a production deployment
+  most often runs at, deletes — while the two neighbouring postures, the open relay and inert
+  durable keys, each got an unconditional stderr banner. All three now speak through one function
+  and take one shape, and the third names the setting (`store.module`) and the recipe that says what
+  to set it to ([the storage model](docs/storage-model.md#deployment-guidance)) rather than only the
+  problem. Additive: the WARN log record is unchanged byte for byte, and the banner is one more
+  stderr line.
 - **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
   `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`

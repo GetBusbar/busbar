@@ -271,6 +271,17 @@ fn boot_lines_match_1_5_5_shape() {
     }
 
     let log_text = read_to_string(&log_path);
+    // THE EPHEMERAL-STORE POSTURE BANNER. This fixture writes no `store:` block, so it boots on the
+    // `memory` default and persists nothing. That is one of the three "this deployment is not what
+    // you think it is" postures, so it owes the SAME unconditional stderr banner the open-relay and
+    // inert-keys postures emit — not only the WARN log record below, which `RUST_LOG=error` deletes.
+    // Asserted on the raw text, deliberately OUTSIDE the INFO/WARN/ERROR line set: the banner is not
+    // a log line at all, which is exactly why log configuration cannot mask it.
+    assert!(
+        log_text.contains("[error] store.module is `memory`"),
+        "the memory-store default must emit the posture banner on stderr; raw log follows:\n{log_text}"
+    );
+
     let mut lines: Vec<String> = log_text
         .lines()
         .map(strip_ansi)

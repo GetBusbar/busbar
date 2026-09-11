@@ -125,6 +125,47 @@ pub fn inert_durable_keys_banner(
     }
 }
 
+/// Return the EPHEMERAL-STORE banner to emit when the resolved store is the in-memory default, or
+/// `None` for a durable store.
+///
+/// `store.module` defaults to `memory`, so a deployment that never wrote a `store:` block persists
+/// NOTHING — every virtual key, every group's usage, every ledger row and every other fact the
+/// store holds is gone on the next restart. That is the same CLASS of fact as an open front door or a shelf of keys that
+/// govern nothing: a posture the operator can hold a false belief about, arrived at by default rather
+/// than by choice. It names the SETTING (`store.module`) and the RECIPE that says what to set it to,
+/// because a banner that states a problem without naming its fix is just noise.
+pub fn ephemeral_store_banner(store_is_memory: bool) -> Option<&'static str> {
+    store_is_memory.then_some(
+        "store.module is `memory` (the default) — this deployment is EPHEMERAL: virtual keys, \
+         groups' usage, ledgers, and everything else the store holds live only in RAM and are LOST \
+         on every restart. Set `store.module` to a durable store plugin (recipes: \
+         docs/storage-model.md#deployment-guidance), or keep it if this is a trial/dev box",
+    )
+}
+
+/// THE ONE SHAPE every deployment-posture banner takes: `[error] <banner>`.
+///
+/// Split from [`emit_posture_banner`] so the SHAPE is a value a test can assert rather than a side
+/// effect it has to capture — the drift this guards against is a fourth condition being announced in
+/// a fourth way, and that is a shape question, not an I/O one.
+pub fn posture_banner_line(banner: &str) -> String {
+    format!("[error] {banner}")
+}
+
+/// Announce a DEPLOYMENT POSTURE — a "this deployment is not what you think it is" condition —
+/// UNCONDITIONALLY on stderr.
+///
+/// Three conditions speak through this one function: the OPEN RELAY (nobody is authenticated),
+/// INERT DURABLE KEYS (the keys you minted govern nothing), and the EPHEMERAL STORE DEFAULT (nothing
+/// you mint survives a restart). Each also emits its own diagnostic log record at the call site —
+/// that record is the machine-readable half. THIS is the half that cannot be turned off: a posture
+/// an operator is wrong about must not be deletable by a `RUST_LOG` setting, and `RUST_LOG=error` is
+/// exactly what a production deployment most often runs at. One function rather than a copy per
+/// condition, so the shape cannot drift apart and the fourth condition has an obvious home.
+pub fn emit_posture_banner(banner: &str) {
+    eprintln!("{}", posture_banner_line(banner));
+}
+
 /// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
 ///
 /// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
@@ -872,7 +913,7 @@ pub fn build_app_from_config(
     // suppressed under RUST_LOG=error, the very level an operator most likely runs in production)
     // AND unconditionally on stderr, so the open-relay state cannot be masked by log configuration.
     if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty(), cfg.auth.is_some()) {
-        eprintln!("[error] {banner}");
+        emit_posture_banner(banner);
         diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }
 
@@ -1101,6 +1142,12 @@ pub fn build_app_from_config(
         let store: Arc<dyn governance::Store> = if g.module
             == crate::config::GOVERNANCE_STORE_MEMORY
         {
+            // THE THIRD POSTURE, announced the same way as the other two. The `diag_warn!` below is
+            // the LOG RECORD and is unchanged; this is the half `RUST_LOG` cannot delete. Emitted
+            // FIRST, matching the open-relay and inert-keys sites: banner, then record.
+            if let Some(banner) = ephemeral_store_banner(true) {
+                emit_posture_banner(banner);
+            }
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
                 "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
@@ -1195,7 +1242,7 @@ pub fn build_app_from_config(
                 if let Some(banner) =
                     inert_durable_keys_banner(store_is_durable, key_count, keys_in_chain)
                 {
-                    eprintln!("[error] {banner}");
+                    emit_posture_banner(&banner);
                     diag_error!(DURABLE_KEYS_INERT, "{banner}");
                 }
                 Some(gs)
