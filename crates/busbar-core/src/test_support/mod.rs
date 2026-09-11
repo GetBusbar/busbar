@@ -800,7 +800,7 @@ pub struct TestApp {
     /// one, which is what every pre-existing test expects and what the gating proof in
     /// `oauth_as::tests::mount_tests` asserts costs nothing.
     oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
-    mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
+    durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
     /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
@@ -936,7 +936,7 @@ impl TestApp {
             &crate::egress::seam::CoreHostlessEgress,
         );
         Self {
-            mcp_durable_store: None,
+            durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
             upstream_request_timeout_secs: 0,
             lanes: Vec::new(),
@@ -1298,8 +1298,8 @@ impl TestApp {
     /// `busbar-store-example-plugin` cdylib in its durable mode, loaded over the plugin C ABI (see
     /// [`super::plugin_store`]). A deployment that configures no store simply never calls this, and
     /// gets the process-local behaviour both properties had before.
-    pub fn mcp_durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
-        self.mcp_durable_store = Some(store);
+    pub fn durable_store(mut self, store: std::sync::Arc<dyn busbar_api::Store>) -> Self {
+        self.durable_store = Some(store);
         self
     }
 
@@ -1541,7 +1541,7 @@ impl TestApp {
         // Captured before the `App` literal moves `self` apart. Attaching it AFTER the app exists is
         // not a convenience either: the boot replay reads the operator's live registrations off the
         // built catalogue, exactly as `run()` does, so there is nothing to replay into until then.
-        let mcp_durable_store = self.mcp_durable_store.clone();
+        let durable_store = self.durable_store.clone();
         let mut by_model = std::collections::HashMap::new();
         // NEUTRAL lane carriers (money-path Phase 3-4 C): the fixture builds `LaneInput`, not `Lane`,
         // and hands `PlaneBuildInput` to the registered `build_runtime` fn-pointer (production parity).
@@ -1578,7 +1578,7 @@ impl TestApp {
         ) {
             plane_slots
                 .entry(crate::state::runtime_slot_key(decl.key))
-                .or_insert_with(crate::plane::registry::default_mcp_test_runtime);
+                .or_insert_with(crate::plane::registry::builtin_plane_test_runtime);
         }
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
@@ -1960,7 +1960,7 @@ impl TestApp {
         // `attach_core_durable_sinks` gives every core-owned durable registry the one narrowed store,
         // BEFORE the app is handed to a caller. Not a second copy of that wiring here — a copy is how
         // a harness keeps proving a durability property production stopped having.
-        if let Some(durable) = mcp_durable_store {
+        if let Some(durable) = durable_store {
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
             crate::boot::attach_core_durable_sinks(&app, Some(&plane_store));
         }

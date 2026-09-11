@@ -336,7 +336,7 @@ impl TestAppKit for TestApp {
         *self = std::mem::take(self).lane(super::LaneSpec::new(model, protocol, base_url));
     }
     fn set_durable_store(&mut self, store: Arc<dyn Store>) {
-        *self = std::mem::take(self).mcp_durable_store(store);
+        *self = std::mem::take(self).durable_store(store);
     }
     fn build(self: Box<Self>) -> Arc<dyn EngineApp> {
         TestApp::build(*self)

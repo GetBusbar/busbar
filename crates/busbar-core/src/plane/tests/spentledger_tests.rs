@@ -89,7 +89,7 @@ fn all_capabilities() -> serde_json::Value {
 fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
     let mut app = crate::test_support::TestApp::new();
     if let Some(cfg) = cfg {
-        app = app.mcp_durable_store(open_plugin(cfg));
+        app = app.durable_store(open_plugin(cfg));
     }
     app.build()
 }
@@ -293,10 +293,10 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
     let node_a = crate::test_support::TestApp::new()
-        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
         .build();
     let node_b = crate::test_support::TestApp::new()
-        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
         .build();
 
     let state = ask(&node_a);

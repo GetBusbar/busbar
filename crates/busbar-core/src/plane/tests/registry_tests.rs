@@ -30,9 +30,9 @@ pub(super) static TEST_BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
 ];
 
 /// THE MCP PLANE'S DEFAULT per-generation runtime for core's `cfg(test)` fixture — reached by
-/// `super::default_mcp_test_runtime()`. It names `busbar_mcp::testkit` here, in this `tests/` module
+/// `super::builtin_plane_test_runtime()`. It names `busbar_mcp::testkit` here, in this `tests/` module
 /// the neutral-purity lint excludes, so that plane symbol stays off the neutral `test_support` source.
-pub(super) fn default_mcp_test_runtime() -> std::sync::Arc<dyn Any + Send + Sync> {
+pub(super) fn builtin_plane_test_runtime() -> std::sync::Arc<dyn Any + Send + Sync> {
     busbar_mcp::testkit::default_mcp_runtime()
 }
 
@@ -1134,7 +1134,7 @@ fn the_core_owned_durable_registries_are_attached_without_any_plane_hook() {
 
     let (_home, cfg) = crate::test_support::plugin_store::durable_cfg("core-owned-sinks");
     let app = crate::test_support::TestApp::new()
-        .mcp_durable_store(crate::test_support::plugin_store::open_plugin(&cfg))
+        .durable_store(crate::test_support::plugin_store::open_plugin(&cfg))
         .build();
     assert!(
         app.spent_token_ledger.is_durable(),

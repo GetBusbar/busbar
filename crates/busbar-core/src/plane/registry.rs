@@ -280,8 +280,8 @@ pub(crate) fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
 /// own test process). Delegates to the `tests/registry_tests.rs` helper, the one `tests/`-file the
 /// neutral-purity lint excludes, so the `busbar_mcp` name that builds it stays OFF this neutral source.
 #[cfg(test)]
-pub(crate) fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
-    registry_tests::default_mcp_test_runtime()
+pub(crate) fn builtin_plane_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+    registry_tests::builtin_plane_test_runtime()
 }
 
 /// The process plane list, folded on first read from the built-ins plus anything installed. Under the

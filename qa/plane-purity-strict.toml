@@ -45,30 +45,38 @@ BACKWARDS = 33
 #
 # MEASURED: 156 on the base (production 55 — busbar-core 51, busbar-substrate 4), 153 after step 0
 # (production 51 — busbar-core 49, busbar-substrate 2) once the two substrate sites and their core
-# twin were deleted onto kind-neutral steps, 149 here (production 49 — busbar-core 47,
-# busbar-substrate 0) once step 1 drained the breaker-input conversion's two sites. The production
-# figure falls by two there — `BreakerCfg::to_llm` is DELETED outright (its one caller-crate,
-# `busbar-core`'s `appbuild`/test fixture, gets a `store::breaker_input_of` free fn instead — a
-# SECOND home only because it has a SECOND caller-shape, never a synonym for the same thing);
-# `BreakerCfg::from_llm` is RENAMED to `from_input` in place, in `busbar-substrate` (its one home,
-# reachable by every plane's `build_runtime`) — a pure spelling retarget, net zero lines, no new
-# `impl` anywhere. Substrate's own diff for step 1 is a straight deletion (net negative lines): the
-# growth an `impl From` pair would have cost stays OUT of the frozen crate by using free
-# functions/inherent methods (the same orphan-rule-driven shape `store::breaker_cfg_to_runtime`
-# beside it already uses) instead of trait impls, which neither type here is local enough to host
-# from any one crate. The combined figure falls by the same two because both were production-scope
-# sites, not test-scope ones. The TEST-scope debt those production drops do NOT touch is the cell
-# that proves the sinks are attached without a plane hook, which has to build an app with a durable
-# home — the only harness builder for one is spelled `mcp_durable_store`, which is step 2 below.
+# twin were deleted onto kind-neutral steps, 149 after step 1 (production 49 — busbar-core 47,
+# busbar-substrate 0) once step 1 drained the breaker-input conversion's two sites, 134 here once
+# step 2 renamed the TEST-SUPPORT harness builder. Step 1's production figure fell by two —
+# `BreakerCfg::to_llm` is DELETED outright (its one caller-crate, core's `appbuild`/test fixture,
+# gets a `store::breaker_input_of` free fn instead — a SECOND home only because it has a SECOND
+# caller-shape, never a synonym for the same thing); `BreakerCfg::from_llm` is RENAMED to
+# `from_input` in place, in `busbar-substrate` (its one home, reachable by every plane's
+# `build_runtime`) — a pure spelling retarget, net zero lines, no new `impl` anywhere. Substrate's
+# own diff for step 1 is a straight deletion (net negative lines): the growth an `impl From` pair
+# would have cost stays OUT of the frozen crate by using free functions/inherent methods (the same
+# orphan-rule-driven shape `store::breaker_cfg_to_runtime` beside it already uses) instead of trait
+# impls, which neither type here is local enough to host from any one crate. The combined figure
+# fell by the same two because both were production-scope sites, not test-scope ones. Step 2's
+# combined figure fell by fifteen — every line that named `mcp_durable_store` or
+# `default_mcp_test_runtime` (the field, the method, the local binding, the fn definitions and their
+# call sites, across `test_support/mod.rs`, `engine_kit.rs`, `plane/registry.rs` and the two
+# `plane/tests/*.rs` fixtures that call the builder) — with no production/test split claimed because
+# the harness spans both scopes.
 #
 # THE DRAIN SCHEDULE, in the order the sites come apart, each step a deletion and never a rename:
 #   1. DONE. busbar-substrate to ZERO: `BreakerCfg::to_llm` is gone (replaced at its one
-#      caller-crate by `busbar-core`'s `store::breaker_input_of`); `BreakerCfg::from_llm` is renamed
-#      in place to `from_input` (still substrate-side — every plane's `build_runtime` reaches it,
-#      so it cannot move to core). Nothing else in the substrate names a plugin.
-#   2. busbar-core's TEST-SUPPORT harness (`mcp_durable_store`, `default_mcp_test_runtime`): a
-#      harness builder spelled after one plane is the same defect in a fixture — it becomes the
-#      section-keyed builder the composition root already reads by declaration.
+#      caller-crate by core's `store::breaker_input_of`); `BreakerCfg::from_llm` is renamed in place
+#      to `from_input` (still substrate-side — every plane's `build_runtime` reaches it, so it
+#      cannot move to core). Nothing else in the substrate names a plugin.
+#   2. DONE. busbar-core's TEST-SUPPORT harness: `TestApp::mcp_durable_store` (field + method) is now
+#      `TestApp::durable_store` — it gives the built App A durable home, not specifically an MCP one
+#      (the ONLY thing it wires, `attach_core_durable_sinks`, is itself plane-neutral: the spent-token
+#      ledger and demotion-record sinks). `plane::registry::default_mcp_test_runtime` (+ its
+#      `registry_tests` delegate) is now `builtin_plane_test_runtime` — the built-in plane it seeds a
+#      runtime for is read off `plane_decl_for_config_section(NAMED_MAP_SECTIONS[2])` already, so the
+#      function needed no plane name of its own, only a description of what it does for the one
+#      built-in plane core's own `cfg(test)` binary carries.
 #   3. busbar-core's remaining production spellings (`llm_runtime_key`, `a2a_card_issuer`,
 #      `migrate_mcp_verify_ttl`): each is a fact its own plane declares — the fallback plane's
 #      runtime key, the card-signing plane's issuer, the owning plane's config migration — and each
@@ -76,7 +84,7 @@ BACKWARDS = 33
 #   4. WIDEN THE SCAN. `busbar-kernel` and `busbar-unit-*` measure ZERO today but are not in
 #      `xtask::planes::neutral_src_roots()`, so nothing is holding that zero. They join the neutral
 #      root list once busbar-core's count is low enough that a widened scan cannot hide a rise in it.
-KEY-SEGMENT = 149
+KEY-SEGMENT = 134
 
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
 # the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test
