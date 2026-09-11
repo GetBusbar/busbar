@@ -401,7 +401,7 @@
       "capability": "audit-chain",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
+      "test": "crates/busbar/src/root/tests/call_record_dlopen.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
       "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green.",
       "root": {
         "state": "proven",
@@ -413,7 +413,7 @@
       "capability": "audit-chain",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin",
+      "test": "crates/busbar/src/root/tests/call_record_dlopen.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin",
       "root": {
         "state": "proven",
         "leg": "root-mcp",
