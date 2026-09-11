@@ -994,6 +994,24 @@ lq_outcome_green() { # $1 = per-line outcome file; 0 when it exists, has rows, a
 # EX_TEMPFAIL, when the box it was polling stopped answering) and its own sentence in the log, for
 # a log copied back by an older transport.
 LQ_BOX_GONE_RE='unreachable for [0-9]+ polls — no verdict|the box vanished mid-proof'
+# THE HARNESS GAVE UP, AND THE LINE IS AS UNPROVEN AS IT WAS. T0-D10's contract: a driver that
+# cannot do its job marks the capture `effects.harness_error`/`effects.error`, prints
+# `harness give-up: <why>` and exits 70; the recorder refuses the cell and the recording goes RED
+# about a busy port or a mock that never came up on THAT BOX. Measured 2026-09-10: three of twelve
+# pre-proofs were parked RED on `documented|changelog|admin-restart` with `/put_settings_body … ->
+# ""` — the driver's second boot did not come up inside ORACLE_BOOT_BOUND_SECS on a loaded box —
+# while a base-only proof had that row byte-identical at the same tip.
+#
+# THE SENTENCE IS land.sh's, NOT THE DRIVER'S, AND THAT IS THE WHOLE PRECISION OF IT. land.sh reads
+# the evidence out of the RECORDING (land_oracle_harness_evidence) and says it in one line. Matching
+# the driver's own words instead would score every landing that TOUCHES a driver NONE:harness: the
+# gate-files leg runs those drivers' --selftests on the box, and one of them plants a busy port on
+# purpose and prints `harness give-up:` as a passing row.
+LQ_HARNESS_RE='land[.]sh: RED — oracle: (a HARNESS failure, not a divergence|the driver exited 70)'
+lq_harness_gave_up() { # $1 = log; 0 when the oracle leg's red was the harness's, not the picks'
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  grep -qE "$LQ_HARNESS_RE" "$1" 2>/dev/null
+}
 lq_box_gone() { # $1 = rc, $2 = log; 0 when the BOX went away rather than the proof failing
   [ "${1:-}" = 75 ] && return 0
   [ -n "${2:-}" ] && [ -f "$2" ] || return 1
@@ -1007,6 +1025,7 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line
   # …and only then the box: a proof that finished and reported GREEN before the box was reclaimed
   # is a green proof, and the outcome file is the proof's own word.
   if lq_box_gone "$1" "$2"; then echo "NONE:box"; return 0; fi
+  if lq_harness_gave_up "$2"; then echo "NONE:harness"; return 0; fi
   if lq_base_state_red "$2"; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
@@ -1032,7 +1051,13 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
   local own; own="$(lq_outcome_row "${3:-}" "$4")"
   case "$own" in
     GREEN) echo GREEN; return 0 ;;
-    RED|RED-*) if lq_base_state_red "$2"; then echo "NONE:base"; else echo RED; fi; return 0 ;;
+    # …and a RED row is the dependent's OWN red only when the proof really ran and really judged
+    # it: a box reclaimed mid-proof and a harness that gave up are no more a verdict on a chained
+    # line than on a single one (the bisect attributes rows it never got to judge to nobody).
+    RED|RED-*) if lq_box_gone "$1" "$2"; then echo "NONE:box"
+               elif lq_harness_gave_up "$2"; then echo "NONE:harness"
+               elif lq_base_state_red "$2"; then echo "NONE:base"
+               else echo RED; fi; return 0 ;;
     # HELD is land.sh's word for "a line BEFORE this one in the unit was the culprit, so this line
     # was never proven": its picks went back out with its predecessor's and nothing was judged. It
     # is not a red — the line is exactly as unproven as it was before the box ran — so it is
@@ -1467,6 +1492,8 @@ EOF
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       NONE:box)  lq_front_add "$text"
                  lq_log "pre-prove: line $j lost its BOX mid-proof (reclaimed, or it stopped answering); no verdict on the line — re-queued to the front (log: $dir/line-$j.log)" ;;
+      NONE:harness)  lq_front_add "$text"
+                 lq_log "pre-prove: line $j died of a HARNESS failure on its box (a give-up the recorder refused), not of anything its picks did; re-queued to the front (log: $dir/line-$j.log)" ;;
       NONE:never-reported) lq_log "pre-prove: line $j never reported; no record written (log: $dir/line-$j.log)" ;;
       NONE:base)  lq_log "pre-prove: line $j red against the BASE (a ceiling the head repairs); recorded NONE, not parked (log: $dir/line-$j.log)" ;;
       NONE:moved) lq_log "pre-prove: line $j refused by the tree-moved guard; re-queued, not parked (log: $dir/line-$j.log)" ;;
@@ -2187,6 +2214,33 @@ lq_selftest() {
   _t "a line that got a real verdict is dropped from the front" 0 "$(grep -c . "$FRONT")"
   FRONT="$savedFRONT"
   _t "the sweep asks the front-ordered queue for its lines" 1 "$(grep -c 'lq_disjoint_lines "\$PREPROVE_LINES" "\$qf"' "$0")"
+
+  # ── A HARNESS THAT GAVE UP IS NOT A RED LINE ─────────────────────────────────────────────────
+  # T0-D10's contract: a driver that cannot do its job marks `effects.harness_error`, prints
+  # `harness give-up:` and exits 70; the recorder refuses the cell and the recording is RED. land.sh
+  # reads that evidence OUT OF THE RECORDING and says so in one sentence; this engine reads the
+  # sentence. Measured 2026-09-10: three pre-proofs were parked RED on `documented|changelog|
+  # admin-restart` with `/put_settings_body … -> ""` — the driver's second boot did not come up
+  # within ORACLE_BOOT_BOUND_SECS on a loaded box, and the give-up was recorded as the LINE's red.
+  echo "landq4 selftest: a harness give-up is NONE:harness, re-queued, never RED"
+  printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence: harness give-up: port 46611 busy\n' >"$root/plharn.log"
+  printf 'land.sh:       no verdict on the picks — the harness gave up on this box; re-run the line elsewhere\n' >>"$root/plharn.log"
+  printf 'land.sh: RED — oracle families: ^(documented)[|]\n' >>"$root/plharn.log"
+  _t "a harness give-up is NONE:harness"       "NONE:harness" "$(lq_preproof_verdict 1 "$root/plharn.log")"
+  _t "  ...and the driver's exit 70 says it too" "NONE:harness" \
+     "$(printf 'land.sh: RED — oracle: the driver exited 70 (harness_error)\n' >"$root/plharn2.log"; lq_preproof_verdict 1 "$root/plharn2.log")"
+  # THE FALSE POSITIVE THE RULE MUST NOT HAVE. A landing that TOUCHES a driver runs that driver's
+  # own --selftest on the box, and one of those selftests plants a busy port on purpose and prints
+  # the give-up as a PASSING row. A line whose log merely contains those words is an ordinary red.
+  printf 'documented-admin-restart selftest: a planted busy port is a harness failure\n' >"$root/plharn3.log"
+  printf '  ok    the driver exited 70 (non-zero) on a harness failure\n' >>"$root/plharn3.log"
+  printf '  ok    the capture carries effects.harness_error (port 64295 busy)\n' >>"$root/plharn3.log"
+  printf 'harness give-up: port 64295 busy\n' >>"$root/plharn3.log"
+  printf 'land.sh: RED — tests failed in: busbar-core\n' >>"$root/plharn3.log"
+  _t "a driver SELFTEST that prints the words is still RED" RED "$(lq_preproof_verdict 1 "$root/plharn3.log")"
+  _t "a GREEN outcome still outranks a give-up"  GREEN "$(lq_preproof_verdict 1 "$root/plharn.log" "$root/pl5.batch.result")"
+  _t "a vanished box outranks it (nothing ran)"  "NONE:box" "$(lq_preproof_verdict 75 "$root/plharn.log")"
+  _t "the sweep re-queues a NONE:harness line to the front" 1 "$(grep -c 'NONE:harness)  lq_front_add "\$text"' "$0")"
 
   echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
   local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"
@@ -3001,6 +3055,11 @@ lq_selftest() {
      "$(printf 'RED%s--prove %s\n' "$TAB" "$hb" >"$cres"; \
         printf 'ceiling-rose: the figure ROSE since the base\n' >"$root/ch-base.log"; \
         lq_chain_preproof_verdict 1 "$root/ch-base.log" "$cres" "--prove $hb")"
+  _t "a chained RED whose box vanished is NONE:box" "NONE:box" \
+     "$(lq_chain_preproof_verdict 75 "$rn" "$cres" "--prove $hb")"
+  _t "  ...and one whose harness gave up is NONE:harness" "NONE:harness" \
+     "$(printf 'land.sh: RED — oracle: a HARNESS failure, not a divergence: harness give-up: port busy\n' >"$root/ch-harn.log"
+        lq_chain_preproof_verdict 1 "$root/ch-harn.log" "$cres" "--prove $hb")"
   _t "no outcome at all falls back to the rc rules" "NONE:never-reported" \
      "$(lq_chain_preproof_verdict "" "$rn" "$root/nosuch" "--prove $hb")"
   _t "  ...and a clean rc is green"             GREEN "$(lq_chain_preproof_verdict 0 "$rn" "$root/nosuch" "--prove $hb")"

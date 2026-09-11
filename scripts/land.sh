@@ -724,6 +724,55 @@ EOF
 # A shard that died is a landing that is RED, never a landing that is green over the shards that
 # happened to survive: the merged recording would simply be missing those cells and --strict would
 # have nothing to complain about because it was never told they were owed by THIS run.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A HARNESS FAILURE IS NOT A DIVERGENCE (T0-D10's contract, read by the landing engine)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# `oracle_harness_give_up` (testing/fleet-fixtures/lib.sh): a driver that cannot do its job writes
+# `effects.harness_error` into its capture, prints `harness give-up: <why>` on stderr, and exits 70;
+# the recorder refuses the cell, and the refused cell makes the recording RED. That red is about
+# THIS BOX — a busy port, a mock that did not come up, a plugin that would not fetch — and about
+# nothing the picks did. Measured 2026-09-10: three of twelve pre-proofs were parked RED on
+# `documented|changelog|admin-restart`, whose body came back `""` (the shape of a driver that gave
+# up on a loaded box) while the same row was byte-identical at the base.
+#
+# THE SCAN IS OF THE RECORDING, NEVER OF THE LANDING LOG. The drivers' own --selftests run on this
+# same box in the gate-files leg, and one of them deliberately plants a busy port and prints
+# `harness give-up:` as a PASSING case. Anything that scanned the whole log would read that as a
+# harness failure in every landing that touches a driver.
+land_oracle_harness_evidence() { # $1 = recording prefix ($out.shard), $2 = K; prints the evidence, rc 0 when there is some
+  local pre="$1" k="${2:-1}" i=0 ev
+  while [ "$i" -lt "$k" ]; do
+    # The recorder's own log for this shard: the driver's stderr goes through it.
+    ev="$(grep -hoE 'harness give-up: .{0,160}' "$pre$i.log" 2>/dev/null | head -1)"
+    # …and the captures themselves, which carry the marker whether or not the log was kept.
+    # The other half of the same contract: the driver EXITS 70 (EX_SOFTWARE), which the recorder
+    # refuses the cell for a second time and notes in its log. Two independent signals for one
+    # fact, because the whole defect was a single signal the recorder read as something else.
+    [ -n "$ev" ] || ev="$(grep -hoE '[^ ]*driver[^ ]* .{0,60}exit(ed)?( with)?( status| code)? 70' "$pre$i.log" 2>/dev/null | head -1)"
+    [ -n "$ev" ] || ev="$(grep -rhoE '"harness_error"[[:space:]]*:[[:space:]]*"[^"]{0,160}"' "$pre$i" 2>/dev/null | head -1)"
+    # `effects.error` is the same give-up under its other name (lib.sh writes both). It is matched
+    # INSIDE an effects object only: a cell whose body or stderr merely contains the word `error`
+    # is an ordinary answer, and reading that as a broken harness would launder real divergences.
+    [ -n "$ev" ] || ev="$(grep -rhoE '"effects"[[:space:]]*:[[:space:]]*\{[^}]*"error"[[:space:]]*:[[:space:]]*"[^"]{0,160}"' "$pre$i" 2>/dev/null | head -1)"
+    [ -n "$ev" ] && { printf '%s\n' "$ev"; return 0; }
+    i=$((i + 1))
+  done
+  return 1
+}
+# EVERY ORACLE RED GOES THROUGH HERE, so the sentence cannot be attached to some of them and not
+# others. It prints the caller's red unchanged — a red is still a red, and this landing still stops
+# — and, when the recording carries a give-up, one extra sentence in the words landq4.sh's
+# lq_preproof_verdict reads to score the line NONE:harness instead of RED.
+land_oracle_red() { # $1 = the red sentence, $2 = recording prefix, $3 = K; always rc 1
+  local ev
+  if ev="$(land_oracle_harness_evidence "$2" "${3:-1}")"; then
+    echo "land.sh: RED — oracle: a HARNESS failure, not a divergence: $ev" >&2
+    echo "land.sh:       no verdict on the picks — the harness gave up on this box; re-run the line elsewhere" >&2
+  fi
+  echo "$1" >&2
+  return 1
+}
+
 land_shards_collect() {
   local pre="$1" k="$2" i=0 bad=0
   while [ "$i" -lt "$k" ]; do
@@ -1546,7 +1595,7 @@ EOF
     # than in part order: a merged part must be byte-comparable to a single-shot recording.
     "$here/bin/oracle" merge --out "$out" --cells "$here/testing/shadow-oracle/cells.json" $parts >"$out.merge.log" 2>&1 || {
       tail -20 "$out.merge.log" >&2
-      echo "land.sh: RED — busbar-oracle merge refused the shards (see $out.merge.log)." >&2
+      land_oracle_red "land.sh: RED — busbar-oracle merge refused the shards (see $out.merge.log)." "$out.shard" "$k" || true
       echo "land.sh:       Re-run with LAND_ORACLE_DIFF=per-shard to diff each shard on its own," >&2
       echo "land.sh:       or LAND_ORACLE_SHARDS=1 for one unsharded recording." >&2
       return 1; }
@@ -1554,7 +1603,7 @@ EOF
       --candidate "$out" --out "$out.report" --cells "$here/testing/shadow-oracle/cells.json" \
       --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
       --id-filter "$families" --strict \
-      || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; return 1; }
+      || land_oracle_red "land.sh: RED — oracle families: $families (see $out.report)" "$out.shard" "$k" || return 1
     echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed, $k merged shard(s))"
   else
     # PER-SHARD: each shard diffed against its own filter, red if ANY shard is red. Strictness is
@@ -1567,7 +1616,7 @@ EOF
         --candidate "$out.shard$i" --out "$out.shard$i.report" --cells "$here/testing/shadow-oracle/cells.json" \
         --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
         --id-filter "${sre[$i]}" --strict \
-        || { echo "land.sh: RED — oracle shard $i: ${sre[$i]} (see $out.shard$i.report)" >&2; red=1; }
+        || { land_oracle_red "land.sh: RED — oracle shard $i: ${sre[$i]} (see $out.shard$i.report)" "$out.shard" "$k" || true; red=1; }
       i=$((i + 1))
     done
     [ "$red" = 0 ] || return 1
@@ -2563,6 +2612,56 @@ EOF
   _st "one shard left an EMPTY recording -> RED" 1 land_shards_collect "$root/rec" 2
   rm -f "$root/rec1.rc"
   _st "one shard never reported at all -> RED"  1 land_shards_collect "$root/rec" 2
+
+  # ── A HARNESS FAILURE IS NOT A DIVERGENCE, AND NOT A VERDICT ON THE PICKS ────────────────────
+  # T0-D10's contract (`oracle_harness_give_up` in testing/fleet-fixtures/lib.sh): a driver that
+  # cannot do its job marks the capture `effects.harness_error` AND exits 70, and the recorder
+  # refuses the cell. A refused cell makes the recording RED — and that red says a port was busy or
+  # a mock never came up on THIS BOX, which is a fact about the box and about nothing the picks did.
+  # Measured 2026-09-10: three of twelve pre-proofs were parked RED on the oracle row
+  # `documented|changelog|admin-restart`, whose body came back `""` — the shape of a driver that
+  # gave up — while the same row was byte-identical at the base.
+  #
+  # THE EVIDENCE IS READ FROM THE RECORDING, NEVER FROM THE LANDING LOG. The drivers' own
+  # --selftests run on this box too (the gate-files leg), and one of them PLANTS a busy port and
+  # prints `harness give-up:` as a passing case. A scan of the whole log would score that landing a
+  # harness failure; this scan looks only at the shard recordings and their recorder logs.
+  echo "land.sh selftest: a harness give-up in a recording is named, not scored as a divergence"
+  mkdir -p "$root/hz0" "$root/hz1"
+  printf 'recording cells 1..40\n' >"$root/hz0.log"
+  printf 'recording cells 41..80\n' >"$root/hz1.log"
+  _st "a clean recording carries no harness evidence" 1 land_oracle_harness_evidence "$root/hz" 2
+  printf 'harness give-up: port 46611 busy\n' >>"$root/hz1.log"
+  _st "a driver that gave up IS evidence"             0 land_oracle_harness_evidence "$root/hz" 2
+  _stgrep "  ...and the evidence names the give-up"   "$ST_OUT" 'harness give-up: port 46611 busy'
+  printf 'recording cells 41..80\nthe driver for documented|changelog|admin-restart exited 70\n' >"$root/hz1.log"
+  _st "a driver that exited 70 IS evidence"           0 land_oracle_harness_evidence "$root/hz" 2
+  _stgrep "  ...and the evidence names the exit"      "$ST_OUT" 'exited 70'
+  printf 'recording cells 41..80\n' >"$root/hz1.log"
+  printf '{"status":-1,"body":"x","effects":{"error":"mock upstream did not come up","harness_error":"mock upstream did not come up"}}\n' >"$root/hz1/captured.json"
+  _st "a capture carrying effects.harness_error IS evidence" 0 land_oracle_harness_evidence "$root/hz" 2
+  _stgrep "  ...and it names what broke"              "$ST_OUT" 'mock upstream did not come up'
+  printf '{"status":-1,"body":"x","effects":{"error":"plugin fetch failed"}}\n' >"$root/hz1/captured.json"
+  _st "a capture carrying only effects.error IS evidence too" 0 land_oracle_harness_evidence "$root/hz" 2
+  printf '{"status":200,"body":"ok","effects":{"stderr":"warning: an error occurred earlier"}}\n' >"$root/hz1/captured.json"
+  _st "a cell that merely SAYS error is not evidence" 1 land_oracle_harness_evidence "$root/hz" 2
+  # The sentence the queue engine reads, and the fact that the ordinary red is still printed.
+  printf 'harness give-up: mock upstream did not come up\n' >>"$root/hz1.log"
+  _st "the oracle red names the harness failure"      1 land_oracle_red "land.sh: RED — oracle families: ^(documented)[|]" "$root/hz" 2
+  _stgrep "  ...in the words the queue engine reads"  "$ST_OUT" 'RED — oracle: a HARNESS failure, not a divergence'
+  _stgrep "  ...and says it proves nothing about the picks" "$ST_OUT" 'no verdict on the picks'
+  _stgrep "  ...and the ordinary red is still printed" "$ST_OUT" 'RED — oracle families'
+  rm -f "$root/hz1.log"; printf 'recording cells 41..80\n' >"$root/hz1.log"
+  rm -f "$root/hz1/captured.json"
+  _st "a real divergence is NOT called a harness failure" 1 land_oracle_red "land.sh: RED — oracle families: ^(documented)[|]" "$root/hz" 2
+  _stno "  ...and the sentence is absent"             "$ST_OUT" 'HARNESS failure'
+  _stgrep "  ...while the red itself is not"          "$ST_OUT" 'RED — oracle families'
+  # THE LEG REALLY GOES THROUGH IT: every oracle red in prove_oracle is printed by land_oracle_red.
+  _t2() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  _t2 "no oracle red bypasses the harness check" 0 \
+      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -cE 'echo "land[.]sh: RED — oracle (families|shard)')"
+  _t2 "  ...they all go through land_oracle_red" 3 \
+      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_red ')"
 
   echo "land.sh selftest: the ledger union (what was RECORDED, not what was requested)"
   if [ -f "$here/testing/shadow-oracle/cells.json" ]; then
