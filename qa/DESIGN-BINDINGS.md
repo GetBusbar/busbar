@@ -17,16 +17,16 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
-- mapped (proven): **103**
-- unproven (cited, but nothing compared): **0**
+- mapped (proven): **102**
+- unproven (cited, but nothing compared): **1**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 12, lint 5, oracle-cell 58, oracle-family 5, test 453
+- checks by kind (mapped bindings only): gate 11, lint 5, oracle-cell 58, oracle-family 5, test 453
 
 ## Bindings
 
 | # | Surface | Status | Verdict | Why | Checks |
 |---|---|---|---|---|---|
-| PB-0 | master rule | mapped | PASS |  | gate: `xtask/src/gates/construction.rs` |
+| PB-0 | master rule | unproven | FAIL | partly proven; a referenced check settles nothing: gate:xtask/src/gates/inventory_coverage.rs | gate: `xtask/src/gates/inventory_coverage.rs`<br>gate: `xtask/src/gates/construction.rs` |
 | PB-1 | hook `on_empty` | mapped | PASS |  | test: `enforce_restricts_reapplies_compliance_tags_across_pools`<br>test: `multi_restrict_disjoint_intersection_fails_closed` |
 | PB-2 | per-lane `max_concurrent` | mapped | PASS |  | test: `excluded_reasons_records_at_capacity`<br>test: `at_capacity_reject_sheds_503_not_queued`<br>test: `queue_dispatches_when_permit_frees_before_deadline`<br>test: `queue_times_out_to_503_when_capacity_never_frees`<br>gate: `scripts/release-check.sh` |
 | PB-3 | tripped / budget-exhausted / at-capacity lanes | mapped | PASS |  | test: `ordered_walk_skips_tripped_preferred_to_next`<br>test: `ordered_walk_skips_excluded_preferred`<br>test: `at_capacity_plus_tripped_member_rejects_503`<br>test: `least_bad_never_reaches_an_excluded_member`<br>test: `strengthened_lane_availability_invariant` |
@@ -130,11 +130,19 @@ The three words are not interchangeable:
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
 
+## The unproven bindings: cited, but nothing was compared
+
+Each of these names one or more checks and is still proof of nothing. A binding here is
+red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
+or it is demoted to a named gap. It is never waived.
+
+- **PB-0** (master rule): partly proven; a referenced check settles nothing: gate:xtask/src/gates/inventory_coverage.rs
+
 ## Findings: bindings in conflict with the tree
 
 A green test that asserts the opposite of a binding is not a proof. These need an owner decision.
 
-- **PB-0** (master rule): STRUCK 2026-09-10: the cited gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. That Rust port exists only on a branch not yet merged to this tip -- `cargo xtask gate --list` here names no `inventory-coverage` gate -- so the citation is struck rather than re-pointed to a check this tree cannot run. PB-0 keeps its one surviving hand-added check, gate:xtask/src/gates/construction.rs (the legacy-reach ratchet), which settles a narrower claim than the master rule's EVERY-row coverage; re-pointing to the real inventory-coverage gate is owed the day that port lands here.
+- **PB-0** (master rule): 2026-09-10: gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. Re-pointed to gate:xtask/src/gates/inventory_coverage.rs, the Rust port's real path (per b220b3bcf's stat) -- but that port has not landed on this tip yet (`cargo xtask gate --list` here names no `inventory-coverage` gate, and the file does not exist in this tree), so the citation names a check that settles nothing YET and the binding is correctly UNPROVEN rather than PASS on the strength of the narrower gate:xtask/src/gates/construction.rs check alone. Becomes mapped the moment b220b3bcf (and its chain: c3ef9ca93, e98068d39, 5fa3f6afd, 6d10b57c4) lands here.
 - **PB-7** (inbound shed): Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency\|inbound-shed\|n8 cell.
 - **PB-8** (request bounds for `http`/`sse` units): The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.
 - **PB-11** (plugin trust and ABI windows): CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.

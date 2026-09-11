@@ -15,12 +15,12 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 103,
-  "unproven": 0,
+  "mapped": 102,
+  "unproven": 1,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 12,
+   "gate": 11,
    "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
@@ -62,9 +62,16 @@
    "surface": "master rule",
    "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
    "inventory": "every row of every inventory file under docs/design/inventory/",
-   "note": "STRUCK 2026-09-10: the cited gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. That Rust port exists only on a branch not yet merged to this tip -- `cargo xtask gate --list` here names no `inventory-coverage` gate -- so the citation is struck rather than re-pointed to a check this tree cannot run. PB-0 keeps its one surviving hand-added check, gate:xtask/src/gates/construction.rs (the legacy-reach ratchet), which settles a narrower claim than the master rule's EVERY-row coverage; re-pointing to the real inventory-coverage gate is owed the day that port lands here.",
-   "status": "mapped",
+   "note": "2026-09-10: gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. Re-pointed to gate:xtask/src/gates/inventory_coverage.rs, the Rust port's real path (per b220b3bcf's stat) -- but that port has not landed on this tip yet (`cargo xtask gate --list` here names no `inventory-coverage` gate, and the file does not exist in this tree), so the citation names a check that settles nothing YET and the binding is correctly UNPROVEN rather than PASS on the strength of the narrower gate:xtask/src/gates/construction.rs check alone. Becomes mapped the moment b220b3bcf (and its chain: c3ef9ca93, e98068d39, 5fa3f6afd, 6d10b57c4) lands here.",
+   "status": "unproven",
    "checks": [
+    {
+     "kind": "gate",
+     "ref": "xtask/src/gates/inventory_coverage.rs",
+     "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red",
+     "source": "curated",
+     "status": "mapped"
+    },
     {
      "kind": "gate",
      "ref": "xtask/src/gates/construction.rs",
@@ -73,8 +80,8 @@
      "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with a per-crate figure per retiring crate that gates in both directions (over its figure is that row's own FAIL, under it is `ceiling-slack`) -- so a cut that retargets a core symbol onto the substrate on its way to the kernel is a re-pin of two figures in the commit that makes it rather than a number nothing could fail on, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "gate:xtask/src/gates/construction.rs"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:xtask/src/gates/inventory_coverage.rs"
   },
   {
    "id": "PB-1",

@@ -15,7 +15,9 @@
 pub type SeededCheck = (&'static str, &'static str, &'static str);
 
 pub static SEED: &[(&str, &[SeededCheck])] = &[
-    ("PB-0", &[]),
+    ("PB-0", &[
+        ("gate", "xtask/src/gates/inventory_coverage.rs", "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red"),
+    ]),
     ("PB-1", &[
         ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
         ("test", "multi_restrict_disjoint_intersection_fails_closed", "two restricts intersecting to empty produce a 503 (status only, not the literal body)"),
@@ -591,7 +593,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
 /// Findings the survey turned up that the owner must see next to the binding. A green test
 /// that asserts the OPPOSITE of a binding is not a proof; it is a design/code conflict.
 pub static NOTES: &[(&str, &str)] = &[
-    ("PB-0", "STRUCK 2026-09-10: the cited gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. That Rust port exists only on a branch not yet merged to this tip -- `cargo xtask gate --list` here names no `inventory-coverage` gate -- so the citation is struck rather than re-pointed to a check this tree cannot run. PB-0 keeps its one surviving hand-added check, gate:xtask/src/gates/construction.rs (the legacy-reach ratchet), which settles a narrower claim than the master rule's EVERY-row coverage; re-pointing to the real inventory-coverage gate is owed the day that port lands here."),
+    ("PB-0", "2026-09-10: gate:scripts/inventory-coverage.sh was retired from the tree (c8272b166, `inventory-coverage: retire scripts/inventory-coverage.py and its scripts/inventory-coverage.sh wrapper`) once `cargo xtask gate inventory-coverage` reached parity with it. Re-pointed to gate:xtask/src/gates/inventory_coverage.rs, the Rust port's real path (per b220b3bcf's stat) -- but that port has not landed on this tip yet (`cargo xtask gate --list` here names no `inventory-coverage` gate, and the file does not exist in this tree), so the citation names a check that settles nothing YET and the binding is correctly UNPROVEN rather than PASS on the strength of the narrower gate:xtask/src/gates/construction.rs check alone. Becomes mapped the moment b220b3bcf (and its chain: c3ef9ca93, e98068d39, 5fa3f6afd, 6d10b57c4) lands here."),
     ("PB-7", "Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell."),
     ("PB-11", "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only."),
     ("PB-84", "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged."),
