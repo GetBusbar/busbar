@@ -382,14 +382,43 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// failure this whole shape exists to make impossible.
 const TAKEN: &str = "2026-09-10 b6f66e929";
 
+/// WHEN AND ON WHAT the entries RE-TAKEN SINCE were measured — and they carry their own date for
+/// the reason the shared one exists: a re-baseline that moves the numbers and not the date is the
+/// failure this shape was built to make impossible, and writing a later measurement under an
+/// earlier tree's date is the same lie one step subtler. Two entries are re-taken here and four
+/// are not; the four still say where they came from.
+const TAKEN_RECUT: &str = "2026-09-11 0063bc20d";
+
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
 // self-test's own cost line. Constants rather than literals inside the table so that a re-baseline
 // is a diff a reviewer can read as a list of numbers that moved.
 const MEASURED_PLANE_PURITY: f64 = 27_923.0; // 16 cases, 298.0 s
 const MEASURED_PLANE_PURITY_STRICT: f64 = 19_435.0; // 12 cases, 202.1 s
 const MEASURED_STRUCTURE_LINT: f64 = 7_938.0; // 39 cases, 88.4 s
-const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
-const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
+
+// RE-TAKEN 33 096 -> 53 337 (GATES-2, `--jobs 1`, one unit 12.5 ms on the box in `TAKEN_RECUT`).
+// NOT A REGRESSION AND NOT SLACK: the battery went from 36 cases to 59 and the entry did not. Its
+// 36-case figure was set on `b6f66e929`, which is nine commits down THIS chain; by the chain's tip
+// the same battery measured 52 595 against an allowance of 52 954 — 99.3 per cent of it, with two
+// of the seven per cent the `construction` entry's own note calls out as the failure this struct
+// exists to prevent. The re-take is the whole battery, serially, on one tree, with the case count
+// written beside it so the next reader can see which of the two numbers moved.
+const MEASURED_CONSTRUCTION: f64 = 53_337.0; // 59 cases, 665.2 s at --jobs 1
+
+// RE-TAKEN 128 034 -> 132 539 (GATES-2, `--jobs 1`, on the fleet box in `TAKEN_RECUT`'s tree at a
+// 1-minute load of 5.0 on 32 cores, 2 182.8 s of wall clock, 175 cases, the battery GREEN and
+// proven RED-able). 152 cases -> 175 is the step-ownership row and the vault door's leaves, all of
+// them on this chain; the entry's own figure never moved. It was NOT blown — 132 539 against an
+// allowance of 204 854 — which is exactly why it had to be re-taken by hand rather than by a red:
+// a budget that is 23 cases stale and still passing is a budget measuring the wrong battery.
+//
+// AND THIS IS THE ANSWER TO T0-I-c's 310 000 -> 420 000. That entry raised a bare `allowed`
+// literal, from a reading its own text says was taken on a contended host and spanned
+// 330 000-420 000 for the same binary. There is no bare literal any more: the entry is a
+// measurement and `allowed` is derived from it by one declared slack. Measured serially on a box
+// whose load did not move across the run, the battery costs 132 539 — under a THIRD of the 420 000
+// that line asks for. The budget half of T0-I-c is moot; its matrix half stands on its own.
+const MEASURED_KIND_ISOLATION: f64 = 132_539.0; // 175 cases, 2182.8 s at --jobs 1
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 
 // `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) AND NO LONGER HAS AN ENTRY. Its budget was
@@ -485,14 +514,14 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "construction",
         measured: MEASURED_CONSTRUCTION,
         allowed: MEASURED_CONSTRUCTION * BUDGET_SLACK,
-        taken: TAKEN,
+        taken: TAKEN_RECUT,
         why: "Thirty-six rules over a 660k-line tree, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves. THIS IS THE ENTRY THAT PROVED THE OLD SHAPE WRONG: its note claimed `about 15 600 units` while the tree measured three times that, under a budget it was within seven per cent of blowing.",
     },
     Budget {
         gate: "kind-isolation",
         measured: MEASURED_KIND_ISOLATION,
         allowed: MEASURED_KIND_ISOLATION * BUDGET_SLACK,
-        taken: TAKEN,
+        taken: TAKEN_RECUT,
         why: "The dearest battery in the registry: every case plants an overlay and drives the whole gate over a 660k-line tree. The per-file compiled set and the matrix scan are memoised on (path, bytes) and the merge-base is read once per process; what is left is the plants and the rules. A plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which many cases do, because a census that walks the whole repository is proven by planting crates in it.",
     },
     Budget {
