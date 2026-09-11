@@ -17,6 +17,9 @@
 #![cfg(unix)]
 #![cfg(feature = "proto-llm")]
 
+mod common;
+
+use common::ReservedPort;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -34,11 +37,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
 }
 
 /// A 1.5.5-SHAPED config: no `mcp:`/`agents:`/`streams:` section, governance ON (a keyed `auth.chain`,
@@ -191,14 +189,22 @@ fn blank_volatile(line: &str) -> String {
 #[test]
 fn boot_lines_match_1_5_5_shape() {
     let dir = fixture_dir();
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
+    // `write_configs` shells out to `busbar --generate-signing-key` — real, measurable work between
+    // "the ports are free" and "the child needs them" — so the reservations stay open across it.
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
 
+    // Everything the child needs is on disk; release the reservations immediately before the spawn
+    // that binds these numbers (see `ReservedPort`'s doc for why this ordering is the fix).
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

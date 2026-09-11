@@ -32,6 +32,9 @@
 // `auth-admin-tokens`, and the same reasoning as the `plane-mcp` gate in `cli_validate.rs`.
 #![cfg(feature = "plane-mcp")]
 
+mod common;
+
+use common::ReservedPort;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -49,13 +52,6 @@ fn fixture_dir(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A free loopback port, asked of the OS rather than hard-coded: a hard-coded port is a red that is
-/// not a defect the first time this machine happens to have something on it.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
 }
 
 /// The smallest config that makes a deployment an MCP server, with `auth_block` spliced in
@@ -140,7 +136,14 @@ fn assert_names_both_keys(where_: &str, text: &str) {
 #[test]
 fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
     let dir = fixture_dir("validate");
-    let cfg = write_config(&dir, free_port(), free_port(), AUTH_OPEN);
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let cfg = write_config(&dir, data_reserved.port(), admin_reserved.port(), AUTH_OPEN);
+    // `--validate` refuses this config before it ever binds, but the reservations are still held
+    // through config-writing and released only right before the spawn, for the same reason every
+    // other conversion in this crate does it (see `ReservedPort`'s doc).
+    data_reserved.release();
+    admin_reserved.release();
     let out = busbar(&cfg, &["--validate"]).output().expect("run busbar");
     let text = format!(
         "{}{}",
@@ -158,9 +161,13 @@ fn an_mcp_config_with_no_auth_chain_fails_validate_naming_both_keys() {
 #[test]
 fn an_mcp_config_with_no_auth_chain_does_not_boot() {
     let dir = fixture_dir("boot");
-    let cfg = write_config(&dir, free_port(), free_port(), AUTH_OPEN);
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let cfg = write_config(&dir, data_reserved.port(), admin_reserved.port(), AUTH_OPEN);
     // No `--validate`: this is the REAL boot path, which is a different code path in `main.rs` from
     // the one above and is the one that would actually serve the plane.
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = busbar(&cfg, &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -221,8 +228,10 @@ fn an_mcp_config_with_no_auth_chain_does_not_boot() {
 #[test]
 fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
     let dir = fixture_dir("control");
-    let data_port = free_port();
-    let cfg = write_config(&dir, data_port, free_port(), AUTH_CLOSED);
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let cfg = write_config(&dir, data_port, admin_reserved.port(), AUTH_CLOSED);
 
     // `--validate` first: the cheap half of the control, and the one that localises a failure. If
     // this is red the fixture is wrong, not the guard.
@@ -237,7 +246,11 @@ fn the_control_an_mcp_config_with_a_closed_chain_still_boots() {
 
     // And then the half that actually matters: it LISTENS. Readiness is proven by observation —
     // a completed TCP connect — rather than by the process merely not having exited yet, which a
-    // process on its way to a panic also satisfies.
+    // process on its way to a panic also satisfies. Reservations are held through the `--validate`
+    // run above (which never binds) and released only right before this final spawn — the one that
+    // actually needs the numbers.
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = busbar(&cfg, &[])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

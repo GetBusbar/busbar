@@ -27,6 +27,9 @@
     feature = "plane-voice"
 ))]
 
+mod common;
+
+use common::ReservedPort;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,16 +47,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A port the OS just handed out and released: the listener must be a fixed address so the test
-/// can scrape it (the boot line prints the CONFIGURED address, not the bound one).
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// The 1.5.5 shape: one provider, one model, keys on the data plane, an admin token, prometheus
@@ -193,13 +186,19 @@ fn expand_alternation(pattern: &str) -> Vec<String> {
 #[test]
 fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() {
     let dir = fixture_dir();
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
+    // Release the reservations immediately before the spawn that binds these numbers (see
+    // `ReservedPort`'s doc for why this ordering is the fix).
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

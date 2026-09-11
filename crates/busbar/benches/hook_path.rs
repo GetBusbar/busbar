@@ -120,7 +120,16 @@
 //! number for a deployment with no hook in it** — a bench that silently measures the wrong cell is
 //! worse than one that stops.
 
+// The port-reservation helper lives beside the nine integration tests it was extracted out of
+// (`crates/busbar/tests/common/mod.rs`) — this bench is the tenth caller of the same fixed-port
+// race, not a reason for a second copy. Benches and integration tests are separate compilation
+// units (`benches/` vs `tests/`), so the shared module is pulled in by its file path rather than
+// `mod common;`, which would look for `benches/common/mod.rs`.
+#[path = "../tests/common/mod.rs"]
+mod common;
+
 use busbar_plugin_sign::{HookNeeds, Manifest, NeedLevel};
+use common::ReservedPort;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -130,13 +139,6 @@ use std::time::{Duration, Instant};
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // FIXTURE PLUMBING
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A free loopback port, asked of the OS. A hard-coded port is a red that is not a defect the first
-/// time this machine happens to have something on it.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    l.local_addr().unwrap().port()
-}
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -166,8 +168,14 @@ const UPSTREAM_REPLY: &str = r#"{"id":"chatcmpl-bench","object":"chat.completion
 /// A stub OpenAI-protocol upstream, answering from memory on its own runtime thread. Never returns
 /// (the process exit tears it down), which is what a bench fixture wants: one upstream for the whole
 /// run, so no cell pays another cell's startup.
+///
+/// Binds ONE std listener here (still on the calling thread) and hands it, still bound, into the
+/// runtime thread that serves it — never dropped and rebound under a different socket, so there is
+/// no window in which the chosen port is free for anything else on the box to take.
 fn spawn_stub_upstream() -> u16 {
-    let port = free_port();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -181,9 +189,7 @@ fn spawn_stub_upstream() -> u16 {
                     UPSTREAM_REPLY,
                 )
             }));
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             axum::serve(listener, app).await.unwrap();
         });
     });
@@ -276,8 +282,10 @@ impl Drop for Deployment {
 /// difference between their numbers is the hook seam and nothing else.
 fn boot(tag: &str, upstream_port: u16, with_hook: bool) -> Deployment {
     let dir = fixture_dir(tag);
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
 
     std::fs::write(
         dir.join("providers.yaml"),
@@ -341,6 +349,10 @@ models:
     let log = dir.join("out.log");
     let out = std::fs::File::create(&log).unwrap();
     let err = out.try_clone().unwrap();
+    // Release the reservations immediately before the spawn that binds these numbers (see
+    // `ReservedPort`'s doc for why this ordering is the fix).
+    data_reserved.release();
+    admin_reserved.release();
     let child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

@@ -24,6 +24,9 @@
 // seam under test here.
 #![cfg(feature = "proto-llm")]
 
+mod common;
+
+use common::ReservedPort;
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -55,16 +58,6 @@ fn fixture_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-/// A free loopback port. Thread-per-core needs a FIXED port: every per-core listener binds the
-/// SAME address, so an ephemeral `:0` would hand each socket a different port.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// A high worker count + `export.prometheus` + an OPEN auth chain (so `/metrics`, declared
@@ -108,13 +101,20 @@ struct Scrape {
 #[test]
 fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let dir = fixture_dir();
-    let data_port = free_port();
-    let admin_port = free_port();
+    let data_reserved = ReservedPort::reserve();
+    let admin_reserved = ReservedPort::reserve();
+    let data_port = data_reserved.port();
+    let admin_port = admin_reserved.port();
     write_configs(&dir, data_port, admin_port);
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
+    // Release the reservations immediately before the spawn that binds these numbers (see
+    // `ReservedPort`'s doc for why this ordering is the fix) — this cell races the boot window
+    // itself starting the instant the child exists, so the gap must be closed right up to the spawn.
+    data_reserved.release();
+    admin_reserved.release();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))

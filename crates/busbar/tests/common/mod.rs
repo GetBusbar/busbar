@@ -294,3 +294,58 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
     // scans it, rather than silently reporting the item absent.
     Some(body)
 }
+
+// ── boot-port reservation ───────────────────────────────────────────────────────────────────────
+//
+// Nine boot-a-real-child integration tests (`no_data_dir_neutrality`, `boot_lines_neutrality`,
+// `thread_per_core_serves`, `scrape_shape_1_5_5`, `mcp_open_front_door`, `ledger_identity`,
+// `inbound_concurrency_shed`, `metrics_scrape_boot_window`, and the `hook_path` bench) each carried
+// their OWN copy of a `free_port()` that bound `127.0.0.1:0`, read the port back, and DROPPED the
+// listener — before the rest of fixture setup (writing config/provider YAML, shelling out to
+// `busbar --generate-signing-key`, sometimes booting a second child) ran, and only THEN spawning
+// the child that binds the number.
+//
+// The port has to be a LITERAL in the child's config before the child exists at all: the
+// thread-per-core data plane binds the identical address from every one of its N SO_REUSEPORT
+// worker threads (an ephemeral `:0` there hands each worker a DIFFERENT port — see
+// `busbar::main::serve_thread_per_core`), and every listener's boot line prints the CONFIGURED
+// address (`cfg.listen`/`cfg.admin_listen`), never the bound one, so there is no line a test could
+// read a dynamically-assigned port back off. So the number has to be chosen up front, which is
+// exactly the TOCTOU the nine copies of `free_port()` accepted as a known, unfixed risk: the OS can
+// (and, by measurement, does) hand this process's freed port to another process on the shared box
+// before the child gets to it.
+//
+// `ReservedPort` does not make that window zero — nothing short of every process on the box
+// coordinating could do that — but the nine copies were leaving it far WIDER than the race itself
+// needs: `free_port()` was called and dropped immediately, and only afterward did the fixture write
+// YAML, shell out to a `--generate-signing-key` child process, or (the ledger-identity cell) boot a
+// Python mock upstream — real, measurable milliseconds of unrelated work between "the port is free"
+// and "the port is asked for again". `ReservedPort` holds the OS-assigned listener open across all
+// of that; the caller drops it (via `release`, or simply letting it go out of scope) only
+// IMMEDIATELY before the `Command::spawn` that binds the number, shrinking the window from
+// "however long fixture setup takes" down to a `drop` followed by a syscall.
+pub struct ReservedPort(std::net::TcpListener);
+
+impl ReservedPort {
+    /// Ask the OS for a free loopback port and hold it open. Panics — like every one of the nine
+    /// `free_port()` copies this replaces already did — if the OS has none to give; there is no
+    /// meaningful fallback for a test fixture.
+    pub fn reserve() -> Self {
+        ReservedPort(std::net::TcpListener::bind("127.0.0.1:0").expect("a free port"))
+    }
+
+    /// The reserved port number, safe to write into a config file or argument list. Cheap and
+    /// side-effect-free to call repeatedly; the listener stays open until `release` (or `Drop`) —
+    /// call that immediately before spawning the process that will bind this port, not before.
+    pub fn port(&self) -> u16 {
+        self.0.local_addr().expect("a bound address").port()
+    }
+
+    /// Release the reservation. Call this the instant before `Command::spawn`, once every other
+    /// part of the fixture (config/provider YAML, a generated signing key, a second child's own
+    /// boot) is already prepared — that ordering is the entire fix: it is not dropping the listener
+    /// that was ever the problem, it is dropping it long before the child that needed the number.
+    pub fn release(self) {
+        drop(self);
+    }
+}
