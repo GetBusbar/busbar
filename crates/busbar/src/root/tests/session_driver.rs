@@ -1865,6 +1865,9 @@ async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
+        // This leg's dialect declares no credential presented at the upgrade, which is what the
+        // three rows this tree ships say for every dialect but one.
+        None,
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );
@@ -1925,6 +1928,9 @@ async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() 
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
+        // This leg's dialect declares no credential presented at the upgrade, which is what the
+        // three rows this tree ships say for every dialect but one.
+        None,
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );

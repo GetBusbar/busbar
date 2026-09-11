@@ -26,8 +26,8 @@ use busbar_contract::Transport;
 use busbar_contract_transport::driver::Outcome;
 use busbar_contract_transport::registry::facts as tfacts;
 use busbar_contract_transport::session::{
-    Cut, DuplexWire, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
-    SessionReply,
+    redact_url_credentials, CredentialAt, Cut, DuplexWire, LegCredential, SessionDriver,
+    SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
 };
 use busbar_contract_transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
@@ -902,6 +902,8 @@ async fn dialling_a_session_hands_back_the_source_the_lease_and_an_unspawned_dra
         &ws,
         &crate::battery::verified_upstream(host),
         &test_key_handle(),
+        // This destination's dialect declares no credential, so the dial is the one it always was.
+        None,
         "application/json",
         busbar_contract_transport::session::EGRESS_DEPTH,
     )
@@ -931,6 +933,168 @@ async fn dialling_a_session_hands_back_the_source_the_lease_and_an_unspawned_dra
         br#"{"kind":"provider"}"#.to_vec(),
         "the inbound half is a FrameSource, which is the same face the client half is pumped through"
     );
+    assert!(
+        source.next_frame().await.is_none(),
+        "the provider's close is the orderly end of the leg"
+    );
+    drain.await.expect("the drain finished");
+}
+
+/// A DIALECT THAT DECLARES A QUERY CREDENTIAL DIALS WITH IT — and the secret rides the ONE handshake
+/// rather than the sealed destination.
+///
+/// The measurement this stands on is that one duplex vendor's native scheme puts the API key in the
+/// URL's query string, and until this face existed the only code that could put it there was a
+/// vendor-named `format!` in a plane's own mount. What is asserted is the whole of the arrangement:
+/// the far end sees the declared parameter carrying the declared secret on the upgrade's request
+/// line; the destination this leg was sealed from still carries only host and port (an
+/// `&'static str` authority is interned for the life of the process, so a credential in it would
+/// outlive every session that used it); and the one redactor takes it back out of anything about to
+/// be logged.
+// The upgrade-inspecting callback's refusal arm is `tungstenite`'s own `ErrorResponse`, a whole HTTP
+// response by value. Nothing here ever takes that arm — the cell admits every upgrade and only
+// RECORDS what arrived — and the size of a foreign crate's error type is not a thing this cell can
+// box away without wrapping the callback face it is handed.
+#[allow(clippy::result_large_err)]
+#[tokio::test]
+async fn a_declared_query_credential_rides_the_upgrade_and_never_the_sealed_destination() {
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the upstream binds");
+    let addr = upstream.local_addr().expect("the upstream has an address");
+
+    // A provider that reports the request line it was dialled with, then closes.
+    let provider = tokio::spawn(async move {
+        let (tcp, _peer) = upstream.accept().await.expect("the leg arrives");
+        let seen = Arc::new(Mutex::new(String::new()));
+        let record = Arc::clone(&seen);
+        let mut sock = tokio_tungstenite::accept_hdr_async(
+            tcp,
+            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                *record.lock().expect("the recorder is not poisoned") = req.uri().to_string();
+                Ok(resp)
+            },
+        )
+        .await
+        .expect("the leg upgrades");
+        sock.close(None).await.expect("the provider closes");
+        let uri = seen.lock().expect("the recorder is not poisoned").clone();
+        uri
+    });
+
+    let ws = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let host: &'static str = Box::leak(format!("ws://{addr}/leg").into_boxed_str());
+    let dest = crate::battery::verified_upstream(host);
+    let (mut source, _lease, drain) = crate::mount::dial_session(
+        &ws,
+        &dest,
+        &test_key_handle(),
+        Some(LegCredential {
+            at: CredentialAt::Query("key"),
+            secret: "s3cr3t-provider-key",
+        }),
+        "application/json",
+        busbar_contract_transport::session::EGRESS_DEPTH,
+    )
+    .await
+    .expect("the leg dials");
+    let drain = tokio::spawn(drain);
+
+    let seen = provider.await.expect("the provider finished");
+    assert_eq!(
+        seen, "/leg?key=s3cr3t-provider-key",
+        "the declared parameter carried the declared secret on the upgrade the dialect asked for"
+    );
+    assert!(
+        !format!("{:?}", dest.facts()).contains("s3cr3t-provider-key"),
+        "the sealed destination is interned for the life of the process; the credential is built \
+         for one handshake and never reaches it"
+    );
+    assert_eq!(
+        redact_url_credentials("ws dial refused: ws://host/leg?key=s3cr3t-provider-key"),
+        "ws dial refused: ws://host/leg?key=<redacted>",
+        "the one redactor takes the secret back out of anything about to be logged or recorded"
+    );
+
+    assert!(
+        source.next_frame().await.is_none(),
+        "the provider's close is the orderly end of the leg"
+    );
+    drain.await.expect("the drain finished");
+}
+
+/// A DECLARED HEADER CREDENTIAL rides the upgrade's headers, and the URL is untouched.
+///
+/// The other arm of the same declaration, and it is a cell rather than a comment because the two
+/// arms take genuinely different code paths through the handshake: one rewrites a URL, one builds a
+/// client request. A dialect that declares the header form and silently dialled with the URL form
+/// would reach its provider unauthenticated, which is the failure this whole face exists to close.
+// The upgrade-inspecting callback's refusal arm is `tungstenite`'s own `ErrorResponse`, a whole HTTP
+// response by value. Nothing here ever takes that arm — the cell admits every upgrade and only
+// RECORDS what arrived — and the size of a foreign crate's error type is not a thing this cell can
+// box away without wrapping the callback face it is handed.
+#[allow(clippy::result_large_err)]
+#[tokio::test]
+async fn a_declared_header_credential_rides_the_upgrade_headers_and_not_the_url() {
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the upstream binds");
+    let addr = upstream.local_addr().expect("the upstream has an address");
+
+    let provider = tokio::spawn(async move {
+        let (tcp, _peer) = upstream.accept().await.expect("the leg arrives");
+        let seen = Arc::new(Mutex::new((String::new(), String::new())));
+        let record = Arc::clone(&seen);
+        let mut sock = tokio_tungstenite::accept_hdr_async(
+            tcp,
+            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                *record.lock().expect("the recorder is not poisoned") =
+                    (req.uri().to_string(), auth);
+                Ok(resp)
+            },
+        )
+        .await
+        .expect("the leg upgrades");
+        sock.close(None).await.expect("the provider closes");
+        let pair = seen.lock().expect("the recorder is not poisoned").clone();
+        pair
+    });
+
+    let ws = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let host: &'static str = Box::leak(format!("ws://{addr}/leg").into_boxed_str());
+    let (mut source, _lease, drain) = crate::mount::dial_session(
+        &ws,
+        &crate::battery::verified_upstream(host),
+        &test_key_handle(),
+        Some(LegCredential {
+            at: CredentialAt::Header("authorization"),
+            secret: "Bearer s3cr3t-provider-key",
+        }),
+        "application/json",
+        busbar_contract_transport::session::EGRESS_DEPTH,
+    )
+    .await
+    .expect("the leg dials");
+    let drain = tokio::spawn(drain);
+
+    let (uri, auth) = provider.await.expect("the provider finished");
+    assert_eq!(
+        auth, "Bearer s3cr3t-provider-key",
+        "the declared header carried the declared secret"
+    );
+    assert_eq!(
+        uri, "/leg",
+        "and the URL is the destination's own — a header credential puts nothing in a query string"
+    );
+
     assert!(
         source.next_frame().await.is_none(),
         "the provider's close is the orderly end of the leg"

@@ -40,6 +40,8 @@
 //! for why a session ended. A transport spells those onto its own numbering; nothing here knows the
 //! numbers.
 
+use core::fmt;
+
 use crate::driver::Outcome;
 use crate::surface::{Bar, WireSurface};
 use crate::wire::CloseReason;
@@ -254,6 +256,90 @@ pub struct SessionBudgets {
 /// would be this node buffering a peer's backlog on a session it is merely relaying, and a leg that
 /// has fallen this far behind is one the session is better off ending than hiding.
 pub const EGRESS_DEPTH: usize = 32;
+
+/// WHERE AN UPSTREAM TAKES THIS DEPLOYMENT'S CREDENTIAL, as the dialect that speaks to it declares.
+///
+/// A duplex upstream authenticates ONCE, at the upgrade, and every vendor spells that one
+/// presentation differently: one reads a request header, one reads a query parameter of the dial
+/// URL. Neither is a choice the composition root, the wire or the plane may make — it is the
+/// dialect's own statement about the protocol it speaks, so it is DECLARED on the dialect's row and
+/// read here rather than branched on a vendor's name at the dial.
+///
+/// The `Query` arm is why [`redact_url_credentials`] exists and why it is in this crate: this is the
+/// declaration that says a secret may travel in a URL, so the redactor that keeps it out of a log
+/// belongs beside it rather than in whichever caller remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialAt {
+    /// A request header of the upgrade, by name.
+    Header(&'static str),
+    /// A query parameter of the dial URL, by name.
+    Query(&'static str),
+}
+
+/// THE CREDENTIAL ONE LEG PRESENTS when it dials, with the place its dialect declared for it.
+///
+/// Borrowed, never owned: the secret is the deployment's, resolved once by the one catalog that
+/// resolves it, and a copy per dial would be a second lifetime for a value whose whole handling rule
+/// is that it has one. Not `Serialize` and not `Clone`: the only thing that may be done with this is
+/// present it.
+pub struct LegCredential<'a> {
+    /// Where the dialect said it goes.
+    pub at: CredentialAt,
+    /// The resolved secret itself.
+    pub secret: &'a str,
+}
+
+/// WRITTEN, NEVER DERIVED. A derived `Debug` puts the resolved secret in whatever line formatted the
+/// value — which is every `{:?}` an author reaches for while debugging a dial that will not open.
+/// This says where the credential goes and how long it is, which is what a reader of that line is
+/// actually asking, and says the value nowhere.
+impl fmt::Debug for LegCredential<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegCredential")
+            .field("at", &self.at)
+            .field("secret", &format_args!("<{} bytes>", self.secret.len()))
+            .finish()
+    }
+}
+
+/// SCRUB a credential carried in a dial target's QUERY STRING out of a message before it is logged.
+///
+/// THE ONE REDACTOR, and it is here because [`CredentialAt::Query`] is here: this crate is the one
+/// that declares a secret may ride a URL, so it is the one that owes the scrub. A dialect whose
+/// native scheme puts the key in the query means every URL-shaped refusal — a dialer quoting the
+/// target back verbatim, a handshake error, an audit record naming where a leg went — would
+/// otherwise write the deployment's resolved provider credential where it is exactly as readable as
+/// the config file it came from.
+///
+/// Everything from `key=` to the next delimiter is replaced. Deliberately blunt: this runs on paths
+/// about to be logged or recorded, and a message that over-redacts costs an operator nothing while
+/// one that under-redacts costs them the credential.
+#[must_use]
+pub fn redact_url_credentials(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut rest = msg;
+    while let Some(at) = rest.find("key=") {
+        // Only a query/fragment parameter — `key=` inside an ordinary word is not a credential.
+        let is_param = at == 0
+            || matches!(
+                rest.as_bytes()[at - 1],
+                b'?' | b'&' | b';' | b'#' | b' ' | b'"'
+            );
+        let (head, tail) = rest.split_at(at + "key=".len());
+        out.push_str(head);
+        if is_param {
+            let end = tail.find(['&', '#', '"', ' ', '\'']).unwrap_or(tail.len());
+            if end > 0 {
+                out.push_str("<redacted>");
+            }
+            rest = &tail[end..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// THE UPSTREAM HALF OF ONE SESSION, as a SYNCHRONOUS driver may reach it.
 ///

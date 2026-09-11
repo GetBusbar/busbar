@@ -25,6 +25,7 @@ use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRu
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::SessionBudget;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+use busbar_plane_streams::dialect::redact_url_credentials;
 use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
@@ -520,7 +521,7 @@ fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
     );
 
     // What the arm actually logs.
-    let logged = super::redact_url_credentials(&raw);
+    let logged = redact_url_credentials(&raw);
     assert!(
         !logged.contains(KEY),
         "the logged line must not carry the provider credential; it read: {logged}"
@@ -537,11 +538,11 @@ fn a_failed_gemini_dial_does_not_write_the_provider_key_into_the_log() {
 #[test]
 fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
     let plain = "connecting to the pinned address failed: connection refused";
-    assert_eq!(super::redact_url_credentials(plain), plain);
+    assert_eq!(redact_url_credentials(plain), plain);
     let worded = "the monkey=business key=";
-    assert_eq!(super::redact_url_credentials(worded), worded);
+    assert_eq!(redact_url_credentials(worded), worded);
     assert_eq!(
-        super::redact_url_credentials("wss://h/p?key=abc&alt=sse"),
+        redact_url_credentials("wss://h/p?key=abc&alt=sse"),
         "wss://h/p?key=<redacted>&alt=sse"
     );
 }

@@ -163,4 +163,5 @@ pub static AN_UPSTREAM_DIALECT: Dialect = Dialect {
     locked_session_config: None,
     reader: None,
     writer: None,
+    credential_at: None,
 };

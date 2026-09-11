@@ -98,9 +98,20 @@ them). Each axis is blind to the other two; only the kernel composes them.
   path grammar this contract already reads for a target template, matched by `match_target` and
   checked by `mount_is_wellformed`, with the capture a session's upgrade yields handed back off
   `duplex_binding_at` — a session declares no target template, so its binding's mounts are the only
-  place an identifier in a served URL is written down) — ≤ **1.1k** (1,056 measured
-  and pinned exact, 2026-09-10: the duplex seam is +177 over the 845 the crate held before it, the
-  egress lease +5 over that, and the mount pattern +29),
+  place an identifier in a served URL is written down), and the LEG CREDENTIAL a duplex upstream is
+  dialled with (`CredentialAt` — a header by name or a query parameter by name — `LegCredential`, and
+  `redact_url_credentials`): where a duplex upstream takes this deployment's credential is a fact of
+  the DIALECT that speaks to it, declared on the dialect's own row and read at the dial, never a
+  vendor's name branched on where the socket is opened. It is transport surface because the
+  presentation is a WIRE fact — which header, which query parameter — and the wire is what reads it;
+  nothing about it is priced, metered or routed, so no unit sees it and no plane holds one. The
+  redactor is here because `CredentialAt::Query` is here: this is the declaration that says a secret
+  may travel in a URL, so the crate that declares it owes the scrub that keeps it out of a log, and a
+  caller that had one and not the other is the leak. The credential is presented through ONE dial
+  body — `WsTransport::dial_with`, of which the frozen `Transport::dial` is `dial_with(.., None)` —
+  because a second dialling path is a second place to forget it — ≤ **1.1k** (1,099 measured
+  and pinned exact, 2026-09-11: the duplex seam is +177 over the 845 the crate held before it, the
+  egress lease +5 over that, the mount pattern +29, and the leg-credential face +43),
   gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,

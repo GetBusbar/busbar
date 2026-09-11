@@ -21,6 +21,10 @@ use busbar_contract_transport::registry::facts as tfacts;
 // Imported rather than spelled out at each signature: the same names were written long-form a dozen
 // times, which is a dozen places for this crate's reach into the seam to be counted and one place
 // for it to be read.
+// The LEG CREDENTIAL face is NOT behind `serve-sessions`: a credentialled DIAL is this transport's
+// outbound half, which every build has, and gating it would make the shipped binary's one dial body
+// depend on whether the serving half was compiled in.
+use busbar_contract_transport::session::{CredentialAt, LegCredential};
 #[cfg(feature = "serve-sessions")]
 use busbar_contract_transport::session::{
     DuplexWire, SessionBudgets, SessionDriver, SessionEnd, SessionHandle,
@@ -346,7 +350,7 @@ impl WsTransport {
         self.handshake(
             Box::new(stream),
             is_server,
-            url,
+            ClientUpgrade::at(url),
             peer,
             vec!["ws"],
             LowerFacts::default(),
@@ -572,11 +576,12 @@ impl WsTransport {
         &self,
         stream: Box<dyn LowerIo>,
         is_server: bool,
-        url: &str,
+        client: ClientUpgrade<'_>,
         peer: &str,
         chain: Vec<&'static str>,
         lower: LowerFacts,
     ) -> Result<Conn, TransportError> {
+        let ClientUpgrade { url, header } = client;
         // Both roles are bounded by the same budget: a peer that never answers is the same
         // unbounded wait whichever side opened the stream.
         let ws_cfg = self.ws_config();
@@ -585,6 +590,28 @@ impl WsTransport {
                 tokio_tungstenite::accept_async_with_config(stream, ws_cfg)
                     .await
                     .map_err(|_| TransportError::HandshakeFailed)?
+            } else if let Some((name, value)) = header {
+                // The ONE place a request is built rather than derived from the URL: tungstenite's
+                // `IntoClientRequest` for a `&str` writes the mandatory upgrade headers and nothing
+                // else, so a declared credential header is added to that request rather than
+                // replacing it. A name or a value the HTTP grammar refuses is a HANDSHAKE FAILURE
+                // and not a dial that silently drops the credential and reaches the provider
+                // unauthenticated.
+                use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+                let mut req = url
+                    .into_client_request()
+                    .map_err(|_| TransportError::AddressRefused)?;
+                let name = tokio_tungstenite::tungstenite::http::header::HeaderName::try_from(name)
+                    .map_err(|_| TransportError::HandshakeFailed)?;
+                let value =
+                    tokio_tungstenite::tungstenite::http::header::HeaderValue::try_from(value)
+                        .map_err(|_| TransportError::HandshakeFailed)?;
+                req.headers_mut().insert(name, value);
+                let (sock, _resp) =
+                    tokio_tungstenite::client_async_with_config(req, stream, ws_cfg)
+                        .await
+                        .map_err(|_| TransportError::HandshakeFailed)?;
+                sock
             } else {
                 let (sock, _resp) =
                     tokio_tungstenite::client_async_with_config(url, stream, ws_cfg)
@@ -713,75 +740,19 @@ impl Transport for WsTransport {
         })
     }
 
+    /// THE FROZEN DIAL, which is [`WsTransport::dial_with`] with NO credential.
+    ///
+    /// ONE DIAL BODY, not two. The trait's signature carries no place for a provider secret and is
+    /// not widened to gain one — every transport family would then declare a parameter one of them
+    /// reads — so the credentialled form is an inherent method and this is the call that passes
+    /// `None`. A caller reaching the trait is a caller whose destination authenticates some other
+    /// way, and it gets the identical socket.
     fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
-        Box::pin(async move {
-            let DestinationFacts::Upstream { address, .. } = dest.facts() else {
-                return Err(TransportError::AddressRefused);
-            };
-            let url = address.authority().ok_or(TransportError::AddressRefused)?;
-            let (secure, host_name, port, path) = split_ws_url(url)?;
-            let authority: &'static str = intern(&format!("{host_name}:{port}"));
-
-            // The socket is the layer below's, dialled against the address this destination already
-            // carries — no name is resolved here, which is what puts the network guard in front of
-            // the dial instead of inside it. Re-addressing narrows the sealed destination to what
-            // that layer reads; it does not re-seal it, and it cannot widen where the unit may go.
-            let lower = self.lower()?;
-            // A `wss://` target says the bytes are encrypted before they leave this process, and
-            // this transport encrypts nothing of its own: it upgrades whatever stream the layer
-            // below gives up. So the secure claim is the lower layer's to keep, and over a
-            // cleartext one the handshake would go out as a plain GET with no certificate ever
-            // validated — a downgrade the destination never asked for. The dial is refused before
-            // a socket is opened, which is the only answer that does not put cleartext on a wire
-            // the caller was told was secure. Wrapping the stream here instead was the alternative
-            // and is the wrong seam: the trust roots a node accepts upstream are the deployment's
-            // statement, held by the `tls` layer's client config, not a root store this crate
-            // would invent per dial.
-            if secure && lower.key() != "tls" {
-                return Err(TransportError::AddressRefused);
-            }
-            let beneath = dest
-                .beneath(
-                    lower.key(),
-                    busbar_contract_transport::dest::UpstreamAddress::Socket {
-                        authority,
-                        sni: address.sni().or(if secure {
-                            Some(intern(&host_name))
-                        } else {
-                            None
-                        }),
-                        extras: &[],
-                    },
-                )
-                .ok_or(TransportError::AddressRefused)?;
-            let conn = lower.dial(&beneath, keys).await?;
-            // The whole record, not only the chain: the layer below is about to give the stream
-            // up and will never be able to answer for this connection again.
-            let below = lower.arrival(&conn);
-            let facts = LowerFacts::of(&below);
-            let mut chain = below.transport_chain;
-            let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
-            chain.push(<Self as TransportMeta>::KEY);
-
-            let request_url = format!(
-                "{}://{host_name}:{port}{path}",
-                if secure { "wss" } else { "ws" }
-            );
-            let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            self.handshake(
-                Box::new(stream),
-                false,
-                &request_url,
-                authority,
-                chain,
-                facts,
-            )
-            .await
-        })
+        Box::pin(async move { self.dial_with(dest, keys, None).await })
     }
 
     fn frames(&self, conn: Conn) -> FrameStream {
@@ -978,8 +949,15 @@ impl Transport for WsTransport {
             chain.push(<Self as TransportMeta>::KEY);
             let peer = raw.peer().to_string();
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            self.handshake(Box::new(stream), true, "", &peer, chain, facts)
-                .await
+            self.handshake(
+                Box::new(stream),
+                true,
+                ClientUpgrade::SERVER,
+                &peer,
+                chain,
+                facts,
+            )
+            .await
         })
     }
 
@@ -1114,6 +1092,32 @@ impl Drop for PoisonGuard<'_> {
     }
 }
 
+/// THE CLIENT UPGRADE this transport sends: the URL the handshake is made for, and the credential
+/// header the leg's dialect declared, where it declared one.
+///
+/// One value rather than two parameters because they ARE one thing — a request line and its headers
+/// — and because the server side has neither: an accepted upgrade arrives already written. Private,
+/// and carries a borrowed secret, so it is neither `Debug` nor `Clone`.
+struct ClientUpgrade<'a> {
+    /// The absolute URL the handshake is sent for, credential query parameter and all.
+    url: &'a str,
+    /// The declared credential header, as `(name, value)`.
+    header: Option<(&'a str, &'a str)>,
+}
+
+impl<'a> ClientUpgrade<'a> {
+    /// A SERVER upgrade, which has no request of this node's making at all.
+    const SERVER: Self = Self {
+        url: "",
+        header: None,
+    };
+
+    /// A client upgrade at a URL, with no declared credential header.
+    const fn at(url: &'a str) -> Self {
+        Self { url, header: None }
+    }
+}
+
 /// The keys an accept-side upgrade is adopted under.
 ///
 /// The WebSocket handshake needs no key material of its own: whatever secured the bytes was
@@ -1128,3 +1132,118 @@ static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> = std::sync::LazyLock::n
     }
     TransportKeyHandle::issue(&NoKeySeal, 0, "none")
 });
+
+impl WsTransport {
+    /// DIAL AN UPSTREAM LEG, presenting the credential its dialect declared for it.
+    ///
+    /// The whole of this transport's outbound dial, and the only one: [`Transport::dial`] is this
+    /// with `cred: None`. WHERE the credential goes is the DIALECT's own declaration
+    /// ([`CredentialAt`]) and never a branch on a vendor's name here — a `Query` credential is
+    /// appended to the request URL the upgrade is sent for, a `Header` one rides that upgrade's
+    /// headers, and a destination with neither dials exactly as it did before this parameter
+    /// existed.
+    ///
+    /// THE SECRET NEVER REACHES THE SEALED DESTINATION. `UpstreamAddress::Socket::authority` is
+    /// `&'static str` and interned for the life of the process; a credentialled URL interned there
+    /// would be a secret in a leak that outlives every session and prints in every address dump. So
+    /// the credentialled URL is built HERE, for one handshake, and the address this destination is
+    /// re-sealed beneath below carries the host and the port alone.
+    ///
+    /// # Errors
+    ///
+    /// The destination is not an upstream socket, its URL will not split, the layer below refused
+    /// the dial, or the upgrade failed. No arm quotes the URL, so none can carry the secret out.
+    pub async fn dial_with(
+        &self,
+        dest: &VerifiedDestination,
+        keys: &TransportKeyHandle,
+        cred: Option<LegCredential<'_>>,
+    ) -> Result<Conn, TransportError> {
+        let DestinationFacts::Upstream { address, .. } = dest.facts() else {
+            return Err(TransportError::AddressRefused);
+        };
+        let url = address.authority().ok_or(TransportError::AddressRefused)?;
+        let (secure, host_name, port, path) = split_ws_url(url)?;
+        let authority: &'static str = intern(&format!("{host_name}:{port}"));
+
+        // The socket is the layer below's, dialled against the address this destination already
+        // carries — no name is resolved here, which is what puts the network guard in front of
+        // the dial instead of inside it. Re-addressing narrows the sealed destination to what
+        // that layer reads; it does not re-seal it, and it cannot widen where the unit may go.
+        let lower = self.lower()?;
+        // A `wss://` target says the bytes are encrypted before they leave this process, and
+        // this transport encrypts nothing of its own: it upgrades whatever stream the layer
+        // below gives up. So the secure claim is the lower layer's to keep, and over a
+        // cleartext one the handshake would go out as a plain GET with no certificate ever
+        // validated — a downgrade the destination never asked for. The dial is refused before
+        // a socket is opened, which is the only answer that does not put cleartext on a wire
+        // the caller was told was secure. Wrapping the stream here instead was the alternative
+        // and is the wrong seam: the trust roots a node accepts upstream are the deployment's
+        // statement, held by the `tls` layer's client config, not a root store this crate
+        // would invent per dial.
+        if secure && lower.key() != "tls" {
+            return Err(TransportError::AddressRefused);
+        }
+        let beneath = dest
+            .beneath(
+                lower.key(),
+                busbar_contract_transport::dest::UpstreamAddress::Socket {
+                    authority,
+                    sni: address.sni().or(if secure {
+                        Some(intern(&host_name))
+                    } else {
+                        None
+                    }),
+                    extras: &[],
+                },
+            )
+            .ok_or(TransportError::AddressRefused)?;
+        let conn = lower.dial(&beneath, keys).await?;
+        // The whole record, not only the chain: the layer below is about to give the stream
+        // up and will never be able to answer for this connection again.
+        let below = lower.arrival(&conn);
+        let facts = LowerFacts::of(&below);
+        let mut chain = below.transport_chain;
+        let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+        chain.push(<Self as TransportMeta>::KEY);
+
+        let mut request_url = format!(
+            "{}://{host_name}:{port}{path}",
+            if secure { "wss" } else { "ws" }
+        );
+        // THE QUERY ARM, built for THIS handshake and nothing else. The separator is read off
+        // the path the destination already declared, so a dialect whose mount carries a query of
+        // its own gains a parameter rather than a second `?`.
+        if let Some(LegCredential {
+            at: CredentialAt::Query(name),
+            secret,
+        }) = cred.as_ref()
+        {
+            let sep = if request_url.contains('?') { '&' } else { '?' };
+            request_url.push(sep);
+            request_url.push_str(name);
+            request_url.push('=');
+            request_url.push_str(secret);
+        }
+        let header = match cred.as_ref() {
+            Some(LegCredential {
+                at: CredentialAt::Header(name),
+                secret,
+            }) => Some((*name, *secret)),
+            _ => None,
+        };
+        let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
+        self.handshake(
+            Box::new(stream),
+            false,
+            ClientUpgrade {
+                url: &request_url,
+                header,
+            },
+            authority,
+            chain,
+            facts,
+        )
+        .await
+    }
+}

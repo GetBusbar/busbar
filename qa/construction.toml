@@ -153,7 +153,7 @@ busbar-voice = ["busbar-voice-codec"]
 [gate.surface_ceilings]
 contract_caps = 3489
 grammar = 388
-contract_transport = 1056
+contract_transport = 1099
 
 # ── declared raises: the streams line's SURFACE — the duplex session seam and the DUPLEX dispatch kind
 # are contract-transport surface, and the root's one route to that seam is one line of busbar-contract.
@@ -1671,3 +1671,49 @@ key = "cell.busbar.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 3
 because = "busbar x dialect (busbar, dialect): the SAME projector battery, counted a second time under the dialect kind for the reason the matrix states — a dialect's instance IS its plane, so the two columns rise together by construction rather than for two different reasons. The three hits are the binding the battery opens its session on, which is the one the real plane declares for the dialect whose posture the projection renders; a cell that opened on a different binding would be projecting a session this plane does not serve (705 -> 708)"
+
+# ── declared raises: THE LEG-CREDENTIAL FACE. A duplex upstream authenticates ONCE, at the upgrade,
+# and until this face existed the only code that could present that credential was a vendor-named
+# `format!` inside one plane's own mount — so a leg dialled through the composition root's egress port
+# reached its provider UNAUTHENTICATED. Seven entries, one per ceiling the face measured; each expires
+# when the base carries the number.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_transport"
+by = 43
+because = "FACE busbar_contract_transport::session::{CredentialAt, LegCredential, redact_url_credentials} \u2014 WHERE a duplex upstream takes this deployment's credential, declared by the DIALECT that speaks to it rather than branched on a vendor's name at the dial, plus the scrub that declaration obliges. It is transport-contract surface because the presentation is a WIRE fact (which header, which query parameter) and the wire is what reads it; nothing about it is priced, metered or routed, so no unit sees it. A plugin author writing a dialect row reads exactly this. 18 surface lines for the two types and their Debug (1,056 -> 1,074) and 25 for the redactor (1,074 -> 1,099), measured by scripts/loc-surface.py. The redactor is HERE and not in a caller because `CredentialAt::Query` is the declaration that says a secret may travel in a URL: the crate that admits that is the crate that owes the scrub, and a caller holding one and not the other is the leak. It is a MOVE, not a new write \u2014 the identical 25 lines left busbar-voice's mount in the same commit, so the tree is flat on it and only the ownership changed"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-transport-ws.transport.count"
+file = "qa/kind-isolation.toml"
+by = 19
+because = "busbar-transport-ws x transport (busbar-transport-ws, transport): the ONE dial body gains the credential the leg's dialect declared. `Transport::dial` is FROZEN and is not widened to carry a provider secret \u2014 every family would then declare a parameter one of them reads \u2014 so the credentialled form is the inherent `dial_with` and the trait method is that call with `None`. The lines are the inherent signature, the query-parameter append, the client-request arm that carries a declared header, the private `ClientUpgrade` that keeps the handshake's arity where it was, and two cells that drive a real upgrade to a real socket and read back what the far end saw. A wire presenting a credential in the place its dialect named, in the crate that owns the wire (217 -> 236)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-transport-ws.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar-transport-ws x contract-transport (busbar-transport-ws, contract-transport): the same dial body naming the face it presents. Three hits and not one per use: the two types are imported once, unconditionally rather than behind `serve-sessions`, because a credentialled DIAL is this transport's outbound half and every build has one \u2014 gating it would make the shipped binary's dial depend on whether the serving half was compiled in \u2014 and the cells name the face through the same import (115 -> 118)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x contract-transport (busbar, contract-transport): the composition root's egress port HOLDS the leg's credential. It is a property of the LEG, settled once when the composition bound it \u2014 the row's dialect said where it goes, the node's one upstream catalog says what it is, and neither answer can change between two dials of the same leg \u2014 so it is a field rather than a per-dial read. The four are the field's two type names, the borrow that builds the borrowed face for one call, and the Debug arm that prints WHERE the credential goes and never whether one is set. No second resolver and no second dialling path enters the root for it (76 -> 80)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-streams.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-plane-streams x contract-transport (busbar-plane-streams, contract-transport): ONE line, and it is the neutral plane re-exporting the presentation enum and the scrub that rides with it so a DIALECT CRATE names its PLANE for the types its plane's row is written in. Without it every dialect would carry the transport contract in its dependency line for one enum its plane already declares, which is the direction rule's own shape read backwards. The row's new field is spelled in the re-exported name and adds nothing further (7 -> 8)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-voice x dialect (busbar-voice, dialect): the legacy plane STOPS OWNING A REDACTOR and names the neutral plane's instead \u2014 one `use` line in the mount and one in its cells, because the row that says a credential rides a query string is the row that obliges the scrub and this crate holds neither. It is the shape of a deletion rather than a write: twenty-five production lines left this crate in the same commit and what replaced them is two imports, both of which fall with the mount bodies they serve (718 -> 720)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar-voice x plane (busbar-voice, plane): the SAME two import lines, counted a second time under the plane kind, because the neutral plane's crate name is spelled in each of them and `busbar_plane_streams::dialect` is one hit in each column by construction. There is no line here that is not already declared above, and both fall with the legacy bodies that call through them (839 -> 843)"

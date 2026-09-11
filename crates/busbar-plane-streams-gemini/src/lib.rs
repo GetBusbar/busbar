@@ -67,7 +67,7 @@
 // the plane's dialect module precisely so a dialect names its PLANE for the types its plane's face
 // is written in. Only the CODEC — this dialect's own reader/writer, which is what the pre-split half
 // still holds — is reached past it.
-use busbar_plane_streams::dialect::{Dialect, DuplexReader, DuplexWriter};
+use busbar_plane_streams::dialect::{CredentialAt, Dialect, DuplexReader, DuplexWriter};
 use busbar_voice_codec::ir::GeminiLiveCodec;
 
 /// This dialect's WIRE NAME — the string on the session's dialect fact, the string the `dialects`
@@ -110,4 +110,10 @@ pub static GEMINI_LIVE: Dialect = Dialect {
     // THE TWO FIELDS THIS CRATE EXISTS FOR. They were an `if name ==` in the neutral plane.
     reader: Some(reader),
     writer: Some(writer),
+    // THIS VENDOR PUTS THE KEY IN THE QUERY STRING. It is its published scheme for this protocol
+    // and not a choice anything in this tree makes; declaring it here is what lets the wire present
+    // it without the neutral plane, the composition root or the transport naming this vendor. It is
+    // also the whole reason the contract owns a URL redactor: a secret in a query string is a secret
+    // in every URL-shaped error message and audit record unless something takes it back out.
+    credential_at: Some(CredentialAt::Query("key")),
 };

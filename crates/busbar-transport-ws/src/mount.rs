@@ -362,9 +362,15 @@ pub use busbar_contract_transport::session::SessionBudgets;
 /// Nothing about WHERE the leg goes. The destination is already sealed and already narrowed by the
 /// trust unit's resolve-then-pin guard, and the `wss://`-over-cleartext refusal is the dial's own,
 /// made before a socket is opened — this call reaches it through the same
-/// [`busbar_contract::Transport::dial`] every other caller does, so there is no second dialling path
-/// to keep honest. What it adds is only the OWNERSHIP move: the socket leaves the connection
-/// registry whole, which is what makes the session its single owner.
+/// [`busbar_transport_ws::WsTransport::dial_with`](crate::WsTransport::dial_with) — the ONE dial
+/// body, of which [`busbar_contract::Transport::dial`] is the no-credential call — so there is no
+/// second dialling path to keep honest. What it adds is only the OWNERSHIP move: the socket leaves
+/// the connection registry whole, which is what makes the session its single owner.
+///
+/// `cred` is the leg's own, as ITS DIALECT declared the presentation: a duplex upstream
+/// authenticates once at the upgrade, and which header or which query parameter carries that is a
+/// protocol fact the dialect's row states. `None` is the honest posture for a destination that
+/// authenticates some other way, and it dials exactly as this call did before the parameter existed.
 ///
 /// `media` is the declaration's, for the reason this module's [`FrameSink`] takes one: this wire has
 /// two frame kinds and the declaration is the only thing entitled to choose which carries a plane's
@@ -380,6 +386,7 @@ pub async fn dial_session(
     transport: &crate::WsTransport,
     dest: &busbar_contract::dest::VerifiedDestination,
     keys: &busbar_contract::TransportKeyHandle,
+    cred: Option<busbar_contract_transport::session::LegCredential<'_>>,
     media: &str,
     depth: usize,
 ) -> Result<
@@ -390,9 +397,7 @@ pub async fn dial_session(
     ),
     TransportError,
 > {
-    use busbar_contract::Transport as _;
-
-    let conn = transport.dial(dest, keys).await?;
+    let conn = transport.dial_with(dest, keys, cred).await?;
     // Whole, and out of the registry in the same breath. A socket left reachable by `Conn` while a
     // session held its two halves would be two unsynchronised writers on one WebSocket, which is a
     // protocol error rather than a race that resolves itself.

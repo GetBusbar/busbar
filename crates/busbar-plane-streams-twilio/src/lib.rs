@@ -382,6 +382,10 @@ pub static TWILIO_MEDIA_STREAMS: Dialect = Dialect {
     // plane pick without an `if` about a vendor.
     reader: None,
     writer: None,
+    // DECLARED `None`, and for the strongest reason of the three: this row is a CARRIER claim. It
+    // is ingress only — a unit ARRIVES on it and is routed to a duplex upstream, never dialled as
+    // one — so there is no upgrade of this node's making for a credential to ride.
+    credential_at: None,
 };
 
 /// This dialect's own row, for the two places its reader has to name it.

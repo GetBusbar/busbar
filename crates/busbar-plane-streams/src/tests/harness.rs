@@ -211,6 +211,7 @@ pub static A_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect {
     locked_session_config: None,
     reader: None,
     writer: None,
+    credential_at: None,
 };
 
 /// REGISTER [`A_DIALECT`], once per test process.
