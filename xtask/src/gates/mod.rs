@@ -869,7 +869,7 @@ impl<'a> Report<'a> {
             infra,
             ..
         } = other;
-        let mut mine = self
+        let mine = self
             .plans
             .get_mut()
             .expect("the plan list is never held across a panic");
@@ -885,7 +885,6 @@ impl<'a> Report<'a> {
                 .into_inner()
                 .expect("the plan list is never held across a panic"),
         );
-        let _ = &mut mine;
         self.infra.extend(infra);
         self.mark = std::time::Instant::now();
     }
