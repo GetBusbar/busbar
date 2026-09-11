@@ -129,6 +129,32 @@ fn safe_mode_requested_matches_the_exact_flag_only() {
     assert!(!safe_mode_requested(std::iter::empty()));
 }
 
+/// `probe_load_requested`: true iff `--probe-load` is literally present. It is the flag that turns
+/// `--list-plugins` from a manifest inventory into a REAL `dlopen` of every verified tarball, and
+/// mapping a library runs its initialiser — so a near-miss spelling must read as absent, never as
+/// "close enough". The default must be the one that runs nothing.
+#[test]
+fn probe_load_requested_matches_the_exact_flag_only() {
+    let args = |a: &[&str]| {
+        a.iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    };
+    assert!(probe_load_requested(args(&[
+        "busbar",
+        "--list-plugins",
+        "--probe-load"
+    ])));
+    assert!(!probe_load_requested(args(&["busbar", "--list-plugins"])));
+    assert!(!probe_load_requested(args(&["busbar", "--probe-loads"])));
+    assert!(!probe_load_requested(args(&[
+        "busbar",
+        "--probe-load=true"
+    ])));
+    assert!(!probe_load_requested(std::iter::empty()));
+}
+
 /// `value_flag`: extracts a value-taking flag in all accepted forms — `--long value`, `--long=value`,
 /// and the short `-x value` — returning the LAST occurrence, and `None` when the flag is absent.
 #[test]
