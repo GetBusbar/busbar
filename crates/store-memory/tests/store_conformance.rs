@@ -127,7 +127,7 @@ fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
 /// write verbs were given, including the tombstone. It says nothing about a restart, and this store
 /// loses every row at one — see the suite's own doc on `assert_key_spend_and_metering_survive_a_
 /// reopen`. The durability half is earned only by a backend whose second `open` really is a second
-/// open (the file-backed store-example plugin, in-process and over dlopen, does exactly that).
+/// open — a file-backed plugin backend, in process and over its dynamic-library seam, does that.
 ///
 /// It is wired anyway for the reason the module header gives: a suite the reference backend sits out
 /// of is a suite nobody has to agree with, and read-back is a real half of the claim that this
@@ -135,9 +135,8 @@ fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
 /// removed the row instead of tombstoning it) and that nothing else here would catch.
 #[test]
 fn key_spend_and_metering_survive_a_reopen() {
-    let shared: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(MemoryStore::new());
-    conf::assert_key_spend_and_metering_survive_a_reopen(
-        &|| std::sync::Arc::clone(&shared),
-        "confreopen",
-    );
+    // `shared_opener` is the suite's own name for "there is nothing to reopen": it hands back the
+    // same live store every time, and it carries the caveat above in one place instead of here.
+    let open = conf::shared_opener(std::sync::Arc::new(MemoryStore::new()));
+    conf::assert_key_spend_and_metering_survive_a_reopen(&open, "confreopen");
 }

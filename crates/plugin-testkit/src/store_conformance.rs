@@ -911,16 +911,31 @@ pub fn reopen_metering(key_id: &str) -> MeteringDelta {
     }
 }
 
+/// An opener over ONE ALREADY-OPEN STORE, for a backend that has no separate backing to reopen.
+///
+/// [`assert_key_spend_and_metering_survive_a_reopen`] takes an opener because the claim is about a
+/// SECOND handle; an in-memory backend cannot give it one, since its backing is the process itself.
+/// This is the honest way to say that: every call hands back the same live store, so the assertion
+/// degrades from a durability proof to a READ-BACK proof, and it degrades in ONE place that says so
+/// rather than at each call site inventing its own cast.
+///
+/// It also saves an ephemeral backend from having to name the trait's home crate just to annotate a
+/// closure's return type — the kind of incidental coupling the isolation ledger counts.
+pub fn shared_opener<S: Store + 'static>(store: Arc<S>) -> impl Fn() -> Arc<dyn Store> {
+    move || Arc::clone(&store) as Arc<dyn Store>
+}
+
 /// **State written through the face — a virtual key, its usage ledger, and a metering row — is
 /// readable back, UNCHANGED, through a handle obtained by RE-OPENING the same backing.**
 ///
 /// That single sentence is the whole claim, and it is the same claim the recorded
-/// `plugins.store-persist|*` oracle cells make over HTTP (mint a key, spend against it, kill the
-/// process, boot it again, read the key and its spend back). This is that claim at the SEAM instead:
-/// no server, no transport, no admin JSON — just [`busbar_api::Store`], so a backend that fails it
-/// fails here with the verb named rather than as a 404 three layers up. The two are deliberately the
-/// same claim stated twice, because the HTTP cell can only ever be run against whatever backend the
-/// harness happened to deploy, and this one runs against every backend in the fleet.
+/// `plugins.store-persist|*` oracle cells make end to end over the wire (mint a key, spend against
+/// it, kill the process, boot it again, read the key and its spend back). This is that claim at the
+/// SEAM instead: no server, no wire, no operator-facing JSON — just [`Store`] — so a backend that
+/// fails it fails here with the verb named rather than as a 404 three layers up. The two are
+/// deliberately the same claim stated twice, because the recorded cell can only ever be run against
+/// whatever backend the harness happened to deploy, and this one runs against every backend in the
+/// fleet.
 ///
 /// # What `open` means, and the one thing a green row here does NOT prove
 ///
@@ -949,7 +964,7 @@ pub fn reopen_metering(key_id: &str) -> MeteringDelta {
 /// `Some(VirtualKey::default())`, or an empty `UsageLedger`, or a zeroed `MeteringRow`, would
 /// satisfy a presence check while having kept nothing, and that is the exact defect shape here: a
 /// write verb that returns `Ok(())` and drops the row. `revision` is the one field excluded — it is
-/// a store-global monotonic stamp the BACKEND owns (see [`busbar_api::VirtualKey::revision`]), so
+/// a store-global monotonic stamp the BACKEND owns (see [`VirtualKey::revision`]), so
 /// its value across a reopen is the backend's business, not the contract's.
 ///
 /// It also covers the TOMBSTONE across the reopen: `delete_key` is a tombstone, not a remove, so the
