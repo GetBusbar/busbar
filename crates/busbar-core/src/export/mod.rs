@@ -20,9 +20,10 @@
 //!   a crate of kind `export`, which this crate may not name. What is left here is the config
 //!   layer's own job — resolving the operator's `module:` token, the settings under it and, for a
 //!   webhook, the SSRF verdict on its target — which this module hands to the composition root as
-//!   [`request_log_webhook_instances`] and [`request_log_file_instances`]. The one piece of a
-//!   webhook DELIVERY that is not the sink's is the socket, and that is the engine's egress client:
-//!   [`webhook_send`], which leaves with that client and not with the sink.
+//!   [`request_log_webhook_instances`] and [`request_log_file_instances`]. The one piece of any
+//!   push DELIVERY that is not the sink's is the socket, and that is the engine's egress client:
+//!   [`export_delivery_send`], ONE send for the whole kind, which leaves with that client and not
+//!   with any sink.
 //!
 //! WHAT LEFT. The FAN-OUT is not here any more: the composition root builds one payload per
 //! distinct projection, sheds for each sink against a gate it owns, and calls the sink. With the
@@ -40,7 +41,6 @@ pub use busbar_plugin::cold::export::projection::{build_request_log, Projection,
 use busbar_plugin_loader::ExportStream;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::OwnedSemaphorePermit;
 
 /// The streams the `request-log-file` sink carries. Its BODY is a crate of kind `export`, which
 /// this crate may not name — but resolving which sink an operator's `module:` token names, and what
@@ -134,22 +134,33 @@ pub fn request_log_webhook_instances(cfg: &ExportCfg) -> Vec<RequestLogWebhookIn
 }
 
 /// Put ONE stated delivery on the wire: the target, the headers and the body the sink stated, that
-/// instance's own deadline, the permit holding its slot, and the callback the outcome (an answered
-/// status, or a URL-FREE cause) is handed back to. Fire-and-forget — it returns immediately.
-pub type RequestLogWebhookSend = Arc<
+/// instance's own deadline, whatever the composer wants HELD for the length of the exchange, and
+/// the callback the outcome (an answered status, or a URL-FREE cause) is handed back to.
+/// Fire-and-forget — it returns immediately.
+///
+/// ONE SEND FOR THE WHOLE KIND, not one per sink. Every push sink of kind `export` states a
+/// delivery and none of them may name a socket, so the wire they are all put on is this one. It is
+/// NOT named after the first sink that needed it: a second sink reaching for a function called
+/// after the first would be the engine keeping a sink's name after that sink left.
+///
+/// THE HOLD IS OPAQUE ON PURPOSE. What keeps an exchange's slot is the COMPOSER's business — one
+/// admission permit for one webhook line, a whole drained batch's permits for one span export — and
+/// a signature that named a semaphore would be this crate deciding a shed policy it does not own.
+/// It is kept alive until the exchange ends and is never read.
+pub type ExportDeliverySend = Arc<
     dyn Fn(
             String,
             Vec<(String, String)>,
             Vec<u8>,
             Duration,
-            OwnedSemaphorePermit,
+            Box<dyn Send>,
             Box<dyn FnOnce(Result<u16, String>) + Send>,
         ) + Send
         + Sync,
 >;
 
-/// The process's webhook delivery, built ONCE by the composition root and shared by every webhook
-/// sink it composes. Call it only when at least one instance is configured: it builds a client.
+/// The process's export delivery, built ONCE by the composition root and shared by every push sink
+/// it composes. Call it only when at least one instance needs it: it builds a client.
 ///
 /// WHY THIS IS STILL HERE. The sink frames the POST; opening the socket is the ENGINE's egress
 /// client on the cold open-web posture, which no crate of kind `export` may name. It is its own
@@ -160,14 +171,14 @@ pub type RequestLogWebhookSend = Arc<
 /// operator-configured hosts, exactly the shape the LLM lanes pool for); the per-DELIVERY total
 /// timeout is each target's own `delivery_timeout_secs`, applied per request below. This goes with
 /// the egress client when the egress client goes.
-pub fn request_log_webhook_send() -> RequestLogWebhookSend {
+pub fn export_delivery_send() -> ExportDeliverySend {
     let client = crate::proxy::build_egress_client(&crate::proxy::EgressClientSpec::pooled_webpki(
         usize::MAX,
         90,
         false,
         false,
     ));
-    Arc::new(move |url, headers, body, timeout, permit, outcome| {
+    Arc::new(move |url, headers, body, timeout, hold, outcome| {
         let client = client.clone();
         let Ok(uri) = url.parse::<http::Uri>() else {
             // Structurally unreachable: the target survived its guard at resolution. Answered as a
@@ -188,7 +199,7 @@ pub fn request_log_webhook_send() -> RequestLogWebhookSend {
             }
         }
         busbar_substrate::detached::spawn_detached(async move {
-            let _permit = permit; // slot releases on task end via the owned permit's Drop.
+            let _hold = hold; // whatever the composer held for this exchange releases on task end.
             let req = busbar_substrate::egress::engine::request(
                 http::Method::POST,
                 uri,

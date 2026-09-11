@@ -1230,10 +1230,12 @@ async fn run(data_workers: usize) {
     // subsequent startup and request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    root::logging::init_logging(
-        otlp_cfg.as_ref().map(|o| o.url.as_str()),
-        mcp_stdio_requested(std::env::args()),
-    );
+    // COMPOSE THE SPAN EXPORT BEFORE THE SUBSCRIBER, because a layer cannot be added to a
+    // subscriber that already exists. This builds the sink, its ONE gate, its ONE queue and the
+    // wire it puts an export on; `None` ⇒ no `otlp` instance (or an endpoint the SSRF guard
+    // refused), in which case no client is built and no span is ever observed.
+    let traces_layer = root::units_export::traces::install(otlp_cfg.as_ref());
+    root::logging::init_logging(traces_layer, mcp_stdio_requested(std::env::args()));
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -1545,12 +1547,13 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "proto-llm")]
     app_handle.set_snapshot_host(boot_host);
 
-    // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
-    // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
-    // exported rather than dropped when the runtime tears down. The signal future is panic-free —
-    // a failed registration logs and parks forever (so a missing signal facility degrades to "no
-    // graceful shutdown", never a crash), and `shutdown_tracing()` is a no-op when OTLP is off.
-    // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
+    // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections and let
+    // in-flight requests drain. Every background task of this process — the budget flusher, the
+    // metrics fold, the span drain — takes its stop from THIS broadcast, so the final (most
+    // diagnostic) spans are exported by the span drain's own `Final` tick rather than dropped when
+    // the runtime tears down. The signal future is panic-free — a failed registration logs and
+    // parks forever (so a missing signal facility degrades to "no graceful shutdown", never a
+    // crash). ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
     // process-global is the honest home: restarting is a process-wide act, not a property of an
@@ -1592,6 +1595,14 @@ async fn run(data_workers: usize) {
         )));
     }
 
+    // THE SPAN DRAIN, on the same tick and the same broadcast. It is a no-op — it returns
+    // immediately — when no `otlp` instance was composed. This is what replaced the SDK batch
+    // processor's own flush: the last interval of spans before a stop is EXPORTED, on a task this
+    // process spawned and can stop, instead of dropped by a buffer it could not see into.
+    std::mem::drop(tokio::spawn(root::units_export::traces::run(
+        shutdown_tx.subscribe(),
+    )));
+
     // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
     // re-verification job — through ONE boot entry point that folds over the plane registry and calls
     // each plane's declared `start` hook (MCP before A2A, the order they have always started in). Each
@@ -1625,7 +1636,10 @@ async fn run(data_workers: usize) {
             let m = gov.flush_metering();
             tracing::info!(flushed = m, "metering rows flushed on shutdown");
         }
-        root::logging::shutdown_tracing();
+        // THE LAST SPANS, on the one exit path that does not go through the shutdown broadcast.
+        // This serve mode exits the process right here, so the drain is called directly rather than
+        // left to the tick — and unlike the SDK flush this replaces, this process sees it finish.
+        root::units_export::traces::flush();
         std::process::exit(code);
     }
 
@@ -1727,8 +1741,8 @@ async fn run(data_workers: usize) {
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
-    // no side-car state file to flush).
-    root::logging::shutdown_tracing();
+    // no side-car state file to flush). The span export's final drain is the maintenance tick's
+    // `Final` arm, which the shutdown broadcast above already fired.
 }
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin

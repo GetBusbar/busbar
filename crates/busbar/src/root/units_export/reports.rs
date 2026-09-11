@@ -29,6 +29,7 @@ use busbar_substrate_values::{diag_debug, diag_warn, diagnostics};
 
 use super::metrics;
 use busbar_export_file::{Event, Report};
+use busbar_export_otlp::{Event as OtlpEvent, Report as OtlpReport};
 use busbar_export_webhook::{Event as WebhookEvent, Report as WebhookReport};
 
 /// The [`Report`] every composed file sink is built with.
@@ -92,6 +93,40 @@ impl WebhookReport for EngineWebhookReport {
                 webhook_url = url,
                 error_kind = %error,
                 "request-log webhook delivery failed (transport error); this log was dropped"
+            ),
+        }
+    }
+}
+
+/// The [`OtlpReport`] the composed OTLP sink is built with.
+///
+/// NO CODED DIAGNOSTIC ID, and that is a measurement rather than an omission: the pipeline this
+/// replaces raised NONE — an `eprintln!` on a failed exporter build and whatever the SDK chose to
+/// say about a delivery, neither of which an operator could match on. These four lines are what
+/// this process can honestly say about an export it now owns, and none of them can carry the
+/// operator's credential because no event of this sink names the target at all.
+pub(crate) struct EngineOtlpReport;
+
+impl OtlpReport for EngineOtlpReport {
+    fn report(&self, event: OtlpEvent<'_>) {
+        match event {
+            OtlpEvent::Refused { status } => tracing::warn!(
+                status,
+                "OTLP trace export was REFUSED; this batch was dropped and every following one will \
+                 be too until the endpoint, the credential or the payload the collector rejects is \
+                 corrected"
+            ),
+            OtlpEvent::Unavailable { status } => tracing::debug!(
+                status,
+                "OTLP trace export could not be accepted right now; this batch was dropped"
+            ),
+            OtlpEvent::TransportError { error } => tracing::debug!(
+                error_kind = %error,
+                "OTLP trace export failed (transport error); this batch was dropped"
+            ),
+            OtlpEvent::MalformedBatch { error } => tracing::warn!(
+                error_kind = %error,
+                "OTLP trace export was handed bytes that are not a span batch; this batch was dropped"
             ),
         }
     }

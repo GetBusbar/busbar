@@ -1660,11 +1660,20 @@ because = "the same nineteen lines as the unit_total_ceiling raise, `busbar_unit
 # this same commit, re-pinned downward. The owner's ruling of 2026-09-10 was "SEQUENCE deletions
 # first, no raise" - this is that sequence arriving: the module is deleted, and the root's reach into
 # the retiring crate falls because there is no longer anything there to reach.
+#
+# RE-PRICED 25 -> 9 BY THE COMMIT THAT DELETED THE EXPORTER. Most of what this entry bought was the
+# OTLP pipeline's own wire vocabulary: a hyper/rustls connector, an OTLP/HTTP span exporter, a
+# credential travelling as a typed header value, and the two Cargo dependency names under them. All
+# of that is GONE - not moved. The sink is a crate of kind `export` that names the OTLP SCHEMA and
+# no client at all, and the socket it states a delivery for is the egress client the whole export
+# kind already shares. Six dependencies leave crates/busbar/Cargo.toml with it. A `by` is what the
+# tree actually rose by, so this is lowered to the nine that are left: the subscriber, the level
+# policy and the URL the credential is split out of.
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
-by = 25
-because = "MOVE: the logging install (subscriber, two-filter level policy, tracer provider, tracer shutdown, OTLP exporter and credential split) left busbar-core/src/observability.rs - which is DELETED - for crates/busbar/src/root/logging.rs, three call sites all in main. busbar-core x transport falls 2037 -> 2014 by twenty-three of these twenty-five; the other two are Cargo dependency names the root did not carry (the hyper/rustls client stack the exporter is built on), which is the composition root composing what it installs"
+by = 9
+because = "MOVE: the logging install (subscriber and two-filter level policy) left busbar-core/src/observability.rs - which is DELETED - for crates/busbar/src/root/logging.rs. Declared at TWENTY-FIVE when it also carried the OTLP exporter, its hyper/rustls client stack and the two Cargo dependency names under them; RE-PRICED to nine on the commit that DELETED all of that rather than moving it, which is the drain this entry's own text promised when it called the extra two `the client stack the exporter is built on`. busbar-core x transport falls further, 1979 -> 1978, in that same commit"
 
 # THE `cell.busbar.plane.count` RAISE THE LOGGING MOVE DECLARED IS STRUCK, not forgotten: the three
 # plane-vocabulary words that travelled into crates/busbar/src/root/logging.rs are still there, but

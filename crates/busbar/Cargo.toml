@@ -54,9 +54,12 @@ busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
-# The built-in `request-log-file` export sink. A crate of kind `export`, composed here like every
-# other plugin the root loads: the root builds it, sheds for it and calls it.
+# THE FOUR BUILT-IN EXPORT SINKS. Each is a crate of kind `export`, composed here like every other
+# plugin the root loads: the root builds it, sheds for it, lends it what belongs to the process and
+# calls it through the ONE face. Each is named at exactly one point — building it — and after that
+# this root holds `Arc<dyn Export>` and cannot tell which one it has.
 busbar-export-file = { path = "../busbar-export-file" }
+busbar-export-otlp = { path = "../busbar-export-otlp" }
 busbar-export-prometheus = { path = "../busbar-export-prometheus" }
 busbar-export-webhook = { path = "../busbar-export-webhook" }
 
@@ -133,16 +136,19 @@ axum = { workspace = true }
 http-body = { workspace = true }
 tracing = { workspace = true }
 # THE LOGGING INSTALL, moved out of the retiring engine (root/logging.rs). A process installs its
-# process-global subscriber exactly once, which is a thing only a composition root can do; these are
-# the crates that install do it with, and they are here rather than in a library for that reason.
+# process-global subscriber exactly once, which is a thing only a composition root can do; and the
+# SPAN PRODUCER (root/units_export/traces.rs) is a layer on that subscriber, which is composition by
+# the same definition. ONE crate does both now.
+#
+# SIX DEPENDENCIES LEFT THIS FILE WITH THE OTLP PIPELINE — `tracing-opentelemetry`,
+# `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `opentelemetry-http` and
+# `hyper-rustls`. The exporter, the tracer provider and the batch processor they built are deleted,
+# not moved: the sink is `busbar-export-otlp` (which names the SCHEMA and no exporter at all) and
+# the queue, the shed and the flush are this process's own. `http` left with them — the credential
+# is a header PAIR the sink copies, not a typed header value a client takes.
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry-http = { workspace = true }
-hyper-rustls = { workspace = true }
-http = { workspace = true }
+# The WHATWG URL parser, for the ONE thing the socket kept: splitting an operator's embedded
+# credential out of the OTLP endpoint so the string the sink holds can never carry a secret.
 url = { workspace = true }
 metrics = { workspace = true }
 # The export fan-out's payload type. The projection grammar builds a `serde_json::Value` per

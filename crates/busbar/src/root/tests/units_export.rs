@@ -198,9 +198,9 @@ fn the_served_webhook_path_frames_the_request_log_line_through_the_plugin() {
     type Sent = (String, Vec<(String, String)>, Vec<u8>, std::time::Duration);
     let sent: Arc<std::sync::Mutex<Vec<Sent>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = sent.clone();
-    let send: export::RequestLogWebhookSend =
-        Arc::new(move |url, headers, body, timeout, permit, outcome| {
-            drop(permit);
+    let send: export::ExportDeliverySend =
+        Arc::new(move |url, headers, body, timeout, hold, outcome| {
+            drop(hold);
             seen.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push((url, headers, body, timeout));

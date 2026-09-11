@@ -339,6 +339,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core",
  "busbar-export-file",
+ "busbar-export-otlp",
  "busbar-export-prometheus",
  "busbar-export-webhook",
  "busbar-kernel",
@@ -381,15 +382,9 @@ dependencies = [
  "criterion",
  "futures",
  "hex",
- "http",
  "http-body",
  "http-body-util",
- "hyper-rustls",
  "metrics",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
@@ -401,7 +396,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
 ]
@@ -566,10 +560,6 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-util",
  "oauth-as",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "proptest",
  "rcgen",
  "reqwest 0.12.28",
@@ -591,7 +581,6 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "webpki-roots",
@@ -2947,38 +2936,6 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry-http"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
-dependencies = [
- "async-trait",
- "bytes",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "opentelemetry",
- "tokio",
-]
-
-[[package]]
-name = "opentelemetry-otlp"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
-dependencies = [
- "http",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "prost",
- "thiserror",
 ]
 
 [[package]]
@@ -4762,22 +4719,6 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-opentelemetry"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
-dependencies = [
- "js-sys",
- "opentelemetry",
- "smallvec",
- "tracing",
- "tracing-core",
- "tracing-log",
- "tracing-subscriber",
- "web-time",
 ]
 
 [[package]]

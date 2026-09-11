@@ -37,6 +37,7 @@
 pub(crate) mod admission;
 mod reports;
 pub mod routes;
+pub mod traces;
 
 use admission::AdmissionGate;
 // THE ONE EXPORT FACE. Every composed sink is held as a `dyn Export` and every delivery goes
@@ -49,7 +50,7 @@ use busbar_contract::{Delivery, Export, ExportHost, ExportItem};
 // already spelled, so lifting the fan-out out of the engine costs the ratchet nothing.
 use busbar_core::{config, export, metrics};
 use busbar_export_webhook::{WebhookSink, GATE as WEBHOOK_GATE};
-use export::{Projection, RequestLogFacts, RequestLogWebhookSend};
+use export::{ExportDeliverySend, Projection, RequestLogFacts};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
@@ -104,7 +105,7 @@ impl ExportHost for NoLoan {
 /// property of this process and its egress posture, which no crate of kind `export` may name — so
 /// the sink states the delivery and this lends it the wire.
 struct WireLoan {
-    send: RequestLogWebhookSend,
+    send: ExportDeliverySend,
     timeout: std::time::Duration,
     /// The slot, taken out exactly once by the single `send` a `receive` makes.
     permit: std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
@@ -126,7 +127,7 @@ impl ExportHost for WireLoan {
             delivery.headers,
             delivery.body,
             self.timeout,
-            permit,
+            Box::new(permit),
             Box::new(move |result| outcome(result)),
         );
         true
@@ -221,7 +222,7 @@ fn webhook_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
     if instances.is_empty() {
         return Vec::new();
     }
-    compose_webhook_sinks(instances, export::request_log_webhook_send())
+    compose_webhook_sinks(instances, export::export_delivery_send())
 }
 
 /// [`webhook_sinks`] over an explicit instance list and an explicit send — the whole of the webhook
@@ -229,7 +230,7 @@ fn webhook_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
 /// it over a send of its own and see the bytes that would have gone out on the wire.
 fn compose_webhook_sinks(
     instances: Vec<export::RequestLogWebhookInstance>,
-    send: RequestLogWebhookSend,
+    send: ExportDeliverySend,
 ) -> Vec<Sink> {
     instances
         .into_iter()

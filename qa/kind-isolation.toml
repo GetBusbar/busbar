@@ -1394,7 +1394,7 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "976"
+count = "960"
 
 [[cell]]
 crate = "busbar"
@@ -1689,7 +1689,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "1979"
+count = "1978"
 
 [[cell]]
 crate = "busbar-core"
@@ -3002,7 +3002,7 @@ count = "19"
 [[cell]]
 crate = "busbar"
 kind = "export"
-count = "39"
+count = "63"
 
 [[disagreement]]
 crate = "busbar"
@@ -3197,6 +3197,16 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 — the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
 why     = "busbar names busbar-export-file: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-otlp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 - the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
+why     = "busbar names busbar-export-otlp: declared normal in the shipped graph, 1 declaration(s) at this commit. The FOURTH and last built-in sink of this kind, composed exactly as the other three are - built at one point, then held as `Arc<dyn Export>`. AGAINST IT, SIX DEPENDENCIES LEAVE THIS ROOT in the same commit: tracing-opentelemetry, opentelemetry, opentelemetry_sdk, opentelemetry-otlp, opentelemetry-http and hyper-rustls, plus `http`. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing - what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar"
