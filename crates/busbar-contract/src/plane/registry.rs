@@ -36,6 +36,34 @@
 
 use std::sync::{Mutex, OnceLock};
 
+/// ONE ROUTE a plane's operator-surface verbs answer on, as plain data: the four facts a renderer
+/// needs to document the route and nothing else. No handler, no schema, no body — a route ROW says
+/// that the surface exists and what it is called; what it does is the plane's, and what it is
+/// mounted under is the host's.
+///
+/// The path is RELATIVE, and that is the load-bearing word. A plane states the shape its verbs
+/// answer on beneath whatever the host mounts the operator surface at; a plane that stated an
+/// absolute path would be declaring the host's mount point, which is not a fact about the plane.
+/// The host joins its own base to this.
+///
+/// SPELLED `OperatorRoute` DELIBERATELY. These are the rows a host's operator-surface document is
+/// rendered from, and the host calls that surface by its own word — but that word is the control
+/// kind's INSTANCE VOCABULARY, and a contract crate absorbing thirty hits of another kind's
+/// instance vocabulary to spell one type is the coupling `kind-isolation` exists to report. The
+/// FACT is the same either way; the word is the host's to choose, and it chooses it at the renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperatorRoute {
+    /// The request method, upper-case, exactly as it is written on the wire.
+    pub method: &'static str,
+    /// The path this route answers on, RELATIVE to whatever base the host mounts the plane's
+    /// operator surface at, with its path parameters in `{name}` form.
+    pub path: &'static str,
+    /// The one-line operator-facing summary of what the route does.
+    pub summary: &'static str,
+    /// What a success on this route means, in the words an operator reads back.
+    pub ok_description: &'static str,
+}
+
 /// THE FACTS A PLANE STATES ABOUT ITSELF, as plain data. Every field is a constant of the plane, read
 /// at registration; nothing here is a hook, a handle or a behaviour. Two planes sharing a scope kind
 /// is how one plane's grant admits another plane's traffic, and two sharing an audit kind is how one
@@ -71,6 +99,15 @@ pub struct PlaneDeclaration {
     pub card_kid_prefix: Option<&'static str>,
     /// The top-level config sections this plane declares it owns the grammar of.
     pub owned_config_sections: &'static [&'static str],
+    /// THE ROUTES this plane's operator-surface verbs answer on, relative to the base the host
+    /// mounts that surface at — the rows a neutral renderer folds into one document. Empty for a
+    /// plane that serves no operator surface.
+    ///
+    /// These are FACTS, not behaviour: the row says a route exists, what it is called and what a
+    /// success on it means. The handler behind it is the plane's own and is not reachable from here.
+    /// A plane that carries these rows stops needing to hand a rendered fragment across, so the
+    /// engines' copies of that renderer can die and one kind-neutral step can render every plane.
+    pub operator_routes: &'static [OperatorRoute],
 }
 
 /// THE TOP-LEVEL CONFIG SECTIONS THE LEGACY CONFIG GRAMMAR STILL DECLARES CONCRETELY — the reserved
@@ -112,6 +149,33 @@ pub fn check_owned_config_claims(
                      section is owned by exactly one plane, or one plane's grammar answers for \
                      another's",
                     decl.key
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// THE OPERATOR-ROUTE CLAIM GUARD. Two planes answering the same `(method, path)` is one plane's
+/// verb answering another plane's question — and in a rendered document it is worse than that,
+/// because a fold that inserts by path silently keeps whichever row it met last and the document
+/// then documents a surface the router does not mount. Returns `Ok(())` when every row across the
+/// whole set is unique, or the FIRST collision, naming both planes.
+///
+/// Pure: a declaration list in, a verdict out. The boot fold runs it over the merged list; a test
+/// drives it directly.
+pub fn check_operator_route_claims(decls: &[PlaneDeclaration]) -> Result<(), String> {
+    // (method, path) -> the plane key that first claimed it, so a second claimant names its rival.
+    let mut claimed: std::collections::BTreeMap<(&'static str, &'static str), &'static str> =
+        std::collections::BTreeMap::new();
+    for decl in decls {
+        for route in decl.operator_routes {
+            if let Some(other) = claimed.insert((route.method, route.path), decl.key) {
+                return Err(format!(
+                    "route `{} {}` is claimed by two planes (`{other}` and `{}`): a route is \
+                     answered by exactly one plane, or one plane's verb answers another's question \
+                     and the rendered document names a surface the router does not mount",
+                    route.method, route.path, decl.key
                 ));
             }
         }
@@ -163,6 +227,9 @@ pub fn merged_boot_plane_decls(
     decls.sort_by_key(|d| rank(d.key));
     if let Err(refusal) = check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS) {
         panic!("plane-owned-config dup-claim guard: {refusal}");
+    }
+    if let Err(refusal) = check_operator_route_claims(&decls) {
+        panic!("plane operator-route dup-claim guard: {refusal}");
     }
     BootFold { decls, skipped }
 }
