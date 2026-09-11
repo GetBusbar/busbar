@@ -293,3 +293,32 @@ fn shipped_config_artifacts_validate() {
         assert!(stdout.contains("ok: config valid"), "{shipped}: {stdout}");
     }
 }
+
+/// THE SHIPPED `config.yaml` MUST NOT CLAIM A FIRST-PARTY FLOOR THAT DOES NOT EXIST.
+///
+/// The annotated `plugins.min_versions` block told operators that first-party plugins are
+/// "auto-floored at the binary version". They are not, and deliberately so: first-party plugins
+/// version on their own independent lines (a 1.0.x store under a 1.6.0 engine), so a binary-version
+/// floor rejected every correctly-signed current release and was removed before 1.5.0 shipped
+/// (`plugin-sign/src/lib.rs`: "PER-NAME floors only. There is deliberately NO automatic
+/// binary-version floor"). The floor that DOES apply automatically is the per-plugin-name
+/// HIGH-WATER MARK — the highest version of that name this deployment has itself seen and loaded —
+/// and a name it has never loaded carries no floor at all.
+///
+/// The difference is not cosmetic: an operator reading the old sentence believes a first install is
+/// already floored, which is the one case where it is not, and so does not think to pin the name
+/// they care about. This asserts the shipped file states the rule the code implements.
+#[test]
+fn shipped_config_yaml_states_the_real_first_party_anti_downgrade_floor() {
+    let text = std::fs::read_to_string(repo_root().join("config.yaml")).expect("read config.yaml");
+    assert!(
+        !text.contains("auto-floored at the binary version"),
+        "config.yaml claims a binary-version first-party floor; there is none (plugin-sign: \
+         PER-NAME floors only)"
+    );
+    assert!(
+        text.contains("high-water"),
+        "config.yaml must name the floor that IS applied automatically: the per-name high-water \
+         mark"
+    );
+}

@@ -427,12 +427,19 @@ pools:
 # inspect with `busbar --list-plugins`. See docs/plugins.md.
 # plugins:
 #   enabled: true                            # MASTER SWITCH (default false)
-#   dir: plugins                             # where the signed .tar.gz tarballs live
+#   dir: plugins                             # where the signed .tar.gz tarballs live; a RELATIVE
+#                                            # path resolves against THIS FILE's directory
 #   trust:
 #     publishers:                            # third-party ed25519 signing keys (allowlist)
 #       - name: acme
 #         public_key: "<64-hex ed25519 public key>"
 #     allow_unsigned: false                  # explicit opt-in for unsigned plugins (default false)
 #     allow_third_party: false               # explicit opt-in for non-allowlisted publishers
-#   min_versions:                            # anti-downgrade floors by manifest name (third-party;
-#     acme-store-dynamo: "2.0.0"             # first-party is auto-floored at the binary version)
+#   min_versions:                            # anti-downgrade floors by manifest name, first- and
+#     acme-store-dynamo: "2.0.0"             # third-party alike. First-party ALSO carries an
+#                                            # automatic per-name high-water floor: the highest
+#                                            # version of that name this deployment has itself seen
+#                                            # and loaded. It is NOT the binary's version (plugins
+#                                            # version on their own lines), and a name never loaded
+#                                            # here carries no floor — a first install is not a
+#                                            # downgrade. See docs/plugins.md security model item 3.
