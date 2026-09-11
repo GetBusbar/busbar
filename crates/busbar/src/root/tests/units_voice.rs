@@ -1321,63 +1321,48 @@ fn the_flat_fee_is_the_session_open_and_nothing_else() {
     use busbar_kernel::teller::fee_count;
 
     let open = |finish| {
-        fee_evidence(
-            UnitShape::SessionOpen,
-            OriginKind::Client,
-            true,
-            true,
-            Some(finish),
+        fee_count(
+            &fee_identity(UnitShape::SessionOpen, OriginKind::Client, true),
+            Some(&served_head(true, Some(finish))),
         )
     };
-    assert_eq!(fee_count(&open(FinishClass::Complete)).0, 1);
-    assert_eq!(fee_count(&open(FinishClass::Error)).0, 0);
+    assert_eq!(open(FinishClass::Complete).0, 1);
+    assert_eq!(open(FinishClass::Error).0, 0);
     // A session that named no upstream, and one whose dial never opened: neither reached a leg,
     // and a fee is for a connection that was actually made.
     assert_eq!(
-        fee_count(&fee_evidence(
-            UnitShape::SessionOpen,
-            OriginKind::Client,
-            false,
-            true,
-            Some(FinishClass::Complete),
-        ))
+        fee_count(
+            &fee_identity(UnitShape::SessionOpen, OriginKind::Client, false),
+            Some(&served_head(true, Some(FinishClass::Complete))),
+        )
         .0,
         0
     );
     assert_eq!(
-        fee_count(&fee_evidence(
-            UnitShape::SessionOpen,
-            OriginKind::Client,
-            true,
-            false,
-            Some(FinishClass::Complete),
-        ))
+        fee_count(
+            &fee_identity(UnitShape::SessionOpen, OriginKind::Client, true),
+            Some(&served_head(false, Some(FinishClass::Complete))),
+        )
         .0,
         0
     );
     // A turn of a conversation the session already paid to open pays nothing, however it ended.
     for finish in [FinishClass::TurnComplete, FinishClass::Error] {
         assert_eq!(
-            fee_count(&fee_evidence(
-                UnitShape::Turn,
-                OriginKind::Client,
-                true,
-                true,
-                Some(finish),
-            ))
+            fee_count(
+                &fee_identity(UnitShape::Turn, OriginKind::Client, true),
+                Some(&served_head(true, Some(finish))),
+            )
             .0,
             0
         );
     }
     // The provider's own push through the session's leg is not a caller's request.
     assert_eq!(
-        fee_count(&fee_evidence(
-            UnitShape::ToolCall,
-            OriginKind::Provider,
-            true,
-            true,
-            Some(FinishClass::TurnComplete),
-        ))
+        fee_count(
+            &fee_identity(UnitShape::ToolCall, OriginKind::Provider, true),
+            Some(&served_head(true, Some(FinishClass::TurnComplete))),
+        )
         .0,
         0
     );

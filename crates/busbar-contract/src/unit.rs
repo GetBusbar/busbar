@@ -12,7 +12,7 @@ use crate::ids::{
     CorrelationRef, LaneId, MeterClassId, OpClassId, PrincipalId, SessionId, StreamId, UnitKey,
 };
 use crate::plugin::KernelSeal;
-use crate::wire::Direction;
+use crate::wire::{Direction, StatusAt, StatusClass, WireStatus};
 use core::fmt;
 
 /// The closed list of steps every unit runs, in order.
@@ -307,6 +307,50 @@ pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass
         | UnitEnd::Aborted(AbortBy::Kernel { .. })
         | UnitEnd::Stalled => FinishClass::Partial,
     }
+}
+
+/// THE RESPONSE HEAD, AS ONE VALUE, SET BY THE ONE PLACE THAT SAW IT.
+///
+/// The fee decision has two sources — what the transport made of the answer and what the plane
+/// made of it — and it is written to distrust both: where they disagree it posts the lower count
+/// and marks the posting. That arm was unreachable on every plane in the tree, and the reason was
+/// the same on each: the step that SEES the head is the one that routed, the step that DECIDES the
+/// fee is the unit's exit, and there was no value on the unit for the head to travel in. So every
+/// leg wrote "this transport reports no status" as a literal, and four legs independently
+/// disarming one kernel arm is a missing face rather than four bugs.
+///
+/// This is that face. It is DATA and not a method, because a head is something a unit HAS rather
+/// than something a plane can be asked for twice: a second reading of one answer is how a unit
+/// ends up with two heads and the fee decision reads whichever ran last. It is recorded once, by
+/// whichever step saw the answer's head — the routed leg where the answer came off the wire, the
+/// response encoder where the plane served it locally — and read by the kernel at the exit.
+///
+/// Nothing here is a plane's dialect. `at` is the transport's own declaration of WHICH FRAME
+/// carries its class ([`TransportMeta::STATUS_CLASS`](crate::TransportMeta::STATUS_CLASS)), and
+/// `None` is the honest answer for a surface whose answer document IS its response — the plane's
+/// finish is then the sole source, which is what the fee decision already does with it.
+///
+/// [`degraded`](StatusLeg::degraded) and [`relayed_error`](StatusLeg::relayed_error) travel here
+/// rather than beside it because they are readings of the SAME head: whether it came off the
+/// ordered walk or a spill, and the upstream's own refusal where one was relayed as-is instead of
+/// failed over. A reader that has the head has all of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct StatusLeg {
+    /// Which frame carries this transport's status class, where it carries one at all.
+    pub at: Option<StatusAt>,
+    /// The class the transport read on that frame. `Some(at)` with nothing here is a stream that
+    /// died before the frame carrying it.
+    pub status: Option<StatusClass>,
+    /// The plane's own verdict on how the answer ended.
+    pub finish: Option<FinishClass>,
+    /// Whether the answer's first frame actually reached the client. A status frame with an empty
+    /// body counts.
+    pub delivered: bool,
+    /// Whether it came off a degraded path — a spill, a queued permit, a documented bypass —
+    /// rather than the ordered walk.
+    pub degraded: bool,
+    /// The upstream's own refusal, relayed as-is, in the numbering that spelled it.
+    pub relayed_error: Option<WireStatus>,
 }
 
 /// Where a plane found the values the metering step folds.

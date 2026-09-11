@@ -1393,14 +1393,17 @@ impl<'n> VoiceUnit<'n> {
         }
     }
 
-    /// Everything the flat fee is decided from, for this unit.
-    fn fee(
-        &self,
-        ctx: &UnitRecord<'_>,
-        finish: Option<busbar_contract::FinishClass>,
-    ) -> FeeEvidence {
-        let (selected_upstream, relayed) = self.upstream_leg();
-        fee_evidence(self.shape, ctx.origin(), selected_upstream, relayed, finish)
+    /// What the UNIT is, for the flat fee. Nothing about the answer: that is the head's.
+    fn fee(&self, ctx: &UnitRecord<'_>) -> FeeEvidence {
+        let (selected_upstream, _relayed) = self.upstream_leg();
+        fee_identity(self.shape, ctx.origin(), selected_upstream)
+    }
+
+    /// THE ANSWER'S HEAD FOR THIS UNIT, read once off the two questions this plane answers about a
+    /// leg: whether one was selected at all, and what this turn emitted onto it.
+    fn head(&self, finish: Option<busbar_contract::FinishClass>) -> busbar_contract::StatusLeg {
+        let (_selected_upstream, relayed) = self.upstream_leg();
+        served_head(relayed, finish)
     }
 }
 
@@ -1794,7 +1797,7 @@ impl Units for VoiceUnit<'_> {
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: self.fee(ctx, finish),
+            fee: self.fee(ctx),
         }
     }
 }
@@ -1881,6 +1884,10 @@ impl VoiceUnit<'_> {
         // Written before the record is, so the settlement that follows reads the ending this record
         // carries rather than deciding the same question a second time.
         *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()) = Some(finish);
+        // AND THE HEAD GOES ONTO THE UNIT HERE, in the same breath and for the same reason. This is
+        // the step that seals what the plane made of the exchange, so it is the step that has the
+        // whole of the head; the record below and the settlement after it are two READERS of it.
+        let _ = ctx.record_head(token, self.head(Some(finish)));
         let inputs = self.audit_inputs(ctx, outcome, finish);
         let mut durability = self
             .node
@@ -1903,7 +1910,7 @@ impl VoiceUnit<'_> {
     ) -> busbar_unit_audit::record::AuditInputs {
         // The record does not decide the fee a second time: it reads the same evidence the exit
         // path settles from, through the same function.
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx, Some(finish)));
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx), ctx.head());
         busbar_unit_audit::record::AuditInputs {
             // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
             // as being handed one. `Arrival` is the honest answer for a unit that was refused before
@@ -1983,20 +1990,34 @@ impl VoiceUnit<'_> {
 /// the unit that pays, those two questions are that dial's two answers. This dialect writes no
 /// status frame of its own — the answer's first token is the first thing the caller sees — so the
 /// plane's sealed ending is the single source, and an ending it called an error posts nothing.
-fn fee_evidence(
+fn fee_identity(
     shape: UnitShape,
     origin: busbar_caps::OriginKind,
     selected_upstream: bool,
-    relayed_first_response_frame: bool,
-    finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
         selected_upstream,
-        relayed_first_response_frame,
-        status_at: None,
+    }
+}
+
+/// THE ANSWER'S HEAD, as this plane's one place that sees it reads it.
+///
+/// This dialect writes no status frame of its own — the answer's first token is the first thing the
+/// caller sees — so `at` is `None` and the plane's sealed ending is the single source, which is
+/// exactly what the kernel's fee decision does with it. `delivered` is the turn's own answer: what
+/// the turn emitted, on a leg the session already opened.
+fn served_head(
+    relayed_first_response_frame: bool,
+    finish: Option<busbar_contract::FinishClass>,
+) -> busbar_contract::StatusLeg {
+    busbar_contract::StatusLeg {
+        at: None,
         status: None,
         finish,
+        delivered: relayed_first_response_frame,
+        degraded: false,
+        relayed_error: None,
     }
 }
 

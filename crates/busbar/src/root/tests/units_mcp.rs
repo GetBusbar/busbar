@@ -1076,7 +1076,10 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
         op: ops::OP_TOOL_CALL,
         hops_upstream: true,
     };
-    let fee = |origin, answered| fee_count(&evidence(&ended(called, origin, answered)).fee).0;
+    let fee = |origin, answered| {
+        let unit = ended(called, origin, answered);
+        fee_count(&evidence(&unit).fee, Some(&unit.head())).0
+    };
     assert_eq!(fee(CameFrom::Client, true), 1, "a delivered call pays once");
     assert_eq!(
         fee(CameFrom::Client, false),
@@ -1094,7 +1097,10 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
         hops_upstream: false,
     };
     assert_eq!(
-        fee_count(&evidence(&ended(listed, CameFrom::Client, true)).fee).0,
+        {
+            let unit = ended(listed, CameFrom::Client, true);
+            fee_count(&evidence(&unit).fee, Some(&unit.head())).0
+        },
         0,
         "a listing answered from this node's own records reaches no server and pays no hop"
     );
@@ -1127,7 +1133,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
         let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
         assert_eq!(
             record.amount.fee_count,
-            fee_count(&evidence(&unit).fee).0,
+            fee_count(&evidence(&unit).fee, Some(&unit.head())).0,
             "the row and the posting agree about the fee"
         );
     }

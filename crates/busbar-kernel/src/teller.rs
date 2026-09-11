@@ -276,7 +276,7 @@ impl AccrualMeter {
 /// arrives, a plane declares how a unit finished, and the settlement table below reads both. A
 /// kernel-local restatement of any of them would be a second spelling of a value that crosses the
 /// plugin boundary in both directions.
-pub use busbar_contract::{FinishClass, StatusAt, StatusClass};
+pub use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
 
 /// Everything the settlement table reads.
 ///
@@ -379,7 +379,16 @@ pub fn settle_amount(end: &Outcome, evidence: &Evidence) -> (u64, PostingFlags) 
     (amount, flags)
 }
 
-/// Everything the flat per-request fee is decided from.
+/// WHAT THE UNIT IS, for the fee decision. Everything about the ANSWER is the head's.
+///
+/// Two booleans, and neither is a reading of the response: whose request this was, and whether the
+/// route selected an upstream leg at all. They are facts about the unit, so the leg that built the
+/// unit is entitled to state them.
+///
+/// The three fields that used to sit here — where the transport reports its status, what it
+/// reported, and what the plane made of the ending — are [`StatusLeg`], recorded on the unit by
+/// the one step that saw the answer and read by [`fee_count`] from there. They left because every
+/// leg in the tree filled them in by hand and every one of them wrote the same disarming literal.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FeeEvidence {
     /// Whether this is a client unit that opened or ran as a one-shot. A provider push through a
@@ -388,17 +397,6 @@ pub struct FeeEvidence {
     /// Whether the route selected an upstream leg at all. It is the KIND that decides, not the
     /// price: with no rate card the fee still posts.
     pub selected_upstream: bool,
-    /// Whether the kernel relayed the first response frame to the client. A status frame with an
-    /// empty body counts.
-    pub relayed_first_response_frame: bool,
-    /// Where this transport reports its status, if it reports one. `None` means the transport
-    /// contributes no status leg at all and the plane's finish decides alone; `Some` with no
-    /// `status` below means the frame that would have carried it never arrived.
-    pub status_at: Option<StatusAt>,
-    /// The status class at the frame the transport reports it on.
-    pub status: Option<StatusClass>,
-    /// The plane's own verdict.
-    pub finish: Option<FinishClass>,
 }
 
 /// Decide the flat fee, and say whether the two sources of truth disagreed.
@@ -412,22 +410,30 @@ pub struct FeeEvidence {
 /// A transport that says WHERE its status is reported and then reports none has lost the evidence:
 /// the stream ended before the frame carrying it. Nothing is billed, and a plane claiming a clean
 /// finish over a status that never arrived is disputed.
-pub fn fee_count(evidence: &FeeEvidence) -> (u32, PostingFlags) {
+///
+/// The head is the UNIT's, not the caller's: it is recorded by the one step that saw the answer
+/// and read here from the record. A unit with no head relayed nothing, which is the same answer
+/// this function gave when every leg in the tree wrote that by hand.
+pub fn fee_count(evidence: &FeeEvidence, head: Option<&StatusLeg>) -> (u32, PostingFlags) {
     let eligible = evidence.client_open_or_one_shot
         && evidence.selected_upstream
-        && evidence.relayed_first_response_frame;
-    let by_status = evidence.status.map(|status| status == StatusClass::Success);
-    let by_finish = evidence.finish.map(|finish| finish != FinishClass::Error);
+        && head.is_some_and(|head| head.delivered);
+    let by_status = head
+        .and_then(|head| head.status)
+        .map(|s| s == StatusClass::Success);
+    let by_finish = head
+        .and_then(|head| head.finish)
+        .map(|f| f != FinishClass::Error);
     // A transport that declares WHERE its status is reported and then does not report one is a
     // stream that died before the frame carrying it — most often a trailer. The status is the
     // evidence the fee is decided from, so a missing one posts nothing; a plane that says the unit
     // finished cleanly anyway is the second source disagreeing, and that is a dispute.
-    let missing_status = evidence.status_at.is_some() && evidence.status.is_none();
+    let missing_status = head.is_some_and(|head| head.at.is_some() && head.status.is_none());
     // A plane that reports a PARTIAL answer against a missing status is telling the same story the
     // transport is: the stream stopped early. A plane that reports a WHOLE one is not, and that
     // disagreement is what the dispute flag is for.
     let claims_whole = matches!(
-        evidence.finish,
+        head.and_then(|head| head.finish),
         Some(FinishClass::Complete | FinishClass::TurnComplete)
     );
     match (eligible, missing_status, by_status, by_finish) {
@@ -1144,7 +1150,7 @@ pub fn exit<U: Units>(
         Some(mut hold) => {
             let evidence = units.evidence(record);
             let (amount, table_flags) = settle_amount(&outcome, &evidence);
-            let (fee, fee_flags) = fee_count(&evidence.fee);
+            let (fee, fee_flags) = fee_count(&evidence.fee, record.head());
             let flags = table_flags.with(fee_flags);
             let requests = requests_settled(
                 reached_admitted,

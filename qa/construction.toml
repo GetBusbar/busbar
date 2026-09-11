@@ -222,14 +222,14 @@ busbar-voice = ["busbar-voice-codec"]
 # gains the body, because a row that lists what the loop holds and omits the one thing it now holds
 # across a step boundary is a row that has stopped describing the loop.
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-from = 5537
-to = 5582
-because = """TWO LANDINGS, ONE ROW, because `ceiling-rose` measures against the BRANCH'S BASE and a stacked line declares base -> tip once per dotted path. +114 for the per-unit record itself: the tree's first production `busbar_contract::unit::Ctx`, built once per unit at loop entry over one lease of the unit's own 4 KiB, lent to all twelve steps, carrying what Verify established so that Route and Meter — which could not see the verified set at all before it — read the set that was SEALED rather than one they derived again, with the generation's transport key handle beside it as a handle and never as bytes; `teller.rs` paid one line back there, 606 -> 605. Then +45, also the per-unit record: the routed body held as a HANDLE under the unit's hold — a lease and what the stream counted, never the bytes — sealed by the Route token, read by the Meter step, and released by the exit path and by nothing before it. Taking the bytes here would mean draining the body here, and on a billing plane the instant a body finishes draining is the instant the money is read, so a record that owned the body would be deciding when a stream ended. `teller.rs` pays two of the 45 for the two release sites; the rest is `record.rs`."""
+from = 5582
+to = 5595
+because = """CHAIN FORM: 5582 is P4's tip, not this branch's base — a stacked line declares its own delta and the rows beneath it declared theirs. +13, all of it the per-unit record gaining THE ANSWER'S HEAD: one write-once cell, one accessor, and the prose that says which step is entitled to write it. The kernel's fee decision has two sources and is written to distrust both — where the transport's status class and the plane's finish class disagree it posts the lower count and marks the posting — and that arm was unreachable on ALL FIVE planes at once. The reason was the same on each: the step that SEES the head is the one that routed, the step that DECIDES the fee is the unit's exit, and nothing between them carried it, so every leg wrote `status_at: None` as a literal. This is the cell those literals were missing, and all four of them come off in the same commit. `teller.rs` does NOT move, and that is measured rather than assumed: the three fields the fee leg carried by hand went OUT of `FeeEvidence` and the reading of the head that replaced them came back in, 607 -> 607. What this landing deletes is in `crates/busbar`, which carries no ceiling of its own — five hand-written fee-evidence assemblies become two booleans about the UNIT, and everything about the ANSWER is read from one place."""
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.record.ceiling"]
-from = 114
-to = 157
-because = """The 43 lines of the body under the hold, all in this file: the lease slot, the completion slot and the released flag, with the two Route-sealed writers and the one exit-sealed release. The record is where they belong because the record is what the unit IS for the length of the unit, and the hold is NOT released when Route returns — the exit path is the only thing lent the token that releases it, so the Meter step in between reads a body that is still the unit's."""
+from = 157
+to = 170
+because = """CHAIN FORM off P4's tip 157. The same 13 lines seen per file: the head's cell, its accessor and its prose, beside the two facts Verify seals and the routed body's hold that are already there. It is the record and not the fee leg because a head is something a unit HAS rather than something a plane can be asked for twice — a second reading of one answer is how a unit ends up with two heads and the fee decision reads whichever ran last — so it is write-once and it answers whether the caller is the one that wrote it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 from = 605
@@ -237,9 +237,9 @@ to = 607
 because = """Two lines, one per end of a unit: the exit path and the child's terminal each give the body back in the same breath they give the leases back. Nothing else in the loop moved — the Meter step gained no argument, because the record it is already lent is where the body now is."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-from = 3480
-to = 3541
-because = """`busbar-caps` gains `BodyLease`, `Completion` and `CompletedUnits`: the name of one routed body stream and what it carried when it finished, per dimension the plane declared. It is caps and not the kernel because BOTH the kernel and the egress unit have to name it and neither may name the other; it is caps and not the contract because no plugin builds one — a plane declares the classes and the relay counts against them. Quantities and never an amount, so `plane-no-money` stays green by construction. `busbar-contract` does not move."""
+from = 3541
+to = 3550
+because = """CHAIN FORM off P4's tip 3541. +9, all in `busbar-contract`: `StatusLeg`, the response head as ONE value — where the transport reports its class, what it reported there, what the plane made of the ending, whether the answer reached the client, whether it came off a degraded path, and the upstream's own refusal where one was relayed as-is. `busbar-caps` does not move. It is the contract and not caps because every field of it is already contract vocabulary (`StatusAt`, `StatusClass`, `FinishClass`, `WireStatus`) and because a PLANE fills it: the two planes whose answer document IS their response say so by answering `None` for the transport leg, which is the same thing their legs used to say as a hand-written literal. It carries no amount and names no price, so `plane-no-money` stays green by construction."""
 
 [gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
 from = 14606
@@ -247,21 +247,20 @@ to = 14624
 because = """+18 in `busbar-unit-egress`: `Delivered` gains the body lease and the completion, and the relay counts bytes off `FrameMeta::bytes` as the frames go past. The unit still reads no body — it hands each frame to the plane's codec and counts — which is the claim this widening could have broken and did not."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23623
-to = 23747
-because = """The same two landings seen from the union: the record's 114, then this landing's 45 + 61 + 18. `caps_contract_ceiling` did not move for the record — it is the loop's own value — and it does move here, for the one thing both the kernel and the egress unit have to name. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
+from = 23747
+to = 23769
+because = """CHAIN FORM off P4's tip 23747. +22 = the kernel's 13 and the contract pair's 9; `unit-total` does not move, because no unit crate names the head. The row over-counts by the note above: a kernel-reachable unit file is summed once in the kernel figure and once in `unit-total`."""
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-from = 3478
-to = 3539
-because = """The plugin-visible surface of the pair, measured by `scripts/loc-surface.py` at this tip. The 61 lines are `BodyLease`, `Completion` and `CompletedUnits` in `busbar-caps`; `busbar-contract` is unchanged at 2327. This is past section 1.1's 3.5k, so section 1.1 is amended to 3.6k in this same commit rather than left reading a figure the tree is over."""
+from = 3539
+to = 3548
+because = """CHAIN FORM off P4's tip 3539. The plugin-visible surface of the pair, measured by `scripts/loc-surface.py` at this tip: `busbar-caps` 1212 unchanged, `busbar-contract` 2327 -> 2336. The 9 lines are `StatusLeg` — the response head, as data a plane fills and the kernel reads. This is inside section 1.1's 3.6k, which P4 amended and which does not move again here; what section 1.1 DOES gain in this same commit is the head, named beside the body in the Teller loop's parenthetical, because the per-unit record now carries both."""
 
 [gate.ceiling_raises."cell.83.count"]
 file = "qa/kind-isolation.toml"
-from = 64
-to = 65
-because = """`busbar-kernel` x `caps`, +1, and it is a new cell's import list. `tests/body_under_the_hold.rs` names this crate once, at the top, for the step tokens and the body lease the routed body under the hold is sealed with. There is no second spelling anywhere in the file — the plane vocabulary the first draft carried in its prose is gone, and `busbar-kernel x plane` stayed at its 1."""
-
+from = 65
+to = 67
+because = """CHAIN FORM off P4's tip 65. `busbar-kernel` x `caps`, +2. The record's head cell takes ANY step's token — what makes a head trustworthy is not which step wrote it but that exactly one did — and the new cell that drives the face through the whole loop names the tokens its fixture plane answers with. There is no second spelling: the fixture names each token once, at the top, exactly as the body-under-the-hold cell beside it does."""
 [gate.ceiling_raises."cell.288.count"]
 file = "qa/kind-isolation.toml"
 from = 34
@@ -276,23 +275,33 @@ because = """`busbar-unit-egress` x `contract-transport`, +1, in the cell that r
 
 [gate.ceiling_raises."cell.2.count"]
 file = "qa/kind-isolation.toml"
-from = 299
-to = 300
-because = """`busbar` x `caps`, +1, in the cell that drives a recorded golden through the plane's own face: the outcome the encode step answers with is opened against the step's own token, which is this kind's and is exactly what makes a cell unable to read back an answer it never asked for."""
-
+from = 300
+to = 304
+because = """CHAIN FORM off P4's tip 300. `busbar` x `caps`, +4, all step tokens. The answer's HEAD becomes a value the unit carries, written by the step that SAW it — and that is a different step on four of the five planes, because a routed answer's head comes off the wire, a document-is-the-response plane's comes off the step that read the document, and a locally served plane's comes off its own encoder. What is counted is naming that step's token at the one line per plane that records the head."""
 [gate.ceiling_raises."cell.5.count"]
 file = "qa/kind-isolation.toml"
-from = 1062
-to = 1077
-because = """`busbar` x `control`, +15 against the tip this line is stacked on. The served leg starts calling the CONTRACT'S plane face — `decode_ingress` for the request line, `encode_response` for the bytes that leave — instead of reaching around it to the plane's own verb table, which is what gave `busbar_contract::Plane` its first production caller in this tree: sixteen declared methods, five implementors, and until now every `&dyn Plane` binding anywhere was an egress-unit or object-safety fixture. The plane arrives as `Arc<dyn Plane>` on the binding, so every call site names the FACE and none names a dialect; what is counted is the ONE construction of it in the composition root — the one place entitled to know which plane this is — plus the prose that explains it and the cell that measures it against a recorded golden. The root is the only crate in the tree this edge is normal for."""
+from = 1077
+to = 1078
+because = """CHAIN FORM off P4's tip 1077. `busbar` x `control`, +1: the admin leg records the answer's head at its response encoder, which is the one place a LOCALLY SERVED plane ever sees one. One line, and it is what keeps "one face, every plane fills it" true rather than true of four — the fee it decides is zero either way, because an admin unit's destination is a kernel verb and no upstream was selected."""
 
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1800
+because = """`busbar` x `plane`, +2. The plane's own verdict on how an answer ended stops being a field each root leg writes into a fee leg by hand and becomes one field of the ANSWER'S HEAD, recorded once by the step that saw it and read by the kernel at the exit. Both hits are the finish class named at the line that builds the head. The four hand-written fee-evidence assemblies come off in the same commit, and they are in this same crate."""
+
+[gate.ceiling_raises."cell.14.count"]
+file = "qa/kind-isolation.toml"
+from = 936
+to = 941
+because = """`busbar` x `transport`, +5, all in the model plane's leg. The transport's own reading of the answer — its status CLASS, on the frame the transport declares it reports one on — arrives on the head instead of being thrown away. That is the leg of the fee decision the kernel could never see: every root leg wrote `status_at: None` as a literal and disarmed the same kernel arm on all five planes at once, and this is the one surface in the tree whose transport declares a status frame at all. The root is the composition root, so it is the one place entitled to know which transport is under which plane."""
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3539
+contract_caps = 3548
 grammar = 388
 contract_transport = 845
 
@@ -510,15 +519,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5582
+kernel_ceiling = 5595
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3541
+caps_contract_ceiling = 3550
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14624
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23747
+union_ceiling = 23769
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -534,7 +543,7 @@ ceiling = 607
 [rules.loc-ceilings.kernel_files.record]
 label = "per-unit record"
 patterns = ["record.rs"]
-ceiling = 157
+ceiling = 170
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"

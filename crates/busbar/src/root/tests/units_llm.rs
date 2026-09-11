@@ -987,7 +987,14 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             kernel_verb_only: false,
         };
         crate::open_record!(record, &ctx);
-        busbar_kernel::teller::fee_count(&unit.evidence(&record).fee).0
+        // The head is the unit's, recorded by the step that saw it. The cell puts it where the
+        // Meter step would, because what it is about is the DECISION the exit makes over it.
+        if let Some(head) = unit.served_head() {
+            let token: busbar_caps::UnitToken<busbar_caps::Meter> =
+                busbar_caps::UnitToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+            assert!(record.record_head(&token, head));
+        }
+        busbar_kernel::teller::fee_count(&unit.evidence(&record).fee, record.head()).0
     };
     assert_eq!(
         fee(OriginKind::Client),

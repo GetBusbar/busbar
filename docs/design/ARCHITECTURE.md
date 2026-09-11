@@ -67,10 +67,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   — helpers the loop calls directly, not the units behind their traits — counts against the kernel
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k (the loop and the per-unit record it builds at its entry: the unit's own
-  memory, the context every step is lent, the two facts Verify seals onto it, and the routed body
+  memory, the context every step is lent, the two facts Verify seals onto it, the routed body
   it holds as a HANDLE — a lease and what the stream counted, never the bytes — from the Route step
   that took it until the exit path releases it, which is what lets the Meter step read a
-  completion the seam did not fix) · pump/scheduler 1.5k ·
+  completion the seam did not fix, and the ANSWER'S HEAD beside it: the status class the transport
+  reported, where it reported it, and what the plane made of the ending, written once by the step
+  that saw the answer and read by the fee decision at the exit, which is what makes the kernel's
+  dispute arm reachable at all) · pump/scheduler 1.5k ·
   in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
   arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.6k **of plugin-visible SURFACE** —

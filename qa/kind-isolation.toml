@@ -1328,7 +1328,12 @@ kind = "caps"
 # 299 -> 300: ONE, in the cell that drives a recorded golden through the plane's own face — the
 # outcome the encode step answers with is opened against the step's own token, which is this kind's
 # and is what makes a cell unable to read back an answer it did not ask for.
-count = "300"
+# 300 -> 304: the answer's HEAD becomes a value the unit carries. Four hits, all of them step
+# tokens: the step that saw the answer is the step entitled to record it, and on four of the five
+# planes that is a different step — Meter on the model and agent planes, Audit on the streaming
+# one, Encode on the locally served one. What is counted is naming the token for that step at the
+# one line that writes the head, plus the cell that drives it.
+count = "304"
 
 [[cell]]
 crate = "busbar"
@@ -1355,7 +1360,11 @@ kind = "control"
 # prose that explains the change and the cell that measures it. The root is the only crate in the
 # tree this edge is normal for, and the 15 buy the first production caller `busbar_contract::Plane`
 # has ever had.
-count = "1077"
+#
+# 1077 -> 1078: the admin leg records the answer's head at its response encoder, which is the one
+# place a LOCALLY SERVED plane sees one. One line, and it is what keeps "every plane fills the same
+# face" true rather than true of four.
+count = "1078"
 
 [[cell]]
 crate = "busbar"
@@ -1377,7 +1386,10 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+# 1798 -> 1800: the plane's own verdict on the ending stops being a field each root leg writes into
+# a fee leg by hand and becomes one field of the answer's head, recorded once by the step that saw
+# it. Two hits, both of them the finish class named at the line that builds the head.
+count = "1800"
 
 [[cell]]
 crate = "busbar"
@@ -1405,7 +1417,12 @@ kind = "transport"
 # 939 -> 936: the two hand-written transport views in the cells are deleted. The stack a cell drives
 # a step over is now the root's own view over a named chain, so the wire words are spelled where the
 # chain is declared and not again beside it.
-count = "936"
+# 936 -> 941: the transport's own reading of the answer arrives on the head. Five hits, all in the
+# model plane's leg, where the served status becomes the transport's status CLASS on the frame the
+# transport declares it reports on — which is the leg of the fee decision the kernel could never
+# see, because every root leg wrote "this transport reports no status" as a literal and disarmed
+# the dispute arm on all five planes at once.
+count = "941"
 
 [[cell]]
 crate = "busbar"
@@ -1764,7 +1781,11 @@ kind = "caps"
 # sealed with. There is no second spelling of it anywhere in the file — the plane vocabulary the
 # first draft carried ("streams", three times in prose) is gone, and `busbar-kernel x plane` stayed
 # at its 1.
-count = "65"
+#
+# 65 -> 67: the record's head cell takes any step's token — what makes a head trustworthy is not
+# which step wrote it but that exactly one did — and the new cell that drives it names the tokens
+# its fixture plane answers with.
+count = "67"
 
 [[cell]]
 crate = "busbar-kernel"

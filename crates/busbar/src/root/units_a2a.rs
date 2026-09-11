@@ -973,11 +973,8 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         // The record does not decide the fee a second time. It reads the same evidence the exit
         // path settles from, through the same function, so a row that says one and a posting that
         // says none cannot both be true of one unit.
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
-            &self.draft,
-            ctx.origin(),
-            progress.metered.is_some(),
-        ));
+        let (fee_count, _) =
+            busbar_kernel::teller::fee_count(&fee_identity(&self.draft, ctx.origin()), ctx.head());
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
                 Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
@@ -1358,9 +1355,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitRecord<'_>,
+        ctx: &UnitRecord<'_>,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
+        // THE ONE PLACE THIS PLANE SEES THE HEAD. The answer document IS this protocol's response,
+        // so the step that read it is the step that knows both halves of the head — that an answer
+        // was there to hand back, and what the plane made of its ending. It goes onto the unit
+        // here, once, and the exit reads it from there rather than from a fee leg this file fills
+        // in twice.
+        let _ = ctx.record_head(token, served_head(&self.draft, true));
         let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
@@ -1493,12 +1496,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
-            fee: fee_evidence(&self.draft, ctx.origin(), progress.metered.is_some()),
+            fee: fee_identity(&self.draft, ctx.origin()),
         }
     }
 }
 
-/// The facts this plane's flat per-request fee is decided from.
+/// WHAT THE UNIT IS, for the fee decision — and nothing about the answer.
 ///
 /// Written once, as a function over the draft rather than as a table each caller fills in, because
 /// the exit path and the audit record are two readers of ONE decision: a settlement that posted a
@@ -1507,22 +1510,34 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 ///
 /// The origin is the client rule the request slot is drawn under — a push the agent sent is not a
 /// caller's request and pays nothing. The upstream is the KIND of leg the plane verified, not its
-/// price: with no rate card the fee still posts. The relayed frame is the metering step's own
-/// locator, which is set when the plane read an answer to hand back; a unit that never got that far
-/// relayed nothing. This transport carries no status leg of its own — the answer document IS the
-/// response — so the plane's finish is the single source, and an error ending posts nothing.
-fn fee_evidence(
+/// price: with no rate card the fee still posts.
+pub(crate) fn fee_identity(
     draft: &A2aDraft,
     origin: busbar_caps::OriginKind,
-    relayed_first_response_frame: bool,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
         client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
         selected_upstream: draft.has_upstream(),
-        relayed_first_response_frame,
-        status_at: None,
+    }
+}
+
+/// THE ANSWER'S HEAD, as this plane's one step that sees it reads it.
+///
+/// This transport carries no status leg of its own — the answer document IS the response — so `at`
+/// is `None` and the plane's finish is the single source, which is exactly what the kernel's fee
+/// decision does with it. `delivered` is the metering step's own locator: it is set when the plane
+/// read an answer to hand back, and a unit that never got that far relayed nothing.
+///
+/// One value rather than three fields on a fee leg, because there is one head per unit and the
+/// only way to keep two readers from describing it differently is to have one of them.
+pub(crate) fn served_head(draft: &A2aDraft, delivered: bool) -> busbar_contract::StatusLeg {
+    busbar_contract::StatusLeg {
+        at: None,
         status: None,
         finish: Some(draft.finish),
+        delivered,
+        degraded: false,
+        relayed_error: None,
     }
 }
 
@@ -1562,8 +1577,9 @@ fn bytes_located(draft: &A2aDraft) -> LocatedValue {
 /// one nobody re-derived. Spelled twice, a provider push on a thin bucket was refused `OverBudget`
 /// for a fee its own settlement would never have posted.
 fn fee_could_land(draft: &A2aDraft, origin: busbar_caps::OriginKind) -> bool {
-    // `false` for the relay: it is not knowable at the door and it is not part of this question.
-    let evidence = fee_evidence(draft, origin, false);
+    // The unit's own two facts, and no head: the answer has not happened yet, which is the whole
+    // reason this question is the larger one.
+    let evidence = fee_identity(draft, origin);
     evidence.client_open_or_one_shot && evidence.selected_upstream
 }
 

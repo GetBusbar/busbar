@@ -2096,6 +2096,27 @@ pub(crate) fn encode(
         .plane
         .encode_response(&response, None, ctx.ctx())
         .map_or_else(|_| answered.clone(), |out| out.as_slice().to_vec());
+    // THE ANSWER'S HEAD GOES ONTO THE UNIT HERE, and on this plane that is the response encoder
+    // because this plane is LOCALLY SERVED: there is no upstream and no wire for a head to come
+    // off, so the one place that sees it is the one place that writes the answer. Every plane fills
+    // the same face; where the face is filled from is what differs, and "unreachable for this
+    // plane" is not an answer any of them gets to give.
+    //
+    // `at` is `None` — nothing relayed a transport's class — and the finish is the one the encoder
+    // just rendered. The fee this decides is zero either way, because an admin unit's destination
+    // is a kernel verb and `selected_upstream` is false, which is what makes the face free to fill
+    // here and what keeps this landing's byte-identity claim true on this plane by construction.
+    let _ = ctx.record_head(
+        token,
+        busbar_contract::StatusLeg {
+            at: None,
+            status: None,
+            finish: Some(response.finish),
+            delivered: true,
+            degraded: false,
+            relayed_error: None,
+        },
+    );
     Decision::proceed(
         token,
         busbar_contract::Frame {
@@ -2119,6 +2140,11 @@ pub(crate) fn encode(
 /// was metered; there is no upstream candidate because an admin unit's verified set is a kernel verb,
 /// which is exactly what makes its `requests` draw and its flat fee both zero under a configured
 /// non-zero fee.
+///
+/// The fee leg is two booleans and says nothing about the answer. What the answer WAS is the head
+/// the encode step put on the unit, and the kernel reads it from there — which is why this
+/// function does not mention it and why this plane, alone among the five, never had a fee leg to
+/// disarm in the first place.
 #[must_use]
 pub(crate) fn evidence(_ctx: &UnitRecord<'_>) -> busbar_kernel::teller::Evidence {
     busbar_kernel::teller::Evidence {
