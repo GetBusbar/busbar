@@ -1319,7 +1319,12 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "302"
+# 302 -> 299: the two cells that built a plugin context by hand stop doing it. Each carried a
+# leaking arena, a blank configuration view and a transport view of its own, and each named the
+# capability crate to build the frame it fed them; they now drive the step over the root's ONE
+# constructor, and the two `UnitCtx` builders beside them are the root's identity value with the one
+# field each actually varies.
+count = "299"
 
 [[cell]]
 crate = "busbar"
@@ -1334,7 +1339,10 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+# 1063 -> 1062: the cells that wrote a unit's six identity fields out by hand stop writing the one
+# that names another kind's surface. The root has one constructor for that value now, and a cell
+# states only the field it varies.
+count = "1062"
 
 [[cell]]
 crate = "busbar"
@@ -1344,7 +1352,9 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "158"
+# 158 -> 157: the root's names for the loop collapse onto one re-export beside the views bundle the
+# loop reads, and the two cell-side identity builders stop reaching for the generation themselves.
+count = "157"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1389,10 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+# 939 -> 936: the two hand-written transport views in the cells are deleted. The stack a cell drives
+# a step over is now the root's own view over a named chain, so the wire words are spelled where the
+# chain is declared and not again beside it.
+count = "936"
 
 [[cell]]
 crate = "busbar"

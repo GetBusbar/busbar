@@ -1734,13 +1734,11 @@ fn a2a_ctx() -> UnitCtx {
 }
 
 fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
+    // The root's own identity value, with the ONE field these cells vary — the origin, which is the
+    // fact that decides whether a fee is coming.
     UnitCtx {
-        key: busbar_caps::UnitKey::new(1),
         origin,
-        session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
-        admin_listener: false,
-        kernel_verb_only: false,
+        ..crate::root::harness::cell_ctx(1)
     }
 }
 

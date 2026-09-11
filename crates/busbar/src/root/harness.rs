@@ -43,7 +43,7 @@
 //! proposed diff rather than made here. Until it lands, [`run`] is usable by any caller that can
 //! already build a unit, and the cross-leg table cannot be closed.
 
-use busbar_caps::{Canary, Hold, HoldCell, PrincipalId};
+use busbar_caps::{Canary, Hold, HoldCell, OriginKind, PrincipalId, UnitKey};
 use busbar_kernel::{
     record::UnitMemory,
     slice::{ConcurrencyGauge, LeaseCell},
@@ -113,6 +113,23 @@ const HARNESS_TRANSPORT_CHAIN: [&str; 1] = ["harness"];
 /// Public because [`open_record!`](crate::open_record) needs it, and named here rather than
 /// assembled at each cell for the reason the macro exists: a cell that built its own bundle would
 /// be driving a step over a context the node never hands it.
+/// The identity value a cell's unit carries, from one place.
+///
+/// A client unit on the data listener, on the first generation, reaching no kernel verb — which is
+/// what every cell that drives a step by hand was writing out field by field. Written once here so
+/// a cell that needed a different unit has to say which field differs and why.
+#[must_use]
+pub fn cell_ctx(key: u64) -> UnitCtx {
+    UnitCtx {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    }
+}
+
 /// A unit's memory, as the cells take one.
 #[must_use]
 pub fn unit_memory<'u>() -> UnitMemory<'u> {
@@ -211,7 +228,10 @@ pub fn run<U: Units>(
 #[macro_export]
 macro_rules! open_record {
     ($record:ident, $ctx:expr) => {
-        let view_set = $crate::root::harness::view_set();
+        $crate::open_record!($record, $ctx, $crate::root::harness::view_set());
+    };
+    ($record:ident, $ctx:expr, $view_set:expr) => {
+        let view_set = $view_set;
         let views = view_set.views(view_set.clock(), None, None);
         let mut memory = $crate::root::harness::unit_memory();
         let arena = memory.lease();
