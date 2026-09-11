@@ -38,13 +38,40 @@ print(" ".join(str(p) for p in ports))
 PY
 }
 
-# h2_boot <workdir> <group-yaml-block>
+# h2_boot <workdir> <group-yaml-block> [agents]
 # Boots busbar with one registered A2A agent "probe" (scripts/a2a-subject/h2-mock-agent.py,
 # `pin: unpinned`), and the group(s) named in <group-yaml-block>.
 # Sets: H2_DATA_PORT H2_ADMIN_PORT H2_AGENT_PORT H2_PLANE_URL H2_ADMIN_TOKEN H2_SIGNING_KEY
-#       H2_AGENT_PID H2_BUSBAR_PID H2_EGRESS_DIR H2_WORKDIR H2_CONTROL_FILE
+#       H2_AGENT_PID H2_BUSBAR_PID H2_EGRESS_DIR H2_WORKDIR H2_CONTROL_FILE H2_AGENTS
+#
+# ── [agents]: `probe` (the default, and what every existing caller gets) or `none` ───────────────
+#
+# `none` boots the SAME busbar with NO `agents:` section and no connect/approve — the agent-less
+# deployment, which is a configuration busbar serves differently rather than an error: see
+# `mounted_routes` in crates/busbar-a2a/src/a2a/receive.rs, "the plane's mounted routes, or an
+# unchanged router when this deployment fronts no agents". That configuration is the whole subject
+# of the plane's `no-agents-configured` row, and until this argument existed the rig could not reach
+# it: h2_boot ALWAYS wrote the `agents:` block and then refused to return until the admin API
+# reported `probe` approved, so "no agents configured" was a named gap naming this function.
+#
+# THE MOCK AGENT STILL RUNS, and that is deliberate rather than leftover. The fact under test is
+# that BUSBAR fronts no agents, not that no agent process exists anywhere on the box — an
+# unregistered upstream sitting there unreferenced is the more honest fixture, and it keeps
+# H2_AGENT_PID, H2_CONTROL_FILE and H2_EGRESS_DIR meaning exactly what they mean on every other
+# boot, so h2_stop and h2_egress_count need no agent-less special case. It also makes the egress
+# count load-bearing for this configuration: zero egress is then a statement that busbar dialled
+# nothing, not a statement that there was nothing to dial.
+#
+# H2_PLANE_URL is set the same way either way. Under `none` it addresses an agent this deployment
+# does not front, which is precisely the request the row is about, and a scenario that wants the
+# refusal sends to it exactly as every other scenario sends to it.
 h2_boot() {
-  local dir="$1" groups_yaml="$2"
+  local dir="$1" groups_yaml="$2" agents="${3:-probe}"
+  case "$agents" in
+    probe|none) ;;
+    *) echo "H2: h2_boot's third argument is 'probe' or 'none', not '$agents'" >&2; return 2 ;;
+  esac
+  H2_AGENTS="$agents"
   mkdir -p "$dir"
   dir="$(cd "$dir" && pwd)"
   H2_WORKDIR="$dir"
@@ -93,12 +120,19 @@ auth:
   signing_key: { file: ${H2_SIGNING_KEY} }
 per_request_fee: 1
 ${groups_yaml}
+YAML
+  # The `agents:` section is APPENDED, not interpolated as an empty string: a config that fronts no
+  # agents must have no `agents:` key at all, not an `agents:` key with nothing under it (which is a
+  # different document, and one busbar is entitled to read differently).
+  if [ "$agents" = probe ]; then
+    cat >>"$dir/config.yaml" <<YAML
 agents:
   probe:
     url: "http://127.0.0.1:${H2_AGENT_PORT}/"
     allow_private: true
     pin: { mechanism: jws_issuer_key, key: "${H2_ISSUER_KEY}" }
 YAML
+  fi
 
   BUSBAR_CONFIG="$dir/config.yaml" BUSBAR_ADMIN_TOKEN="$H2_ADMIN_TOKEN" RUST_LOG=warn \
     nohup "$H2_BIN" >"$dir/busbar.log" 2>&1 &
@@ -112,6 +146,13 @@ YAML
     [ "$waited" -lt 60 ] || { cat "$dir/busbar.log" >&2; return 1; }
     sleep 1
   done
+
+  # NOTHING TO APPROVE when nothing is fronted. The connect/approve pair below is the admission of
+  # the `probe` registration; under `none` there is no registration, so asking for it would 404 and
+  # the boot would fail on the absence it is trying to produce.
+  if [ "$agents" = none ]; then
+    return 0
+  fi
 
   local preview fingerprint approved state
   preview="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/agents/probe/connect" \
