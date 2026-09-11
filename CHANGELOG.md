@@ -144,6 +144,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   deployment is charged exactly as it was; `per_request_fee:` and `rate_card:` are unchanged and
   still carry the amounts.
 
+- **The tariff carries the amounts too, and one fee never has two numbers.** Each scope now also
+  says what its counts are WORTH: `entry_fee.amount_cents` per visit, `transaction_fee.flat_cents`
+  per completed transaction and `transaction_fee.per_units` (`{dimension, per, cents}`) per N units
+  of a dimension a plane declared, with `minimum_cents`, `maximum_cents` and a declared `rounding`
+  (`bankers` | `up` | `down`) bounding one unit's charge. The amounts are applied where the card
+  lives and nowhere else. An amount a deployment does not write INHERITS `per_request_fee:`, which
+  is why a 1.5.5 configuration validates unchanged and is billed the same cents; a deployment that
+  writes both spellings for one fee at one scope is REFUSED AT BOOT, with both keys and both figures
+  named, rather than having one of them picked for it. `rounding:` defaults to **banker's** — half
+  to even, the rule a till uses, because it has no bias for the house or the customer over many
+  roundings; the default schedule reaches it on no charge at all, since nothing produces a fraction
+  of a minor unit until a deployment writes a `per_units` rate.
+
 - **A visit with no transaction is charged for the visit and nothing else.** The A2A plane read
   "did this reach an agent" off the SHAPE of the destination rather than off whether there was one,
   so a task for which no agent was configured resolved to an upstream-shaped destination with no
