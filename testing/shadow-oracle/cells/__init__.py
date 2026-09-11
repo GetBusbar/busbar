@@ -192,8 +192,10 @@ TOOL_RESULT_OUTCOME = (
 # parked exactly as a 5xx parks it).
 UPSTREAM_429_OUTCOME = (
     "upstream_429",
-    "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render in "
-    "the door's own dialect, as distinct from the 429 busbar itself produces at Admit")
+    "the UPSTREAM answers 429 with Retry-After: the refusal busbar received and had to render, as "
+    "distinct from the 429 busbar itself produces at Admit. MEASURED against 1.5.5 on these 36 "
+    "cells: the client is answered 503 `overloaded`, NOT 429 -- the breaker classifies 429 as "
+    "TransientUpstream, the single-member lane is parked, and the walk has nowhere left to go")
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
 # same-proto only (ingress == egress). Forwarded outcomes reach Route and exercise the cross-protocol
@@ -263,7 +265,6 @@ def llm_cells(inv: dict) -> list[dict]:
         for e in dialects:
             for oc, why in (TOOL_CALL_OUTCOME, TOOL_RESULT_OUTCOME, UPSTREAM_429_OUTCOME):
                 c = cell(i, e, oc, why)
-                c["needs_fixture"] = True
                 if oc == "ok_tool_call":
                     c["mock_control"] = {"tool-call": True}
                 elif oc == "upstream_429":
@@ -1980,9 +1981,13 @@ def llm_op_cells() -> list[dict]:
     request. Nothing parses these ids positionally -- they are file names on both sides of the
     differ -- so the segment carries the fact that distinguishes the cell and nothing else.
 
-    Every cell is `needs_fixture` until it is RECORDED from the published 1.5.5 binary: the golden
-    is made by recording a released binary, never by the release that changed the judge, so a cell
-    defined here and not yet recorded must read as a NAMED gap and never as a silent pass.
+    These cells carried `needs_fixture` from the commit that defined them until the commit that
+    RECORDED them, which is the same commit that moved the oracle pin to the tool able to drive
+    them. All 31 are recorded now, from the published 1.5.5 binary
+    (sha256 84bde0a0..) on x86_64-unknown-linux-gnu, twice, byte-identically -- so the flag is gone
+    rather than merely unset. A golden is made by recording a RELEASED binary, never by the release
+    that changed the judge; a cell defined here and not yet recorded must read as a NAMED gap and
+    never as a silent pass, which is what the flag is for and why it is not left on out of caution.
     """
     matrix = llm_op_matrix()
     cells = []
@@ -1995,14 +2000,14 @@ def llm_op_cells() -> list[dict]:
                         "id": f"llm|{i}|{e}|{op}|{oc}",
                         "plane": "llm", "family": "llm.op", "ingress_dialect": i,
                         "egress_dialect": e, "cross_protocol": i != e, "transport": "http",
-                        "op": op, "outcome": oc, "why": f"{op}: {why}", "needs_fixture": True,
+                        "op": op, "outcome": oc, "why": f"{op}: {why}",
                     })
             for oc, why in OP_REFUSAL:
                 cells.append({
                     "id": f"llm|{i}|{i}|{op}|{oc}",
                     "plane": "llm", "family": "llm.op", "ingress_dialect": i,
                     "egress_dialect": i, "cross_protocol": False, "transport": "http",
-                    "op": op, "outcome": oc, "why": f"{op}: {why}", "needs_fixture": True,
+                    "op": op, "outcome": oc, "why": f"{op}: {why}",
                 })
     return cells
 
