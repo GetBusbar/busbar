@@ -13,6 +13,8 @@
 //! plane's refusal encoder, so the same shed renders in each dialect's own envelope, exactly as
 //! the previous release rendered its 503 through the ingress protocol's native error writer.
 
+use busbar_caps::{BodyLease, Completion};
+
 /// The kind a shed carries when the pool had nowhere to send the request.
 pub const KIND_OVERLOADED: &str = "overloaded";
 
@@ -194,4 +196,28 @@ pub struct Delivered {
     /// because a relayed `14` that does not say it is gRPC's is a number a reader can only guess
     /// at. Only a degraded caller asks for this; the walk fails over instead.
     pub relayed_error: Option<busbar_contract_transport::wire::WireStatus>,
+    /// THE ANSWER'S BODY, NAMED AND NEVER CARRIED: the lease the stream it came back on is held
+    /// under.
+    ///
+    /// A handle, so this unit does not buffer. Taking the bytes here would mean draining the body
+    /// here, and on a billing plane the instant a body finishes draining is the instant the money
+    /// is read — a seam that buffered would be deciding when a stream ended, which is a decision
+    /// that moves money and is not this unit's to make. So the outcome names the stream, the
+    /// KERNEL holds it under the unit's hold across this call's return, and the Meter step reads
+    /// what it carried. Nothing in this crate ever reads a body, and this field is what keeps that
+    /// true while still giving the meter something to read.
+    pub body: BodyLease,
+    /// WHAT THE STREAM CARRIED once it finished, as the relay counted it while it ran.
+    ///
+    /// Quantities against declared keys and never an amount: what a quantity is worth is the cost
+    /// unit's answer, and a plane that could name an amount could name an invoice. The frames and
+    /// the bytes are this unit's own count of what it relayed; the per-class dimensions are the
+    /// plane's declared locators evaluated over the answer, which is the reading this unit does
+    /// not make and does not have — it calls the plane's codec and reads no body of its own.
+    ///
+    /// It travels on the outcome rather than being recomputed at the meter because there is no
+    /// second reading of the body to recompute it from: the bytes were the transport's and by the
+    /// time the meter runs they are gone. One reading, carried forward, is what makes the money
+    /// side's figure and the relay's figure incapable of disagreeing.
+    pub carried: Completion,
 }

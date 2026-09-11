@@ -22,7 +22,7 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
-use busbar_caps::{Route, UnitToken};
+use busbar_caps::{BodyLease, Completion, Route, UnitToken};
 use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
 use busbar_contract_transport::wire::{Conn, StatusClass};
 use futures::StreamExt;
@@ -603,6 +603,12 @@ fn classify_failure(
     // it came, on the ordered walk as well as a degraded one.
     if matches!(disposition, Disposition::ClientFault) {
         return AttemptOutcome::Delivered(Delivered {
+            body: body_lease(hop),
+            // A relayed client fault is not a metered answer: the upstream refused the caller's
+            // own request and there is no body of the caller's for a dimension to be counted
+            // against. An EMPTY completion says exactly that, and it is a different statement from
+            // a completion that counted zero of something.
+            carried: Completion::default(),
             destination: hop.destination,
             pool: hop.pool.to_string(),
             status: status.class,
@@ -619,6 +625,9 @@ fn classify_failure(
         disposition,
         err_type: label,
         relay: hop.degraded.then(|| Delivered {
+            body: body_lease(hop),
+            // Same: the walk is failing over and only a degraded caller relays this at all.
+            carried: Completion::default(),
             destination: hop.destination,
             pool: hop.pool.to_string(),
             status: status.class,
@@ -684,6 +693,7 @@ async fn deliver(
     } = first;
     let status = frame.meta.status;
     let mut relayed = 0_usize;
+    let mut bytes = 0_u64;
     let mut finish = None;
     let mut clean = false;
 
@@ -710,6 +720,11 @@ async fn deliver(
         let Some(Ok((_, frame))) = next else {
             break;
         };
+        // COUNTED, NOT READ. The transport already told this unit how many bytes the frame was;
+        // adding them up as they go past is the whole of the completion this unit can produce, and
+        // it is produced WHILE the stream runs rather than by looking at a body afterwards — there
+        // is no afterwards to look at, because the bytes belong to the connection.
+        bytes = bytes.saturating_add(frame.meta.bytes);
         let carried = [frame];
         let mut cursor = busbar_contract::FrameCursor::new(&carried);
         match hop.plane.decode_response(&mut cursor, hop.dest, None, ctx) {
@@ -760,6 +775,8 @@ async fn deliver(
     }
 
     AttemptOutcome::Delivered(Delivered {
+        body: body_lease(hop),
+        carried: relayed_body(relayed, bytes),
         destination: hop.destination,
         pool: hop.pool.to_string(),
         status,
@@ -768,4 +785,26 @@ async fn deliver(
         degraded: hop.degraded,
         relayed_error: None,
     })
+}
+
+/// The lease the answer's stream is held under.
+///
+/// It names the stream of the connection the answer came back on, because that is what the body
+/// IS: one stream of one connection, held open by the transport. It is not derived from the bytes
+/// and it is not an index into anything this unit owns — a lease is a name, and the only thing a
+/// name has to do is name the one thing.
+fn body_lease(hop: &Hop<'_>) -> BodyLease {
+    BodyLease::new(hop.stream.0)
+}
+
+/// What the relay counted while it ran.
+///
+/// Frames and bytes, both this unit's own count of what went past. The per-class dimensions are
+/// EMPTY here and deliberately so: a quantity against a declared meter class is read by evaluating
+/// the plane's own declared locators over the decoded answer, and this unit does not read a body —
+/// it hands each frame to the plane's codec and counts. A unit that filled those in would be a
+/// unit that had parsed the answer, which is the one thing this crate says it never does.
+fn relayed_body(frames: usize, bytes: u64) -> busbar_caps::Completion {
+    busbar_caps::Completion::of(frames as u64, bytes, Vec::new())
+        .unwrap_or_else(|_| Completion::default())
 }

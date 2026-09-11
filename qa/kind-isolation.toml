@@ -1745,7 +1745,13 @@ kind = "caps"
 # loop stops path-spelling it five times. `Kernel::durability_token`, `Kernel::ledger_token` and the
 # exit path's durability refusal each wrote the package name inline beside a symbol the file's own
 # import list already carries or can carry; they now write the symbol. Five spellings out, two in.
-count = "64"
+#
+# 64 -> 65: ONE, and it is a new cell's import list. `tests/body_under_the_hold.rs` names this
+# crate once, at the top, for the tokens and the body lease the routed body under the hold is
+# sealed with. There is no second spelling of it anywhere in the file — the plane vocabulary the
+# first draft carried ("streams", three times in prose) is gone, and `busbar-kernel x plane` stayed
+# at its 1.
+count = "65"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -2770,12 +2776,21 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "caps"
-count = "34"
+# 34 -> 37: THREE, all of them import lines rather than inline spellings. `Delivered` gains the
+# routed body's lease and what the relay counted, both of which are this kind's types because both
+# the kernel and this unit have to name them and neither may name the other. `wire.rs` gains one
+# import, `attempt.rs` widens the one it had, and the cell that measures the widening carries one.
+# The first draft fully-qualified every use and scored nine; naming each type once and using the
+# symbol is what took it to three.
+count = "37"
 
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "contract-transport"
-count = "55"
+# 55 -> 56: ONE, in the cell that relays a body larger than the per-unit arena and asserts the
+# outcome carries the count and none of the bytes. It names the transport-facing status class its
+# scripted frames carry, which is the same name every other cell in this unit's battery names.
+count = "56"
 
 [[cell]]
 crate = "busbar-unit-egress"

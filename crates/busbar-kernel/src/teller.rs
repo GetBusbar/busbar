@@ -1040,6 +1040,7 @@ fn terminal<U: Units>(
             // already carries this spend.
             let taken = run.cell.take(&ExitToken::mint(seal));
             run.leases.release_all(run.gauge);
+            record.release_body(&ExitToken::mint(seal));
             match taken {
                 None => Ended::AlreadySettled,
                 Some(arrival) => {
@@ -1132,6 +1133,12 @@ pub fn exit<U: Units>(
     let seal = &kernel.seal;
     let taken = run.cell.take(&ExitToken::mint(seal));
     run.leases.release_all(run.gauge);
+    // AND THE BODY, in the same breath as the leases and for the same reason: this is the unit's
+    // end, whichever of its two ends it is. The routed body is held as a handle from the moment
+    // Route took it, across Route's own return and across the Meter step that reads what it
+    // carried; here is where it stops being the unit's. Releasing it any earlier would make the
+    // completion the meter reports a figure the seam had already fixed.
+    record.release_body(&ExitToken::mint(seal));
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
