@@ -16,8 +16,14 @@
 #              replaying that family would be a claim about code it did not change. An unfiltered
 #              replay is the better part of half an hour and would be a claim about twenty-six
 #              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   tests    — `xtask` and nothing else FOR THE FACE COMMITS. The branch's last commit MOVES the
+#              `groups:` value grammar and its one `busbar_contract::limits` relay out of the
+#              frozen substrate into `busbar-substrate-values`, so the list gains every package
+#              whose test binary builds a limit tree or a GroupSpec through the historical
+#              `busbar_substrate::config::groups::` spelling the re-export has to keep working:
+#              `busbar-substrate-values` (the grammar's new home), `busbar-substrate` (the
+#              re-export), `busbar-contract` (the vocabulary the relay projects into),
+#              `busbar-unit-cost` (the projection that reads it), `busbar-core` and `busbar` (the
+#              resolvers and the composition root).
+families = '^(documented|boot|config)([|.]|$)'
+tests = ["xtask", "busbar-substrate-values", "busbar-substrate", "busbar-contract", "busbar-unit-cost", "busbar-core", "busbar"]

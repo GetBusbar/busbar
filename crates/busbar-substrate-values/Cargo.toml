@@ -25,6 +25,12 @@ license = "Apache-2.0"
 # leaves, exactly as the parent crate named them.
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
+# The NEUTRAL LIMIT VOCABULARY (`busbar_contract::limits`) the `groups:` grammar's one relay
+# projects into. busbar-contract is the face every kind is written against and is itself a pure
+# leaf -- serde, futures and two value crates, opening nothing -- so it satisfies this manifest's
+# rule, and the edge it grants is the same `substrate -> contract` ARCHITECTURE.md 1.2 already
+# grants the other half of the split.
+busbar-contract = { path = "../busbar-contract" }
 # The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
 # declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
 # `axum::http::…` resolves to — axum re-exports this crate — so the move off the `axum::` spelling
