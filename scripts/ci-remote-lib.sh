@@ -31,6 +31,12 @@ set -uo pipefail
 export AWS_REGION AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
 export PATH="$HOME/.local/bin:$PATH"   # session-manager-plugin, installed without root
 
+# SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11). See the same block
+# in landq4.sh: /tmp is wiped and $TMPDIR on macOS dies with the session, and both have taken a
+# probe table out from under a live sweep. Defined here as well as in the callers because this file
+# is also sourced on its own by prove-remote.sh.
+LAND_TMP="${LAND_TMP:-$HOME/Developer/tmp}"
+mkdir -p "$LAND_TMP" 2>/dev/null || true
 FLEET_FILE="${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet}"
 FLEET_KEY="${FLEET_SSH_KEY:-$HOME/.ssh/busbar-ci-fleet}"
 REMOTE_USER="${BUSBAR_REMOTE_USER:-ubuntu}"
@@ -246,7 +252,7 @@ _fleet_probe_round() { # $1 = the remote command, $2.. = hosts; prints `<proofs>
   [ "$#" -gt 0 ] || return 0
   local d h probe np ld i=0 p
   local pids=()
-  d="$(mktemp -d -t fleet-probe.XXXXXX)" || return 1
+  d="$(mktemp -d "$LAND_TMP/fleet-probe.XXXXXX")" || return 1
   for h in "$@"; do
     _fleet_tmo "${FLEET_PROBE_TIMEOUT:-15}" "$SSH_WRAP" "$REMOTE_USER@$h" "$cmd" </dev/null >"$d/p$i" 2>/dev/null &
     pids[$i]=$!
@@ -585,7 +591,7 @@ remote_push_tree() { # $1 = host  $2 = local repo  $3 = ref name  $4.. = extra c
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 _lib_selftest() {
   local root fails=0
-  root="$(mktemp -d "${TMPDIR:-/tmp}/ci-remote-lib-selftest.XXXXXX")"
+  root="$(mktemp -d "$LAND_TMP/ci-remote-lib-selftest.XXXXXX")"
   _t() { if [ "$2" = "$3" ]; then printf '  ok   %-52s\n' "$1"; else printf '  FAIL %-52s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
   echo "ci-remote-lib selftest: the box's bare repo is refreshed WITHOUT pruning a live run's refs"
   _t "the refresh does not prune refs/heads" 0 "$(grep -c 'fetch -q --prune origin "+refs/heads/\*:refs/heads/\*"' "${BASH_SOURCE[0]}")"

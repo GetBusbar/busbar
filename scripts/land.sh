@@ -37,6 +37,16 @@
 # exactly the lines in it.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# /tmp is wiped — by the OS on a laptop, by systemd-tmpfiles on a fleet box — and it took a running
+# engine's staged scripts, a sweep's slot directories and a lock's spill file with it. `${TMPDIR}`
+# is no better: on macOS it is a per-session /var/folders directory that goes when the session does.
+# So every scratch path this engine writes is rooted here, one directory the operator owns and
+# nothing sweeps, and the only way to move it is to say so.
+LAND_TMP="${LAND_TMP:-$HOME/Developer/tmp}"
+mkdir -p "$LAND_TMP" 2>/dev/null || true
 # The selftest drives this whole engine against a scratch repository; everything below reads $here.
 [ -n "${LAND_SELFTEST_ROOT:-}" ] && here="$LAND_SELFTEST_ROOT"
 
@@ -507,7 +517,7 @@ land_lock_xtask_closure() { # $1 = a Cargo.lock path (a missing file, or one wit
 }
 land_lock_xtask_moved() { # $1 = tree  $2 = base sha; rc 0 when xtask's resolved closure differs
   local a b tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/land-lock.XXXXXX")" || return 1
+  tmp="$(mktemp "$LAND_TMP/land-lock.XXXXXX")" || return 1
   git -C "$1" show "$2:Cargo.lock" >"$tmp" 2>/dev/null || : >"$tmp"
   a="$(land_lock_xtask_closure "$tmp")"
   b="$(land_lock_xtask_closure "$1/Cargo.lock")"
@@ -1171,7 +1181,7 @@ land_shards_collect() {
 # hand it a ledger pair it knows is wrong and watch it refuse.
 land_ledger_assert() {
   local filter="$1" pre="$2" k="$3" i=0 rows=0
-  local tmp; tmp="$(mktemp -t land-ledger.XXXXXX)" || return 1
+  local tmp; tmp="$(mktemp "$LAND_TMP/land-ledger.XXXXXX")" || return 1
   : >"$tmp"
   while [ "$i" -lt "$k" ]; do
     [ -f "$pre$i/ledger.tsv" ] || {
@@ -3858,6 +3868,18 @@ STUBCARGO
   _t2 "  ...before it runs cargo test"             1 \
      "$( [ "$(grep -n 'land_build_plugin_cdylibs "$here" || return 1' "$LAND_SRC" | tail -n1 | cut -d: -f1)" -lt "$(grep -n 'echo "land.sh: cargo test \$args"' "$LAND_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t2 "  ...and the plugins leg is the same call"  2 "$(grep -c 'land_build_plugin_cdylibs "$here" || return 1' "$LAND_SRC")"
+
+  # ── NO SCRATCH UNDER /tmp (owner rule, 2026-09-11). The pattern is built from a variable so that
+  # this assertion is not itself the thing it counts.
+  echo "land.sh selftest: no scratch under the wiped directories"
+  local _sl="/" _pat
+  _pat="(^|[^[:alnum:]_.-])${_sl}tmp(${_sl}|[^[:alnum:]]|\$)"
+  _t2 "O: land.sh names no absolute /tmp path"     0 \
+     "$(grep -vE '^[[:space:]]*#' "$LAND_SRC" | grep -cE "$_pat" || true)"
+  _t2 "  ...and takes no TMPDIR fallback either"   0 \
+     "$(grep -vE '^[[:space:]]*#' "$LAND_SRC" | grep -c 'TMPDIR' || true)"
+  _t2 "  ...its scratch root is LAND_TMP, declared once" 1 \
+     "$(grep -c '^LAND_TMP=' "$LAND_SRC")"
 
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'

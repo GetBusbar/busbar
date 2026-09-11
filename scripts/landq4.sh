@@ -56,6 +56,16 @@ BASERED="${LANDQ_BASE_RED:-$W/target/gate/oracle-base-red.txt}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# /tmp is wiped — by the OS on a laptop, by systemd-tmpfiles on a fleet box — and it took a running
+# engine's staged scripts, a sweep's slot directories and a lock's spill file with it. `${TMPDIR}`
+# is no better: on macOS it is a per-session /var/folders directory that goes when the session does.
+# So every scratch path this engine writes is rooted here, one directory the operator owns and
+# nothing sweeps, and the only way to move it is to say so.
+LAND_TMP="${LAND_TMP:-$HOME/Developer/tmp}"
+mkdir -p "$LAND_TMP" 2>/dev/null || true
 
 # HOW MANY BOXES THE PRE-PROVE STAGE MAY HOLD AT ONCE. Six leaves the fleet room for the serial
 # runner's own box and for whatever an operator is doing by hand.
@@ -2365,7 +2375,7 @@ try_push() {
 # --selftest: the decisions above, proven RED before anything is called green
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 lq_selftest() {
-  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/landq4-selftest.XXXXXX")"
+  local root; root="$(mktemp -d "$LAND_TMP/landq4-selftest.XXXXXX")"
   local repo="$root/repo" fails=0
   # THE ENGINE'S SOURCE WITHOUT ITS SELF-TEST. A `grep -c … "$0"` that asks whether the runner does
   # something counts the line that ASSERTS it as well as the line that does it; this file with the
@@ -4092,6 +4102,20 @@ lq_selftest() {
      "$( [ "$(grep -n 'lq_front_queue "\$Q" >"\$dir/queue-front.txt"' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
+
+  # ── NO SCRATCH UNDER /tmp (owner rule, 2026-09-11) ────────────────────────────────────────────
+  # The pattern is built from a variable so that this assertion is not itself the thing it counts.
+  echo "landq4 selftest: no scratch under the wiped directories"
+  local _sl="/" _pat
+  _pat="(^|[^[:alnum:]_.-])${_sl}tmp(${_sl}|[^[:alnum:]]|\$)"
+  _t "the engine names no absolute /tmp path" 0 \
+     "$(grep -vE '^[[:space:]]*#' "$LQ_SRC" | grep -cE "$_pat" || true)"
+  _t "  ...and it takes no TMPDIR fallback either" 0 \
+     "$(grep -vE '^[[:space:]]*#' "$LQ_SRC" | grep -c 'TMPDIR' || true)"
+  _t "  ...the scratch root is LAND_TMP, declared once" 1 \
+     "$(grep -c '^LAND_TMP=' "$LQ_SRC")"
+  _t "  ...and this very selftest ran under it" 1 \
+     "$(case "$root" in "$LAND_TMP"/*) echo 1 ;; *) echo 0 ;; esac)"
 
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then

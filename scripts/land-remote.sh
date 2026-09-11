@@ -18,6 +18,16 @@
 # the box's gc.
 # shellcheck disable=SC2154   # R_* are assigned by fanout_parse_request in ci-remote-lib.sh
 set -uo pipefail
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11)
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# /tmp is wiped — by the OS on a laptop, by systemd-tmpfiles on a fleet box — and it took a running
+# engine's staged scripts, a sweep's slot directories and a lock's spill file with it. `${TMPDIR}`
+# is no better: on macOS it is a per-session /var/folders directory that goes when the session does.
+# So every scratch path this engine writes is rooted here, one directory the operator owns and
+# nothing sweeps, and the only way to move it is to say so.
+LAND_TMP="${LAND_TMP:-$HOME/Developer/tmp}"
+mkdir -p "$LAND_TMP" 2>/dev/null || true
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
@@ -118,7 +128,7 @@ if [ "${1:-}" = "--selftest" ]; then
       fi
       echo "$RC"'
   }
-  _st="$(mktemp "${TMPDIR:-/tmp}/land-remote-selftest.XXXXXX")"
+  _st="$(mktemp "$LAND_TMP/land-remote-selftest.XXXXXX")"
   printf 'GREEN\t--prove --tests xtask 6d5bba552 4b6e3e40c 8d48b75ab\n' >"$_st"
   [ "$(_arm 1 "$_st")" = 0 ] && _ok "  ...pre-proof + GREEN outcome + no ref = exit 0" || _fail "pre-proof + GREEN outcome + no ref = exit 0"
   [ "$(_arm 1 "")"    = 2 ] && _ok "  ...pre-proof + no outcome at all + no ref = exit 2" || _fail "pre-proof + no outcome + no ref = exit 2"
@@ -142,7 +152,7 @@ if [ "${1:-}" = "--selftest" ]; then
       if [ "$VANISHED" = 1 ] && [ "$PREPROVE" = 1 ] && { [ -z "$OUTCOME" ] || [ ! -s "$OUTCOME" ]; }; then RC=75; fi
       echo "$RC"'
   }
-  _vt="$(mktemp "${TMPDIR:-/tmp}/land-remote-vanish.XXXXXX")"
+  _vt="$(mktemp "$LAND_TMP/land-remote-vanish.XXXXXX")"
   printf 'GREEN\t--prove --tests xtask 6d5bba552\n' >"$_vt"
   [ "$(_vanish 1 1 "")"    = 75 ] && _ok "  ...a vanished box on a PRE-PROOF exits 75 (NONE:box)" || _fail "a vanished box on a pre-proof exits 75"
   [ "$(_vanish 1 1 "$_vt")" = 2 ] && _ok "  ...but a GREEN outcome that got back first still wins" || _fail "a returned outcome outranks the vanished box"
@@ -168,7 +178,7 @@ if [ "${1:-}" = "--selftest" ]; then
     if [ "$1" = 1 ]; then :; else grep -F -v -x -f "$led" "$rem" >>"$led" 2>/dev/null || true; fi
     grep -c 'batch=new' "$led"
   }
-  _dt="$(mktemp -d "${TMPDIR:-/tmp}/land-remote-done.XXXXXX")"
+  _dt="$(mktemp -d "$LAND_TMP/land-remote-done.XXXXXX")"
   [ "$(_done 1 2)" = 0 ] && _ok "  ...a refused landing adds no row" || _fail "a refused landing adds no row"
   [ "$(_done 0 1)" = 1 ] && _ok "  ...a partially green batch still adds its green row" || _fail "a partially green batch adds its green row"
   [ "$(_done 0 0)" = 1 ] && _ok "  ...and a whole green landing does too" || _fail "a green landing adds its row"
@@ -176,7 +186,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # ── THE CANCEL CHANNEL (see remote_cancel) ────────────────────────────────────────────────────
   # Driven, not spelled: `rsh` is replaced with a stub that records what it was asked to run, and
   # the real remote_cancel is called through it.
-  _cx="$(mktemp -d "${TMPDIR:-/tmp}/land-remote-cancel.XXXXXX")"
+  _cx="$(mktemp -d "$LAND_TMP/land-remote-cancel.XXXXXX")"
   rsh() { printf '%s\n' "$*" >>"$_cx/asked.txt"; }
   remote_cancel box-1 land-20260910-221500-4242 >/dev/null 2>&1 \
     && _ok "a cancel goes out over the same rsh channel the poll uses" || _fail "a cancel goes out over rsh"
@@ -207,6 +217,20 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qE -- 'admits no further proof — this landing did not start' "${BASH_SOURCE[0]}" \
     && _ok "  ...and a refusal is rc 2: a landing that did not happen, re-queued, never a red" \
     || _fail "a refused landing must be rc 2, not a red"
+
+  # NO SCRATCH UNDER /tmp (owner rule, 2026-09-11), for this script and for the library it sources.
+  # The pattern is built from a variable so that this assertion is not itself the thing it counts.
+  _sl="/"; _pat="(^|[^[:alnum:]_.-])${_sl}tmp(${_sl}|[^[:alnum:]]|\$)"
+  for _f in "${BASH_SOURCE[0]}" "$HERE/ci-remote-lib.sh"; do
+    [ "$(grep -vE '^[[:space:]]*#' "$_f" | grep -cE "$_pat" || true)" = 0 ] \
+      && _ok "$(basename "$_f") names no absolute path under the wiped directory" \
+      || _fail "$(basename "$_f") names an absolute path under the wiped directory"
+    [ "$(grep -vE '^[[:space:]]*#' "$_f" | grep -c 'TMP''DIR' || true)" = 0 ] \
+      && _ok "  ...and takes no session-temp fallback either" \
+      || _fail "$(basename "$_f") falls back to the session temp variable"
+    [ "$(grep -c '^LAND_TMP=' "$_f")" = 1 ] \
+      && _ok "  ...its scratch root is LAND_TMP, declared once" || _fail "$(basename "$_f") has no single LAND_TMP"
+  done
 
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
