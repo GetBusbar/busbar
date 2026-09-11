@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
 use crate::gates::construction::model::{plain, CRow, Cfg};
+use crate::gates::construction::tree::{scan_text, Lexer, Tree};
 use crate::gates::construction::{CEILINGS, SURFACE};
 
 /// The other ceilings file this gate watches. It is not read by any construction rule — it is the
@@ -1432,6 +1433,401 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     }
     Ok(out)
 }
+
+// ── construction:substrate-frozen ───────────────────────────────────────────────────────────────
+//
+// `busbar-substrate`'s PRODUCTION line count must never sit higher on this tree than it did at the
+// base — no ceiling to raise, no declaration form to spend, because there is no FACE on a crate
+// that is frozen. `busbar-substrate-values`, the surviving pure-values half the split carved out,
+// is a live crate with its own future and is deliberately not judged here.
+
+pub const ROW_FROZEN: &str = "construction:substrate-frozen";
+
+/// The crate this row freezes.
+const FROZEN_CRATE: &str = "busbar-substrate";
+
+const FROZEN_TITLE: &str = "busbar-substrate's PRODUCTION line count never rises above its figure \
+    at the base -- busbar-substrate-values (the surviving pure-values half) is not judged by this \
+    row";
+
+/// PRODUCTION lines only: non-blank, non-comment, outside a `#[cfg(test)]` body or a test path —
+/// the SAME filter [`super::rules2::loc_ceilings`]'s `unit-total`/`caps-contract` figures use, read
+/// straight off [`crate::gates::construction::tree::Line`], so "a production line" means the same
+/// thing in every row that counts one.
+fn production_lines(lines: &[crate::gates::construction::tree::Line]) -> i64 {
+    lines
+        .iter()
+        .filter(|l| !l.intest && !l.code.trim().is_empty())
+        .count() as i64
+}
+
+/// `busbar-substrate`'s production total on THIS tree, read off the scan
+/// [`super::ConstructionGate::measure`] already built — no second scan, so this row can never
+/// disagree with the tree the rest of the gate measured.
+fn substrate_now(tree: &Tree) -> (i64, BTreeMap<String, i64>) {
+    let mut per_file = BTreeMap::new();
+    for rel in tree.crate_files(FROZEN_CRATE) {
+        let n = tree
+            .files
+            .get(&rel)
+            .map(|ls| production_lines(ls))
+            .unwrap_or(0);
+        per_file.insert(rel, n);
+    }
+    let total = per_file.values().sum();
+    (total, per_file)
+}
+
+/// The overlay key a self-test plants `busbar-substrate`'s file LISTING at the base under. The
+/// bytes of each file are read through [`Ctx::git_show`], already overlay-hookable — see its own
+/// doc comment — so only the listing needs a key of its own, the same delegation shape
+/// [`super::external`]'s three inputs share: a self-test cannot plant into a subprocess's or a
+/// history read's view of the tree, so it plants the ANSWER instead.
+pub const BASE_FILES_KEY_PREFIX: &str = "construction:substrate-base-files:";
+
+fn substrate_base_files(cx: &Ctx, base: &str) -> Result<Vec<String>, String> {
+    let key = format!("{BASE_FILES_KEY_PREFIX}{base}");
+    if let Some(planted) = cx.overlay_command(&key) {
+        return Ok(planted
+            .lines()
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .collect());
+    }
+    let prefix = format!("crates/{FROZEN_CRATE}/src/");
+    let out = cx.git_lines(&["ls-tree", "-r", "--name-only", base, &prefix])?;
+    Ok(out.into_iter().filter(|p| p.ends_with(".rs")).collect())
+}
+
+/// `busbar-substrate`'s production total AT THE BASE — the same lexer, the same filter, over the
+/// bytes the base's own tree carried rather than this one's.
+/// `substrate_at`'s answer, memoised by `base` — see [`SUBSTRATE_BASE_MEMO`].
+type SubstrateAt = (i64, BTreeMap<String, i64>);
+
+/// THE SAME MEMO SHAPE [`super::tree`]'s scan memo IS, and for the same reason: every case in the
+/// self-test re-runs the whole gate, and this crate's base figure is the SAME figure for every one
+/// of them that does not plant [`BASE_FILES_KEY_PREFIX`] — which today is all of them. Reading it
+/// through `git show` once per `.rs` file, per case, is the per-file lex `tree.rs`'s own memo was
+/// written to stop paying for, one history read removed. Keyed by `base` alone: the real answer is
+/// a pure function of the base commit, and a plant that overrides the listing bypasses the memo
+/// entirely rather than reading or writing it.
+static SUBSTRATE_BASE_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, SubstrateAt>>> =
+    std::sync::OnceLock::new();
+
+fn substrate_at(cx: &Ctx, base: &str, test_fragments: &[String]) -> Result<SubstrateAt, String> {
+    let planted = cx
+        .overlay_command(&format!("{BASE_FILES_KEY_PREFIX}{base}"))
+        .is_some();
+    if !planted {
+        let memo = SUBSTRATE_BASE_MEMO.get_or_init(Default::default);
+        if let Some(hit) = memo
+            .lock()
+            .expect("the substrate base memo mutex is never poisoned")
+            .get(base)
+        {
+            return Ok(hit.clone());
+        }
+    }
+    let lexer = Lexer::new()?;
+    let files = substrate_base_files(cx, base)?;
+    let mut per_file = BTreeMap::new();
+    for rel in files {
+        let text = cx.git_show(base, &rel)?;
+        let lines = scan_text(&lexer, &rel, &text, test_fragments);
+        per_file.insert(rel, production_lines(&lines));
+    }
+    let total = per_file.values().sum();
+    let result = (total, per_file);
+    if !planted {
+        SUBSTRATE_BASE_MEMO
+            .get_or_init(Default::default)
+            .lock()
+            .expect("the substrate base memo mutex is never poisoned")
+            .insert(base.to_string(), result.clone());
+    }
+    Ok(result)
+}
+
+/// `busbar-substrate`'s production line count, on this tree, held to its figure at the base.
+pub fn substrate_frozen(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Vec<CRow> {
+    let base = match base_ref(cx) {
+        Ok(b) => b,
+        Err(e) => {
+            return vec![plain(
+                ROW_FROZEN,
+                false,
+                FROZEN_TITLE,
+                format!(
+                    "no base commit could be established, so {FROZEN_CRATE}'s frozen count could \
+                     not be compared against one ({e}). A freeze that cannot read its own history \
+                     reports nothing, and reporting nothing is not passing."
+                ),
+                -1,
+                0,
+                vec![],
+            )]
+        }
+    };
+    let short = base[..8.min(base.len())].to_string();
+    let test_fragments = match cfg.test_path_fragments() {
+        Ok(v) => v,
+        Err(e) => {
+            return vec![plain(
+                ROW_FROZEN,
+                false,
+                FROZEN_TITLE,
+                format!("{CEILINGS}: {e}"),
+                -1,
+                0,
+                vec![],
+            )]
+        }
+    };
+    let (now, now_files) = substrate_now(tree);
+    let (before, before_files) = match substrate_at(cx, &base, &test_fragments) {
+        Ok(v) => v,
+        Err(e) => {
+            return vec![plain(
+                ROW_FROZEN,
+                false,
+                FROZEN_TITLE,
+                format!(
+                    "{FROZEN_CRATE} at the base {short} could not be read, so the freeze could \
+                     not be measured: {e}"
+                ),
+                -1,
+                0,
+                vec![],
+            )]
+        }
+    };
+    let mut all_files: BTreeSet<&String> = now_files.keys().collect();
+    all_files.extend(before_files.keys());
+    let mut grown: Vec<(i64, String)> = Vec::new();
+    for rel in all_files {
+        let n = *now_files.get(rel).unwrap_or(&0);
+        let b = *before_files.get(rel).unwrap_or(&0);
+        if n > b {
+            grown.push((n - b, format!("{rel}: {b} -> {n}")));
+        }
+    }
+    grown.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let offenders: Vec<String> = grown.into_iter().map(|(_, s)| s).collect();
+    let ok = now <= before;
+    let detail = if ok {
+        format!(
+            "{now} production line(s) in {FROZEN_CRATE}, {before} at the base {short} \
+             ({FROZEN_CRATE}-values is not judged by this row)"
+        )
+    } else {
+        format!(
+            "{FROZEN_CRATE} rose from {before} to {now} production line(s) since the base {short} \
+             -- this crate is frozen and no declaration form admits a rise on it: {}",
+            offenders.join("; ")
+        )
+    };
+    vec![plain(
+        ROW_FROZEN,
+        ok,
+        FROZEN_TITLE,
+        detail,
+        now,
+        before,
+        offenders,
+    )]
+}
+
+// ── construction:face-raise-amends-architecture ─────────────────────────────────────────────────
+//
+// Every `[[gate.ceiling_raises]]` entry this branch carries and the base does not is either a MOVE
+// or a FACE — [`raises`]'s own doc comment names the two legitimate reasons a raise can exist at
+// all: "the FIRST gating figure of a row that was not gating before, and a face landed under a
+// ceiling that measures the very lines the face is made of." [`RAISE_SHAPE`] spells the second one
+// out as the template a FACE reason is written against ("the face, and the lines it measured"). A
+// MOVE names no face because nothing new was authored for it: a row started counting a symbol, a
+// prefix or a floor that was already on the tree, by IDENTITY, and the tree it counts did not move
+// an inch. A FACE landed new lines under a new figure, and `docs/design/ARCHITECTURE.md` is the
+// one place this tree writes down what a new face IS — so the commit that admits one without
+// touching that file is a design decision nobody wrote down.
+
+pub const ROW_ARCH: &str = "construction:face-raise-amends-architecture";
+
+const ARCH_TITLE: &str =
+    "every FACE ceiling raise amends docs/design/ARCHITECTURE.md in the commit that adds it";
+
+/// The one file this tree keeps its section 1.1 design prose in.
+pub const ARCHITECTURE_DOC: &str = "docs/design/ARCHITECTURE.md";
+
+/// A raise names a FACE, not a MOVE, when its reason says so — see the module header. Read from
+/// the same `because` text [`raises`] already required to be at least [`MIN_REASON`] characters,
+/// so a MOVE cannot dodge this by omission: a `because` this short was refused before this row
+/// ever ran.
+fn is_face_raise(r: &Raise) -> bool {
+    r.because.to_lowercase().contains("face")
+}
+
+/// The dotted path a raise names, and the needle its introducing commit's snapshot carries: the
+/// array shape's `key = "<dotted>"` line, or the retired shape's `[gate.ceiling_raises."<dotted>"]`
+/// header, per [`Raise::pair`] — the same two shapes [`raises_in_at`] reads.
+fn raise_needle(r: &Raise) -> (String, String) {
+    let dotted = r
+        .key
+        .split_once(':')
+        .map(|(_, k)| k)
+        .unwrap_or(r.key.as_str())
+        .to_string();
+    let needle = match &r.pair {
+        Some(header) => format!("[{RAISES}.\"{header}\"]"),
+        None => format!("key = \"{dotted}\""),
+    };
+    (dotted, needle)
+}
+
+/// The file a raise is declared in — the part of [`Raise::key`] before the first `:`, the same
+/// split [`ceiling_rose`]'s own comparison reads.
+fn raise_file(r: &Raise) -> String {
+    r.key
+        .split_once(':')
+        .map(|(f, _)| f)
+        .unwrap_or(CEILINGS)
+        .to_string()
+}
+
+/// The overlay key a self-test plants one file's commit log under, in `git log --format=%H
+/// --reverse <base>..HEAD -- <file>` order.
+pub const COMMIT_LOG_KEY_PREFIX: &str = "construction:arch-commit-log:";
+/// The overlay key a self-test plants one commit's touched-file list under.
+pub const COMMIT_FILES_KEY_PREFIX: &str = "construction:arch-commit-files:";
+
+/// Every commit in `base..HEAD` that touched `file`, oldest first.
+fn commits_touching(cx: &Ctx, base: &str, file: &str) -> Result<Vec<String>, String> {
+    let key = format!("{COMMIT_LOG_KEY_PREFIX}{file}");
+    if let Some(planted) = cx.overlay_command(&key) {
+        return Ok(planted
+            .lines()
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .collect());
+    }
+    cx.git_lines(&[
+        "log",
+        "--format=%H",
+        "--reverse",
+        &format!("{base}..HEAD"),
+        "--",
+        file,
+    ])
+}
+
+/// The file list one commit touched.
+fn commit_files(cx: &Ctx, sha: &str) -> Result<Vec<String>, String> {
+    let key = format!("{COMMIT_FILES_KEY_PREFIX}{sha}");
+    if let Some(planted) = cx.overlay_command(&key) {
+        return Ok(planted
+            .lines()
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .collect());
+    }
+    cx.git_lines(&["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+}
+
+/// Does `sha` INTRODUCE `needle` into `file` — present in the commit's own snapshot, absent from
+/// its parent's? Both snapshots are read through [`Ctx::git_show`], already overlay-hookable (see
+/// its own doc comment), so a self-test plants the two file bodies and nothing else.
+fn commit_introduces(cx: &Ctx, sha: &str, file: &str, needle: &str) -> bool {
+    let after = cx.git_show(sha, file).unwrap_or_default();
+    let before = cx.git_show(&format!("{sha}^"), file).unwrap_or_default();
+    after.contains(needle) && !before.contains(needle)
+}
+
+/// Every live `[[gate.ceiling_raises]]` entry (either transitional form) amends
+/// `docs/design/ARCHITECTURE.md` in the SAME commit that adds it, unless it is a MOVE rather than
+/// a FACE — see the module header. RED names the entry and the commit that added it without §1.1.
+pub fn face_raise_amends_architecture(cx: &Ctx) -> Vec<CRow> {
+    let base = match base_ref(cx) {
+        Ok(b) => b,
+        Err(e) => {
+            return vec![plain(
+                ROW_ARCH,
+                false,
+                ARCH_TITLE,
+                format!(
+                    "no base commit could be established, so no declared raise could be checked \
+                     against one ({e})"
+                ),
+                -1,
+                0,
+                vec![],
+            )]
+        }
+    };
+    let short = base[..8.min(base.len())].to_string();
+    let declared = raises(cx, &base);
+    let faces: Vec<&Raise> = declared.live.iter().filter(|r| is_face_raise(r)).collect();
+    let exempt = declared.live.len() - faces.len();
+    let mut bad: Vec<String> = Vec::new();
+    let mut checked = 0i64;
+    for r in &faces {
+        checked += 1;
+        let file = raise_file(r);
+        let (dotted, needle) = raise_needle(r);
+        let commits = match commits_touching(cx, &base, &file) {
+            Ok(v) => v,
+            Err(e) => {
+                bad.push(format!("{dotted}: {file} history could not be read ({e})"));
+                continue;
+            }
+        };
+        let introducer = commits
+            .iter()
+            .find(|sha| commit_introduces(cx, sha, &file, &needle));
+        match introducer {
+            None => bad.push(format!(
+                "{dotted}: no commit in {short}..HEAD adds it — a live declared raise with no \
+                 introducing commit in range"
+            )),
+            Some(sha) => match commit_files(cx, sha) {
+                Ok(files) => {
+                    if !files.iter().any(|f| f == ARCHITECTURE_DOC) {
+                        let short_sha = sha[..8.min(sha.len())].to_string();
+                        bad.push(format!(
+                            "{dotted}: {short_sha} adds this FACE raise and does not touch \
+                             {ARCHITECTURE_DOC}"
+                        ));
+                    }
+                }
+                Err(e) => bad.push(format!(
+                    "{dotted}: commit {sha}'s file list could not be read ({e})"
+                )),
+            },
+        }
+    }
+    let ok = bad.is_empty();
+    let detail = if ok {
+        format!(
+            "{checked} FACE raise(s) since the base {short} each amend {ARCHITECTURE_DOC} in the \
+             commit that adds them; {exempt} MOVE-by-identity raise(s) exempt"
+        )
+    } else {
+        format!(
+            "{} of {checked} FACE raise(s) since the base {short} do not amend {ARCHITECTURE_DOC} \
+             in the commit that adds them ({exempt} MOVE-by-identity raise(s) exempt): {}",
+            bad.len(),
+            bad.join("; ")
+        )
+    };
+    vec![plain(
+        ROW_ARCH,
+        ok,
+        ARCH_TITLE,
+        detail,
+        bad.len() as i64,
+        0,
+        bad,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

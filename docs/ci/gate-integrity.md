@@ -32,6 +32,20 @@ drift hides.
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
 
+Two more construction rows hold invariants a ratchet cannot, because neither is a number in a
+ceilings file for `ceiling-rose`/`ceiling-slack` to see. `construction:substrate-frozen` reads
+`busbar-substrate`'s own production line count — the gate's own counter, the one `unit-total` and
+`caps-contract` use — and holds it to what it measured at the branch's base: equal or lower is
+PASS, higher is RED naming the delta and the files, because there is no declaration form that
+admits a rise on a crate that is frozen. (`busbar-substrate-values`, the surviving pure-values half
+of the split, is a live crate with its own future and is not judged by this row.)
+`construction:face-raise-amends-architecture` reads every `[[gate.ceiling_raises]]` entry (either
+shape the reader carries while the from/to transition drains) this branch declares that the base
+does not, and requires the commit that adds it to also touch `docs/design/ARCHITECTURE.md` — unless
+the entry's own reason names no face at all, which marks it a MOVE-by-identity raise (a row that
+started counting a symbol, a prefix or a floor that was already on the tree) and exempts it: nothing
+new was authored, so there is no design surface for the architecture doc to have missed.
+
 ## What CI holds mechanically
 
 | check | what it is | required on |

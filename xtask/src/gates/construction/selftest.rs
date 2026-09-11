@@ -736,6 +736,142 @@ fn ceiling_ratchet_cases<'a>(
         );
     }
 
+    r.append(freeze_cases(gate, cx, base, &based));
+    r.append(arch_cases(gate, cx, base, &text));
+
+    r
+}
+
+/// `construction:substrate-frozen` — a synthetic file under `busbar-substrate`'s own `src/`, so
+/// the case is decoupled from the crate's real (and constantly moving) size: the base's listing
+/// and content are planted, not read from real history, and the current tree's copy is planted
+/// alongside it.
+fn freeze_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay, _based: &str) -> Report<'a> {
+    let mut r = Report::new();
+    // A BRAND-NEW FILE, never planted into the base's own listing — the real base's `git ls-tree`
+    // does not carry it, so its `before` is 0 by construction and every line this plant adds is a
+    // genuine rise, over the crate's REAL base total rather than a synthetic one this case would
+    // otherwise have to keep in lockstep with it.
+    const REL: &str = "crates/busbar-substrate/src/zz_planted_frozen.rs";
+    let mut ov = on(base);
+    ov.set(REL, format!("pub fn zz_planted_kept() {{}}\n{}", bulk(50)));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "busbar-substrate's production line count rising above its figure at the base is refused \
+         — there is no declaration form that admits a rise on a frozen crate",
+        &[ceilings::ROW_FROZEN],
+        ov,
+        &[REL, "rose from"],
+    ));
+
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "against the real base busbar-substrate is not larger than it was there",
+        &[ceilings::ROW_FROZEN],
+        on(base),
+    ));
+    r
+}
+
+/// `construction:face-raise-amends-architecture` — a `[[gate.ceiling_raises]]` entry does not need
+/// to name a real ceiling to be read by [`ceilings::raises`]; only `key`, `by` and a long enough
+/// `because` matter, so the plant is a key this row alone reads (`zz.planted.*`) and the commit
+/// that introduces it is entirely synthetic, through the same overlay hooks [`declared_raise_cases`]
+/// already uses (`git-show:<ref>:<path>`) plus the two this row adds for its own commit walk.
+fn arch_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay, text: &str) -> Report<'a> {
+    let mut r = Report::new();
+
+    let face_reason = "a governance virtual-key face landed here — this reason exists only to \
+                        prove construction:face-raise-amends-architecture and names no real \
+                        ceiling";
+    let with_face = |key: &str| -> String {
+        format!(
+            "{}\n\n[[gate.ceiling_raises]]\nkey = \"{key}\"\nby = 5\nbecause = \"{face_reason}\"\n",
+            text.trim_end()
+        )
+    };
+
+    // RED: the commit that adds the FACE raise never touches ARCHITECTURE.md.
+    const SHA_RED: &str = "1111111111111111111111111111111111111111";
+    const KEY_RED: &str = "zz.planted.face.raise.red";
+    let mut ov = on(base);
+    ov.set(CEILINGS, with_face(KEY_RED));
+    ov.set_command(
+        format!("{}{CEILINGS}", ceilings::COMMIT_LOG_KEY_PREFIX),
+        SHA_RED.to_string(),
+    );
+    ov.set_command(format!("git-show:{SHA_RED}:{CEILINGS}"), with_face(KEY_RED));
+    ov.set_command(format!("git-show:{SHA_RED}^:{CEILINGS}"), text.to_string());
+    ov.set_command(
+        format!("{}{SHA_RED}", ceilings::COMMIT_FILES_KEY_PREFIX),
+        format!("{CEILINGS}\n"),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a FACE ceiling raise landing without amending docs/design/ARCHITECTURE.md in the same \
+         commit is refused",
+        &[ceilings::ROW_ARCH],
+        ov,
+        &[KEY_RED, "does not touch", ceilings::ARCHITECTURE_DOC],
+    ));
+
+    // GREEN: the same shape, but the introducing commit also touches ARCHITECTURE.md.
+    const SHA_GREEN: &str = "2222222222222222222222222222222222222222";
+    const KEY_GREEN: &str = "zz.planted.face.raise.green";
+    let mut ov = on(base);
+    ov.set(CEILINGS, with_face(KEY_GREEN));
+    ov.set_command(
+        format!("{}{CEILINGS}", ceilings::COMMIT_LOG_KEY_PREFIX),
+        SHA_GREEN.to_string(),
+    );
+    ov.set_command(
+        format!("git-show:{SHA_GREEN}:{CEILINGS}"),
+        with_face(KEY_GREEN),
+    );
+    ov.set_command(
+        format!("git-show:{SHA_GREEN}^:{CEILINGS}"),
+        text.to_string(),
+    );
+    ov.set_command(
+        format!("{}{SHA_GREEN}", ceilings::COMMIT_FILES_KEY_PREFIX),
+        format!("{CEILINGS}\n{}\n", ceilings::ARCHITECTURE_DOC),
+    );
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a FACE ceiling raise that amends docs/design/ARCHITECTURE.md in the same commit is \
+         accepted",
+        &[ceilings::ROW_ARCH],
+        ov,
+    ));
+
+    // GREEN: a MOVE-by-identity raise — its reason names no face — is exempt, and is never asked
+    // for a commit at all: no commit-log or commit-files key is planted for it, so a row that
+    // failed to exempt it would go to real history looking for a key that is not there and RED.
+    let move_reason = "the first gating figure of a row that was not gating before -- eighty-plus \
+                        characters of accounting prose about a symbol that already existed on the \
+                        tree, named nothing new and moved not one line of code anywhere";
+    let mut ov = on(base);
+    ov.set(
+        CEILINGS,
+        format!(
+            "{}\n\n[[gate.ceiling_raises]]\nkey = \"zz.planted.move.raise\"\nby = 5\nbecause = \
+             \"{move_reason}\"\n",
+            text.trim_end()
+        ),
+    );
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a MOVE-by-identity ceiling raise (no face named) is exempt and is never asked for an \
+         architecture-touching commit",
+        &[ceilings::ROW_ARCH],
+        ov,
+    ));
+
     r
 }
 

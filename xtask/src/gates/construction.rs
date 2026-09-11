@@ -207,6 +207,8 @@ impl ConstructionGate {
             "legacy-reach",
             ceilings::ROW_ROSE,
             ceilings::ROW_SLACK,
+            ceilings::ROW_FROZEN,
+            ceilings::ROW_ARCH,
             // UNCONDITIONAL, AND THAT IS THE ENTIRE POINT. Every id below this block is derived
             // from the same `Cfg` the rules read, so deleting a rule table deletes the obligation
             // to run it in the same edit. This one is a literal: `ceiling-census` is owed whatever
@@ -451,6 +453,8 @@ impl ConstructionGate {
         );
 
         rows.extend(surface_rows(cx, &cfg));
+        rows.extend(ceilings::substrate_frozen(cx, &tree, &cfg));
+        rows.extend(ceilings::face_raise_amends_architecture(cx));
         // LAST, AND IN THIS ORDER. `ceiling-slack` reads the OTHER ROWS' measurements rather than
         // re-deriving them, so it must see every row this run produced — including the three
         // surface rows above, which are the ones a re-measurement would be most likely to disagree
