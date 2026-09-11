@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "762"
+count = "781"
 
 [[cell]]
 crate = "busbar"
@@ -1517,12 +1517,12 @@ count = "181"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "96"
+count = "97"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1985"
+count = "2007"
 
 [[cell]]
 crate = "busbar"

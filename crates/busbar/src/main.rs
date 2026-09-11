@@ -790,6 +790,7 @@ fn register_ws_arrivals() {
 fn mount_root_voice(
     limits: &busbar_substrate::config::limits::LimitsResolved,
     rows: &'static [busbar_plane_streams::Upstream],
+    lease: std::sync::Arc<root::units_voice::NodeSessionLease>,
 ) -> (
     std::sync::Arc<root::units_voice::VoiceNode>,
     std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls>,
@@ -823,7 +824,7 @@ fn mount_root_voice(
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls(rows)
+    compose_voice_governed_calls(rows, lease)
 }
 
 /// THE SECTION'S ROWS, COMPOSED INTO THE LIST THE MOUNTED NODE IS BUILT WITH.
@@ -887,6 +888,7 @@ fn composed_upstreams(
 #[cfg(feature = "root-voice")]
 fn compose_voice_governed_calls(
     rows: &'static [busbar_plane_streams::Upstream],
+    lease: std::sync::Arc<root::units_voice::NodeSessionLease>,
 ) -> (
     std::sync::Arc<root::units_voice::VoiceNode>,
     std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls>,
@@ -918,7 +920,16 @@ fn compose_voice_governed_calls(
         scope: root::units_voice::scope_policy(),
         meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
         durability,
-        io: root::units_voice::VoiceIo::default(),
+        // THE I/O HALF, WITH ITS MONEY HOP REAL. The lease is the node's own and the composition
+        // holds the other end of it: its host arrives with the generation the app build produces
+        // and is bound there, which is the same shape the configured legs' credentials have and the
+        // same shape the LLM leg's book has. The two seams beside it stay detached and DECLARED so:
+        // nothing on this node reads them, and the carrier one names a transport that does not
+        // exist.
+        io: root::units_voice::VoiceIo {
+            lease: Box::new(lease),
+            ..root::units_voice::VoiceIo::default()
+        },
         // Minted from the root's own kernel, which is the only place a sealed origin can come from:
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
@@ -1370,7 +1381,14 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-voice")]
     let voice_rows = composed_upstreams(&voice_upstreams);
     #[cfg(feature = "root-voice")]
-    let (voice_node, voice_calls) = mount_root_voice(&cfg.limits, voice_rows);
+    // THE SESSION LEASE, composed here and bound one build later — see `NodeSessionLease`. Held by
+    // the caller because both ends are: the node meters through it and the composition binds its
+    // money hop onto it.
+    #[cfg(feature = "root-voice")]
+    let voice_lease = std::sync::Arc::new(root::units_voice::NodeSessionLease::default());
+    #[cfg(feature = "root-voice")]
+    let (voice_node, voice_calls) =
+        mount_root_voice(&cfg.limits, voice_rows, std::sync::Arc::clone(&voice_lease));
     // THE ROOT-COMPOSED PORTS this build hands across the plane-build seam, keyed by the OWNING
     // PLANE'S config section. The voice node's open-call table is one: the root builds it (it is the
     // root's node, its journal and its origin) and the plane cannot, so it crosses HERE, into the
@@ -1505,6 +1523,18 @@ async fn run(data_workers: usize) {
             std::process::exit(2);
         }
     }
+
+    // THE MONEY HOP, BOUND ONTO THE NODE'S LEASE, off the generation that owns it — the second half
+    // of the composition the block above finishes, and the same shape the LLM leg's book has. Until
+    // this line runs the lease refuses every reserve under the node's own unavailability reason, so
+    // there is no window in which a session opens metering against nothing; no listener is bound for
+    // another few hundred lines either way.
+    #[cfg(all(feature = "root-voice", feature = "proto-llm"))]
+    voice_lease.bind_port(Box::new(
+        busbar_voice::runtime::metering::HostMeteringPort::new(
+            busbar_core::plane_host::engine_host(&app),
+        ),
+    ));
 
     #[cfg(feature = "proto-llm")]
     let boot_host = busbar_core::plane_host::engine_host(&app);

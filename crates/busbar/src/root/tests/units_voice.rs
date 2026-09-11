@@ -100,7 +100,12 @@ fn every_declared_class_carries_a_figure() {
 /// A lease that can be taken and never runs dry.
 struct OpenLease;
 impl SessionLease for OpenLease {
-    fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+    fn reserve(
+        &self,
+        _session: u64,
+        _nanos: u64,
+        _cap_nanos: Option<u64>,
+    ) -> Result<(), ReasonCode> {
         Ok(())
     }
     fn settle(&self, _session: u64, _nanos: u64) -> bool {
@@ -905,7 +910,12 @@ fn the_opening_unit_seals_under_the_declared_operation_class() {
 fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
     struct DryLease;
     impl SessionLease for DryLease {
-        fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+        fn reserve(
+            &self,
+            _session: u64,
+            _nanos: u64,
+            _cap_nanos: Option<u64>,
+        ) -> Result<(), ReasonCode> {
             Ok(())
         }
         fn settle(&self, _session: u64, _nanos: u64) -> bool {
@@ -1009,6 +1019,134 @@ fn a_refused_units_record_carries_the_refusal_and_its_step() {
     assert_eq!(done.outcome.step, None);
 }
 
+/// THE NODE'S SESSION LEASE IS THE REAL MONEY HOP, AND IT REFUSES UNTIL ONE IS BOUND.
+///
+/// `VoiceIo`'s lease seam had exactly one implementor that shipped — `Detached`, which refuses every
+/// reserve — so no session on this node could open at all: unit zero's admit reads it and a refused
+/// reserve is a refused session. The implementor that replaces it is the plane's own D2
+/// reserve-then-settle port, and this cell drives all four of its answers over a host that is
+/// nobody's.
+///
+/// THE UNBOUND ANSWER IS THE ONE WORTH CELLING. The money hop belongs to the generation the app
+/// build produces, and this node is composed before that build, so there is a window in which the
+/// lease exists and its hop does not. What it must answer there is the DURABILITY reason and never
+/// an over-budget one: nothing is wrong with the principal's chain, there is simply nowhere to
+/// record a reservation — the same shape as a journal that cannot be written. Reporting it as
+/// over-budget would tell an operator their caller ran out of money.
+#[test]
+fn the_session_lease_refuses_until_its_money_hop_is_bound_and_meters_after() {
+    use crate::root::units_voice::{NodeSessionLease, SessionLease};
+
+    let lease = NodeSessionLease::default();
+    assert_eq!(
+        lease.reserve(7, 100, None),
+        Err(ReasonCode::DurabilityUnavailable),
+        "an unbound hop has nowhere to record a reservation, which is not an over-budget principal"
+    );
+
+    lease.bind_port(Box::new(
+        busbar_voice::runtime::metering::HostMeteringPort::new(std::sync::Arc::new(
+            ScriptedHost::default(),
+        )),
+    ));
+
+    // ── A REFUSE-ALL CAP IS DENIED AT THE DOOR. A session that cannot pay for its first frame must
+    // not open and then discover it.
+    assert_eq!(
+        lease.reserve(8, 100, Some(0)),
+        Err(ReasonCode::OverBudget),
+        "a refuse-all cap denies the reserve, which is the money answer and not the durable one"
+    );
+
+    // ── A LIVE LEASE SETTLES UNTIL THE CAP AND THEN SAYS STOP. `false` is what the caller turns
+    // into the hard close, and it is the one thing metering after the fact cannot do.
+    assert!(lease.reserve(7, 10, Some(100)).is_ok());
+    assert!(
+        lease.settle(7, 40),
+        "under the cap, the session may continue"
+    );
+    assert!(
+        !lease.settle(7, 60),
+        "at the cap the lease is dry and the next frame must not be served"
+    );
+
+    // ── A SESSION THIS NODE OPENED NO LEASE FOR SETTLES NOTHING. Answering `true` would let a
+    // session nobody reserved for keep receiving frames it is not paying for.
+    assert!(!lease.settle(999, 1));
+
+    // ── AND CLOSE IS ONCE, ON EVERY ENDING. After it the session is gone from the table, so a late
+    // settle is the same answer an unknown session gets.
+    lease.close(7);
+    assert!(!lease.settle(7, 1));
+}
+
+/// A HOST THAT KEEPS ONE BUDGET CELL PER LEASE — the narrow metering slice, and nothing else.
+///
+/// Written here rather than reached for because the slice IS narrow: five methods, all about one
+/// reserve-then-settle lease, and a cell that stood up a whole engine host to drive them would be
+/// proving something about the engine.
+#[derive(Default)]
+struct ScriptedHost {
+    next: std::sync::atomic::AtomicU64,
+    open: Mutex<HashMap<u64, (u128, Option<u128>)>>,
+}
+
+impl busbar_substrate::plane_host::MeteringHost for ScriptedHost {
+    fn cost_reserve(
+        &self,
+        _estimate_nanos: u128,
+        _fee_nanos: u128,
+        cap_nanos: Option<u128>,
+    ) -> Option<busbar_substrate::plane_host::CostLeaseId> {
+        // The real host's own door rule: a refuse-all cap opens no lease.
+        if matches!(cap_nanos, Some(0)) {
+            return None;
+        }
+        let id = self
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(1);
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, (0, cap_nanos));
+        Some(busbar_substrate::plane_host::CostLeaseId(id))
+    }
+
+    fn cost_settle(
+        &self,
+        lease: busbar_substrate::plane_host::CostLeaseId,
+        exact_nanos: u128,
+    ) -> Option<busbar_substrate::plane_host::SettleOutcome> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let cell = open.get_mut(&lease.0)?;
+        cell.0 = cell.0.saturating_add(exact_nanos);
+        Some(busbar_substrate::plane_host::SettleOutcome {
+            exhausted: matches!(cell.1, Some(cap) if cell.0 >= cap),
+        })
+    }
+
+    fn cost_settled(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&lease.0)
+            .map(|c| c.0)
+    }
+
+    fn cost_close(&self, lease: busbar_substrate::plane_host::CostLeaseId) -> Option<u128> {
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&lease.0)
+            .map(|c| c.0)
+    }
+
+    fn price_usage(&self, _model: &str, _usage: &busbar_substrate::billing::Usage) -> Option<u128> {
+        Some(0)
+    }
+}
+
 /// The three seams refuse rather than pretend. A node whose I/O half was never installed cannot
 /// pump, cannot lease and has no carrier; saying so at the seam is what keeps "detached" from being
 /// reported as "broken", and keeps neither from being reported as "fine".
@@ -1020,7 +1158,7 @@ fn a_refused_units_record_carries_the_refusal_and_its_step() {
 fn the_detached_seams_refuse_honestly() {
     let io = VoiceIo::default();
     assert!(!io.pump.is_pumping(7));
-    assert!(io.lease.reserve(7, 1).is_err());
+    assert!(io.lease.reserve(7, 1, None).is_err());
     assert!(!io.lease.settle(7, 1));
     assert!(!io.carrier.available());
 }
@@ -1324,7 +1462,7 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     // The node comes back beside the port now, because the credentials this node's legs present
     // are bound onto it one build later (see `resolve_leg_bindings`). This cell is about the
     // TABLE, so the node is dropped here — what it carries is the same either way.
-    let (_node, calls) = crate::compose_voice_governed_calls(&[]);
+    let (_node, calls) = crate::compose_voice_governed_calls(&[], std::sync::Arc::default());
     let ports: [(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -1466,7 +1604,12 @@ fn unit_zero_reserves_nothing_itself_and_takes_the_sessions_opening_reservation(
     /// A lease that records what it was reserved for.
     struct Recording(std::sync::Mutex<Vec<u64>>);
     impl SessionLease for Recording {
-        fn reserve(&self, _session: u64, nanos: u64) -> Result<(), ReasonCode> {
+        fn reserve(
+            &self,
+            _session: u64,
+            nanos: u64,
+            _cap_nanos: Option<u64>,
+        ) -> Result<(), ReasonCode> {
             self.0.lock().expect("lock").push(nanos);
             Ok(())
         }
@@ -1478,8 +1621,13 @@ fn unit_zero_reserves_nothing_itself_and_takes_the_sessions_opening_reservation(
     let seen = std::sync::Arc::new(Recording(std::sync::Mutex::new(Vec::new())));
     struct Shared(std::sync::Arc<Recording>);
     impl SessionLease for Shared {
-        fn reserve(&self, session: u64, nanos: u64) -> Result<(), ReasonCode> {
-            self.0.reserve(session, nanos)
+        fn reserve(
+            &self,
+            session: u64,
+            nanos: u64,
+            cap_nanos: Option<u64>,
+        ) -> Result<(), ReasonCode> {
+            self.0.reserve(session, nanos, cap_nanos)
         }
         fn settle(&self, session: u64, nanos: u64) -> bool {
             self.0.settle(session, nanos)

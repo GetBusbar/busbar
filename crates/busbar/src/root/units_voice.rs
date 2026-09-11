@@ -570,12 +570,20 @@ pub trait SessionPump: Send + Sync {
 /// because the object that has to be told those three things lives on the far side of the async
 /// boundary.
 pub trait SessionLease: Send + Sync {
-    /// Reserve the session's coarse opening estimate, in nano-units.
+    /// Reserve the session's coarse opening estimate, in nano-units, against the ceiling the
+    /// session's own chain leaves.
+    ///
+    /// THE CAP IS AN ARGUMENT because only the caller has it: it is the headroom the presenting
+    /// principal's resolved bucket chain leaves at this instant, and the unit that calls this is the
+    /// one holding that chain. A lease opened without it would be an UNCAPPED lease — it would
+    /// settle every turn and report `Live` forever, so the hard close that stops a session which can
+    /// no longer pay would never fire. `None` is uncapped and is the honest answer for a deployment
+    /// that capped nobody; `Some(0)` is refuse-all and is denied at the door.
     ///
     /// # Errors
     ///
     /// The principal's chain cannot cover it, which is the exhaustion answer.
-    fn reserve(&self, session: u64, nanos: u64) -> Result<(), ReasonCode>;
+    fn reserve(&self, session: u64, nanos: u64, cap_nanos: Option<u64>) -> Result<(), ReasonCode>;
 
     /// Settle one turn's exact figure against the reservation, and say whether anything is left.
     ///
@@ -616,7 +624,12 @@ impl SessionPump for Detached {
 }
 
 impl SessionLease for Detached {
-    fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+    fn reserve(
+        &self,
+        _session: u64,
+        _nanos: u64,
+        _cap_nanos: Option<u64>,
+    ) -> Result<(), ReasonCode> {
         // Not `Ok(())`. A lease that cannot be taken must not read as one that was: the whole point
         // of reserve-then-settle is that the reservation is what a later frame is allowed against.
         //
@@ -636,6 +649,142 @@ impl SessionLease for Detached {
 impl Carrier for Detached {
     fn available(&self) -> bool {
         false
+    }
+}
+
+/// THE SESSION LEASE THIS NODE MEASURES MONEY WITH — the real D2 reserve-then-settle hop, over the
+/// port the plane's own runtime declares.
+///
+/// NOT A SECOND LEDGER, and the seam's own declaration says why: the reservation this drives IS the
+/// unit's hold, the settlements it takes are what the usage and cost units folded, and the close is
+/// the exit path. What this type adds is the two things a `dyn` seam cannot carry — WHICH session a
+/// reserve belongs to, and the lease that reserve opened, held until the session ends.
+///
+/// ## Why the host is bound LATE, and why that is not a deferred write
+///
+/// The money hop is the HOST's — core's engine host, reached through the plane's own metering port —
+/// so a lease that reserves against a caller's real grant needs the generation the app build
+/// produces. This value is a field of the node, and the node is composed BEFORE that build because
+/// its governed-call port crosses into it. So the host arrives one build later and is bound here,
+/// set-once, exactly as the configured legs' credentials are — and the window in between is not a
+/// window a session can fall through: no listener is bound until long after, and a reserve asked
+/// before the host exists refuses under the node's own unavailability reason rather than opening a
+/// session that meters against nothing.
+#[derive(Default)]
+pub struct NodeSessionLease {
+    /// The money hop, once the generation that owns it exists.
+    port: std::sync::OnceLock<Box<dyn busbar_voice::runtime::metering::MeteringPort>>,
+    /// The lease each open session is running under. Keyed by session because the seam is: a `dyn`
+    /// port is told a number and a session id, and the object that number is settled against has to
+    /// be found again on the next turn.
+    open: Mutex<HashMap<u64, Box<dyn busbar_voice::runtime::metering::MeteringLease>>>,
+}
+
+impl std::fmt::Debug for NodeSessionLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeSessionLease")
+            .field("bound", &self.port.get().is_some())
+            .field(
+                "open",
+                &self.open.lock().map(|o| o.len()).unwrap_or_default(),
+            )
+            .finish()
+    }
+}
+
+impl NodeSessionLease {
+    /// BIND THE MONEY HOP, once, off the generation that owns it.
+    ///
+    /// What is bound is the PLANE's own declared PORT rather than a host, and that is the direction
+    /// rule rather than a convenience: the seam this type implements names the plane's metering port
+    /// as its implementor, so the port is what crosses. The composition builds one over whatever
+    /// host its generation minted; this node never names a host, and a deployment whose money hop
+    /// lives somewhere else binds a different port here without this file learning about it.
+    ///
+    /// A second call is a no-op rather than a swap of the hop this node's live sessions are already
+    /// metering through — two hops on one session table would be two books for one conversation.
+    pub fn bind_port(&self, port: Box<dyn busbar_voice::runtime::metering::MeteringPort>) {
+        let _ = self.port.set(port);
+    }
+}
+
+impl SessionLease for NodeSessionLease {
+    /// OPEN the session's lease against the ceiling its own chain leaves.
+    ///
+    /// NO FLAT FEE HERE, and the zero is the seam's rather than this node's opinion: the plane's
+    /// port takes an already-priced fee beside the estimate, and what this node charges once per
+    /// session is decided by the unit that ends, off the fee evidence the kernel folds — not twice,
+    /// in two places, out of two readings of one configuration.
+    ///
+    /// # Errors
+    ///
+    /// `DurabilityUnavailable` when no money hop is bound — there is nowhere to record the
+    /// reservation, which is the same shape as a journal that cannot be written and is emphatically
+    /// not an over-budget principal. `OverBudget` when the hop DENIED the reserve, which is the
+    /// refuse-all cap answering at the door: a session that cannot pay for its first frame must not
+    /// open and then discover it.
+    fn reserve(&self, session: u64, nanos: u64, cap_nanos: Option<u64>) -> Result<(), ReasonCode> {
+        let Some(port) = self.port.get() else {
+            return Err(ReasonCode::DurabilityUnavailable);
+        };
+        let Some(lease) = port.reserve(nanos, 0, cap_nanos) else {
+            return Err(ReasonCode::OverBudget);
+        };
+        self.open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session, lease);
+        Ok(())
+    }
+
+    /// SETTLE one turn's exact figure and say whether there is a next one.
+    ///
+    /// `false` on exhaustion, which the caller turns into a hard close. `false` also for a session
+    /// with no lease — a session this node never opened one for cannot have one settled, and
+    /// answering `true` would let it keep receiving frames it is not paying for.
+    fn settle(&self, session: u64, nanos: u64) -> bool {
+        let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lease) = open.get(&session) else {
+            return false;
+        };
+        matches!(
+            lease.settle(nanos),
+            busbar_voice::runtime::metering::LeaseState::Live
+        )
+    }
+
+    /// CLOSE the lease, once, on every ending.
+    ///
+    /// The close guard is taken and dropped HERE rather than left to the lease's own drop, because
+    /// that is what the guard is for: a host-side reserve stays open until something says the
+    /// session is over, and "something" must run on the ugly endings too.
+    fn close(&self, session: u64) {
+        let taken = self
+            .open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+        if let Some(lease) = taken {
+            drop(lease.close_guard());
+        }
+    }
+}
+
+/// SHARED, because the composition holds one end and the node holds the other.
+///
+/// The node reads this seam on every unit; the composition binds its money hop one build later. Both
+/// are the same object, so the forward is three lines rather than a second table to keep in step.
+impl SessionLease for std::sync::Arc<NodeSessionLease> {
+    fn reserve(&self, session: u64, nanos: u64, cap_nanos: Option<u64>) -> Result<(), ReasonCode> {
+        NodeSessionLease::reserve(self, session, nanos, cap_nanos)
+    }
+
+    fn settle(&self, session: u64, nanos: u64) -> bool {
+        NodeSessionLease::settle(self, session, nanos)
+    }
+
+    fn close(&self, session: u64) {
+        NodeSessionLease::close(self, session);
     }
 }
 
@@ -1726,6 +1875,20 @@ impl<'n> VoiceUnit<'n> {
     /// has authenticated anybody — so the fee cannot ride the door's hold; it rides the session's,
     /// taken here, once, exactly as the previous release's lease took it. A fee that settled and was
     /// never reserved is a session billed past a budget that was never asked about it.
+    /// THE CEILING THIS SESSION'S LEASE IS JUDGED AGAINST — the headroom the presenting principal's
+    /// own resolved chain leaves at this instant, read off the same door and the same chain the
+    /// admission was judged against.
+    ///
+    /// `None` for a session whose chain was never resolved (the ungoverned posture) and for a
+    /// deployment that capped nobody: an uncapped lease is the honest answer there, and it is not
+    /// the same thing as a lease with no ceiling because nobody asked for one. What it must never be
+    /// is a number this unit invented — a cap read off anything but the caller's own chain is a
+    /// session cut short against a budget its principal never had.
+    fn session_cap_nanos(&self) -> Option<u64> {
+        self.chain.as_ref()?;
+        Some(self.headroom_nanos())
+    }
+
     fn session_opening_nanos(&self) -> u64 {
         let rate = self
             .node
@@ -1983,12 +2146,11 @@ impl Units for VoiceUnit<'_> {
             // The session's opening reservation is taken here, once, and it is the reservation every
             // later frame of the session is allowed against. A lease that cannot be opened is an
             // exhaustion answer at the door rather than a session that opens and then cannot pay.
-            if let Err(reason) = self
-                .node
-                .io
-                .lease
-                .reserve(self.session, self.session_opening_nanos())
-            {
+            if let Err(reason) = self.node.io.lease.reserve(
+                self.session,
+                self.session_opening_nanos(),
+                self.session_cap_nanos(),
+            ) {
                 // A detached I/O half is not an over-budget principal, and the two must not be
                 // reported as the same thing. The reservation failing for want of a lease is the
                 // node's own unavailability.

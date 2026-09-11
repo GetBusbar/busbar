@@ -1841,3 +1841,22 @@ key = "cell.busbar-plane-streams.transport.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar-plane-streams x transport (busbar-plane-streams, transport): the opening-frame declaration is a method of `busbar_contract::plane::SessionPlane`, the contract face a SESSION transport obliges, so the plane's implementation of it and the cells that drive it name that face's own session vocabulary. Two hits, both the face: the implementation's signature and the battery's call of it through the trait. A plane that answered this question somewhere other than the session face would be answering it where no transport asks (105 -> 107)"
+
+# ── declared raises: R3's MONEY HOP — `VoiceIo`'s lease seam composed for real. It had exactly one
+# implementor that shipped, `Detached`, which refuses every reserve — so unit zero's admit refused
+# every session and no session on this node could open at all. The implementor that replaces it is
+# the PLANE's own D2 reserve-then-settle port, bound one build later exactly as the
+# configured legs' credentials are. Root composing a plane's declared port; each expires when the
+# base carries the number.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 19
+because = "busbar x dialect (busbar, dialect): the lease seam's own vocabulary is the PLANE's runtime metering port (`busbar_voice::runtime::metering::{MeteringPort, MeteringLease, LeaseState, HostMeteringPort}`), which is what the seam's own declaration has always named as its implementor — the root held a `dyn` and no implementor, and this is the implementor. The cell that drives it drives all four answers over a host that is nobody's, because the unbound answer (the durable reason, never an over-budget one) is the one worth proving (762 -> 781)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = "busbar x plane (busbar, plane): the same composition counted under the plane kind the runtime port belongs to, plus the seam's own widening. `SessionLease::reserve` gains the CAP the unit already holds — the headroom the presenting principal's own resolved chain leaves — because a lease opened without it is an uncapped lease that reports `Live` forever, so the hard close that stops a session which can no longer pay would never fire. The cap is read off the same door and the same chain the admission was judged against and is never a number this unit invented (1,985 -> 2,007)"
