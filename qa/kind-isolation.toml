@@ -1569,7 +1569,14 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+# 20 -> 22, HAND-SET to the measurement and declared in qa/construction.toml's
+# [gate.ceiling_raises] as `cell.52.count`: `PlaneDeclaration::admin_noun` -- the plane-neutral fact
+# the owner ruled into the declaration (the instance word is the FIELD'S NAME, not a plane's) -- and
+# its row in tests/plane_registry.rs. The key is an ORDINAL because that is the only key this tree's
+# `ceilings.rs::raises()` can resolve against an array-of-tables; ordinal 52 IS this row
+# (busbar-contract x control), verified by counting `[[cell]]` headers, and no cell row is added or
+# removed by this commit so no other ordinal moves.
+count = "22"
 
 [[cell]]
 crate = "busbar-contract"

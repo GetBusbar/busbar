@@ -4030,7 +4030,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 /// restated here, because a hand-written step list is a list that goes stale the first time a step
 /// is added and nothing says so.
 const STEP_TABLE_FILE: &str = "crates/busbar-caps/src/step.rs";
-const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane.rs";
+const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane/mod.rs";
 
 /// A tree with fewer than this many plane-owned steps has not been read; the loop is ten steps long
 /// and the planes own seven of them.

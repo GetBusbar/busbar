@@ -120,13 +120,51 @@ busbar-voice = ["busbar-voice-codec"]
 # stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
 # returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
+# THE PLANE DECLARATION LIST IS CONTRACT DATA (D33 section 7.2: "plane declarations must become
+# contract-level data before a config crate can exist, because a config crate must not name a
+# plane"). `busbar_contract::plane::registry` is the new face: the plain declaration struct (every
+# plain-data fact a plane states -- key, fallback, config_section, scope_kinds, subject_noun,
+# admin_noun, audit_kind, card_signing_domain, card_kid_prefix, owned_config_sections), the boot
+# fold, the section fold, the claim guard and the process slot with its by-key / by-section /
+# by-index readers -- MEASURED at 192 lines by this gate's own counting rule and 189 plugin-visible
+# surface lines by scripts/loc-surface.py. It names no plane: the rows are handed across as data by
+# the composition root, and a plane's BEHAVIOUR (its hooks) stays in the layer that runs it, keyed
+# by the same key. The same 192 lines are the whole of the union's rise; the kernel and unit rows
+# are untouched. ARCHITECTURE.md section 1.1 is amended in the same commit. These three entries
+# EXPIRE the moment this commit lands on the integration line: the base then carries the new
+# numbers, the rise disappears, and `ceiling-rose` refuses them as stale.
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 3480
+to = 3672
+because = "new FACE busbar_contract::plane::registry -- the plane declaration list as contract data, D33 section 7.2 -- MEASURED at 192 lines under this rule's own counting. The face names no plane: the rows are installed as data by the composition root and a plane's behaviour stays in the layer that runs it. ARCHITECTURE.md section 1.1 is amended in the same commit."
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 23335
+to = 23527
+because = "the caps/contract term of the union rose by exactly the 192 measured lines of the new FACE busbar_contract::plane::registry (see the caps_contract_ceiling raise above, same commit, same face); the kernel term and every unit-* term are unchanged by this commit. The kernel is 5379 and the unit-* total 14476 at both ends, so the whole of this delta is the face."
+
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+from = 3478
+to = 3667
+because = "new FACE busbar_contract::plane::registry -- the plane declaration list as contract data, D33 section 7.2 -- MEASURED at 189 plugin-visible surface lines by scripts/loc-surface.py. The face names no plane. ARCHITECTURE.md section 1.1 is amended in the same commit with the same figure."
+
+# THE ONE KIND-ISOLATION CELL THIS FACE MOVES. `busbar-contract x control` 20 -> 22: the declaration
+# struct names `admin_noun`, the control-kind word, because "what ONE registration on this plane is
+# called on the admin surface" is a plane-neutral FACT and the word is the FIELD'S NAME rather than
+# any plane's instance vocabulary. Two hits: the field and its row in tests/plane_registry.rs.
+[gate.ceiling_raises."cell.52.count"]
+file = "qa/kind-isolation.toml"
+from = 20
+to = 22
+because = "busbar-contract x control: PlaneDeclaration::admin_noun, the plane-neutral fact the owner ruled into the contract declaration, plus its row in tests/plane_registry.rs. The instance word is the FIELD'S NAME -- the face names no plane, and busbar-contract x plane does not move. Ordinal 52 is the busbar-contract x control row; this tree's raises() cannot key an array-of-tables by identity, and the row carries the same note beside its count."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3667
 grammar = 388
 contract_transport = 845
 
@@ -347,12 +385,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3672
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14476
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23335
+union_ceiling = 23527
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -521,7 +559,7 @@ without the plugin's author ever writing a line — the opposite of "every trait
 Every method on every kind trait below must be bodiless (`;`), so implementing the trait is the only \
 way to answer it."""
 file = "crates/busbar-contract/src/kinds.rs"
-plane_file = "crates/busbar-contract/src/plane.rs"
+plane_file = "crates/busbar-contract/src/plane/mod.rs"
 transport_file = "crates/busbar-contract/src/transport.rs"
 traits = [
   "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
@@ -709,6 +747,7 @@ max_sites = 0
 #   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
+  "crates/busbar-contract/src/plane/registry.rs::leak_fold",
   "crates/busbar-core/src/plane_host/",
   "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
