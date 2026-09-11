@@ -3,31 +3,42 @@
 # RECORD THE THREE STORE-BACKED ORACLE CELLS FROM THE PUBLISHED 1.5.5, AND HAND THEM TO A HUMAN.
 #
 # THE PROBLEM THIS SOLVES. `plugins.store-persist|store-{postgres,mysql,valkey}` are the only cells
-# whose whole claim — spend, restart, read back — needs a real durable backend. The committed golden
-# was recorded on a laptop, where two of the three had no backend, so their rows read
-# `SKIP … named gap: the fixture this cell needs is not in the tree yet`. A gap on the golden side
-# is a gap on both sides: the shadow-oracle job in ci.yml now boots the same three services and the
-# candidate DOES record them, but a candidate recording with nothing to diff against proves nothing.
-# So the golden owes three cells that only a machine with Postgres, MySQL and Valkey can record.
+# whose whole claim — spend, restart, read back — needs a real durable backend. A recording host
+# that cannot stand the servers up reports them `missing.candidate`, which reds replay unless the
+# loss is named as an accepted gap. So the golden owes three cells that only a machine with
+# Postgres, MySQL and Valkey can record.
 #
-# WHY A SEPARATE WORKFLOW, AND WHY IT CANNOT WRITE THE GOLDEN. The golden is the reviewed, committed
-# answer to "what did 1.5.5 do". A gate that can rewrite its own reference is not a gate — ci.yml
-# says this at length where it copies the committed golden in rather than re-deriving it. The same
-# rule applies to the thing that PRODUCES golden bytes: this workflow records, checks, and UPLOADS.
-# It has `contents: read`, it never pushes, and a step below proves it left `testing/shadow-oracle/
-# golden/` byte-identical to the checkout. A human runs `testing/shadow-oracle/import-store-cells.sh`
-# on the downloaded artifact, reads the diff, and commits it under their own name. The recording is
-# machine work; accepting it into the reference is a review.
+# THIS FILE IS NOW A CALLER, NOT A RECORDER. Everything the recording does — the pinned images, the
+# readiness wait, the fixture URLs, the digest-verified 1.5.5 binary and plugins, the three-and-only-
+# three filter, the all-PASS check, the self-merge, the merge notes, the teardown — lives in
+# `testing/shadow-oracle/record-store-cells.sh`, and this job runs that one command.
 #
-# WHY THE SERVICE PINS ARE THE SAME BYTES AS ci.yml's. The oracle's answer is a COMPARISON. If the
-# golden's store cells were recorded against Postgres 16 and the candidate's against Postgres 17,
-# the differ would report a divergence that is really a difference in how the two were run — the
-# hardest kind of red to read, because everything about it looks like a busbar regression. The three
-# `image:` lines below are therefore the same rows of testing/fleet-fixtures/service-images.tsv that
-# ci.yml's shadow-oracle job reads, and scripts/service-images-check.sh — run as the FIRST step
-# here, before anything expensive — proves it rather than trusting the copy. GitHub cannot read a
-# file into a `services:` block, so the literals must be duplicated; the lint is what makes the
-# duplication safe.
+# WHY. The recording used to live here as twenty-odd inline steps wired to GitHub's `services:`
+# block, so it ran on a GitHub runner or it ran nowhere. It then stopped running even there: four of
+# those steps invoked `testing/shadow-oracle/{record,fetch-golden,fetch-plugin}.sh` and
+# `testing/shadow-oracle/merge-recordings.py`, every one of which left this tree when the oracle was
+# extracted into GetBusbar/busbar-oracle. The recording path for three cells the golden owes had been
+# broken for as long as nobody dispatched it — which is exactly how long a path that exists only as
+# YAML goes unexercised. A script an operator can run on any box with docker (`bash
+# testing/shadow-oracle/record-store-cells.sh`) is a path that gets run, and its breakage is found by
+# the person who needed it rather than by the next release.
+#
+# WHAT THE `services:` BLOCK COST, AND WHY IT IS GONE. GitHub cannot read a file into a `services:`
+# block, so the three `image:` digests had to be re-stated in YAML, and `scripts/service-images-
+# check.sh` existed to prove the copies still matched `testing/fleet-fixtures/service-images.tsv`. A
+# duplication made safe by a lint is still a duplication. The driver provisions through
+# `testing/fleet-fixtures/store-services.sh`, which reads that table directly — the same table
+# `ci.yml`'s shadow-oracle job records the CANDIDATE side against, which is the agreement that makes
+# the two sides comparable — so there is nothing to re-state and nothing to drift. Docker is
+# available on `ubuntu-latest`; the driver needs nothing else.
+#
+# WHY IT STILL CANNOT WRITE THE GOLDEN. The golden is the reviewed, committed answer to "what did
+# 1.5.5 do". A gate that can rewrite its own reference is not a gate. The same rule applies to the
+# thing that PRODUCES golden bytes: this job records, checks, and UPLOADS. It has `contents: read`,
+# it never pushes, and a step below proves it left `testing/shadow-oracle/golden/` byte-identical to
+# the checkout. A human runs `testing/shadow-oracle/import-store-cells.sh` on the downloaded
+# artifact, reads the diff, and commits it under their own name. The recording is machine work;
+# accepting it into the reference is a review.
 name: oracle record store cells
 
 on:
@@ -58,321 +69,35 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-    # THE SAME THREE BACKENDS ci.yml's shadow-oracle JOB BOOTS, PINNED TO THE SAME DIGESTS.
-    # Not re-pinned here: testing/fleet-fixtures/service-images.tsv is the one pinned list, and the
-    # first step below refuses a drift rather than recording against a backend nobody agreed to.
-    services:
-      postgres:
-        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
-        env:
-          POSTGRES_USER: busbar
-          POSTGRES_PASSWORD: busbar
-          POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U busbar"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      # MySQL 8's FIRST boot initialises the datadir and restarts once, which is why its readiness
-      # budget is larger than the other two here exactly as service-images.tsv's ready_secs records.
-      mysql:
-        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
-        env:
-          MYSQL_ROOT_PASSWORD: busbar
-          MYSQL_USER: busbar
-          MYSQL_PASSWORD: busbar
-          MYSQL_DATABASE: busbar_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 12
-      valkey:
-        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      # The three ids this run is allowed to produce, and the ONLY three. Written once, read by the
-      # --filter, by the PASS check and by the artifact guard, so a fourth id cannot enter through
-      # one of them while the other two go on describing three.
-      STORE_CELL_IDS: 'plugins.store-persist|store-postgres plugins.store-persist|store-mysql plugins.store-persist|store-valkey'
-      # The fixtures the three cells gate on. Identical to ci.yml's shadow-oracle job, host-side:
-      # the services above publish their container ports onto the runner, and record.sh runs on the
-      # runner, not in a container.
-      BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-      BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
-      VALKEY_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # FIRST, AND BEFORE ANYTHING EXPENSIVE. If the `image:` lines above have drifted from the
-      # pinned table, everything after this step records against a backend that is not the one the
-      # candidate side will use, and the resulting golden is worse than no golden at all.
-      - name: The service pins are the ones the table pins
+      # THE DRIVER'S OWN RULES, FIRST AND BEFORE ANYTHING EXPENSIVE. No docker, no binary, no
+      # network: it proves the three ids are the three cells.json declares need a fixture, that the
+      # vars it exports are the ones the cell driver reads, that an INHERITED fixture URL is refused
+      # (a caller's URL can point at any server, and the recording would then claim the pinned
+      # digest's name while carrying another server's behaviour), that the pinned service table's
+      # own rules hold, and that the golden this records for is the one on disk. Every one of those
+      # is a way the run below could go green having recorded the wrong thing.
+      - name: The recording driver's own rules (no docker, no binary)
         timeout-minutes: 5
-        run: bash scripts/service-images-check.sh
+        run: bash testing/shadow-oracle/record-store-cells.sh --selftest
 
       # THE FIXTURE GATE DECIDES BOTH WAYS. It is the single function that turns "this env var is
       # set" into RECORD and its absence into GAP, and this whole workflow exists to take its
       # recording arm. A gate that had quietly stopped reading the variable would name three gaps
-      # here and the run would go green having recorded nothing. Needs no binary and no backend.
+      # in the run below and it would go green having recorded nothing.
       - name: The fixture gate decides both ways (fixture-gate selftest)
         timeout-minutes: 5
-        run: bash testing/shadow-oracle/fixture-gate-selftest.sh
+        run: ./bin/oracle fixture-gate-selftest
 
-      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. Same reservation ci.yml's
-      # shadow-oracle job makes, for the same reason: the oracle binds a fixed 487xx/488xx band that
-      # sits inside Linux's default ephemeral range, so an outbound socket can be handed the port
-      # the next busbar is about to bind. Applied, then READ BACK — a silently-failed sysctl would
-      # leave the flake in place under a step that printed nothing.
-      - name: Reserve the oracle port band from the kernel's ephemeral pool
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
-          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
-          echo "ip_local_reserved_ports=${got}"
-          case "$got" in *48700-48900*) ;; *) echo "::error::the oracle port band was not reserved (got '${got}'); a recorder bind would race the kernel's ephemeral allocator"; exit 1 ;; esac
-
-      - name: Oracle revision (keys the 1.5.5 artifact cache)
-        id: rev
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
-          [ -n "$digest" ] || { echo "::error::golden-digests.tsv pins no 1.5.5 linux tarball; there is nothing to record from"; exit 1; }
-          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
-
-      - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
-        with:
-          path: ~/.cache/busbar-oracle
-          key: ${{ steps.rev.outputs.key }}
-
-      # THE GOLDEN'S TRUTH IS THE PUBLISHED ARTIFACT, NEVER A BUILD OF THE TAG. fetch-golden.sh
-      # re-hashes what is on disk against golden-digests.tsv on EVERY invocation — a cache hit is
-      # verified, not trusted — and deletes a mismatched download rather than recording from it.
-      - name: Fetch the published 1.5.5 binary and plugins by digest
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          bash testing/shadow-oracle/fetch-golden.sh
-          bash testing/shadow-oracle/fetch-golden.sh --check
-          # The plugin set is DERIVED from the same digest file the cells read: a hand-kept copy of
-          # it goes stale the day a plugin is added, and the symptom is a store cell recording
-          # against a plugin that was never fetched.
-          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
-          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
-          for pl in $plugins; do
-            bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
-          done
-
-      # THE BACKEND VERSIONS GO IN THE NOTE, NOT JUST IN THE LOG. A store cell's recorded bytes can
-      # carry a backend's own error text or its wire behaviour, so "which Postgres" is part of what
-      # the recording MEANS. The digest pins the image; this records what that image says it is, in
-      # the merge note the human reads before accepting the cells.
-      - name: Read the backend versions the recording will be made against
-        id: backends
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          pg="$(PGPASSWORD=busbar psql -h localhost -U busbar -d busbar_test -tAc 'select version()' | head -1)"
-          my="$(mysql -h 127.0.0.1 -ubusbar -pbusbar -N -B -e 'select version()' busbar_test | head -1)"
-          # Valkey is asked over RESP directly. `redis-cli`/`valkey-cli` are NOT on the runner image,
-          # and installing a package to read one version string would put an unpinned apt fetch on
-          # the path of a recording whose whole point is that everything it touches is pinned.
-          # `INFO server` is two words on a socket.
-          vk="$(python3 - <<'PY'
-          import socket, sys
-          s = socket.create_connection(("localhost", 6379), 10)
-          s.settimeout(10)
-          s.sendall(b"INFO server\r\n")
-          buf = b""
-          # RESP bulk string: `$<len>\r\n<payload>\r\n`. Read the length, then read exactly that
-          # many bytes -- a recv loop that stops on a timeout would take the timeout every run.
-          while b"\r\n" not in buf:
-              buf += s.recv(4096)
-          head, rest = buf.split(b"\r\n", 1)
-          if not head.startswith(b"$"):
-              sys.exit(f"valkey answered {head!r}, not a bulk string")
-          want = int(head[1:])
-          while len(rest) < want:
-              rest += s.recv(65536)
-          out = [l for l in rest[:want].decode("utf-8", "replace").splitlines()
-                 if l.startswith(("valkey_version:", "redis_version:", "server_name:"))]
-          if not out:
-              sys.exit("valkey's INFO server named no version")
-          print(" ".join(l.replace(":", "=", 1) for l in out))
-          PY
-          )"
-          for v in "$pg" "$my" "$vk"; do
-            [ -n "$v" ] || { echo "::error::a backend did not answer a version query; the recording would not be able to say what it was made against"; exit 1; }
-          done
-          { echo "postgres=$pg"; echo "mysql=$my"; echo "valkey=$vk"; } >> "$GITHUB_OUTPUT"
-          echo "postgres: $pg"; echo "mysql: $my"; echo "valkey: $vk"
-
-      # RECORD EXACTLY THE THREE. `--filter` takes a regex over the cell id; it is built from
-      # STORE_CELL_IDS so the filter and the check below cannot describe different sets. `--plane
-      # all` is the plane the store family lives in; the filter is what narrows it.
-      #
-      # A FILTERED RUN IS THE RIGHT SHAPE HERE, WHERE IT IS NOT FOR MOST CELLS. The golden's own
-      # note explains why a cell whose answer depends on state earlier cells left (the governance
-      # store, the metrics buckets) must come out of a FULL run: a filtered re-record of
-      # `ops.scrape|metrics|key` carried a bucket no full run has at that point. These three do not
-      # have that property — each `plugins.store-persist|*` cell is a script cell that boots its own
-      # busbar against its own fresh backend schema, spends, restarts and reads back, and record.sh
-      # gives every cell its own working tree. Their bytes are a function of the binary and the
-      # backend, not of what ran before them.
-      - name: Record the three store cells (and nothing else)
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          rm -rf target/oracle/store-cells
-          mkdir -p target/oracle/store-cells/part
-          # The ids carry `|` and `.`, both regex metacharacters, and one of them IS the field
-          # separator of every cell id in the tree. Escaped by re.escape and anchored per id, so the
-          # filter selects these three exactly and cannot widen into a prefix match.
-          re="$(python3 -c 'import os,re;print("|".join("(^%s$)" % re.escape(i) for i in os.environ["STORE_CELL_IDS"].split()))')"
-          echo "filter: $re"
-          bash testing/shadow-oracle/record.sh \
-            --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" \
-            --plane all \
-            --filter "$re" \
-            --out target/oracle/store-cells/part
-
-      # THREE ROWS, ALL PASS, AND NOTHING ELSE. Each arm is checked on its own terms:
-      #   * a row that is not PASS is the failure this workflow exists to catch — a SKIP here means
-      #     the fixture gate did not see the backend, and uploading that would offer the human a
-      #     "recording" that re-states the gap it was supposed to close;
-      #   * a FOURTH row means the filter widened, and a cell nobody asked for would enter the
-      #     golden through an artifact whose name says "store cells";
-      #   * ZERO ROWS IS RED on its own terms — a recorder that ran and produced nothing must not
-      #     read as three green cells that happened not to be written down.
-      - name: All three recorded, all three PASS, and no fourth cell
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          led=target/oracle/store-cells/part/ledger.tsv
-          [ -s "$led" ] || { echo "::error::the recorder produced no ledger; nothing was recorded"; exit 1; }
-          rows=$(awk -F'\t' 'NF' "$led" | wc -l | tr -d ' ')
-          [ "$rows" = 3 ] || { echo "::error::expected exactly 3 ledger rows, got ${rows}"; awk -F'\t' 'NF{print "  "$1"\t"$2}' "$led"; exit 1; }
-          bad=0
-          for id in $STORE_CELL_IDS; do
-            verdict="$(awk -F'\t' -v id="$id" '$1==id{print $2; exit}' "$led")"
-            case "$verdict" in
-              PASS) echo "  PASS  $id" ;;
-              "")   echo "::error::${id} has no ledger row; the filter did not reach it"; bad=1 ;;
-              *)    echo "::error::${id} recorded ${verdict}, not PASS: $(awk -F'\t' -v id="$id" '$1==id{print $3; exit}' "$led")"; bad=1 ;;
-            esac
-          done
-          [ "$bad" = 0 ] || exit 1
-
-      # MERGED HERE, INTO SCRATCH, SO THE HUMAN'S MERGE IS NOT THE FIRST ONE EVER ATTEMPTED. This
-      # normalises the part into the exact layout import-store-cells.sh will feed to the golden and
-      # re-runs merge-recordings.py's provenance rules (version and binary_sha256 identity, the
-      # ledger written in cells.json order). A part that cannot merge with itself cannot merge with
-      # the golden either, and finding that out here costs one step instead of one round trip.
-      - name: Merge the part into a scratch recording
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          rm -rf target/oracle/store-cells/merged
-          python3 testing/shadow-oracle/merge-recordings.py \
-            --out target/oracle/store-cells/merged \
-            target/oracle/store-cells/part
-          python3 - <<'PY'
-          import json, sys
-          m = json.load(open("target/oracle/store-cells/merged/meta.json"))
-          if m.get("recorded") != 3:
-              sys.exit(f"::error::the merged recording says recorded={m.get('recorded')}, not 3")
-          print("merged:", m["version"], m["binary_sha256"][:12], m["host_triple"], m["harness_rev"][:12])
-          PY
-
-      - name: Write the merge notes
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          out=target/oracle/store-cells/merged
-          python3 - "$out" "${{ steps.backends.outputs.postgres }}" "${{ steps.backends.outputs.mysql }}" "${{ steps.backends.outputs.valkey }}" <<'PY'
-          import json, os, subprocess, sys
-          out, pg, my, vk = sys.argv[1:5]
-          m = json.load(open(os.path.join(out, "meta.json")))
-          rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(out, "ledger.tsv")) if l.strip()]
-          images = {}
-          for line in open("testing/fleet-fixtures/service-images.tsv"):
-              if line.startswith("#") or not line.strip():
-                  continue
-              f = line.split("\t")
-              if f[0] in ("postgres", "mysql", "valkey"):
-                  images[f[0]] = f"{f[1]}@{f[2]}"
-          note = [
-              "# store-cell recording — merge notes",
-              "",
-              "The three `plugins.store-persist|*` cells the committed golden cannot record on a",
-              "laptop, recorded from the PUBLISHED 1.5.5 binary against real backends. This artifact",
-              "is an INPUT to a human's `testing/shadow-oracle/import-store-cells.sh` run; nothing",
-              "here has touched `testing/shadow-oracle/golden/`.",
-              "",
-              "## Provenance",
-              "",
-              f"- version         `{m['version']}`",
-              f"- binary_sha256   `{m['binary_sha256']}`",
-              f"- harness_rev     `{m['harness_rev']}`",
-              f"- host_triple     `{m['host_triple']}`",
-              f"- recorded at     `{m['at']}`",
-              f"- recorded cells  {m['recorded']}",
-              "",
-              "## Backends",
-              "",
-              "The images are the rows `testing/fleet-fixtures/service-images.tsv` pins, which is the",
-              "same pin `ci.yml`'s shadow-oracle job records the CANDIDATE side against — that",
-              "agreement is what makes the two sides comparable, and it is proven by",
-              "`scripts/service-images-check.sh`, not asserted here.",
-              "",
-              f"- postgres  `{images.get('postgres','?')}`",
-              f"    - {pg}",
-              f"- mysql     `{images.get('mysql','?')}`",
-              f"    - {my}",
-              f"- valkey    `{images.get('valkey','?')}`",
-              f"    - {vk}",
-              "",
-              "## Verdicts",
-              "",
-          ]
-          for r in rows:
-              note.append(f"- `{r[0]}` — **{r[1]}** — {r[2] if len(r) > 2 else ''}".rstrip(" —"))
-          note += [
-              "",
-              "## What a human does with this",
-              "",
-              "```",
-              "gh run download <run-id> -n <artifact> -D /tmp/store-cells",
-              "testing/shadow-oracle/import-store-cells.sh /tmp/store-cells",
-              "```",
-              "",
-              "It merges these three cells into `testing/shadow-oracle/golden/1.5.5`, re-stamps the",
-              "provenance, and prints the diff. It does not commit: accepting a golden is a review.",
-              "",
-              "## What is deliberately NOT in this artifact",
-              "",
-              "`raw/`. That is the PRE-NORMALISATION forensic tree — bodies as they came off the wire,",
-              "each cell's working directory with its generated signing key and admin token, and the",
-              "key-mint responses whose `.token` is a live `bbk_…` virtual key. `cells/` is the",
-              "post-normalisation view and is safe by construction. The golden does not check raw/ in",
-              "either, so the import needs none of it.",
-          ]
-          open(os.path.join(out, "merge-notes.md"), "w").write("\n".join(note) + "\n")
-          print("\n".join(note))
-          PY
+      # ONE COMMAND. Provision (pinned digests, readiness proven), export the three fixture URLs,
+      # fetch the published binary and plugins by digest, record exactly the three ids, refuse
+      # anything that is not three PASS rows, merge into a scratch recording, write the merge notes,
+      # tear the backends down. Every one of those steps used to be a `run:` block here.
+      - name: Record the three store cells
+        timeout-minutes: 35
+        run: bash testing/shadow-oracle/record-store-cells.sh --out target/oracle/store-cells
 
       # THE GOLDEN IS EXACTLY AS THE CHECKOUT LEFT IT. This workflow's whole contract is that it
       # PRODUCES a recording and never becomes one. `contents: read` stops it pushing; this stops it
@@ -387,9 +112,10 @@ jobs:
           [ -z "$dirty" ] || { echo "::error::this workflow modified the committed golden; it may only ever produce an artifact"; printf '%s\n' "$dirty"; exit 1; }
           echo "testing/shadow-oracle/golden: unchanged"
 
-      # THE PATH LIST IS AN ALLOW-LIST, AND THAT IS A SECRETS DECISION. See the merge notes above:
-      # `raw/` holds live minted key material. `cells/`, the ledger, the meta and the notes are the
-      # normalised view and are what the import consumes.
+      # THE PATH LIST IS AN ALLOW-LIST, AND THAT IS A SECRETS DECISION. `raw/` — deliberately not
+      # listed — holds each cell's working directory with its generated signing key and admin token,
+      # and the key-mint responses whose `.token` is a live virtual key. `cells/`, the ledger, the
+      # meta and the notes are the normalised view and are what the import consumes.
       - name: Upload the recorded cells and the merge notes
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
