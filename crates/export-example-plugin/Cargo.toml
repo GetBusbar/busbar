@@ -17,6 +17,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-
-[dev-dependencies]
+# The catalog is shipped as JSON and parsed back by the cell that checks it.
 serde_json = { workspace = true }

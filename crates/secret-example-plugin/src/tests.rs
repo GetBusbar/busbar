@@ -86,3 +86,26 @@ fn resolve_never_leaks_the_secret_value_in_its_error_message() {
         .unwrap_err();
     assert!(!err.message.contains("top-secret-value"));
 }
+
+/// THE CATALOG IS WELL-FORMED, and its two locales do what two locales are for.
+#[test]
+fn the_catalog_is_a_catalog_document_that_checks_in_two_locales() {
+    let catalog = crate::catalog();
+    catalog.check().expect("the catalog checks");
+    assert_eq!(catalog.default_locale, "en");
+    assert_eq!(
+        catalog.template("secret_example.no_entry", "de"),
+        Some("kein Eintrag namens {key}"),
+        "a locale the plugin ships is served from the plugin"
+    );
+    assert_eq!(
+        catalog.template("secret_example.no_entry", "fr"),
+        Some("no entry named {key}"),
+        "a locale the plugin does not ship falls back to its default, never to a developer message"
+    );
+    assert_eq!(
+        catalog.template("secret_example.never_declared", "en"),
+        None,
+        "an undeclared code has no rendering — the host refuses it rather than inventing one"
+    );
+}

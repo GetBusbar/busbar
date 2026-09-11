@@ -19,7 +19,37 @@
 //! non-string `key` field, or malformed open-time config JSON is an `Err`, never an empty `Ok`.
 
 use busbar_api::{SecretError, SecretModule, SecretResult};
+use busbar_plugin_sdk::{export_catalog, export_secret_plugin, Catalog};
 use serde::Deserialize;
+
+/// This plugin's error catalog, in TWO locales — the reference for what a plugin ships beside its
+/// claims. The host reads it once at load and renders these codes from it; a code this plugin
+/// emitted that is not declared here would be refused at first use, by name.
+///
+/// `de` is here on purpose: one locale proves the shape, two prove the LOOKUP — that a caller
+/// asking for `de` gets German, and a caller asking for a locale this plugin does not ship falls
+/// back to `en` and never to the developer message.
+pub const CATALOG: &str = r#"{
+  "default_locale": "en",
+  "entries": [
+    { "code": "secret_example.key_missing", "templates": [
+      { "locale": "en", "text": "the reference carries no `key`" },
+      { "locale": "de", "text": "die Referenz enthält keinen `key`" } ] },
+    { "code": "secret_example.no_entry", "templates": [
+      { "locale": "en", "text": "no entry named {key}" },
+      { "locale": "de", "text": "kein Eintrag namens {key}" } ] }
+  ]
+}"#;
+
+/// This plugin's catalog, parsed: what the host reads at load, and what the tests check.
+///
+/// # Panics
+/// Never in a shipped build — the constant above is a catalog document by construction, and the
+/// cell beside it is what keeps that true.
+#[must_use]
+pub fn catalog() -> Catalog {
+    serde_json::from_str(CATALOG).expect("the catalog is a catalog document")
+}
 
 /// The plugin's opaque open-time config: the whole map this instance resolves against.
 #[derive(Deserialize, Default)]
@@ -65,7 +95,8 @@ fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
     Ok(Box::new(ExampleSecret { map: c.map }))
 }
 
-busbar_plugin_sdk::export_secret_plugin!(open);
+export_catalog!(CATALOG);
+export_secret_plugin!(open);
 
 #[cfg(test)]
 #[path = "tests.rs"]

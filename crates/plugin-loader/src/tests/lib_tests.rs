@@ -1296,15 +1296,49 @@ fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
 /// empty `Ok`), and a reference whose `settings` carries no `key` at all.
 #[test]
 fn load_and_exercise_secret_example_plugin() {
+    const DISPLAY: &str = "secret-example";
     let Some(path) = secret_example_plugin_path() else {
         eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
         return;
     };
     let bytes = std::fs::read(&path).expect("read secret example plugin cdylib");
+
+    // END TO END OVER THE REAL ABI: the optional catalog symbol, read the way a load reads it.
+    // The cells above are about the RULES; this is about the symbol actually being there and the
+    // bytes actually crossing. What comes back has to be the catalog the plugin declares, in both
+    // the locales it ships and with the fallback for one it does not, and the codes it declares
+    // have to be admitted where one it did not is refused.
+    {
+        let (lib, _staged) = stage::load_library_from_bytes(&bytes, DISPLAY).expect("stage");
+        let catalog = read_catalog(&lib, DISPLAY)
+            .expect("the catalog is read at load, not refused")
+            .expect("the plugin exports one");
+        catalog.check().expect("and it checks");
+        let declared = catalog.entries.as_slice()[1].code.clone();
+        assert_eq!(catalog.default_locale, "en");
+        assert_eq!(
+            catalog.template(&declared, "de"),
+            Some("kein Eintrag namens {key}")
+        );
+        assert_eq!(
+            catalog.template(&declared, "fr"),
+            Some("no entry named {key}"),
+            "a locale the plugin does not ship falls back to its default"
+        );
+        let e = busbar_contract::PluginError::new(busbar_contract::ErrorClass::NotFound, declared);
+        assert_eq!(admit_code(&catalog, DISPLAY, e.clone()), e);
+        let invented =
+            busbar_contract::PluginError::new(busbar_contract::ErrorClass::NotFound, "x.invented");
+        assert_eq!(
+            admit_code(&catalog, DISPLAY, invented).code,
+            "wire.internal"
+        );
+    }
+
     let module = load_secret_from_bytes(
         &bytes,
         r#"{"map": {"db-password": "hunter2"}}"#,
-        "secret-example",
+        DISPLAY,
         "secret",
     )
     .expect("load secret example plugin over the ABI");
@@ -2423,7 +2457,8 @@ fn an_uncatalogued_code_is_refused_at_first_use_by_name() {
     .expect("a catalog that checks");
 
     // Declared: through untouched, verbatim.
-    let declared = PluginError::new(ErrorClass::NotFound, "vault.declared").with_message("gone");
+    let declared = PluginError::new(busbar_contract::ErrorClass::NotFound, "vault.declared")
+        .with_message("gone");
     assert_eq!(
         admit_code(&catalog, "libvault.so", declared.clone()),
         declared
@@ -2435,8 +2470,8 @@ fn an_uncatalogued_code_is_refused_at_first_use_by_name() {
     assert_eq!(admit_code(&catalog, "libvault.so", minted.clone()), minted);
 
     // Undeclared: refused, and what comes back is the refusal rather than the plugin's claim.
-    let undeclared =
-        PluginError::new(ErrorClass::NotFound, "vault.invented").with_message("made up");
+    let undeclared = PluginError::new(busbar_contract::ErrorClass::NotFound, "vault.invented")
+        .with_message("made up");
     let refused = admit_code(&catalog, "libvault.so", undeclared);
     assert_eq!(refused.class, ErrorClass::Internal);
     assert_eq!(refused.code, "wire.internal");
