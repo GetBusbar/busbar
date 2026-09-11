@@ -617,10 +617,10 @@ pub struct AffinityCfg {
 }
 
 // ── `tool_pools:` / `agent_pools:` ────────────────────────────────────────────────────────────────
-// Relocated VERBATIM from `busbar-core/src/failover/mod.rs` (1.6.0 R-config unblock 1): it is the
+// Relocated VERBATIM out of the retiring crate's failover module (1.6.0 R-config unblock 1): it is the
 // value grammar of two top-level config sections, so it belongs beside the other pool shapes rather
 // than in the disposition module that happens to read it. ONE visibility change, stated: `repeatable`
-// was `pub(crate)` when its only writer (`config/mod.rs`'s non-LLM pool derivation) shared a crate
+// was `pub(crate)` when its only writer (the reader in `config/mod.rs` that derives the pools the model section does not) shared a crate
 // with it; that writer is now crate-external, so the field is `pub`. Visibility is not wire — the
 // serde attrs, field order, defaults and `deny_unknown_fields` are byte-identical, and the
 // `config-schema` gate reads the same surface here that it read there.
@@ -629,12 +629,12 @@ pub struct AffinityCfg {
 /// this feature adds, and it is CORE's rather than a plane's.
 ///
 /// ```yaml
-/// tool_pools:                       # MCP: one server image, deployed twice
+/// tool_pools:                       # one server image, deployed twice
 ///   search:
 ///     members: [search-eu, search-us]
 ///     repeatable: [search_code]     # operations safe to perform TWICE. Default: none.
 ///
-/// agent_pools:                      # A2A: one agent, registered twice
+/// agent_pools:                      # one agent, registered twice
 ///   planner:
 ///     members: [planner-eu, planner-us]
 /// ```
@@ -700,7 +700,7 @@ impl CandidatePoolCfg {
 
 /// The CEILING on a `tool_pools:`/`agent_pools:` member list, enforced at config validation
 /// (`config::check_failover_pool`), relocated here from
-/// `busbar-core/src/store/planes.rs` so the bound sits with the list it bounds so an admission can never index past the plane store's fixed
+/// the retiring crate's plane store so the bound sits with the list it bounds so an admission can never index past the plane store's fixed
 /// lane table. A constant rather than a config-derived size because the plane store's `PlaneBreakers` lane table is
 /// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
 /// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
