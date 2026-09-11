@@ -233,31 +233,39 @@ def llm_cells(inv: dict) -> list[dict]:
     # error looks like on the wire, the door decides what the client is told, and the diagonal
     # covers all six of each.
     #
-    # THESE SIX STAY `needs_fixture`, AND ONE OF THE TWO REASONS IS NOW CLOSED. The mock grew the
-    # `stream-error` verb for all six dialects and has shipped it since v0.3.7. What is missing is
+    # THESE SIX STAY `needs_fixture`, AND BOTH OF THE TWO REASONS ARE NOW CLOSED. The mock grew the
+    # `stream-error` verb for all six dialects and has shipped it since v0.3.7. What was missing was
     # the RECORDER, and it was missing twice, on the two INDEPENDENT legs of the cell:
     #   1. CLOSED BY v0.3.14. record.sh's built-in `llm` driver wrote the mock control for exactly
     #      ONE outcome — `if [ "$outcome" = upstream_down ]` -> "down" — so a cell's own
     #      `mock_control` was dead on this driver and the mock answered the HEALTHY 200. v0.3.14
     #      routes all three drivers and the `pre` runner through one `cell_mock_control()`, so the
     #      cell's own `{"stream-error": true}` now lands.
-    #   2. STILL OPEN, and it is sufficient on its own. build-request.py (the same pinned tool,
-    #      v0.3.14, line 48) still decides streaming by `oc in ("ok_stream", "ok_stream_array")`.
-    #      `stream_upstream_error` is in neither tuple, so the request it builds is BUFFERED — and
+    #   2. CLOSED BY v0.3.15, and this comment said otherwise until the pin that closed it was
+    #      already in the tree — which is the failure mode the whole file is about, one level up.
+    #      build-request.py decided streaming by `oc in ("ok_stream", "ok_stream_array")`, two
+    #      outcome NAMES; `stream_upstream_error` is in neither, so the request was BUFFERED, and
     #      the mock's own rule is that `stream-error` "only ever applies to a request that IS a
-    #      stream" (mock-upstream.py: every dialect arm reads `if want_stream and stream_error`),
-    #      because answering a buffered request with half a stream is a shape no upstream produces.
-    #      So with the control landing and the request buffered, the mock falls through to the
-    #      HEALTHY buffered answer: the same silent pass as before, now arrived at by a different
-    #      route.
-    # MEASURED, NOT ARGUED (2026-09-10, published 1.5.5, aarch64-apple-darwin): with `needs_fixture`
-    # lifted, all six record `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a
-    # buffered `chat.completion` body — the happy path frozen under the name of the failure, and
-    # frozen identically on the candidate, so the cell would prove the opposite of what it claims.
-    # Recording them therefore still needs a TOOL release, now for leg 2 alone: build-request.py has
-    # to build a STREAMING request for this outcome. That is named in accepted-gaps.json and owed to
-    # a pin bump, not to anything in this tree. The behaviour itself is pinned TODAY by the
-    # `llm.stream|<dialect>|<fault>` family above, in the half of the harness busbar owns.
+    #      stream" (every dialect arm reads `if want_stream and stream_error`), because answering a
+    #      buffered request with half a stream is a shape no upstream produces. v0.3.15 replaced the
+    #      name test with `declares_stream(cell)`, which reads the CELL most specific first: an
+    #      explicit `stream` field, then a `mock_control` only a stream can reach
+    #      (`STREAM_ONLY_CONTROLS`, which is exactly `stream-error`), then the two names LAST.
+    #      MEASURED at the pin this tree carries, by driving the pinned build-request.py directly on
+    #      one of these six cells: `declares_stream` -> True, and the emitted request is
+    #      `"stream": true` both as the request's own field and inside the body.
+    # SO WHAT IS OWED IS A RECORDER RUN, NOT A TOOL RELEASE — and that is the only reason they are
+    # still `needs_fixture`. A run has to happen on an IDLE box (these cells snapshot metrics either
+    # side of a stream, so a loaded host is how a timing sample becomes part of the record), and the
+    # same is true of the two a2a reachability cells. Until one lands, what the six would freeze is
+    # unmeasured on this pin: MEASURED ON THE OLD ONE (2026-09-10, published 1.5.5,
+    # aarch64-apple-darwin, when leg 2 was open) they recorded
+    # `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a buffered
+    # `chat.completion` body — the happy path frozen under the name of the failure, and frozen
+    # identically on the candidate, so the cell proved the opposite of what it claims. That number is
+    # kept here as the reason the rows were not lifted blind, not as a claim about this pin.
+    # The behaviour itself is pinned TODAY by the `llm.stream|<dialect>|<fault>` family above, in the
+    # half of the harness busbar owns.
     # gemini is not in the inventory's `streams` set (its streaming is the path-selected
     # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
     # failure is exactly as unrecorded there — so it gets the cell too: all six backends.
