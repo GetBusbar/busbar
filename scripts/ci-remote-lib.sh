@@ -192,13 +192,26 @@ WORKDIR
 }
 
 # HOW MANY PROOFS ARE RUNNING ON A BOX — as one shell line, because it travels as an ssh command
-# line. Every proof drops its pid in `<checkout>/.proof.pid` and removes it on the way out; a pid
-# whose process is gone is a crashed proof, not a running one, and is not counted. `busbar-prove*`
-# covers the shared checkout and every per-branch one. THE PATTERN MUST NOT MATCH ITSELF: this is a
-# glob over directories, not a pgrep, so it cannot — which is the other half of why the count is a
-# file and not a process scan.
+# line. A pid whose process is gone is a crashed proof, not a running one, and is not counted.
+# `busbar-prove*` covers the shared checkout and every per-branch one. THE PATTERN MUST NOT MATCH
+# ITSELF: this is a glob over directories, not a pgrep, so it cannot — which is the other half of
+# why the count is a file and not a process scan.
+#
+# THERE ARE TWO KINDS OF PID FILE AND THE CEILING ONLY MEANT ONE OF THEM.
+# `<checkout>/.proof.pid` is what prove-remote.sh's slot pre-proof writes. A LANDING and every
+# SWEEP PRE-PROOF go through land-remote.sh instead, which writes
+# `<checkout>/target/land-remote-<ref>.pid` and never touches .proof.pid — so a box carrying two
+# sweep pre-proofs reported ZERO to this probe and `BUSBAR_PROVE_PER_BOX` was not enforced on the
+# work the fleet actually does. MEASURED 19:19 on a live box: `--preprove … line-9.batch` running,
+# its group id in target/land-remote-land-20260911-190506-7406.pid, and the old snippet answering 0.
+# Both kinds count now, which is also what makes ci-fleet-power.sh's stopper unable to stop a box
+# mid-landing.
+#
+# A LANDING THAT HAS FINISHED WROTE ITS `.rc`. The pid files are named by ref and accumulate, so a
+# stale one whose pid has been reused would hold a box out of the fleet forever; the rc file beside
+# it is land-remote.sh's own "this one is over" and is checked first.
 _prove_count_snippet() {
-  printf '%s' 'n=0; for f in "$HOME"/busbar-prove*/.proof.pid; do [ -f "$f" ] || continue; p="$(cat "$f" 2>/dev/null)"; case "$p" in ""|*[!0-9]*) continue ;; esac; kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"'
+  printf '%s' 'n=0; for f in "$HOME"/busbar-prove*/.proof.pid "$HOME"/busbar-prove*/target/land-remote-*.pid; do [ -f "$f" ] || continue; case "$f" in *land-remote-*) [ -f "${f%.pid}.rc" ] && continue ;; esac; p="$(cat "$f" 2>/dev/null)"; case "$p" in ""|*[!0-9]*) continue ;; esac; kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"'
 }
 # ── THE PROBE IS A ROUND, NOT A WALK; AND A SWEEP MAKES ONE OF THEM ──────────────────────────────
 # MEASURED 2026-09-10: a sweep of twelve pre-proofs spent from 18:41 to 19:1x DISPATCHING. Every
@@ -888,6 +901,24 @@ STUB
   _t "one live proof and one stale pid counts 1" "1" "$(tail -1 "$root/cnt.txt")"
   ( export HOME="$H"; rm -f "$H"/busbar-prove-branch-*/.proof.pid; eval "$(_prove_count_snippet)" ) >"$root/cnt0.txt" 2>&1
   _t "no pid files counts 0"                     "0" "$(tail -1 "$root/cnt0.txt")"
+  # ── A LANDING AND A SWEEP PRE-PROOF ARE PROOFS TOO ───────────────────────────────────────────
+  # MEASURED 19:19 on a live fleet box: `land.run.local.sh --preprove … line-9.batch` running, its
+  # group id in target/land-remote-<ref>.pid, and this probe answering 0 — so the per-box ceiling
+  # was not being enforced on the work the fleet actually does, only on prove-remote.sh's slot
+  # proofs. Three lines could be handed a box that already held two.
+  mkdir -p "$H/busbar-prove-branch-a/target"
+  ( export HOME="$H"; rm -f "$H"/busbar-prove-branch-*/.proof.pid
+    echo $$ >"$H/busbar-prove-branch-a/target/land-remote-land-1.pid"
+    eval "$(_prove_count_snippet)" ) >"$root/cntl.txt" 2>&1
+  _t "a live LANDING counts as a proof"          "1" "$(tail -1 "$root/cntl.txt")"
+  ( export HOME="$H"; : >"$H/busbar-prove-branch-a/target/land-remote-land-1.rc"
+    eval "$(_prove_count_snippet)" ) >"$root/cntr.txt" 2>&1
+  _t "  ...and one that wrote its rc does not"   "0" "$(tail -1 "$root/cntr.txt")"
+  ( export HOME="$H"; rm -f "$H/busbar-prove-branch-a/target/land-remote-land-1.rc"
+    echo $$ >"$H/busbar-prove-branch-b/.proof.pid"
+    eval "$(_prove_count_snippet)" ) >"$root/cntb.txt" 2>&1
+  _t "  ...a landing and a slot proof are TWO"   "2" "$(tail -1 "$root/cntb.txt")"
+  rm -rf "$H/busbar-prove-branch-a/target"; rm -f "$H"/busbar-prove-branch-*/.proof.pid
   # ── A BOX THAT HAS CLAIMED A STOP IS NOT OFFERED TO A PROOF ──────────────────────────────────
   # The probe command is DRIVEN, not grepped: it is a shell line that travels over ssh, so running
   # it against a fake HOME is the only reading of it that cannot drift from what the box executes.

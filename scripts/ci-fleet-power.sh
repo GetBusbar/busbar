@@ -104,6 +104,9 @@ busy_count() {
   n=0
   for f in "$H"/busbar-prove*/.proof.pid "$H"/busbar-prove*/target/land-remote-*.pid; do
     [ -f "$f" ] || continue
+    # A LANDING THAT HAS FINISHED WROTE ITS `.rc`. These files are named by ref and accumulate, so a
+    # stale one whose pid has been reused would hold the box awake forever.
+    case "$f" in *land-remote-*) [ -f "${f%.pid}.rc" ] && continue ;; esac
     p="$(cat "$f" 2>/dev/null)"
     case "$p" in ''|*[!0-9]*) continue ;; esac
     kill -0 "$p" 2>/dev/null && n=$((n + 1))
@@ -428,6 +431,9 @@ power_selftest() {
   rm -f "$BH/busbar-prove/.proof.pid"
   echo $$ >"$BH/busbar-prove/target/land-remote-land-1.pid"
   _t "a live LANDING counts as a proof" 1 "$(box busy)"
+  : >"$BH/busbar-prove/target/land-remote-land-1.rc"
+  _t "  ...but one that wrote its rc is over" 0 "$(box busy)"
+  rm -f "$BH/busbar-prove/target/land-remote-land-1.rc"
   rm -f "$BH/busbar-prove/target/land-remote-land-1.pid"
 
   echo "ci-fleet-power selftest: a busy box is never claimed, whatever its idle clock says"
