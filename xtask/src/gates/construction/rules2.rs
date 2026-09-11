@@ -901,6 +901,22 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
 
 // ── 21. kernel-seal-impls and forbid-unsafe ──────────────────────────────────────────────────────
 
+/// The two legal spellings of one Rust module, read as one path.
+///
+/// `a/b/foo.rs` and `a/b/foo/mod.rs` are the SAME module; which one a module is written as depends
+/// only on whether it has grown children yet. A ratchet that pins a file by its exact path would
+/// otherwise let a pure module split — no seal edited, no site added — read as a pinned site
+/// vanishing and a brand-new finding appearing in the same commit. Normalising the `mod.rs`
+/// spelling onto the flat one makes a pin survive the split, and it makes the reverse impossible
+/// too: a site cannot be re-pinned as new by moving the file the other way.
+fn same_module(known: &str, rel: &str) -> bool {
+    fn flat(path: &str) -> &str {
+        path.strip_suffix("/mod.rs").unwrap_or(path)
+    }
+    let (k, r) = (flat(known), flat(rel));
+    k == r || k.strip_suffix(".rs") == Some(r) || r.strip_suffix(".rs") == Some(k)
+}
+
 pub fn kernel_seal_impls(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("kernel-seal-impls")?;
     let allowed_root = need_str(c, "allowed_root", "kernel-seal-impls")?;
@@ -917,7 +933,7 @@ pub fn kernel_seal_impls(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             continue;
         }
         let where_ = format!("{rel}:{}", l.no);
-        if known.iter().any(|k| k == rel) {
+        if known.iter().any(|k| same_module(k, rel)) {
             tracked.push(where_);
         } else {
             offenders.push(where_);
@@ -1838,4 +1854,42 @@ pub fn no_test_doubles_in_production(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
             doubles,
         ),
     ])
+}
+
+#[cfg(test)]
+mod module_spelling_tests {
+    use super::same_module;
+
+    /// A pinned site keeps its pin when the module it lives in grows children and is rewritten
+    /// from `tests.rs` to `tests/mod.rs`. Nothing about the seal changed, so nothing about the
+    /// ratchet may either — in EITHER direction, which is what stops a site being re-pinned as
+    /// new by moving the file back.
+    #[test]
+    fn the_two_spellings_of_one_module_are_one_pin() {
+        let flat = "crates/busbar-transport-tcp/src/tests.rs";
+        let dir = "crates/busbar-transport-tcp/src/tests/mod.rs";
+        assert!(same_module(flat, dir));
+        assert!(same_module(dir, flat));
+        assert!(same_module(flat, flat));
+        assert!(same_module(dir, dir));
+    }
+
+    /// And a DIFFERENT file in the same directory is still a different file: the normalisation
+    /// reads `mod.rs` and nothing else, so a pin never spreads to the module's siblings.
+    #[test]
+    fn a_sibling_of_a_pinned_module_is_not_pinned() {
+        let pinned = "crates/busbar-transport-tcp/src/tests.rs";
+        assert!(!same_module(
+            pinned,
+            "crates/busbar-transport-tcp/src/tests/battery.rs"
+        ));
+        assert!(!same_module(
+            pinned,
+            "crates/busbar-transport-tls/src/tests/mod.rs"
+        ));
+        assert!(!same_module(
+            pinned,
+            "crates/busbar-transport-tcp/src/lib.rs"
+        ));
+    }
 }

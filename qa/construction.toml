@@ -601,6 +601,22 @@ max_sites = 0
 # busbar-caps at all (section 1.2, and manifest-allowlist makes it an automatic RED), so their test
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
+# The TRANSPORT crates are in the same position and it is worth writing down which ones and why,
+# because the two are not the same shape. `transport -> caps` is a `not-allowed` edge class in
+# qa/kind-isolation.toml, and that gate refuses to let a branch INTRODUCE one even as a
+# dev-dependency, so a transport battery cannot reach for a token the way a unit crate's own tests
+# do. busbar-transport-tls is the exception and keeps its entry off this list: it carries a
+# PRE-EXISTING `transport -> caps` test edge the ledger already records, so its battery takes the
+# real `TransportKeyToken`/`TrustToken` and forges nothing. For the rest, the two faces that would
+# retire the whole class are a keyless `TransportKeyHandle` (a transport with no key material —
+# busbar-transport-ws forges one in PRODUCTION source today to say so) and a destination a
+# transport is allowed to seal. Until the contract offers those, these sites are pinned here.
+#
+# A PIN IS A FILE, AND A FILE HAS TWO LEGAL SPELLINGS. `foo.rs` and `foo/mod.rs` are the same Rust
+# module, and a module that grows a second file moves from one spelling to the other without a
+# single line of the seal changing. The matcher normalises the two, so splitting a pinned test
+# module into a directory does not silently convert pinned debt into a fresh finding — and, just as
+# importantly, does not let it be re-pinned as if it were new.
 known_sites = [
   "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-voice/src/tests/harness.rs",
@@ -608,7 +624,6 @@ known_sites = [
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests.rs",
-  "crates/busbar-transport-tls/src/tests.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-unit-egress/src/tests/harness.rs",

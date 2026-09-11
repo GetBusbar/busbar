@@ -4,7 +4,6 @@
 //! opaque key handle's slot).
 
 use super::*;
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::ConfigView;
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
@@ -14,15 +13,28 @@ use std::sync::Arc as StdArc;
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;
 
-struct FixtureSeal;
-impl KernelSeal for FixtureSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-transport-tls test fixture"
-    }
+/// THE CAPABILITY CRATE, NAMED ONCE FOR THE WHOLE BATTERY.
+///
+/// This file used to declare a type of its own and implement the contract's `KernelSeal` on it,
+/// which forges the very thing the seal exists to prove: a crate that can implement that trait
+/// mints kernel evidence with no token, no kernel and no review. It never needed to — the
+/// two-level composition cells further down already took a real token against the real seal, and a
+/// token IS a seal. Every fixture here now goes through the two helpers below, so the whole
+/// battery names the capability crate in ONE place instead of once per fixture.
+use busbar_caps::{KernelSeal, TransportKeyToken, TrustToken};
+
+/// The transport-key unit's token, minted the one way production mints it.
+fn transport_key_token() -> TransportKeyToken {
+    TransportKeyToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+/// The trust unit's token: what seals a destination in production, and here too.
+fn trust_token() -> TrustToken {
+    TrustToken::mint(&KernelSeal::acquire_for_kernel())
 }
 
 fn fixture_key(slot: u64) -> TransportKeyHandle {
-    TransportKeyHandle::issue(&FixtureSeal, slot, "test")
+    TransportKeyHandle::issue(&transport_key_token(), slot, "test")
 }
 
 struct TestCfg {
@@ -149,7 +161,7 @@ async fn a_certificate_fingerprint_is_the_sha256_of_its_der_in_lowercase_hex() {
 fn upstream_dest(addr: &str) -> busbar_contract::VerifiedDestination {
     let host: &'static str = Box::leak(addr.to_string().into_boxed_str());
     busbar_contract::VerifiedDestination::seal(
-        &FixtureSeal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
             address: busbar_contract_transport::dest::UpstreamAddress::socket(host),
@@ -633,12 +645,11 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
 
     // The transport offers somewhere to put a config; the unit is what puts one there.
     let server = StdArc::new(TlsTransport::new());
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let keys = busbar_unit_transport_key::provision_server(
         &source,
         &journal,
         &*server,
-        &busbar_caps::TransportKeyToken::mint(&seal),
+        &transport_key_token(),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture",
@@ -691,7 +702,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
     let client = StdArc::new(TlsTransport::new());
     let client_keys = busbar_unit_transport_key::provision_client(
         &*client,
-        &busbar_caps::TransportKeyToken::mint(&seal),
+        &transport_key_token(),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture-client",
@@ -729,7 +740,7 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
 
     let leaked: &'static str = Box::leak(addr.into_boxed_str());
     let dest = busbar_contract::VerifiedDestination::seal(
-        &FixtureSeal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
             address: busbar_contract_transport::dest::UpstreamAddress::Socket {
@@ -850,7 +861,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
     });
     let leaked: &'static str = Box::leak(addr.into_boxed_str());
     let named = busbar_contract::VerifiedDestination::seal(
-        &FixtureSeal,
+        &trust_token(),
         busbar_contract::DestinationFacts::Upstream {
             transport: "tls",
             address: busbar_contract_transport::dest::UpstreamAddress::Socket {
@@ -1117,7 +1128,7 @@ mod cg_49_sni {
         let leaked_addr: &'static str = Box::leak(addr.to_string().into_boxed_str());
         let leaked_sni: &'static str = Box::leak(sni.to_string().into_boxed_str());
         busbar_contract::VerifiedDestination::seal(
-            &FixtureSeal,
+            &trust_token(),
             busbar_contract::DestinationFacts::Upstream {
                 transport: "tls",
                 address: busbar_contract_transport::dest::UpstreamAddress::Socket {
@@ -1165,14 +1176,13 @@ mod cg_49_sni {
             .collect(),
         );
         let journal = RecordingJournal::default();
-        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
 
         let server = StdArc::new(TlsTransport::new());
         let handle = busbar_unit_transport_key::provision_server_named(
             &source,
             &journal,
             &*server,
-            &busbar_caps::TransportKeyToken::mint(&seal),
+            &transport_key_token(),
             Slot {
                 index: 0,
                 fingerprint: "fixture",

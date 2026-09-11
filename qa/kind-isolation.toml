@@ -2604,7 +2604,7 @@ count = "12"
 [[cell]]
 crate = "busbar-transport-tls"
 kind = "caps"
-count = "7"
+count = "3"
 
 [[cell]]
 crate = "busbar-transport-tls"
