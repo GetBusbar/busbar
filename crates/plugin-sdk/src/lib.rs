@@ -838,10 +838,11 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 }
 
 // ── EXPORT-plugin glue (`kind: export`) ────────────────────────────────────────────────────────────
-// An export plugin is a telemetry SINK behind the frozen six-symbol ABI. Its author implements the tiny
-// SYNC [`ExportHandler`] trait (`streams`/`deliver` over JSON); the op-dispatch match
-// ([`dispatch_export`]) routes the [`ExportRequest`] envelope to it. Mirrors the hook glue one-to-one:
-// same `export_plugin!` shape, its own handle type (`Box<dyn ExportHandler>`), its own request enum.
+// An export plugin is a telemetry SINK behind the frozen six-symbol ABI. Its author implements the ONE
+// export face the contract declares ([`busbar_contract::Export`]) — the same face the in-tree sinks
+// implement, so a dlopen'd sink and a composed one are the same object; the op-dispatch match
+// ([`dispatch_export`]) routes the [`ExportRequest`] envelope onto it. Mirrors the hook glue one-to-one:
+// same `export_plugin!` shape, its own handle type (`Box<dyn Export>`), its own request enum.
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
@@ -854,40 +855,45 @@ pub use busbar_plugin::cold::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 
-/// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
-/// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
-/// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
-/// sink implements only `streams`.
-pub trait ExportHandler: Send + Sync {
-    /// The [`ExportStream`]s this instance carries. Asked once at load; the engine only routes
-    /// deliveries for streams named here.
-    fn streams(&self) -> Vec<ExportStream>;
-    /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
-    /// Default: no-op (a sink that reports streams but drops batches).
-    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
-    /// The HTTP [`Route`]s this instance serves — its OWN compiled-in declarations, collected once at
-    /// load (a metrics sink declares `GET /metrics`). Default: none (a push-only sink has no HTTP
-    /// surface). The engine collision-checks + namespace-confines these before mounting.
-    fn routes(&self) -> Vec<Route> {
-        Vec::new()
+/// THE ONE EXPORT FACE, re-exported so a plugin author names `busbar_plugin_sdk::Export` (etc.)
+/// without a direct `busbar-contract` dependency — the same re-export path the wire types above
+/// take.
+///
+/// There is no SDK-side export trait any more, and its absence is the point. `ExportHandler` — a
+/// `streams`/`deliver`/`routes`/`handle_http` trait on this crate, asking the same four questions
+/// the contract's face asks, in JSON instead of bytes — was a SECOND export face, reachable only by
+/// a plugin written against this SDK, so an in-tree sink and a dlopen'd sink implemented two
+/// different things and neither could be substituted for the other. It is deleted against
+/// `busbar_contract::Export`, and this module is now what it should always have been: the glue that
+/// carries the ONE face over the six-symbol ABI.
+pub use busbar_contract::{
+    AbiVersion, Ack, Delivery, Export, ExportHost, ExportItem, Kind, Plugin, RouteBar,
+    RouteStatement, ServeRequest, Served, EXPORT_ABI,
+};
+
+/// WHAT THIS SDK CAN LEND A SINK ACROSS THE C ABI, which today is nothing.
+///
+/// The export ABI carries four ops and no callbacks: a dlopen'd sink is handed a request and
+/// answers it, and there is no symbol through which it could reach back for this process's wire or
+/// this process's exposition. So the host an out-of-process sink is given REFUSES, honestly, rather
+/// than pretending to lend something the seam cannot carry — a sink that needs a wire opens its
+/// own, exactly as it does today.
+struct AbiHost;
+
+impl ExportHost for AbiHost {
+    fn send(&self, _delivery: Delivery) -> bool {
+        false
     }
-    /// Serve one inbound HTTP request matched to a declared route. Fires only for a matched route (the
-    /// engine already enforced the route's auth). Default: `404` — the fallback for a sink that
-    /// declared no routes / a partial impl.
-    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
-        HttpEndpointResponse {
-            status: 404,
-            headers: Vec::new(),
-            body: Vec::new(),
-        }
+    fn read(&self, _stream: &str) -> Option<String> {
+        None
     }
 }
 
-/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
+/// The export handle behind the opaque `*mut c_void`: a boxed [`Export`]. Named at the module
 /// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type ExportHandle = Box<dyn ExportHandler>;
+pub type ExportHandle = Box<dyn Export>;
 
-/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`].
+/// The export handle behind the opaque `*mut c_void`: a boxed [`Export`].
 type BoxedExport = ExportHandle;
 
 /// Return the EXPORT PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() ==
@@ -898,20 +904,85 @@ pub fn export_abi_version() -> u32 {
     busbar_plugin::cold::export::EXPORT_ABI_VERSION
 }
 
-/// Run one [`ExportRequest`] against an [`ExportHandler`] — the single op-dispatch match that maps the
-/// wire envelope to the trait, unit-testable without FFI. `Streams` returns the handler's declared
-/// streams; `Deliver` runs the handler's sink and acks with [`ExportResponse::Delivered`].
-pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> ExportResponse {
+/// Run one [`ExportRequest`] against the ONE export face — the single op-dispatch match that maps
+/// the wire envelope onto [`busbar_contract::Export`], unit-testable without FFI.
+///
+/// Each op is the face's own question said in the wire's words: `Streams` renders the sink's
+/// declared tokens back as the frozen [`ExportStream`] vocabulary (a token this ABI cannot spell is
+/// DROPPED rather than guessed at — the engine routes nothing it cannot name); `Deliver` hands the
+/// already-serialized batch over as an [`ExportItem`]; `Routes` says the sink's declarations in the
+/// wire's `Route` shape; `HttpEndpoint` relays a matched request to `serve`.
+///
+/// THE ACK IS NOT CARRIED. `ExportResponse::Delivered` has no field for one and
+/// `DynExport::deliver` returns `()`, so nothing upward is told what the sink said — and nothing
+/// upward is INVENTED either, which is the property that matters: teaching the ABI the ack is an
+/// `EXPORT_ABI_VERSION` move and is not done here.
+pub fn dispatch_export(handler: &dyn Export, req: ExportRequest) -> ExportResponse {
     match req {
-        ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
+        ExportRequest::Streams => ExportResponse::Streams(
+            handler
+                .streams()
+                .iter()
+                .filter_map(|token| ExportStream::from_token(token))
+                .collect(),
+        ),
         ExportRequest::Deliver { stream, payload } => {
-            handler.deliver(stream, &payload);
+            let bytes = payload.to_string();
+            let _ack = handler.receive(
+                ExportItem {
+                    stream: stream.as_token(),
+                    bytes: bytes.as_bytes(),
+                },
+                &AbiHost,
+            );
             ExportResponse::Delivered
         }
-        ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
+        ExportRequest::Routes => ExportResponse::Routes(
+            handler
+                .routes()
+                .iter()
+                .filter_map(|stated| {
+                    Some(Route {
+                        path: stated.path.to_string(),
+                        method: route_method(stated.method)?,
+                        auth: match stated.bar {
+                            RouteBar::Open => RouteAuth::None,
+                            RouteBar::Key => RouteAuth::Key,
+                        },
+                    })
+                })
+                .collect(),
+        ),
         ExportRequest::HttpEndpoint { request } => {
-            ExportResponse::Http(handler.handle_http(&request))
+            let served = handler.serve(
+                &ServeRequest {
+                    path: &request.path,
+                    method: &request.method,
+                    headers: &request.headers,
+                    body: &request.body,
+                },
+                &AbiHost,
+            );
+            ExportResponse::Http(HttpEndpointResponse {
+                status: served.status,
+                headers: served.headers,
+                body: served.body,
+            })
         }
+    }
+}
+
+/// The sink states its method as the uppercase token that rides the wire; this ABI spells the same
+/// method as an enum. A token outside the ABI's vocabulary is a route the host could not mount, so
+/// it is DROPPED from the declaration rather than mapped onto a method the sink did not name.
+fn route_method(token: &str) -> Option<RouteMethod> {
+    match token {
+        "GET" => Some(RouteMethod::Get),
+        "POST" => Some(RouteMethod::Post),
+        "PUT" => Some(RouteMethod::Put),
+        "PATCH" => Some(RouteMethod::Patch),
+        "DELETE" => Some(RouteMethod::Delete),
+        _ => None,
     }
 }
 
@@ -936,7 +1007,7 @@ pub unsafe fn export_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
 }
 
 /// Emit an `export`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn busbar_plugin_sdk::ExportHandler>, String>`). Expands through
+/// `fn(&str) -> Result<Box<dyn busbar_plugin_sdk::Export>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "export"` + the six neutral symbols.
 #[macro_export]
 macro_rules! export_export_plugin {

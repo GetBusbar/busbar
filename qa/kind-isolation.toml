@@ -1606,7 +1606,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "43"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1706,7 +1706,7 @@ count = "1"
 [[cell]]
 crate = "busbar-export-example-plugin"
 kind = "plane"
-count = "3"
+count = "2"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1722,6 +1722,21 @@ count = "2"
 crate = "busbar-export-example-plugin"
 kind = "store"
 count = "1"
+
+[[cell]]
+crate = "busbar-export-file"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-export-prometheus"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-export-webhook"
+kind = "plane"
+count = "2"
 
 [[cell]]
 crate = "busbar-grammar"
@@ -2266,7 +2281,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "plane"
-count = "20"
+count = "11"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2276,7 +2291,7 @@ count = "7"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "transport"
-count = "44"
+count = "32"
 
 [[cell]]
 crate = "busbar-plugin-sign"
@@ -2976,7 +2991,7 @@ count = "19"
 [[cell]]
 crate = "busbar"
 kind = "export"
-count = "41"
+count = "39"
 
 [[disagreement]]
 crate = "busbar"
@@ -3813,6 +3828,36 @@ why     = "busbar-export-example-plugin names busbar-plugin-sdk: declared normal
 drain   = "delete the busbar-plugin-sdk dependency from busbar-export-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
+from    = "busbar-export-file"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list / ARCHITECTURE.md 1.1 — busbar-contract is the face every kind is written against, and `busbar_contract::Export` is the entry face of the export kind."
+why     = "busbar-export-file names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the face this sink IMPLEMENTS — until it existed the crate had no dependencies at all and no face either, and its composer paired it up by hand. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: naming the face a plugin implements is what being a plugin of a kind means. What this row holds is the NUMBER, so a SECOND edge out of this sink is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-prometheus"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list / ARCHITECTURE.md 1.1 — busbar-contract is the face every kind is written against, and `busbar_contract::Export` is the entry face of the export kind."
+why     = "busbar-export-prometheus names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the face this sink IMPLEMENTS, route half included — the sink's own RouteStatement/Auth/Served/Scrape copies are deleted against it. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: naming the face a plugin implements is what being a plugin of a kind means. What this row holds is the NUMBER, so a SECOND edge out of this sink is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-export-webhook"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list / ARCHITECTURE.md 1.1 — busbar-contract is the face every kind is written against, and `busbar_contract::Export` is the entry face of the export kind."
+why     = "busbar-export-webhook names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It is the face this sink IMPLEMENTS — the crate's own Delivery type is deleted against the contract's. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: naming the face a plugin implements is what being a plugin of a kind means. What this row holds is the NUMBER, so a SECOND edge out of this sink is still a landing that has to say why."
+
+[[dep]]
 from    = "busbar-hook-test-plugin"
 to      = "busbar-plugin-sdk"
 half    = "shipped"
@@ -4281,6 +4326,16 @@ verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-sdk names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / PLUGIN-TREE.md 7 — the tooling that BUILDS a plugin names the face that plugin implements; the alternative is a second face only this SDK's plugins could implement."
+why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. It carries `busbar_contract::Export` over the six-symbol ABI; the SDK-side twin that stood here before it (`ExportHandler`, the same four questions asked in JSON) is deleted against it. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: an SDK that could not name the face would have to declare one of its own, which is the duplication this edge exists to end. What this row holds is the NUMBER."
 
 [[dep]]
 from    = "busbar-plugin-sdk"

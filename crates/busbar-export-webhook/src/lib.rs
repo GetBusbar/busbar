@@ -32,6 +32,10 @@
 //! and this crate never has an opportunity to mix them up, because it holds no masker and could not
 //! produce the first from the second if it tried.
 
+use busbar_contract::{
+    AbiVersion, Ack, Delivery, Export, ExportHost, ExportItem, Kind, Plugin, RouteStatement,
+    ServeRequest, Served, EXPORT_ABI,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,23 +91,6 @@ impl Report for Silent {
     fn report(&self, _event: Event<'_>) {}
 }
 
-/// One stated delivery: the whole of what this sink says about one request-log line.
-///
-/// It is DATA, not a request: a request type belongs to the wire its composer opens, and this sink
-/// names no wire. `POST` is not on it because this sink does nothing else.
-pub struct Delivery {
-    /// The target this line is addressed to — the real one, credentials and all, never the masked
-    /// spelling the reports carry.
-    pub url: String,
-    /// The headers the delivery rides under, in order: the media type, then the operator's auth
-    /// header if one was configured. A pair the composer's header vocabulary refuses is the
-    /// composer's to drop.
-    pub headers: Vec<(String, String)>,
-    /// The already-serialized request-log line, byte for byte as the composer built it to this
-    /// sink's projection.
-    pub body: Vec<u8>,
-}
-
 /// One configured webhook target: where a line goes, what may be said about it in a log, the header
 /// the operator wants on it, and how long any one delivery may take.
 pub struct WebhookSink {
@@ -154,15 +141,18 @@ impl WebhookSink {
     ///
     /// The method is a POST and is not stated, because there is no other thing this sink does and a
     /// field that can only hold one value is a field a composer can get wrong. A header pair the
-    /// composer's wire refuses is the composer's to drop; this sink states what the operator asked
-    /// for.
-    pub fn delivery(&self, payload: &str) -> Delivery {
+    /// host's wire refuses is the host's to drop; this sink states what the operator asked for.
+    ///
+    /// PRIVATE: the only way into this sink is [`Export::receive`]. A framing a composer could
+    /// reach around the face to call is a second entry point, and two entry points are two
+    /// behaviours a month later.
+    fn delivery(&self, payload: &str) -> Delivery {
         let mut headers = vec![(CONTENT_TYPE.0.to_string(), CONTENT_TYPE.1.to_string())];
         if let Some((name, value)) = &self.auth {
             headers.push((name.clone(), value.clone()));
         }
         Delivery {
-            url: self.url.clone(),
+            target: self.url.clone(),
             headers,
             body: payload.as_bytes().to_vec(),
         }
@@ -181,6 +171,65 @@ impl WebhookSink {
                 url: &self.display_url,
                 error: &error,
             }),
+        }
+    }
+}
+
+impl Plugin for WebhookSink {
+    fn key(&self) -> &'static str {
+        MODULE
+    }
+    fn kind(&self) -> Kind {
+        Kind::Export
+    }
+    fn abi(&self) -> AbiVersion {
+        EXPORT_ABI
+    }
+}
+
+/// THE FACE. What this sink carries, what it does with a record of it, and — because it is a PUSH
+/// sink and is delivered to rather than scraped — the two halves of the face that say so by being
+/// empty.
+impl Export for WebhookSink {
+    /// The per-request operational record, in the frozen export vocabulary's own token. Stated by
+    /// the sink, so a composer routes nothing to it that it never said it would take.
+    fn streams(&self) -> &'static [&'static str] {
+        &["logs"]
+    }
+
+    /// Frame one record as this instance's POST and put it on the wire the HOST lends for the
+    /// length of this call. The framing is this sink's and the socket is the host's, which is the
+    /// same division the composer made by hand before the face existed — a connection pool on the
+    /// open-web posture is a property of the process, and a crate of kind `export` may not name one.
+    ///
+    /// The ACK is what actually happened. [`Ack::Received`] means the host's wire took the framed
+    /// delivery: this sink never learns whether it landed, so `Durable` is a word it may never say.
+    /// [`Ack::Retry`] means the host took it nowhere.
+    fn receive(&self, item: ExportItem<'_>, host: &dyn ExportHost) -> Ack {
+        let Ok(payload) = std::str::from_utf8(item.bytes) else {
+            return Ack::Retry;
+        };
+        if host.send(self.delivery(payload)) {
+            Ack::Received
+        } else {
+            Ack::Retry
+        }
+    }
+
+    /// None. A push sink is delivered to; it is not scraped, and it claims no path on this
+    /// process's front door.
+    fn routes(&self) -> &'static [RouteStatement] {
+        &[]
+    }
+
+    /// Unreachable: a host only dispatches to a route the sink declared, and this sink declares
+    /// none. Answered rather than panicked, because a sink is not the party that decides what a
+    /// host does with a request nobody claimed.
+    fn serve(&self, _req: &ServeRequest<'_>, _host: &dyn ExportHost) -> Served {
+        Served {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
         }
     }
 }

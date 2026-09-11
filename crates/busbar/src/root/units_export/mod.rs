@@ -39,6 +39,10 @@ mod reports;
 pub mod routes;
 
 use admission::AdmissionGate;
+// THE ONE EXPORT FACE. Every composed sink is held as a `dyn Export` and every delivery goes
+// through `receive`: after construction this module cannot tell which sink it is holding, which is
+// the whole of what "the root mounts by KIND, never by name" means on this path.
+use busbar_contract::{Delivery, Export, ExportHost, ExportItem};
 // MODULE-LEVEL, deliberately. The `legacy-reach` ratchet counts DISTINCT symbols the root spells
 // through a retiring crate's prefix, and it may only go down: naming the two modules the engine
 // still owns here — and every item under them by short path — is the same two names main.rs
@@ -49,14 +53,16 @@ use export::{Projection, RequestLogFacts, RequestLogWebhookSend};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-/// Ship one payload, already built to the sink's projection, taking the permit that holds this
-/// delivery's slot. Named so the sink declaration below reads as the four facts it is, rather than
-/// as one line of type. It is the ROOT's vocabulary: the last engine-side sink that used to present
-/// itself through it is a crate of kind `export` now, so nothing but this fan-out speaks it.
+/// Run one delivery: the record, already built to the sink's projection, and the permit that holds
+/// this delivery's slot.
+///
+/// It is the ROOT's decision and only the root's — WHICH THREAD the sink's `receive` runs on and
+/// WHAT the sink is lent while it runs — because both are properties of this process. What the
+/// sink DOES with the record is behind [`Export::receive`] and is not spelled here at all.
 type Ship = Box<dyn Fn(&Arc<Value>, tokio::sync::OwnedSemaphorePermit) + Send + Sync>;
 
-/// One composed PUSH sink: what it was granted, what the root will shed for it, and the one call
-/// that ships it a payload.
+/// One composed PUSH sink: what it was granted, what the root will shed for it, which stream it
+/// declared, and the one call that runs a delivery.
 struct Sink {
     /// The subscription + fields THIS sink was granted. Its payload is built to exactly this.
     projection: Projection,
@@ -66,9 +72,69 @@ struct Sink {
     /// This sink's policy-specific drop counter, incremented on a shed. (The gate additionally
     /// counts every denial on `busbar_admission_denied_total{gate}`, uniformly across all gates.)
     dropped_total: &'static str,
-    /// Ship one payload built to [`projection`](Self::projection), taking the permit that holds
-    /// this delivery's slot.
+    /// Run one delivery of a payload built to [`projection`](Self::projection), taking the permit
+    /// that holds this delivery's slot.
     ship: Ship,
+}
+
+/// WHAT THE RECORD THIS FAN-OUT BUILDS IS, in the frozen export vocabulary's own token: the
+/// per-request operational record. It is stated here because this is the module that BUILDS it —
+/// every payload below is a request log and nothing else — and each sink composed here declares the
+/// same token for itself, which its own cells assert.
+const REQUEST_LOG: &str = "logs";
+
+/// WHAT THIS PROCESS LENDS A SINK that has nothing to ask it for — the file sink, whose only
+/// outside is the path it was configured with.
+struct NoLoan;
+
+impl ExportHost for NoLoan {
+    fn send(&self, _delivery: Delivery) -> bool {
+        false
+    }
+    fn read(&self, _stream: &str) -> Option<String> {
+        None
+    }
+}
+
+/// WHAT THIS PROCESS LENDS A WEBHOOK DELIVERY: the egress wire, for the length of ONE `receive`,
+/// with the slot this delivery was admitted under riding along so the in-flight bound is a bound on
+/// EXCHANGES and not on calls.
+///
+/// The socket is the reason this exists. A connection pool on the cold open-web posture is a
+/// property of this process and its egress posture, which no crate of kind `export` may name — so
+/// the sink states the delivery and this lends it the wire.
+struct WireLoan {
+    send: RequestLogWebhookSend,
+    timeout: std::time::Duration,
+    /// The slot, taken out exactly once by the single `send` a `receive` makes.
+    permit: std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    /// What this process does with the outcome the wire comes back with. Bound at composition, at
+    /// the one point the sink's crate is named at all.
+    outcome: Arc<dyn Fn(Result<u16, String>) + Send + Sync>,
+}
+
+impl ExportHost for WireLoan {
+    fn send(&self, delivery: Delivery) -> bool {
+        let Some(permit) = self.permit.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+            // The slot is already spent: one admitted delivery is one exchange, and a second send
+            // inside one `receive` would put a line on the wire nobody sheds for.
+            return false;
+        };
+        let outcome = self.outcome.clone();
+        (self.send)(
+            delivery.target,
+            delivery.headers,
+            delivery.body,
+            self.timeout,
+            permit,
+            Box::new(move |result| outcome(result)),
+        );
+        true
+    }
+
+    fn read(&self, _stream: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The composed sinks, built ONCE at boot. Unset ⇒ [`install`] found nothing to compose and never
@@ -101,7 +167,9 @@ fn file_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
     export::request_log_file_instances(cfg)
         .into_iter()
         .map(|instance| {
-            let handler = Arc::new(busbar_export_file::FileSink::new(
+            // The ONE point this composition names the sink's crate: building it. Everything after
+            // this line is a `dyn Export` and could be any sink of the kind.
+            let sink: Arc<dyn Export> = Arc::new(busbar_export_file::FileSink::new(
                 instance.path,
                 instance.rotate_mb,
                 Arc::new(reports::EngineFileReport),
@@ -118,13 +186,20 @@ fn file_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
                     // blocking pool. That is a decision about THIS process's runtime, which is
                     // exactly why the sink does not make it. The permit rides along and returns the
                     // slot when the task ends.
-                    let handler = handler.clone();
+                    let sink = sink.clone();
                     let payload = payload.clone();
                     tokio::task::spawn_blocking(move || {
                         let _permit = permit;
                         // Already built to THIS sink's projection, so an ungranted field is never
-                        // written to disk. The sink frames the line; the root serialized it.
-                        handler.append(&payload.to_string());
+                        // written to disk. The record goes over the face; the sink frames it.
+                        let line = payload.to_string();
+                        let _ack = sink.receive(
+                            ExportItem {
+                                stream: REQUEST_LOG,
+                                bytes: line.as_bytes(),
+                            },
+                            &NoLoan,
+                        );
                     });
                 }),
             }
@@ -161,13 +236,21 @@ fn compose_webhook_sinks(
         .map(|instance| {
             let projection = instance.projection;
             let max_inflight = instance.max_inflight;
-            let handler = Arc::new(WebhookSink::new(
+            // The ONE point this composition names the sink's crate: building it, and binding the
+            // one thing the face has no half for — what the sink makes of an outcome its wire came
+            // back with. Everything after these lines is a `dyn Export`.
+            let timeout = instance.timeout;
+            let built = Arc::new(WebhookSink::new(
                 instance.url,
                 instance.display_url,
                 instance.auth,
                 instance.timeout,
                 Arc::new(reports::EngineWebhookReport),
             ));
+            let judge = built.clone();
+            let outcome: Arc<dyn Fn(Result<u16, String>) + Send + Sync> =
+                Arc::new(move |result| judge.observe(result));
+            let sink: Arc<dyn Export> = built;
             let send = send.clone();
             Sink {
                 projection,
@@ -175,17 +258,22 @@ fn compose_webhook_sinks(
                 dropped_total: metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
                 ship: Box::new(move |payload, permit| {
                     // Already built to THIS sink's projection, so an ungranted field is never put
-                    // on the wire. The sink states the delivery; the root serialized it and sends
-                    // it, because the wire is the root's and the statement is the sink's.
-                    let delivery = handler.delivery(&payload.to_string());
-                    let outcome = handler.clone();
-                    send(
-                        delivery.url,
-                        delivery.headers,
-                        delivery.body,
-                        handler.timeout(),
-                        permit,
-                        Box::new(move |result| outcome.observe(result)),
+                    // on the wire. The record goes over the face; the sink frames the delivery and
+                    // puts it on the wire THIS loan lends it, because the wire is the root's and
+                    // the framing is the sink's.
+                    let body = payload.to_string();
+                    let loan = WireLoan {
+                        send: send.clone(),
+                        timeout,
+                        permit: std::sync::Mutex::new(Some(permit)),
+                        outcome: outcome.clone(),
+                    };
+                    let _ack = sink.receive(
+                        ExportItem {
+                            stream: REQUEST_LOG,
+                            bytes: body.as_bytes(),
+                        },
+                        &loan,
                     );
                 }),
             }

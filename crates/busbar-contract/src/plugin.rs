@@ -134,6 +134,15 @@ pub use busbar_contract_transport::AbiVersion;
 /// previous release boots unchanged.
 pub const STORE_ABI: AbiVersion = AbiVersion(5);
 
+/// The export kind's native interface generation — what an export sink answers
+/// [`Plugin::abi`] with.
+///
+/// It is the SAME generation the export payload schema on the plugin ABI carries, so an in-tree
+/// sink the composition root builds and a dlopen'd sink the loader opens answer one number rather
+/// than two that drift. Pinned here because this crate is where the face it versions is declared,
+/// and a sink may not name the plugin ABI to read it.
+pub const EXPORT_ABI: AbiVersion = AbiVersion(2);
+
 /// The base trait every plugin implements.
 ///
 /// It is deliberately tiny. Everything a plugin *does* is on its kind trait; everything a plugin

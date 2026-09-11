@@ -374,22 +374,51 @@ fn hook_ffi_roundtrip_open_call_close() {
     }
 }
 
-/// A trivial export sink: declares `[Metrics]` and counts deliveries.
+/// The three answers every plugin gives about itself, spelled once for the sinks below.
+macro_rules! sink_identity {
+    ($ty:ty, $key:literal) => {
+        impl busbar_contract::Plugin for $ty {
+            fn key(&self) -> &'static str {
+                $key
+            }
+            fn kind(&self) -> busbar_contract::Kind {
+                busbar_contract::Kind::Export
+            }
+            fn abi(&self) -> busbar_contract::AbiVersion {
+                busbar_contract::EXPORT_ABI
+            }
+        }
+    };
+}
+
+/// A trivial export sink: declares the metrics stream and counts what it was handed.
 struct TestExport {
     delivered: std::sync::atomic::AtomicU64,
 }
-impl ExportHandler for TestExport {
-    fn streams(&self) -> Vec<ExportStream> {
-        vec![ExportStream::Metrics]
+sink_identity!(TestExport, "test-export");
+impl Export for TestExport {
+    fn streams(&self) -> &'static [&'static str] {
+        &["metrics"]
     }
-    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {
+    fn receive(&self, _item: ExportItem<'_>, _host: &dyn ExportHost) -> Ack {
         self.delivered
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ack::Received
+    }
+    fn routes(&self) -> &'static [RouteStatement] {
+        &[]
+    }
+    fn serve(&self, _req: &ServeRequest<'_>, _host: &dyn ExportHost) -> Served {
+        Served {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 }
 
-/// EXPORT glue: `dispatch_export` maps `Streams` to the declared catalog and `Deliver` to the
-/// sink, acking `Delivered` and running the handler exactly once.
+/// EXPORT glue: `dispatch_export` maps `Streams` onto the face's declared tokens rendered back as
+/// the frozen wire vocabulary, and `Deliver` onto `receive`, running the sink exactly once.
 #[test]
 fn export_dispatch_maps_ops() {
     let sink = TestExport {
@@ -412,22 +441,26 @@ fn export_dispatch_maps_ops() {
     assert_eq!(sink.delivered.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
-/// A sink that declares a `GET /metrics` route and serves it via `handle_http`.
+/// A sink that declares a `GET /metrics` route and serves it through the face.
 struct RoutedExport;
-impl ExportHandler for RoutedExport {
-    fn streams(&self) -> Vec<ExportStream> {
-        vec![ExportStream::Metrics]
+sink_identity!(RoutedExport, "routed-export");
+impl Export for RoutedExport {
+    fn streams(&self) -> &'static [&'static str] {
+        &["metrics"]
     }
-    fn routes(&self) -> Vec<Route> {
-        vec![Route {
-            path: "/metrics".into(),
-            method: RouteMethod::Get,
-            auth: RouteAuth::None,
+    fn receive(&self, _item: ExportItem<'_>, _host: &dyn ExportHost) -> Ack {
+        Ack::Retry
+    }
+    fn routes(&self) -> &'static [RouteStatement] {
+        &[RouteStatement {
+            path: "/metrics",
+            method: "GET",
+            bar: RouteBar::Open,
         }]
     }
-    fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+    fn serve(&self, req: &ServeRequest<'_>, _host: &dyn ExportHost) -> Served {
         assert_eq!(req.path, "/metrics");
-        HttpEndpointResponse {
+        Served {
             status: 200,
             headers: vec![("content-type".into(), "text/plain".into())],
             body: b"busbar_up 1\n".to_vec(),
@@ -435,8 +468,9 @@ impl ExportHandler for RoutedExport {
     }
 }
 
-/// EXPORT glue: `dispatch_export` maps `Routes` to the declared routes and `HttpEndpoint` to
-/// `handle_http`, relaying the plugin's response — the additive route-registration + dispatch wire.
+/// EXPORT glue: `dispatch_export` says the face's route declarations in the wire's `Route` shape
+/// and maps `HttpEndpoint` onto `serve`, relaying the sink's answer — the additive
+/// route-registration + dispatch wire, now over the ONE face.
 #[test]
 fn export_dispatch_routes_and_http() {
     match dispatch_export(&RoutedExport, ExportRequest::Routes) {
@@ -444,6 +478,7 @@ fn export_dispatch_routes_and_http() {
             assert_eq!(r.len(), 1);
             assert_eq!(r[0].path, "/metrics");
             assert_eq!(r[0].method, RouteMethod::Get);
+            assert_eq!(r[0].auth, RouteAuth::None);
         }
         other => panic!("expected Routes, got {other:?}"),
     }
@@ -467,24 +502,30 @@ fn export_dispatch_routes_and_http() {
     }
 }
 
-/// EXPORT glue: the DEFAULT `handle_http` is a 404 (a sink with no HTTP surface / partial impl).
+/// THERE IS NO DEFAULT HALF OF THE FACE. A sink that serves nothing says so itself — it declares no
+/// route and answers a request nobody routed to it with a 404 written in its own file — so what a
+/// push-only sink does is readable where the sink is, not inherited from a trait nobody opens.
 #[test]
-fn export_default_handle_http_is_404() {
-    struct Bare;
-    impl ExportHandler for Bare {
-        fn streams(&self) -> Vec<ExportStream> {
-            vec![ExportStream::Metrics]
-        }
+fn a_push_only_sink_states_its_empty_route_half_itself() {
+    let bare = TestExport {
+        delivered: std::sync::atomic::AtomicU64::new(0),
+    };
+    assert!(bare.routes().is_empty());
+    match dispatch_export(
+        &bare,
+        ExportRequest::HttpEndpoint {
+            request: HttpEndpointRequest {
+                method: "GET".into(),
+                path: "/whatever".into(),
+                query: String::new(),
+                headers: vec![],
+                body: vec![],
+            },
+        },
+    ) {
+        ExportResponse::Http(resp) => assert_eq!(resp.status, 404),
+        other => panic!("expected Http, got {other:?}"),
     }
-    assert!(Bare.routes().is_empty());
-    let resp = Bare.handle_http(&HttpEndpointRequest {
-        method: "GET".into(),
-        path: "/whatever".into(),
-        query: String::new(),
-        headers: vec![],
-        body: vec![],
-    });
-    assert_eq!(resp.status, 404);
 }
 
 /// EXPORT: the SDK's declared payload version reads the shared const (compile-time link, not a

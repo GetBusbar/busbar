@@ -39,55 +39,6 @@ fn sink(auth: Option<(String, String)>, report: &Arc<Recorder>) -> WebhookSink {
     )
 }
 
-/// THE FRAME IS THE PAYLOAD'S, BYTE FOR BYTE. The line the composer serialized to this instance's
-/// projection is the body, unaltered and un-re-encoded, under the one media type a request-log line
-/// has — and the request goes to the target, not to the masked spelling of it.
-#[test]
-fn delivery_frames_the_payload_bytes_at_the_target() {
-    let report = Arc::new(Recorder::default());
-    let s = sink(None, &report);
-    let payload = r#"{"ts":1700000000,"pool":"prod","outcome":"ok","latency_ms":42}"#;
-
-    let d = s.delivery(payload);
-
-    assert_eq!(
-        d.url, "https://user:hunter2@logs.example.com/busbar",
-        "the delivery is addressed to the TARGET, never to the masked display spelling"
-    );
-    assert_eq!(
-        d.headers,
-        vec![("content-type".to_string(), "application/json".to_string())]
-    );
-    assert_eq!(
-        d.body,
-        payload.as_bytes(),
-        "the body is the serialized line, byte for byte"
-    );
-    assert!(
-        report.lines().is_empty(),
-        "a framed delivery reports nothing"
-    );
-}
-
-/// The operator's auth header rides on the delivery, AFTER the media type, exactly as configured —
-/// this sink neither validates it nor invents one.
-#[test]
-fn the_operators_auth_header_rides_the_delivery_as_configured() {
-    let report = Arc::new(Recorder::default());
-
-    let s = sink(
-        Some(("Authorization".to_string(), "Bearer sekret".to_string())),
-        &report,
-    );
-    assert_eq!(
-        s.delivery("{}").headers,
-        vec![
-            ("content-type".to_string(), "application/json".to_string()),
-            ("Authorization".to_string(), "Bearer sekret".to_string()),
-        ]
-    );
-}
-
 /// A DELIVERY IS STATED, NEVER JUDGED. Whether a target can be reached — or addressed at all — is
 /// the composer's answer, and it comes back through [`WebhookSink::observe`]; this sink states the
 /// line either way rather than second-guessing the wire it does not own.
@@ -102,7 +53,21 @@ fn a_target_this_sink_cannot_judge_is_still_stated() {
         report.clone(),
     );
 
-    assert_eq!(s.delivery("{}").url, "not a uri");
+    let wire = Wire::default();
+    let ack = busbar_contract::Export::receive(
+        &s,
+        busbar_contract::ExportItem {
+            stream: "logs",
+            bytes: b"{}",
+        },
+        &wire,
+    );
+    assert_eq!(
+        wire.sent.lock().unwrap_or_else(|e| e.into_inner())[0].target,
+        "not a uri",
+        "the target is stated as the operator wrote it, judged by nobody here"
+    );
+    assert_eq!(ack, busbar_contract::Ack::Received);
     assert!(
         report.lines().is_empty(),
         "stating a delivery reports nothing"
@@ -143,5 +108,121 @@ fn observe_reports_every_failure_with_the_masked_target_and_nothing_on_success()
     assert!(
         !lines.join("\n").contains("hunter2"),
         "no report may carry the operator's credentials: {lines:?}"
+    );
+}
+
+// ── the face ─────────────────────────────────────────────────────────────────────────────────
+
+/// A host that lends this sink the one thing it asks for — a wire — and keeps what was put on it,
+/// so a test can see the bytes that would have left the process.
+#[derive(Default)]
+struct Wire {
+    sent: Mutex<Vec<busbar_contract::Delivery>>,
+    refuse: bool,
+}
+
+impl busbar_contract::ExportHost for Wire {
+    fn send(&self, delivery: busbar_contract::Delivery) -> bool {
+        if self.refuse {
+            return false;
+        }
+        self.sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(delivery);
+        true
+    }
+    fn read(&self, _stream: &str) -> Option<String> {
+        unreachable!("a push sink never asks its host for a reading")
+    }
+}
+
+/// THE SERVED PATH REACHES THIS SINK THROUGH THE FACE, AND THE BYTES ARE THE SAME.
+///
+/// A request-log line handed to `busbar_contract::Export::receive` through a `dyn Export` — no
+/// crate name, no `delivery` — is framed at the same target, under the same headers in the same
+/// order, with the same body, as the frame the composer's direct call produced before the face
+/// existed. Red first: without `impl Export for WebhookSink` this does not compile, and a `receive`
+/// that re-encoded the line or reordered the headers would move the bytes on the wire.
+#[test]
+fn a_line_through_the_face_is_the_post_the_direct_frame_stated() {
+    use busbar_contract::{Ack, Export, ExportItem};
+
+    let report = Arc::new(Recorder::default());
+    let s = sink(
+        Some(("Authorization".to_string(), "Bearer sekret".to_string())),
+        &report,
+    );
+    let payload = r#"{"ts":1700000000,"pool":"prod","outcome":"ok","latency_ms":42}"#;
+
+    let wire = Wire::default();
+    let faced: Box<dyn Export> = Box::new(s);
+    let ack = faced.receive(
+        ExportItem {
+            stream: "logs",
+            bytes: payload.as_bytes(),
+        },
+        &wire,
+    );
+
+    let sent = wire.sent.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(sent.len(), 1, "one item is one delivery");
+    assert_eq!(
+        sent[0].target, "https://user:hunter2@logs.example.com/busbar",
+        "the delivery is addressed to the TARGET, never to the masked display spelling"
+    );
+    assert_eq!(
+        sent[0].headers,
+        vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("Authorization".to_string(), "Bearer sekret".to_string()),
+        ],
+        "the media type, then the operator's header, in that order — the 1.5.x frame"
+    );
+    assert_eq!(
+        sent[0].body,
+        payload.as_bytes(),
+        "the body is the serialized line, byte for byte"
+    );
+    assert_eq!(
+        ack,
+        Ack::Received,
+        "a delivery the host's wire accepted is Received: this sink never learns whether it landed"
+    );
+    assert_eq!(faced.streams(), &["logs"]);
+    assert!(
+        faced.routes().is_empty(),
+        "a push sink declares no route: it is delivered to, never scraped"
+    );
+    assert!(
+        report.lines().is_empty(),
+        "a framed delivery reports nothing"
+    );
+}
+
+/// A DELIVERY THE HOST WOULD NOT TAKE IS NOT ACKNOWLEDGED AS TAKEN.
+///
+/// The wire belongs to the composer, so a refusal is the composer's answer — and the honest thing
+/// for the sink to say about a record that went nowhere is that it did not take it.
+#[test]
+fn a_delivery_the_host_refused_is_not_acknowledged_as_taken() {
+    use busbar_contract::{Ack, Export, ExportItem};
+
+    let report = Arc::new(Recorder::default());
+    let faced: Box<dyn Export> = Box::new(sink(None, &report));
+    let wire = Wire {
+        refuse: true,
+        ..Wire::default()
+    };
+
+    assert_eq!(
+        faced.receive(
+            ExportItem {
+                stream: "logs",
+                bytes: b"{}",
+            },
+            &wire,
+        ),
+        Ack::Retry,
     );
 }

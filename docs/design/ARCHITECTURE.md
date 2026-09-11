@@ -175,6 +175,54 @@ composition-root file that says a composed sink's stated route in this process's
 Against them, `busbar-core × transport` falls 2009 → 1979 in the same commit, because the engine
 file that used to spell those names for a built-in sink is deleted.
 
+The second is **`busbar_contract::kinds::Export`** — `ExportItem`, `ExportHost`, `Ack`, `Delivery`,
+`RouteStatement`, `RouteBar`, `ServeRequest`, `Served`, and `plugin::EXPORT_ABI`: **THE ONE EXPORT
+FACE**, what a telemetry sink IS. A sink declares what it carries (frozen export tokens, because the
+word-space is the plugin ABI's and a second enum here would be a second vocabulary drifting beside
+the frozen one), takes one already-serialized record for one of them, declares what it serves, and
+answers a request matched to one of those routes. All four are required: a sink that does not push
+and a sink that is not scraped each say so in their own file, so there is no half of an export
+inherited from a default nobody opens.
+
+It is declared on the CONTRACT, on the terms this section already grants `Store`, `Secret` and
+`Hook`: it is the entry face of a kind, and naming the face is what being a plugin of a kind means.
+The measurement that made it a redesign rather than a tidy-up is that the face standing here before
+it had **zero implementors and zero producers** — `impl Export for` matched nothing in the tree, and
+`ExportItem`'s three variants (`JournalEntry`, `Content`, `Segment`) were constructed only by the
+contract's own object-safety test. That face described a durable journal shipper; what the root
+actually hands a sink is one already-serialized request-log line, and what it hands a pull sink is
+nothing at all, because a pull sink is scraped. So the three variants are deleted for having no
+producer and the item becomes the one shape that has one. **An `Ack` is what happened at the moment
+`receive` returns**: `Received` for an unfsynced append that landed and for a delivery a host's wire
+took, `Retry` for a record that reached nowhere and for any item at all handed to a sink that is
+scraped, and `Durable` for a sink that fsyncs — which is nothing in this tree, and is not claimed by
+anything in it.
+
+Two things it deliberately is not. It is not a second route face: `RouteStatement` is DATA, and the
+composition root says it in `busbar_plugin_loader::RouteDecl` — the face above — so what the
+declaration buys is that every sink of the kind states a route the same way instead of one sink
+owning its own spelling. And it is not an SDK trait: `busbar_plugin_sdk::ExportHandler`, the same
+four questions asked in JSON and reachable only by a plugin written against that SDK, is DELETED
+against it in the same strike, so a dlopen'd sink and an in-tree sink the composition root builds
+are one object rather than two that cannot be substituted. The `ExportHost` the face hands a sink
+per call is what keeps that true in both directions: the wire and the reading belong to the process,
+every method on it is an ANSWER and none is a capability, and a sink that is lent nothing is told so
+honestly rather than handed a stub that pretends.
+
+It is MEASURED on the three ceilings that carry `busbar-contract` — **`contract_caps` 3526 → 3559**,
+**`caps_contract_ceiling` 3528 → 3561** and **`union_ceiling` 24091 → 24124**, all three the same 33
+lines, because `busbar-caps`, `busbar-kernel` and every `busbar-unit-*` crate are untouched — and on
+four matrix cells, all four of which are the word **`streams`**: **`busbar-contract × plane`
+42 → 43** (the face's one method name) and three cells minted at 2 apiece
+(`busbar-export-file`, `busbar-export-webhook`, `busbar-export-prometheus` × `plane`, each the
+method in the sink and the assertion in its cell). `streams` is also the bare instance id of a plane
+member of this tree, and matrix scores whole text: this is the SAME HOMONYM the export projection
+grammar's own +53 declaration flagged for the owner, and there is no coupling in any of the four to
+drain — no dependency, no type and no call against any plane comes with them. Against that,
+`busbar × export` falls 41 → 39, `busbar-plugin-sdk × plane` falls 20 → 11 and
+`busbar-plugin-sdk × transport` falls 44 → 32 in the same strike, because the SDK's twin face and
+the root's sink-named delivery calls are gone.
+
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
 `docs/design/D33-legacy-retirement.md` §7 carries the measurement):
 

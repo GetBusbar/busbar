@@ -13,6 +13,10 @@ license = "Apache-2.0"
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
+# THE ONE EXPORT FACE. A `kind: export` plugin author implements `busbar_contract::Export` and this
+# crate carries it over the ABI; the SDK-side twin that used to stand here (`ExportHandler`) is
+# deleted against it, so there is exactly one thing an export sink can be.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
 

@@ -8,7 +8,9 @@
 //!
 //! # What this crate is, and what it deliberately is not
 //!
-//! It is a sink of kind `export`. It takes an item and writes it. It does not decide whether there
+//! It is a sink of kind `export`, and the whole of what it is is `busbar_contract::Export`: it
+//! declares the stream it carries, takes an item and writes it, and declares no route because it is
+//! delivered to rather than scraped. It does not decide whether there
 //! is room for the delivery (its composer sheds for it, against the capacity this crate STATES in
 //! [`MAX_INFLIGHT_APPENDS`]), it does not decide which thread the write runs on, and it does not
 //! build the payload — the projection that bounds what may be in the line is resolved from the
@@ -30,6 +32,10 @@
 //! past `rotate_mb` — a stuck rename degrades to "rotation isn't happening", never to "history is
 //! gone."
 
+use busbar_contract::{
+    AbiVersion, Ack, Export, ExportHost, ExportItem, Kind, Plugin, RouteStatement, ServeRequest,
+    Served, EXPORT_ABI,
+};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -161,7 +167,11 @@ impl FileSink {
     /// Append one already-serialized line. BLOCKING: the caller decides which thread this runs on.
     /// Never panics, never propagates — a sink that failed to write says so through [`Report`] and
     /// the delivery is over.
-    pub fn append(&self, line: &str) {
+    ///
+    /// `true` ⇒ the line reached the file. That is the fact [`Export::receive`] turns into an
+    /// [`Ack`], which is why it is returned rather than only reported: an acknowledgement built
+    /// from anything other than what happened is a fabrication.
+    pub fn append(&self, line: &str) -> bool {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         // Best-effort size bound (`rotate_mb`): when the file exceeds the configured size, roll it
         // over by RENAME to a numbered archive, never by truncation.
@@ -179,18 +189,23 @@ impl FileSink {
             .append(true)
             .open(&self.path)
         {
-            Ok(mut file) => {
-                if let Err(e) = writeln!(file, "{line}") {
+            Ok(mut file) => match writeln!(file, "{line}") {
+                Ok(()) => true,
+                Err(e) => {
                     self.report.report(Event::AppendFailed {
                         path: &self.path,
                         error: e.to_string(),
                     });
+                    false
                 }
+            },
+            Err(e) => {
+                self.report.report(Event::OpenFailed {
+                    path: &self.path,
+                    error: e.to_string(),
+                });
+                false
             }
-            Err(e) => self.report.report(Event::OpenFailed {
-                path: &self.path,
-                error: e.to_string(),
-            }),
         }
     }
 
@@ -248,6 +263,60 @@ impl FileSink {
                 path: &self.path,
                 error: e.to_string(),
             }),
+        }
+    }
+}
+
+impl Plugin for FileSink {
+    fn key(&self) -> &'static str {
+        MODULE
+    }
+    fn kind(&self) -> Kind {
+        Kind::Export
+    }
+    fn abi(&self) -> AbiVersion {
+        EXPORT_ABI
+    }
+}
+
+/// THE FACE. What this sink carries, what it does with a record of it, and — because it is a PUSH
+/// sink and is delivered to rather than scraped — the two halves of the face that say so by being
+/// empty.
+impl Export for FileSink {
+    /// The per-request operational record, in the frozen export vocabulary's own token. Stated by
+    /// the sink, so a composer routes nothing to it that it never said it would take.
+    fn streams(&self) -> &'static [&'static str] {
+        &["logs"]
+    }
+
+    /// Write one record as a line. The record is already serialized and already bounded to this
+    /// instance's projection, so the whole of the framing is the newline [`FileSink::append`] adds.
+    ///
+    /// The host is not asked for anything: a file sink's only outside is the path it was configured
+    /// with. The ACK is what actually happened — [`Ack::Received`] for a line that reached the file
+    /// (the append is unfsynced by design: telemetry must not affect serving, so `Durable` would be
+    /// a claim this sink cannot make), [`Ack::Retry`] for one that did not.
+    fn receive(&self, item: ExportItem<'_>, _host: &dyn ExportHost) -> Ack {
+        match String::from_utf8(item.bytes.to_vec()) {
+            Ok(line) if self.append(&line) => Ack::Received,
+            _ => Ack::Retry,
+        }
+    }
+
+    /// None. A push sink is delivered to; it is not scraped, and it claims no path on this
+    /// process's front door.
+    fn routes(&self) -> &'static [RouteStatement] {
+        &[]
+    }
+
+    /// Unreachable: a host only dispatches to a route the sink declared, and this sink declares
+    /// none. Answered rather than panicked, because a sink is not the party that decides what a
+    /// host does with a request nobody claimed.
+    fn serve(&self, _req: &ServeRequest<'_>, _host: &dyn ExportHost) -> Served {
+        Served {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
         }
     }
 }

@@ -30,7 +30,9 @@
 //! export rather than this one.
 
 use super::config;
-use busbar_export_prometheus::{Auth, PrometheusSink, Scrape, ROUTES};
+// THE ONE EXPORT FACE. A composed sink's route declarations and the answer it gives on one of them
+// are read through `dyn Export`; after construction this module cannot tell which sink it holds.
+use busbar_contract::{Delivery, Export, ExportHost, RouteBar, ServeRequest};
 use busbar_plugin_loader::{
     HttpDispatch, HttpEndpointRequest, HttpEndpointResponse, ProcessSnapshot, Route, RouteAuth,
     RouteDecl, RouteKind, RouteMethod,
@@ -55,27 +57,35 @@ pub fn declarer() -> Declarer {
         // so "composing" it is stating that it exists; everything it needs of this process it asks
         // for at the moment of a scrape.
         if cfg.prometheus.is_some() {
-            decls.extend(declare(busbar_export_prometheus::MODULE, PrometheusRoute));
+            let sink: Arc<dyn Export> = Arc::new(busbar_export_prometheus::PrometheusSink);
+            decls.extend(declare(sink));
         }
         decls
     })
 }
 
 /// Say a sink's stated routes in the words this process's router speaks, and bind each to the
-/// dispatcher that answers it. The sink's own vocabulary crosses here and nowhere else.
-fn declare(owner: &str, dispatch: PrometheusRoute) -> Vec<RouteDecl> {
-    let dispatch: Arc<dyn HttpDispatch> = Arc::new(dispatch);
-    ROUTES
+/// dispatcher that answers it. The CONTRACT's route vocabulary crosses into this process's router
+/// vocabulary here and nowhere else — and it is one translation for every sink of the kind, not one
+/// per sink, which is what putting the declaration on the face bought.
+///
+/// The owner is the sink's OWN registry key, read off `Plugin::key`: the name a collision
+/// diagnostic spells is the name the sink answers to, never a string this composition invented
+/// about it.
+fn declare(sink: Arc<dyn Export>) -> Vec<RouteDecl> {
+    let owner = sink.key().to_string();
+    let dispatch: Arc<dyn HttpDispatch> = Arc::new(SinkRoute(sink.clone()));
+    sink.routes()
         .iter()
         .map(|stated| RouteDecl {
-            owner: owner.to_string(),
+            owner: owner.clone(),
             kind: RouteKind::Export,
             route: Route {
                 path: stated.path.to_string(),
                 method: method_of(stated.method),
-                auth: match stated.auth {
-                    Auth::Open => RouteAuth::None,
-                    Auth::Key => RouteAuth::Key,
+                auth: match stated.bar {
+                    RouteBar::Open => RouteAuth::None,
+                    RouteBar::Key => RouteAuth::Key,
                 },
             },
             dispatch: dispatch.clone(),
@@ -100,18 +110,26 @@ fn method_of(token: &str) -> RouteMethod {
     }
 }
 
-/// The composed `prometheus` sink, presented to the engine as a dispatcher. Zero-sized: it holds no
-/// handle at all, and resolves everything it needs from the reading the engine takes of the CURRENT
+/// ANY composed sink, presented to the engine as a dispatcher. It holds the face and nothing else,
+/// and resolves everything the sink needs from the reading the engine takes of the CURRENT
 /// generation at the moment of the request.
-struct PrometheusRoute;
+struct SinkRoute(Arc<dyn Export>);
 
-impl HttpDispatch for PrometheusRoute {
+impl HttpDispatch for SinkRoute {
     fn handle_http(
         &self,
-        _req: &HttpEndpointRequest,
+        req: &HttpEndpointRequest,
         process: &dyn ProcessSnapshot,
     ) -> HttpEndpointResponse {
-        let served = PrometheusSink.render(&ProcessScrape(process));
+        let served = self.0.serve(
+            &ServeRequest {
+                path: &req.path,
+                method: &req.method,
+                headers: &req.headers,
+                body: &req.body,
+            },
+            &ProcessLoan(process),
+        );
         HttpEndpointResponse {
             status: served.status,
             headers: served.headers,
@@ -120,13 +138,24 @@ impl HttpDispatch for PrometheusRoute {
     }
 }
 
-/// The engine's reading of this process, presented to the sink as the one question the sink asks.
+/// WHAT THIS PROCESS LENDS A SINK ANSWERING A SCRAPE: its reading of itself, and no wire — a sink
+/// serving a route has a caller to answer and nothing to push.
+///
 /// It borrows for the length of one dispatch: the sink cannot hold it, and what it reads is true as
 /// of this request rather than as of whenever the route was mounted.
-struct ProcessScrape<'a>(&'a dyn ProcessSnapshot);
+struct ProcessLoan<'a>(&'a dyn ProcessSnapshot);
 
-impl Scrape for ProcessScrape<'_> {
-    fn registry(&self) -> Option<String> {
+impl ExportHost for ProcessLoan<'_> {
+    /// Nothing. This loan is made for an INBOUND request, and a sink answering one has nowhere to
+    /// send: the answer is the response, not a delivery.
+    fn send(&self, _delivery: Delivery) -> bool {
+        false
+    }
+
+    /// This process's exposition of the stream the sink asks for. The engine's reading is taken at
+    /// the moment of the request and the refresh behind it happens inside the sink's `serve`, on
+    /// the path that is going to answer with it.
+    fn read(&self, _stream: &str) -> Option<String> {
         self.0.metrics()
     }
 }

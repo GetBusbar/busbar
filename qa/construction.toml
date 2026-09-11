@@ -214,7 +214,7 @@ because = "the export projection grammar face busbar_plugin::cold::export::proje
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3526
+contract_caps = 3559
 grammar = 388
 contract_transport = 845
 
@@ -435,12 +435,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5398
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3528
+caps_contract_ceiling = 3561
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15165
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24091
+union_ceiling = 24124
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1727,3 +1727,58 @@ key = "cell.busbar-core.plugin-tooling.count"
 file = "qa/kind-isolation.toml"
 by = 2
 because = "TWO lines in crates/busbar-core/src/plugin_routes.rs: the engine takes the route-declaration face from the loader (`pub(crate) use busbar_plugin_loader::{HttpDispatch, RouteDecl, RouteKind}`) instead of declaring a second, engine-only spelling of it, and names ProcessSnapshot in the same import it already had. The engine's own `PluginHttpDispatch` trait and its `RouteDecl`/`RouteKind` types are DELETED in the same commit, so what rises is the reach and what falls is the surface"
+
+# THE EXPORT FACE: `busbar_contract::kinds::{Export, ExportItem, ExportHost, Ack, Delivery,
+# RouteStatement, RouteBar, ServeRequest, Served}` + `busbar_contract::plugin::EXPORT_ABI`. The ONE
+# face every export sink implements, and the first one any of them has ever implemented: measured
+# against the base, `grep -rn "impl Export for" crates` returned nothing and `ExportItem` had no
+# producer outside the contract's own object-safety test. The face that stood there described a
+# durable journal shipper — `JournalEntry` / `Content` / `Segment`, three variants nothing in the
+# tree ever built — and what a sink of this tree IS is: a thing that declares what it carries, takes
+# one already-serialized record for one of those, declares what it serves, and answers a request
+# matched to one of those routes. Those are different objects, so it is replaced rather than
+# extended, and the three dead variants are deleted in the same commit.
+#
+# WHY ON THE CONTRACT and not on the SDK or the loader: it is the ENTRY FACE OF A KIND, on the
+# terms ARCHITECTURE.md 3.1 already grants `Store`, `Secret` and `Hook`. The SDK-side twin that
+# stood in its place (`busbar_plugin_sdk::ExportHandler`, the same four questions asked in JSON,
+# reachable only by a plugin written against that SDK) is DELETED against it in the same strike, so
+# a dlopen'd sink and an in-tree sink the composition root builds are now the same object. The route
+# half is stated as DATA here and translated into EXPORT-5's route-declaration face
+# (`busbar_plugin_loader::{RouteDecl, HttpDispatch, ProcessSnapshot}`) by the root, so it adds no
+# second route face — what it adds is that EVERY sink of the kind states a route the same way,
+# instead of one sink owning its own spelling.
+#
+# 33 LINES, and the three ceilings that carry busbar-contract all rise by exactly that and by
+# nothing else: busbar-caps is untouched, and so are busbar-kernel and every busbar-unit-* crate, so
+# the union's rise is the pair's rise. The deletion that pays for it is outside all three unions
+# (`busbar_plugin_sdk::ExportHandler`, and `busbar_export_prometheus`'s and
+# `busbar_export_webhook`'s own copies of the route and delivery vocabulary), which is why nothing
+# is paid back here.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 33
+because = "FACE busbar_contract::kinds::{Export, ExportItem, ExportHost, Ack, Delivery, RouteStatement, RouteBar, ServeRequest, Served} + plugin::EXPORT_ABI: the ONE export face, net of the three ExportItem variants deleted for having no producer anywhere in the tree. busbar-caps is untouched, so the pair rises by the contract's own lines exactly"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 33
+because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes: +33 lines in busbar-contract and nothing in busbar-caps, busbar-kernel or any busbar-unit-* crate, so the union rises by exactly the caps/contract rise. The lines it is paid for with are busbar-plugin-sdk's and the two sinks' own, and this union carries none of those crates"
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 33
+because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::kinds::Export and its shapes, measured at the identical 33 lines: the face a plugin author reads to write an export sink, which before this commit no sink in the tree implemented and no caller ever produced an item for. ARCHITECTURE.md section 1.1 is amended in this same commit, as that figure's own rule requires - it is the FOURTH face to move it, after the virtual-key directory, busbar_contract::limits and busbar_contract::telemetry::Telemetry"
+
+# The same face, one kind-isolation matrix cell over. `Export::streams` is the method a sink
+# declares what it carries with, and `streams` is also the bare instance id of a plane member of
+# this tree - so matrix, which scores whole text, reads the one method name as busbar-contract
+# naming a plane. It is the SAME HOMONYM the export projection grammar's own +53 declaration
+# already flagged for the owner ("EVERY ONE OF THE 53 IS THE WORD `streams`"), one line instead of
+# fifty-three, and there is no coupling here to drain: busbar-contract gained no dependency, no type
+# and no call against any plane. The honest fix is the plane's id, not the face's vocabulary.
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+by = 1
+file = "qa/kind-isolation.toml"
+because = "the export face busbar_contract::kinds::Export: its `streams` method, the one word a sink declares what it carries with, read as a plane instance id by a matrix that scores whole text. One line, the same homonym the export projection grammar's +53 already flagged for the owner, and no dependency, type or call against any plane comes with it"

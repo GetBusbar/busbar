@@ -527,11 +527,21 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "contract-transport"),
+    // A SINK NAMES THE FACE IT IMPLEMENTS. `busbar_contract::Export` is the entry face of the
+    // `export` kind, and naming the face is what being a plugin of a kind MEANS — the same clause
+    // that grants ("store", "contract") and ("plane", "contract"). Its absence was the reason the
+    // three built-in sinks implemented no face at all and were paired to their composer by hand.
     ("contract", "grammar"),
+    ("export", "contract"),
     ("kernel", "caps"),
     ("kernel", "contract"),
     ("kernel", "grammar"),
     ("legacy", "contract"),
+    // THE SDK CARRIES THE ONE FACE OVER THE ABI. The tooling that builds a plugin names the face
+    // that plugin implements, because the alternative — a second, SDK-side trait asking the same
+    // questions — is what `busbar_plugin_sdk::ExportHandler` was and what this grant deletes. The
+    // loader already sits on the same terms in the direction of the `plugin-tooling -> export` row.
+    ("plugin-tooling", "contract"),
     ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),

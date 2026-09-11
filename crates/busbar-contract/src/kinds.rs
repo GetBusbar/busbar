@@ -6,7 +6,7 @@
 //! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc
 //! for what a failure means, rather than repeating it per method.
 
-use crate::bounded::{ArenaBytes, BoundedVec, Facts, IrPatch, MAX_KEYS, MAX_RECORD_BYTES};
+use crate::bounded::{BoundedVec, Facts, IrPatch, MAX_KEYS, MAX_RECORD_BYTES};
 use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
@@ -681,48 +681,161 @@ pub trait Hook: Plugin + Send + Sync + 'static {
 
 // ── export ───────────────────────────────────────────────────────────────────────────────────
 
-/// What an export sink is handed.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ExportItem<'u> {
-    /// One journal entry, as bytes.
-    JournalEntry(RecordBytes),
-    /// What a plane said a response contained.
+/// ONE RECORD HANDED TO A SINK, for a stream that sink declared.
+///
+/// It is ALREADY SERIALIZED and ALREADY BOUNDED: the projection that says what may appear in it
+/// was resolved from the operator's configuration long before it got here, so an ungranted field
+/// is absent by the time any sink can see one. A sink FRAMES this record — as a line, as a body —
+/// and never builds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExportItem<'u> {
+    /// The stream this record belongs to, as the frozen export token the operator configures it
+    /// under (`metrics`, `logs`, `traces`, `costs`, `decisions`, `events`, `identity`, `prompts`,
+    /// `completions`).
     ///
-    /// Boxed because a fact map is pre-sized to its key ceiling: carrying one inline would make
-    /// every other variant of this enum as large as the largest.
-    Content(Box<ContentFacts<'u>>),
-    /// A retention segment: a contiguous run of the journal, sealed.
-    Segment {
-        /// Which stream.
-        stream: &'u str,
-        /// The first sequence in the run.
-        from: u64,
-        /// The last sequence in the run.
-        to: u64,
-        /// The sealed bytes.
-        bytes: ArenaBytes<'u>,
-    },
+    /// A TOKEN and not an enum: the frozen word-space is the plugin ABI's, which this crate may not
+    /// name, and a second enum here would be a second vocabulary drifting beside the frozen one.
+    pub stream: &'u str,
+    /// The record.
+    pub bytes: &'u [u8],
 }
 
-/// A sink's acknowledgement.
+/// ONE FRAMED DELIVERY: the whole of what a sink decides about putting a record on a wire.
 ///
-/// A sink written against this contract acknowledges at-least-once. The previous release's own
-/// sink subsystem stays fire-and-forget with its admission gate, and it refuses a configuration
-/// that asks it for durability rather than pretending to provide it.
+/// DATA, not a request. A request type belongs to the wire it goes out on, and a sink names no
+/// wire — so it states the three facts and its host does the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delivery {
+    /// Where this delivery is addressed.
+    pub target: String,
+    /// The headers it rides under, in the order the sink decided them.
+    pub headers: Vec<(String, String)>,
+    /// The framed body.
+    pub body: Vec<u8>,
+}
+
+/// The bar a host enforces before a request may reach a sink, stated in the SINK's words.
+///
+/// A sink of kind `export` names no auth chain and no router, so it says what it NEEDS and its
+/// host says that in whatever language this process's front door speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RouteBar {
+    /// Unauthenticated.
+    Open,
+    /// A valid client token.
+    Key,
+}
+
+/// ONE ROUTE A SINK DECLARES IT WILL SERVE.
+///
+/// Data, not a mount: the sink states it and its host decides whether this process can honour it,
+/// confines it to the namespace this KIND allows, refuses a collision, enforces the bar, and only
+/// then calls [`Export::serve`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteStatement {
+    /// The absolute path.
+    pub path: &'static str,
+    /// The uppercase request-method token.
+    pub method: &'static str,
+    /// The bar the host enforces before the request arrives.
+    pub bar: RouteBar,
+}
+
+/// One request matched to a declared route, as the sink is handed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServeRequest<'a> {
+    /// The path the request arrived on.
+    pub path: &'a str,
+    /// The uppercase request-method token.
+    pub method: &'a str,
+    /// The headers the host chose to relay, bounded by the host.
+    pub headers: &'a [(String, String)],
+    /// The request body.
+    pub body: &'a [u8],
+}
+
+/// What a sink SAYS on a declared route, stated as what it is — a status, headers and a body —
+/// and turned into this process's own response type by its host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Served {
+    /// The response status.
+    pub status: u16,
+    /// The response headers, in the order the sink decided them.
+    pub headers: Vec<(String, String)>,
+    /// The response body.
+    pub body: Vec<u8>,
+}
+
+/// WHAT A HOST LENDS A SINK for the length of ONE call, and not one instant longer.
+///
+/// Every method is a thing that belongs to the PROCESS and not to the sink: the wire this
+/// deployment's egress posture opens, the reading this process can take of itself. A sink reaches
+/// them through this face or not at all, which is what lets a crate of kind `export` name no
+/// runtime, no socket, no recorder and no registry. Every method is an ANSWER; none is a
+/// capability a sink could use to change the process it was composed into.
+pub trait ExportHost {
+    /// Put one framed delivery on the wire this process owns, inside the slot the host admitted
+    /// this item under. `false` ⇒ the host took it nowhere.
+    fn send(&self, delivery: Delivery) -> bool;
+
+    /// This process's current exposition of one stream, as of THIS call — with whatever it derives
+    /// at observation time already refreshed, so what comes back is true now and not as of some
+    /// earlier call.
+    ///
+    /// `None` ⇒ this host exposes nothing for that stream. Deliberately NOT the same value as
+    /// `Some(String::new())`: "nothing installed" and "installed and empty" are different facts
+    /// about a process and a sink is entitled to answer them differently.
+    fn read(&self, stream: &str) -> Option<String>;
+}
+
+/// A SINK'S ACKNOWLEDGEMENT, and it means what it says at the moment [`Export::receive`] returns.
+///
+/// None of the three is a wish. A sink that cannot tell the difference between enqueued and
+/// delivered says [`Ack::Received`] and never [`Ack::Durable`]; an acknowledgement that carries no
+/// information is worse than none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Ack {
-    /// Received and durable at the sink.
+    /// The record is where a crash on this node cannot lose it.
+    ///
+    /// Nothing in this tree returns it: the sinks that ship telemetry are unfsynced by design,
+    /// because telemetry must not affect serving. It stays in the vocabulary because it is the one
+    /// word a sink that DOES fsync has, and the at-least-once statement this contract makes is
+    /// made of it.
     Durable,
-    /// Received, not durable.
+    /// The sink has the record and claims no durability for it — an unfsynced append that
+    /// succeeded, a framed delivery a host's wire accepted.
     Received,
-    /// Not received; the kernel retries.
+    /// The sink did NOT take it. A failed open or write; a delivery the host refused; any item at
+    /// all handed to a PULL sink, which is scraped and is never handed one.
+    ///
+    /// It states a fact about the sink. What a host does about it is the host's — this tree's
+    /// request-log fan-out counts a drop, because a retry queue in front of a telemetry sink is a
+    /// memory leak with a deadline.
     Retry,
 }
 
-/// Ships journal entries, content facts and segments off the node.
+/// EVERY EXPORT SINK, and the whole of what one is.
+///
+/// A sink declares WHAT IT CARRIES, takes one already-serialized record for one of them, declares
+/// WHAT IT SERVES, and answers a request matched to one of those routes. Push sinks live
+/// in the first pair, pull sinks in the second, and every sink states all four: there are no
+/// defaults here, so a sink that does not push and a sink that does not serve each say so in their
+/// own file rather than inheriting a silence from this one.
 pub trait Export: Plugin + Send + Sync + 'static {
-    /// Take one item.
-    fn receive<'u>(&self, item: ExportItem<'u>) -> Ack;
+    /// What THIS instance carries, as frozen export tokens. A host only ever hands it an item
+    /// whose token is named here.
+    fn streams(&self) -> &'static [&'static str];
+
+    /// Take one record for a declared stream.
+    fn receive(&self, item: ExportItem<'_>, host: &dyn ExportHost) -> Ack;
+
+    /// The routes THIS instance serves — its own compiled-in declarations. A push-only sink
+    /// declares none.
+    fn routes(&self) -> &'static [RouteStatement];
+
+    /// Answer one request matched to a declared route. Never called for a route this sink did not
+    /// declare, and never before the host has enforced that route's stated bar.
+    fn serve(&self, req: &ServeRequest<'_>, host: &dyn ExportHost) -> Served;
 }
 
 /// An export sink that can also anchor the journal's head somewhere outside the node.

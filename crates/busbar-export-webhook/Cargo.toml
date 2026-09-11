@@ -8,14 +8,15 @@ rust-version = "1.97"
 description = "The built-in `request-log-webhook` export sink: one POST per delivery, stated here and put on the wire by its composer. Kind `export`."
 license = "Apache-2.0"
 
-# NO DEPENDENCIES AT ALL, and that is the point rather than an accident, exactly as for the sibling
-# file sink.
+# ONE DEPENDENCY, AND IT IS THE FACE THIS CRATE IMPLEMENTS, exactly as for the sibling file sink.
 #
-# A sink of this kind is written against the face it implements and names nothing else of the tree:
-# no engine, no substrate, no recorder, no diagnostics registry — and not even a request/header
+# A sink of this kind is written against that face and names nothing else of the tree: no engine, no
+# substrate, no runtime, no recorder, no diagnostics registry — and not even a request/header
 # vocabulary, because those types belong to the wire the composer opens and naming one here would be
-# this crate reading a transport's own words. So the delivery states itself as WHAT IT IS — a target, a
-# header list, a body — and its composer turns that into whatever this process speaks. Everything a
-# statement cannot do for itself (open a socket, choose a runtime, mask an operator's credentials
-# for a log line, count a drop) belongs to whoever composed it, and is not reachable from here.
+# this crate reading a transport's own words. So the delivery states itself as WHAT IT IS — a target,
+# a header list, a body — in the contract's own kind-neutral spelling, and the host the face hands
+# this sink turns that into whatever this process speaks. Everything a statement cannot do for
+# itself (open a socket, choose a runtime, mask an operator's credentials for a log line, count a
+# drop) belongs to whoever composed it, and is not reachable from here.
 [dependencies]
+busbar-contract = { path = "../busbar-contract" }

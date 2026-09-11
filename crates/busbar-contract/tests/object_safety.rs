@@ -21,9 +21,10 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
-    HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret,
-    SecretError, SecretRef, SecretValue, Signer, Store, StoreError, VirtualKeyDirectory,
+    CredentialFacts, CredentialLocator, Delivery, EgressAuthScheme, Export, ExportHost, ExportItem,
+    Head, Hook, HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, RouteBar,
+    RouteStatement, Seat, Secret, SecretError, SecretRef, SecretValue, ServeRequest, Served,
+    Signer, Store, StoreError, VirtualKeyDirectory,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -51,6 +52,7 @@ const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;
 const _HOOK: Option<&dyn Hook> = None;
 const _EXPORT: Option<&dyn Export> = None;
+const _EXPORT_HOST: Option<&dyn ExportHost> = None;
 const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _SIGNER: Option<&dyn Signer> = None;
@@ -597,11 +599,32 @@ fn the_remaining_kinds_shapes_are_constructible() {
     let _: Result<SecretValue, SecretError> = Err(SecretError::Unknown);
     let _ = SecretRef("fixture://key".into());
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
-    let _ = ExportItem::Segment {
-        stream: "journal",
-        from: 0,
-        to: 1,
-        bytes: ArenaBytes::new(&[]),
+    // The export face, whole: the item a sink is handed, what it says about a delivery, the route
+    // it declares, the request it is handed on that route and the answer it gives.
+    let _ = ExportItem {
+        stream: "logs",
+        bytes: b"{}",
+    };
+    let _ = Delivery {
+        target: "https://example.invalid/logs".into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: b"{}".to_vec(),
+    };
+    let _ = RouteStatement {
+        path: "/metrics",
+        method: "GET",
+        bar: RouteBar::Key,
+    };
+    let _ = ServeRequest {
+        path: "/metrics",
+        method: "GET",
+        headers: &[],
+        body: &[],
+    };
+    let _ = Served {
+        status: 200,
+        headers: Vec::new(),
+        body: Vec::new(),
     };
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;

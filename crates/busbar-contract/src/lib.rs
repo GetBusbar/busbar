@@ -48,10 +48,11 @@ pub use ids::{
 };
 pub use kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, EnvelopeFields, Export, ExportItem, Head,
-    Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyFacts, KeyMaterial, KeyScope,
-    OnFailure, PlaneFacts, RecordBytes, Seat, Secret, SecretError, SecretRef, SecretValue,
-    SignFailed, Signer, SliceGrant, Store, StoreError, VirtualKeyDirectory,
+    CredentialFacts, CredentialLocator, Delivery, EgressAuthScheme, EnvelopeFields, Export,
+    ExportHost, ExportItem, Head, Hook, HookFacts, HookKindDecl, HookView, KernelCounts, KeyFacts,
+    KeyMaterial, KeyScope, OnFailure, PlaneFacts, RecordBytes, RouteBar, RouteStatement, Seat,
+    Secret, SecretError, SecretRef, SecretValue, ServeRequest, Served, SignFailed, Signer,
+    SliceGrant, Store, StoreError, VirtualKeyDirectory,
 };
 pub use limits::{GroupSpec, LimitMetric, LimitSpec, ScopeSpec};
 pub use plane::{
@@ -61,7 +62,7 @@ pub use plane::{
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
-pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, EXPORT_ABI, STORE_ABI};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,

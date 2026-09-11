@@ -8,14 +8,13 @@ rust-version = "1.97"
 description = "The built-in `request-log-file` export sink: an append-only JSONL file with rename-based rotation. Kind `export`."
 license = "Apache-2.0"
 
-# NO DEPENDENCIES AT ALL, and that is the point rather than an accident.
+# ONE DEPENDENCY, AND IT IS THE FACE THIS CRATE IMPLEMENTS.
 #
 # A sink of this kind is written against the face it implements and names nothing else of the tree:
-# no engine, no substrate, no recorder, no diagnostics registry. On this line the face itself is not
-# yet reachable — the author's trait and the frozen stream vocabulary both live in kinds the
-# architecture grants this one nothing to — so the crate declares what it CAN state for itself (its
-# operator token, its capacity floor, its retention bound, its reports) and its composer supplies
-# the face. What that costs is one pairing in the composition root; what it buys is a sink whose
-# whole dependency list is the standard library, which is the strongest form of the isolation this
-# crate exists to demonstrate.
+# no engine, no substrate, no runtime, no recorder, no diagnostics registry. Until the face existed
+# this crate's list was empty and its composer paired it up by hand, which is the pairing the
+# contract's `Export` abolishes — every sink of the kind now reaches ONE face, and a composer that
+# holds a `dyn Export` cannot tell which of them it is holding. `busbar-contract` is the whole of
+# the list and there is nothing else this crate is allowed to want.
 [dependencies]
+busbar-contract = { path = "../busbar-contract" }

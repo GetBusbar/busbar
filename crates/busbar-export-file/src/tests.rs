@@ -238,3 +238,108 @@ fn the_archive_series_stops_at_the_retention_bound() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── the face ─────────────────────────────────────────────────────────────────────────────────
+
+/// A host that lends nothing — what this sink is composed with, because a file sink's only
+/// outside is the path it was configured with and it asks its host for neither a wire nor a
+/// reading.
+struct NoLoan;
+
+impl busbar_contract::ExportHost for NoLoan {
+    fn send(&self, _delivery: busbar_contract::Delivery) -> bool {
+        unreachable!("a file sink never asks its host for a wire")
+    }
+    fn read(&self, _stream: &str) -> Option<String> {
+        unreachable!("a file sink never asks its host for a reading")
+    }
+}
+
+/// THE SERVED PATH REACHES THIS SINK THROUGH THE FACE, AND THE BYTES ARE THE SAME.
+///
+/// The whole of what this slot claims about the file sink: a request-log line handed to
+/// `busbar_contract::Export::receive` through a `dyn Export` — no crate name, no `append` — lands
+/// on disk byte for byte as the line the composer's direct call put there before the face existed.
+/// Red first: without `impl Export for FileSink` this does not compile, and with a `receive` that
+/// framed the line differently the two files would differ.
+#[test]
+fn a_line_through_the_face_is_the_line_the_direct_append_wrote() {
+    use busbar_contract::{Ack, Export, ExportItem};
+
+    let dir = scratch("through-the-face");
+    let line = r#"{"correlation_id":"c-1","status":200}"#;
+
+    // What the composer's direct call writes — this sink's own `append`, the 1.5.x bytes.
+    let direct_path = dir.join("direct.jsonl").to_string_lossy().to_string();
+    FileSink::silent(direct_path.clone(), None).append(line);
+
+    // What the FACE writes, reached with the sink's name already forgotten.
+    let faced_path = dir.join("faced.jsonl").to_string_lossy().to_string();
+    let sink: Box<dyn Export> = Box::new(FileSink::silent(faced_path.clone(), None));
+    let ack = sink.receive(
+        ExportItem {
+            stream: "logs",
+            bytes: line.as_bytes(),
+        },
+        &NoLoan,
+    );
+
+    assert_eq!(
+        std::fs::read(&faced_path).expect("the faced file"),
+        std::fs::read(&direct_path).expect("the direct file"),
+        "a line delivered through the contract's export face is byte-identical to the line the \
+         direct append wrote"
+    );
+    assert_eq!(
+        ack,
+        Ack::Received,
+        "an unfsynced append that succeeded is Received and never Durable"
+    );
+    assert_eq!(
+        sink.streams(),
+        &["logs"],
+        "the sink declares the stream it carries, and the composer routes nothing else to it"
+    );
+    assert!(
+        sink.routes().is_empty(),
+        "a push sink declares no route: it is delivered to, never scraped"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// AN ITEM A PUSH SINK CANNOT WRITE IS `Retry`, AND `Retry` IS NOT A LIE.
+///
+/// The sink states that it did not take the record. What the composer does about that — this tree
+/// counts a drop — is the composer's. Red first: a `receive` that returned `Received` regardless of
+/// the write would claim bytes that are not on any disk.
+#[test]
+fn a_record_the_sink_could_not_write_is_not_acknowledged_as_taken() {
+    use busbar_contract::{Ack, Export, ExportItem};
+
+    let dir = scratch("unwritable");
+    // A path whose parent is the file itself: the open cannot succeed and cannot be made to.
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, b"x").expect("the blocking file");
+    let path = blocker
+        .join("under-a-file.jsonl")
+        .to_string_lossy()
+        .to_string();
+
+    let sink: Box<dyn Export> = Box::new(FileSink::silent(path, None));
+    let ack = sink.receive(
+        ExportItem {
+            stream: "logs",
+            bytes: b"{}",
+        },
+        &NoLoan,
+    );
+
+    assert_eq!(
+        ack,
+        Ack::Retry,
+        "a record that reached no disk is not Received"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

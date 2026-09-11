@@ -8,15 +8,10 @@ rust-version = "1.97"
 description = "The built-in `prometheus` export sink: the well-known `GET /metrics` it declares, and the scrape it shapes from a reading of the process its composer hands it. Kind `export`."
 license = "Apache-2.0"
 
-# NO DEPENDENCIES AT ALL, exactly as for the file and webhook sinks before it — and here it is worth
-# saying what that costs, because this sink is a PULL sink and the thing it serves is a registry it
-# does not own.
+# ONE DEPENDENCY, AND IT IS THE FACE THIS CRATE IMPLEMENTS, exactly as for its two push siblings.
 #
-# A registry belongs to the process: the recorder is process-global, the gauges it derives at
-# observation time come off a governance store and a breaker's atomics, and none of those is
-# something a crate of kind `export` may name. So this crate does not read them. It states the route
-# it will answer, it asks its composer for ONE reading of the process (`Scrape::registry`), and it
-# decides what to SAY — which is the only half of a scrape that is policy rather than plumbing:
-# whether a scrape with no registry behind it is a 200 with nothing in it or a refusal, what the
-# content type of an exposition is, and how long a refused scraper should wait.
+# A sink of this kind names nothing else of the tree: no engine, no router, no recorder, no
+# registry. What it needs of the process it was composed into — the exposition — it asks the HOST
+# the face hands it, at the moment of the scrape and never before.
 [dependencies]
+busbar-contract = { path = "../busbar-contract" }
