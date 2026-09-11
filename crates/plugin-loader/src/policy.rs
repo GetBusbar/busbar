@@ -15,18 +15,65 @@
 //! a word of this policy, and the substrate below it never reads the block at all. So the block's
 //! grammar sits in [`crate::config`] and its resolution sits here, one `mod` apart.
 //!
-//! Keeping them in busbar-core put fourteen sites naming `busbar_plugin_sign::` and
+//! Keeping them one layer up put fourteen sites naming `busbar_plugin_sign::` and
 //! `busbar_plugin_loader::` inside the config document root. Moved, the config layer states the
 //! grammar by naming this crate — the edge it already has — and this crate reads an operator's block
 //! without naming the config layer at all.
 
 use crate::config::{PluginFetch, PluginsCfg};
-use busbar_substrate_values::diag_warn;
-use busbar_substrate_values::diagnostics::{
-    CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
-};
 
 use crate::fetch::FetchSpec;
+
+/// WHICH FLOOR an operator wrote badly — the two anti-downgrade maps, told apart.
+///
+/// The two maps arm the SAME control by different routes, and an operator fixes them in different
+/// places, so a finding that did not say which one it came from would name a key and leave the
+/// reader to guess the block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorMap {
+    /// `plugins.min_versions` — floors first- and third-party plugins alike.
+    MinVersions,
+    /// `plugins.first_party_floors` — the rollback pin, which REPLACES the binary-version floor.
+    FirstPartyFloors,
+}
+
+/// ONE MALFORMED ANTI-DOWNGRADE FLOOR, as a fact rather than as an emitted line.
+///
+/// WHY THIS IS RETURNED AND NOT LOGGED. A malformed floor is not a config error — it does not stop
+/// the boot, because `version_at_least` fails closed at the comparator and refuses just the one
+/// floored plugin — but it IS worth telling the operator about early, before an artifact is even
+/// present: an unparsable floor silently disarms the anti-downgrade control, and an operator who
+/// believes it is armed should not have to discover that from a missing `--list-plugins` row.
+///
+/// Telling them is the ROOT's job, not this crate's. This crate resolves the operator's block; it
+/// does not own the process's diagnostic surface, it does not choose a stream, and it does not
+/// decide whether a boot, a `--validate` or an admin reload is the audience. So the resolver
+/// RETURNS what it found, in this crate's own vocabulary — which entry, which map, which value —
+/// and the caller that owns the operator's console decides what to say and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloorFinding {
+    /// Which of the two maps the entry was written in.
+    pub map: FloorMap,
+    /// The plugin canonical name the entry is keyed by.
+    pub name: String,
+    /// The unparsable value as the operator wrote it.
+    pub value: String,
+}
+
+/// A RESOLVED `plugins.trust` BLOCK: the policy the plugin subsystem runs on, plus whatever this
+/// resolver noticed on the way that is the operator's business and not the resolver's.
+///
+/// The two travel together because they are one read of one block: a caller cannot get the policy
+/// without also being handed what was wrong with it, which is the property a separate "also check
+/// the floors" function would not have.
+#[derive(Clone)]
+pub struct ResolvedTrust {
+    /// The trust policy: embedded first-party key + configured third-party anchors and floors.
+    pub policy: busbar_plugin_sign::TrustPolicy,
+    /// Every malformed anti-downgrade floor, in the order the maps are read (`min_versions`
+    /// first, then `first_party_floors`), each map in its own key order.
+    pub floor_findings: Vec<FloorFinding>,
+}
 
 /// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
 /// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
@@ -136,10 +183,11 @@ pub fn fetch_specs(cfg: &PluginsCfg) -> Result<Vec<FetchSpec>, String> {
 /// high-water mark, an observed fact rather than a config value, and it is injected by the engine's
 /// preflight from [`crate::HighWaterMarks`]. This resolver leaves `first_party_high_water` empty; a
 /// caller that skips the injection gets NO automatic floor.
-pub fn trust_policy(
-    cfg: &PluginsCfg,
-    binary_version: &str,
-) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+///
+/// A MALFORMED FLOOR IS NOT AN ERROR AND NOT A LOG LINE HERE: it comes back on the
+/// [`ResolvedTrust::floor_findings`] list, for the caller that owns the operator's console to
+/// say. See [`FloorFinding`].
+pub fn trust_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<ResolvedTrust, String> {
     let mut publishers = std::collections::BTreeMap::new();
     for p in &cfg.trust.publishers {
         if p.name == busbar_plugin_sign::FIRST_PARTY_PUBLISHER {
@@ -154,37 +202,26 @@ pub fn trust_policy(
             .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
         publishers.insert(p.name.clone(), key);
     }
-    // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
-    // fails closed at the comparator, refusing just the one floored plugin) but
-    // it IS worth telling the operator about early, before an artifact is even present: an
-    // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
-    // it is armed should not have to discover that from a missing `--list-plugins` row.
-    for (name, floor) in &cfg.min_versions {
-        if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-            diag_warn!(
-                CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
-                key = %format!("plugins.min_versions['{name}']"),
-                value = %floor,
-                "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
-                 'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove \
-                 the entry."
-            );
+    // A malformed floor is COLLECTED, not announced: see [`FloorFinding`] for why this crate
+    // finds them and does not say them. Both maps are walked to the end — an operator with two
+    // bad entries fixes two, and a resolver that stopped at the first would make them boot twice
+    // to learn that.
+    let mut floor_findings = Vec::new();
+    for (map, entries) in [
+        (FloorMap::MinVersions, &cfg.min_versions),
+        (FloorMap::FirstPartyFloors, &cfg.first_party_floors),
+    ] {
+        for (name, floor) in entries {
+            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+                floor_findings.push(FloorFinding {
+                    map,
+                    name: name.clone(),
+                    value: floor.clone(),
+                });
+            }
         }
     }
-    for (name, floor) in &cfg.first_party_floors {
-        if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-            diag_warn!(
-                CONFIG_FIRSTPARTY_FLOOR_INVALID,
-                key = %format!("plugins.first_party_floors['{name}']"),
-                value = %floor,
-                "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
-                 'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
-                 REPLACES the binary-version floor, so the plugin is refused unconditionally \
-                 until this is fixed. Fix or remove the entry."
-            );
-        }
-    }
-    Ok(busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_sign::TrustPolicy {
         first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
         binary_version: binary_version.to_string(),
         first_party_floors: cfg.first_party_floors.clone(),
@@ -196,5 +233,13 @@ pub fn trust_policy(
         allow_unsigned: cfg.trust.allow_unsigned,
         allow_third_party: cfg.trust.allow_third_party,
         min_versions: cfg.min_versions.clone(),
+    };
+    Ok(ResolvedTrust {
+        policy,
+        floor_findings,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/policy_tests.rs"]
+mod tests;

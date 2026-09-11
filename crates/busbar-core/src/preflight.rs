@@ -7,8 +7,10 @@
 
 use std::sync::Arc;
 
-use crate::diagnostics::{
-    diag_warn, PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE, PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
+    PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE, PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
     PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY,
 };
 
@@ -48,7 +50,50 @@ fn fleet_data_dir() -> Option<std::path::PathBuf> {
 pub fn engine_trust_policy(
     plugins_cfg: &config::PluginsCfg,
 ) -> Result<busbar_plugin_sign::TrustPolicy, String> {
-    busbar_plugin_loader::trust_policy(plugins_cfg, env!("CARGO_PKG_VERSION"))
+    let resolved = busbar_plugin_loader::trust_policy(plugins_cfg, env!("CARGO_PKG_VERSION"))?;
+    warn_floor_findings(&resolved.floor_findings);
+    Ok(resolved.policy)
+}
+
+/// SAY WHAT THE RESOLVER FOUND — the two anti-downgrade-floor warnings, emitted HERE.
+///
+/// The resolver that reads `plugins.min_versions` / `plugins.first_party_floors` returns a
+/// malformed entry as a FACT (`busbar_plugin_loader::FloorFinding`: which map, which entry, which
+/// value); it does not own the process's diagnostic surface and does not choose a stream. This
+/// crate does, and this is the one place the fact becomes a line.
+///
+/// THE CODES AND THE BYTES ARE FROZEN. `CONFIG_ANTIDOWNGRADE_FLOOR_INVALID` and
+/// `CONFIG_FIRSTPARTY_FLOOR_INVALID` are codes an operator has had pinned since 1.5.0, and the
+/// message text is the wording the config inventory records for these two boot warnings. A warning
+/// changes its code — or a byte of its text — only when its MEANING changes, and moving where it is
+/// emitted from is not a change of meaning. What moved is the emit site; nothing an operator can
+/// see moved with it.
+///
+/// Every automatic path (boot / config reload / config apply / admin plugin reload / the admin
+/// catalog / `--list-plugins`) reaches this through [`engine_trust_policy`], so one bad floor is
+/// reported the same way whichever door the config came in by.
+pub fn warn_floor_findings(findings: &[busbar_plugin_loader::FloorFinding]) {
+    for f in findings {
+        match f.map {
+            busbar_plugin_loader::FloorMap::MinVersions => diag_warn!(
+                CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
+                key = %format!("plugins.min_versions['{}']", f.name),
+                value = %f.value,
+                "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                 'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove \
+                 the entry."
+            ),
+            busbar_plugin_loader::FloorMap::FirstPartyFloors => diag_warn!(
+                CONFIG_FIRSTPARTY_FLOOR_INVALID,
+                key = %format!("plugins.first_party_floors['{}']", f.name),
+                value = %f.value,
+                "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                 'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
+                 REPLACES the binary-version floor, so the plugin is refused unconditionally \
+                 until this is fixed. Fix or remove the entry."
+            ),
+        }
+    }
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot

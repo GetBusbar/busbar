@@ -34,8 +34,8 @@ use std::path::Path;
 
 pub mod auth;
 // The `plugins:` block's GRAMMAR and its RESOLUTION, one `mod` apart. Both are facts about the
-// plugin subsystem: the substrate never reads the block, and the config layer states it by naming
-// this crate through the `busbar-core -> busbar-plugin-loader` edge it already has.
+// plugin subsystem: nothing below the plugin subsystem reads the block, and the config layer
+// states it by naming this crate through the edge it already has.
 pub mod config;
 pub mod export;
 pub mod fetch;
@@ -67,7 +67,7 @@ pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
 // The two resolutions of the `plugins:` block. Named at the crate root because every caller is an
 // engine boot/reload/admin path that already spells `busbar_plugin_loader::`.
-pub use policy::{fetch_specs, trust_policy};
+pub use policy::{fetch_specs, trust_policy, FloorFinding, FloorMap, ResolvedTrust};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,

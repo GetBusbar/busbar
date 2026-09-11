@@ -2310,7 +2310,7 @@ fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
         let mut cfg = PluginsCfg::default();
         cfg.min_versions.insert("p".to_string(), floor.to_string());
         tracing::subscriber::with_default(sub, || {
-            let _ = busbar_plugin_loader::trust_policy(&cfg, "1.5.0");
+            let _ = crate::preflight::engine_trust_policy(&cfg);
         });
         let n = events.lock().unwrap().len();
         n
