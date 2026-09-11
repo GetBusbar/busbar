@@ -42,6 +42,8 @@
 #   (k) the same gap where the row is clean        -> RED as stale, before the verdict
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
+#   (m2) `gaps` given in the OTHER shape (an object, not the list this loader promises) rather than
+#       simply absent (the shape (f2)'s ceiling-only gapfile legitimately uses) -> REFUSED by name
 #
 # And the side of 2xx a cell was answered on, which no schema can see:
 #
@@ -294,6 +296,22 @@ else
   say FAIL "(m) wildcard gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
 fi
 
+# (m2) named-gaps.json carries TWO sections read by two loaders (`gaps`, the FAIL -> named-gap
+# list this loader owns; `expected`/`accepted`, the separate SKIP ceiling reconciled by run.sh).
+# Neither loader reads the other's keys, so a file written for the other section alone — no `gaps`
+# key at all, exactly (f2)'s gapfile above — is not malformed; it simply names no gaps. But `gaps`
+# present in the OTHER, WRONG shape (not a list — e.g. the single object it would be if someone
+# wrote one entry without wrapping it) must still be REFUSED, by name, so the loosening that admits
+# a missing key cannot be mistaken for one that stops checking the key's shape when it IS given.
+g4="$(gapfile badshape '{"gaps":{"id":"one-entry-not-a-list","owner":"nobody","rule":"type","detail_contains":"expected number, got string","cells":["llm|cohere|cohere|request|ok#response"],"why":"the other shape: one gap object where a list of gaps was promised"}}')"
+rc="$(run_gaps "$W/b-rec" "$W/m2" "$W/b-rec/cells.json" "$g4")"
+if [ "$rc" != 0 ] && grep -q '`gaps` must be a list' "$W/m2.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/m2/ledger.tsv")" = 0 ]; then
+  say PASS "(m2) 'gaps' given in the OTHER shape (an object, not a list) -> REFUSED by name, nothing judged"
+else
+  say FAIL "(m2) malshaped gaps rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m2/ledger.tsv")"; tail -8 "$W/m2.log"
+fi
+
 # ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
 # (p) a cell whose whole point is a REFUSAL — no credential at all — answered HTTP 200 with a
 # happy-path body. Every byte of that body satisfies the dialect's RESPONSE schema, so a check that
@@ -431,4 +449,4 @@ else
 fi
 
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (19/19)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (20/20)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi

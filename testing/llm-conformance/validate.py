@@ -348,10 +348,18 @@ class NamedGaps:
                 doc = json.load(f)
         except (OSError, ValueError) as e:
             return NamedGaps([]), [f"{path}: not readable as JSON ({e})"]
-        if not isinstance(doc, dict) or not isinstance(doc.get("gaps"), list):
+        # This file carries TWO sections, read by two loaders (see named-gaps.json's own `_doc`):
+        # `gaps` here, the FAIL -> named-gap list; `expected`/`accepted`, the separate SKIP ceiling
+        # run.sh reconciles on its own. Neither loader reads the other's keys, so a file written for
+        # the other section alone — no `gaps` key at all — is not malformed, it simply names none.
+        # Present-but-wrong-shaped is still refused: an object was promised, not proof of one typo.
+        if not isinstance(doc, dict):
             return NamedGaps([]), [f"{path}: must be an object with a `gaps` list"]
+        gaps_field = doc.get("gaps", [])
+        if not isinstance(gaps_field, list):
+            return NamedGaps([]), [f"{path}: `gaps` must be a list"]
         bad, seen, ok = [], set(), []
-        for i, g in enumerate(doc["gaps"]):
+        for i, g in enumerate(gaps_field):
             where = f"{path}: gaps[{i}]"
             if not isinstance(g, dict):
                 bad.append(f"{where}: not an object")
