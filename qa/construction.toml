@@ -791,7 +791,10 @@ why = """A timestamp field is a reading of the node's clock or it is nothing. Ze
 scope_globs = ["crates/*/src/*"]
 # The field names that carry a time. `now`/`at`/`epoch` are deliberately ABSENT: they name
 # parameters and counters far more often than they name a stored stamp, and a rule that cried wolf
-# on every one of those would be a rule nobody could hold at zero.
+# on every one of those would be a rule nobody could hold at zero. `wall`/`mono` are absent for a
+# different reason: the WAL entry builder's zeroed pair is the documented "no reading to report"
+# shape a `.at(wall, mono)` overwrites at every production call site, so flagging the default would
+# be flagging a builder rather than a stamp.
 timestamp_fields = [
   "created_at",
   "updated_at",
