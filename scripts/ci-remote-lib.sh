@@ -235,7 +235,7 @@ _fleet_probe_round() { # $1 = the remote command, $2.. = hosts; prints `<proofs>
   local pids=()
   d="$(mktemp -d -t fleet-probe.XXXXXX)" || return 1
   for h in "$@"; do
-    _fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "$cmd" </dev/null >"$d/p$i" 2>/dev/null &
+    _fleet_tmo "${FLEET_PROBE_TIMEOUT:-15}" "$SSH_WRAP" "$REMOTE_USER@$h" "$cmd" </dev/null >"$d/p$i" 2>/dev/null &
     pids[$i]=$!
     i=$((i + 1))
   done
@@ -295,8 +295,21 @@ fleet_table_open() { # $1 = path for the table
   mkdir -p "$(dirname "$path")" 2>/dev/null || true
   # shellcheck disable=SC2086
   _fleet_probe_round "$(_fleet_probe_cmd_proof)" $hosts >"$path" || { rm -f "$path"; return 1; }
-  FLEET_TABLE="$path"
   ready="$(grep -c . "$path" || true)"
+  # A ROUND IN WHICH EVERY BOX WAS SILENT IS A ROUND THAT FAILED, NOT A FLEET OF ZERO BOXES.
+  # MEASURED 11:5x: the queue runner HALTed on "no prepared, reachable on-demand box among the 0"
+  # minutes after the fleet was resized 18 -> 10 and the reconcile swept 32 ghost registrations —
+  # with ten boxes RUNNING. The table had been opened, every probe in that one round had timed out
+  # in the churn, and the EMPTY table was then cached for the whole sweep: every later allocation
+  # read zero rows and said so, and no box was ever asked again. An empty round is therefore not
+  # cached at all; the caller falls back to one round per allocation, which re-asks (and, below,
+  # re-asks once more with a longer timeout) instead of standing on a single bad second.
+  if [ "$ready" -eq 0 ]; then
+    rm -f "$path"
+    rlog "fleet: the probe round over $n on-demand box(es) got NO answer at all — that is a failed round, not an empty fleet; this sweep will ask per allocation instead of caching it"
+    return 1
+  fi
+  FLEET_TABLE="$path"
   rlog "fleet: one probe round over $n on-demand box(es) — $ready ready, cached for this sweep ($path)"
   printf '%s\n' "$path"
 }
@@ -344,6 +357,24 @@ fleet_pick_host() { # $@ = hosts this caller already holds
     [ -n "$ex" ] || continue
     rows="$(printf '%s\n' "$rows" | grep -v " $ex\$" || true)"
   done
+  # A SILENT ROUND IS RE-ASKED ONCE, WITH ROOM. The 15 s bound is sized for a quiet fleet; a fleet
+  # that has just been resized, swept and reconciled is not quiet, and every box answering slowly in
+  # the same second is indistinguishable here from every box being gone. The difference is worth one
+  # more round: if the fleet file names boxes and not one of them answered, ask again at 45 s before
+  # halting a queue on it. A fleet that really is gone costs 45 s and the same honest message.
+  # NEVER THROUGH A TABLE. While a sweep's table is open it is authoritative — a box dropped from it
+  # stopped answering, and a box already taken is at its ceiling — so re-asking the fleet here would
+  # hand a line exactly the box the sweep just decided against. The re-ask is only for the caller
+  # that had no table, which is the caller that just made the round itself.
+  if ! fleet_table_active && [ -z "$(printf '%s\n' "$rows" | grep . || true)" ] && [ "$n" -gt 0 ]; then
+    rlog "fleet: not one of $n box(es) answered the probe — re-asking once at ${FLEET_PROBE_RETRY_TIMEOUT:-45}s before treating the fleet as empty"
+    # shellcheck disable=SC2086
+    rows="$(FLEET_PROBE_TIMEOUT="${FLEET_PROBE_RETRY_TIMEOUT:-45}" _fleet_probe_round "$(_fleet_probe_cmd_proof)" $(fleet_proof_hosts))"
+    for ex in "$@"; do
+      [ -n "$ex" ] || continue
+      rows="$(printf '%s\n' "$rows" | grep -v " $ex\$" || true)"
+    done
+  fi
   win="$(printf '%s\n' "$rows" | _fleet_choose)" \
     || rdie "no prepared, reachable on-demand box among the $n in ${FLEET_TABLE:-$FLEET_FILE}"
   bestn="${win%% *}"; best="${win##* }"; bestload="${win#* }"; bestload="${bestload%% *}"
@@ -748,6 +779,49 @@ STUB
      "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; FLEET_TABLE=""; : >"$root/calls"; fleet_pick_host >/dev/null 2>&1; grep -c . "$root/calls")"
   _t "  ...and two of them are two rounds, as they always were" 24 \
      "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; FLEET_TABLE=""; : >"$root/calls"; fleet_pick_host >/dev/null 2>&1; fleet_pick_host >/dev/null 2>&1; grep -c . "$root/calls")"
+  # ── A SILENT ROUND IS NOT AN EMPTY FLEET ─────────────────────────────────────────────────────
+  # MEASURED 11:5x: the queue runner HALTed on "no prepared, reachable on-demand box among the 0"
+  # with TEN BOXES RUNNING, minutes after the fleet was resized 18 -> 10 and the reconcile swept 32
+  # ghost registrations. Nothing was gone; one probe round landed in the churn, every box timed out
+  # inside the 15 s bound, and the EMPTY table was cached for the whole sweep — so every later
+  # allocation read zero rows and no box was ever asked again. Both halves are pinned here.
+  echo "ci-remote-lib selftest: a probe round nobody answered is a failed round, not a fleet of zero"
+  cat >"$root/ssh-silent" <<STUB
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$root/ssh-silent"
+  # Silent on the FIRST round, answering on the second: the churn, not the outage.
+  cat >"$root/ssh-churn" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in ubuntu@*) h="\${a#ubuntu@}" ;; esac; done
+echo x >>"$root/churn"
+n=\$(wc -l <"$root/churn")
+[ "\$n" -le 12 ] && exit 1
+printf '0\n0.5\n'
+STUB
+  chmod +x "$root/ssh-churn"
+  _t "an all-silent round caches NO table" 1 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-silent"; FLEET_TABLE=""; fleet_table_open "$root/table-silent" >/dev/null 2>&1; echo $?)"
+  _t "  ...and leaves no empty table behind" 0 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-silent"; FLEET_TABLE=""; fleet_table_open "$root/table-silent" >/dev/null 2>&1; [ -f "$root/table-silent" ] && echo 1 || echo 0)"
+  _t "  ...and says the round failed, not that the fleet is empty" 1 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-silent"; FLEET_TABLE=""; fleet_table_open "$root/table-silent" 2>&1 >/dev/null | grep -c 'failed round, not an empty fleet')"
+  # THE HALT ITSELF: with the empty table cached, every allocation in the sweep died. With no table
+  # cached, the allocation asks the fleet — and a fleet that has come back answers.
+  rm -f "$root/churn" "$root/fleet12.cursor"; : >"$root/churn"
+  _t "a sweep whose round was silent still allocates when the fleet answers" "box01" \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-churn"; FLEET_TABLE=""; rm -f "$root/fleet12.cursor"
+        fleet_table_open "$root/table-churn" >/dev/null 2>&1 || true
+        fleet_pick_host 2>/dev/null)"
+  rm -f "$root/churn" "$root/fleet12.cursor"; : >"$root/churn"
+  _t "  ...because a silent round is re-asked once, with room" 1 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-churn"; FLEET_TABLE=""; rm -f "$root/fleet12.cursor"
+        fleet_pick_host 2>&1 >/dev/null | grep -c 're-asking once at')"
+  # And a fleet that really is gone still says so, in the same words it always did.
+  _t "a fleet that really is gone still halts, honestly" 2 \
+     "$( (FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh-silent"; FLEET_TABLE=""; fleet_pick_host) >/dev/null 2>&1; echo $?)"
+
   FLEET_TABLE=""; FLEET_FILE="$root/fleet"; SSH_WRAP="$root/ssh"
 
   # ── THE SLUG: A BRANCH NAME THAT CANNOT BECOME THE SHARED TREE ────────────────────────────────
