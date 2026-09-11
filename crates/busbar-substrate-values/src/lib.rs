@@ -27,6 +27,12 @@
 // `busbar_substrate::diag_warn!` resolve exactly as before.
 pub mod diagnostics;
 
+// THE CONFIG VALUE GRAMMAR the node deserializes -- the pure serde shapes of the config sections,
+// over `busbar-api`/`busbar-plugin` leaves. It opens nothing, which is why it is on this side of
+// the split rather than beside the egress engine. `busbar-substrate` re-exports the whole module,
+// so `busbar_substrate::config::...` resolves unchanged.
+pub mod config;
+
 // The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
 // seam, the base64/media-type helper, the AWS EventStream framing codec, the source-scoped
 // lossless-extras namespace, and the hand-rolled SigV4 signer.

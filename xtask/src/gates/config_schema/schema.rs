@@ -103,6 +103,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `busbar-core`, which re-exports every moved item at its historical `config::` path.
         // Tracked as a DIRECTORY so a future file split under it is automatically covered.
         "crates/busbar-substrate/src/config".to_string(),
+        // The `groups:` shapes went one crate further DOWN, into the PURE half of the substrate
+        // that survives its retirement. Same directory of the same shapes under a new crate, so
+        // the snapshot it renders is byte-identical; tracked as a DIRECTORY for the same reason
+        // the line above is, so the rest of the grammar following it needs no edit here.
+        "crates/busbar-substrate-values/src/config".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.

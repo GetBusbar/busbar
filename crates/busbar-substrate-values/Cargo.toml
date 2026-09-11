@@ -68,6 +68,11 @@ tracing-subscriber = { workspace = true, optional = true }
 # The relocated `eventstream` framing tests capture WARN/ERROR events through a `tracing_subscriber`
 # Layer to assert a `diag_*!` fired without a global subscriber.
 tracing-subscriber = { workspace = true }
+# The relocated FROZEN LIMIT GRAMMAR cells parse a `limits:` entry the way an operator writes it --
+# out of the config document's own format -- so the refusal text they pin is the one a real parse
+# produces. A TEST edge only: nothing in this crate's shipped closure names YAML, so the manifest's
+# pure-leaf rule is untouched and a plane's scanned closure does not move.
+serde_yaml = { workspace = true }
 
 [features]
 # The two NEUTRAL capability features the parent crate gates its plane-consumed items on. Both are
