@@ -98,7 +98,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -151,7 +151,7 @@ jobs:
   # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         if: always()
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -214,7 +214,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -392,7 +392,7 @@ jobs:
   # unsharded workspace run -- the floor is the same number, because it is the same suite.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         if: always()
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -486,7 +486,7 @@ jobs:
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -511,7 +511,7 @@ jobs:
   # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         if: always()
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -628,7 +628,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -822,7 +822,7 @@ jobs:
   # umbrellas exist to refuse.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         if: always()
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -851,7 +851,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -884,7 +884,7 @@ jobs:
   # writes no status at all on the runs where the answer matters most.
       - name: Latchkey Fast Cache (cargo registry + target, save)
         if: always()
-        uses: latchkey-dev/cache-action@v1
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
