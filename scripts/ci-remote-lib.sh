@@ -200,34 +200,147 @@ WORKDIR
 _prove_count_snippet() {
   printf '%s' 'n=0; for f in "$HOME"/busbar-prove*/.proof.pid; do [ -f "$f" ] || continue; p="$(cat "$f" 2>/dev/null)"; case "$p" in ""|*[!0-9]*) continue ;; esac; kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"'
 }
-fleet_pick_host() {
-  local hosts n cur cursor h probe np ld best="" bestload="" bestn=""
-  hosts="$(fleet_proof_hosts)"
-  n="$(printf '%s\n' "$hosts" | grep -c .)"
-  [ "$n" -gt 0 ] || rdie "no on-demand box in $FLEET_FILE for a proof to run on ($(fleet_hosts | grep -c .) box(es) in the file, none of them ondemand) — the fleet needs an on-demand floor"
-  cursor="${FLEET_FILE}.cursor"
-  cur="$(cat "$cursor" 2>/dev/null || echo 0)"
-  case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
-  echo $(( (cur + 1) % n )) > "$cursor" 2>/dev/null || true
-  for h in $(printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR>s'; printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR<=s'); do
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg" </dev/null 2>/dev/null || true)"
-    # TWO LINES NOW: how many proofs are running here, then the 1-minute load. A box is skipped when
-    # it is at the ceiling — that is what makes a third slot go somewhere else instead of racing.
+# ── THE PROBE IS A ROUND, NOT A WALK; AND A SWEEP MAKES ONE OF THEM ──────────────────────────────
+# MEASURED 2026-09-10: a sweep of twelve pre-proofs spent from 18:41 to 19:1x DISPATCHING. Every
+# allocation walked the fleet one box at a time, each box costing up to `timeout 15 ssh …`; with
+# twenty-three boxes, many of them slow or silent under load, twelve allocations asked the fleet the
+# same question up to 276 times, serially, before the first proof started. Nothing was wrong with
+# any verdict — the engine was simply standing in line behind itself.
+#
+# TWO THINGS FIX IT AND THEY ARE SEPARATE. (1) ONE ROUND IS CONCURRENT: every box is asked AT THE
+# SAME TIME and the whole round is still bounded by the same 15 s, so a round costs one box's
+# timeout rather than the fleet's. (2) A SWEEP MAKES ONE ROUND: `fleet_table_open` writes the
+# readiness table down and every allocation in that sweep is a read of the file plus a TAKE.
+#
+# THE WAIT IS ON NAMED PIDS, NEVER A BARE `wait`. This function is called from landq4.sh's sweep,
+# which by its second line already has backgrounded pre-proof children of its own; a bare `wait`
+# there would block the allocator on three hours of proving.
+_fleet_probe_cmd_proof() {
+  printf '%s' "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg"
+}
+_fleet_probe_cmd_shard() {
+  printf '%s' "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f '[l]and.run.local.sh' >/dev/null 2>&1; then echo BUSY; else $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg; fi"
+}
+_fleet_probe_round() { # $1 = the remote command, $2.. = hosts; prints `<proofs> <load> <host>` rows in the order given
+  local cmd="$1"; shift
+  [ "$#" -gt 0 ] || return 0
+  local d h probe np ld i=0 p
+  local pids=()
+  d="$(mktemp -d -t fleet-probe.XXXXXX)" || return 1
+  for h in "$@"; do
+    _fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "$cmd" </dev/null >"$d/p$i" 2>/dev/null &
+    pids[$i]=$!
+    i=$((i + 1))
+  done
+  for p in "${pids[@]}"; do wait "$p" 2>/dev/null || true; done
+  i=0
+  for h in "$@"; do
+    probe="$(cat "$d/p$i" 2>/dev/null || true)"; i=$((i + 1))
+    case "$probe" in
+      BUSY*) rlog "fleet: $h skipped (a landing is running there)"; continue ;;
+    esac
+    # TWO LINES: how many proofs are running here, then the 1-minute load.
     np="$(printf '%s\n' "$probe" | sed -n 1p)"; ld="$(printf '%s\n' "$probe" | sed -n 2p)"
     case "$np" in ''|*[!0-9]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
     case "$ld" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    printf '%s %s %s\n' "$np" "$ld" "$h"
+  done
+  rm -rf "$d"
+}
+# THE CEILING AND THE ORDER, over `<proofs> <load> <host>` rows in preference order. A box is
+# skipped when it is at the ceiling — that is what makes a third slot go somewhere else instead of
+# racing — and of the rest, PROOFS FIRST, THEN LOAD: an empty box beats a box with one proof on it
+# however quiet the loadavg looks, because loadavg is a one-minute average and a proof that started
+# forty seconds ago is not in it yet. Prints the winning row; rc 1 when there is none.
+_fleet_choose() {
+  local np ld h best="" bestload="" bestn=""
+  while read -r np ld h; do
+    [ -n "$h" ] || continue
     if [ "$np" -ge "$PROVE_PER_BOX" ]; then
       rlog "fleet: $h skipped ($np proof(s) running, ceiling $PROVE_PER_BOX)"; continue
     fi
-    # PROOFS FIRST, THEN LOAD. An empty box beats a box with one proof on it however quiet the
-    # loadavg looks, because loadavg is a one-minute average and a proof that started forty seconds
-    # ago is not in it yet.
     if [ -z "$best" ] || awk -v a="$np" -v b="$bestn" -v c="$ld" -v d="$bestload" \
          'BEGIN { exit !(a + 0 < b + 0 || (a + 0 == b + 0 && c + 0 < d + 0)) }'; then
       best="$h"; bestload="$ld"; bestn="$np"
     fi
   done
-  [ -n "$best" ] || rdie "no prepared, reachable on-demand box among the $n in $FLEET_FILE"
+  [ -n "$best" ] || return 1
+  printf '%s %s %s\n' "$bestn" "$bestload" "$best"
+}
+
+# ── THE SWEEP'S TABLE: ONE ROUND, HELD FOR THE WHOLE SWEEP ───────────────────────────────────────
+# `fleet_table_open <path>` probes the on-demand fleet once, in parallel, and caches it; every
+# `fleet_pick_host` while it is open reads the file instead of the fleet, and TAKES the box it
+# returns (its proof count goes up in the table, so the ceiling still moves the third proof off a
+# two-proof box and two lines are never handed the same slot). `fleet_table_drop <host>` is the
+# other half: a box that stopped answering mid-sweep is removed by the line that lost it, so the
+# table can only get more accurate as the sweep runs. `fleet_table_close` ends it; a caller that
+# never opens one gets exactly the old behaviour, one round per allocation.
+FLEET_TABLE="${BUSBAR_FLEET_TABLE:-}"
+fleet_table_active() { [ -n "${FLEET_TABLE:-}" ] && [ -f "$FLEET_TABLE" ]; }
+fleet_table_open() { # $1 = path for the table
+  local path="${1:-}" hosts n ready
+  [ -n "$path" ] || return 1
+  FLEET_TABLE=""                       # never probe THROUGH a stale table
+  hosts="$(fleet_proof_hosts)"
+  n="$(printf '%s\n' "$hosts" | grep -c .)"
+  [ "$n" -gt 0 ] || rdie "no on-demand box in $FLEET_FILE for a proof to run on ($(fleet_hosts | grep -c .) box(es) in the file, none of them ondemand) — the fleet needs an on-demand floor"
+  mkdir -p "$(dirname "$path")" 2>/dev/null || true
+  # shellcheck disable=SC2086
+  _fleet_probe_round "$(_fleet_probe_cmd_proof)" $hosts >"$path" || { rm -f "$path"; return 1; }
+  FLEET_TABLE="$path"
+  ready="$(grep -c . "$path" || true)"
+  rlog "fleet: one probe round over $n on-demand box(es) — $ready ready, cached for this sweep ($path)"
+  printf '%s\n' "$path"
+}
+fleet_table_drop() { # $1 = a host that stopped answering; it is out of this sweep
+  local h="${1:-}"
+  [ -n "$h" ] && fleet_table_active || return 0
+  grep -v " $h\$" "$FLEET_TABLE" >"$FLEET_TABLE.tmp" 2>/dev/null || : >"$FLEET_TABLE.tmp"
+  mv -f "$FLEET_TABLE.tmp" "$FLEET_TABLE"
+  rlog "fleet: $h dropped from this sweep's table (it stopped answering; no further line is sent there)"
+}
+fleet_table_take() { # $1 = the host just handed out; its proof count rises in the table
+  local h="${1:-}"
+  [ -n "$h" ] && fleet_table_active || return 0
+  awk -v hh="$h" '{ if ($3 == hh) print ($1 + 1), $2, $3; else print }' "$FLEET_TABLE" >"$FLEET_TABLE.tmp" \
+    && mv -f "$FLEET_TABLE.tmp" "$FLEET_TABLE"
+}
+fleet_table_close() { FLEET_TABLE=""; }
+
+# READY AND LEAST LOADED, NOT BLIND ROUND-ROBIN. Measured 20:2x: the cursor handed a landing to a
+# box that no longer answered (a reclaimed spot instance) and the whole queue HALTed on "push
+# failed"; every box also hosts four CI runner agents, so the 1-minute load differs threefold across
+# the fleet in any given minute. The prepared box with the lowest load wins and a box that does not
+# answer is skipped, not chosen. The cursor still advances so equal loads spread.
+# EXCLUDES ARE ARGUMENTS, because the caller that needs a box PER LINE must not be handed the same
+# box twice — and must not have to ask repeatedly to find that out, which is the read-modify-write
+# race the sweep used to work around by asking four times per line.
+fleet_pick_host() { # $@ = hosts this caller already holds
+  local hosts n cur cursor rows win bestn bestload best ex
+  if fleet_table_active; then
+    rows="$(cat "$FLEET_TABLE")"
+    n="$(printf '%s\n' "$rows" | grep -c .)"
+  else
+    hosts="$(fleet_proof_hosts)"
+    n="$(printf '%s\n' "$hosts" | grep -c .)"
+    [ "$n" -gt 0 ] || rdie "no on-demand box in $FLEET_FILE for a proof to run on ($(fleet_hosts | grep -c .) box(es) in the file, none of them ondemand) — the fleet needs an on-demand floor"
+    cursor="${FLEET_FILE}.cursor"
+    cur="$(cat "$cursor" 2>/dev/null || echo 0)"
+    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    echo $(( (cur + 1) % n )) > "$cursor" 2>/dev/null || true
+    # shellcheck disable=SC2086
+    rows="$(_fleet_probe_round "$(_fleet_probe_cmd_proof)" \
+      $(printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR>s'; printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR<=s'))"
+  fi
+  for ex in "$@"; do
+    [ -n "$ex" ] || continue
+    rows="$(printf '%s\n' "$rows" | grep -v " $ex\$" || true)"
+  done
+  win="$(printf '%s\n' "$rows" | _fleet_choose)" \
+    || rdie "no prepared, reachable on-demand box among the $n in ${FLEET_TABLE:-$FLEET_FILE}"
+  bestn="${win%% *}"; best="${win##* }"; bestload="${win#* }"; bestload="${bestload%% *}"
+  fleet_table_take "$best"
   rlog "fleet: $best chosen ($bestn proof(s) running, 1-min load $bestload)"
   printf '%s\n' "$best"
 }
@@ -241,32 +354,27 @@ fleet_pick_host() {
 # landing and says so; it does not launch three shards and call it four).
 fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
   local want="$1"; shift
-  local hosts h probe np ld ex skip rows=""
+  local hosts h ex skip cand="" rows np ld
   hosts="$(fleet_hosts)"
   for h in $hosts; do
     skip=0; for ex in "$@"; do [ "$h" = "$ex" ] && skip=1; done; [ "$skip" = 1 ] && continue
-    # A BOX ALREADY RUNNING A LANDING IS NOT A SIBLING. The live runner's box carries its landing and
-    # four CI agents; a shard on top of that slows the landing everybody is waiting on and the shard
-    # alike. The probe answers BUSY when the runner's engine is in the box's process list (measured:
-    # the first allocation without this handed shard 2 to the box the queue runner was landing on).
-    # THE PATTERN MUST NOT MATCH ITSELF: this probe travels as a shell command line that contains it,
-    # so an unbracketed pattern found its own shell on every box and the fleet "gave 0" (measured:
-    # a sharded pre-proof that degraded to unsharded on an idle fleet).
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f '[l]and.run.local.sh' >/dev/null 2>&1; then echo BUSY; else $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg; fi" </dev/null 2>/dev/null || true)"
-    case "$probe" in
-      BUSY) rlog "fleet: $h skipped (a landing is running there)"; continue ;;
-    esac
-    np="$(printf '%s\n' "$probe" | sed -n 1p)"; ld="$(printf '%s\n' "$probe" | sed -n 2p)"
-    case "$np" in ''|*[!0-9]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
-    case "$ld" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    cand="$cand $h"
+  done
+  # ONE ROUND, EVERY CANDIDATE AT ONCE — the same round the single-host allocator makes, with the
+  # shard probe's extra question. A BOX ALREADY RUNNING A LANDING IS NOT A SIBLING: the live
+  # runner's box carries its landing and four CI agents, so a shard on top of that slows the landing
+  # everybody is waiting on and the shard alike (measured: the first allocation without this handed
+  # shard 2 to the box the queue runner was landing on). _fleet_probe_round reads that BUSY answer.
+  # shellcheck disable=SC2086
+  rows="$(_fleet_probe_round "$(_fleet_probe_cmd_shard)" $cand)"
+  printf '%s\n' "$rows" | while read -r np ld h; do
+    [ -n "$h" ] || continue
     if [ "$np" -ge "$PROVE_PER_BOX" ]; then
       rlog "fleet: $h skipped ($np proof(s) running, ceiling $PROVE_PER_BOX)"; continue
     fi
     # Sorted on the pair, so a box with a proof on it is behind every empty box.
-    rows="$rows$np $ld $h
-"
-  done
-  printf '%s' "$rows" | sort -k1,1n -k2,2n | head -n "$want" | awk '{print $3}'
+    printf '%s %s %s\n' "$np" "$ld" "$h"
+  done | sort -k1,1n -k2,2n | head -n "$want" | awk '{print $3}'
 }
 
 # Push ONE NAMED COMMIT (not HEAD) into a box's bare repo under a ref of the caller's choosing. The
@@ -568,6 +676,72 @@ STUB
   _t "  ...and says why"                              1 \
      "$(_sp fleet_pick_host 2>&1 >/dev/null | grep -c 'no on-demand box')"
   FLEET_FILE="$root/fleet"
+
+  # ── ONE PROBE ROUND PER SWEEP, IN PARALLEL — NOT ONE SERIAL ROUND PER ALLOCATION ─────────────
+  # MEASURED 2026-09-10: a sweep of twelve pre-proofs took from 18:41 to 19:1x simply to DISPATCH.
+  # `fleet_pick_host` probes the boxes ONE AT A TIME, each with `timeout 15 ssh … test -d`, and the
+  # sweep calls it once per line: twenty-three boxes, most of them answering slowly or not at all
+  # under load, walked twelve times over. Nothing was wrong with any verdict; the fleet was asked
+  # the same question 276 times before the first proof started.
+  #
+  # THE TABLE IS THE FIX, AND IT IS A CACHE WITH AN OWNER. One round, every box asked AT ONCE and
+  # the whole round still bounded by the same 15 s, written down as `<proofs> <load> <host>` rows;
+  # every allocation in the sweep is then a read of that table plus a take (the chosen box's count
+  # goes up, so the ceiling still moves the third proof off a two-proof box). A box that stops
+  # answering mid-sweep is DROPPED from the table by the line that lost it — see landq4.sh's
+  # NONE:box — so the next line is never handed the box that just vanished.
+  echo "ci-remote-lib selftest: the sweep probes the fleet ONCE, in parallel, and allocates from the table"
+  : >"$root/fleet12"
+  for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    printf 'box%s us-east-1a 10.0.0.1 ondemand\n' "$i" >>"$root/fleet12"
+  done
+  cat >"$root/ssh12" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in ubuntu@*) h="\${a#ubuntu@}" ;; esac; done
+echo "\$h" >>"$root/calls"
+sleep 1
+printf '0\n1.%s\n' "\${h#box}"
+STUB
+  chmod +x "$root/ssh12"
+  # WHAT THE SWEEP DOES: open the table once, then take one box per line, never the same box twice.
+  _sweep12() { # $1 = how many lines; prints the hosts it dispatched to, one per line
+    local want="$1" got="" h k=0
+    FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; rm -f "$root/fleet12.cursor"; : >"$root/calls"
+    fleet_table_open "$root/table12" >/dev/null || return 1
+    while [ "$k" -lt "$want" ]; do
+      k=$((k + 1)); h="$(fleet_pick_host $got 2>/dev/null)" || break
+      [ -n "$h" ] || break; got="$got $h"
+    done
+    fleet_table_close
+    printf '%s\n' $got
+  }
+  _t "twelve lines get twelve boxes"              12 "$(_sweep12 12 | grep -c .)"
+  _t "  ...twelve DISTINCT boxes"                 12 "$(_sweep12 12 | sort -u | grep -c .)"
+  _t "  ...for ONE probe round over the fleet"    12 "$(_sweep12 12 >/dev/null; grep -c . "$root/calls")"
+  _t "  ...which asked each box exactly once"     12 "$(_sweep12 12 >/dev/null; sort -u "$root/calls" | grep -c .)"
+  # AND THE ROUND IS CONCURRENT. Twelve boxes that each take a second to answer: serially that is
+  # twelve seconds before the first proof starts, and the whole defect is that multiplied by twelve.
+  local _t0=$SECONDS _el
+  _sweep12 12 >/dev/null; _el=$((SECONDS - _t0))
+  _t "the round is one 15 s bound, not twelve serial seconds" yes "$( [ "$_el" -lt 7 ] && echo yes || echo "no ($_el s)" )"
+  # A BOX THAT VANISHED MID-SWEEP IS OUT OF THE TABLE, and the table is what the next line reads.
+  _dropped12() {
+    FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; : >"$root/calls"
+    fleet_table_open "$root/table12" >/dev/null || return 1
+    fleet_table_drop box01
+    local got="" h k=0
+    while [ "$k" -lt 12 ]; do k=$((k + 1)); h="$(fleet_pick_host $got 2>/dev/null)" || break; got="$got $h"; done
+    fleet_table_close; printf '%s\n' $got
+  }
+  _t "a box dropped mid-sweep is never allocated again" 0 "$(_dropped12 | grep -c '^box01$')"
+  _t "  ...and the other eleven still are"             11 "$(_dropped12 | grep -c .)"
+  # WITHOUT A TABLE NOTHING CHANGES — one allocation, one round — which is what land-remote.sh's
+  # single named landing still does, and is why the old callers need no edit.
+  _t "one allocation without a table is still one round" 12 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; FLEET_TABLE=""; : >"$root/calls"; fleet_pick_host >/dev/null 2>&1; grep -c . "$root/calls")"
+  _t "  ...and two of them are two rounds, as they always were" 24 \
+     "$(FLEET_FILE="$root/fleet12"; SSH_WRAP="$root/ssh12"; FLEET_TABLE=""; : >"$root/calls"; fleet_pick_host >/dev/null 2>&1; fleet_pick_host >/dev/null 2>&1; grep -c . "$root/calls")"
+  FLEET_TABLE=""; FLEET_FILE="$root/fleet"; SSH_WRAP="$root/ssh"
 
   # ── THE SLUG: A BRANCH NAME THAT CANNOT BECOME THE SHARED TREE ────────────────────────────────
   echo "ci-remote-lib selftest: the per-branch checkout name"

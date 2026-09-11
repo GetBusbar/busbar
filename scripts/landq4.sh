@@ -1007,15 +1007,13 @@ lq_line_families() { # $1 = queue line; prints its --families value, unquoted
 # which proves exactly the tree the sweep's lines are being judged against. It takes its box AFTER
 # every line in the sweep has one, so measuring the base never costs a line its proof.
 lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4 = the sweep's lines, $5 = hosts already taken
-  local tree="$1" dir="$2" key="$3" taken="$5" fams h="" try=0
+  local tree="$1" dir="$2" key="$3" taken="$5" fams h=""
   fams="$(printf '%s\n' "$4" | lq_families_union)"
   [ -n "$fams" ] || { lq_log "base state: no line in this sweep asks the oracle for a family; there is nothing to measure at $(printf '%.9s' "$key")"; return 1; }
-  while [ "$try" -lt 4 ]; do
-    try=$((try + 1))
-    h="$( fleet_pick_host )" || h=""
-    [ -n "$h" ] || break
-    case " $taken " in *" $h "*) h="" ;; *) break ;; esac
-  done
+  # AFTER EVERY LINE HAS ITS BOX: the lines it must not take are named to the allocator, which is
+  # the same one ask the lines themselves make of the sweep's probe table.
+  # shellcheck disable=SC2086
+  h="$( fleet_pick_host $taken )" || h=""
   [ -n "$h" ] || { lq_log "base state: no free box for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red stays RED"; return 1; }
   printf -- '--prove --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
   lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams"
@@ -1513,21 +1511,27 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   . "$tree/target/gate/ci-remote-lib.sh" 2>/dev/null || {
     lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
   ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
-  local i=0 line hosts="" cand try
+  # ONE PROBE ROUND FOR THE WHOLE SWEEP. Measured 2026-09-10: dispatching twelve pre-proofs took
+  # from 18:41 to 19:1x, because every line walked the fleet box by box with a `timeout 15 ssh`
+  # apiece — and asked again whenever it was handed a box this sweep already held. The table is
+  # probed ONCE, every box at the same time and the round still bounded by that same 15 s, and each
+  # line is then a read of it plus a take. A box that turns out to have vanished is dropped from the
+  # table by the line that lost it, below, so the table is only ever more accurate than the round.
+  fleet_table_open "$dir/fleet-table" >/dev/null \
+    || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
+  local i=0 line hosts="" cand
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    cand=""; try=0
-    while [ "$try" -lt $(( PREPROVE_LINES * 4 )) ]; do
-      try=$((try + 1))
-      local h; h="$( fleet_pick_host )" || h=""
-      [ -n "$h" ] || break
-      case " $hosts " in *" $h "*) continue ;; esac
-      cand="$h"; hosts="$hosts $h"; break
-    done
+    # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
+    # box is never handed out twice and no line has to re-probe the fleet to discover that.
+    # shellcheck disable=SC2086
+    cand="$( fleet_pick_host $hosts )" || cand=""
     [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
+    hosts="$hosts $cand"
     i=$((i + 1))
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
+    printf '%s\n' "$cand" >"$dir/line-$i.host"
     (
       # `--preprove` AS AN ARGUMENT, not LAND_PREPROVE in the environment. land.sh converts one
       # into the other for a caller who typed the variable, but the argv is what reaches the box —
@@ -1561,15 +1565,10 @@ EOF
     # box taken and abandoned is a box the next line in this very loop is refused.
     local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
     [ -n "$chain2" ] || continue
-    cand=""; try=0
-    while [ "$try" -lt $(( PREPROVE_LINES * 4 )) ]; do
-      try=$((try + 1))
-      local h2; h2="$( fleet_pick_host )" || h2=""
-      [ -n "$h2" ] || break
-      case " $hosts " in *" $h2 "*) continue ;; esac
-      cand="$h2"; hosts="$hosts $h2"; break
-    done
+    # shellcheck disable=SC2086
+    cand="$( fleet_pick_host $hosts )" || cand=""
     [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
+    hosts="$hosts $cand"
     ctext="$(printf '%s' "$chain2" | tail -n1)"
     ck="$(printf '%s' "$chain2" | sed '$d' | lq_chain_key "$key")"
     i=$((i + 1))
@@ -1585,6 +1584,7 @@ EOF
         u=$((u + 1)); [ "$u" = 1 ] || printf '#UNIT 1\n' >>"$bf2"
         printf '%s\n' "$cl" >>"$bf2"
       done; }
+    printf '%s\n' "$cand" >"$dir/line-$i.host"
     printf '%s\n' "$ck" >"$dir/line-$i.chainkey"
     printf '%s\n' "$ctext" >"$dir/line-$i.chaintext"
     lq_log "pre-prove: chained $(printf '%.70s' "$ctext") on $(printf '%s' "$chain2" | grep -c .) line(s) at $(printf '%.9s' "$key")"
@@ -1639,6 +1639,9 @@ $chained" "$hosts" || true
       GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP"; lq_front_drop "$text" ;;
       NONE:box)  lq_front_add "$text"
+                 # THE BOX IS OUT OF THIS SWEEP'S TABLE. It was reachable when the round was made
+                 # and it is not now, and the table is what every remaining allocation reads.
+                 fleet_table_drop "$(cat "$dir/line-$j.host" 2>/dev/null || true)"
                  lq_log "pre-prove: line $j lost its BOX mid-proof (reclaimed, or it stopped answering); no verdict on the line — re-queued to the front (log: $dir/line-$j.log)" ;;
       NONE:harness)  lq_front_add "$text"
                  lq_log "pre-prove: line $j died of a HARNESS failure on its box (a give-up the recorder refused), not of anything its picks did; re-queued to the front (log: $dir/line-$j.log)" ;;
@@ -1648,6 +1651,7 @@ $chained" "$hosts" || true
     esac
     j=$((j + 1))
   done
+  fleet_table_close
   lq_log "pre-prove: recorded in $PP"
   return 0
 }
@@ -2448,6 +2452,24 @@ lq_selftest() {
   _t "  ...on a box the lines did not take"       1 "$(grep -c '^lq_base_red_[r]eplay() {' "$0")"
   _t "  ...and the batch it sends has NO hashes"  1 "$(grep -c "printf -- '--prove --famil[i]es %s.n' " "$0")"
   _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
+
+  # ── THE SWEEP PROBES THE FLEET ONCE, NOT ONCE PER LINE ───────────────────────────────────────
+  # MEASURED 2026-09-10: the sweep of twelve pre-proofs took from 18:41 to 19:1x simply to
+  # DISPATCH. Each line asked `fleet_pick_host` for a box, and each of those calls walked
+  # twenty-three boxes ONE AT A TIME with a `timeout 15 ssh … test -d` apiece — and asked again,
+  # up to four times, whenever the box it was handed was one this sweep already held. The fleet was
+  # asked the same question hundreds of times, serially, before the first proof started.
+  # The transport now makes ONE ROUND (ci-remote-lib.sh: fleet_table_open, every box at once inside
+  # the same 15 s) and the sweep allocates from that table: one call per line, naming the boxes it
+  # already holds so a repeat is never handed out and never has to be asked for twice.
+  echo "landq4 selftest: the sweep probes the fleet once, allocates from the table, and drops a box it lost"
+  _t "the sweep opens ONE table before it dispatches"      1 "$(grep -c 'fleet_table_open "\$dir/fleet-table"' "$0")"
+  _t "  ...and closes it only once every line is scored"   1 "$(grep -c '^  fleet_table_close$' "$0")"
+  _t "a line asks for a box ONCE, naming the ones it holds" 2 "$(grep -c 'fleet_pick_host \$hosts' "$0")"
+  _t "  ...and so does the base replay, after them"         1 "$(grep -c 'fleet_pick_host \$taken' "$0")"
+  _t "  ...so no line re-probes the fleet looking for one"  0 "$(grep -c 'try=\$((try + 1))' "$0")"
+  _t "the box each line went to is written down"            2 "$(grep -c 'printf .%s.n. "\$cand" >"\$dir/line-\$i.host"' "$0")"
+  _t "a line that LOST its box drops it from the table"     1 "$(grep -c 'fleet_table_drop "\$(cat "\$dir/line-\$j.host"' "$0")"
   # THE RECORDER'S BOUNDS ARE FORWARDED, NEVER INVENTED HERE. A bound this runner set would be a
   # laptop's guess about a box's speed; the box measures its own load (land.sh's land_oracle_bounds).
   # What the runner owes is the CHANNEL: an operator who exported one gets it on the box.
