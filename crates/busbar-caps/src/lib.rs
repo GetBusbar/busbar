@@ -20,6 +20,8 @@
 //! - [`Posted`], [`DurabilityLost`], [`Usage`] — what closes a hold, and what it is closed against.
 //! - [`VerifiedDestination`], [`AuthDecoration`], [`SecretSlot`], [`TransportKeyHandle`],
 //!   [`SecretOnce`] — the capabilities on the way out.
+//! - [`BodyLease`], [`Completion`] — the routed body named as a handle and never as bytes, and
+//!   what its stream counted once it finished.
 //! - [`Origin`], [`SessionId`], [`IdempotencyKey`], [`UnitEnd`] — the kernel's own.
 //! - The [canary] the kernel balances.
 //!
@@ -73,7 +75,10 @@ pub mod usage;
 
 pub use canary::{Canary, CanaryBreak};
 pub use decision::{Decision, ReasonCode, Refusal};
-pub use egress::{AuthDecoration, SecretOnce, SecretSlot, TransportKeyHandle, VerifiedDestination};
+pub use egress::{
+    AuthDecoration, BodyLease, CompletedUnits, Completion, SecretOnce, SecretSlot,
+    TransportKeyHandle, VerifiedDestination,
+};
 pub use hold::{
     Accrual, AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold,
     HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags, Spend,

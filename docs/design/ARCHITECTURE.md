@@ -67,15 +67,18 @@ them). Each axis is blind to the other two; only the kernel composes them.
   — helpers the loop calls directly, not the units behind their traits — counts against the kernel
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k (the loop and the per-unit record it builds at its entry: the unit's own
-  memory, the context every step is lent, and the two facts Verify seals onto it) · pump/scheduler 1.5k ·
+  memory, the context every step is lent, the two facts Verify seals onto it, and the routed body
+  it holds as a HANDLE — a lease and what the stream counted, never the bytes — from the Route step
+  that took it until the exit path releases it, which is what lets the Meter step read a
+  completion the seam did not fix) · pump/scheduler 1.5k ·
   in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.6k **of plugin-visible SURFACE** —
   non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3600`), which the construction gate runs as
   `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,

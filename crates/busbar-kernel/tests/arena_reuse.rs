@@ -266,3 +266,69 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
     assert_eq!(table.len(), MAX_KEYS);
     assert_eq!(table[MAX_KEYS - 1].0, pointers[MAX_KEYS - 1]);
 }
+
+/// TWO FRAMES OF ONE RELAYED UNIT, OVER ONE 4 KIB.
+///
+/// The unit's memory is leased once per unit by construction: [`UnitMemory::lease`] takes the
+/// memory's own lifetime parameter, so the lease and the unit end together and there is no second
+/// one to take. That is right for a one-shot unit and wrong for a relay, where the doc above says
+/// the arena "is reset per frame" — and until the second constructor there was no call a relay
+/// could make to reset it. The only thing it could do instead was allocate a second buffer, which
+/// is the failure this whole file is written against, arriving through a different door.
+///
+/// [`UnitMemory::relay`] is that call. The FRAME owns the frame's span table and the UNIT owns the
+/// bytes, so the cursor goes back to zero over the same allocation. Two frames, one buffer: the
+/// reset count is two and the high-water is the LARGER of the two frames rather than their sum.
+/// Take the reset away — give the second frame its own buffer — and the high-water on the unit's
+/// memory stops moving at the first frame instead, because the second frame's bytes are somewhere
+/// this value cannot see.
+#[test]
+fn two_frames_of_a_relayed_unit_reuse_the_units_own_four_kib() {
+    let first = b"{\"delta\":{\"content\":\"the first frame of a relayed answer\"}}";
+    let second =
+        b"{\"delta\":{\"content\":\"the second, which is longer than the first one was\"}}";
+    assert!(
+        second.len() > first.len(),
+        "the second frame is the larger, so the high-water can only be its length or the sum"
+    );
+
+    let mut memory = busbar_kernel::record::UnitMemory::new();
+
+    let used_first = {
+        let mut spans = span_slab();
+        let arena = memory.relay(&mut spans);
+        arena
+            .alloc_bytes(first)
+            .expect("one relayed frame fits the unit's own memory");
+        arena.used()
+    };
+    let used_second = {
+        let mut spans = span_slab();
+        let arena = memory.relay(&mut spans);
+        arena
+            .alloc_bytes(second)
+            .expect("and so does the next one, in the same bytes");
+        arena.used()
+    };
+
+    assert_eq!(used_first, first.len(), "each frame pays for itself");
+    assert_eq!(
+        used_second,
+        second.len(),
+        "and the second pays for itself ALONE: the cursor went back to zero between them"
+    );
+    assert_eq!(
+        memory.resets(),
+        2,
+        "one reset per frame is what re-leasing the same buffer means"
+    );
+    assert_eq!(
+        memory.high_water(),
+        second.len(),
+        "the most this unit's 4 KiB ever held at once is one frame, not two"
+    );
+    assert!(
+        memory.high_water() < first.len() + second.len(),
+        "a buffer that was not reset between the frames would read the sum here"
+    );
+}
