@@ -4800,8 +4800,11 @@ sys.exit(1 if missing else 0)' "$STATUSJ"; echo $?)"
   _t "  ...no line on a box"                   0 "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["sweep"]))' "$STATUSJ")"
   _t "  ...and no page"                        "" "$(jq_ direct_edit)"
   # THE SITES: every loop, and at every state change.
-  _t "the runner writes it at the loop top, and when the batch comes back" 2 \
+  _t "the runner writes it at the loop top, after the fold, and when the batch comes back" 3 \
      "$(grep -c '^  lq_status_json$' "$LQ_SRC")"
+  _t "  ...and the one after the fold comes before the dispatch" 1 \
+     "$( [ "$(grep -n '^  lq_status_json$' "$LQ_SRC" | sed -n 2p | cut -d: -f1)" \
+          -lt "$(grep -n '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...the loop-top one FIRST"             1 \
      "$( [ "$(grep -n '^  lq_status_json$' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
           -lt "$(grep -n '^  lq_status_json "\$batch" "\$bstart"$' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
@@ -5159,6 +5162,11 @@ while true; do
       rm -f "$batch" "$batch.chain"; sleep 60; continue
     fi
   fi
+  # THE QUEUE JUST CHANGED — the inbox was folded, holds were released, lines were popped or parked
+  # — and a status file still showing the counts from before the fold is a status file that is wrong
+  # for the whole minute an integrator is most likely to be reading it (they have just typed a
+  # command). Written here, under nobody's lock, before the batch or the idle sleep.
+  lq_status_json
   if [ "${n:-0}" -eq 0 ]; then
     rm -f "$batch" "$batch.chain"; try_push; sleep 60; continue
   fi
