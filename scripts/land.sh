@@ -725,6 +725,58 @@ EOF
 # happened to survive: the merged recording would simply be missing those cells and --strict would
 # have nothing to complain about because it was never told they were owed by THIS run.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# HOW MUCH SLOWER THIS BOX IS THAN AN IDLE ONE, AND WHAT THAT COSTS THE RECORDER'S STOPWATCHES
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# record.sh has two waits that are WALL-CLOCK BOUNDS WHOSE EXPIRY IS WRITTEN INTO THE CELL:
+# ORACLE_BOOT_BOUND_SECS (record.sh:334, :589-593 — "on a loaded machine a warning-boot cell whose
+# golden is `exit 0` records `exit 124` … the harness's stopwatch frozen into the cell as if it were
+# the binary's answer") and ORACLE_EGRESS_SETTLE_SECS (record.sh:670). They already scaled with the
+# SHARD COUNT. They did not scale with the BOX — and the box is what they are a measurement of.
+#
+# Measured 2026-09-10: three of twelve pre-proofs went RED on `documented|changelog|admin-restart`
+# with an empty `/put_settings_body` body — a driver's second boot that did not come up inside 60 s
+# on a box that was also carrying another proof and four CI runner agents.
+#
+# THE FACTOR IS THE 1-MINUTE LOAD OVER THE CPU COUNT, ROUNDED UP, FLOORED AT 1 AND CAPPED AT 4.
+# A box at exactly its cpu count is BUSY, not overloaded — every proof box is meant to be busy — so
+# that is still 1. Twice its cpus is 2, and the cap is there because beyond four the answer is not
+# "wait longer", it is "this box was oversubscribed and the recording should not have started".
+# Only ever UPWARD, and an operator's own export still wins outright.
+#   LAND_ORACLE_LOAD_SCALE=0   turn the scaling off (the pre-load numbers, exactly)
+#   LAND_LOAD_FACTOR=<n>       pin the factor (what the self-test drives)
+land_load_factor() { # [$1 = 1-minute load] [$2 = cpu count] — both measured here when not given
+  local ld="${1-}" n="${2-}"
+  [ -n "${LAND_LOAD_FACTOR:-}" ] && { printf '%s\n' "$LAND_LOAD_FACTOR"; return 0; }
+  if [ -z "$ld" ] && [ $# -lt 1 ]; then
+    if [ -r /proc/loadavg ]; then ld="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+    else ld="$(uptime 2>/dev/null | sed -n 's/.*load averages\{0,1\}: *\([0-9.]*\).*/\1/p')"; fi
+  fi
+  if [ -z "$n" ] && [ $# -lt 2 ]; then
+    n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo '')"
+  fi
+  # ANYTHING UNREADABLE IS 1, NEVER 4: a factor invented out of a parse failure would quietly turn
+  # every bound into four minutes and hide a box that really was too slow.
+  case "$ld" in ''|*[!0-9.]*) printf '1\n'; return 0 ;; esac
+  case "$n"  in ''|*[!0-9]*)  printf '1\n'; return 0 ;; esac
+  [ "$n" -ge 1 ] || { printf '1\n'; return 0; }
+  awk -v l="$ld" -v n="$n" 'BEGIN {
+      r = l / n
+      f = int(r); if (r > f) f = f + 1
+      if (f < 1) f = 1
+      if (f > 4) f = 4
+      print f
+    }'
+}
+# THE TWO BOUNDS, IN ONE PLACE, SO THE LEG CANNOT DERIVE THEM DIFFERENTLY. `<boot> <egress>`.
+land_oracle_bounds() { # $1 = K shards
+  local k="${1:-1}" lf
+  lf="$(land_load_factor)"
+  case "${LAND_ORACLE_LOAD_SCALE:-1}" in 0) lf=1 ;; esac
+  case "$lf" in ''|*[!0-9]*) lf=1 ;; esac
+  printf '%s %s\n' "${ORACLE_BOOT_BOUND_SECS:-$(( 60 * k * lf ))}" "${ORACLE_EGRESS_SETTLE_SECS:-$(( 15 * k * lf ))}"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # A HARNESS FAILURE IS NOT A DIVERGENCE (T0-D10's contract, read by the landing engine)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # `oracle_harness_give_up` (testing/fleet-fixtures/lib.sh): a driver that cannot do its job writes
@@ -1516,8 +1568,10 @@ EOF
   # manufacture divergences that are facts about this host's load and about nothing the picks did.
   # They scale with the fan-out, and only upward — an operator's own export still wins.
   local boot_secs egress_secs
-  boot_secs="${ORACLE_BOOT_BOUND_SECS:-$(( 60 * k ))}"
-  egress_secs="${ORACLE_EGRESS_SETTLE_SECS:-$(( 15 * k ))}"
+  read -r boot_secs egress_secs <<EOF
+$(land_oracle_bounds "$k")
+EOF
+  echo "land.sh: oracle: bounds for $k shard(s) on $(hostname 2>/dev/null || echo this box): boot ${boot_secs}s, egress settle ${egress_secs}s (load factor $(land_load_factor), 1-min load over cpus)"
 
   # The oracle plugin cache under $HOME is shared and deliberately concurrency-safe (fetch-plugin.sh
   # writes beside the target and renames), but K shards starting cold would each pay for the same
@@ -2626,6 +2680,37 @@ EOF
   # --selftests run on this box too (the gate-files leg), and one of them PLANTS a busy port and
   # prints `harness give-up:` as a passing case. A scan of the whole log would score that landing a
   # harness failure; this scan looks only at the shard recordings and their recorder logs.
+  # ── THE RECORDER'S WALL-CLOCK BOUNDS SCALE WITH THE BOX'S LOAD ────────────────────────────────
+  # record.sh has two waits that are wall-clock bounds whose EXPIRY IS WRITTEN INTO THE CELL:
+  # ORACLE_BOOT_BOUND_SECS (a warning-boot cell whose golden is `exit 0` records `exit 124` when the
+  # stopwatch wins) and ORACLE_EGRESS_SETTLE_SECS. They already scaled with the SHARD COUNT; they
+  # did not scale with the box, and a box is what they are actually a measurement of. Measured
+  # 2026-09-10: three pre-proofs red on `documented|changelog|admin-restart` with an empty
+  # `/put_settings_body` — a second boot that did not come up inside 60 s on a box carrying two
+  # other proofs and four CI runner agents.
+  echo "land.sh selftest: the recorder's bounds scale with the box's measured load"
+  _t3() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  _t3 "an idle box scales by 1"             1 "$(land_load_factor 0.20 16)"
+  _t3 "a fully-busy box still scales by 1"  1 "$(land_load_factor 16.0 16)"
+  _t3 "twice oversubscribed scales by 2"    2 "$(land_load_factor 31.0 16)"
+  _t3 "three times over scales by 3"        3 "$(land_load_factor 47.0 16)"
+  _t3 "the factor is capped at 4"           4 "$(land_load_factor 400.0 16)"
+  _t3 "a load nobody could read is 1"       1 "$(land_load_factor '' 16)"
+  _t3 "  ...and so is a cpu count nobody could read" 1 "$(land_load_factor 99.0 '')"
+  _t3 "the bounds are 60/15 per shard on an idle box" "180 45" "$(LAND_LOAD_FACTOR=1 land_oracle_bounds 3)"
+  _t3 "  ...and double on a box at twice its cpus"    "360 90" "$(LAND_LOAD_FACTOR=2 land_oracle_bounds 3)"
+  _t3 "  ...and one shard is one block"               "60 15"  "$(LAND_LOAD_FACTOR=1 land_oracle_bounds 1)"
+  _t3 "the laptop's own export always wins"           "900 180" "$(LAND_LOAD_FACTOR=4 ORACLE_BOOT_BOUND_SECS=900 land_oracle_bounds 3)"
+  _t3 "  ...for the settle bound too"                 "720 300" "$(LAND_LOAD_FACTOR=4 ORACLE_EGRESS_SETTLE_SECS=300 land_oracle_bounds 3)"
+  _t3 "the scaling can be turned off, and then it is the old number" "180 45" \
+      "$(LAND_LOAD_FACTOR=4 LAND_ORACLE_LOAD_SCALE=0 land_oracle_bounds 3)"
+  _t3 "the oracle leg takes its bounds from that one function" 1 \
+      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'land_oracle_bounds "\$k"')"
+  _t3 "  ...and never re-derives them inline"        0 \
+      "$(sed -n '/^prove_oracle() {/,/^}/p' "$LAND_SRC" | grep -c 'ORACLE_BOOT_BOUND_SECS:-')"
+  _t3 "the box is told what it measured"             1 \
+      "$(grep -c 'oracle: bounds' "$LAND_SRC")"
+
   echo "land.sh selftest: a harness give-up in a recording is named, not scored as a divergence"
   mkdir -p "$root/hz0" "$root/hz1"
   printf 'recording cells 1..40\n' >"$root/hz0.log"

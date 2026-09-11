@@ -62,6 +62,13 @@ export LAND_ORACLE_SHARDS="${LAND_ORACLE_SHARDS:-3}"
 export LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-50100}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 export XTASK_GATE_CEILING_SECS="${XTASK_GATE_CEILING_SECS:-900}"
+# THE RECORDER'S WALL-CLOCK BOUNDS ARE FORWARDED, NEVER INVENTED HERE. A number this runner picked
+# would be a laptop's guess about how fast a fleet box is; the box measures its own load and scales
+# its own default (land.sh's land_oracle_bounds, land-remote.sh carries an operator's override
+# across as a positional). What this file owes is the channel, and only when there is something in it.
+[ -n "${ORACLE_BOOT_BOUND_SECS:-}" ] && export ORACLE_BOOT_BOUND_SECS
+[ -n "${ORACLE_EGRESS_SETTLE_SECS:-}" ] && export ORACLE_EGRESS_SETTLE_SECS
+true
 
 TAB="$(printf '\t')"
 
@@ -2441,6 +2448,11 @@ lq_selftest() {
   _t "  ...on a box the lines did not take"       1 "$(grep -c '^lq_base_red_[r]eplay() {' "$0")"
   _t "  ...and the batch it sends has NO hashes"  1 "$(grep -c "printf -- '--prove --famil[i]es %s.n' " "$0")"
   _t "the landed batch teaches the new tip"       1 "$(grep -c 'lq_base_red_learn "\$newtip"' "$0")"
+  # THE RECORDER'S BOUNDS ARE FORWARDED, NEVER INVENTED HERE. A bound this runner set would be a
+  # laptop's guess about a box's speed; the box measures its own load (land.sh's land_oracle_bounds).
+  # What the runner owes is the CHANNEL: an operator who exported one gets it on the box.
+  _t "the runner forwards a bound the operator set" 2 "$(grep -c '^\[ -n "\${ORACLE_' "$0")"
+  _t "  ...and invents neither of them"             0 "$(grep -c '^export ORACLE_\(BOOT\|EGRESS\)' "$0")"
 
   echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
   local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"

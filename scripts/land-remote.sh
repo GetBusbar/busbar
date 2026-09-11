@@ -36,8 +36,27 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qF -- '"+refs/heads/$REF-base:$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the integration base is a refspec on the checkout's fetch, from \$REF-base" || _fail "the integration base is a refspec on the checkout's fetch"
   grep -qE -- '^git fetch .*\+refs/heads/\$REF:\$BASEREF' "${BASH_SOURCE[0]}" && _fail "the base must never be the pushed tip (\$REF)" || _ok "the base is never the pushed tip"
   grep -qF -- 'rev-parse --verify --quiet "$LAND_BASE_BRANCH"' "${BASH_SOURCE[0]}" && _ok "the base is resolved HERE from refs/heads/integration/oracle-phase0" || _fail "the base is resolved here"
-  grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; BASESHA="\$5"; shift 5' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS BASESHA, in that order" || _fail "the box unpacks REF CEIL BASEREF SHARDS BASESHA"
-  grep -qF -- 'rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "$BASE_SHA_LOCAL"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends REF CEIL BASEREF SHARDS BASESHA"
+  grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; BASESHA="\$5"; OBOOT="\$6"; OEGRESS="\$7"; shift 7' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS BASESHA OBOOT OEGRESS" || _fail "the box unpacks REF CEIL BASEREF SHARDS BASESHA OBOOT OEGRESS"
+  grep -qE -- 'rsh_script "\$HOST" "\$REF" .*"\$BASE_SHA_LOCAL" "\$\{[O]RACLE_BOOT_BOUND_SECS:-\}" "\$\{ORACLE_EGRESS_SETTLE_SECS:-\}"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends them in that order"
+  # ── THE RECORDER'S BOUNDS TRAVEL, LIKE THE CEILING DOES ──────────────────────────────────────
+  # The block the box runs is a QUOTED heredoc, so an `${ORACLE_BOOT_BOUND_SECS:-…}` written inside
+  # it expands ON THE BOX, where nothing sets it — the same way the runner's XTASK_GATE_CEILING_SECS
+  # once never arrived and a green tree was reported hung. An operator who raises the bound on the
+  # laptop because the fleet is loaded must have it raised where the recording actually happens.
+  # An UNSET bound travels as the empty string and the box is left to scale its own default by its
+  # own measured load (land.sh's land_oracle_bounds) — which is the whole point of measuring it there.
+  # Twice: the stub exercised below, and the line the box really runs.
+  [ "$(grep -cE -- '\[ -n "\$OBOOT" \] && export [O]RACLE_BOOT_BOUND_SECS="\$OBOOT"$' "${BASH_SOURCE[0]}")" = 2 ] && _ok "a bound the laptop set is exported on the box" || _fail "a bound the laptop set is exported on the box"
+  grep -qE -- '\[ -n "\$OEGRESS" \] && export [O]RACLE_EGRESS_SETTLE_SECS="\$OEGRESS"$' "${BASH_SOURCE[0]}" && _ok "  ...and so is the settle bound" || _fail "the settle bound is exported on the box"
+  _bound() { # $1 = what the laptop sent; prints what the box would have in the environment
+    OBOOT="$1" bash -c '
+      unset ORACLE_BOOT_BOUND_SECS
+      [ -n "$OBOOT" ] && export ORACLE_BOOT_BOUND_SECS="$OBOOT"
+      echo "${ORACLE_BOOT_BOUND_SECS:-<unset: the box scales its own>}"'
+  }
+  [ "$(_bound 900)" = 900 ] && _ok "  ...a laptop that set 900 gets 900 on the box" || _fail "a laptop that set 900 gets 900 on the box"
+  [ "$(_bound '')" = "<unset: the box scales its own>" ] && _ok "  ...and an unset one leaves the box to scale its own" || _fail "an unset bound leaves the box to scale its own"
+  grep -qE -- 'export ORACLE_BOOT_BOUND_SECS="\$\{ORACLE_BOOT_BOUND_SECS' "${BASH_SOURCE[0]}" && _fail "a bound must never be expanded INSIDE the box's quoted heredoc" || _ok "  ...and no bound is expanded inside the box's own heredoc"
   grep -qF -- '[ "$BASE_SHA" = "$BASESHA" ] ||' "${BASH_SOURCE[0]}" && _ok "the box refuses a base that differs from the laptop's" || _fail "the box refuses a differing base"
   # The shard launcher's .rc line: written after the group, from the variable, by the same shell.
   # An `exit` inside the group is exactly the form that lost every shard's verdict once.
@@ -275,10 +294,19 @@ BASE_SHA_LOCAL="$(git -C "$REPO" rev-parse --verify --quiet "$LAND_BASE_BRANCH")
   || rdie "no $LAND_BASE_BRANCH in $REPO to judge the ceilings against — a landing needs the integration branch, not only a tip"
 remote_push_sha "$HOST" "$REPO" "$REF-base" "$BASE_SHA_LOCAL" || rdie "could not push the integration base $(printf '%.9s' "$BASE_SHA_LOCAL") to $HOST"
 rlog "integration base $(printf '%.9s' "$BASE_SHA_LOCAL") ($LAND_BASE_BRANCH here) pushed as $REF-base"
-rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "$BASE_SHA_LOCAL" "${RARGS[@]}" <<'RUN'
+# THE RECORDER'S WALL-CLOCK BOUNDS TRAVEL TOO, FOR THE SAME REASON THE CEILING DOES. The block
+# below is a quoted heredoc: an `${ORACLE_BOOT_BOUND_SECS:-…}` written inside it would expand on the
+# BOX, where nothing sets it, and an operator who raised the bound on the laptop because the fleet
+# is loaded would have raised it nowhere. They go across as positionals, and an UNSET bound travels
+# as the empty string — deliberately, because then the box scales its own default by its own
+# measured load (land.sh's land_oracle_bounds), which is a fact only the box has.
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "$BASE_SHA_LOCAL" "${ORACLE_BOOT_BOUND_SECS:-}" "${ORACLE_EGRESS_SETTLE_SECS:-}" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; CEIL="$2"; BASEREF="$3"; SHARDS="$4"; BASESHA="$5"; shift 5
+REF="$1"; CEIL="$2"; BASEREF="$3"; SHARDS="$4"; BASESHA="$5"; OBOOT="$6"; OEGRESS="$7"; shift 7
 export LAND_BASE_REF="$BASEREF" LAND_BASE_SHA="$BASESHA"
+# Only when the laptop set one: an empty positional leaves the box's own scaling to decide.
+[ -n "$OBOOT" ] && export ORACLE_BOOT_BOUND_SECS="$OBOOT"
+[ -n "$OEGRESS" ] && export ORACLE_EGRESS_SETTLE_SECS="$OEGRESS"
 # THE FAN-OUT MODE, when shards were allocated: land.sh writes a REQUEST per leg and waits for what
 # this script delivers (land.sh's header has the protocol). With SHARDS=0 neither variable is set
 # and land.sh runs exactly what it ran before.
