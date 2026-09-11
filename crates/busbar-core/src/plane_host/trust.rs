@@ -8,24 +8,21 @@
 //!
 //! | slot | primitive | fail-closed value |
 //! |---|---|---|
-//! | [`verify_lookup`] | the host-side verify freshness cache + single-flight leadership | non-`Ok` status (never a spurious `Hit`) |
-//! | [`verify_store`] | the same cache — the leader records a completed fetch | non-`Ok` status |
+//! | [`verify_lookup`] | [`busbar_unit_trust::VerifyFreshness`] — freshness + single-flight leadership | non-`Ok` status (never a spurious `Hit`) |
+//! | [`verify_store`] | the same ledger — the leader records a completed fetch | non-`Ok` status |
 //! | [`drift_quarantine`] | [`crate::plane::quarantine`] durable demotion record | `Fault`/`Refused` |
 //! | [`approval_redeem`] | [`crate::plane::approvals`] spent-approval ledger | `Refused` (already-spent OR store error) |
 //! | [`trust_evaluate`] | the durable drift/quarantine trust state | [`TrustVerdict::Denied`] |
 //!
-//! ## The design split (why the cache lives host-side)
+//! ## The design split (why the host holds the freshness, and why it holds no verdict)
 //!
-//! The HOST owns the verify CACHE and the single-flight COORDINATION; the PLANE does the fetch. So
-//! [`verify_lookup`] answers `Hit` when a fresh entry exists, else designates this caller `Lead` (it
-//! fetches, then calls [`verify_store`]) or `Follow` (it awaits the leader's store). The real
-//! `crate::trust::verify::VerifyGate` is the async, clock-independent single-flight coalescer that
-//! rides the `App`; it stamps the plane's ledger and bumps a per-subject epoch but stores no verdict
-//! digest of its own. The synchronous `#[repr(C)]` ABI cannot drive that async coalescer, so the
-//! host-side FRESHNESS cache here is the faithful synchronous scaffold for it. Because
-//! [`VerifyStoreFn`](busbar_plugin::hot::host::VerifyStoreFn) carries no digest, the cache is
-//! freshness-only: a `Hit` reports "verified within ttl", never a cached payload, and its
-//! `digest_ptr` is null — exactly what a `VerifyGate` that stores no verdict can promise.
+//! The HOST coordinates; the PLANE does the fetch. The freshness rule, the single flight and the
+//! release a dropped leader depends on are [`busbar_unit_trust::VerifyFreshness`]'s, and are stated
+//! there. What belongs here is WHY the host asks at all: the real `crate::trust::verify::VerifyGate`
+//! is an async coalescer riding the `App`, the synchronous `#[repr(C)]` ABI cannot drive it, and
+//! [`VerifyStoreFn`](busbar_plugin::hot::host::VerifyStoreFn) carries no digest — so a `Hit` reports
+//! "verified within ttl", never a cached payload, and its `digest_ptr` is null, which is exactly
+//! what a `VerifyGate` that stores no verdict of its own can promise.
 //!
 //! ## Fail-closed, because trust fails closed
 //!
@@ -45,7 +42,7 @@
 //!   identity → grant → artifact → generation) is wired once the counterparty→registration
 //!   resolution (a registry lookup that turns opaque identity bytes into an `Approval`/`Sighting`)
 //!   lands. Until then an un-demoted counterparty is `Allow` and a demoted one is `Quarantined`.
-//! * The freshness cache is a module-global here rather than an `App` field, so `verify_store` →
+//! * The freshness ledger is a module-global here rather than an `App` field, so `verify_store` →
 //!   `verify_lookup` persists across dispatch invocations without reshaping `App`. Phase 2 moves it
 //!   onto the `App` beside `mcp_verify` and keys it to the real `VerifyGate` epochs for cross-node
 //!   coordination.
@@ -58,49 +55,23 @@ use busbar_plugin::hot::{
 };
 use busbar_plugin::read_sized_field;
 use core::mem::MaybeUninit;
-use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Mutex, OnceLock};
+use std::sync::LazyLock;
 
-/// A cache key: the [`Key`]'s host-defined scope plus a copy of its opaque bytes. Owned, so it can
-/// live in the map past the borrowed range the call handed us.
-type CacheKey = (u32, Vec<u8>);
+/// The process-wide verify freshness ledger — [`busbar_unit_trust::VerifyFreshness`], which states
+/// the freshness-only rule, the single flight and the release a dropped leader depends on. A
+/// module-global (not an `App` field) so `store` → `lookup` persists across dispatch invocations
+/// without reshaping `App`; see the Phase-2 note in the header.
+static FRESHNESS: LazyLock<busbar_unit_trust::VerifyFreshness> =
+    LazyLock::new(busbar_unit_trust::VerifyFreshness::default);
 
-/// The host-side verify FRESHNESS cache and single-flight leadership registry — the state the design
-/// split places host-side. Freshness-only (the store ABI carries no digest): a subject is "verified"
-/// for a ttl after a [`verify_store`], and at most one caller leads the re-fetch of a stale subject.
-#[derive(Default)]
-struct VerifyCache {
-    /// `key` → the wall-clock millisecond after which the verification is stale. Written by the
-    /// original [`verify_store`] (opaque baked expiry); read by the original [`verify_lookup`].
-    fresh: HashMap<CacheKey, u64>,
-    /// The keys with an ACTIVE leader fetching right now (single-flight: a second caller follows).
-    leading: HashSet<CacheKey>,
-    /// A leadership lease's raw id → the key it leads, so [`verify_store`] can resolve the lease the
-    /// plane hands back to the subject it completed.
-    inflight: HashMap<u64, CacheKey>,
-}
-
-/// The process-wide verify cache. A module-global (not an `App` field) so `store` → `lookup`
-/// persists across dispatch invocations without reshaping `App`; see the Phase-2 note in the header.
-fn cache() -> &'static Mutex<VerifyCache> {
-    static CACHE: OnceLock<Mutex<VerifyCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(VerifyCache::default()))
-}
-
-/// Poison-recovering lock, the same discipline every request-path lock in this process takes: a
-/// panic mid-update must not wedge the cache for every later call.
-fn lock_cache() -> std::sync::MutexGuard<'static, VerifyCache> {
-    cache().lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Copy a [`Key`]'s owned cache key from its borrowed range, or `None` when the range is null/empty —
+/// Copy a [`Key`]'s owned subject from its borrowed range, or `None` when the range is null/empty —
 /// an unusable key is fail-closed at the call site (a verify with no subject is never a `Hit`).
 ///
 /// # Safety
 /// `key` must be a live `&Key` whose `(key_ptr, key_len)`, when non-null, borrows an initialized
 /// range for the call (the ABI's borrow discipline).
-unsafe fn cache_key(key: &Key) -> Option<CacheKey> {
+unsafe fn cache_key(key: &Key) -> Option<(u32, Vec<u8>)> {
     // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline (delegated to `cache_key_raw`).
     unsafe { cache_key_raw(key.scope, key.key_ptr, key.key_len) }
 }
@@ -171,42 +142,22 @@ pub(crate) extern "C-unwind" fn verify_lookup(
         };
 
         let now = busbar_substrate::store::now_ms();
-        // Decide the outcome under the cache lock, RELEASING it before registering a lease (which
-        // takes the dispatch-scope lock) so the two locks are never held nested — the scope's
-        // reclaim path (on drop) takes the cache lock alone, so ordering cannot deadlock.
-        enum Decision {
-            Hit,
-            Follow,
-            Lead,
-        }
-        let decision = {
-            let mut c = lock_cache();
-            if c.fresh.get(&ckey).is_some_and(|&exp| now < exp) {
-                Decision::Hit
-            } else if c.leading.insert(ckey.clone()) {
-                // We are the first to reach a stale/unseen subject: we lead the fetch.
-                Decision::Lead
-            } else {
-                // A leader is already fetching this subject.
-                Decision::Follow
-            }
-        };
-
-        let (outcome, lease) = match decision {
-            Decision::Hit => (VerifyOutcome::Hit, VerifyLease::NONE),
-            Decision::Follow => (VerifyOutcome::Follow, VerifyLease::NONE),
-            Decision::Lead => {
-                // Register the leadership lease in the dispatch scope so a leader whose dispatch is
-                // dropped BEFORE it stores does not wedge followers forever: the reclaim clears the
-                // leadership when the scope ends (the leak-safety keystone, applied to trust). It
-                // is idempotent with `verify_store`, which clears the same entry on the happy path.
-                let reclaim_key = ckey.clone();
-                let lease = state.scope.register_lease(Box::new(move || {
-                    let mut c = lock_cache();
-                    c.leading.remove(&reclaim_key);
-                    c.inflight.retain(|_, v| v != &reclaim_key);
-                }));
-                lock_cache().inflight.insert(lease.0, ckey);
+        // THE DECISION IS THE VERIFY UNIT'S. It is taken with the ledger's lock and released before
+        // the lease is registered (which takes the dispatch-scope lock), so the two locks are never
+        // held nested — the scope's reclaim path takes the ledger's lock alone on drop, so ordering
+        // cannot deadlock.
+        let (outcome, lease) = match FRESHNESS.look_up(ckey.0, &ckey.1, now) {
+            busbar_unit_trust::Lookup::Fresh => (VerifyOutcome::Hit, VerifyLease::NONE),
+            busbar_unit_trust::Lookup::Follow => (VerifyOutcome::Follow, VerifyLease::NONE),
+            busbar_unit_trust::Lookup::Lead => {
+                // Register the leadership RELEASE in the dispatch scope so a leader whose dispatch
+                // is dropped BEFORE it stores does not wedge followers forever: the reclaim clears
+                // the claim when the scope ends (the leak-safety keystone, applied to trust). It is
+                // idempotent with `verify_store`, which clears the same claim on the happy path.
+                let reclaim = ckey.clone();
+                let lease = state
+                    .scope
+                    .register_lease(Box::new(move || FRESHNESS.release(reclaim.0, &reclaim.1)));
                 (VerifyOutcome::Lead, lease)
             }
         };
@@ -220,14 +171,17 @@ pub(crate) extern "C-unwind" fn verify_lookup(
     .unwrap_or(StatusClass::Fault) // caught panic → fault, never a Hit.
 }
 
-/// WIRED `verify_store` → the host-side verify freshness cache: the LEADER records that it completed
-/// a fetch for this subject, marking it fresh for `ttl_secs` and releasing its leadership so the next
-/// caller reads a `Hit` rather than re-leading. `ttl_secs == 0` is strict-live (immediately stale
-/// again). A null key is `Refused`; a caught panic is `Fault`.
+/// WIRED `verify_store` → [`busbar_unit_trust::VerifyFreshness::record`]: the LEADER records that it
+/// completed a fetch for this subject, marking it fresh for `ttl_secs` and releasing its leadership
+/// so the next caller reads a `Hit` rather than re-leading. `ttl_secs == 0` is strict-live
+/// (immediately stale again). A null key is `Refused`; a caught panic is `Fault`.
+///
+/// `_lease` is carried by the ABI and is not consulted: the ledger is keyed by the SUBJECT, which
+/// arrives with this call. It indexed a lease->subject map no code path ever read.
 pub(crate) extern "C-unwind" fn verify_store(
     host: HostCtx,
     key: *const Key,
-    lease: VerifyLease,
+    _lease: VerifyLease,
     ttl_secs: u64,
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
@@ -242,25 +196,21 @@ pub(crate) extern "C-unwind" fn verify_store(
         let Some(ckey) = (unsafe { cache_key(k) }) else {
             return StatusClass::Refused;
         };
-        let expires =
-            busbar_substrate::store::now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
-        let mut c = lock_cache();
-        c.fresh.insert(ckey.clone(), expires);
-        // Release this subject's leadership: clear it, and drop the lease→subject mapping. The scope
-        // reclaim registered at `verify_lookup` becomes a no-op (idempotent) when it later runs.
-        c.leading.remove(&ckey);
-        c.inflight.remove(&lease.0);
+        // The ledger marks the subject verified for `ttl_secs` AND releases this subject's
+        // leadership in the one step — so the scope reclaim registered at `verify_lookup` becomes a
+        // no-op (idempotent) when it later runs.
+        FRESHNESS.record(ckey.0, &ckey.1, ttl_secs, busbar_substrate::store::now_ms());
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
 }
 
-/// Copy an owned cache key from a borrowed `(scope, ptr, len)` range, or `None` when null/empty — the
+/// Copy an owned subject from a borrowed `(scope, ptr, len)` range, or `None` when null/empty — the
 /// shared body of [`cache_key`] (over a [`Key`]) and the [`VerifyQuery`]/[`ApprovalQuery`] paths.
 ///
 /// # Safety
 /// `(ptr, len)`, when non-null, borrow a live, initialized range for the call.
-unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<CacheKey> {
+unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<(u32, Vec<u8>)> {
     if ptr.is_null() || len == 0 {
         return None;
     }

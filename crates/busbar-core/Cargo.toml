@@ -37,6 +37,11 @@ busbar-unit-audit = { path = "../busbar-unit-audit" }
 # `[[transitional]] busbar-core -> busbar-unit-*` row; the edge dies with busbar-core.
 busbar-unit-auth = { path = "../busbar-unit-auth" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
+# The verify step's freshness ledger: whether a subject was checked recently enough to reuse the
+# answer, and which single caller re-checks it while the rest wait. The host-vtable's verify slots
+# read it rather than holding a second one. Part of the drain named by the
+# `[[transitional]] busbar-core -> busbar-unit-*` row; the edge dies with busbar-core.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
 # THE CHAIN WALK, read rather than restated. The retiring engine's cost model carried its own copy of
 # the resolved group topology AND its own walk over it; the topology is the cost unit's (`GroupTable`)
 # and the walk is this one's (`ChainWalk` -> `BucketChain`). Two walks over one money topology that

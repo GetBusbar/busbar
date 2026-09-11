@@ -36,6 +36,14 @@
 //! library beside it that a caller may or may not have called. A guard nothing on the sealed path
 //! reaches is a guard that is not running, however carefully it is written.
 //!
+//! ## Freshness is asked before "where", not beside it
+//!
+//! [`freshness`] holds the other half of this step: whether a subject was verified recently enough
+//! to reuse the answer, and — when it was not — which single caller re-checks it while the rest
+//! wait. It remembers the CHECK and never its result, because a ledger that handed back a
+//! remembered verdict would be a second place a trust decision is made, still making it after the
+//! thing that produced it stopped agreeing.
+//!
 //! ## The exclusion rule
 //!
 //! A tripped, budget-exhausted or at-capacity lane is EXCLUDED from the walk, never "ordered last
@@ -63,6 +71,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod destination;
+pub mod freshness;
 pub mod guard;
 pub mod lane;
 pub mod net;
@@ -73,6 +82,7 @@ pub mod unit;
 pub use destination::{
     kind_permitted, kind_rule_passes, Candidate, DestinationFacts, KindFacts, OriginKind,
 };
+pub use freshness::{Lookup, VerifyFreshness};
 pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,
     RefusalKind,

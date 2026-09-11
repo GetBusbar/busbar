@@ -535,6 +535,7 @@ dependencies = [
  "busbar-unit-audit",
  "busbar-unit-auth",
  "busbar-unit-cost",
+ "busbar-unit-trust",
  "bytes",
  "crc32fast",
  "criterion",
