@@ -402,6 +402,9 @@ boot.refusal|BOOT-153|boot
 boot.refusal|BOOT-162|boot
 boot.refusal|BOOT-170|boot
 boot.refusal|BOOT-171|boot
+boot.refusal|BOOT-171b|boot
+boot.refusal|BOOT-171c|boot
+boot.refusal|BOOT-171d|boot
 boot.refusal|BOOT-172|boot
 boot.refusal|BOOT-174|boot
 boot.refusal|BOOT-175|boot
@@ -656,6 +659,7 @@ documented|changelog|stats-reasons
 documented|changelog|validate-checks
 documented|changelog|validate-list-plugins
 documented|changelog|worker-threads-zero
+documented|dockerfile|store-persists-across-the-container
 documented|readme|config-locked
 documented|readme|contradicted-overlay-boots
 documented|readme|docker-defaults

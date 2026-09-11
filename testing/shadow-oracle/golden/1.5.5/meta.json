@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 919,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "463a37c162366be85c3a97c1fbd6620006e97a536c15225241ffcec52fe97d0f",
+  "harness_rev": "7bc170bb2b828f0c87a697d9e0cc1b2e57ca1cef846830656033631ff744ac2e",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-11T06:27:16Z",
   "provenance_history": {
@@ -74,6 +74,11 @@
         "from": "677d66b6262fad90a3a7530f3f4a0217486564cebba41f31553be9d3c361bf65",
         "to": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "why": "2026-09-08 documentation-only: accepted-differences.json is a harness_rev file, and F-013 validation wording moved from kind=improvement to kind=additive with text_list_growth (BOOT-P20/P29/P30's expected-one-of list grew by the four new token-limit metric names, proven by the tool's splice check rather than forgiven on say-so alone); no cell re-recorded"
+      },
+      {
+        "from": "463a37c162366be85c3a97c1fbd6620006e97a536c15225241ffcec52fe97d0f",
+        "to": "7bc170bb2b828f0c87a697d9e0cc1b2e57ca1cef846830656033631ff744ac2e",
+        "why": "2026-09-11 documentation-only: accepted-differences.json is a harness_rev file, and the D-1/D-2 entries' `expected_cells` moved 462 -> 466 to cover the four cells this landing recorded (they were already inside the entries' regex; the count is the entry's own declaration of how wide it is, and a stale one makes the waiver wider than it says). owed-baseline.txt gained the same four ids, so the golden cannot silently stop owing them. NO CELL WAS RE-RECORDED and no cell's bytes changed."
       }
     ],
     "merges": [
