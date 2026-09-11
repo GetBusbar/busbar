@@ -26,6 +26,10 @@ const TOKEN_FAMILY: &str = "token";
 /// and the metering step settles against what the upstream actually reported.
 const BYTES_PER_TOKEN: u32 = 4;
 
+/// What one unit of every class this plane declares is CALLED. All four are token-shaped, so the
+/// noun is written once: a second spelling of it would be a second answer to what this plane counts.
+const TOKEN_NOUN: &str = "token";
+
 /// The four token classes: every class this plane reports, and no other.
 ///
 /// The four are the ones every dialect reports, read through the codec's own normalization rather
@@ -57,24 +61,28 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
+        unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
         key: MeterClassId::new("tokens_out"),
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
+        unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
         key: MeterClassId::new("cache_read"),
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
+        unit_noun: TOKEN_NOUN,
     },
     MeterClassDecl {
         key: MeterClassId::new("cache_write"),
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheWrite,
         default_divisor: BYTES_PER_TOKEN,
+        unit_noun: TOKEN_NOUN,
     },
 ];
 

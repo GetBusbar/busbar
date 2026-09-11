@@ -34,6 +34,7 @@ const BYTE_FAMILY: &str = "byte";
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
         key: MeterClassId::new("tool_calls"),
+        unit_noun: "call",
         family: COUNT_FAMILY,
         // Sized from the answer: a call has been made once it has been answered, and a call that
         // never reached a server is not a call this node made.
@@ -42,6 +43,7 @@ const METER_CLASSES: &[MeterClassDecl] = &[
     },
     MeterClassDecl {
         key: MeterClassId::new("bytes"),
+        unit_noun: "byte",
         family: BYTE_FAMILY,
         // Sized from the ANSWER, because the answer is what the metering step measures: the one
         // quantity this plane reports under this class is the length of the document it just read

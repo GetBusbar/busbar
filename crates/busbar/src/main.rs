@@ -685,7 +685,10 @@ fn register_protocols() {
 #[allow(clippy::vec_init_then_push)]
 fn register_planes() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    // ONE NAME FOR THE REGISTRY, used by both installs below. Two spellings of one module is two
+    // chances for the declarations and what they meter to be installed against different registries.
+    use busbar_core::plane::registry as planes;
+    let mut installed: Vec<&'static planes::PlaneDecl> = Vec::new();
     // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
     // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
@@ -708,7 +711,14 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
-    busbar_core::plane::registry::install_planes(installed.leak());
+    planes::install_planes(installed.leak());
+    // AND WHAT EACH OF THEM METERS, in the same breath and from the same declarations. The
+    // registry's neutral decl carries a plane's vocabulary but not its TYPE, and what a plane
+    // meters is a `const` on the type — so the one crate that can name every plane reads the
+    // declarations here and hands them over by reference. It is installed BESIDE the declarations,
+    // not somewhere else later, because a build that mounted a plane and forgot to say what it
+    // meters would refuse every schedule that plane's own dimensions.
+    planes::install_plane_meters(root::kernel::plane_meter_table());
 
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so

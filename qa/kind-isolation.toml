@@ -1363,7 +1363,7 @@ kind = "control"
 # 1076 -> 1078: the fee schedule's install and its holder in the composition root. Boot closes over
 # the deployment's `tariff:` section and hands the root a RESOLVER; the holder answers it. Control
 # vocabulary because the root is where a deployment's configuration becomes a running node.
-count = "1096"
+count = "1100"
 
 [[cell]]
 crate = "busbar"
@@ -1400,7 +1400,7 @@ kind = "plane"
 # registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
 # asks the same question of all five in the same words, and a sixth answers it without this file
 # changing.
-count = "1902"
+count = "1922"
 
 [[cell]]
 crate = "busbar"
