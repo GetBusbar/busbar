@@ -5620,7 +5620,7 @@ impl Gate for KindIsolationGate {
                 &[ROW_DEPS],
                 registry_with(
                     cx,
-                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"123\"",
                     "crate = \"busbar\"\nkind = \"api\"\ncount = \"-1\"",
                 ),
                 &[

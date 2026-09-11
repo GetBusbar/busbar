@@ -159,3 +159,32 @@ impl PlaneMeta for McpPlane {
 #[cfg(test)]
 #[path = "tests/meta.rs"]
 mod tests;
+
+// ── THIS PLANE'S DECLARATION ─────────────────────────────────────────────────────────────────────
+
+/// WHAT THIS PLANE STATES ABOUT ITSELF, as contract data — the row the composition root installs
+/// into `busbar_contract::plane::registry` and every kind-neutral layer folds. It lives HERE, in the
+/// plane's pure half, because these are facts about the plane and nothing else: no handle, no hook,
+/// no host type. The engine's `PLANE_DECL` carries the same key and the fn-pointer seams beside it;
+/// its copies of these ten facts are written and no longer read, and they are deleted in SUB-1.
+///
+/// The root proves the two agree, field by field, rather than trusting them to
+/// (`crates/busbar/tests/plane_declaration_agreement.rs`), so the one landing they coexist for
+/// cannot be a landing they drift in.
+pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
+    busbar_contract::plane::PlaneDeclaration {
+        key: "mcp",
+        fallback: false,
+        config_section: "tools",
+        scope_kinds: &["mcp_server", "mcp_tool"],
+        subject_noun: "MCP server",
+        admin_noun: "mcp-server",
+        audit_kind: "mcp_server",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        // NO OPERATOR ROUTES DECLARED YET. The rows exist on the declaration (the renderer MCP-M2
+        // builds reads them); filling them is that line's, and an empty list renders nothing, which
+        // is byte-identically what this plane contributes today.
+        operator_routes: &[],
+    };

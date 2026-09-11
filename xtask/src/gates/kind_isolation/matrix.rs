@@ -1585,7 +1585,7 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         ledger_with(
             cx,
-            &cell_row("busbar", "plane", "1798"),
+            &cell_row("busbar", "plane", "1860"),
             &cell_row("busbar", "plane", "0"),
         ),
         &["ratchet", "busbar × plane", "RAISED", "units_voice.rs"],

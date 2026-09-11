@@ -191,7 +191,7 @@ pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
 /// accessors now read through. Callers wanting a decl FIELD (`config_section`, `subject_noun`,
 /// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
 /// that COMPUTED something rather than reading a field.
-pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
+pub(crate) fn plane_decl(key: &str) -> &'static busbar_contract::plane::registry::PlaneDeclaration {
     registry::plane_decl_for(key)
         .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
 }
@@ -203,7 +203,10 @@ pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
 /// compare them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some
 /// other plane's `openai` end up in one series meaning two things.
 pub fn wire_format_names(key: &str) -> &'static [&'static str] {
-    (plane_decl(key).wire_format_names)()
+    // A fn pointer, not a fact: the one accessor here that reads the BEHAVIOUR row.
+    let row = registry::behaviour_for(key)
+        .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"));
+    (row.wire_format_names)()
 }
 
 /// The plane's ONE wire format, when it has exactly one — otherwise `None`.

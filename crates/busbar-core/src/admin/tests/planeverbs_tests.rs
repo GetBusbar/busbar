@@ -128,7 +128,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
     ];
 
     let mut actual: Vec<(String, String, String)> = Vec::new();
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         let Some(admin_routes) = decl.admin_routes else {
             continue;
         };

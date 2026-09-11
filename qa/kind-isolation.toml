@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "122"
+count = "123"
 
 [[cell]]
 crate = "busbar"
@@ -1334,7 +1334,7 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1063"
+count = "1069"
 
 [[cell]]
 crate = "busbar"
@@ -1349,12 +1349,12 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "98"
+count = "97"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1860"
 
 [[cell]]
 crate = "busbar"
@@ -1626,7 +1626,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "610"
+count = "608"
 
 [[cell]]
 crate = "busbar-core"
@@ -1641,7 +1641,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5521"
+count = "5522"
 
 [[cell]]
 crate = "busbar-core"
@@ -1651,7 +1651,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3067"
+count = "3056"
 
 [[cell]]
 crate = "busbar-core"
@@ -1966,7 +1966,7 @@ count = "7"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "control"
-count = "13"
+count = "14"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -1981,7 +1981,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "17"
+count = "18"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -2036,7 +2036,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "control"
-count = "12"
+count = "13"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2051,7 +2051,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-count = "5"
+count = "6"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2071,7 +2071,7 @@ count = "33"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "control"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2111,12 +2111,12 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "control"
-count = "13"
+count = "14"
 
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "plane"
-count = "43"
+count = "44"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -3656,6 +3656,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-auth-admin-tokens: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-auth-admin-tokens dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against. D33 section 7.2: plane declarations must become contract-level data before a config crate can exist, because a config crate must not name a plane."
+why     = "busbar-core names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. THE EDGE IS THE FACE THE DRAIN IS WRITTEN AGAINST. The plane declaration list left busbar-core for busbar_contract::plane::registry, and core's readers of which-planes-exist now read the contract instead of a copy core owned; a legacy crate reaching a contract face is the class the kind table already accepts, and it is the shape every other core reader is being moved to. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete busbar-core. This edge is not drained on its own terms: it is core reading a contract face, which is the correct direction and the destination every other core coupling is being moved to, so it disappears when the crate does."
 
 [[dep]]
 from    = "busbar-core"

@@ -24,7 +24,18 @@ pub const PLANE_KEYS: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
-pub const PLANE_GRAMMAR: &str = "pub const PLANE_DECL";
+///
+/// THE COLON IS PART OF THE NEEDLE, and it is load-bearing. Every reader of this constant matches
+/// it as a PREFIX (`starts_with`) or a substring (`contains`), so without the colon it matches any
+/// longer `const` whose name merely BEGINS with `PLANE_DECL` — and the tree now has four of them
+/// (`PLANE_DECLARATION`, a plane's plain facts as contract data, one per pure `busbar-plane-*`
+/// half). Measured before the colon was added: `plane-abi-neutrality:plane-keys-covered` read those
+/// four files as four extra plane crates and demanded the ban list carry `plane-llm`, `plane-mcp`,
+/// `plane-a2a` and `plane-voice`; `structure-lint`'s plane-root rule would have credited the same
+/// files with owning a plane they do not declare. A needle that matches a longer name is a needle
+/// answering about a symbol nobody asked it about. Every real declaration and every fixture spells
+/// it `pub const PLANE_DECL: <type> = ...`, so the colon costs nothing and closes the class.
+pub const PLANE_GRAMMAR: &str = "pub const PLANE_DECL:";
 
 /// Every plane key EXCEPT `llm` — `busbar-llm` owns the LLM dialect names and is never scanned as
 /// a plane key by the grep gate, which bans the dialects there instead. Derived from

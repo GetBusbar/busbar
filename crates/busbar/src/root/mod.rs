@@ -62,6 +62,9 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+/// The composition root's one write into the plane axis, moved verbatim out of
+/// `busbar-core::plane::registry` once the plane list became contract data.
+pub mod plane_install;
 pub mod policy;
 pub mod registry;
 pub mod transports;
