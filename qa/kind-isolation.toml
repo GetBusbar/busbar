@@ -1599,7 +1599,7 @@ count = "6"
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "76"
+count = "85"
 
 [[cell]]
 crate = "busbar-contract-transport"
@@ -2259,7 +2259,7 @@ count = "7"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "transport"
-count = "43"
+count = "37"
 
 [[cell]]
 crate = "busbar-plugin-sign"

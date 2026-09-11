@@ -13,6 +13,7 @@
 pub mod bounded;
 pub mod dest;
 pub mod grammar;
+pub mod hook;
 pub mod http_endpoint;
 pub mod ids;
 pub mod kinds;

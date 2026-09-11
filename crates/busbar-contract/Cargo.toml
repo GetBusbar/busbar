@@ -19,6 +19,14 @@ license = "Apache-2.0"
 # `futures` is here for exactly one item: the `Stream` trait in the transport frame pump. The
 # standard library has no stable stream trait, and inventing a private one would mean every in-tree
 # transport re-implements the adapter the ecosystem already has.
+#
+# `serde_json` is here for the `hook`/`export` WIRE FACES (`kinds::Hook`'s and `kinds::Export`'s
+# `busbar_contract::{hook,export}` counterparts): a hook's op payload/reply and an export sink's
+# batch are the opaque `serde_json::Value` the engine projects, so the trait that names that value
+# is written against the crate that already depends on `serde_json` one layer further from the
+# plugin, not the plugin tooling that re-exports it. Owner ruling 2026-09-10 (see
+# docs/design/1.6.0-one-face-per-kind.md §2): the wire face lives where the kind face lives, not
+# one crate further out.
 # Two busbar crates are named below, and neither is an exception to the rule above: both sit BELOW
 # the contract and neither names anything of busbar's itself.
 #
@@ -34,9 +42,5 @@ license = "Apache-2.0"
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }
 serde = { workspace = true }
-futures = { workspace = true }
-
-# Tests only. The ABI types that seal into the policy journal are serialised by something, and a
-# test that asserts what a serialisation does NOT contain has to run a real serializer over it.
-[dev-dependencies]
 serde_json = { workspace = true }
+futures = { workspace = true }
