@@ -14,10 +14,19 @@
 #   * THE ENGINE HOME is ~/.busbar-engine: `current/scripts` is a `git archive` of the landed tip's
 #     scripts/ at the sha in `sha`, never a hand copy and never a checkout that can be edited under
 #     the runner. `env` is the restart line, one NAME=value per line (scripts/landq.env.example).
-#   * ADOPTION IS A LANDING. At every boundary the runner signals (target/gate/landq.boundary) the
-#     supervisor asks the landed tip which commit last touched scripts/. If that is not the sha in
-#     the engine home, it asks the runner to stop AT THE BOUNDARY (never mid-batch — a batch is an
-#     hour of a fleet box), re-archives, and starts the new engine. Nobody types anything.
+#   * ADOPTION IS A LANDING, AND ONLY A LANDING. At every boundary the runner signals
+#     (target/gate/landq.boundary) the supervisor asks the landed tip which commit last touched
+#     scripts/, and compares it with what the PREVIOUS boundary's tip said (~/.busbar-engine/
+#     last-tip-engine). They differ only when a landing CHANGED the tip's engine — and a landing is
+#     newer by construction, which is the only ordering available: landings are `cherry-pick -x`, so
+#     a landed engine commit is never the branch sha an ancestry test would ask about. Then, and
+#     only then, it asks the runner to stop AT THE BOUNDARY (never mid-batch — a batch is an hour of
+#     a fleet box), re-archives and starts the new engine. Nobody types anything.
+#     THE HOME'S SHA IS A PIN, NOT A COMPARISON. Measured 2026-09-11: the tip carried a scripts/ sha
+#     from the T0-S era while the engine actually running was two unlanded lines AHEAD of it — a
+#     supervisor that adopted "whatever differs from the home" would have adopted that older engine
+#     at its first start and flipped back to it at every boundary after. The integrator pins the
+#     home once; landings move it from there, and ~/.busbar-engine/PIN stops even that.
 #   * THE EXIT CLASS DECIDES (landq4.sh's THE EXIT-CODE CONTRACT, and nothing else):
 #       0  STOP marker            the supervisor exits too — a stop is a stop
 #       1  HALT head-conflict-twice   a fact about the tree: PAGE and WAIT for the integrator
@@ -44,6 +53,8 @@ SHAF="$ENGINE_HOME/sha"                 # the sha that archive was taken at
 ENVF="$ENGINE_HOME/env"                 # the restart line, as a file
 PAGEDF="$ENGINE_HOME/PAGED"             # present = the integrator owes the engine an answer
 ADOPTF="$ENGINE_HOME/ADOPT"             # present = the STOP marker downstairs is OURS, for an adoption
+PINF="$ENGINE_HOME/PIN"                 # present = adopt nothing, whatever lands (the integrator's pin)
+LASTF="$ENGINE_HOME/last-tip-engine"    # the tip's engine sha AS OF THE LAST BOUNDARY WE SAW
 SUPLOG="${LANDQ_SUP_LOG:-$ENGINE_HOME/supervisor.log}"
 # SCRATCH UNDER $LAND_TMP AND NEVER UNDER /tmp (owner rule, 2026-09-11): a wiped directory took a
 # running engine's staged scripts once already.
@@ -210,12 +221,38 @@ sup_boundary_tip() { # $1 = the boundary file
   local f="${1:-${BOUNDARY:-}}"
   [ -n "$f" ] && [ -f "$f" ] && awk 'NF { print $2 }' "$f" | tail -n1 || true
 }
-sup_adopt_wanted() { # $1 = tip; 0 = the tip carries an engine we are not running
-  local tip="$1" want
+sup_last_tip_engine() { [ -f "$LASTF" ] && head -n1 "$LASTF" | tr -d ' \n' || true; }
+sup_remember_tip_engine() { # $1 = the tip's engine sha at this boundary
+  [ -n "${1:-}" ] || return 0
+  mkdir -p "$ENGINE_HOME" 2>/dev/null || true
+  printf '%s\n' "$1" >"$LASTF.tmp" && mv "$LASTF.tmp" "$LASTF"
+}
+# ADOPTION IS A CHANGE AT THE TIP, NOT A DIFFERENCE FROM THE HOME. Prints the sha to adopt and
+# returns 0 only when a landing moved the tip's engine since the last boundary this supervisor saw.
+# Three refusals, and each of them is a defect this rule exists to avoid:
+#   * NO BASELINE YET (first start, or a fresh engine home): the baseline is RECORDED and nothing is
+#     adopted. The home is whatever the integrator pinned, and a tip that is behind it stays behind.
+#   * THE TIP'S ENGINE DID NOT MOVE: a landing that touches no script changes nothing here.
+#   * ~/.busbar-engine/PIN EXISTS: the integrator is holding an engine on purpose (a bisect, a
+#     revert in flight, an engine being proven by hand). Landings are still tracked — the baseline
+#     moves — so that removing the pin does not adopt a change that landed three batches ago.
+sup_adopt_wanted() { # $1 = tip; prints the sha to adopt, 0 = adopt it
+  local tip="$1" want prev
   [ -n "$tip" ] || return 1
   want="$(sup_engine_sha_for_tip "$tip")"
   [ -n "$want" ] || return 1
-  [ "$want" = "$(sup_current_sha)" ] && return 1
+  prev="$(sup_last_tip_engine)"
+  if [ -z "$prev" ]; then
+    sup_remember_tip_engine "$want"
+    sup_log "engine baseline recorded at $(printf '%.9s' "$want"); the home stays pinned at $(sup_current_sha) until a landing moves it"
+    return 1
+  fi
+  [ "$want" = "$prev" ] && return 1
+  if [ -e "$PINF" ]; then
+    sup_remember_tip_engine "$want"
+    sup_log "a landing moved the tip's engine to $(printf '%.9s' "$want") but $PINF is set: NOT adopting"
+    return 1
+  fi
   printf '%s\n' "$want"
   return 0
 }
@@ -257,7 +294,9 @@ sup_watch() { # $1 = the runner's pid; polls the boundary signal until the runne
     seen="$now"
     sup_log "boundary at $(printf '%.9s' "$now")"
     adopt="$(sup_adopt_wanted "$now")" || continue
-    sup_request_adoption "$adopt" || true
+    # THE BASELINE MOVES ONLY WITH THE ADOPTION. A request refused (the integrator's own STOP is
+    # already set) must fire again at the next boundary, not be forgotten as "seen".
+    sup_request_adoption "$adopt" && sup_remember_tip_engine "$adopt"
   done
   wait "$pid"; return $?
 }
@@ -277,7 +316,9 @@ sup_loop() {
     # THE ENGINE THE LANDED TIP CARRIES, at every start (the second half of "adoption is a landing":
     # a supervisor started by hand after an engine landed adopts it without being told to).
     tip="$(sup_boundary_tip)"; [ -n "$tip" ] || tip="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
-    if adopt="$(sup_adopt_wanted "$tip")"; then sup_archive "$adopt" || sup_log "the archive failed; running the engine already in the home"; fi
+    if adopt="$(sup_adopt_wanted "$tip")"; then
+      sup_archive "$adopt" && sup_remember_tip_engine "$adopt" || sup_log "the archive failed; running the engine already in the home"
+    fi
     [ -d "$CURRENT/scripts" ] || [ -n "${LANDQ_SUP_RUNNER:-}" ] || { sup_log "no engine in $CURRENT — archive one first"; return 2; }
     rm -f "$ADOPTF"
     local pid; SUP_PID=""; sup_start_runner || return 2; pid="$SUP_PID"
@@ -291,7 +332,7 @@ sup_loop() {
       stop)
         if [ -f "$ADOPTF" ]; then
           adopt="$(head -n1 "$ADOPTF")"; rm -f "$ADOPTF" "$STOPF"
-          sup_archive "$adopt" || sup_log "the adoption archive failed; the engine in the home stands"
+          sup_archive "$adopt" && sup_remember_tip_engine "$adopt" || sup_log "the adoption archive failed; the engine in the home stands"
           consec=0
           sup_log "adopted at the boundary; restarting on $(sup_current_sha)"
           sup_status_merge "{\"state\":\"adopted\",\"starts\":$starts,\"last_exit\":$rc,\"paged\":false,\"engine_sha\":\"$(sup_current_sha)\"}"
@@ -366,6 +407,7 @@ sup_selftest() {
   ENGINE_HOME="$root/home"; mkdir -p "$ENGINE_HOME"
   CURRENT="$ENGINE_HOME/current"; SHAF="$ENGINE_HOME/sha"; ENVF="$ENGINE_HOME/env"
   PAGEDF="$ENGINE_HOME/PAGED"; ADOPTF="$ENGINE_HOME/ADOPT"; SUPLOG="$ENGINE_HOME/supervisor.log"
+  PINF="$ENGINE_HOME/PIN"; LASTF="$ENGINE_HOME/last-tip-engine"
   REPO="$repo"; STOPF="$repo/target/gate/STOP"; BOUNDARY="$repo/target/gate/landq.boundary"
   STATUSJ="$repo/target/gate/landq.status.json"; mkdir -p "$repo/target/gate"
   POLL=0; PAGE_POLL=0
@@ -415,11 +457,32 @@ sup_selftest() {
      "$(grep -c 'engine-1' "$CURRENT/scripts/landq4.sh")"
   _t "  ...and it carries nothing else"     0 "$([ -e "$CURRENT/docs" ] && echo 1 || echo 0)"
 
-  echo "supervisor selftest: adoption is a landing (the tip's engine sha, and nothing else)"
+  echo "supervisor selftest: adoption is a CHANGE AT THE TIP, never a difference from the home"
+  rm -f "$LASTF" "$PINF"
   _t "the engine sha of a tip is the last commit touching scripts/" "$shaA" "$(sup_engine_sha_for_tip "$tipB" "$repo")"
-  _t "  ...which a docs-only landing does not move" 1 "$(sup_adopt_wanted "$tipB" >/dev/null; echo $?)"
-  _t "a landing that touches scripts/ does"  "$tipC" "$(sup_adopt_wanted "$tipC")"
-  _t "  ...and it is wanted"                 0 "$(sup_adopt_wanted "$tipC" >/dev/null; echo $?)"
+  # A FIRST START HAS NO BASELINE, and a supervisor with nothing to compare adopts nothing: the home
+  # is whatever the integrator pinned, and the tip may be a dozen engine lines behind it.
+  _t "a first start adopts nothing"          1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
+  _t "  ...it records the baseline instead"  "$shaA" "$(sup_last_tip_engine)"
+  # THE DEFECT THIS RULE EXISTS FOR (measured 2026-09-11): the home is pinned AHEAD of the tip,
+  # because the engine that is running has not landed yet. Comparing the home with the tip would
+  # adopt the OLDER engine off the tip at the first start and flip back to it at every boundary.
+  printf '%s\n' "$tipC" >"$SHAF"
+  _t "a tip BEHIND the pinned home is never adopted" 1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
+  _t "  ...and the home stays pinned"        "$tipC" "$(sup_current_sha)"
+  printf '%s\n' "$shaA" >"$SHAF"
+  # ...AND THE ONE THING THAT *IS* AN ADOPTION: a landing that changed the tip's engine.
+  _t "a docs-only landing moves nothing"     1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
+  _t "a landing that touches scripts/ adopts" "$tipC" "$(sup_adopt_wanted "$tipC")"
+  # THE PIN: while it exists nothing is adopted, but landings are still TRACKED, so removing it
+  # cannot adopt a change that landed three batches ago.
+  : >"$PINF"
+  _t "a PIN refuses the adoption"            1 "$(sup_adopt_wanted "$tipC" >/dev/null 2>&1; echo $?)"
+  _t "  ...says so in the log"               1 "$(grep -c 'is set: NOT adopting' "$SUPLOG")"
+  _t "  ...and still tracks the landing"     "$tipC" "$(sup_last_tip_engine)"
+  rm -f "$PINF"
+  _t "  ...so unpinning adopts nothing by itself" 1 "$(sup_adopt_wanted "$tipC" >/dev/null 2>&1; echo $?)"
+  printf '%s\n' "$shaA" >"$LASTF"
   printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
   _t "the boundary signal names the tip"     "$tipC" "$(sup_boundary_tip)"
   rm -f "$STOPF"
@@ -496,13 +559,21 @@ STUB
   _t "  ...and pages nobody: it is not a fault" 0 "$([ -e "$PAGEDF" ] && echo 1 || echo 0)"
 
   echo "supervisor selftest: adoption at the boundary, and no adoption without one"
-  : >"$starts"; rm -f "$PAGEDF" "$ADOPTF" "$STOPF"
-  sup_archive "$shaA" "$repo" >/dev/null 2>&1
+  : >"$starts"; rm -f "$PAGEDF" "$ADOPTF" "$STOPF" "$PINF"
+  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"
   printf '%s %s\n' "$(date +%s)" "$tipB" >"$BOUNDARY"     # a docs-only landing: the engine did not move
   printf '0\n' >"$codes"; sup_env_write nomove
   sup_loop >/dev/null 2>&1
   _t "a tip whose scripts/ did not move is not adopted" "$shaA" "$(sup_current_sha)"
   _t "  ...and the engine ran once"           1 "$(grep -c . "$starts")"
+  # THE TIP MOVED WHILE THE SUPERVISOR WAS DOWN: the baseline says so at the next start.
+  : >"$starts"; printf '0\n' >"$codes"; sup_env_write moved
+  printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
+  sup_loop >/dev/null 2>&1
+  _t "a landing that moved the tip's engine is adopted at the start" "$tipC" "$(sup_current_sha)"
+  _t "  ...and the baseline follows it"       "$tipC" "$(sup_last_tip_engine)"
+  # ...AND AT A BOUNDARY, through the STOP marker (the stub plays the part of the watch).
+  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"
   : >"$starts"; printf '0\n0\n' >"$codes"; sup_env_write adopt "$tipC"
   printf '%s %s\n' "$(date +%s)" "$tipB" >"$BOUNDARY"
   LANDQ_SUP_MAX_STARTS=2 sup_loop >/dev/null 2>&1
@@ -511,6 +582,15 @@ STUB
   _t "  ...restarting the runner at that boundary" 2 "$(grep -c . "$starts")"
   _t "  ...and the STOP it set is taken away again" 0 "$([ -f "$STOPF" ] && echo 1 || echo 0)"
   _t "  ...with its own marker cleared"       0 "$([ -f "$ADOPTF" ] && echo 1 || echo 0)"
+  _t "  ...and the baseline is the engine that landed" "$tipC" "$(sup_last_tip_engine)"
+  # A PIN STOPS THE WHOLE OF IT, end to end.
+  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"; : >"$PINF"
+  : >"$starts"; printf '0\n' >"$codes"; sup_env_write pinned
+  printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
+  sup_loop >/dev/null 2>&1
+  _t "a PIN keeps the pinned engine through a landing" "$shaA" "$(sup_current_sha)"
+  _t "  ...and the runner still ran"          1 "$(grep -c . "$starts")"
+  rm -f "$PINF"
 
   echo "supervisor selftest: the status file keeps what the runner wrote"
   printf '{"tip":"4197eb098","live":23,"pages":[]}\n' >"$STATUSJ"
