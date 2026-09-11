@@ -453,6 +453,27 @@ and hook plugins are untouched. Stores built against ABI 4 — the ones that per
 records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
 for 1.6.0. See [the plugin guide](docs/plugins.md).
 
+**Every store plugin's refusal is now tested, not just sqlite's.** A store that is configured and
+cannot open refuses boot, loudly, exit 1, with the reason named — there is no silent fall back to
+an in-memory ledger. That was proven for one backend; it is now proven for all four, against the
+published mysql, postgres and valkey tarballs as well as sqlite.
+
+**The `docker run` recipe in the Dockerfile does not work, and did not work in 1.5.5 either.** The
+published image is `FROM scratch` and its busbar is dynamically linked, so a plugin — which is a
+shared library loaded with `dlopen` — cannot be loaded inside it at all. Dropping a signed tarball
+into `/etc/busbar/plugins` and mounting a volume for the SQLite file, exactly as the Dockerfile's
+header describes, ends in `plugin load failed: ... dlopen failed` and a refusal to start. Busbar is
+right to refuse; the image is what is wrong. **Until the image ships what a `dlopen` needs, run
+busbar from the release tarball if you want a durable governance store** — the binary is the same
+one that is in the image, and every store plugin loads under it. Worse, the image's own
+`--list-plugins` reports `STATUS: LOADS` for the tarball that then fails, so the obvious pre-flight
+check does not warn you. Both are pinned by an oracle cell now, so the day the image can load a
+plugin is a day something changes colour.
+
+**`store-sqlite` is a required part of the release gate.** It is the store this project's own
+Dockerfile recommends by name, and its gate phase needs no container, so a release can no longer be
+cut on a machine that quietly skipped it.
+
 ### Spec fidelity
 
 The LLM plane is now validated against the providers' published, machine-readable API
