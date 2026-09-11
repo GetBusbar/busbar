@@ -3,25 +3,29 @@
 //! The oracle judges the workspace. The gates read the workspace. Neither may become the other and
 //! neither may import the thing it grades. Six rules, each its own ledger row:
 //!
-//! 1. `segregation:xtask-manifest-deps` — `xtask/Cargo.toml` declares no product crate.
-//! 2. `segregation:xtask-dep-closure` — the resolved dependency closure holds no product package.
+//! 1. `segregation:xtask-manifest-deps` — `xtask/Cargo.toml` declares no product crate as a
+//!    NORMAL or BUILD dependency.
+//! 2. `segregation:xtask-dep-closure` — the resolved NON-DEV closure holds no product package.
 //!    New dependencies are allowed; product crates are not.
-//! 3. `segregation:xtask-src-imports` — nothing under `xtask/src/` imports a product crate.
+//! 3. `segregation:xtask-dev-subjects` — a product crate MAY be a dev-dependency, and only as a
+//!    SUBJECT: something `xtask/tests/**` drives. See [`rule_dev_subjects`].
+//! 4. `segregation:xtask-src-imports` — nothing under `xtask/src/` imports a product crate.
 //!    **xtask reads sources as TEXT.** A gate that `use`s the type it audits is a gate whose
 //!    verdict moves when the type does, which is the one failure the shell gates never had.
-//! 4. `segregation:no-reverse-dep` — no manifest in the tree depends on `xtask`.
-//! 5. `segregation:oracle-clean` — no file under `testing/shadow-oracle/` carries the token
+//! 5. `segregation:no-reverse-dep` — no manifest in the tree depends on `xtask`.
+//! 6. `segregation:oracle-clean` — no file under `testing/shadow-oracle/` carries the token
 //!    `xtask`: not an invocation, not an import, not a comment that would tempt the next person.
-//! 6. `segregation:oracle-data-allow` — an oracle path read from `xtask/src/` must be on
+//! 7. `segregation:oracle-data-allow` — an oracle path read from `xtask/src/` must be on
 //!    [`ORACLE_DATA_ALLOW`]. Reading a TSV is data; running the oracle's code is not.
 
 use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_rows_green, Case, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::scan;
 
 pub const ROW_MANIFEST: &str = "segregation:xtask-manifest-deps";
 pub const ROW_CLOSURE: &str = "segregation:xtask-dep-closure";
+pub const ROW_DEV_SUBJECTS: &str = "segregation:xtask-dev-subjects";
 pub const ROW_SRC: &str = "segregation:xtask-src-imports";
 pub const ROW_REVERSE: &str = "segregation:no-reverse-dep";
 pub const ROW_ORACLE: &str = "segregation:oracle-clean";
@@ -56,11 +60,11 @@ pub const ORACLE_DATA_ALLOW: &[&str] = &[
 /// "Running the checks (a slower tier)" section telling a reader which command executes an
 /// `oracle-cell` ref; that sentence names `record.sh`, and it named it just the same when
 /// `scripts/design-bindings.py` rendered it. The path is a citation in prose the gate EMITS, never
-/// a path the gate opens, and the difference is the whole point of rule 6.
+/// a path the gate opens, and the difference is the whole point of rule 7.
 ///
 /// Keeping it a `(file, path)` pair rather than adding the script to [`ORACLE_DATA_ALLOW`] is what
 /// keeps the ban intact: that list is read as "xtask may open this", and `record.sh` is exactly the
-/// thing rule 6 exists to stop xtask opening. Nothing here grants a read to anyone.
+/// thing rule 7 exists to stop xtask opening. Nothing here grants a read to anyone.
 /// The second entry is this file itself, and it is not a loophole: a `(file, path)` allowlist has
 /// to WRITE the path down to exempt it, so the declaration is an occurrence of the very string it
 /// governs. The alternative — exempting the rule's own source wholesale — would let any future
@@ -91,7 +95,7 @@ fn is_product_package(name: &str) -> bool {
 }
 
 /// The import spellings, built at run time rather than written as literals, so this scanner cannot
-/// be reported by rule 3 for containing its own needle. Belt AND braces: rule 3 also blanks string
+/// be reported by rule 4 for containing its own needle. Belt AND braces: rule 4 also blanks string
 /// literals before matching.
 fn import_needles() -> Vec<String> {
     let product = "busbar";
@@ -112,6 +116,7 @@ impl Gate for SegregationGate {
         vec![
             ROW_MANIFEST.to_string(),
             ROW_CLOSURE.to_string(),
+            ROW_DEV_SUBJECTS.to_string(),
             ROW_SRC.to_string(),
             ROW_REVERSE.to_string(),
             ROW_ORACLE.to_string(),
@@ -123,6 +128,7 @@ impl Gate for SegregationGate {
         let mut rows = Vec::new();
         rows.push(rule_manifest(cx));
         rows.push(rule_closure(cx));
+        rows.push(rule_dev_subjects(cx));
         let src = match cx.walk(&WalkSpec::new(["xtask/src"]).ext("rs").min_files(SRC_FLOOR)) {
             Ok(files) => files,
             Err(e) => {
@@ -163,9 +169,78 @@ impl Gate for SegregationGate {
             "xtask/Cargo.toml declares a product crate",
             &[ROW_MANIFEST],
             "xtask/Cargo.toml",
-            Edit::Append("\nbusbar-core = { path = \"../crates/busbar-core\" }\n".to_string()),
+            // THE TABLE IS NAMED IN THE PLANT, not inherited from whatever the file ends with.
+            // The ban is about the NORMAL table, and a plant that appends to the end of the file
+            // says whichever thing the last header happens to be — which is exactly how this case
+            // would go quietly green the day a dev table was added below.
+            Edit::Append(
+                "\n[dependencies]\nbusbar-core = { path = \"../crates/busbar-core\" }\n"
+                    .to_string(),
+            ),
             &["busbar-core"],
         ));
+        report.push(plant(
+            cx,
+            self,
+            "xtask/Cargo.toml build-depends on a product crate, which builds the runner too",
+            &[ROW_MANIFEST],
+            "xtask/Cargo.toml",
+            Edit::Append(
+                "\n[build-dependencies]\nbusbar-core = { path = \"../crates/busbar-core\" }\n"
+                    .to_string(),
+            ),
+            &["busbar-core", "build"],
+        ));
+        // THE LICENCE, BOTH WAYS. A product crate in the DEV table is a conformance battery's
+        // subject and is allowed — and only if a battery drives it.
+        report.push(plant(
+            cx,
+            self,
+            "a product crate xtask dev-depends on and no battery drives is refused by name",
+            &[ROW_DEV_SUBJECTS],
+            "xtask/Cargo.toml",
+            Edit::Append(
+                "\n[dev-dependencies]\nbusbar-core = { path = \"../crates/busbar-core\" }\n"
+                    .to_string(),
+            ),
+            &["busbar-core", "used as a door"],
+        ));
+        {
+            // The same dev-dependency, DRIVEN: the manifest row and the subjects row stay green.
+            // Two edits in one overlay, which is the tree K13/T0-H's shared conformance batteries
+            // actually produce.
+            let mut ov = Overlay::new();
+            let manifest = Edit::Append(
+                "\n[dev-dependencies]\nbusbar-core = { path = \"../crates/busbar-core\" }\n"
+                    .to_string(),
+            );
+            let battery = Edit::Append(
+                "\nfn planted_battery_subject() { let _ = busbar_core::plane::PlaneDecl; }\n"
+                    .to_string(),
+            );
+            let planted = manifest.apply(cx, "xtask/Cargo.toml", &mut ov).is_ok()
+                && battery.apply(cx, "xtask/tests/infra.rs", &mut ov).is_ok();
+            report.push(if planted {
+                prove_rows_green(
+                    cx,
+                    self,
+                    "a product crate xtask dev-depends on AND a battery drives is a subject, not \
+                     a breach",
+                    &[ROW_MANIFEST, ROW_DEV_SUBJECTS],
+                    ov,
+                )
+            } else {
+                Case {
+                    name: "a product crate xtask dev-depends on AND a battery drives is a \
+                           subject, not a breach"
+                        .to_string(),
+                    covers: vec![ROW_MANIFEST.to_string(), ROW_DEV_SUBJECTS.to_string()],
+                    expected: crate::gates::Expect::Green,
+                    got: crate::gates::Expect::Skipped,
+                }
+                .into()
+            });
+        }
 
         // The closure arm plants `cargo metadata`'s OUTPUT rather than a manifest, because the
         // rule's subject is the RESOLVED graph and a self-test that planted a manifest would be
@@ -185,6 +260,25 @@ impl Gate for SegregationGate {
             &[ROW_CLOSURE],
             ov,
             &["busbar-substrate"],
+        ));
+        // THE SAME GRAPH WITH THE SAME EDGE MARKED `dev`. The gate runner is not built from it —
+        // `cargo run -p xtask -- gate …` resolves normal and build edges and nothing else — so
+        // this row must not see it, and `segregation:xtask-dev-subjects` is what judges it.
+        let mut dev = Overlay::new();
+        dev.set_command(
+            "cargo-metadata:xtask/Cargo.toml",
+            r#"{"packages":[{"id":"x","name":"xtask"},{"id":"s","name":"serde_json"},
+                {"id":"b","name":"busbar-substrate"}],
+                "resolve":{"nodes":[{"id":"x","deps":[{"pkg":"s","dep_kinds":[{"kind":null}]},
+                {"pkg":"b","dep_kinds":[{"kind":"dev"}]}]},
+                {"id":"s","deps":[]},{"id":"b","deps":[]}]}}"#,
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a DEV edge to a product crate is not in the closure the gate runner is built from",
+            &[ROW_CLOSURE],
+            dev,
         ));
 
         report.push(plant(
@@ -209,7 +303,7 @@ impl Gate for SegregationGate {
 
         // Both oracle paths below are BUILT AT RUN TIME rather than written as literals: a
         // self-test that spells an offending oracle path in the gate's own source would be
-        // planting that violation into the real tree permanently, and rule 6 would be red on
+        // planting that violation into the real tree permanently, and rule 7 would be red on
         // itself. The gate must not be a violation of the rule it enforces.
         let oracle_dir = format!("testing/{}/", "shadow-oracle");
         report.push(plant(
@@ -296,15 +390,30 @@ fn rule_manifest(cx: &Ctx) -> Row {
             )
         }
     };
+    // THE BAN IS ON WHAT THE GATE RUNNER IS BUILT FROM, and that is the normal and build tables.
+    //
+    // MEASURED, AND THE RULE WAS WRONG AS WRITTEN. The reason this row states is exact — "the gate
+    // runner would then be built from the thing it audits" — and `[dev-dependencies]` do not build
+    // the gate runner. `cargo run -p xtask -- gate …`, which is every gate run on every push,
+    // builds `[dependencies]` and nothing below; the dev table compiles under `cargo test -p xtask`
+    // and nowhere else. Read over every table, this row refused a shape the reason it gives does
+    // not object to, and the shape it refused is the one a shared conformance battery has to have:
+    // a kind's battery is TOOLING and tooling depends on the plugins it drives. The alternative —
+    // a helper crate every plugin takes as a dev-dependency — puts a `unit -> plugin-tooling` edge
+    // in fourteen manifests, which the kind graph refuses one by one and no `[[dep]]` row may
+    // admit. So the subjects are named here, in the dev table, and judged by
+    // [`rule_dev_subjects`]; the ban on the runner's own build is unchanged and absolute.
     let offenders = manifest_dep_names(&text)
         .into_iter()
-        .filter(|d| is_product_package(d))
+        .filter(|(d, kind)| *kind != "dev" && is_product_package(d))
+        .map(|(d, kind)| format!("{d} ({kind})"))
         .collect::<Vec<_>>();
     if offenders.is_empty() {
         Row::pass(
             ROW_MANIFEST,
             "xtask/Cargo.toml declares no product crate",
-            "new dependencies are allowed here; product crates are not",
+            "new dependencies are allowed here; product crates are not — except as dev-only \
+             conformance subjects, which `segregation:xtask-dev-subjects` judges",
         )
     } else {
         Row::fail(
@@ -318,26 +427,148 @@ fn rule_manifest(cx: &Ctx) -> Row {
     }
 }
 
-/// Dependency NAMES declared in any `[*dependencies]` table of a manifest.
-fn manifest_dep_names(text: &str) -> Vec<String> {
+/// A PRODUCT CRATE MAY BE A DEV-DEPENDENCY OF `xtask`, AND ONLY AS A SUBJECT.
+///
+/// `segregation:xtask-manifest-deps` and `:xtask-dep-closure` protect one property: the gate
+/// runner's verdict must not move when the type it audits moves. `xtask/src/**` reads sources as
+/// TEXT (`:xtask-src-imports`) and is built from `[dependencies]`, so that property is about the
+/// normal closure and is left exactly where it was.
+///
+/// A SHARED CONFORMANCE BATTERY IS NOT A GATE, and it is the thing the blanket ban had no room
+/// for. A battery DRIVES a kind's crates through the kind's entry face: it is supposed to move when
+/// the face moves, that is what it is for, and it has to link its subjects to do it. Driven from
+/// the plugin side it would need a `unit -> plugin-tooling` edge in fourteen manifests, which the
+/// kind graph refuses every one of; driven from the tooling side it is one dev table in a crate
+/// that has no kind, ships in no artifact, and is subject to none of the rules it enforces.
+///
+/// SO THE LICENCE IS NARROW AND IT IS CHECKED. A product crate in `[dev-dependencies]` must be a
+/// subject — NAMED by something under `xtask/tests/**`. A dev-dependency nobody drives is not a
+/// battery's subject; it is the ban's exception being used as a door, and it is refused by name.
+/// `xtask/src/**` may still not name it, which is `:xtask-src-imports`, unchanged.
+fn rule_dev_subjects(cx: &Ctx) -> Row {
+    let text = match cx.read("xtask/Cargo.toml") {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_DEV_SUBJECTS,
+                "xtask/Cargo.toml is unreadable",
+                format!("{e} — a gate whose own manifest vanished proves nothing"),
+            )
+        }
+    };
+    let subjects: Vec<String> = manifest_dep_names(&text)
+        .into_iter()
+        .filter(|(d, kind)| *kind == "dev" && is_product_package(d))
+        .map(|(d, _)| d)
+        .collect();
+    if subjects.is_empty() {
+        return Row::pass(
+            ROW_DEV_SUBJECTS,
+            "every product crate xtask dev-depends on is a battery's subject",
+            "xtask dev-depends on no product crate",
+        );
+    }
+    let files = match cx.walk(&WalkSpec::new(["xtask/tests"]).ext("rs").min_files(1)) {
+        Ok(f) => f,
+        Err(e) => {
+            return Row::fail(
+                ROW_DEV_SUBJECTS,
+                "xtask/tests is unscannable, so no subject could be shown to be driven",
+                format!(
+                    "{e} — {} product dev-dependenc(ies) and no battery to drive them is the \
+                     exception being used as a door: {}",
+                    subjects.len(),
+                    subjects.join(", ")
+                ),
+            )
+        }
+    };
+    // DRIVEN MEANS THE BATTERY LINKS IT, AND THAT IS `use <crate>::` OR `<crate>::`.
+    //
+    // NOT a bare mention of the name: `xtask/tests/**` is full of them — path fixtures
+    // (`crates/busbar-core/src`), planted source strings, a command line in a table — and a rule
+    // satisfied by any of those is satisfied by the plant that proves it, which is a rule proving
+    // nothing. Measured: with a bare-name match this row went GREEN on the very case written to
+    // red it. A `::` after the crate's Rust ident is the battery naming a path INTO the subject,
+    // which is the only mention that means the dev-dependency is load-bearing.
+    // AND IT IS READ OFF CODE, NOT OFF THE FILE'S BYTES. `xtask/tests/**` plants source for the
+    // gates it drives, so the literal `"use busbar_core::plane::PlaneDecl;"` sits in this very
+    // tree as a STRING — measured, it satisfied a bare `busbar_core::` search and turned the case
+    // written to red this row green. Comments and string literals are blanked first, by the same
+    // reader `:xtask-src-imports` uses, so what is left is the battery's own code.
+    let body: String = files
+        .iter()
+        .flat_map(|f| f.production_lines())
+        .map(|(_, code)| scan::blank_literals(&code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let undriven: Vec<String> = subjects
+        .iter()
+        .filter(|s| !body.contains(&format!("{}::", s.replace('-', "_"))))
+        .cloned()
+        .collect();
+    if undriven.is_empty() {
+        Row::pass(
+            ROW_DEV_SUBJECTS,
+            "every product crate xtask dev-depends on is a battery's subject",
+            format!(
+                "{} subject(s), each named by xtask/tests/**: {}",
+                subjects.len(),
+                subjects.join(", ")
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_DEV_SUBJECTS,
+            "xtask dev-depends on a product crate no battery drives",
+            format!(
+                "{}: a dev-dependency nobody drives is not a subject, it is the ban's exception \
+                 used as a door. Delete the dependency, or write the battery that drives it",
+                undriven.join(", ")
+            ),
+        )
+    }
+}
+
+/// Dependency NAMES declared in any `[*dependencies]` table of a manifest, each with the table it
+/// was declared in: `"dev"`, `"build"` or `"normal"`.
+///
+/// THE TABLE IS PART OF THE FACT, and reading it is the whole of the split below. `[dependencies]`
+/// is what `cargo run -p xtask -- gate …` builds — the gate runner, on every push;
+/// `[dev-dependencies]` is what `cargo test -p xtask` builds, and nothing else ever does.
+fn manifest_dep_names(text: &str) -> Vec<(String, &'static str)> {
     let mut out = Vec::new();
-    let mut in_deps = false;
+    let mut kind: Option<&'static str> = None;
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            in_deps = t.contains("dependencies");
+            let head = t.trim_start_matches('[').trim_end_matches(']');
+            kind = head.contains("dependencies").then(|| {
+                if head.contains("dev-dependencies") {
+                    "dev"
+                } else if head.contains("build-dependencies") {
+                    "build"
+                } else {
+                    "normal"
+                }
+            });
             if let Some(rest) = t.strip_prefix("[dependencies.") {
-                out.push(rest.trim_end_matches(']').to_string());
+                out.push((rest.trim_end_matches(']').to_string(), "normal"));
+            } else if let Some(rest) = t.strip_prefix("[dev-dependencies.") {
+                out.push((rest.trim_end_matches(']').to_string(), "dev"));
+            } else if let Some(rest) = t.strip_prefix("[build-dependencies.") {
+                out.push((rest.trim_end_matches(']').to_string(), "build"));
             }
             continue;
         }
-        if !in_deps || t.is_empty() || t.starts_with('#') {
+        let Some(kind) = kind else { continue };
+        if t.is_empty() || t.starts_with('#') {
             continue;
         }
         if let Some((name, _)) = t.split_once('=') {
             let name = name.trim().trim_matches(['"', '\'']);
             if !name.is_empty() {
-                out.push(name.to_string());
+                out.push((name.to_string(), kind));
             }
         }
     }
@@ -426,11 +657,29 @@ fn resolve_closure(value: &serde_json::Value, root_name: &str) -> Result<Vec<Str
         let Some(id) = node.get("id").and_then(|v| v.as_str()) else {
             continue;
         };
+        // DEV EDGES ARE NOT IN THE CLOSURE THIS ROW IS ABOUT. The ban is on what the gate
+        // RUNNER is built from — `cargo run -p xtask -- gate …`, which resolves normal and build
+        // edges and nothing else. A dev edge compiles under `cargo test -p xtask` alone, and the
+        // product crates a shared conformance battery drives reach xtask by exactly that edge and
+        // no other. `segregation:xtask-dev-subjects` judges those; this row must not see them, or
+        // the two rows disagree about the same manifest. An edge with NO `dep_kinds` is read as
+        // normal, because an unknown edge is a real one.
         let deps = node
             .get("deps")
             .and_then(|d| d.as_array())
             .map(|arr| {
                 arr.iter()
+                    .filter(|d| {
+                        d.get("dep_kinds")
+                            .and_then(|k| k.as_array())
+                            .map(|kinds| {
+                                kinds.is_empty()
+                                    || kinds.iter().any(|k| {
+                                        k.get("kind").and_then(|v| v.as_str()) != Some("dev")
+                                    })
+                            })
+                            .unwrap_or(true)
+                    })
                     .filter_map(|d| d.get("pkg").and_then(|p| p.as_str()))
                     .map(str::to_string)
                     .collect()
@@ -562,7 +811,10 @@ fn rule_reverse(cx: &Ctx) -> Row {
         if !m.rel_str().ends_with("Cargo.toml") || m.rel_str().starts_with("xtask/Cargo.toml") {
             continue;
         }
-        if manifest_dep_names(&m.text).iter().any(|d| d == "xtask") {
+        if manifest_dep_names(&m.text)
+            .iter()
+            .any(|(d, _)| d == "xtask")
+        {
             offenders.push(m.rel_str());
         }
     }
