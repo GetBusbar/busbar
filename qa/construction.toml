@@ -441,6 +441,26 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "busbar_unit_cost::FeeSchedule in the recompute cells' card construction: the card's constructor takes a schedule where it took a scalar, and a cell that built the card another way would be proving something about a card the node never builds."
 
+# ── THE IDENTITY CELL LEARNS THE AMOUNTS ─────────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "`busbar_unit_cost::FeeSchedule` in the identity cell: what the previous release's amounts ARE and what the shipped default's amounts are, both as the card's own type, so the comparison is between two schedules the node could actually hold rather than between two arithmetic expressions the cell wrote."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "`busbar_core::cost::fee_schedule_of` and `busbar_core::config::tariff::TariffCfg` in the identity cell. The shipped default's amounts are RESOLVED through the real grammar from one configured figure rather than written out here: a cell that hand-built the answer would go on passing after the inheritance rule stopped inheriting, which is the exact defect it exists to catch. Both names go with the section when it leaves the retiring engine."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "`busbar_caps::PostingFlags::NONE` on the `Charge` the identity cell builds from each recorded cell's own booked counts. A cell that left the mark off would be comparing a value the kernel never produces."
+
 # ── THE POOL AND THE TIER REACH THE SCHEDULE ─────────────────────────────────────────────────────
 
 [[gate.ceiling_raises]]
