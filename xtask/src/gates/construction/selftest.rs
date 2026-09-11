@@ -202,6 +202,27 @@ fn shape_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         ],
     ));
 
+    // `one-face-home` is PINNED RED-FIRST at its measured count (11), not asserted at zero, so the
+    // proof this case owes is not "the row is red" (it may be green once the count is at or under
+    // ceiling) but "the ceiling still catches a NEW offender above it" — a sixth foreign-home wire
+    // face, planted as a top-level `impl SecretModule for` inside one of the four reviewed
+    // plugin-kind crate directories, pushes the measured count to 12 against the pinned ceiling of
+    // 11.
+    let mut ov = on(base);
+    ov.set(
+        "crates/secret-example-plugin/src/zz_planted_face.rs",
+        "impl SecretModule for PlantedSecretFace {\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a sixth foreign-home wire face lands in a reviewed plugin-kind crate, over the pinned \
+         ceiling of eleven",
+        &["one-face-home"],
+        ov,
+        &["zz_planted_face.rs", "PlantedSecretFace"],
+    ));
+
     // request-path-fn-size names its files exactly, so the plant goes into one of them. PREPENDED,
     // not appended: the end of a request-path file is a `#[cfg(test)]` module, and a function
     // planted inside one is test code the rule is right to ignore.

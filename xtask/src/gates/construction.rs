@@ -41,6 +41,7 @@ pub mod ceilings;
 pub mod census;
 pub mod external;
 pub mod model;
+pub mod one_face_home;
 pub mod rules;
 pub mod rules2;
 pub mod selftest;
@@ -197,6 +198,7 @@ impl ConstructionGate {
             "hold-escapes",
             "seal-sites",
             "kernel-seal-impls",
+            "one-face-home",
             "secret-carrier-debug",
             "no-escaped-newline-doc-comment",
             "unit-no-wall-clock",
@@ -406,6 +408,11 @@ impl ConstructionGate {
         take(
             "kernel-seal-impls",
             rules2::kernel_seal_impls(&tree, &cfg),
+            &mut rows,
+        );
+        take(
+            "one-face-home",
+            one_face_home::one_face_home(&tree, &cfg),
             &mut rows,
         );
         take(

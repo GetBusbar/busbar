@@ -27,8 +27,26 @@ kind table.
 
 ## 1. The kind table
 
-One line per kind. `Trait` names the single trait in `busbar-contract` that a crate of this kind
-implements; implementing a second kind's trait in one crate is a kind fusion and is RED.
+One line per kind. **`Trait` names TWO things, not one**, corrected against the measurement in
+`docs/design/1.6.0-one-face-per-kind.md`: this document previously said it named "the single trait
+... that a crate of this kind implements", and that sentence was false for auth, egress-auth,
+store, secret, hook and export — every trait in `busbar_contract::kinds` has zero production
+implementors, and the trait a plugin crate actually implements is a SEPARATE trait entirely (until
+2026-09, three different homes: `busbar-api`, `busbar-plugin-sdk`, and the six dead
+`busbar_contract::kinds` traits nothing answered). The corrected shape, taken from the one branch
+that had already drawn this line for `store` and is now the shape every kind is held to:
+
+> A kind has exactly two faces and one translation. The **kind face** is the trait in
+> `busbar_contract::kinds` — what core, the root and the units name, and the only face above the
+> loader. The **wire face** is a trait in `busbar_contract::<kind>` — what a plugin implements,
+> named by the one crate a plugin manifest may name. Exactly ONE adapter in
+> `busbar-plugin-loader` implements the kind face over the wire face. A face outside these two
+> crates is a finding — `cargo xtask gate construction`'s `one-face-home` row measures it.
+
+The table's `Trait` column below names the kind face (what §1's original sentence was actually
+about) and, in parentheses, today's wire face and its home. Implementing a second kind's KIND face
+in one crate is a kind fusion and is RED (`kind-isolation:faces`); implementing a wire face outside
+its one home is the separate `one-face-home` finding this correction adds.
 
 | Kind | Crate | Declares (data) | Does (I/O, state) | The ONE trait | May depend on | May be depended on by | Ceiling | Testkit battery |
 |---|---|---|---|---|---|---|---|---|
@@ -36,12 +54,12 @@ implements; implementing a second kind's trait in one crate is a kind fusion and
 | **dialect** | `busbar-plane-<plane>-<dialect>` | `KEY`, `PLANE`, `CLAIMS`, `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers | nothing — pure; translates bytes ↔ its plane's IR | `dialect::Dialect` (+ consts on `DialectMeta`) | contract + **its own plane, nothing else** | its own plane's registration only | per-crate LOC row (3.8k–6.3k today) | purity · determinism · object-safety · round-trip byte-exactness · claim-rung uniqueness |
 | **control** | `busbar-control-<name>` | `KEY`, `CLAIMS` — its routes, as data — `CONFIG_SCHEMA`, its own request/response bodies, its own UI data | reads node state only through contract traits; changes node state only through the verbs unit; mints credentials only through the auth unit's signer | `control::Control` (+ consts on `ControlMeta`) | contract (+ capabilities if the contract needs it) | kernel, root | none — a control surface is unmetered and carries no metered LOC row | the control battery (claim-table completeness, route uniqueness, unmetered, no-upstream, refusal coverage) |
 | **transport** | `busbar-transport-<wire>` | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `FRAMING`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD`, `STATUS_CLASS` | sockets, processes, TLS — all of it | `transport::Transport` (+ consts on `TransportMeta`) | contract, contract-transport, **lower transports only** | kernel, root, transports that compose over it | `surface-ceiling:contract-transport` bounds its seam, not the crate | the transport battery (round-trip, half-close, cancel, backpressure, K writers, honest frame meta, composition, handoff, upgrade) |
-| **auth** (ingress) | `busbar-auth-<name>` | `KEY`, `LOCATIONS`, `IO: bool`, issuer config | I/O only when `does_io()`, on the blocking pool under a deadline | `kinds::AuthScheme` | contract | kernel | — | universal-config · verify-shape · challenge-rounds · deadline |
-| **egress-auth** | `busbar-egress-auth-<name>` | `KEY` | none (pure) | `kinds::EgressAuthScheme` | contract | kernel | — | universal-config · decorate-purity · handshake-round · slot-substitution |
-| **store** | `busbar-store-<name>` | `KEY`, `ABI_FLOOR`, `FLEET_SAFE`, schema versions, measured record rate | all durable I/O, blocking pool | `kinds::Store` | contract | kernel | — | `plugin-testkit::store_conformance` (23 assertions) + gap detection + fleet-safe N-node verdict |
-| **secret** | `busbar-secret-<name>` | `KEY`, `REF_GRAMMAR` | key I/O | `kinds::Secret` | contract | the auth / egress-auth / transport-key **units** only | — | universal-config · resolve/watch/sign/seal round-trip · canary grep |
-| **hook** | `busbar-hook-<name>` | `KEY`, kind (`Tap`\|`Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` | none (pure) | `kinds::Hook` | contract | kernel | — | purity · seat composition · veto/restrict/permutation · priced-delta bound |
-| **export** | `busbar-export-<name>` | `KEY`, sink, format, retention | sink I/O | `kinds::Export` (+ `Anchor` extension) | contract | kernel | — | universal-config · at-least-once ack · anchor head round-trip |
+| **auth** (ingress) | `busbar-auth-<name>` | `KEY`, `LOCATIONS`, `IO: bool`, issuer config | I/O only when `does_io()`, on the blocking pool under a deadline | `kinds::AuthScheme` (wire face: `busbar_api::AuthModule`/`LoginModule`, owed move to `busbar_contract::auth`) | contract | kernel | — | universal-config · verify-shape · challenge-rounds · deadline |
+| **egress-auth** | `busbar-egress-auth-<name>` | `KEY` | none (pure) | `kinds::EgressAuthScheme` (no wire face yet — no plugin of this kind exists) | contract | kernel | — | universal-config · decorate-purity · handshake-round · slot-substitution |
+| **store** | `busbar-store-<name>` | `KEY`, `ABI_FLOOR`, `FLEET_SAFE`, schema versions, measured record rate | all durable I/O, blocking pool | `kinds::Store` (wire face: `busbar_api::Store`, owed move to `busbar_contract::store` — STORE-4/STORE-4b) | contract | kernel | — | `plugin-testkit::store_conformance` (23 assertions) + gap detection + fleet-safe N-node verdict |
+| **secret** | `busbar-secret-<name>` | `KEY`, `REF_GRAMMAR` | key I/O | `kinds::Secret` (wire face: `busbar_api::SecretModule`, owed move to `busbar_contract::secret`) | contract | the auth / egress-auth / transport-key **units** only | — | universal-config · resolve/watch/sign/seal round-trip · canary grep |
+| **hook** | `busbar-hook-<name>` | `KEY`, kind (`Tap`\|`Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` | none (pure) | `kinds::Hook` (wire face: `busbar_contract::hook::HookHandler` — landed 1.6.0; the kind face's loader adapter is still owed) | contract | kernel | — | purity · seat composition · veto/restrict/permutation · priced-delta bound |
+| **export** | `busbar-export-<name>` | `KEY`, sink, format, retention | sink I/O | `kinds::Export` (+ `Anchor` extension; wire face: `busbar_contract::export::ExportHandler` — landed 1.6.0; the kind face's loader adapter is still owed) | contract | kernel | — | universal-config · at-least-once ack · anchor head round-trip |
 | *(core)* **unit** | `busbar-unit-<name>` | nothing plugin-visible; a sealed unit trait | the rules — decides one step | its sealed unit trait in `busbar-contract::unit` | contract, **capabilities** (`busbar-core-capabilities`), contract-transport where it holds a wire handle | kernel only | `busbar-unit-*` ≤ 45k, union ≤ 56k | the step battery + mutation floor on the seven money files |
 
 **The control kind, in one paragraph.** A control surface is an UNMETERED served surface, and the
@@ -286,21 +304,24 @@ correct by construction and is the cheap first half of "kind by declaration, not
 
 ## 8. Migrating the six kinds with zero contract implementors
 
-Six kinds have rules and gate rows but no crate implementing their `busbar-core-contract` trait; the
-live plugins sit on the retiring `busbar-api` ABI. Until these land, the kind gate would police
-boundaries around traits nothing implements.
+Six kinds have rules and gate rows but no crate implementing their `busbar_contract::kinds` KIND
+face; only three still have a WIRE face outside `busbar-contract` too (see §1's correction and
+`docs/design/1.6.0-one-face-per-kind.md`). Until every kind face lands its loader adapter, the
+`one-face-home` construction row polices this table's own claim and stays pinned red at its
+measured count, draining as each row below lands.
 
 | Kind | Today | Move | Size | Track R |
 |---|---|---|---|---|
-| store | `store-memory` / `store-example-plugin` impl `busbar_api::Store`; `kinds::Store::record_{put,get,scan}` has ZERO implementors | re-base onto `kinds::Store`; implement the three record verbs; add the kernel-side `Leg::Record` executor | ~150–200 (store) + ~250–350 (kernel executor) | **R5** `store/` row, after D31 B9 |
-| hook | `hooks-ranking` impls `busbar_api::RoutingPolicy` | re-base onto `kinds::Hook`; seats from the four-seat table | ~200 | **R5** `hooks/` row |
-| auth | `auth-admin-tokens` is a 1.5.5-era module on `busbar-api`; `auth-static-plugin` likewise | re-base onto `kinds::AuthScheme`; the token SIGNER lands in `busbar-unit-auth`, not in a plugin and not in capabilities | ~250 | **R5** `auth/` row |
-| secret | `secret-example-plugin` only; `secret-ref` is a type crate swept in by the glob | re-base onto `kinds::Secret`; fold `SecretRef` into the contract | ~150 | **R5** `store/`+`auth/` rows |
-| export | `export-example-plugin` on `busbar-api` | re-base onto `kinds::Export`; `Anchor` for the retention sink | ~150 | **R5** `export/` row |
+| store | `store-memory` / `store-example-plugin` impl `busbar_api::Store` (WIRE face, unmoved); `kinds::Store::record_{put,get,scan}` has ZERO implementors (KIND face) | STORE-4/STORE-4b: move the wire face `busbar_api::Store` → `busbar_contract::store::Store` by identity, THEN implement the kind face's three record verbs and the kernel-side `Leg::Record` executor | ~150–200 (store) + ~250–350 (kernel executor) | **R5** `store/` row, after D31 B9 |
+| hook | **WIRE FACE DONE (1.6.0):** `busbar_contract::hook::HookHandler`, moved by identity from `busbar-plugin-sdk` — `busbar-hook-test-plugin` implements it. KIND face `kinds::Hook` still has zero implementors; its loader adapter is owed. (Unrelated: `busbar-hooks-ranking` implements the ENGINE-side `busbar_api::RoutingPolicy` for the hook ROUTING business logic, a different "hooks" than this plugin kind's face — do not conflate the two when reading this row.) | give `kinds::Hook` its loader adapter; seats from the four-seat table | ~200 | **R5** `hooks/` row |
+| auth | `auth-admin-tokens` is a 1.5.5-era module on `busbar-api`; `auth-static-plugin` likewise (WIRE face, unmoved) | move the wire face `busbar_api::{AuthModule,LoginModule}` → `busbar_contract::auth` by identity, THEN give `kinds::AuthScheme` its loader adapter; the token SIGNER lands in `busbar-unit-auth`, not in a plugin and not in capabilities | ~250 | **R5** `auth/` row |
+| secret | `secret-example-plugin` only (WIRE face `busbar_api::SecretModule`, unmoved); `secret-ref` is a type crate swept in by the glob | move the wire face `busbar_api::SecretModule` → `busbar_contract::secret` by identity, fold `SecretRef` into the contract, THEN give `kinds::Secret` its loader adapter | ~150 | **R5** `store/`+`auth/` rows |
+| export | **WIRE FACE DONE (1.6.0):** `busbar_contract::export::ExportHandler` (+ `ExportStream`/`ExportField`), moved by identity from `busbar-plugin`/`busbar-plugin-sdk` — `busbar-export-example-plugin` implements it. KIND face `kinds::Export`/`Anchor` still has zero implementors; its loader adapter is owed | give `kinds::Export`/`Anchor` its loader adapter and retention-sink semantics | ~150 | **R5** `export/` row |
 | egress-auth | **zero crates**; the schemes are hardcoded in `busbar-unit-egress-auth` and a full dialect-detection ladder sits in `busbar-unit-auth` | create `busbar-egress-auth-anthropic` / `-openai`; the unit keeps the mechanism, the crates keep the vocabulary; `lean-core`'s `max_hits = 21` ratchet closes to 0 | ~300 | **R6**, with the dialect split (same vocabulary, same move) |
 
 Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` constant — only `STORE_ABI`
-(5) and `TRANSPORT_ABI` (1) exist today, while `Plugin::abi()` is required of every kind.
+(5), `TRANSPORT_ABI` (1), `HOOK_ABI_VERSION` (1) and `EXPORT_ABI_VERSION` (2) exist today, while
+`Plugin::abi()` is required of every kind.
 
 ---
 

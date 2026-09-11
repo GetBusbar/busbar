@@ -663,6 +663,40 @@ known_sites = [
   "crates/busbar-unit-egress/src/tests/harness.rs",
 ]
 
+# ── 21b. one-face-home (docs/design/1.6.0-one-face-per-kind.md) ────────────────────────────────────
+[rules.one-face-home]
+why = """PLUGIN-TREE.md section 1 says a crate of a kind implements THE ONE trait busbar-contract \
+declares for it. Measured (docs/design/1.6.0-one-face-per-kind.md section 1): every trait in \
+busbar_contract::kinds has ZERO production implementors, and three of the six kinds' real WIRE \
+faces still live outside busbar-contract (busbar-api's auth/secret/store blocks; hook and export \
+landed on this branch). PINNED RED-FIRST, not asserted: the count below is what the tree measures \
+on the commit that adds this rule -- a ratchet that only falls, never a ceiling asserted at zero. \
+STORE-4b, secret, auth (section 3, steps 5-7) each drain part of it as they land a kind's wire face \
+onto busbar-contract and give its kind face a loader adapter; egress-auth drains it too, but not to \
+zero on its own -- that kind's `[[cell]]`-equivalent row stands until the first egress-auth plugin \
+ships, because a trait nothing will ever implement until then is not evidence of a face in the \
+wrong home.
+
+Claim A is anchored to the qualified spelling (`kinds::<Trait>`) on purpose: `Store` is also the \
+WIRE face's name, and a bare-name search would silently count a wire-face impl as if it answered \
+the kind face it happens to share a name with, hiding the exact finding this rule exists to catch.
+
+Claim B is scoped to a fixed, reviewed list of plugin-kind crate directories rather than a \
+tree-wide search: the loader's own adapter implementations (plugin_loader::{DynAuth, DynSecret, \
+DynStore}) are the ONE TRANSLATION this shape keeps, not a plugin, and counting them would charge \
+the finding to work the plan does not move."""
+kind_traits = ["AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export"]
+foreign_face_traits = ["AuthModule", "LoginModule", "SecretModule", "Store"]
+# Directory basenames under crates/ (not package names -- `tree.crate_files` keys off the
+# directory, and every one of these four differs from its `busbar-*` package name).
+foreign_face_crates = [
+  "auth-static-plugin",
+  "secret-example-plugin",
+  "store-example-plugin",
+  "store-memory",
+]
+max_findings = 11
+
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
 [rules.forbid-unsafe]
 why = """Plane, hook, pure-auth, egress-auth and secret crates carry `#![forbid(unsafe_code)]` — a \
