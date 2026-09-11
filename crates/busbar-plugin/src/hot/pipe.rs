@@ -228,3 +228,7 @@ pub extern "C-unwind" fn pipe_write(
     }))
     .unwrap_or(StatusClass::Fault)
 }
+
+#[cfg(test)]
+#[path = "tests/pipe_tests.rs"]
+mod tests;
