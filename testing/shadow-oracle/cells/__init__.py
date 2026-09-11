@@ -1614,9 +1614,16 @@ def documented_cells() -> list[dict]:
     # driven an image other than the one it named.
     cells.append({"id": "documented|dockerfile|store-persists-across-the-container", "plane": "core", "family": F,
                   "driver": "script", "script": {"name": "store-persist-image.sh"}, "outcome": "ok", "weight": 10,
-                  "why": "Dockerfile:26-27 — the PUBLISHED image with a signed store-sqlite tarball at an "
-                         "absolute plugins.dir and a writable volume: mint, spend, `docker rm -f`, run a NEW "
-                         "container against the SAME volumes, read the key and its usage back",
+                  "why": "CONTRADICTED (code wins, PB-71): Dockerfile:12-13,26-27 documents a durable store in "
+                         "the published image — a signed plugin tarball dropped into /etc/busbar/plugins plus a "
+                         "writable volume for the SQLite file. Measured against 1.5.5 the recipe cannot be "
+                         "followed: the image is FROM scratch and its busbar is a dynamically-linked ELF, so a "
+                         "cdylib plugin cannot be dlopen'd at all (memfd `dlopen failed`; the private-staging "
+                         "fallback then has no /tmp, and `dlopen failed` again when given one). busbar is right "
+                         "throughout — the store refuses to open and boot is refused loudly, exit 1, reason "
+                         "named, never a silent fall back to RAM. This cell pins the trajectory: the pre-flight "
+                         "`--list-plugins` verdict the operator reads (LOADS), both refusal causes separately, "
+                         "and the mint/kill/read-back path it takes the day the image can load a plugin",
                   "bindings": ["PB-11", "PB-37", "PB-93"],
                   "needs_fixture": "BUSBAR_TEST_BUSBAR_IMAGE"})
     # CONTRADICTED (README:272, code-wins per PB-71): pins the ACTUAL behaviour.
