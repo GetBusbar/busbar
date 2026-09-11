@@ -57,6 +57,10 @@ SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
 # HOW MANY BOXES THE PRE-PROVE STAGE MAY HOLD AT ONCE. Six leaves the fleet room for the serial
 # runner's own box and for whatever an operator is doing by hand.
 PREPROVE_LINES="${LANDQ_PREPROVE_LINES:-6}"
+# HOW MANY OF THOSE BOXES THE HEAD OF THE LIVE QUEUE IS GUARANTEED (see lq_sweep_order). The chain
+# preference below can otherwise spend the whole budget on holds three deep in the queue while the
+# two lines the runner is about to POP go unproven — measured 2026-09-10 on a sweep of twelve.
+PREPROVE_HEAD="${LANDQ_PREPROVE_HEAD:-2}"
 
 export LAND_ORACLE_SHARDS="${LAND_ORACLE_SHARDS:-3}"
 export LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-50100}"
@@ -71,6 +75,7 @@ export XTASK_GATE_CEILING_SECS="${XTASK_GATE_CEILING_SECS:-900}"
 true
 
 TAB="$(printf '\t')"
+NL="$(printf '\n.')"; NL="${NL%.}"
 
 lq_log() { printf '%s\n' "$*" >>"$L"; }
 
@@ -1505,6 +1510,61 @@ $lines
 EOF
 }
 
+# ── THE HEAD OF THE LIVE QUEUE IS RESERVED BEFORE THE CHAINS FILL THE REST ────────────────────────
+# lq_chain_roots_first says WHICH live lines are worth a box; this says HOW MANY of them the chains
+# may take. MEASURED 2026-09-10: the sweep of twelve logged "9 chained holds + 3 live lines, 3 of
+# the live lines root a chain" — every box went to a chain or to a chain's root, and the two lines
+# at the HEAD of the queue (the ones the runner pops NEXT) were left with no pre-proof at all. The
+# integrator wrote them into preprove-front.txt by hand, which is the operator doing the sweep's
+# arithmetic for it.
+#
+# A chain is worth its depth and a single is worth one — that is still true, and it is not the only
+# thing that is true. A pre-proof is only worth anything to the line that is ABOUT TO BE POPPED: a
+# green three lines down the queue chooses an order the runner will not reach for an hour, while an
+# unproven head line is a serial batch proven from scratch, which is the cost the sweep exists to
+# avoid. So the first K live lines IN QUEUE ORDER are dispatched whatever the chains want, and the
+# chains are budgeted against that reservation rather than against the roots alone.
+#
+# THE FRONT IS STILL FIRST, AND FOR FREE: this reads the head of the list it is GIVEN, and the list
+# the sweep gives it is already the front-ordered queue (lq_front_queue). A line the fleet owes an
+# answer to IS the head of the live queue, so the two rules never contend.
+lq_sweep_order() { # $1 = the live lines in QUEUE order, $2 = the same lines roots-first, $3 = K, $4 = slots
+  local lines="$1" roots="$2" k="${3:-0}" slots="${4:-0}" l n=0 seen="$NL"
+  case "$k" in ''|*[!0-9]*) k=0 ;; esac
+  case "$slots" in ''|*[!0-9]*) slots=0 ;; esac
+  [ "$slots" -gt 0 ] || return 0
+  [ "$k" -le "$slots" ] || k="$slots"
+  while IFS= read -r l || [ -n "$l" ]; do
+    [ -n "$l" ] || continue
+    [ "$n" -lt "$k" ] || break
+    printf '%s\n' "$l"; seen="$seen$l$NL"; n=$((n + 1))
+  done <<EOF
+$lines
+EOF
+  while IFS= read -r l || [ -n "$l" ]; do
+    [ -n "$l" ] || continue
+    [ "$n" -lt "$slots" ] || break
+    # THE RESERVED HEAD IS NOT HANDED A SECOND BOX. A head line that also roots a chain is at the
+    # front of BOTH lists, and printing it twice would cost a box to prove the same line again.
+    case "$seen" in *"$NL$l$NL"*) continue ;; esac
+    printf '%s\n' "$l"; seen="$seen$l$NL"; n=$((n + 1))
+  done <<EOF
+$roots
+EOF
+}
+# HOW MANY BOXES THE CHAINED HOLDS MAY ASK FOR. The roots want one each and the head wants K, and
+# those two claims OVERLAP — a head line that roots a chain is one box, not two — so the reservation
+# is the larger of them, never their sum. A budget smaller than the claim is no boxes, not a
+# negative number that `lq_chain_candidates` would read as "unbounded".
+lq_chain_budget() { # $1 = the sweep's whole budget, $2 = how many live lines root a chain, $3 = K
+  local slots="${1:-0}" nroots="${2:-0}" k="${3:-0}" hold
+  case "$slots" in ''|*[!0-9]*) slots=0 ;; esac
+  case "$nroots" in ''|*[!0-9]*) nroots=0 ;; esac
+  case "$k" in ''|*[!0-9]*) k=0 ;; esac
+  hold="$nroots"; [ "$k" -le "$hold" ] || hold="$k"
+  if [ "$hold" -ge "$slots" ]; then echo 0; else echo $((slots - hold)); fi
+}
+
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
@@ -1539,16 +1599,22 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
     roots="$(lq_chain_roots_first "$lines" "$Q" "$tree")"
     nroots="$(printf '%s\n' "$roots" | while IFS= read -r l; do [ -n "$l" ] && lq_line_roots_a_hold "$l" "$Q" && echo x; done | grep -c . || true)"
     case "$nroots" in ''|*[!0-9]*) nroots=0 ;; esac
-    chained="$(lq_chain_candidates $((PREPROVE_LINES - nroots)) "$Q" "$tree" "$key" "$claimf")"
+    # THE HEAD'S RESERVATION, CLAMPED TO WHAT THERE IS (see lq_sweep_order). K live lines cannot be
+    # reserved out of fewer than K live lines, and never out of more than the sweep's whole budget.
+    local kact="$PREPROVE_HEAD"
+    case "$kact" in ''|*[!0-9]*) kact=0 ;; esac
+    [ "$kact" -le "$nlive" ] || kact="$nlive"
+    [ "$kact" -le "$PREPROVE_LINES" ] || kact="$PREPROVE_LINES"
+    chained="$(lq_chain_candidates "$(lq_chain_budget "$PREPROVE_LINES" "$nroots" "$kact")" "$Q" "$tree" "$key" "$claimf")"
     local nch; nch="$(printf '%s\n' "$chained" | grep -c . || true)"
     case "$nch" in ''|*[!0-9]*) nch=0 ;; esac
     if [ "$nch" -gt 0 ] && [ $((nlive + nch)) -gt "$PREPROVE_LINES" ]; then
-      lines="$(printf '%s\n' "$roots" | grep -v '^$' | head -n $((PREPROVE_LINES - nch)))"
+      lines="$(lq_sweep_order "$lines" "$roots" "$kact" $((PREPROVE_LINES - nch)))"
       nlive="$(printf '%s\n' "$lines" | grep -c . || true)"
       case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
-      lq_log "pre-prove: chains before singles — $nch chained hold(s) and $nlive live line(s) of a budget of $PREPROVE_LINES ($nroots of the live lines root a chain)"
+      lq_log "pre-prove: the head, then chains before singles — $kact head slot(s) reserved, $nch chained hold(s) and $nlive live line(s) of a budget of $PREPROVE_LINES ($nroots of the live lines root a chain)"
     else
-      lines="$(printf '%s\n' "$roots" | grep -v '^$')"
+      lines="$(lq_sweep_order "$lines" "$roots" "$kact" "$PREPROVE_LINES")"
     fi
   fi
   if [ -z "$lines" ] && [ -z "$chained" ]; then
@@ -3338,10 +3404,11 @@ lq_selftest() {
 --prove $ha" "$Q" "$repo")"
   _t "  ...and nothing is dropped or invented"  2 "$(lq_chain_roots_first "--prove $hc
 --prove $ha" "$Q" "$repo" | grep -c . || true)"
+  # …the roots' claim now goes through lq_chain_budget, which weighs it against the head's (below).
   _t "the sweep budgets the chained holds against the ROOTS" 1 \
-     "$(grep -c 'chained="$(lq_chain_candidates $((PREPROVE_LINES - nroots))' "$LQ_SRC")"
+     "$(grep -c 'chained="$(lq_chain_candidates "$(lq_chain_budget "$PREPROVE_LINES" "$nroots"' "$LQ_SRC")"
   _t "  ...and trims the live list, roots first, to what is left" 1 \
-     "$(grep -c 'head -n $((PREPROVE_LINES - nch))' "$LQ_SRC")"
+     "$(grep -c 'lq_sweep_order "$lines" "$roots" "$kact" $((PREPROVE_LINES - nch))' "$LQ_SRC")"
 
   # ── HELD: WHAT COMES BACK FROM A UNIT THAT WAS BISECTED BY PREFIX ──────────────────────────────
   # land.sh says HELD for a line standing after the culprit in its unit: never proven, never
@@ -3500,12 +3567,52 @@ lq_selftest() {
   _t "  ...before it reads the tip"            1 \
      "$( [ "$(grep -n '^  lq_status >"\$W/target/gate/landq4.status"$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  tip="\$(git -C "\$W" rev-parse HEAD)"$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   _t "  ...and puts it in the log too"         1 "$(grep -c '^  lq_log "status: ' "$0")"
+
+  # ── THE HEAD OF THE LIVE QUEUE KEEPS ITS SLOTS ────────────────────────────────────────────────
+  # MEASURED 2026-09-10: a sweep of twelve spent its WHOLE budget on chained holds — "9 chained
+  # holds + 3 live lines, 3 of the live lines root a chain" — and the two lines at the HEAD of the
+  # queue got no pre-proof at all; the integrator put them in preprove-front.txt by hand. The chain
+  # preference is right (a chain is worth its depth, a single is worth one) and it is not right
+  # ENOUGH to take every box: the head of the queue is what the runner is about to POP, and a pop
+  # of a line nobody pre-proved is the serial batch the sweep exists to avoid.
+  echo "landq4 selftest: the sweep reserves slots for the head of the live queue"
+  local hl hr
+  hl="$(printf 'L1\nL2\nL3\nL4\n')"
+  hr="$(printf 'L3\nL4\nL1\nL2\n')"
+  _t "the first K live lines take their slots" "L1 L2 L3" \
+     "$(lq_sweep_order "$hl" "$hr" 2 3 | tr '\n' ' ' | sed 's/ $//')"
+  _t "  ...and the rest are still roots first" "L1 L2 L3 L4" \
+     "$(lq_sweep_order "$hl" "$hr" 2 4 | tr '\n' ' ' | sed 's/ $//')"
+  _t "K=0 is exactly the old chains-before-singles" "L3 L4 L1" \
+     "$(lq_sweep_order "$hl" "$hr" 0 3 | tr '\n' ' ' | sed 's/ $//')"
+  _t "a head line that ROOTS a chain is not listed twice" "L3 L1" \
+     "$(lq_sweep_order "$(printf 'L3\nL1\n')" "$(printf 'L3\nL1\n')" 1 2 | tr '\n' ' ' | sed 's/ $//')"
+  _t "K larger than the live list is the live list" "L1 L2" \
+     "$(lq_sweep_order "$(printf 'L1\nL2\n')" "$(printf 'L2\nL1\n')" 9 9 | tr '\n' ' ' | sed 's/ $//')"
+  _t "no slots is no lines"                    "" "$(lq_sweep_order "$hl" "$hr" 2 0)"
+  # THE CHAINED HOLDS ARE BUDGETED AGAINST THE RESERVATION TOO. Without this the chains are handed
+  # `budget - nroots` boxes, take them, and the trim below has nothing left to give the head.
+  _t "the chain budget never eats the reserved head" 4 "$(lq_chain_budget 6 0 2)"
+  _t "  ...and the roots' own claim still counts" 3 "$(lq_chain_budget 6 3 2)"
+  _t "  ...the two claims are not added twice"  3 "$(lq_chain_budget 6 2 3)"
+  _t "  ...and it never goes negative"          0 "$(lq_chain_budget 2 9 2)"
+  # …and the blunt `head -n` that dropped them is GONE, not merely bypassed.
+  _t "the sweep orders with it, not with head -n" 0 \
+     "$(grep -c 'head -n \$((PREPROVE_LINES' "$LQ_SRC")"
+  _t "  ...on BOTH arms of the trim"            2 "$(grep -c 'lq_sweep_order "\$lines" "\$roots"' "$LQ_SRC")"
+  _t "  ...and the chain budget is asked for"   1 "$(grep -c 'lq_chain_candidates "\$(lq_chain_budget ' "$LQ_SRC")"
+  # THE FRONT IS STILL FIRST. lq_sweep_order's head is the head of the list it is GIVEN, and the
+  # list the sweep gives it is the front-ordered queue — so an owed line is still offered a box
+  # before anything else, and the reservation is over what is left.
+  _t "the front reordering happens before the reservation" 1 \
+     "$( [ "$(grep -n 'lq_front_queue "\$Q" >"\$dir/queue-front.txt"' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n 'lines="\$(lq_sweep_order ' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
 
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
     echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone,"
-    echo "                        popper, chains admitted as ONE UNIT, unit markers, HELD lines, chains before singles)"
+    echo "                        popper, chains admitted as ONE UNIT, unit markers, HELD lines, head before chains before singles)"
     return 0
   fi
   echo "landq4 selftest: RED ($fails failure(s))" >&2
