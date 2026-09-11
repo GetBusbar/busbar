@@ -20954,6 +20954,9 @@
       "op": "chat",
       "outcome": "ok_tool_use_tokens",
       "why": "happy path whose ANSWER reports `usageMetadata.toolUsePromptTokenCount`: the server-side tool-use token term Vertex reports BESIDE `promptTokenCount` (measured 32 against an 18-token prompt on a real capture), which the `ping` fixture's tool-less answer never produces and which is therefore the one money term no recorded cell can see",
+      "mock_control": {
+        "tool-use-tokens": true
+      },
       "needs_fixture": true
     },
     {
