@@ -11,6 +11,7 @@
 mod harness;
 
 mod allocation_tests;
+mod body_pump_tests;
 mod body_tests;
 mod deadline_tests;
 mod exhaustion_tests;
