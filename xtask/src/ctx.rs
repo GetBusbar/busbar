@@ -714,6 +714,60 @@ impl Ctx {
         Ok(out)
     }
 
+    /// `cargo tree` WITH THE FEATURE COLUMN — the resolver's own answer to "which features does
+    /// this invocation turn on", read back as text.
+    ///
+    /// Separate from [`Ctx::cargo_tree`] on purpose, and separately keyed
+    /// (`cargo-tree-resolved:…`): that one answers a PRESENCE question over `-e no-dev` and its
+    /// self-tests plant against its key. This one is parameterised on the EDGE KINDS, because the
+    /// difference between `-e features` and `-e features,no-dev` is precisely the difference
+    /// between a build that compiles dev targets and one that does not — which is where
+    /// dev-dependency feature unification lives, and therefore where a coverage claim that rests on
+    /// it can evaporate.
+    ///
+    /// `--locked --offline` are not decoration. `--locked` pins the resolution to the committed
+    /// `Cargo.lock`, so the answer is a function of files in the repository and nothing else;
+    /// `--offline` makes that a refusal rather than a promise — a resolve that would have reached
+    /// the network fails loudly instead of quietly answering from a different index than the one
+    /// the next run will see. The same input therefore produces the same bytes on every box.
+    ///
+    /// An empty tree is an `Err` for the reason [`Ctx::cargo_tree`] gives: "resolved nothing" is
+    /// indistinguishable from "resolved and found nothing", and one of those is a pass.
+    pub fn cargo_tree_resolved(&self, edges: &str, args: &[String]) -> Result<String, String> {
+        let key = format!("cargo-tree-resolved:{edges} {}", args.join(" "));
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let mut argv: Vec<String> = vec![
+            "tree".into(),
+            "--locked".into(),
+            "--offline".into(),
+            "-e".into(),
+            edges.into(),
+            "-f".into(),
+            "{p}|{f}".into(),
+        ];
+        argv.extend(args.iter().cloned());
+        let out = self.run_checked(&cargo, &argv)?;
+        if out.trim().is_empty() {
+            return Err(format!(
+                "`cargo tree -e {edges} {}` resolved and named no package at all — a resolution \
+                 with no packages in it enables no features, and enabling no features is the \
+                 passing answer to every coverage claim.",
+                args.join(" ")
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The key [`Ctx::cargo_tree_resolved`] reads an overlay override under.
+    pub fn cargo_tree_resolved_key(edges: &str, args: &[String]) -> String {
+        format!("cargo-tree-resolved:{edges} {}", args.join(" "))
+    }
+
     /// `cargo metadata` for one manifest, overlay-overridable so a self-test can plant a dependency
     /// closure without a fixture workspace.
     pub fn cargo_metadata(&self, manifest_rel: &str) -> Result<String, String> {

@@ -34,12 +34,24 @@
 //!    was renamed away is a coverage claim nobody can check.
 //! 7. [`ROW_DECL_REASON`] — a declaration carries a reason of at least [`MIN_REASON`] characters. An
 //!    exemption without a reason becomes permanent by accident.
+//! 8. [`ROW_RIGS_RUN`] — see below: the same contract one axis over, on executable scenarios.
+//! 9. [`ROW_RESOLVED`] — THE CLAIM IS CHECKED. Rule 4 asks whether a feature is NAMED by a leg;
+//!    this asks whether the named leg really enables it. For every matrix row and every
+//!    declaration, the leg's cargo invocations are derived from `ci.yml` (and from the scripts
+//!    those invocations run), handed to cargo's own resolver with `--locked --offline`, and the
+//!    claimed feature has to be in the answer. See [`legs`].
 //!
-//! WHAT THIS DOES NOT HOLD, stated so it is not mistaken for held: rule 4 accepts a declaration on
-//! its word. It does not resolve the named job's own feature set, so a declaration that says
-//! `check` builds a feature by dev-dependency unification stays green after the dev-dependency that
-//! did the unifying is deleted. Closing that needs a `cargo tree -f '{p}|{f}'` per declared leg,
-//! compared against the claim. It belongs in this gate, as an eighth row. It is not here.
+//! WHY RULE 9 EXISTS. Rules 1-8 shipped without it, and the header said so in these words: rule 4
+//! accepts a declaration ON ITS WORD. Eleven of this workflow's declarations say `check` builds a
+//! feature "by `--all-targets` dev-dependency unification" — coverage that is real today and that
+//! evaporates the moment somebody deletes the dev-dependency doing the unifying, with every row of
+//! this gate still green and the comment still saying the feature is built. A gate that trusts a
+//! comment is not a gate. Rule 9 is the difference between a claim and a measurement, and the
+//! difference it turns on is exactly one cargo flag: dev-dependency features unify into a
+//! resolution only when dev targets are built, so a leg that builds them resolves under
+//! `-e features` and a leg that does not resolves under `-e features,no-dev`.
+
+pub mod legs;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,6 +79,9 @@ pub const ROW_DECL_REASON: &str = "feature-sets:declaration-reason";
 /// The SECOND axis this gate holds: an executable scenario the tree carries and no job runs is the
 /// same defect as a feature no job builds. See [`RIG_DIRS`].
 pub const ROW_RIGS_RUN: &str = "feature-sets:every-h2-rig-is-run-by-a-named-step";
+/// The row that CHECKS the claim rather than reading it: the leg a matrix row or a declaration
+/// names is resolved, by cargo, and the claimed feature has to be in the resolved set.
+pub const ROW_RESOLVED: &str = "feature-sets:the-named-leg-really-enables-the-feature";
 
 /// The discovery floor under the non-default feature count. Measured at 46 on the 1.6.0 integration
 /// tree. Deliberately NOT overridable from the environment: a floor a caller can lower is a floor a
@@ -410,6 +425,137 @@ fn rig_row(rigs: &[String], workflow: &str) -> Row {
     }
 }
 
+/// THE RESOLVED ROW. Every coverage claim in this workflow, checked against the leg it names.
+///
+/// A CLAIM is either a matrix row of [`JOB`] (its `features:` value names what that row builds) or a
+/// `# feature-covered:` declaration (its job field names what already builds it). Both are read the
+/// same way: derive the leg's cargo invocations, resolve them, require the claimed feature to be in
+/// the union.
+///
+/// WHAT THIS ROW DOES NOT REPORT, so that exactly one row moves per defect: a declaration whose
+/// feature no crate declares is [`ROW_DECL_LIVE`]'s, a declaration naming a job this workflow does
+/// not have is [`ROW_DECL_JOB`]'s. Both are skipped here — there is no leg to resolve and no
+/// feature to find, and a row that reddened alongside its neighbour would prove neither alone.
+fn resolved_row(
+    cx: &Ctx,
+    workflow: &str,
+    decls: &[Decl],
+    all: &BTreeSet<String>,
+    nd: &BTreeSet<String>,
+    jobs: &BTreeSet<String>,
+) -> Row {
+    // The matrix rows first: a row's `features:` value is the claim it makes about itself.
+    let mut claims: Vec<(legs::Leg, Vec<String>)> = legs::matrix_rows(workflow, JOB)
+        .into_iter()
+        .map(|row| {
+            let wanted: Vec<String> = split_features(&row.features).map(str::to_string).collect();
+            (legs::leg(cx, workflow, JOB, Some(&row)), wanted)
+        })
+        .collect();
+
+    // Then the declarations, grouped by the job they name so a leg is derived and resolved ONCE
+    // however many features rest on it — twenty-eight of them rest on `check`.
+    let mut by_job: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for d in decls {
+        if !all.contains(&d.feature) || !nd.contains(&d.feature) || !jobs.contains(&d.job) {
+            continue;
+        }
+        by_job
+            .entry(d.job.clone())
+            .or_default()
+            .push(d.feature.clone());
+    }
+    claims.extend(
+        by_job
+            .into_iter()
+            .map(|(job, feats)| (legs::leg(cx, workflow, &job, None), feats)),
+    );
+
+    let mut checked = 0usize;
+    let mut resolutions = 0usize;
+    // Counted and REPORTED even on a pass. An invocation this gate cannot derive contributes
+    // nothing, which is the safe direction — but a number that grows is the sign that the workflow
+    // has moved its builds somewhere this reader no longer follows, and a silent skip is how that
+    // happens without anybody noticing.
+    let mut unreadable = 0usize;
+    let mut problems: Vec<String> = Vec::new();
+    for (leg, wanted) in &claims {
+        if wanted.is_empty() {
+            continue;
+        }
+        let res = legs::resolve_leg(cx, leg);
+        if !res.errors.is_empty() {
+            problems.push(format!(
+                "`{}` did not resolve: {} — a leg this gate cannot resolve is a leg whose claims it \
+                 cannot check, and an unchecked claim is the whole defect this row exists for.",
+                leg.label,
+                res.errors.join(" | ")
+            ));
+            continue;
+        }
+        if res.resolved.is_empty() {
+            problems.push(format!(
+                "`{}` issues no cargo invocation this gate could derive from {WORKFLOW} ({}) — a \
+                 coverage claim against a leg whose build cannot be derived is a claim nobody can \
+                 check.",
+                leg.label,
+                if res.out_of_reach.is_empty() {
+                    "no cargo line at all".to_string()
+                } else {
+                    res.out_of_reach.join(" | ")
+                }
+            ));
+            continue;
+        }
+        resolutions += res.resolved.len();
+        unreadable += res.out_of_reach.len();
+        for feature in wanted {
+            checked += 1;
+            if !res.features.contains(feature) {
+                problems.push(format!(
+                    "`{feature}` is claimed by `{}` and that leg's own resolution DOES NOT ENABLE \
+                     IT — {} invocation(s) resolved, the first being `{}`. Either the claim was \
+                     never true, or the build that made it true (a dev-dependency edge, a default, \
+                     a `--features` argument) has been edited away and nothing else noticed.",
+                    leg.label,
+                    res.resolved.len(),
+                    res.resolved[0]
+                ));
+            }
+        }
+    }
+
+    if checked == 0 {
+        return Row::fail(
+            ROW_RESOLVED,
+            "no coverage claim was resolved at all",
+            format!(
+                "{} leg(s) were derived from {WORKFLOW} and none of them carried a feature to \
+                 check. A resolver with nothing to resolve reports every claim true.",
+                claims.len()
+            ),
+        );
+    }
+    if problems.is_empty() {
+        Row::pass(
+            ROW_RESOLVED,
+            "every leg a matrix row or a declaration names really does enable the feature claimed",
+            format!(
+                "{checked} claim(s) over {} leg(s), {resolutions} cargo resolution(s) \
+                 (`cargo tree --locked --offline -e features[,no-dev] -f '{{p}}|{{f}}'`), \
+                 {unreadable} invocation(s) out of this repository's reach",
+                claims.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_RESOLVED,
+            "a coverage claim names a leg that does not build the feature",
+            problems.join(" | "),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // the gate
 // ---------------------------------------------------------------------------------------------
@@ -435,7 +581,8 @@ fn unproven(why: &str) -> Verdict {
             "no declaration was checked",
             detail.clone(),
         ),
-        Row::fail(ROW_RIGS_RUN, "no rig scenario was checked", detail),
+        Row::fail(ROW_RIGS_RUN, "no rig scenario was checked", detail.clone()),
+        Row::fail(ROW_RESOLVED, "no coverage claim was resolved", detail),
     ])
 }
 
@@ -454,6 +601,7 @@ impl Gate for FeatureSetsGate {
             ROW_DECL_JOB.to_string(),
             ROW_DECL_REASON.to_string(),
             ROW_RIGS_RUN.to_string(),
+            ROW_RESOLVED.to_string(),
         ]
     }
 
@@ -655,6 +803,7 @@ impl Gate for FeatureSetsGate {
         });
 
         rows.push(rig_row(&rig_scripts(cx), &workflow));
+        rows.push(resolved_row(cx, &workflow, &decls, &all, &nd, &jobs));
 
         Verdict::of(rows)
     }
@@ -768,7 +917,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         let mut ov = Overlay::new();
         ov.set(
             WORKFLOW,
-            format!("{t}\n  {DECL} busbar-core/loom-model{SEP}check{SEP}because\n"),
+            format!("{t}\n  {DECL} busbar-core/loom-model{SEP}txn-guards{SEP}because\n"),
         );
         ov
     });
@@ -813,6 +962,60 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             );
             ov
         });
+
+    // A DECLARATION THAT NAMES A LEG WHICH DOES NOT BUILD THE FEATURE — rule 9's own defect, and
+    // the one rules 1-8 could not see. Everything about this line is well-formed: the feature is
+    // real and non-default, the job is a job this workflow defines, the reason is long enough, and
+    // rule 4 is already discharged for `busbar-core/loom-model` by its REAL declaration further up.
+    // The only thing wrong with it is that it is FALSE, and the only way to find that out is to
+    // resolve `openapi-schema`'s own cargo lines, which name `-p busbar -p busbar-core --features
+    // openapi-schema` and nothing about loom.
+    let false_claim = workflow.as_ref().map(|t| {
+        let mut ov = Overlay::new();
+        ov.set(
+            WORKFLOW,
+            format!(
+                "{t}\n  {DECL} busbar-core/loom-model{SEP}openapi-schema{SEP}a leg that compiles \
+                 this crate but never turns this feature on, declared anyway\n"
+            ),
+        );
+        ov
+    });
+
+    // THE DEV-DEPENDENCY DELETION, which is the case this row was built for. Eleven declarations in
+    // this workflow say `check` builds a feature because `--all-targets` pulls a dev-dependency that
+    // turns it on. `busbar-plugin-testkit/store` is the cleanest of them: the ONLY edges that enable
+    // it are `crates/store-memory` and `crates/store-example-plugin` naming
+    // `busbar-plugin-testkit = { …, features = ["store"] }` in their `[dev-dependencies]`. Delete
+    // those two lines and the feature stops being compiled anywhere, while the declaration goes on
+    // saying it is built.
+    //
+    // THE PLANT IS ON THE RESOLVER'S ANSWER, NOT ON A MANIFEST, and that is a property of what is
+    // being planted rather than a shortcut. An overlay is an IN-MEMORY view; `cargo tree` reads the
+    // disk, so an overlaid `Cargo.toml` would change nothing about what cargo says — a plant that
+    // looked realer would in fact plant nothing at all. So the fixture takes the leg's REAL
+    // resolution and strikes the feature out of it, which is byte-for-byte what cargo prints once
+    // those two lines are gone (verified out of band by making the deletion on disk and diffing the
+    // trees). It is the same mechanism `Ctx::cargo_metadata` documents for exactly this case.
+    let dev_dep_deleted = workflow.as_ref().and_then(|t| {
+        let leg = legs::leg(cx, t, DEV_UNIFIED_JOB, None);
+        let mut ov = Overlay::new();
+        let mut planted = 0usize;
+        for inv in &leg.invocations {
+            if inv.out_of_reach.is_some() {
+                continue;
+            }
+            let Ok(tree) = legs::tree_of(cx, inv) else {
+                continue;
+            };
+            ov.set_command(
+                inv.overlay_key(),
+                strike_feature(&tree, DEV_UNIFIED_FEATURE),
+            );
+            planted += 1;
+        }
+        (planted > 0).then_some(ov)
+    });
 
     // THE ROOT MANIFEST GONE. Everything below rule 1 is UNPROVEN, never passed.
     let mut no_root = Overlay::new();
@@ -862,12 +1065,60 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             overlay: unrun_rig,
         },
         Plant {
+            label: "a coverage declaration names a leg that does not build the feature it claims",
+            rule: ROW_RESOLVED,
+            naming: vec!["DOES NOT ENABLE IT".to_string()],
+            overlay: false_claim,
+        },
+        Plant {
+            label: "the dev-dependency that unified a declared feature in is deleted",
+            rule: ROW_RESOLVED,
+            naming: vec![DEV_UNIFIED_FEATURE.to_string()],
+            overlay: dev_dep_deleted,
+        },
+        Plant {
             label: "the root manifest is unreadable",
             rule: ROW_MANIFESTS,
             naming: vec!["is unreadable".to_string()],
             overlay: Some(no_root),
         },
     ]
+}
+
+/// The job whose declarations rest on `--all-targets` dev-dependency unification, and the feature
+/// of theirs with the fewest edges holding it up — the pair the rule-9 plant is built from.
+const DEV_UNIFIED_JOB: &str = "check";
+const DEV_UNIFIED_FEATURE: &str = "busbar-plugin-testkit/store";
+
+/// A `cargo tree -f '{p}|{f}'` answer with one `pkg/feature` struck out of it: what the resolver
+/// prints once the edge that enabled that feature is gone.
+fn strike_feature(tree: &str, pkg_feature: &str) -> String {
+    let Some((pkg, feature)) = pkg_feature.split_once('/') else {
+        return tree.to_string();
+    };
+    let mut out = Vec::new();
+    for line in tree.lines() {
+        let Some(bar) = line.find('|') else {
+            out.push(line.to_string());
+            continue;
+        };
+        let (head, tail) = line.split_at(bar);
+        if !head.contains(&format!("{pkg} v")) {
+            out.push(line.to_string());
+            continue;
+        }
+        let (list, suffix) = match tail[1..].split_once(" (*)") {
+            Some((l, _)) => (l, " (*)"),
+            None => (&tail[1..], ""),
+        };
+        let kept: Vec<&str> = list
+            .split(',')
+            .map(str::trim)
+            .filter(|f| !f.is_empty() && *f != feature)
+            .collect();
+        out.push(format!("{head}|{}{suffix}", kept.join(",")));
+    }
+    out.join("\n")
 }
 
 /// The workflow with every `# feature-covered:` line removed.
@@ -883,6 +1134,7 @@ fn without_declarations(text: &str) -> String {
 fn emptied_matrix(text: &str) -> Overlay {
     let mut out: Vec<String> = Vec::new();
     let mut decls: Vec<String> = Vec::new();
+    let mut moved: Vec<String> = Vec::new();
     let mut in_job = false;
     for raw in text.lines() {
         if let Some(name) = job_key(raw) {
@@ -891,8 +1143,9 @@ fn emptied_matrix(text: &str) -> Overlay {
         if in_job {
             if let Some(v) = raw.trim().strip_prefix("features:") {
                 for f in split_features(v.trim().trim_matches(['"', '\''])) {
+                    moved.push(f.to_string());
                     decls.push(format!(
-                        "  {DECL} {f}{SEP}check{SEP}the matrix row that named it was removed by \
+                        "  {DECL} {f}{SEP}{JOB}{SEP}the matrix row that named it was removed by \
                          this planted fixture"
                     ));
                 }
@@ -900,6 +1153,18 @@ fn emptied_matrix(text: &str) -> Overlay {
             }
         }
         out.push(raw.to_string());
+    }
+    // THE JOB STILL BUILDS THEM, and the fixture has to say so in the only place rule 9 reads: the
+    // job's own cargo line. Without this the matrix rows would be gone AND the leg that claims them
+    // would resolve to nothing, and a plant that reddens two rows proves neither. So the matrix
+    // interpolation is replaced by the literal union the six rows named between them — which is the
+    // same job, written out.
+    let literal = format!("--features \"{}\" --locked -- -D warnings", moved.join(","));
+    for line in out.iter_mut() {
+        if line.contains("cargo clippy --workspace --all-targets --features") {
+            let head = line.split("--features").next().unwrap_or("").to_string();
+            *line = format!("{head}{literal}");
+        }
     }
     out.extend(decls);
     let mut ov = Overlay::new();
