@@ -136,7 +136,6 @@ const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
     ("plane_pool_members", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
     ("plane_slot_live", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
     ("pool_gates", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("pool_label", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("pool_members_repeatable", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
     ("pool_policy", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("pool_rewrites", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
@@ -144,7 +143,6 @@ const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
     ("principal_standing", "mcp", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the MCP plane's identity/registry/failover path."),
     ("quarantine_settle", "mcp", "F3/F6 tracked debt: MCP durable trust/audit engine state (drift-quarantine / one-time-approval ledger / ask-state sealer), owner-ruled core-resident today; pending extraction to a narrowed McpTrustHost slice that is NOT a supertrait of EngineHost."),
     ("rate_headroom", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("request_finished", "a2a", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the A2A plane (card signing / pool membership / request-finish)."),
     ("requested_signals", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("rewrite_hooks", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("run_gauntlet", "mcp", "universal/neutral: the shared gauntlet entry any plane may ride (provided method delegating to the free run_gauntlet). One caller today is incidental, not plane vocabulary."),
@@ -155,11 +153,6 @@ const SINGLE_PLANE_ALLOWLIST: &[(&str, &str, &str)] = &[
     ("tap_hooks_candidate", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("tap_hooks_response", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("tap_hooks_routing", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_breaker_trip", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_failover", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_translation", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_upstream_attempt", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
-    ("telemetry_upstream_failure", "llm", "Neutral single-consumer capability: generic signature, no foreign-plane vocabulary; sole current caller is the LLM plane's request/metering/telemetry path. Re-review if a second plane consumes it."),
     ("verify_token_test", "llm", "test-only (cfg test/test-support) raw-token verifier for the LLM routing-policy test seam; never linked in a production binary."),
 ];
 
