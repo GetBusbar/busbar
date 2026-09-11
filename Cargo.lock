@@ -804,6 +804,7 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "busbar-caps",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-sign",

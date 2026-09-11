@@ -20,7 +20,8 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
-    PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, SecretErrorKind, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
 use busbar_plugin::cold::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -207,6 +208,10 @@ struct RawPlugin {
     close: CloseFn,
     /// The plugin name/path, for diagnostics.
     path: String,
+    /// The plugin's own error catalog, read ONCE at load from the optional `busbar_catalog`
+    /// symbol and checked there; `None` for a plugin that ships none, which then renders only
+    /// through the wire's own codes ([`wire_catalog`]).
+    catalog: Option<busbar_contract::Catalog>,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker
     /// (`dlclose` runs the image's `.fini_array`); it is always `Some` until then. Declared BEFORE
     /// `_backing` so the unload still happens first — the UNLOAD-then-REMOVE order Windows requires.
@@ -561,6 +566,18 @@ fn wire_up_raw(
         }
     }
 
+    // ── 3c. Read the error catalog (OPTIONAL symbol; a present catalog must CHECK). ──
+    //
+    // LOAD-TIME: a catalog that fails `Catalog::check()` refuses the load HERE AND BY NAME, because
+    // a plugin whose declaration of its own codes is malformed cannot be rendered correctly for any
+    // code, and a host that discovered that on the first failure would discover it at the worst
+    // possible moment. What is NOT decidable here is whether the plugin will only ever emit codes it
+    // declared — a cdylib cannot be asked what it will say — so an uncatalogued code is refused at
+    // FIRST USE, the moment the plugin contradicts its declaration (see `DynSecret::admit`).
+    //
+    // Read once, never on a call: the catalog is DATA the host reads, not a question it asks.
+    let catalog = read_catalog(lib, &display)?;
+
     // ── 4. open: construct the instance from the JSON config. ──
     // Guarded: `busbar_open` runs plugin constructor code on every load (boot AND hot config-reload).
     // With the `extern "C-unwind"` ABI a panicking constructor unwinds here and fails the load CLOSED,
@@ -634,6 +651,7 @@ fn wire_up_raw(
     let (lib, backing) = guard.disarm();
     Ok(RawPlugin {
         handle,
+        catalog,
         call,
         free,
         close,
@@ -641,6 +659,135 @@ fn wire_up_raw(
         _lib: Some(lib),
         _backing: backing,
     })
+}
+
+/// Read the optional `busbar_catalog` symbol: `None` when the plugin exports none, the CHECKED
+/// catalog when it does, and a load REFUSAL naming the plugin when what it exports is over the
+/// response cap, not UTF-8 JSON, or not a catalog that checks.
+fn read_catalog(lib: &Library, display: &str) -> Result<Option<busbar_contract::Catalog>, String> {
+    let Ok(f) = (unsafe { lib.get::<busbar_plugin::cold::CatalogFn>(symbol::CATALOG) }) else {
+        return Ok(None);
+    };
+    let mut len: usize = 0;
+    // Guarded like every other symbol call: a panicking plugin fails the load CLOSED, not an abort.
+    let ptr = ffi_guard_confined(display, "catalog", || unsafe { (*f)(&mut len) })?;
+    if ptr.is_null() || len == 0 {
+        return Ok(None);
+    }
+    if len > MAX_PLUGIN_RESPONSE_LEN {
+        return Err(format!(
+            "plugin '{display}' catalog of {len} bytes exceeds the \
+             {MAX_PLUGIN_RESPONSE_LEN}-byte cap"
+        ));
+    }
+    // SAFETY: the symbol's contract is `len` live `'static` bytes at `ptr`, capped above.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    catalog_from_bytes(bytes, display).map(Some)
+}
+
+/// The DECISION half of [`read_catalog`], over bytes rather than over a symbol: what a host will
+/// and will not accept as a plugin's declaration of its own codes. Every refusal names the plugin,
+/// because a load that fails without saying whose fault it is is a load an operator cannot fix.
+fn catalog_from_bytes(bytes: &[u8], display: &str) -> Result<busbar_contract::Catalog, String> {
+    let catalog: busbar_contract::Catalog = serde_json::from_slice(bytes)
+        .map_err(|e| format!("plugin '{display}' catalog is not a catalog document: {e}"))?;
+    catalog
+        .check()
+        .map_err(|e| format!("plugin '{display}' catalog refused at load: {e}"))?;
+    Ok(catalog)
+}
+
+/// FIRST-USE REFUSAL OF AN UNCATALOGUED CODE, BY NAME — the decision half of
+/// [`DynSecret::admit`], over a catalog rather than over a loaded plugin.
+///
+/// A code the plugin's catalog does not declare is the plugin contradicting its own declaration. A
+/// cdylib cannot be asked in advance what it will emit, so the contradiction can only land the
+/// moment it happens — and when it does the answer is REPLACED by an `Internal` failure under the
+/// wire's own code, with the offending code and the plugin as parameters, so nothing downstream
+/// reaches for a template that does not exist and the contradiction is on the record by name.
+fn admit_code(
+    catalog: &busbar_contract::Catalog,
+    plugin: &str,
+    e: busbar_contract::PluginError,
+) -> busbar_contract::PluginError {
+    use busbar_contract::{ErrorClass, ParamValue, PluginError};
+    if catalog.entry(&e.code).is_some() || wire_catalog().entry(&e.code).is_some() {
+        return e;
+    }
+    PluginError::new(ErrorClass::Internal, "wire.internal")
+        .with_param("uncatalogued_code", ParamValue::Str(e.code.clone()))
+        .with_param("plugin", ParamValue::Str(plugin.to_string()))
+        .with_message(format!(
+            "plugin '{plugin}' emitted `{}`, a code its catalog does not declare; refused ({e})",
+            e.code
+        ))
+}
+
+/// THE WIRE CATALOG: the codes the loader mints for a plugin that shipped none.
+///
+/// A plugin built before the structured error existed says a frozen token and a string. The token
+/// becomes a class and a `wire.*` code; this is the catalog that DECLARES those codes, so a host
+/// renders them through the same table as a plugin's own rather than through a second path for old
+/// plugins. One default locale, five codes.
+pub fn wire_catalog() -> &'static busbar_contract::Catalog {
+    use busbar_contract::{Catalog, CatalogEntry, Template};
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let mut catalog = Catalog::empty("en");
+        for (code, text) in [
+            ("wire.not_found", "the reference does not resolve"),
+            (
+                "wire.unavailable",
+                "the backing source could not be reached",
+            ),
+            (
+                "wire.denied",
+                "the caller is not permitted to read this reference",
+            ),
+            (
+                "wire.invalid",
+                "the reference is not in the plugin's grammar",
+            ),
+            ("wire.internal", "the plugin failed without saying why"),
+        ] {
+            let mut templates = busbar_contract::bounded::BoundedVec::new();
+            let _ = templates.push(Template {
+                locale: "en".into(),
+                text: text.into(),
+            });
+            let _ = catalog.entries.push(CatalogEntry {
+                code: code.into(),
+                templates,
+            });
+        }
+        catalog
+            .check()
+            .expect("the wire catalog is well-formed by construction");
+        catalog
+    })
+}
+
+/// The class a frozen wire token means. THE ONLY wire-token -> class map in the tree.
+fn secret_wire_class(kind: SecretErrorKind) -> busbar_contract::ErrorClass {
+    use busbar_contract::ErrorClass;
+    match kind {
+        SecretErrorKind::NotFound => ErrorClass::NotFound,
+        SecretErrorKind::Unavailable => ErrorClass::Unavailable,
+        SecretErrorKind::Denied => ErrorClass::Denied,
+        SecretErrorKind::Invalid => ErrorClass::Malformed,
+        SecretErrorKind::Internal => ErrorClass::Internal,
+    }
+}
+
+/// The code minted for a frozen wire token: `wire.<token>`, which [`wire_catalog`] declares.
+fn secret_wire_code(kind: SecretErrorKind) -> &'static str {
+    match kind {
+        SecretErrorKind::NotFound => "wire.not_found",
+        SecretErrorKind::Unavailable => "wire.unavailable",
+        SecretErrorKind::Denied => "wire.denied",
+        SecretErrorKind::Invalid => "wire.invalid",
+        SecretErrorKind::Internal => "wire.internal",
+    }
 }
 
 /// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
@@ -1347,10 +1494,73 @@ impl busbar_api::SecretModule for DynSecret {
             .map_err(busbar_api::SecretError::internal)?
         {
             busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
-            busbar_plugin::cold::SecretResponse::Error { kind, message, .. } => {
-                Err(busbar_api::SecretError::new(kind, message))
+            busbar_plugin::cold::SecretResponse::Error {
+                kind,
+                message,
+                error,
+            } => {
+                let structured = self.record(self.admit(self.structured(kind, &message, error)));
+                // THE FROZEN TOKEN IS STILL WHAT THE FACE ANSWERS WITH while the legacy face retires:
+                // the structured error is what the loader RECORDS and what it holds the plugin's
+                // catalog to, and the developer message it carries is the one that reaches the
+                // caller, so nothing about the answer depends on whether a plugin shipped one.
+                Err(busbar_api::SecretError::new(
+                    kind,
+                    structured.developer_message,
+                ))
             }
         }
+    }
+}
+
+impl DynSecret {
+    /// The catalog this plugin's codes are rendered through: its own, or the wire's when it
+    /// shipped none.
+    #[must_use]
+    pub fn catalog(&self) -> &busbar_contract::Catalog {
+        self.raw.catalog.as_ref().unwrap_or_else(|| wire_catalog())
+    }
+
+    /// The structured error behind one wire answer: the plugin's own when it sent one, the frozen
+    /// pair minted into the wire's own code when it did not.
+    ///
+    /// A structured error that does not DECODE is the plugin contradicting the ABI rather than its
+    /// catalog, and becomes an `Internal` under the wire's code carrying both halves of what went
+    /// wrong — never a silent fallback to the pair, which would hide a plugin emitting garbage.
+    fn structured(
+        &self,
+        kind: SecretErrorKind,
+        message: &str,
+        error: Option<busbar_plugin::cold::WireError>,
+    ) -> busbar_contract::PluginError {
+        use busbar_contract::{ErrorClass, PluginError};
+        match error.map(serde_json::from_value::<PluginError>) {
+            Some(Ok(e)) => e,
+            Some(Err(bad)) => PluginError::new(ErrorClass::Internal, "wire.internal")
+                .with_message(format!("structured error did not decode: {bad}; {message}")),
+            None => PluginError::new(secret_wire_class(kind), secret_wire_code(kind))
+                .with_message(message.to_string()),
+        }
+    }
+
+    /// FIRST-USE REFUSAL of a code this plugin's catalog does not declare — see [`admit_code`].
+    fn admit(&self, e: busbar_contract::PluginError) -> busbar_contract::PluginError {
+        admit_code(self.catalog(), &self.raw.path, e)
+    }
+
+    /// THE LOG PATH: the five fields, verbatim, beside the plugin that said them. Nothing here
+    /// renders — rendering is the reason table's, in the caller's locale — this is the record.
+    fn record(&self, e: busbar_contract::PluginError) -> busbar_contract::PluginError {
+        tracing::warn!(
+            plugin = %self.raw.path,
+            class = %e.class,
+            code = %e.code,
+            params = ?e.params.as_slice(),
+            developer_message = %e.developer_message,
+            advisory = ?e.advisory,
+            "secret plugin reported a failure"
+        );
+        e
     }
 }
 
