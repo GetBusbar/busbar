@@ -79,6 +79,30 @@ fleet_instance_ids() {
 # throughput to FLOOR instead of to zero.
 FLOOR="${CI_RUNNER_ONDEMAND_FLOOR:-2}"
 
+# ── THE FLOOR IS A FLOOR OF *REGISTERED* BOXES, AND A STOPPED BOX IS STILL REGISTERED ────────────
+# Once scripts/ci-fleet-power.sh started STOPPING idle boxes, `pending,running` stopped being the
+# answer to "how many boxes does this fleet have". A stopped box keeps its EBS volume — the bare
+# repo, the shared checkout, the warm target/, the sccache — keeps its instance id, keeps its
+# runner registrations, and comes back in 60-90 s. Counting only the awake ones would make the
+# reconcile LAUNCH A REPLACEMENT for every box the stopper just put to sleep, which is the whole
+# saving spent on new boxes plus a ten-minute bootstrap each. So the floor counts what the fleet
+# HAS; CI_RUNNER_RUNNING_MAX, below, is what may be AWAKE at once, and that is what bounds the bill.
+REGISTERED_STATES="pending,running,stopping,stopped"
+fleet_registered_tsv() {
+  aws ec2 describe-instances \
+    --filters "Name=tag:Name,Values=$FLEET" \
+              "Name=instance-state-name,Values=$REGISTERED_STATES" \
+    --query 'Reservations[].Instances[].[InstanceId,InstanceLifecycle,Placement.AvailabilityZone,InstanceType]' \
+    --output text
+}
+fleet_registered_ondemand_ids() { fleet_registered_tsv | awk '$2!="spot" {print $1}'; }
+fleet_registered_spot_ids()     { fleet_registered_tsv | awk '$2=="spot" {print $1}'; }
+
+# HOW MANY MAY BE AWAKE AT ONCE. The bill is (boxes running) x (hours running) x the hourly rate
+# plus EBS for every box the fleet has, awake or not; this is the first factor. It defaults to the
+# registered floor, so a fleet that nobody configured behaves exactly as it did.
+RUNNING_MAX="${CI_RUNNER_RUNNING_MAX:-$FLOOR}"
+
 # ── Spot diversification ────────────────────────────────────────────────────────────────────────
 # One type in one AZ is one pool. Four 32-vCPU x86-64 types across every AZ the region offers them
 # in is ~20 pools, and `instance-terminated-no-capacity` is a statement about ONE of them.
@@ -449,19 +473,36 @@ fleet_file_rows() {
     }'
 }
 
+# THE REWRITE GOES THROUGH A TEMPORARY, AND NEVER LANDS EMPTY UNDER A RUNNING FLEET.
+# `> "$f"` TRUNCATES BEFORE THE QUERY RUNS. A describe that is throttled, that returns while the
+# fleet is mid-resize, or that fails on expired credentials then leaves four comment lines and no
+# host — and ~/.busbar-fleet IS the allocator's whole knowledge of the fleet, so the next landing
+# reads zero boxes and the queue HALTs. That is one of the two halves of the 11:5x halt ("no
+# prepared, reachable on-demand box among the 0", ten boxes running); the other is in
+# ci-remote-lib.sh's probe round. A file that is merely STALE costs one skipped box on the next
+# allocation, which the probe round already handles; a file that is EMPTY costs the queue.
 write_fleet_file() {
-  local f="${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet}"
+  local f="${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet}" rows tmp
   if dry; then printf '[dry-run] would rewrite %s from the live fleet\n' "$f" >&2; return 0; fi
+  rows="$(aws ec2 describe-instances \
+      --filters "Name=tag:Name,Values=$FLEET" "Name=instance-state-name,Values=running" \
+      --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone,PrivateIpAddress,InstanceLifecycle]' \
+      --output text | fleet_file_rows)"
+  if [ -z "$rows" ] && [ -n "$(fleet_instance_ids)" ]; then
+    log "REFUSING to rewrite $f: the host query returned no row while boxes are running — the old file stands"
+    return 1
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/busbar-fleet.XXXXXX")" || return 1
   {
     echo "# busbar CI fleet — written by scripts/ci-runners-*.sh at $(date -u +%FT%TZ)"
     echo "# <instance-id> <az> <private-ip> <lifecycle>   (ssh reaches these over SSM; there is no public port)"
     echo "# lifecycle is EC2's own InstanceLifecycle: spot | ondemand | unknown. A PROOF only ever"
     echo "# goes to an ondemand box — a reclaimed spot box is a proof with no verdict (see ci-remote-lib.sh)."
-    aws ec2 describe-instances \
-      --filters "Name=tag:Name,Values=$FLEET" "Name=instance-state-name,Values=running" \
-      --query 'Reservations[].Instances[].[InstanceId,Placement.AvailabilityZone,PrivateIpAddress,InstanceLifecycle]' \
-      --output text | fleet_file_rows
-  } > "$f"
+    echo "# ONLY RUNNING BOXES ARE LISTED. A stopped box still counts toward CI_RUNNER_ONDEMAND_FLOOR"
+    echo "# and still holds its EBS and its registrations; scripts/ci-fleet-power.sh starts what a"
+    echo "# sweep needs and rewrites this file when it is ready."
+    printf '%s\n' "$rows"
+  } >"$tmp" && mv -f "$tmp" "$f"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -553,7 +594,70 @@ _runners_lib_selftest() {
   _t "the header names the fourth column" 1 \
      "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c '<lifecycle>')"
 
-  if [ "$fails" -eq 0 ]; then echo "ci-runners-lib selftest: GREEN (prove box is not a runner; the prove type's default is measured; the host file records each box's lifecycle)"; return 0; fi
+  # ── THE REWRITE NEVER EMPTIES THE FILE UNDER A RUNNING FLEET ─────────────────────────────────
+  # THE HALT, MEASURED 11:5x: "no prepared, reachable on-demand box among the 0" with ten boxes
+  # running, minutes after a resize and a 32-registration ghost sweep. `> "$f"` truncates before
+  # the query runs, so a describe that is throttled, mid-resize or unauthorised leaves the
+  # allocator's ONLY knowledge of the fleet as four comment lines. Driven for real here, with a
+  # stub `aws` on PATH, because the failure is in the redirection and not in anything greppable.
+  echo "ci-runners-lib selftest: the host file is never emptied while boxes are running"
+  local _r; _r="$(mktemp -d "${TMPDIR:-/tmp}/ci-runners-lib-file.XXXXXX")"
+  mkdir -p "$_r/bin"
+  cat >"$_r/bin/aws" <<'GOOD'
+#!/usr/bin/env bash
+case "$2" in describe-instances)
+  for a in "$@"; do case "$a" in *PrivateIpAddress*) printf 'i-live	us-east-1a	10.0.0.7	None
+'; exit 0 ;; esac; done
+  echo "i-live" ;; esac
+exit 0
+GOOD
+  chmod 0755 "$_r/bin/aws"
+  local _op="$PATH"; PATH="$_r/bin:$PATH"
+  BUSBAR_FLEET_FILE="$_r/fleet" write_fleet_file
+  _t "a good rewrite lands the row" 1 \
+     "$(awk 'NF && $1 !~ /^#/ && $4 == "ondemand"' "$_r/fleet" | grep -c . || true)"
+  cat >"$_r/bin/aws" <<'EMPTY'
+#!/usr/bin/env bash
+# The host query answers nothing (throttled, mid-resize, expired credentials); the fleet is up.
+case "$2" in describe-instances)
+  for a in "$@"; do case "$a" in *PrivateIpAddress*) exit 0 ;; esac; done
+  echo "i-live" ;; esac
+exit 0
+EMPTY
+  chmod 0755 "$_r/bin/aws"
+  BUSBAR_FLEET_FILE="$_r/fleet" write_fleet_file >/dev/null 2>&1
+  _t "  ...and an empty answer leaves the old file standing" 1 \
+     "$(awk 'NF && $1 !~ /^#/ && $4 == "ondemand"' "$_r/fleet" | grep -c . || true)"
+  _t "  ...reporting the refusal rather than succeeding" 1 \
+     "$(BUSBAR_FLEET_FILE="$_r/fleet" write_fleet_file >/dev/null 2>&1; echo $?)"
+  _t "  ...and saying so out loud" 1 \
+     "$(BUSBAR_FLEET_FILE="$_r/fleet" write_fleet_file 2>&1 | grep -c 'REFUSING to rewrite')"
+  # AND IT IS NOT A `>` ANY MORE. The temporary + mv is what makes a reader that opens the file
+  # mid-rewrite see one whole fleet or the other, never four comment lines and half a fleet.
+  _t "the rewrite is atomic (a temporary, then mv)" 1 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c 'mv -f "\$tmp" "\$f"')"
+  _t "  ...and nothing truncates the file in place" 0 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c '} > "\$f"')"
+  PATH="$_op"; rm -rf "$_r"
+
+  # ── THE FLOOR COUNTS A STOPPED BOX ───────────────────────────────────────────────────────────
+  # A stopped box keeps its id, its EBS and its registrations and is 60-90 s from proving. Counting
+  # only `pending,running` toward CI_RUNNER_ONDEMAND_FLOOR would make this watchdog launch a
+  # replacement for every box the idle stopper just put to sleep — the saving spent on new boxes,
+  # plus a ten-minute bootstrap each.
+  echo "ci-runners-lib selftest: the on-demand floor counts REGISTERED boxes, stopped ones included"
+  _t "the registered query asks for the stopped states too" 1 \
+     "$(sed -n '/^fleet_registered_tsv/,/^}/p' "${BASH_SOURCE[0]}" | grep -c 'Values=\$REGISTERED_STATES')"
+  _t "  ...and those states include stopped" 1 \
+     "$(printf '%s' "$REGISTERED_STATES" | tr ',' '\n' | grep -cx stopped)"
+  _t "  ...and stopping" 1 \
+     "$(printf '%s' "$REGISTERED_STATES" | tr ',' '\n' | grep -cx stopping)"
+  _t "the RUNNING max defaults to the registered floor" "$FLOOR" \
+     "$(CI_RUNNER_RUNNING_MAX=; printf '%s' "${CI_RUNNER_RUNNING_MAX:-$FLOOR}")"
+  _t "  ...and an operator can bound the awake fleet below it" "3" \
+     "$(CI_RUNNER_RUNNING_MAX=3 bash -c 'printf "%s" "${CI_RUNNER_RUNNING_MAX:-9}"')"
+
+  if [ "$fails" -eq 0 ]; then echo "ci-runners-lib selftest: GREEN (prove box is not a runner; the prove type's default is measured; the host file records each box's lifecycle and is never emptied; the floor counts a stopped box)"; return 0; fi
   echo "ci-runners-lib selftest: RED ($fails failure(s))" >&2; return 1
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _runners_lib_selftest; exit $?; fi

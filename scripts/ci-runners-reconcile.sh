@@ -79,7 +79,30 @@ reconcile_selftest() {
      "$(grep -c 'git -C busbar.git fetch -q ori[g]in' "${BASH_SOURCE[0]}")"
   _t "  ...and no other leg prunes heads"    0 \
      "$(grep -c -- '--prun[e] origin' "${BASH_SOURCE[0]}")"
-  if [ "$fails" -eq 0 ]; then echo "ci-runners-reconcile selftest: GREEN (the SSM refresh, without --prune)"; return 0; fi
+  # ── THE FLOOR COUNTS A STOPPED BOX, AND THE PASS RUNS THE IDLE STOPPER ───────────────────────
+  # Both are about the same arithmetic: what the fleet HAS versus what is AWAKE. Reading the floor
+  # off `pending,running` would launch a replacement for every box the stopper just put to sleep.
+  echo "ci-runners-reconcile selftest: the floor counts what the fleet HAS, not what is awake"
+  _t "the top-up counts REGISTERED on-demand boxes" 1 \
+     "$(grep -c 'have_od="\$(n_of "\$(fleet_registered_onde[m]and_ids)")"' "${BASH_SOURCE[0]}")"
+  _t "  ...and never the running-only query"        0 \
+     "$(grep -c 'have_od="\$(n_of "\$(fleet_onde[m]and_ids)")"' "${BASH_SOURCE[0]}")"
+  _t "  ...and the same for spot"                   1 \
+     "$(grep -c 'have_spot="\$(n_of "\$(fleet_registered_sp[o]t_ids)")"' "${BASH_SOURCE[0]}")"
+  _t "the summary reports awake against the ceiling" 1 \
+     "$(grep -c 'awake, online runn[e]rs' "${BASH_SOURCE[0]}")"
+  echo "ci-runners-reconcile selftest: the idle stopper runs on the timer, not when someone remembers"
+  _t "the pass calls the stopper"                   1 \
+     "$(grep -c 'ci-fleet-po[w]er.sh" --stop-idle' "${BASH_SOURCE[0]}")"
+  _t "  ...on the plain 15-minute path, not under --converge" 1 \
+     "$([ "$(grep -n 'ci-fleet-po[w]er.sh" --stop-idle' "${BASH_SOURCE[0]}" | cut -d: -f1)" \
+        -lt "$(grep -n '^if \[ "\$CONVERGE" = 1 \]; then' "${BASH_SOURCE[0]}" | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and an operator can turn it off"         1 \
+     "$(grep -c 'CI_RUNNER_POW[E]R:-1' "${BASH_SOURCE[0]}")"
+  _t "the stopper's own selftest is green"          0 \
+     "$(bash "$HERE/ci-fleet-power.sh" --selftest >/dev/null 2>&1; echo $?)"
+
+  if [ "$fails" -eq 0 ]; then echo "ci-runners-reconcile selftest: GREEN (the SSM refresh without --prune; the floor counts a stopped box; the idle stopper is on the timer)"; return 0; fi
   echo "ci-runners-reconcile selftest: RED ($fails failure(s))" >&2; return 1
 }
 [ "$SELFTEST" = 1 ] && { reconcile_selftest; exit $?; }
@@ -89,9 +112,17 @@ command -v gh >/dev/null || die "gh is required (the sweep and the registration 
 dry && log "DRY RUN: read-only describes still run; nothing will be launched, deleted or registered"
 
 # ── 1. Top up ───────────────────────────────────────────────────────────────────────────────────
-have_od="$(n_of "$(fleet_ondemand_ids)")"
-have_spot="$(n_of "$(fleet_spot_ids)")"
-log "fleet: spot $have_spot/$COUNT, on-demand $have_od/$FLOOR"
+# THE FLOOR IS A FLOOR OF *REGISTERED* BOXES, AND A STOPPED BOX IS REGISTERED. It keeps its EBS
+# volume (the bare repo, the shared checkout, the warm target/, the sccache), its instance id and
+# its runner registrations, and scripts/ci-fleet-power.sh has it proving again in 60-90 s. Counting
+# only the awake ones here would launch a brand-new box for every box the idle stopper just put to
+# sleep: the whole saving spent on replacements, each one ten minutes from being useful, and the
+# stopped originals still on the bill for their EBS. What may be AWAKE at once is a separate knob,
+# CI_RUNNER_RUNNING_MAX, and that is the one that bounds the hourly cost.
+have_od="$(n_of "$(fleet_registered_ondemand_ids)")"
+have_spot="$(n_of "$(fleet_registered_spot_ids)")"
+awake="$(n_of "$(fleet_instance_ids)")"
+log "fleet: spot $have_spot/$COUNT, on-demand $have_od/$FLOOR registered ($awake awake, max $RUNNING_MAX)"
 
 launched=""
 want_od=$(( FLOOR - have_od ))
@@ -112,6 +143,30 @@ launched="$(printf '%s' "$launched" | tr -s ' ' ' ' | sed -e 's/^ //' -e 's/ $//
 # for, and the pass fifteen minutes from now registers it. Blocking here is how a 15-minute timer
 # becomes two overlapping 15-minute timers.
 [ -n "$launched" ] && log "(new boxes bootstrap for ~8-12 min; the next pass registers them)"
+
+# ── 1b. POWER: put the idle boxes to sleep, and never run more than the ceiling ─────────────────
+# THIS IS THE TIMER THE STOPPER WANTED. $569 was measured for eighteen boxes that were mostly idle,
+# and the constraint was never CPU — it was proof SLOTS, two per box, with a battery that took one
+# core. A box that has held no proof for LANDQ_IDLE_STOP_MINS is STOPPED, not terminated: EBS
+# persists, the bill falls to gp3 storage alone, and the next sweep starts what it needs.
+#
+# IT CANNOT STOP A PROOF. ci-fleet-power.sh asks each box its OWN PROOF REGISTRY under the box's own
+# lock — the lock a proof takes to announce itself — and a box it claims refuses to admit any
+# further proof before it is stopped. Nothing here needs to know that; what this pass must not do is
+# skip it, because a stopper that only runs when someone remembers is the nightly-stop lesson again
+# with the sign reversed.
+POWER_STATUS="skipped"
+if [ "${CI_RUNNER_POWER:-1}" = 1 ] && [ -x "$HERE/ci-fleet-power.sh" ]; then
+  POWER_STATUS="$(bash "$HERE/ci-fleet-power.sh" --stop-idle 2>&1 | tail -1)"
+  log "power: $POWER_STATUS"
+  awake="$(n_of "$(fleet_instance_ids)")"
+  if [ "$awake" -gt "$RUNNING_MAX" ]; then
+    # Not an error and not something this pass forces: a box above the ceiling is a box holding a
+    # proof (the stopper refused it) or a box inside its idle window. Both resolve themselves on
+    # the next pass, and neither is worth killing work over.
+    log "power: $awake box(es) awake, above CI_RUNNER_RUNNING_MAX=$RUNNING_MAX — the surplus is proving or still inside its idle window; the next pass re-asks"
+  fi
+fi
 
 # ── 2. Sweep the ghosts, BEFORE registering anything ────────────────────────────────────────────
 sweep_ghost_runners
@@ -315,12 +370,13 @@ fi
 # fleet what it should have been". The counts are re-read from EC2 AFTER the pass rather than
 # inferred from what was launched: a RunInstances that returned an id and then failed its capacity
 # check is not a box.
-now_od="$(n_of "$(fleet_ondemand_ids)")"
-now_spot="$(n_of "$(fleet_spot_ids)")"
+now_od="$(n_of "$(fleet_registered_ondemand_ids)")"
+now_spot="$(n_of "$(fleet_registered_spot_ids)")"
+now_awake="$(n_of "$(fleet_instance_ids)")"
 now_runners="$(n_of "$(gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" \
   --jq '.runners[] | select(.status=="online") | .name' 2>/dev/null)")"
-printf 'reconcile: spot %s/%s, on-demand %s/%s, online runners %s, swept ghosts %s, registered %s, remote-prove %s\n' \
-  "$now_spot" "$COUNT" "$now_od" "$FLOOR" "$now_runners" "$SWEPT_GHOSTS" \
+printf 'reconcile: spot %s/%s, on-demand %s/%s registered, %s/%s awake, online runners %s, swept ghosts %s, registered %s, remote-prove %s\n' \
+  "$now_spot" "$COUNT" "$now_od" "$FLOOR" "$now_awake" "$RUNNING_MAX" "$now_runners" "$SWEPT_GHOSTS" \
   "$(n_of "$REGISTERED")" "$REMOTE_STATUS"
 
 # ALWAYS ZERO. A healthy pass, a pass that could not reach a bootstrapping box, and a pass that
