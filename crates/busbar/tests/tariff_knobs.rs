@@ -11,7 +11,7 @@
 //!
 //! # What is driven, and from where
 //!
-//! [`DECLARED`] is the five shipped planes as the composition root sees them: the registry key each
+//! [`all_planes`] is the five shipped planes as the composition root sees them: the registry key each
 //! declares, where each says its status is reported, and whether each declares its local work
 //! chargeable. Nothing here is written out by hand — every field is read through
 //! [`busbar_contract::plane::PlaneMeta`] off the plane's own `meta.rs`, so a sixth plane joins this
@@ -27,8 +27,21 @@
 //! a number the cell holds still.
 
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::StatusLeg;
 use busbar_contract::{FinishClass, StatusClass};
 use busbar_kernel::teller::{charge, Charge, DisputePolicy, FeeEvidence, TariffCell};
+
+/// ONE UNIT, AS THE PRICING SITE READS IT: what the UNIT is, and the head its answer recorded.
+///
+/// They are two values because they come from two places — the leg that built the unit states the
+/// first, the one step that saw the answer records the second — and a cell that folded them into
+/// one would be proving a shape the tree does not have.
+type Shape = (FeeEvidence, StatusLeg);
+
+/// What one shape is charged under one schedule, through the one site a tariff is applied at.
+fn charge_of(shape: &Shape, tariff: &TariffCell) -> Charge {
+    charge(&shape.0, Some(&shape.1), tariff)
+}
 
 /// One plane's declarations, as the fee reads them.
 struct Declared {
@@ -61,42 +74,58 @@ fn all_planes() -> Vec<Declared> {
 }
 
 /// A completed exchange inside an admitted visit, on one plane.
-fn completed(plane: &Declared) -> FeeEvidence {
-    FeeEvidence {
-        admitted: true,
-        client_open_or_one_shot: true,
-        selected_upstream: true,
-        chargeable_local: plane.chargeable_local,
-        relayed_first_response_frame: true,
-        status_at: plane.status_at,
-        status: Some(StatusClass::Success),
-        finish: Some(FinishClass::Complete),
-    }
+fn completed(plane: &Declared) -> Shape {
+    (
+        FeeEvidence {
+            admitted: true,
+            client_open_or_one_shot: true,
+            selected_upstream: true,
+            chargeable_local: plane.chargeable_local,
+        },
+        StatusLeg {
+            at: plane.status_at,
+            status: Some(StatusClass::Success),
+            finish: Some(FinishClass::Complete),
+            delivered: true,
+            degraded: false,
+            relayed_error: None,
+        },
+    )
 }
 
 /// The same visit, whose two endings contradict each other: the client saw an answer start, the
 /// plane says it failed.
-fn contradicted(plane: &Declared) -> FeeEvidence {
-    FeeEvidence {
-        finish: Some(FinishClass::Error),
-        ..completed(plane)
-    }
+fn contradicted(plane: &Declared) -> Shape {
+    let (evidence, head) = completed(plane);
+    (
+        evidence,
+        StatusLeg {
+            finish: Some(FinishClass::Error),
+            ..head
+        },
+    )
 }
 
 /// A caller refused before the door: nothing was admitted, and nothing about the exchange exists.
-fn refused_before_admit(plane: &Declared) -> FeeEvidence {
-    FeeEvidence {
-        admitted: false,
-        selected_upstream: false,
-        relayed_first_response_frame: false,
-        status: None,
-        finish: Some(FinishClass::Error),
-        ..completed(plane)
-    }
+fn refused_before_admit(plane: &Declared) -> Shape {
+    let (evidence, head) = completed(plane);
+    (
+        FeeEvidence {
+            admitted: false,
+            selected_upstream: false,
+            ..evidence
+        },
+        StatusLeg {
+            status: None,
+            finish: Some(FinishClass::Error),
+            delivered: false,
+            ..head
+        },
+    )
 }
 
 /// Every ending shape this file knows how to build, for one plane.
-fn every_shape(plane: &Declared) -> Vec<(&'static str, FeeEvidence)> {
+fn every_shape(plane: &Declared) -> Vec<(&'static str, Shape)> {
     vec![
         ("completed", completed(plane)),
         ("contradicted", contradicted(plane)),
@@ -121,8 +150,8 @@ fn with_entry_fee(enabled: bool) -> TariffCell {
 fn the_entry_fee_knob_moves_the_entry_count_on_every_plane_alike() {
     for plane in all_planes() {
         for (shape, evidence) in every_shape(&plane) {
-            let off = charge(&evidence, &with_entry_fee(false));
-            let on = charge(&evidence, &with_entry_fee(true));
+            let off = charge_of(&evidence, &with_entry_fee(false));
+            let on = charge_of(&evidence, &with_entry_fee(true));
             assert_eq!(
                 off.entry, 0,
                 "{}/{shape}: a node that does not charge for the door charges for no doors",
@@ -130,7 +159,7 @@ fn the_entry_fee_knob_moves_the_entry_count_on_every_plane_alike() {
             );
             assert_eq!(
                 on.entry,
-                u32::from(evidence.admitted),
+                u32::from(evidence.0.admitted),
                 "{}/{shape}: one entry per admitted visit, none for a caller who never became one",
                 plane.key
             );
@@ -152,8 +181,8 @@ fn the_entry_fee_knob_moves_the_entry_count_on_every_plane_alike() {
 #[test]
 fn a_caller_refused_before_the_door_is_charged_no_entry_on_any_plane() {
     for plane in all_planes() {
-        let admitted = charge(&completed(&plane), &with_entry_fee(true)).entry;
-        let refused = charge(&refused_before_admit(&plane), &with_entry_fee(true)).entry;
+        let admitted = charge_of(&completed(&plane), &with_entry_fee(true)).entry;
+        let refused = charge_of(&refused_before_admit(&plane), &with_entry_fee(true)).entry;
         assert_ne!(
             admitted, refused,
             "{}: if these are equal the door is not what is being charged for",
@@ -178,7 +207,7 @@ fn the_dispute_policy_knob_moves_a_contradicted_unit_on_every_plane_alike() {
     for plane in all_planes() {
         let mut seen = Vec::new();
         for (policy, transaction, units) in expected {
-            let charged = charge(
+            let charged = charge_of(
                 &contradicted(&plane),
                 &TariffCell {
                     dispute_policy: policy,
@@ -225,7 +254,7 @@ fn the_dispute_policy_knob_moves_nothing_on_a_unit_that_did_not_contradict() {
             ]
             .into_iter()
             .map(|dispute_policy| {
-                charge(
+                charge_of(
                     &shape,
                     &TariffCell {
                         dispute_policy,
@@ -254,12 +283,16 @@ fn a_declared_local_service_is_the_only_thing_that_bills_a_visit_with_no_destina
     for plane in all_planes() {
         let mut answers = Vec::new();
         for chargeable_local in [false, true] {
-            let local_only = FeeEvidence {
-                selected_upstream: false,
-                chargeable_local,
-                ..completed(&plane)
-            };
-            let charged = charge(&local_only, &TariffCell::default());
+            let (evidence, head) = completed(&plane);
+            let local_only = (
+                FeeEvidence {
+                    selected_upstream: false,
+                    chargeable_local,
+                    ..evidence
+                },
+                head,
+            );
+            let charged = charge_of(&local_only, &TariffCell::default());
             assert_eq!(
                 charged.transaction,
                 u32::from(chargeable_local),
@@ -296,7 +329,7 @@ fn no_schedule_and_no_shape_tells_the_five_planes_apart() {
         for index in 0..every_shape(&planes[0]).len() {
             let answers: Vec<Charge> = planes
                 .iter()
-                .map(|plane| charge(&every_shape(plane)[index].1, &schedule))
+                .map(|plane| charge_of(&every_shape(plane)[index].1, &schedule))
                 .collect();
             assert!(
                 answers.windows(2).all(|w| w[0] == w[1]),
@@ -309,4 +342,73 @@ fn no_schedule_and_no_shape_tells_the_five_planes_apart() {
         5,
         "the shipped planes; a sixth joins by existing"
     );
+}
+
+/// **THE POOL AND THE TIER REACH THE SCHEDULE, AND THEY SELECT A DIFFERENT CELL.**
+///
+/// The scopes are worth nothing if the site that resolves them is only ever handed a plane key: a
+/// pool scope nothing passes a pool to is a schedule an operator wrote that will never be selected,
+/// which is the same defect as a scope naming a pool nobody defined — and it is invisible, because
+/// the lookup misses into the default and the default is a perfectly good answer.
+///
+/// RED BEFORE GREEN: driven through the real grammar with the real resolution order, so a resolver
+/// that dropped either argument would answer the plane's cell at every row below and every
+/// `assert_ne!` would collapse. Written as differences for that reason.
+#[test]
+fn a_pool_and_a_tier_select_a_cell_the_plane_scope_does_not() {
+    let planes = all_planes();
+    let plane = planes.first().expect("a shipped plane").key;
+    let section: busbar_core::config::tariff::TariffCfg = serde_yaml::from_str(&format!(
+        r#"
+default:
+  dispute_policy: entry_plus_units
+plane:
+  {plane}:
+    dispute_policy: full
+pool:
+  pool-a:
+    dispute_policy: entry_only
+tier:
+  gold:
+    entry_fee: {{ enabled: true }}
+"#
+    ))
+    .expect("the fragment is the grammar under test");
+
+    let cell = |pool: Option<&str>, tier: Option<&str>| {
+        let r = section.cell(plane, pool, tier);
+        (
+            r.entry_enabled,
+            r.disputed_charges_transaction,
+            r.disputed_charges_units,
+        )
+    };
+
+    // The plane's own scope, reached with neither a pool nor a tier: what a leg that knows neither
+    // gets, and what every one of the rows below has to differ from to prove it was consulted.
+    let plane_only = cell(None, None);
+    assert_eq!(plane_only, (false, true, true));
+
+    // THE POOL BEATS THE PLANE.
+    let pooled = cell(Some("pool-a"), None);
+    assert_ne!(
+        pooled, plane_only,
+        "a pool scope that changes nothing is a pool argument nothing carries"
+    );
+    assert_eq!(pooled, (false, false, false));
+
+    // A POOL NO SCOPE NAMES FALLS THROUGH, which is what makes a miss a lookup and not a branch.
+    assert_eq!(
+        cell(Some("a-pool-the-section-does-not-name"), None),
+        plane_only
+    );
+
+    // THE TIER BEATS THE POOL, field by field: it names the door and inherits the pool's dispute
+    // rule rather than resetting it to the type's default.
+    let tiered = cell(Some("pool-a"), Some("gold"));
+    assert_ne!(
+        tiered, pooled,
+        "a tier scope that changes nothing is a tier argument nothing carries"
+    );
+    assert_eq!(tiered, (true, false, false));
 }

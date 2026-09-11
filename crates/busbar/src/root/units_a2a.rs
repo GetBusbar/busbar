@@ -987,7 +987,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         let fee_count = busbar_kernel::teller::charge(
             &fee_identity(&self.draft, ctx.origin()),
             ctx.head(),
-            &crate::root::kernel::tariff_cell(<A2aPlane as busbar_contract::plane::PlaneMeta>::KEY),
+            &crate::root::kernel::tariff_cell(
+                <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                Some(self.bindings.pool),
+                None,
+            ),
         )
         .transaction;
         AuditInputs {
@@ -1514,6 +1518,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             fee: fee_identity(&self.draft, ctx.origin()),
             tariff: crate::root::kernel::tariff_cell(
                 <A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                Some(self.bindings.pool),
+                None,
             ),
         }
     }

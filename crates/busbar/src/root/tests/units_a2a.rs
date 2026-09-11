@@ -788,11 +788,10 @@ fn an_upstream_shaped_destination_with_no_lane_is_no_destination() {
             "an upstream shape with nothing behind it is not somewhere the task went"
         );
         assert_eq!(
-            crate::root::kernel::default_fee(&fee_evidence(
-                &no_agent,
-                busbar_caps::OriginKind::Client,
-                true
-            ))
+            crate::root::kernel::default_fee(
+                &fee_identity(&no_agent, busbar_caps::OriginKind::Client),
+                Some(&served_head(&no_agent, true)),
+            )
             .0,
             0,
             "a visit that held no exchange is charged for the visit and nothing else"

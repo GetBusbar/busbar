@@ -34,7 +34,7 @@
 //! nevertheless a break, and it is why the break is proven here and in `fee_one_decision.rs` rather
 //! than by a diverging recording.
 
-use busbar_contract::{FinishClass, StatusAt, StatusClass};
+use busbar_contract::{FinishClass, StatusAt, StatusClass, StatusLeg};
 use busbar_kernel::teller::{charge, DisputePolicy, FeeEvidence, TariffCell};
 
 /// Where the recording lives, from this crate rather than from a working directory.
@@ -51,18 +51,17 @@ fn previous_release() -> TariffCell {
     }
 }
 
-/// Every combination of evidence a unit can carry. Written as a product rather than as a list, so
-/// a field gaining a case cannot quietly leave the cube.
-fn every_evidence() -> Vec<FeeEvidence> {
+/// Every combination of evidence a unit can carry — what the UNIT is, and the head its answer
+/// recorded. Written as a product rather than as a list, so a field gaining a case cannot quietly
+/// leave the cube.
+fn every_evidence() -> Vec<(FeeEvidence, StatusLeg)> {
     let mut out = Vec::new();
     for admitted in [false, true] {
         for client_open_or_one_shot in [false, true] {
             for selected_upstream in [false, true] {
                 for chargeable_local in [false, true] {
-                    for relayed_first_response_frame in [false, true] {
-                        for status_at in
-                            [None, Some(StatusAt::FirstFrame), Some(StatusAt::Terminal)]
-                        {
+                    for delivered in [false, true] {
+                        for at in [None, Some(StatusAt::FirstFrame), Some(StatusAt::Terminal)] {
                             for status in [
                                 None,
                                 Some(StatusClass::Success),
@@ -77,16 +76,22 @@ fn every_evidence() -> Vec<FeeEvidence> {
                                     Some(FinishClass::Partial),
                                     Some(FinishClass::Error),
                                 ] {
-                                    out.push(FeeEvidence {
-                                        admitted,
-                                        client_open_or_one_shot,
-                                        selected_upstream,
-                                        chargeable_local,
-                                        relayed_first_response_frame,
-                                        status_at,
-                                        status,
-                                        finish,
-                                    });
+                                    out.push((
+                                        FeeEvidence {
+                                            admitted,
+                                            client_open_or_one_shot,
+                                            selected_upstream,
+                                            chargeable_local,
+                                        },
+                                        StatusLeg {
+                                            at,
+                                            status,
+                                            finish,
+                                            delivered,
+                                            degraded: false,
+                                            relayed_error: None,
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -108,9 +113,9 @@ fn the_two_schedules_agree_except_where_the_two_readings_contradict() {
     let cube = every_evidence();
     assert_eq!(cube.len(), 2 * 2 * 2 * 2 * 2 * 3 * 5 * 5, "the whole cube");
     let mut differing = 0usize;
-    for evidence in &cube {
-        let previous = charge(evidence, &previous_release());
-        let shipped = charge(evidence, &TariffCell::default());
+    for (evidence, head) in &cube {
+        let previous = charge(evidence, Some(head), &previous_release());
+        let shipped = charge(evidence, Some(head), &TariffCell::default());
         if previous == shipped {
             continue;
         }
@@ -119,7 +124,7 @@ fn the_two_schedules_agree_except_where_the_two_readings_contradict() {
             previous
                 .flags
                 .contains(busbar_caps::PostingFlags::METER_DISPUTED),
-            "the schedules parted on a unit whose readings did not contradict: {evidence:?}"
+            "the schedules parted on a unit whose readings did not contradict: {evidence:?} {head:?}"
         );
         assert_eq!(
             (previous.transaction, shipped.transaction),

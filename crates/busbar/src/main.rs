@@ -1346,8 +1346,8 @@ async fn run(data_workers: usize) {
     // section, which answers the default cell at every scope.
     {
         let schedule = cfg.tariff.clone().unwrap_or_default();
-        root::kernel::ROOT_TARIFF.install(Box::new(move |plane| {
-            let resolved = schedule.cell(plane, None, None);
+        root::kernel::ROOT_TARIFF.install(Box::new(move |plane, pool, tier| {
+            let resolved = schedule.cell(plane, pool, tier);
             busbar_kernel::teller::TariffCell {
                 entry_fee_enabled: resolved.entry_enabled,
                 dispute_policy: busbar_kernel::teller::DisputePolicy::charging(

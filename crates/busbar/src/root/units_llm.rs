@@ -1023,7 +1023,11 @@ impl LateAccrual {
         let fee = busbar_kernel::teller::charge(
             &fee_evidence(&walk, origin),
             head_facts(walk.served_status(), Some(report.finish)).as_ref(),
-            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
+            // NO POOL AND NO TIER HERE, and that is a fact rather than an omission: this is the
+            // LATE arm, reached from a carried report after the walk is gone, and the pool a unit
+            // was routed to is the walk's. `None` resolves to the next scope out, which is what an
+            // unnamed pool has always done — see `tariff_cell`.
+            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY, None, None),
         );
         let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
@@ -1608,7 +1612,11 @@ impl Units for LlmUnit<'_> {
         let fee = busbar_kernel::teller::charge(
             &fee_evidence(&self.walk, ctx.origin()),
             ctx.head(),
-            &crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
+            &crate::root::kernel::tariff_cell(
+                <LlmPlane as PlaneMeta>::KEY,
+                Some(self.walk.effective_pool(&self.model()).as_str()),
+                None,
+            ),
         );
         self.walk.meter(token, usage, &|report| {
             self.history
@@ -1714,7 +1722,14 @@ impl Units for LlmUnit<'_> {
             // from it and the late pricing arm prices from it, so a row that says one fee and a
             // posting that says none cannot both be true of one unit.
             fee: fee_evidence(&self.walk, ctx.origin()),
-            tariff: crate::root::kernel::tariff_cell(<LlmPlane as PlaneMeta>::KEY),
+            // THE POOL THE UNIT WAS ROUTED TO, not the one it asked for: a request failed over to
+            // a second pool ran there, and a schedule resolved against the pool it never reached
+            // would bill it under a cell nothing about the unit was true of.
+            tariff: crate::root::kernel::tariff_cell(
+                <LlmPlane as PlaneMeta>::KEY,
+                Some(self.walk.effective_pool(&self.model()).as_str()),
+                None,
+            ),
         }
     }
 }

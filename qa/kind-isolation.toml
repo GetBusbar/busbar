@@ -1383,7 +1383,7 @@ count = "177"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "94"
+count = "95"
 
 [[cell]]
 crate = "busbar"
@@ -1400,7 +1400,7 @@ kind = "plane"
 # registry key the plane itself declares. A FACE READ, not a plane name the root learned: the root
 # asks the same question of all five in the same words, and a sixth answers it without this file
 # changing.
-count = "1898"
+count = "1900"
 
 [[cell]]
 crate = "busbar"

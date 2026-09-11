@@ -1814,6 +1814,12 @@ impl Units for VoiceUnit<'_> {
             fee: self.fee(ctx),
             tariff: crate::root::kernel::tariff_cell(
                 <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+                // NO POOL YET, and the reason is a fact about this leg rather than a choice: the
+                // pool a voice unit reaches is the upstream LANE, which the session's dial holds
+                // and which is not on the unit at the two moments the schedule is resolved. `None`
+                // resolves to the next scope out, exactly as an unnamed pool always has.
+                None,
+                None,
             ),
         }
     }
@@ -1932,6 +1938,12 @@ impl VoiceUnit<'_> {
             ctx.head(),
             &crate::root::kernel::tariff_cell(
                 <VoicePlane as busbar_contract::plane::PlaneMeta>::KEY,
+                // NO POOL YET, and the reason is a fact about this leg rather than a choice: the
+                // pool a voice unit reaches is the upstream LANE, which the session's dial holds
+                // and which is not on the unit at the two moments the schedule is resolved. `None`
+                // resolves to the next scope out, exactly as an unnamed pool always has.
+                None,
+                None,
             ),
         )
         .transaction;

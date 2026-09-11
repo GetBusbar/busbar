@@ -1374,6 +1374,7 @@ impl Ended<'_> {
 /// document, and the call-shaped line is a flat count rather than what the amount is denominated in.
 #[must_use]
 pub fn evidence(ended: &Ended<'_>) -> Evidence {
+    let pool = ended.resource.as_ref().map(|r| pool_key(r.name));
     Evidence {
         // ONE DECLARED CLASS, because this plane's answer IS its document and what it spent is the
         // size of it. A plane that declares more reports more; what the shape no longer does is
@@ -1396,8 +1397,13 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
         // The fee's upstream rule and the request slot's are the same rule, read from the same fact.
         upstream_candidate: ended.shape.hops_upstream,
         fee: fee_identity(ended.shape, ended.origin),
+        // THE POOL IS THE SERVER THIS UNIT WAS ROUTED TO, keyed the way the breaker and the pool
+        // table key it — the same string a grant is checked against, so a pool scope names what an
+        // operator already writes elsewhere in the file.
         tariff: crate::root::kernel::tariff_cell(
             <McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            pool.as_deref(),
+            None,
         ),
     }
 }
@@ -1506,10 +1512,15 @@ pub fn audit_inputs(
     origin: busbar_caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
+    let pool = ended.resource.as_ref().map(|r| pool_key(r.name));
     let fee_count = busbar_kernel::teller::charge(
         &fee_identity(ended.shape, ended.origin),
         Some(&ended.head()),
-        &crate::root::kernel::tariff_cell(<McpPlane as busbar_contract::plane::PlaneMeta>::KEY),
+        &crate::root::kernel::tariff_cell(
+            <McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
+            pool.as_deref(),
+            None,
+        ),
     )
     .transaction;
     AuditInputs {
