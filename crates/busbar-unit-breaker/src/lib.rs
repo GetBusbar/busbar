@@ -164,6 +164,11 @@ pub trait Breaker: sealed::Sealed {
     /// Side-effect-free: this `(pool, destination)` cell's current [`LaneState`], folding in the
     /// destination's lifetime budget (`BudgetExhausted` takes precedence — an exhausted destination
     /// is excluded regardless of what its breaker cell reads).
+    ///
+    /// THE SAME READING as the token-free [`BreakerUnit::state_peek`], because it IS that reading:
+    /// this method delegates. It stays because the route step already holds the token and reads
+    /// health through the unit's sealed shape like every other unit; the peek exists because the
+    /// VERIFY step does not hold one and must ask the identical question.
     fn state(
         &self,
         pool: &str,
@@ -408,6 +413,48 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             .clone()
     }
 
+    /// This `(pool, destination)`'s cell, if one has already been created — NEVER creating one.
+    ///
+    /// The lookup half of [`Self::cell`] with the creation half removed, which is the whole of what
+    /// makes a peek a peek: creating a cell publishes an entry in the cell map and registers the
+    /// pool name against the destination, and both are writes. A reader that took them would be a
+    /// read that changes what a later hard-down fan-out reaches.
+    fn cell_peek(&self, pool: &str, destination: DestinationId) -> Option<Arc<BreakerCell>> {
+        self.cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(pool)
+            .and_then(|by_destination| by_destination.get(&destination))
+            .cloned()
+    }
+
+    /// **THE READINESS READ, token-free and side-effect-free**: this `(pool, destination)` cell's
+    /// [`LaneState`] as it stands at `now`, folding in the destination's lifetime budget
+    /// (`BudgetExhausted` takes precedence, exactly as the sealed [`Breaker::state`] folds it).
+    ///
+    /// Inherent and token-free because the step that needs it holds no `Route` token: the VERIFY
+    /// step decides which lanes may be sealed, and it is not the route step. Sealing this behind a
+    /// route token left the root with two bad options — mint a token outside the kernel, or give
+    /// the verify step a second opinion about health — and a second opinion about health is the one
+    /// thing the split between the peek and the admission exists to prevent.
+    ///
+    /// SIDE-EFFECT-FREE IS A CONTRACT, not a description. This call never drives a cell out of
+    /// Open, never takes or releases the single-flight recovery probe, never creates a cell, never
+    /// registers a pool name, never spends a budget and never journals. A cell that has never been
+    /// touched reads `Ready` — it is Closed-and-unspent by construction — rather than being created
+    /// to be asked, because an enumeration is not a dispatch and a lane nobody has dialled must not
+    /// become an entry in the map just because somebody counted it.
+    #[must_use]
+    pub fn state_peek(&self, pool: &str, destination: DestinationId, now: u64) -> LaneState {
+        if self.budget_exhausted(destination) {
+            return LaneState::BudgetExhausted;
+        }
+        match self.cell_peek(pool, destination) {
+            Some(cell) => lane_state_from_verdict(cell.verdict(now)),
+            None => LaneState::Ready,
+        }
+    }
+
     /// Whether a cell for this pool and destination already exists, without creating one.
     ///
     /// Reachability made observable, so a test can wait for the exact moment a cell becomes usable
@@ -586,10 +633,11 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         now: u64,
         _token: &UnitToken<Route>,
     ) -> LaneState {
-        if self.budget_exhausted(destination) {
-            return LaneState::BudgetExhausted;
-        }
-        lane_state_from_verdict(self.cell(pool, destination).verdict(now))
+        // ONE BODY. The sealed trait method stays for the token holders that already call it, and
+        // answers by delegating to the token-free read rather than by carrying a second copy of the
+        // budget-then-cell fold. Two bodies would be two state tables, and the first divergence
+        // between them would be a lane the route step and the verify step disagree about.
+        self.state_peek(pool, destination, now)
     }
 }
 
