@@ -35,6 +35,9 @@ and the scripts they call) issues, the enabled-feature set was resolved with
 `cargo tree -f '{p}|{f}'` — cargo's own resolver, not a reading of the manifests — and unioned. The
 seven below are what the union did not contain.
 
+**That measurement is no longer a measurement somebody took once.** It is the gate's ninth row, run
+on every push: see "How coverage is proven" below.
+
 ## The seven that nothing built
 
 | feature | what is behind it |
@@ -136,6 +139,20 @@ so that a feature added to any crate is RED until somebody says, in the workflow
 builds it. A declaration that names a feature which no longer exists is red too: a stale exemption
 outlives the feature it excused and then silently excuses the next one to take the name.
 
+Nine rows, each able to go red on its own:
+
+| row | what it holds |
+| --- | --- |
+| `feature-sets:manifests-read` | every workspace member manifest was read; a reader that lost its input has no features and no features are covered by anything |
+| `feature-sets:feature-floor` | at least 30 non-default features were discovered; "every feature is covered" is vacuously true over none |
+| `feature-sets:matrix-present` | `ci.yml` carries the `feature-sets` job and its matrix names features |
+| `feature-sets:every-non-default-feature-is-built` | every non-default feature is in that matrix or carries a declaration |
+| `feature-sets:declaration-names-a-live-feature` | a declaration names a feature that still exists and is still non-default |
+| `feature-sets:declaration-names-a-live-job` | the job a declaration names is a job `ci.yml` defines |
+| `feature-sets:declaration-reason` | a declaration carries a reason of at least 30 characters |
+| `feature-sets:every-h2-rig-is-run-by-a-named-step` | every `h2-*.sh` scenario in the tree is named by a step of `ci.yml` |
+| `feature-sets:the-named-leg-really-enables-the-feature` | **the claim is checked, not read** — the leg a matrix row or a declaration names is resolved by cargo and has to enable the feature |
+
 ### The second axis the same gate holds: rig scenarios
 
 A feature nothing builds and an executable scenario nothing runs are the same defect. The eighth row
@@ -151,14 +168,92 @@ on the runner where nobody reads the expansion, so a rig added tomorrow would be
 that never listed it with no diff to show the difference. The rig row counts steps against the
 directory listing, which only works if the steps are lines.
 
+## How coverage is proven
+
+The rows above ask whether a feature is NAMED by a leg. The ninth row asks whether the named leg
+really enables it, and it asks cargo.
+
+For every matrix row of `feature-sets` and every `# feature-covered:` declaration, the gate
+
+1. **derives the leg's cargo invocations from `ci.yml`** — the job's own block, plus the text of
+   every `scripts/*.sh` that block runs (`txn-guards`' cargo line lives in `scripts/loom.sh`, not in
+   the workflow), with `${{ matrix.* }}` substituted per matrix row so a row reads as the concrete
+   commands it issues;
+2. **resolves each one** with
+
+   ```
+   cargo tree --locked --offline -e features[,no-dev] -f '{p}|{f}'
+   ```
+
+   carrying that invocation's package selection (`--workspace` / `-p …`), its `--features` and its
+   `--no-default-features`;
+3. **requires the claimed feature to be in the union** of what those invocations enable.
+
+**The edge kinds are the whole mechanism.** Cargo's v2 resolver unifies a dev-dependency's features
+into a build only when dev targets are built. So an invocation that builds them — `--all-targets`,
+`--tests`, `--benches`, or `cargo test`/`cargo bench`, which build them by definition — resolves
+under `-e features`, and an invocation that does not resolves under `-e features,no-dev`. That one
+flag is the difference between `busbar-core/test-support` being enabled and not, which is exactly
+the coverage the eleven `(incidental)` declarations rest on. The gate now resolves them the way the
+job builds them.
+
+**Why `cargo tree` and not `cargo metadata`.** `cargo metadata` reports a manifest's *declared*
+feature table and the whole dependency graph. It does not report which features a particular
+package-selection-plus-`--features` actually turns on; getting that out of it means reimplementing
+cargo's feature resolver, including the dev-unification rule above — and a gate that reimplements the
+resolver is a gate that disagrees with cargo the first time cargo changes. `cargo tree -f '{p}|{f}'`
+is the resolver answering directly: one line per resolved package with the features it ended up
+with. It is a resolve, not a build — no codegen, ~0.2 s per invocation.
+
+**Determinism.** `--locked` pins every version to the committed `Cargo.lock`, so the answer is a
+function of files that are in the repository and reviewed with the change that moves them.
+`--offline` turns "did not need the network" from a hope into a refusal: a resolve that would have
+reached a registry fails loudly rather than quietly answering from an index that is not the one the
+next run will see. Given the same manifests and the same lockfile, every leg resolves to the same
+bytes on every box. `ci.yml`'s `structure-lint` job runs `cargo fetch --locked` before the gate so
+that `--offline` is a promise the environment can keep; `--locked` means that fetch can download
+nothing the lockfile does not already pin.
+
+**What is deliberately not derived.** An invocation carrying an unexpanded `${…}` (a value only the
+runner has) or a `--manifest-path` (the plugin-pack builds a *different* repository's checkout) is
+reported as out of this repository's reach and contributes nothing. That is the conservative
+direction: an invocation the gate cannot read can only make a claim harder to satisfy, never easier.
+The count is printed on the PASS line too, because a number that grows is the sign that the workflow
+has moved its builds somewhere this reader no longer follows.
+
+**Cost.** 46 claims over 9 legs = 28 cargo resolutions, memoised per process; about 3 s for a gate
+run and 4.3 s / 381 work units for the whole self-test, against a 9 000-unit budget.
+
+### The two reds it was proven against
+
+* *A declaration that names a leg which does not build the feature.* A well-formed line —
+  `busbar-core/loom-model -- openapi-schema -- …`: real non-default feature, real job, long enough
+  reason, rule 4 already discharged by the feature's genuine declaration — and false. Only resolving
+  `openapi-schema`'s own cargo lines (`-p busbar -p busbar-core --features openapi-schema`) finds
+  that out. Red, naming the feature, the leg and the first command it resolved.
+* *The dev-dependency deletion this row was built for.* `busbar-plugin-testkit/store` is enabled by
+  exactly two edges: `crates/store-memory` and `crates/store-example-plugin` naming
+  `busbar-plugin-testkit = { …, features = ["store"] }` in their `[dev-dependencies]`. Deleting both
+  lines **on disk** makes the row red on the real tree, naming the feature and the `check` leg,
+  while every other row of the gate stays green — which is precisely the state rules 1–8 could not
+  see. Inside the self-test the same defect is planted on the resolver's ANSWER rather than on a
+  manifest, and that is a property of what is being planted rather than a shortcut: an overlay is an
+  in-memory view and `cargo tree` reads the disk, so an overlaid `Cargo.toml` would change nothing
+  about what cargo says. The fixture takes the leg's real resolution and strikes the feature out of
+  it — byte-for-byte what cargo prints once those two lines are gone.
+
 ## What this does NOT hold
 
-The declarations for features covered by `check` through `--all-targets` DEV-DEPENDENCY
-UNIFICATION — `busbar-core/test-support`, `busbar-a2a/test-support` and the nine others marked
-`(incidental)` in the table — are claims the gate accepts on the declaration's word. That coverage
-is real today and is one dev-dependency edit away from evaporating without a red. Closing it needs
-the gate to RESOLVE each declared job's feature set (a `cargo tree -f '{p}|{f}'` per leg) rather
-than read a comment; that belongs in this gate, as a second row, and it is not here.
+The ninth row resolves the legs `ci.yml` describes. It does not resolve the legs of
+`a2a-conformance.yml`, `mcp-conformance.yml` or `voice-conformance.yml`: no declaration names a job
+in those workflows today, and rule 6 keeps it that way (a declaration may only name a job `ci.yml`
+defines). A declaration that wanted to rest on a conformance workflow would have to extend the
+reader first.
+
+It resolves what a leg ENABLES, not what a leg RUNS. A matrix row that compiled a feature and then
+lost its `cargo test` line would still satisfy this row; the tests are asserted by the row's own
+`tests:` value being passed to `cargo test`, which is a line a reviewer reads, not a thing this gate
+measures.
 
 ## The table
 

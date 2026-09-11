@@ -291,6 +291,19 @@ jobs:
       # `# feature-covered:` line naming the job that already builds it. Self-test runs FIRST and its
       # first case re-plants exactly that defect -- a crate grows a feature no job names -- and
       # requires a red. `docs/ci/feature-sets.md` is the measurement behind it.
+      # THE RESOLVER'S INPUT, FETCHED ONCE. `feature-sets`' ninth row does not read the coverage
+      # declarations, it CHECKS them: for every matrix row and every `# feature-covered:` line it
+      # resolves the named leg's own cargo invocations with
+      # `cargo tree --locked --offline -e features[,no-dev] -f '{p}|{f}'` and requires the claimed
+      # feature to be in the answer. `--offline` is what makes that a function of this repository
+      # rather than of whatever a registry says today — and `--offline` needs the registry entries
+      # the lockfile names to be on the box. This job only builds `xtask`, so it fetches them
+      # explicitly rather than relying on an earlier step happening to have warmed the cache.
+      # `--locked` means it can download nothing the lockfile does not already pin, and
+      # `Swatinem/rust-cache` above makes it a no-op on every run after the first for a given lock.
+      # It is a download, not a build: no codegen, no target directory.
+      - name: Fetch the locked dependency set (so the feature-set resolver can run --offline)
+        run: cargo fetch --locked
       - name: feature-set coverage self-test (an unbuilt feature re-planted, proven RED)
         run: cargo xtask gate feature-sets --selftest
       - name: feature-set coverage (no non-default feature is outside CI by accident)
@@ -1456,7 +1469,9 @@ jobs:
   # `docs/ci/feature-sets.md` is the full measurement — all 67 declared features, 46 non-default,
   # which leg builds each, and the seven that no leg built before this job existed. The
   # `feature-sets` xtask gate holds the two together: a non-default feature that appears neither in
-  # this matrix nor in a `# feature-covered:` declaration below is RED.
+  # this matrix nor in a `# feature-covered:` declaration below is RED — and a declaration whose
+  # named job does not in fact enable the feature is red too, because the gate RESOLVES that job's
+  # own cargo lines rather than reading its comment.
   #
   # WHY CLIPPY AND NOT `cargo check`: `cargo clippy --workspace --all-targets` IS
   # `cargo check --workspace --all-targets` — same front end, same target set — and then refuses on
@@ -1621,6 +1636,16 @@ jobs:
   # A feature added to any crate is RED until somebody writes down which job builds it. These are
   # the forty that an existing leg already builds; the derivation behind each is the table in
   # docs/ci/feature-sets.md, produced with `cargo tree -f '{p}|{f}'` over every CI invocation.
+  #
+  # THESE LINES ARE NOT TAKEN ON THEIR WORD. The gate's ninth row DERIVES the named job's cargo
+  # invocations from this file (and from the scripts those invocations run), hands each to cargo's
+  # own resolver (`cargo tree --locked --offline -e features[,no-dev] -f '{p}|{f}'`) and requires
+  # the feature to be in the answer. So a line below that stops being true — because the
+  # dev-dependency whose `--all-targets` unification enabled the feature was deleted, because a
+  # default moved, because a `--features` argument was edited — is RED, not a comment that goes on
+  # saying the feature is built. The edge kinds are the mechanism: dev-dependency features unify
+  # into a resolution only when dev targets are built, so a leg that builds them resolves under
+  # `-e features` and a leg that does not resolves under `-e features,no-dev`.
   #
   # feature-covered: busbar/loom-model -- txn-guards -- scripts/loom.sh builds it in release to explore the txn interleavings
   # feature-covered: busbar-core/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one

@@ -41,6 +41,7 @@ be promoted.
 | `construction gate (…)` | how the tree is built vs `ARCHITECTURE.md`, on its posture | qa, main |
 | `gate-mutants` | the gates themselves, under mutation | qa, main |
 | `ship-ready` | the ship criterion, as five rows | qa, main |
+| `feature set coverage` | every non-default cargo feature is inside a job, and the job really enables it | qa, main |
 
 ### Which executable scenario runs on the integration/dev push
 
@@ -53,6 +54,34 @@ were executed by no job of any workflow, while being cited by the matrix as proo
 `ci.yml`'s `plane-rigs` job runs all twelve on every push to `integration/**`, `dev`, `qa` and
 `main`, one named step each, and it is in `ci-umbrella`'s `needs` and RESULTS. `feature-sets`'s
 eighth row holds the membership: a `h2-*.sh` in the tree that no step of `ci.yml` names is red.
+
+### Which cargo feature is compiled on the integration/dev push — and by whom
+
+`ci-umbrella` asserts every JOB is inside the required check; `feature-sets` asserts every
+non-default CARGO FEATURE is inside a job. A feature nothing builds is not compiled, so it is not
+type-checked, so it does not have to be valid Rust: the root duplex-serve leg was default-OFF, named
+by no job, and broken for days with every run green.
+
+Membership is derived from the member manifests and asserted against the `feature-sets` matrix, and
+a deliberate exclusion is possible only as a written
+`# feature-covered: <pkg>/<feature> -- <job> -- <reason>` line in `ci.yml`.
+
+**The declaration is not taken on its word, and that distinction is this gate's ninth row.** Eleven
+of those declarations say `check` builds a feature because `--all-targets` pulls a dev-dependency
+that turns it on — coverage that is real, and that evaporates the moment somebody deletes the
+dev-dependency doing the unifying, with every other row still green and the comment still saying the
+feature is built. A gate that trusts a comment is not a gate. So for every matrix row and every
+declaration, `feature-sets:the-named-leg-really-enables-the-feature` DERIVES the named leg's cargo
+invocations from `ci.yml` (and from the `scripts/*.sh` those invocations run), resolves each with
+`cargo tree --locked --offline -e features[,no-dev] -f '{p}|{f}'` — cargo's own resolver, pinned to
+the committed lockfile and refused the network — and requires the claimed feature to be in the
+answer. Dev-dependency features unify into a resolution only when dev targets are built, so the edge
+kinds carry exactly the distinction the incidental declarations rest on.
+
+It is proven red two ways, and one of them is on the real tree: deleting the two
+`[dev-dependencies]` lines that enable `busbar-plugin-testkit/store` turns the row red on the
+checkout, alone, with the other eight green. `docs/ci/feature-sets.md` is the measurement and the
+full argument.
 
 ### Which registered gate runs on the integration/dev push
 
