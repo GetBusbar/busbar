@@ -766,3 +766,22 @@ fn the_template_names_no_sibling_store_in_its_manifest() {
         );
     }
 }
+
+/// THE CATALOG IS WELL-FORMED: what the host reads at load and refuses if it does not check.
+#[test]
+fn the_catalog_is_a_catalog_document_that_checks() {
+    let catalog = crate::catalog();
+    catalog.check().expect("the catalog checks");
+    for e in catalog.entries.as_slice() {
+        assert!(
+            catalog.template(&e.code, "en").is_some(),
+            "{} has an en template",
+            e.code
+        );
+    }
+    assert_eq!(
+        catalog.entries.as_slice().len(),
+        4,
+        "one code per failure this fixture reports"
+    );
+}
