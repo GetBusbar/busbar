@@ -39,12 +39,13 @@
 //! ```
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord, PlaneSelector,
-    SecretForm, Store, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
+    PlaneDisposition, PlaneRecord, PlaneSelector, SecretForm, Store, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// A per-`ns` `(old_ts, new_ts)` pair for the two `purge_plane_records_before` checks below, straddling
 /// a FIXED, SHARED `cutoff`.
@@ -82,6 +83,8 @@ pub fn key_ids(ns: &str) -> Vec<String> {
         format!("{ns}_deadowner"),
         format!("{ns}_mintowner"),
         format!("{ns}_minted"),
+        format!("{ns}_persist"),
+        format!("{ns}_persistdead"),
     ]
 }
 
@@ -856,5 +859,258 @@ pub fn assert_plane_token_is_single_use(store: &dyn Store, ns: &str) {
             .redeem_plane_token("ask", &format!("{ns}_othernonce"), expires_at, now)
             .expect("a different nonce"),
         "a different nonce is still redeemable"
+    );
+}
+
+// ── THE PERSISTENCE CLAIM, AT THE SEAM ───────────────────────────────────────────────────────────
+
+/// The model name every reopen fixture below charges under. Shared by the ledger and the metering
+/// row on purpose: the two sides of the same spend must read back agreeing after the reopen.
+const REOPEN_MODEL: &str = "conformance-model";
+/// The provider the reopen metering row is attributed to.
+const REOPEN_PROVIDER: &str = "conformance-provider";
+/// The `(bucket_id, window_start)` window the reopen ledger is written into.
+pub const REOPEN_WINDOW: u64 = 1_700_000_000;
+/// The metering day-bucket the reopen row is written into.
+pub const REOPEN_BUCKET: u64 = 1_699_920_000;
+
+/// The exact `UsageLedger` [`assert_key_spend_and_metering_survive_a_reopen`] writes — and the exact
+/// value it demands back. Public so a backend can pre-clean its own window before calling.
+pub fn reopen_ledger() -> UsageLedger {
+    UsageLedger {
+        requests: 7,
+        billable_requests: 5,
+        models: vec![ModelTokens {
+            model: REOPEN_MODEL.to_string(),
+            usage_units: [
+                ("input".to_string(), 11u64),
+                ("output".to_string(), 13u64),
+                ("cache_read".to_string(), 3u64),
+            ]
+            .into_iter()
+            .collect(),
+        }],
+    }
+}
+
+/// The metering delta the reopen check charges, for key id `key_id`.
+pub fn reopen_metering(key_id: &str) -> MeteringDelta {
+    MeteringDelta {
+        key_id: key_id.to_string(),
+        bucket: REOPEN_BUCKET,
+        model: REOPEN_MODEL.to_string(),
+        provider: REOPEN_PROVIDER.to_string(),
+        tokens_input: 11,
+        tokens_output: 13,
+        tokens_cache_read: 3,
+        tokens_cache_write: 2,
+        requests: 4,
+        billable_requests: 3,
+        key_group_at_use: "conformance-group".to_string(),
+        pricing_version: "pv-1".to_string(),
+    }
+}
+
+/// **State written through the face — a virtual key, its usage ledger, and a metering row — is
+/// readable back, UNCHANGED, through a handle obtained by RE-OPENING the same backing.**
+///
+/// That single sentence is the whole claim, and it is the same claim the recorded
+/// `plugins.store-persist|*` oracle cells make over HTTP (mint a key, spend against it, kill the
+/// process, boot it again, read the key and its spend back). This is that claim at the SEAM instead:
+/// no server, no transport, no admin JSON — just [`busbar_api::Store`], so a backend that fails it
+/// fails here with the verb named rather than as a 404 three layers up. The two are deliberately the
+/// same claim stated twice, because the HTTP cell can only ever be run against whatever backend the
+/// harness happened to deploy, and this one runs against every backend in the fleet.
+///
+/// # What `open` means, and the one thing a green row here does NOT prove
+///
+/// `open` is "get me a handle onto this backing" — called TWICE, with the first handle dropped in
+/// between. For a file- or database-backed store the second call is a genuine REOPEN and the check
+/// is a durability proof: the only possible source of the values it reads back is whatever the first
+/// handle committed to the backing.
+///
+/// For a RAM backend there IS no separate backing, so the opener necessarily hands back a handle
+/// onto the SAME LIVE STORE (an `Arc` clone, not a reopen). **A green row from a RAM backend
+/// therefore proves READ-BACK, NOT DURABILITY** — the state never left the process, nothing was
+/// reconstructed from bytes, and the check cannot distinguish a store that persists from one that
+/// merely remembers. Do not read a green RAM row as evidence that a restart would keep anything; it
+/// is evidence only that the face's read verbs return what its write verbs were given. The
+/// durability half of the claim is earned only by a backend whose second `open` really is a second
+/// open — the same reason this takes an opener rather than a `&dyn Store`: a single handle can never
+/// state the claim at all.
+///
+/// `Arc<dyn Store>` rather than `Box<dyn Store>` for exactly that RAM case: only a shared handle can
+/// express "another handle onto the same live store". A backend whose real open yields a `Box` (a
+/// dlopen'd plugin's, say) converts with `Arc::from(boxed)` and loses nothing.
+///
+/// # What it asserts
+///
+/// The READ-BACK VALUES, field by field — never `is_some()`. A backend that answered
+/// `Some(VirtualKey::default())`, or an empty `UsageLedger`, or a zeroed `MeteringRow`, would
+/// satisfy a presence check while having kept nothing, and that is the exact defect shape here: a
+/// write verb that returns `Ok(())` and drops the row. `revision` is the one field excluded — it is
+/// a store-global monotonic stamp the BACKEND owns (see [`busbar_api::VirtualKey::revision`]), so
+/// its value across a reopen is the backend's business, not the contract's.
+///
+/// It also covers the TOMBSTONE across the reopen: `delete_key` is a tombstone, not a remove, so the
+/// second handle must still find the row, still see `deleted_at`/`enabled` set the way the delete
+/// left them, and must still REFUSE a live-shaped `put_key` over it. A backend that persisted keys
+/// but not the tombstone would silently resurrect every revoked key at the next restart.
+///
+/// # Namespacing
+///
+/// `ns` scopes both key ids ([`key_ids`] lists them) and the usage bucket. The metering BUCKET and
+/// the usage WINDOW are fixed (`REOPEN_BUCKET`/`REOPEN_WINDOW`) because `list_metering` selects by
+/// bucket alone, so the metering assertion filters the returned rows down to THIS `ns`'s key id
+/// rather than demanding an exact vector — two concurrent runs against one shared database both see
+/// each other's rows in that bucket and neither is wrong.
+pub fn assert_key_spend_and_metering_survive_a_reopen(open: &dyn Fn() -> Arc<dyn Store>, ns: &str) {
+    let live = format!("{ns}_persist");
+    let dead = format!("{ns}_persistdead");
+    let key = live_key(&live);
+    let ledger = reopen_ledger();
+    let charge = reopen_metering(&live);
+
+    // ── HANDLE ONE: mint, spend, kill. Then let the handle go. ────────────────────────────────
+    //
+    // Deliberately no read-back in this block: the claim is about the SECOND handle, and an
+    // assertion here would fire first and report a same-handle symptom in its place.
+    {
+        let store = open();
+        store
+            .put_key(&key)
+            .expect("handle one: mint the key that must survive the reopen");
+        store
+            .put_key(&live_key(&dead))
+            .expect("handle one: mint the key that gets revoked");
+        store
+            .delete_key(&dead)
+            .expect("handle one: revoke it — a TOMBSTONE, which must survive the reopen too");
+        store
+            .put_usage(&live, REOPEN_WINDOW, &ledger)
+            .expect("handle one: write the spend ledger");
+        store
+            .add_metering(&charge)
+            .expect("handle one: charge the metering row");
+    }
+
+    // ── HANDLE TWO: the reopen. Everything below reads only through this handle. ───────────────
+    let store = open();
+
+    let back = store
+        .get_key(&live)
+        .expect("handle two: get_key must not error")
+        .unwrap_or_else(|| {
+            panic!(
+                "handle two: get_key('{live}') is None — the key written through handle one did \
+                 not survive the reopen. `put_key` returned Ok and the row is gone."
+            )
+        });
+    assert_eq!(back.id, key.id, "the reopened key's id");
+    assert_eq!(
+        back.generation_hash, key.generation_hash,
+        "the reopened key's generation_hash — the rotation fingerprint `verify_token` compares a \
+         token's `generation` claim against; a backend that dropped it silently invalidates every \
+         live token at the next restart"
+    );
+    assert_eq!(back.name, key.name, "the reopened key's name");
+    assert_eq!(
+        back.enabled, key.enabled,
+        "the reopened key's enabled flag — a key that came back disabled is a key nobody can use"
+    );
+    assert_eq!(
+        back.created_at, key.created_at,
+        "the reopened key's created_at"
+    );
+    assert_eq!(back.group, key.group, "the reopened key's group binding");
+    assert_eq!(back.labels, key.labels, "the reopened key's labels");
+    assert_eq!(
+        back.expires_at, key.expires_at,
+        "the reopened key's expires_at"
+    );
+    assert_eq!(
+        back.deleted_at, None,
+        "the LIVE key came back carrying a tombstone it was never given: {back:?}"
+    );
+    assert_eq!(
+        back.allowed_scopes, key.allowed_scopes,
+        "the reopened key's scope grant — `None` is the omitted-grant wildcard and `Some([])` is \
+         the empty set, so a backend that confuses them across a reopen turns a no-scopes key into \
+         an all-scopes one"
+    );
+
+    assert!(
+        store
+            .list_keys()
+            .expect("handle two: list_keys must not error")
+            .iter()
+            .any(|k| k.id == live),
+        "the reopened key is readable by id but ABSENT from list_keys — hydration at boot walks \
+         the listing, so a key only `get_key` can find is a key the engine never loads"
+    );
+
+    assert_eq!(
+        store
+            .get_usage(&live, REOPEN_WINDOW)
+            .expect("handle two: get_usage must not error"),
+        ledger,
+        "the spend ledger did not survive the reopen UNCHANGED. An empty ledger here is the \
+         defect: `put_usage` returned Ok, and after the restart the key's budget is spent back to \
+         zero — every cap the operator set is silently refunded"
+    );
+
+    let rows: Vec<MeteringRow> = store
+        .list_metering(REOPEN_BUCKET)
+        .expect("handle two: list_metering must not error")
+        .into_iter()
+        .filter(|r| r.key_id == live)
+        .collect();
+    let expected = MeteringRow {
+        key_id: live.clone(),
+        model: charge.model.clone(),
+        provider: charge.provider.clone(),
+        tokens_input: charge.tokens_input,
+        tokens_output: charge.tokens_output,
+        tokens_cache_read: charge.tokens_cache_read,
+        tokens_cache_write: charge.tokens_cache_write,
+        requests: charge.requests,
+        billable_requests: charge.billable_requests,
+        key_group_at_use: charge.key_group_at_use.clone(),
+        pricing_version: charge.pricing_version.clone(),
+    };
+    assert_eq!(
+        rows,
+        vec![expected],
+        "the metering row did not survive the reopen UNCHANGED. This is the BILLING ledger: an \
+         empty vector here means every response served before the restart is unbilled, and a row \
+         with zeroed counts means it is billed at nothing"
+    );
+
+    // ── THE TOMBSTONE, ACROSS THE REOPEN ──────────────────────────────────────────────────────
+    let revoked = store
+        .get_key(&dead)
+        .expect("handle two: get_key on the revoked id must not error")
+        .unwrap_or_else(|| {
+            panic!(
+                "handle two: get_key('{dead}') is None — `delete_key` is a TOMBSTONE, not a \
+                 remove: the row is KEPT so anything attributing by key id (billing, audit) keeps \
+                 resolving forever. A backend that persisted the removal instead of the tombstone \
+                 has lost the attribution."
+            )
+        });
+    assert!(
+        revoked.deleted_at.is_some(),
+        "the revoked key came back WITHOUT its tombstone — the reopen resurrected a key an \
+         operator killed: {revoked:?}"
+    );
+    assert!(
+        !revoked.enabled,
+        "the revoked key came back ENABLED: {revoked:?}"
+    );
+    assert!(
+        store.put_key(&live_key(&dead)).is_err(),
+        "after the reopen, a live-shaped put_key over the tombstoned id was ACCEPTED — the \
+         tombstone precondition did not survive the reopen, so every revoked key is one ordinary \
+         rename away from being live again"
     );
 }

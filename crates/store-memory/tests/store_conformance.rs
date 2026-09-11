@@ -116,3 +116,28 @@ fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
         b.join().expect("run confB must not panic");
     });
 }
+
+/// The persistence claim, stated at the seam: a key, its spend ledger and its metering row written
+/// through one handle read back UNCHANGED through a handle obtained by re-opening the same backing.
+///
+/// The opener here hands back a CLONE OF ONE SHARED `Arc<MemoryStore>`, not a second open, and that
+/// is the only honest thing it can do: this backend's backing IS the process, so there is nothing to
+/// reopen — "the same backing" and "the same live store" are the same object. So what a green row
+/// from THIS backend proves is READ-BACK, not durability: the face's read verbs return what its
+/// write verbs were given, including the tombstone. It says nothing about a restart, and this store
+/// loses every row at one — see the suite's own doc on `assert_key_spend_and_metering_survive_a_
+/// reopen`. The durability half is earned only by a backend whose second `open` really is a second
+/// open (the file-backed store-example plugin, in-process and over dlopen, does exactly that).
+///
+/// It is wired anyway for the reason the module header gives: a suite the reference backend sits out
+/// of is a suite nobody has to agree with, and read-back is a real half of the claim that this
+/// backend could get wrong on its own (a `put_usage` that dropped the ledger, a `delete_key` that
+/// removed the row instead of tombstoning it) and that nothing else here would catch.
+#[test]
+fn key_spend_and_metering_survive_a_reopen() {
+    let shared: std::sync::Arc<dyn busbar_api::Store> = std::sync::Arc::new(MemoryStore::new());
+    conf::assert_key_spend_and_metering_survive_a_reopen(
+        &|| std::sync::Arc::clone(&shared),
+        "confreopen",
+    );
+}
