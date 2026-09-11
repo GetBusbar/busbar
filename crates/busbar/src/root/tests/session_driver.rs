@@ -1772,3 +1772,179 @@ async fn the_legs_view_names_the_principal_the_composition_resolved() {
          resolved, beside the key of the unit that sealed the leg"
     );
 }
+
+// ── THE ROOT'S EGRESS PORT: what the composition's own dialler decides ───────────────────────────
+//
+// `crate::root::registry::WsLegEgress` is the ONE thing in this tree that turns a sealed
+// destination into a real socket, and the cells for it live here for the reason the ones above it
+// do: what it does is only observable through a driver with a leg parked on it, and a second copy
+// of this harness would be a second thing to keep in step.
+//
+// WHAT IS DELIBERATELY NOT PROVED HERE, and it is not an omission. The SUCCESS path — a leg that
+// dials, relays and reads a provider's reply — needs a WebSocket SERVER, which means a client
+// library, and `crates/busbar/Cargo.toml` carries none: "NO `tokio-tungstenite` HERE, not even as a
+// dev-dependency, and the absence is load-bearing", because `cargo xtask gate
+// duplex-ws-default-edge` reads dev-dependencies too and a client borrowed for a battery reds the
+// gate that keeps this binary strong-form deletable. So the real-socket half is proved where the
+// library is already on the right side of that edge — `busbar-transport-ws`'s own
+// `dialling_a_session_hands_back_the_source_the_lease_and_an_unspawned_drain` — and what is proved
+// HERE is the half that is this port's own: the two ways a dial can refuse, and what the session
+// does about each.
+
+/// The wire the composition dials over: the WS transport composed on the cleartext layer, which is
+/// the same shape `root::registry::seal` composes its `ws` over. Built here rather than taken off a
+/// seal because this battery has no boot; the port's contract is that it is HANDED one.
+fn cleartext_ws_wire() -> std::sync::Arc<busbar_transport_ws::WsTransport> {
+    std::sync::Arc::new(busbar_transport_ws::WsTransport::over(std::sync::Arc::new(
+        busbar_transport_tcp::TcpTransport::new(),
+    )))
+}
+
+/// The dial-side handle, minted through the token the kernel already lends the composition — never
+/// a forged seal of this file's own, for `sealed_leg`'s reason.
+fn dial_handle(kernel: &busbar_kernel::teller::Kernel) -> busbar_contract::TransportKeyHandle {
+    busbar_contract::TransportKeyHandle::issue(&kernel.transport_key_token(), 0, "sha256:made-up")
+}
+
+/// A leg sealed to one address, so a cell can say WHERE the dial went.
+fn sealed_leg_at(
+    kernel: &busbar_kernel::teller::Kernel,
+    address: &'static str,
+) -> PlaneDestination {
+    PlaneDestination::seal(
+        &kernel.transport_key_token(),
+        DestinationFacts::Upstream {
+            transport: "ws",
+            address: busbar_contract::dest::UpstreamAddress::socket(address),
+            lane: busbar_contract::LaneId::new("made-up-lane"),
+        },
+        "ws",
+        None,
+    )
+}
+
+/// A node and a driver that live for the process, which is what the port's `&'static` asks for and
+/// what a composition root actually does: it builds one driver and keeps it.
+fn composed_for(
+    address: &'static str,
+) -> (
+    &'static Node,
+    &'static SessionLoopDriver<'static, RecordingUnits>,
+) {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg_at(&node.kernel, address));
+    let node: &'static Node = Box::leak(Box::new(node));
+    let driver: &'static SessionLoopDriver<'static, RecordingUnits> =
+        Box::leak(Box::new(node.driver()));
+    (node, driver)
+}
+
+/// A DIAL THAT FAILS ENDS THE SESSION, AND LEAVES NO LEG BEHIND.
+///
+/// The alternative is the one outcome worse than ending, and it is the reason this is a cell rather
+/// than an assumption: a session whose leg never opened would read the next frame, find no leg,
+/// relay nothing and carry on — a relayed session that had silently stopped relaying, for as long as
+/// the client kept talking. So the refusal has to reach the PUMP, and the cell asks it where the
+/// pump would: through the decorator's own `next_frame`, which is where "between frames" happens.
+///
+/// The second assertion is the "leaves nothing" half. `attach_leg` was never reached, so the leg the
+/// unit sealed is still PARKED — not half-attached, not attached to a lease with no socket under it.
+#[tokio::test]
+async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
+    // A port nothing serves: bound only to learn a number the OS is not using, then dropped.
+    let dead = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the OS lends a port");
+        l.local_addr().expect("the port has a number")
+    };
+    let address: &'static str = Box::leak(format!("ws://{dead}/leg").into_boxed_str());
+    let (node, driver) = composed_for(address);
+
+    let port = crate::root::registry::WsLegEgress::new(
+        cleartext_ws_wire(),
+        dial_handle(&node.kernel),
+        driver,
+        MADE_UP_MEDIA,
+        busbar_contract::transport::session::EGRESS_DEPTH,
+    );
+
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    // The unit that seals the leg. After this the driver has a destination parked and nothing
+    // dialled.
+    assert_eq!(
+        driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
+        Outcome::Completed
+    );
+    assert!(
+        driver.pending_leg(session).is_some(),
+        "the unit sealed a leg, so the driver has one parked to dial"
+    );
+
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted([RELAYS_A_FRAME].into_iter().collect()),
+        driver,
+        session,
+        &port,
+    );
+    let read = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+
+    assert!(
+        matches!(read, Some(Err(_))),
+        "a dial that fails is handed to the pump as the session's END, never swallowed into a \
+         session that relays nothing and says nothing"
+    );
+    assert!(
+        driver.pending_leg(session).is_some(),
+        "the dial refused, so the leg is still the parked one: nothing was attached, and no lease \
+         with no socket under it was left on the slot"
+    );
+}
+
+/// A SECURE LEG OVER A CLEARTEXT LAYER IS REFUSED BEFORE A SOCKET IS OPENED, AND THE PORT ADDS NO
+/// SECOND PATH THAT COULD MISS IT.
+///
+/// This is the claim that matters most about where the dial lives. `wss://` says the bytes are
+/// encrypted before they leave this process, and the WS transport encrypts nothing of its own — it
+/// upgrades whatever stream the layer below gives up. Over a cleartext layer the handshake would go
+/// out as a plain GET with no certificate ever validated: a downgrade the destination never asked
+/// for. The wire refuses it, and the whole point of this port reaching `Transport::dial` through the
+/// same call every other caller does is that the refusal is INHERITED rather than re-implemented —
+/// a second dialling path is a second place to forget this.
+///
+/// `AddressRefused` rather than a connection failure is the load-bearing half of the assertion: the
+/// address names a port nothing could be listening on, so an error that arrived from the network
+/// would prove a socket had been attempted. This one arrives before that.
+#[tokio::test]
+async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() {
+    let (node, driver) = composed_for("wss://127.0.0.1:9/leg");
+
+    let port = crate::root::registry::WsLegEgress::new(
+        cleartext_ws_wire(),
+        dial_handle(&node.kernel),
+        driver,
+        MADE_UP_MEDIA,
+        busbar_contract::transport::session::EGRESS_DEPTH,
+    );
+
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    driver.drive(session, frame(0, OPENS_A_UNIT));
+    let dest = driver
+        .pending_leg(session)
+        .expect("the unit sealed the secure leg");
+
+    let refused = crate::root::leg_dial::LegDialer::dial(&port, session, &dest).await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(busbar_contract::TransportError::AddressRefused)
+        ),
+        "a `wss://` target over a layer that is not `tls` is refused by the WIRE, before a socket \
+         is opened — and this port inherits that refusal rather than owning a second copy of it"
+    );
+}

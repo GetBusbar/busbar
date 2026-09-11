@@ -1567,3 +1567,42 @@ because = "busbar-voice x plane (busbar-voice, plane): the plane that had the de
 # below the base, so there is nothing left here to declare. The cell it was written for is still in
 # the tree and still reads the log for both halves of the refusal; what is gone is the rise.
 
+
+# ── declared raises: THE ROOT'S EGRESS PORT (`root::registry::WsLegEgress`), the one thing in this
+# tree that turns a sealed destination into a real upstream socket, plus the cells that drive it.
+# Every `by` below is what THIS landing measured, and the pre-existing undeclared remainders on
+# `cell.busbar.transport.count` and the two contract-transport rows are NOT absorbed into them: a
+# `by` is the lines a face measured, not room for somebody else's debt.
+#
+# NOTHING IS DECLARED FOR `cell.busbar.dialect.count` (651 -> 653), AND THAT IS THE RULE RATHER THAN
+# AN OMISSION. The `dialect` KIND does not exist at the merge-base b0c5b6f1 for any crate —
+# `git show b0c5b6f1:qa/kind-isolation.toml | grep -c 'kind = "dialect"'` is 0 — so the key has no
+# `before`, `ceiling-rose` has nothing for it to be higher than, and a declared raise on it is
+# refused as "not a rise at the base". 8fc937495 struck two entries there for exactly this reason.
+# The row is re-pinned because `ceiling-slack` requires a ceiling to equal its measurement, and the
+# two hits are named in this commit's message, which is the only ratchet that column has until
+# T0-F's `[[minted]]` door lands.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 48
+because = "busbar x transport (busbar, transport): THE ROOT'S EGRESS PORT and its two cells. `WsLegEgress` is the composition's `LegDialer` — the one implementor in the tree — and it necessarily names the wire it dials over: `WsTransport` off the boot seal, `busbar_transport_ws::mount::dial_session`, the `EgressLease`/`FrameSource` halves it hands three different owners, and `TransportKeyHandle`. It lives in `root/registry.rs` and NOT in a module of its own, which is the whole reason this number is what it is: `kind-isolation:transport-registration` refuses a wire named in a second shipped file, and a first cut of this landing in `root/leg_egress.rs` reds that rule by name ('the wire busbar-transport-ws is composed in 2 places'). So the port sits in the ONE file the root already composes the wire in. The rest is the battery in `root/tests/session_driver.rs` — a real `WsTransport` over the real cleartext layer, because the two refusals it proves are the wire's own and a fake wire would prove nothing about them (1042 -> 1090)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "busbar x contract-transport (busbar, contract-transport): the egress port's seam spelled THROUGH THE CONTRACT rather than through the wire's crate, which is the same choice the generic acceptor and the session driver already made and for the same reason — `EgressLease`, `SessionHandle` and `EGRESS_DEPTH` are the face the port hands its three halves across, and naming them through `busbar_contract::transport::session` is what keeps the wire's own type out of every signature but the dial itself. The alternative was `busbar_transport_ws::` paths in the port's public shape, which would have put a transport type on a seam the composition is supposed to be able to swap (63 -> 72)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar x plane (busbar, plane): three hits, all of them the egress port's cells saying WHOSE leg is being dialled — the destination the made-up plane's units seal, carried through `VerifiedDestination` and the plane-facing `PlaneDestination` alias the driver's battery already uses. No plane is named in the port itself; what rose is the battery's vocabulary for 'a leg a plane's unit sealed', which is the only way a cell can ask whether the dial went where the unit said (1858 -> 1861)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar x kernel (busbar, kernel): two hits, and both are the battery refusing to forge a seal. The dial-side `TransportKeyHandle` and the sealed destination the cells dial to are both minted through `Kernel::transport_key_token()` — the token this kernel already lends the composition — rather than through a sealing marker this battery implemented for itself. `construction:kernel-seal-impls` counts every crate that implements the contract's sealing marker, so a test double here would have been a rise in the exact number that rule exists to hold down (176 -> 178)"

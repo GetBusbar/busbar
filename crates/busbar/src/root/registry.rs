@@ -552,6 +552,173 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     Ok(registry)
 }
 
+// THE ROOT'S EGRESS PORT: the one thing in this tree that turns a sealed destination into a real
+// upstream socket, and the reason it is HERE and not in the file that declares the seam.
+//
+// [`crate::root::leg_dial`] declares [`LegDialer`] and says, in its own header, that it names no
+// wire: *"What dials is a WIRE, and this module names none."* That is what makes the decorator
+// testable against a lease that is nobody's. But something has to name one, because a session
+// cannot relay into an abstraction. This is that something, and it is in the composition root
+// because the composition root is the WIRE-PERMITTED kind — the one place in the tree allowed to
+// name what it composes.
+//
+// ## Why the wire is taken and not built
+//
+// [`crate::root::registry::seal`] already registered exactly one `ws` wire, and
+// `kind-isolation:transport-registration` is the rule that says exactly one is what there is: each
+// wire is composed in one place and no plugin links one. A dialler that called `WsTransport::new()`
+// would be a second instance of a key the registry seals one of — a second registration in
+// everything but the word, and one that would quietly not share the connection registry, the
+// max-message bound or the TLS posture the seal chose. So the wire arrives as an `Arc` off the
+// seal, exactly as [`crate::root::plane_mount`] takes its own.
+//
+// ## Why this is NOT a `composed` port, which is what the work order assumed
+//
+// `BuildCtx::composed` (PLANEDECL-3) carries root-composed ports keyed by a plane decl's
+// `config_section`, and it carries them **from the root TO a plane**: the whole tree has exactly
+// one reader of it, `busbar_voice::mount`'s read of its own `GovernedCalls` port, and the root
+// never reads one back. The dialler's consumer is the ROOT's own arrival mount, not the plane —
+// the plane's `open_upstream` opens the plane's upstream *codec state*, not a socket, and the plane
+// has no call that wants a dialler. A dialler handed across `composed` would be a port with no
+// reader, which is a coupling declared for nothing.
+//
+// ## Why the driver is `'static`, and why that is honest rather than a workaround
+//
+// [`LegDialer::dial`]'s contract says the dial STARTS the read of the leg's inbound half, and says
+// why: that read is a loop for the life of the session, which means a task, which means something
+// that outlives the call and holds the driver. `leg_dial`'s own driver is a borrow and cannot; the
+// composition's is not a borrow. The composition root builds one driver per process and keeps it
+// for the process, so `&'static` is a statement of that fact and not a lifetime escape hatch: a
+// node that re-composed its session driver mid-flight would be a node whose open sessions pointed
+// at a table that no longer existed.
+//
+// ## What a failed dial does, and what is never half-open
+//
+// `Err` straight back, and [`crate::root::leg_dial`] turns that into the session's end. Nothing is
+// half-owned on that path: `dial_session` takes the socket whole out of the connection registry or
+// takes nothing, the inbound pump is not spawned until the socket is in hand, and the lease is only
+// handed back once both halves exist. A partially-dialled leg is never a state this function can
+// leave behind.
+
+/// THE ROOT'S DIALLER, over the one `ws` wire the boot seal registered.
+///
+/// Five fields and four of them are the composition's own decisions, spelled once here rather than
+/// re-decided per session:
+///
+/// * `wire` — the seal's instance, never a fresh one (see this module's header);
+/// * `keys` — the dial-side key handle the deployment provisioned, which is a slot and a
+///   fingerprint and never material;
+/// * `driver` — the process's session driver, because the leg's inbound half is pumped into it;
+/// * `media` — the DECLARATION's, never this module's guess. The wire has two frame kinds and the
+///   plane's row is the only thing entitled to say which carries its bytes;
+/// * `depth` — the offering lease's bound, spelled beside the session budget it belongs with.
+#[cfg(feature = "root-duplex-serve")]
+pub struct WsLegEgress<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> {
+    wire: std::sync::Arc<WsTransport>,
+    keys: busbar_contract::TransportKeyHandle,
+    driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+    media: &'static str,
+    depth: usize,
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> std::fmt::Debug
+    for WsLegEgress<U>
+{
+    /// The handle is a slot and a fingerprint, so it is printable; the wire and the driver are not
+    /// this type's to describe and are named rather than dumped.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsLegEgress")
+            .field("keys", &self.keys)
+            .field("media", &self.media)
+            .field("depth", &self.depth)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsLegEgress<U> {
+    /// Compose the port.
+    ///
+    /// Every argument is something the composition root already holds at the moment it mounts a
+    /// surface: the wire off its own seal, the handle off its own dial provisioning, the driver it
+    /// just built, and the two numbers the declaration and the budget supply.
+    #[must_use]
+    pub fn new(
+        wire: std::sync::Arc<WsTransport>,
+        keys: busbar_contract::TransportKeyHandle,
+        driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
+        media: &'static str,
+        depth: usize,
+    ) -> Self {
+        Self {
+            wire,
+            keys,
+            driver,
+            media,
+            depth,
+        }
+    }
+}
+
+#[cfg(feature = "root-duplex-serve")]
+impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static>
+    crate::root::leg_dial::LegDialer for WsLegEgress<U>
+{
+    fn dial<'a>(
+        &'a self,
+        session: busbar_contract::transport::session::SessionHandle,
+        dest: &'a busbar_contract::dest::VerifiedDestination,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::root::leg_dial::DialledLeg,
+                        busbar_contract::TransportError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            // THE DIAL ITSELF IS THE WIRE'S, and everything about WHERE the leg goes was settled
+            // before this call: the destination arrives sealed and already narrowed by the trust
+            // unit's resolve-then-pin guard, and the `wss://`-over-cleartext refusal is the dial's
+            // own, made before a socket is opened. This function adds no second dialling path to
+            // keep honest — it reaches `Transport::dial` through the same call every other caller
+            // does. What it adds is the OWNERSHIP split of the three halves.
+            let (source, lease, drain) = busbar_transport_ws::mount::dial_session(
+                &self.wire, dest, &self.keys, self.media, self.depth,
+            )
+            .await?;
+
+            // THE INBOUND HALF IS STARTED HERE, and this is the reason `dial` is handed the session
+            // at all. A provider's replies do not arrive inside the client pump's strict
+            // alternation — they arrive when the provider has something to say — so the leg's read
+            // is a loop of its own, and the loop has to be told which slot the replies settle into.
+            //
+            // The handle is DROPPED rather than joined. `pump_leg` ends on the leg's own ending and
+            // calls `driver.close` on every one of them, so a join here would be this task waiting
+            // for an ending it has already delegated; and the session that owns this leg is ended by
+            // the same call, which is what stops the task from outliving it.
+            let driver = self.driver;
+            drop(tokio::spawn(async move {
+                // The ending is a REPORT and not a duty: `pump_leg` has already called
+                // `driver.close` with it on every one of its endings, so there is nothing left for
+                // this task to do with the value.
+                let _end = crate::root::leg_pump::pump_leg(driver, session, source).await;
+            }));
+
+            // The drain is RETURNED and not spawned, because `leg_dial` spawns it beside the session
+            // it belongs to. A dialler that spawned it would be choosing the composition's runtime
+            // twice over and deciding when the drain is cancelled.
+            let drain: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(drain);
+            Ok((lease, drain))
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/registry.rs"]
 mod tests;
