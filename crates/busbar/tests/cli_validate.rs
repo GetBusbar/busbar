@@ -33,9 +33,10 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// A minimal VALID providers.yaml + config.yaml pair. `extra` is appended verbatim to config.yaml
-/// (the governance/plugins blocks under test).
-fn write_configs(dir: &Path, extra: &str) {
+/// The fixture's upstream catalog. Extracted so a fixture that declares no upstream at all can
+/// still write the file `run_busbar` points `BUSBAR_PROVIDERS` at, without a second copy of the
+/// catalog text going out of step with this one.
+fn write_catalog(dir: &Path) {
     std::fs::write(
         dir.join("providers.yaml"),
         r#"mock:
@@ -45,6 +46,12 @@ fn write_configs(dir: &Path, extra: &str) {
 "#,
     )
     .unwrap();
+}
+
+/// A minimal VALID providers.yaml + config.yaml pair. `extra` is appended verbatim to config.yaml
+/// (the governance/plugins blocks under test).
+fn write_configs(dir: &Path, extra: &str) {
+    write_catalog(dir);
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -55,6 +62,27 @@ providers:
 models:
   test-model:
     provider: mock
+{extra}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// A VALID config that declares NO upstream and NO route to one — empty maps where the pair above
+/// writes a mock entry — with `extra` appended verbatim.
+///
+/// A fixture that names an upstream also names the wire codec that upstream speaks, so a build
+/// compiled without that codec refuses the file before it ever reaches the setting under test. The
+/// tests that use this one are asking about the tarball directory and nothing else, and an upstream
+/// they never dial is a second question riding along in the fixture.
+fn write_configs_without_upstreams(dir: &Path, extra: &str) {
+    write_catalog(dir);
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:0"
+providers: {{}}
+models: {{}}
 {extra}"#
         ),
     )
@@ -1321,15 +1349,15 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 /// `config.overlay.file`); this is that rule, applied to the one path that was missing it.
 ///
 /// Driven from a working directory that is NOT the fixture (the test binary's own cwd), so a pass
-/// can only mean the config file's directory was used.
-#[cfg(feature = "proto-llm")]
+/// can only mean the config file's directory was used. The fixture declares no upstream, so the
+/// question it asks is the same one in every build.
 #[test]
 fn validate_resolves_a_relative_plugins_dir_against_the_config_file_dir() {
     let dir = fixture_dir("relative-plugins-dir");
     // A real tarball in <fixture>/plugins — the directory the config file's own `dir: plugins`
     // must name. The process cwd has no `plugins/` sibling, so resolving against cwd finds nothing.
     write_tarball(&dir, "a.tar.gz", "acme-store-a", "a", b"lib-a");
-    write_configs(
+    write_configs_without_upstreams(
         &dir,
         "plugins:\n  enabled: true\n  dir: plugins\n  trust:\n    allow_unsigned: true\n",
     );
@@ -1354,11 +1382,10 @@ fn validate_resolves_a_relative_plugins_dir_against_the_config_file_dir() {
 /// place, got a clean `ok: config valid` and a deployment with none of the plugins they installed.
 /// `--validate` is the question "is this config good", and the answer there is no. Boot still
 /// tolerates it, exactly as `validate_builtin_secrets_resolve` is stricter than boot about secrets.
-#[cfg(feature = "proto-llm")]
 #[test]
 fn validate_refuses_a_plugins_dir_that_does_not_exist() {
     let dir = fixture_dir("missing-plugins-dir");
-    write_configs(
+    write_configs_without_upstreams(
         &dir,
         "plugins:\n  enabled: true\n  dir: not-a-real-dir\n  trust:\n    allow_unsigned: true\n",
     );
@@ -1381,11 +1408,10 @@ fn validate_refuses_a_plugins_dir_that_does_not_exist() {
 /// …and ONLY while plugins are enabled. With `plugins.enabled: false` nothing in the directory is
 /// ever read (drop-is-inert), so its absence is not a problem to report — refusing there would make
 /// the default posture un-validatable.
-#[cfg(feature = "proto-llm")]
 #[test]
 fn validate_ignores_a_missing_plugins_dir_when_plugins_are_disabled() {
     let dir = fixture_dir("missing-plugins-dir-disabled");
-    write_configs(&dir, "plugins:\n  enabled: false\n  dir: not-a-real-dir\n");
+    write_configs_without_upstreams(&dir, "plugins:\n  enabled: false\n  dir: not-a-real-dir\n");
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("ok: config valid"), "got {stdout}");

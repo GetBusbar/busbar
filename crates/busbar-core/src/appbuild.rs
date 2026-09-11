@@ -402,7 +402,7 @@ pub fn load_config_from_disk(
     // `WorkingDirectory`, a container entrypoint, an operator's shell — rather than on the config file
     // that names them. Same file, same machine, two different plugin sets, and the mismatch is silent,
     // because a directory that is not there reads as zero tarballs. Resolved ONCE, here, so every
-    // consumer (boot, `--validate`, `--list-plugins`, the admin reload) sees the same resolved path and
+    // consumer (boot, `--validate`, `--list-plugins`, a live reload) sees the same resolved path and
     // reports it; an ABSOLUTE `dir:` is untouched, which is what a deployment that pins one already
     // writes. An empty config_dir (a bare `config.yaml` argument) joins to the same relative path this
     // produced before, so the one case where CWD *was* the config's directory is unchanged.

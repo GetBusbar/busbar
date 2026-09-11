@@ -748,7 +748,7 @@ pub(crate) fn validate_secret_refs(
 /// REFUSE a `plugins.dir` that does not exist while `plugins.enabled` is true — for `--validate`
 /// ONLY.
 ///
-/// A directory that is not there reads as ZERO tarballs: `busbar_plugin_loader::discover` maps
+/// A directory that is not there reads as ZERO tarballs: the loader's `discover` maps
 /// `NotFound` to an empty list on purpose, because drop-is-inert is the right posture at boot. The
 /// cost is that a typo in `dir:`, or a volume mounted one level off, produced a clean
 /// `ok: config valid` over a deployment carrying none of the plugins the operator installed — and
@@ -756,7 +756,7 @@ pub(crate) fn validate_secret_refs(
 ///
 /// DELIBERATELY NOT IN `plugins_preflight`, for exactly the reason
 /// [`validate_builtin_secrets_resolve`] is not: that pre-flight is SHARED with boot and with the
-/// admin apply/reload path, and boot must keep tolerating an absent directory (a deployment whose
+/// live apply/reload path, and boot must keep tolerating an absent directory (a deployment whose
 /// plugins volume mounts a moment later is a legitimate shape, and refusing it would turn a warning
 /// into an outage). The operator running `--validate` is asking whether the config is good, and over
 /// a directory that is not there the answer is no.
