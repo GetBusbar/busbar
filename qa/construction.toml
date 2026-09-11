@@ -1509,14 +1509,14 @@ because = "THE PRINCIPAL ON THE LEG'S VIEW extends this by 3 (1018 -> 1021): the
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.plane.count"
 file = "qa/kind-isolation.toml"
-by = 4
-because = "busbar-core x plane (busbar-core, plane): the resolved config gained the section-keyed map every plane's `build` reads its own operator posture out of, and the composition root gained the borrow it hands across the seam. Before this, `resolve` lowered two plane sections onto typed fields and carried a third nowhere at all, so the config a plane was built from did not contain the section that declares that plane — which is why one of them kept a second copy in process-global state and read it back. The lines are the map field, the one fold every construction of it goes through, and the erasing borrow at the call site; the same landing DELETED the one plane-named field the seam used to carry, so what is here is the neutral read that replaced a named one (3,033 -> 3,037)"
+by = 1
+because = "busbar-core x plane (busbar-core, plane): the resolved config gained the section-keyed map every plane's `build` reads its own operator posture out of, and the composition root gained the borrow it hands across the seam. Before this, `resolve` lowered two plane sections onto typed fields and carried a third nowhere at all, so the config a plane was built from did not contain the section that declares that plane — which is why one of them kept a second copy in process-global state and read it back. The lines are the map field, the one fold every construction of it goes through, and the erasing borrow at the call site; the same landing DELETED the one plane-named field the seam used to carry, so what is here is the neutral read that replaced a named one (3,033 -> 3,037) Re-measured at +1, not the +4 first written: the definition-surface drain that follows deletes the two per-plane fields that held a second clone of two of these same sections, so what the map cost net is one line and not four."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.control.count"
 file = "qa/kind-isolation.toml"
-by = 3
-because = "busbar-core x control (busbar-core, control): the secret-reference walk stopped asking two NAMED bindings for their credentials and started looping the section map, so a plane that declares a section this walk has never heard of is asked for its secrets by the same loop rather than by somebody remembering to add it. That is the coverage rule the exhaustive no-`..` destructure exists to force, finally written as a fold instead of a list; the destructure still fails to compile on a new top-level field, which is what made the decision unavoidable here (5,200 -> 5,203)"
+by = 1
+because = "busbar-core x control (busbar-core, control): the secret-reference walk stopped asking two NAMED bindings for their credentials and started looping the section map, so a plane that declares a section this walk has never heard of is asked for its secrets by the same loop rather than by somebody remembering to add it. That is the coverage rule the exhaustive no-`..` destructure exists to force, finally written as a fold instead of a list; the destructure still fails to compile on a new top-level field, which is what made the decision unavoidable here (5,200 -> 5,203) Re-measured at +1, not the +3 first written: the definition-surface drain that follows deletes the two plane-named fields this walk used to destructure, and the exhaustive destructure lost two lines with them."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-a2a.plane.count"
@@ -1524,11 +1524,11 @@ file = "qa/kind-isolation.toml"
 by = 1
 because = "busbar-a2a x plane (busbar-a2a, plane): the A2A plane's `build` stopped reading the seam field that carried its registry BY NAME and now asks the seam for its own section by its own declared config-section key, downcasting inside its own module where that key is the only place with a type. One line, and it is the MOVE that let the named field be deleted from the neutral seam entirely: what was one plane's privilege on a shared context is now every plane's read (2,758 -> 2,759)"
 
-[[gate.ceiling_raises]]
-key = "cell.busbar-llm.legacy.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = "busbar-llm x legacy (busbar-llm, legacy): one forward-pool integration fixture constructs the resolved config by struct literal with no `..`, so the new section-keyed field is a compile error until that fixture answers for it. It answers through the SAME fold every other construction goes through rather than by hand-rolling a map, which is the whole reason the fold is a function: a fixture's key set is then the grammar's key set and not a second opinion about it (79 -> 80)"
+# STRUCK — the raise this entry declared no longer exists. The forward-pool fixture answered for the
+# new section-keyed field at a cost of one line (79 -> 80); the definition-surface drain then deleted
+# the two plane-named fields the SAME fixture was also filling, and the cell fell to 78 — below the
+# base, so there is nothing here to declare. The fixture still constructs the resolved config through
+# the one fold, which is the property the entry was written about.
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-voice.plane.count"

@@ -469,6 +469,41 @@ pub struct Composition<'a> {
     pub prior: Option<&'a state::App>,
 }
 
+/// THE PER-CONTAINER HOOK ATTACHMENTS a declared section carries, by the key that declaration spells —
+/// the section's own `container_gates()`, or the empty answer when the grammar carries no such section
+/// (the owning plane is compiled out), which is byte-identically what the hand-built empty map was.
+fn container_gates_of(
+    sections: &PlaneSections,
+    section: &'static str,
+) -> busbar_substrate::plane::config::ContainerGateInputs {
+    section_of(sections, section)
+        .map(busbar_substrate::plane::config::PlaneCfg::container_gates)
+        .unwrap_or(busbar_substrate::plane::config::ContainerGateInputs {
+            section_hooks: Vec::new(),
+            containers: Vec::new(),
+        })
+}
+
+/// Whether a declared section DEFINES anything — the neutral read of "this deployment configured that
+/// plane", by the key the plane's own declaration carries.
+fn defined_section(sections: &PlaneSections, section: &'static str) -> bool {
+    section_of(sections, section).is_some_and(|s| !s.def_names().is_empty())
+}
+
+/// EVERY PLANE-OWNED SECTION this deployment parsed, as `RootCfg` carries it — spelled once so the
+/// three reads below take the map rather than the whole config, which by the point they run has had
+/// several unrelated fields moved out of it.
+type PlaneSections =
+    std::collections::BTreeMap<&'static str, Box<dyn busbar_substrate::plane::config::PlaneCfg>>;
+
+/// ONE declared section off that map, by the key its own declaration carries.
+fn section_of<'a>(
+    sections: &'a PlaneSections,
+    section: &str,
+) -> Option<&'a dyn busbar_substrate::plane::config::PlaneCfg> {
+    sections.get(section).map(Box::as_ref)
+}
+
 /// THE MODEL→UPSTREAM CATALOG as this deployment configured it — the composition's own implementation
 /// of the neutral [`busbar_substrate::plane::registry::UpstreamCatalog`] a plane's `build` reads.
 ///
@@ -1161,11 +1196,18 @@ pub fn build_app_from_config(
         // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
         // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
         // for a stateful deployment — never for an LLM-only (stateless) one.
-        // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
-        // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
-        // these read identically to the former per-feature branches without naming a plane feature.
-        let mcp_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
-        let a2a_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
+        // Data-driven: a declared section is always the neutral `Box<dyn PlaneCfg>`, read by the key
+        // its own declaration carries; with the owning plane compiled out the section is the raw
+        // carrier whose `def_names()` is empty, so these read identically to the former per-feature
+        // branches without naming a plane feature.
+        let mcp_stateful = defined_section(
+            &cfg.plane_sections,
+            crate::plane::config::ToolsSection::SECTION,
+        ) || !cfg.tool_pools.is_empty();
+        let a2a_stateful = defined_section(
+            &cfg.plane_sections,
+            crate::plane::config::AgentsSection::SECTION,
+        ) || !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> = if g.module
             == crate::config::GOVERNANCE_STORE_MEMORY
         {
@@ -1356,7 +1398,10 @@ pub fn build_app_from_config(
     // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
     // plane feature named.
     let mcp_server_gates = {
-        let g = cfg.tool_defs.container_gates();
+        let g = container_gates_of(
+            &cfg.plane_sections,
+            crate::plane::config::ToolsSection::SECTION,
+        );
         hooks::resolve_container_gates(
             g.containers
                 .iter()
@@ -1368,7 +1413,10 @@ pub fn build_app_from_config(
         )
     };
     let a2a_agent_gates = {
-        let g = cfg.agent_defs.container_gates();
+        let g = container_gates_of(
+            &cfg.plane_sections,
+            crate::plane::config::AgentsSection::SECTION,
+        );
         hooks::resolve_container_gates(
             g.containers
                 .iter()
@@ -1383,7 +1431,10 @@ pub fn build_app_from_config(
     // rewrite chains, resolved once per generation exactly like the gates. Empty on every deployment
     // that attaches no rewrite hook, so the transform firing sites stay zero-cost / byte-identical.
     let mcp_server_rewrites = {
-        let g = cfg.tool_defs.container_gates();
+        let g = container_gates_of(
+            &cfg.plane_sections,
+            crate::plane::config::ToolsSection::SECTION,
+        );
         hooks::resolve_container_rewrites(
             g.containers
                 .iter()
@@ -1395,7 +1446,10 @@ pub fn build_app_from_config(
         )
     };
     let a2a_agent_rewrites = {
-        let g = cfg.agent_defs.container_gates();
+        let g = container_gates_of(
+            &cfg.plane_sections,
+            crate::plane::config::AgentsSection::SECTION,
+        );
         hooks::resolve_container_rewrites(
             g.containers
                 .iter()
@@ -1515,7 +1569,7 @@ pub fn build_app_from_config(
     // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT
     // companion key (`runtime_slot_key(<mcp decl key>)`), distinct from the plane's decl key,
     // whose slot is config-conditional and drives the dispatch door. Built ONCE through the plane's
-    // own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
+    // own type-erasing `build_runtime` seam (from that plane's own declared section, erased via
     // `PlaneCfg::as_any`) so this composition names no `crate::mcp` runtime type. It bundles the
     // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
     // even one that changes nothing about `tools:` — moves the generation and a call admitted under the
@@ -1536,7 +1590,11 @@ pub fn build_app_from_config(
         (
             slot_key,
             f(
-                cfg.tool_defs.as_any(),
+                section_of(
+                    &cfg.plane_sections,
+                    crate::plane::config::ToolsSection::SECTION,
+                )
+                .map_or(&() as &dyn std::any::Any, |s| s.as_any()),
                 prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
             ),
         )
@@ -1721,8 +1779,14 @@ pub fn build_app_from_config(
             let planes_configured = crate::plane::registry::plane_decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
-                || !cfg.tool_defs.def_names().is_empty()
-                || !cfg.agent_defs.def_names().is_empty()
+                || defined_section(
+                    &cfg.plane_sections,
+                    crate::plane::config::ToolsSection::SECTION,
+                )
+                || defined_section(
+                    &cfg.plane_sections,
+                    crate::plane::config::AgentsSection::SECTION,
+                )
                 || !cfg.tool_pools.is_empty()
                 || !cfg.agent_pools.is_empty();
             match prior {
@@ -1834,7 +1898,14 @@ pub fn build_app_from_config(
         // TYPE-ERASED into `App` so it names no `crate::a2a` config type — the SAME resolved object
         // (a clone, not a reparse), so the admin view and gates are byte-identical. The A2A plane
         // downcasts it back in `crate::a2a::agent_cfg`.
-        agent_defs: cfg.agent_defs.clone_arc_any(),
+        agent_defs: section_of(
+            &cfg.plane_sections,
+            crate::plane::config::AgentsSection::SECTION,
+        )
+        .map_or_else(
+            || std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+            busbar_substrate::plane::config::PlaneCfg::clone_arc_any,
+        ),
         // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
         // field any more: it lives solely in its `plane_slots` entry (built once by `PlaneDecl::build`),
         // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which

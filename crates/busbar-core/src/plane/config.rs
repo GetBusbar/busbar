@@ -350,8 +350,8 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 /// EVERY PLANE-OWNED CONFIG SECTION, keyed by the section key its own carrier declares — the ONE fold
 /// `RootCfg::plane_sections` is built by, so the map a plane's `build` reads its own posture out of and
 /// the map a scratch config carries have one definition rather than two opinions. Each carrier is
-/// cloned rather than moved because the definition twins beside it (`tool_defs`, `agent_defs`) are
-/// still read by the admin definition surface off the same document.
+/// cloned rather than moved because the parsed document it folds is borrowed here and read on after
+/// this fold runs.
 pub fn plane_sections_of(
     tools: &ToolsSection,
     agents: &AgentsSection,

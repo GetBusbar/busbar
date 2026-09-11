@@ -1817,7 +1817,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5203"
+count = "5201"
 
 [[cell]]
 crate = "busbar-core"
@@ -1832,7 +1832,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3037"
+count = "3034"
 
 [[cell]]
 crate = "busbar-core"
@@ -1987,7 +1987,7 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "legacy"
-count = "80"
+count = "78"
 
 [[cell]]
 crate = "busbar-llm"

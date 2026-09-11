@@ -1697,8 +1697,13 @@ fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     // plane compiled out the seam holds a `RawPlaneSection`, whose `def_names` is empty (a present
     // section is refused at resolve), so no name resolves there — the same answer the per-plane
     // feature gate gave, without naming a plane.
-    let tools: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
-    let agents: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
+    let names = |section| -> BTreeSet<&str> {
+        cfg.plane_section(section)
+            .map(|s| s.def_names().into_iter().collect())
+            .unwrap_or_default()
+    };
+    let tools = names(crate::plane::config::ToolsSection::SECTION);
+    let agents = names(crate::plane::config::AgentsSection::SECTION);
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
     for (a, b, name_a, name_b) in [

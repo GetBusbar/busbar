@@ -411,14 +411,6 @@ pub struct RootCfg {
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
     pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
-    /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
-    ///
-    /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
-    /// happens to it is building the catalogue snapshot, which is a separate value with its own
-    /// generation. Lowering it here would give the registry two representations that could disagree
-    /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
-    /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -494,14 +486,6 @@ pub struct RootCfg {
     /// the typed `export` projection above, for the same reason `identity_providers` is carried:
     /// the admin API serves DEFINITIONS, not the lowered per-module runtime shape.
     pub export_defs: ExportDefs,
-    /// The `agents:` NAMED-DEFINITION map, carried through resolve VERBATIM, for the same reason
-    /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
-    /// control plane derives its runtime `AgentRegistration` from this plus what the store has
-    /// accumulated. Nothing here is accumulation.
-    // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
-    // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
-    // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
-    pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// EVERY PLANE-OWNED CONFIG SECTION this deployment parsed, keyed by the DECLARING PLANE'S
     /// `config_section` and type-erased behind the neutral [`crate::plane::config::PlaneCfg`] — the
     /// section-keyed read a plane's own `build` is handed its own operator posture through
@@ -513,14 +497,16 @@ pub struct RootCfg {
     /// A key is present iff the grammar carries that section, whether or not the operator wrote a
     /// block for it (an unwritten section is the owning plane's own default, which is what the plane
     /// would have answered anyway) — so a plane's `build` reads absence as its defaults rather than as
-    /// a missing map entry. The named-definition twins beside this (`tool_defs`, `agent_defs`) are the
-    /// SAME sections under the DEFINITION surface the admin API serves and re-writes; they are a
-    /// different reader, not a second parse, and they drain into this map when that surface is
-    /// declaration-driven.
+    /// a missing map entry. THIS IS ALSO THE DEFINITION SURFACE: the named-definition maps the admin
+    /// API serves and re-writes are these same sections, read through the declaring plane's own
+    /// `config_section` rather than through a field named for one plane. Two per-plane fields used to
+    /// stand beside this map holding the identical `clone_box()` of the identical carrier — a second
+    /// reader that looked like a second parse, and one more place a plane had to be spelled in a crate
+    /// that may spell none. Read it through [`RootCfg::plane_section`].
     pub plane_sections:
         std::collections::BTreeMap<&'static str, Box<dyn crate::plane::config::PlaneCfg>>,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
-    /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
+    /// like the section it pools servers from, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
@@ -533,12 +519,25 @@ impl RootCfg {
     /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
     /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
     /// its concrete resource. This is the NEUTRAL, section-keyed read the composition root uses in
-    /// place of a per-plane field, mirroring `tool_defs`/`agent_defs` beside it.
+    /// place of a per-plane field, mirroring [`RootCfg::plane_section`] beside it.
     pub fn endpoint_resource(
         &self,
         section: &str,
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         self.endpoint_resources.get(section).cloned()
+    }
+
+    /// THE PARSED SECTION A PLANE DECLARED, by that plane's own `config_section` key — the ONE read of
+    /// [`Self::plane_sections`], and the read that replaced the two per-plane definition fields that
+    /// used to stand beside it holding a second clone of the identical carrier.
+    ///
+    /// `None` when this deployment's grammar carries no such section at all (the key is not a declared
+    /// section). A section the grammar DOES carry is always present whether or not the operator wrote a
+    /// block for it, so a present key with nothing written is the owning plane's own default — which is
+    /// what a deployment that writes nothing already got.
+    #[must_use]
+    pub fn plane_section(&self, section: &str) -> Option<&dyn crate::plane::config::PlaneCfg> {
+        self.plane_sections.get(section).map(Box::as_ref)
     }
 }
 
@@ -2615,7 +2614,7 @@ pub fn resolve(
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
-    // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
+    // the section-keyed map beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
     let mut endpoint_resources: std::collections::HashMap<
         &'static str,
@@ -2651,7 +2650,6 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             endpoint_resources,
             oauth_as,
-            tool_defs: deploy.tools.0.clone_box(),
             tool_pools: tool_pools_derived,
             agent_pools: agent_pools_derived,
             tls: deploy.tls.clone(),
@@ -2704,7 +2702,6 @@ pub fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
-            agent_defs: deploy.agents.0.clone_box(),
             plane_sections: crate::plane::config::plane_sections_of(
                 &deploy.tools,
                 &deploy.agents,

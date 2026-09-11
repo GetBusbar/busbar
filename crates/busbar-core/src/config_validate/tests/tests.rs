@@ -8,8 +8,6 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
         plane_sections: crate::plane::config::plane_sections_of(
             &Default::default(),
             &Default::default(),
@@ -5328,7 +5326,10 @@ fn a_name_defined_in_two_nouns_is_refused() {
     let mut models = HashMap::new();
     models.insert("shared".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("shared"));
+    cfg.plane_sections.insert(
+        crate::plane::config::ToolsSection::SECTION,
+        Box::new(tools_with("shared")),
+    );
 
     let mut errors = Vec::new();
     super::validate_unified_pool_names(&cfg, &mut errors);
@@ -5346,7 +5347,10 @@ fn a_name_defined_in_two_nouns_is_refused() {
 #[test]
 fn a_pool_named_like_a_tools_registration_is_refused() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("search"));
+    cfg.plane_sections.insert(
+        crate::plane::config::ToolsSection::SECTION,
+        Box::new(tools_with("search")),
+    );
     cfg.tool_pools.insert(
         "search".to_string(),
         crate::failover::CandidatePoolCfg {
@@ -5371,7 +5375,10 @@ fn distinct_names_across_nouns_and_pools_pass() {
     let mut models = HashMap::new();
     models.insert("gpt".to_string(), make_model_unbounded("prov"));
     let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
-    cfg.tool_defs = Box::new(tools_with("fs-server"));
+    cfg.plane_sections.insert(
+        crate::plane::config::ToolsSection::SECTION,
+        Box::new(tools_with("fs-server")),
+    );
 
     let mut errors = Vec::new();
     super::validate_unified_pool_names(&cfg, &mut errors);

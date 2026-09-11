@@ -167,8 +167,6 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // definition surface. Not walked: they are the SAME parsed sections the loop below already
         // asks, and asking twice would report one credential as two. They stay NAMED (not `_`) so a
         // new TOP-LEVEL `RootCfg` field is still a compile error somebody has to answer.
-        tool_defs: _,
-        agent_defs: _,
         // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
         // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
         // references INTO sections this walk already covers, so a credential could only appear here
@@ -409,10 +407,10 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // exchange, never the caller's.
     ("TokenExchangeCfg", SecretBearing::Walked),
     // The A2A plane's LEASED outbound delegation credential. Reached from `RootCfg` through
-    // `agent_defs -> agents.<name>.upstream_credential`.
+    // the declared `agents:` section -> `agents.<name>.upstream_credential`.
     ("OutboundCredential", SecretBearing::Walked),
     // The A2A plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
-    // registered agent. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
+    // registered agent. Reached from `RootCfg` through that section -> `agents.<name>.client_identity`.
     ("ClientIdentityCfg", SecretBearing::Walked),
     // The authorization server's ES256 signing key — the highest-value secret in the process, since
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`

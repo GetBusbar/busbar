@@ -38,11 +38,9 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
         // The section-keyed map at every plane's own default, through the SAME fold `resolve` uses —
         // so a fixture's key set is the grammar's key set and not a second opinion about it.
         plane_sections: crate::plane::config::plane_sections_of(

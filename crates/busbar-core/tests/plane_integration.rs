@@ -32,7 +32,10 @@ fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
         let mut c = cfg_with_provider_api_key(busbar_core::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
         ));
-        c.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
+        c.plane_sections.insert(
+            busbar_a2a::PLANE_DECL.config_section,
+            Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent()),
+        );
         c
     };
     let prior = build_once(cfg_with_agents(), None).expect("boot with an agents: block");
@@ -175,7 +178,10 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
             .expect("valid mcp cfg"),
         ) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
     );
-    cfg.agent_defs = Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent());
+    cfg.plane_sections.insert(
+        busbar_a2a::PLANE_DECL.config_section,
+        Box::new(busbar_a2a::testkit::agents_cfg_with_one_receiving_agent()),
+    );
     cfg.public_url = Some("https://busbar.example".to_string());
     // `mcp:` refuses an open data-plane chain — close it with the test-only stand-in module.
     cfg.auth = Some(closed_auth_chain("test-groups-module"));
@@ -229,7 +235,7 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
 /// for either plane — exactly the absence the neutral accessors (`busbar_mcp::mcp::resource` /
 /// `busbar_a2a::a2a::runtime`) already encode.
 /// Watched RED before `PlaneDecl::build` guarded absence (an unconditional `build` that always
-/// constructs an object regardless of `ctx.mcp_slot`/`ctx.agent_defs` makes this fail: `plane_slot`
+/// constructs an object regardless of `ctx.mcp_slot`/its own section makes this fail: `plane_slot`
 /// answers `Some` on a deployment that configured no plane, disagreeing with the neutral accessor's
 /// `None` right beside it).
 #[test]
@@ -246,7 +252,8 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "fixture control: not an mcp: deployment"
     );
     assert!(
-        cfg.agent_defs.def_names().is_empty(),
+        cfg.plane_section(busbar_a2a::PLANE_DECL.config_section)
+            .is_none_or(|s| s.def_names().is_empty()),
         "fixture control: no agents: entries"
     );
 
