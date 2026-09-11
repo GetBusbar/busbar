@@ -130,7 +130,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   question anybody writing a schedule asks; and a noun invented anywhere but the plane that produced
   the quantity is a second opinion about what the quantity IS. It joins the family and the divisor
   on the declaration table every plane already fills in, and it is what a boot refusal shows an
-  operator who priced a dimension no mounted plane declares. Two crates carry their own surface ceilings beside it, because
+  operator who priced a dimension no mounted plane declares. The seventh is **the four token
+  dimensions** (`busbar_contract::ids::{DIM_TOKENS_IN, DIM_TOKENS_OUT, DIM_CACHE_READ,
+  DIM_CACHE_WRITE}`, their `MeterClassId` twins and `TOKEN_CLASSES`/`TOKEN_DIMENSIONS`, the one
+  order both are folded in; 22 lines, measured 3686 -> 3708): the ONE spelling of the four
+  quantities a token-billing plane meters, taken rather than restated by the codec that projects an
+  upstream's usage, the card that prices it and the persisted ledger that keys it. It is not a
+  second vocabulary beside a plane's own declaration — a plane still says WHICH dimensions it
+  meters, in what family, at what divisor and under what noun — only the STRING each of those four
+  is spelled with lives here, because the crates that must agree on it cannot all name each other:
+  the codec is upstream of the plane that declares the spelling, and the crate holding the dated
+  card depends on neither. Before it, four vocabularies claimed the same four quantities — the
+  codec's own `input`/`output`, the card's hand-kept `RESERVED_CLASSES` of the same, the admission
+  unit's identical third copy, and the plane's declared `tokens_in`/`tokens_out` — and a `per_units`
+  rate for the plane's own spelling validated at boot and then priced a quantity filed under
+  another, charging nothing, forever, silently. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
