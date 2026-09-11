@@ -46,19 +46,20 @@
 //! quietly writing a record nobody reads back.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
-    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
-    ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
+    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
+    Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
+    StepName, TrustToken, UnitToken, UsageToken, Verify,
 };
-use busbar_contract::dest::DestinationFacts;
+use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
 use busbar_contract::VirtualKeyDirectory;
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
-use busbar_kernel::teller::Evidence;
+use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
@@ -66,7 +67,7 @@ use busbar_unit_admission::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
 use busbar_unit_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
-use busbar_unit_audit::AuditInputs;
+use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest, CredentialCache};
 use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
@@ -1393,7 +1394,7 @@ pub fn settle(
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering
         // step's, and that is the step a durability loss here is attributed to.
-        step: busbar_caps::StepName::Meter,
+        step: StepName::Meter,
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
             wall: at.wall,
@@ -1461,7 +1462,7 @@ impl Mono {
 #[must_use]
 pub fn audit_inputs(
     ended: &Ended<'_>,
-    outcome: busbar_caps::Outcome,
+    outcome: Outcome,
     origin: busbar_caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
@@ -1769,6 +1770,731 @@ pub fn class_prices(rates: &BTreeMap<String, u64>) -> ClassPrices {
             .copied()
             .unwrap_or_default(),
         bytes: rates.get(CLASS_BYTES.as_str()).copied().unwrap_or_default(),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LEG — one MCP request, through the loop the units serve
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the plane made of one arriving request, as an OWNED value every step reads.
+///
+/// Owned, and that is the whole reason this type exists rather than the borrowed [`Read`] above.
+/// The loop hands each step `&self` and nothing else, so whatever the steps read has to outlive the
+/// arena the bytes were decoded in; a draft that borrowed the frame would tie the unit's lifetime to
+/// the cursor and the loop would not compile. So the read happens ONCE, at the one step entitled to
+/// read it, and what survives is the answer rather than the bytes.
+pub struct McpDraft {
+    /// The class the plane's method table named, or the reason it could not read the body.
+    pub op: Result<OpClassId, ReasonCode>,
+    /// Whether the unit holds its direction open rather than being answered once.
+    pub streaming: bool,
+    /// The credential the transport masked out of the frame, where one arrived.
+    pub credential: Option<String>,
+    /// The claim this unit arrived under, which is how this plane names a transport.
+    pub claim_transport: &'static str,
+    /// Whether that claim declares a scheme at all. The discovery surface declares none.
+    pub under_scheme: bool,
+    /// Whether the principal is a bound session's rather than these bytes'.
+    pub from_session: bool,
+    /// What the transports wrote about the connection, bottom layer first.
+    pub arrival: ArrivalRecord,
+    /// Where the plane says this unit ends up.
+    pub destination: DestinationFacts,
+    /// The legs of the plane's route plan, in the plan's order.
+    pub legs: Vec<Leg>,
+    /// The record key each leg names, in the plan's order. A leg that names none carries the empty
+    /// string, which is what the schema's own key vocabulary calls "the whole of it".
+    pub record_keys: Vec<String>,
+    /// The body a record leg writes. The store keeps it verbatim and never looks inside.
+    pub record_body: Vec<u8>,
+    /// The whole request document's length, which is what this plane prices its input on.
+    pub request_bytes: u64,
+    /// What the metering step's locator carries — the size of the answer the plane read.
+    pub response_bytes: u64,
+    /// How the plane says the unit finished.
+    pub finish: busbar_contract::unit::FinishClass,
+}
+
+impl McpDraft {
+    /// **The production caller of [`read_ingress`].** Read one arriving request through the plane's
+    /// own ingress decoder and keep what the steps need.
+    ///
+    /// The decode failure is CARRIED rather than raised, because the step that answers for it is the
+    /// decode step and the loop has not reached it yet. A constructor that returned an error here
+    /// would be refusing a unit before the loop opened one, and the journal would carry no row for
+    /// a request that was certainly answered.
+    #[must_use]
+    pub fn read<'u>(
+        plane: &McpPlane,
+        frames: &mut busbar_contract::wire::FrameCursor<'u>,
+        ctx: &busbar_contract::unit::Ctx<'u>,
+        wire: Wire<'_>,
+    ) -> Self {
+        let (op, streaming) = match read_ingress(plane, frames, ctx) {
+            Ok(Read::Unit(decoded)) => (Ok(decoded.op), decoded.streaming),
+            // Neither a dropped notice nor a partial frame opens a unit, and neither is a class.
+            // The decode step renders both the way it renders a body this plane does not carry.
+            Ok(Read::Dropped | Read::NeedMore) => (Err(ReasonCode::DecodeFailed), false),
+            Err(reason) => (Err(reason), false),
+        };
+        McpDraft {
+            op,
+            streaming,
+            credential: wire.credential.map(ToString::to_string),
+            claim_transport: wire.claim_transport,
+            under_scheme: wire.under_scheme,
+            from_session: wire.from_session,
+            arrival: wire.arrival.clone(),
+            destination: wire.destination,
+            legs: wire.legs.to_vec(),
+            record_keys: wire.record_keys.iter().map(|k| (*k).to_string()).collect(),
+            record_body: wire.record_body.to_vec(),
+            request_bytes: wire.request_bytes,
+            response_bytes: 0,
+            finish: busbar_contract::unit::FinishClass::Complete,
+        }
+    }
+
+    /// Every leg of the plan, classified.
+    #[must_use]
+    pub fn leg_kinds(&self) -> Vec<LegKind> {
+        self.legs.iter().map(|l| classify(&l.destination)).collect()
+    }
+
+    /// Whether anything about this unit reaches the registered server.
+    ///
+    /// Read off the plan the plane produced rather than off a second table of method names, for the
+    /// reason the fee's own documentation gives: the fee rule and the request-slot rule are one
+    /// rule, and a rule spelled twice is two rules with one of them drifting.
+    #[must_use]
+    pub fn has_upstream(&self) -> bool {
+        matches!(self.destination, DestinationFacts::Upstream { .. })
+            || self
+                .legs
+                .iter()
+                .any(|l| matches!(l.destination, DestinationFacts::Upstream { .. }))
+    }
+}
+
+/// What the transport and the plane already decided, as the read is handed it.
+///
+/// One borrowed value rather than nine arguments, for the reason the door's is one: every field is
+/// a fact somebody else established before this unit existed, and a constructor taking them singly
+/// is a constructor a caller can fill in wrongly one at a time.
+#[derive(Clone, Copy)]
+pub struct Wire<'a> {
+    /// What the transports wrote about the connection.
+    pub arrival: &'a ArrivalRecord,
+    /// The claim that matched, which is how this plane names a transport.
+    pub claim_transport: &'static str,
+    /// Whether that claim declares a scheme.
+    pub under_scheme: bool,
+    /// Whether the principal is a bound session's.
+    pub from_session: bool,
+    /// The credential the carrier presented, where one arrived.
+    pub credential: Option<&'a str>,
+    /// Where the plane says this unit ends up.
+    pub destination: DestinationFacts,
+    /// The plan the plane returned.
+    pub legs: &'a [Leg],
+    /// The record key each leg names, in the plan's order.
+    pub record_keys: &'a [&'a str],
+    /// The body a record leg writes.
+    pub record_body: &'a [u8],
+    /// The whole request document's length.
+    pub request_bytes: u64,
+}
+
+/// Everything one MCP unit is driven against, assembled once at boot.
+///
+/// Every field is a value configuration decided and nothing here is built per request: the door's
+/// cells are hydrated, the auth chain is resolved, the rate card is read and the record legs are
+/// bound to the store the loader opened. A binding assembled per unit would be a node whose answers
+/// depend on which request asked.
+pub struct McpBindings<'r> {
+    /// The plane, with the registrations the operator configured.
+    pub plane: McpPlane,
+    /// The authentication chain, as configuration resolved it.
+    pub auth: &'r Auth,
+    /// The node's one set of authentication seams — the credential cache and the revocation view.
+    pub auth_bindings: &'r crate::root::kernel::auth_bindings::AuthBindings,
+    /// The trust unit.
+    pub trust: &'r Trust,
+    /// The three tables the trust unit reads.
+    pub views: Views<'r>,
+    /// The admission unit's long-lived door.
+    pub door: &'r Door<InMemoryCells>,
+    /// What the door prices a unit against.
+    pub pricer: &'r Pricer,
+    /// The buckets this caller is judged and charged against.
+    ///
+    /// `None` is the fail-closed arm and NOT the uncapped one: it is a caller bound to a group this
+    /// node's configuration does not have, whose caps therefore could not be read.
+    pub chain: Option<&'r BucketChain>,
+    /// The highest per-unit price over the verified set, for each class the plane declares.
+    pub prices: ClassPrices,
+    /// The flat per-request fee, in nano-units, where one could land at all.
+    pub fee_nanos: u64,
+    /// This plane's kernel-held record legs, over the store the loader opened.
+    pub records: &'r Records,
+    /// What the usage unit folds against.
+    pub meter_policy: &'r crate::root::policy::MeterPolicyHandle,
+    /// What the scope unit reads at approve.
+    pub scope_policy: &'r crate::root::policy::ScopePolicy,
+    /// The journal, the ledger and the two audit chains.
+    pub durability: &'r Mutex<crate::root::durability::Durability>,
+    /// The registration this unit is on, keyed the way the breaker keys it.
+    pub pool: &'r str,
+    /// The unit's two pinned clocks, both read once, where the unit arrived.
+    pub at: Clocks,
+    /// The sealed origin the audit record is written under.
+    pub origin: busbar_caps::Origin,
+    /// When a one-time grant this plan redeems lapses.
+    pub expires_at: u64,
+}
+
+/// A lock this plane holds, taken the way the root takes its locks.
+///
+/// A poisoned lock is read through rather than refused. The panic that poisoned it happened
+/// somewhere else, and what is behind it is written once per field and then read — so a reader
+/// after a panic sees a prefix of the truth rather than a corrupted one. The alternative is a node
+/// whose audit chain stops sealing because one unrelated unit panicked once.
+fn read_through_poison<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// What the steps recorded as they ran.
+///
+/// The settlement table and the audit record read this once, at the end. It is behind a lock
+/// because the steps take `&self` and the end reads what they wrote; there is one of these per unit,
+/// so the lock is never contended and its only job is to make the write legal.
+#[derive(Debug, Default)]
+struct Progress {
+    /// Who the loop settled on. **Recorded at the step that is handed it** — verify is the first
+    /// step the loop hands a principal, and the audit record and the settlement both read it back
+    /// from here rather than being handed it again.
+    principal: Option<PrincipalId>,
+    /// What the record legs answered.
+    legs: Vec<RecordAnswer>,
+    /// What the metering step located.
+    metered: Option<u64>,
+    /// Whether the metering step disputed its own reading.
+    disputed: bool,
+    /// The hash the audit chain sealed this unit under, recorded at the audit step, which is the
+    /// step that sees it.
+    head: Option<String>,
+    /// The bytes the encode step reported.
+    encoded: u64,
+}
+
+/// One unit of the MCP plane, driven through the kernel's ten steps and its one exit.
+///
+/// This is what "the MCP plane enters the Teller loop" means, and it is the whole of it: the ten
+/// steps below answer with the units every other plane is answered by, in the order the loop calls
+/// them and in no other. Nothing here decides anything a unit decides — every arm is a handover.
+pub struct McpUnits<'r> {
+    bindings: McpBindings<'r>,
+    draft: McpDraft,
+    grants: Grants,
+    leg_kinds: Vec<LegKind>,
+    progress: Mutex<Progress>,
+}
+
+impl<'r> McpUnits<'r> {
+    /// Drive one unit.
+    ///
+    /// The draft is what the plane already said; the grants are what the caller's credential
+    /// carries. Both are inputs because both are decided before the first step runs, and a step
+    /// that produced either of them would be a step deciding its own inputs.
+    #[must_use]
+    pub fn new(bindings: McpBindings<'r>, draft: McpDraft, grants: Grants) -> Self {
+        let leg_kinds = draft.leg_kinds();
+        McpUnits {
+            bindings,
+            draft,
+            grants,
+            leg_kinds,
+            progress: Mutex::new(Progress::default()),
+        }
+    }
+
+    /// What the plane said about this unit.
+    #[must_use]
+    pub fn draft(&self) -> &McpDraft {
+        &self.draft
+    }
+
+    /// The hash the audit chain sealed this unit under, once the audit step has run.
+    #[must_use]
+    pub fn head(&self) -> Option<String> {
+        read_through_poison(&self.progress).head.clone()
+    }
+
+    /// **The exit arm.** Move the books for what this unit posted, and put the posting on the
+    /// journal.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the record durable. The books have already moved: value was
+    /// delivered, and a settlement is not rolled back because a write failed.
+    pub fn settle(
+        &self,
+        principal: &PrincipalId,
+        posted: busbar_caps::Posted,
+        token: &busbar_caps::DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        let mut durability = read_through_poison(self.bindings.durability);
+        settle(&mut durability, principal, self.bindings.at, token, posted)
+    }
+
+    /// The operation class this unit is, where the decode step read one.
+    ///
+    /// A body this plane does not carry has no class, and the arms that need one to name a record
+    /// or a resource ask this and answer for the absence rather than substituting a plausible
+    /// neighbour: a refused unit recorded under somebody else's class is a row that lies.
+    fn op(&self) -> Option<OpClassId> {
+        self.draft.op.ok()
+    }
+
+    /// What this unit IS, as far as the money is concerned.
+    fn shape(&self) -> Shape {
+        Shape::of(self.op().unwrap_or(ops::OP_NOTIFICATION), &self.leg_kinds)
+    }
+
+    /// The hold this unit is sized against.
+    fn estimate(&self) -> Estimate {
+        estimate(
+            self.op().unwrap_or(ops::OP_NOTIFICATION),
+            self.draft.request_bytes,
+            &self.bindings.prices,
+            if self.draft.has_upstream() {
+                self.bindings.fee_nanos
+            } else {
+                0
+            },
+        )
+    }
+
+    /// What this unit consumed, as the exit and the record both read it.
+    fn ended<'p>(&'p self, progress: &'p Progress, origin: busbar_caps::OriginKind) -> Ended<'p> {
+        Ended {
+            shape: self.shape(),
+            origin,
+            finish: self.draft.finish,
+            request_bytes: self.draft.request_bytes,
+            metered: progress.metered,
+            dispatched: !progress.legs.is_empty() || self.draft.has_upstream(),
+            principal: progress.principal.as_ref(),
+            resource: self
+                .op()
+                .and_then(|op| resources(&self.bindings.plane, op).first().copied()),
+        }
+    }
+
+    /// Seal one ending on the audit chain and keep the head it sealed.
+    fn seal(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: Outcome) -> Decision<Audit> {
+        let inputs = {
+            let progress = read_through_poison(&self.progress);
+            audit_inputs(
+                &self.ended(&progress, ctx.origin),
+                outcome,
+                self.bindings.origin,
+                self.bindings.at,
+            )
+        };
+        let record = {
+            let mut durability = read_through_poison(self.bindings.durability);
+            durability.record.seal(inputs, token)
+        };
+        // The head is recorded HERE, at the step that sees it. Nothing earlier could have it and
+        // nothing later is handed it again.
+        read_through_poison(&self.progress).head = Some(record.hash);
+        Decision::proceed(
+            token,
+            AuditFacts {
+                op_class: self.op().unwrap_or(ops::OP_NOTIFICATION),
+                finish: self.draft.finish,
+            },
+        )
+    }
+}
+
+impl Units for McpUnits<'_> {
+    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+        arrival(
+            &Arrived {
+                record: &self.draft.arrival,
+                claim_transport: self.draft.claim_transport,
+            },
+            token,
+        )
+    }
+
+    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+        // The bytes were read once, where the draft was built, and this restates that answer rather
+        // than re-deriving it: a second read here would advance the codec a second time over the
+        // same frame and could disagree with the draft every later step is built from.
+        match self.draft.op {
+            Ok(op) => Decision::proceed(token, op),
+            Err(reason) => Decision::refuse(token, Refusal::new(reason)),
+        }
+    }
+
+    fn authenticate(
+        &self,
+        token: &UnitToken<Authenticate>,
+        _ctx: &UnitCtx,
+    ) -> Decision<Authenticate> {
+        authenticate_bound(
+            self.bindings.auth,
+            &Arriving {
+                presented: self.draft.credential.as_deref(),
+                transport: self.draft.claim_transport,
+                under_scheme: self.draft.under_scheme,
+                now: self.bindings.at.wall,
+                // A bound session's principal is the cached one; an unbound session
+                // re-authenticates every unit, which is what makes revocation gate new units on
+                // this plane at all.
+                new_unit: !self.draft.from_session,
+            },
+            self.bindings.auth_bindings,
+            token,
+        )
+    }
+
+    fn verify(
+        &self,
+        token: &UnitToken<Verify>,
+        trust: &TrustToken,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Decision<Verify> {
+        {
+            // The first step the loop hands the principal is the first step that can record it.
+            let mut progress = read_through_poison(&self.progress);
+            progress.principal = Some(principal.clone());
+        }
+        let mut candidates = vec![self.draft.destination];
+        for leg in &self.draft.legs {
+            if !candidates.contains(&leg.destination) {
+                candidates.push(leg.destination);
+            }
+        }
+        let _ = ctx;
+        verify(
+            self.bindings.trust,
+            &candidates,
+            self.bindings.pool,
+            self.bindings.views,
+            self.bindings.at.wall,
+            trust,
+            token,
+        )
+    }
+
+    fn approve(
+        &self,
+        token: &UnitToken<Approve>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+        _destinations: &[busbar_caps::VerifiedDestination],
+    ) -> Decision<Approve> {
+        let Some(op) = self.op() else {
+            return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+        };
+        match approve(
+            &self.bindings.plane,
+            op,
+            self.grants,
+            self.bindings.scope_policy,
+        ) {
+            // A deployment that registered nothing has nothing here to be authorized to reach, and
+            // a pair the policy is silent about has not been authorized. Both are the scope unit's
+            // one refusal, because both are "the caller may not do this".
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
+            Ok(resources) => {
+                // The plane says WHAT is being asked for; the resources travel with the approval so
+                // the record names the server and the tool rather than the method.
+                let mut facts = ScopeFacts::default();
+                for resource in resources {
+                    let _ = facts
+                        .resources
+                        .push(busbar_contract::unit::ResourceLocator {
+                            kind: resource.kind,
+                            name: resource.name,
+                        });
+                }
+                Decision::proceed(token, facts)
+            }
+        }
+    }
+
+    fn admit(
+        &self,
+        token: &UnitToken<Admit>,
+        admit_token: &AdmitToken<Admit>,
+        _ctx: &UnitCtx,
+        principal: &PrincipalId,
+        _destinations: &[busbar_caps::VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Decision<Admit> {
+        // An empty chain is a yes from every cap at once: no gauge is raised, no window bucket is
+        // read and no freeze flag is consulted. A caller whose caps could not be read is OVER
+        // QUOTA, not merely rate-limited, and that is the fail-closed arm.
+        let Some(chain) = self.bindings.chain else {
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        };
+        let estimate = self.estimate();
+        admit(
+            &Admitting {
+                door: self.bindings.door,
+                pricer: self.bindings.pricer,
+                pool: self.bindings.pool,
+                // The pinned arrival epoch and never a fresh clock read: a check and a charge that
+                // read two different clocks are a check of one window and a charge in another.
+                arrival_epoch: self.bindings.at.wall,
+                estimate: &estimate,
+                principal,
+                chain,
+            },
+            admit_token,
+            token,
+            leases,
+        )
+    }
+
+    fn route(
+        &self,
+        token: &UnitToken<Route>,
+        _ctx: &UnitCtx,
+        meter: &AccrualMeter,
+    ) -> Decision<Route> {
+        // The plan has to FIT before any of it happens. The bound belongs to the contract and is
+        // read from it, so the number this compares against and the number the plan holds are the
+        // same number and there is nowhere to write a second one.
+        if self.draft.legs.len() > busbar_contract::MAX_LEGS {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+        // A plan with no leg at all is an operation this plane does not carry: a refusal at the
+        // routing step, not a panic and not a hop to somewhere plausible.
+        if self.draft.legs.is_empty() {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+
+        // The KERNEL-HELD RECORD LEGS, in the plan's order, before anything is dialled. They are
+        // what says whether this caller may see the thing at all, and the hop that follows carries
+        // what they answered.
+        let mut answers = Vec::new();
+        for (at, kind) in self.leg_kinds.iter().enumerate() {
+            let LegKind::Record { schema, op } = *kind else {
+                continue;
+            };
+            let key = self.draft.record_keys.get(at).map_or("", String::as_str);
+            match self.bindings.records.run(&RecordLeg {
+                schema,
+                op,
+                key,
+                parent: None,
+                seq: 0,
+                body: &self.draft.record_body,
+                terminal: matches!(
+                    self.draft.finish,
+                    busbar_contract::unit::FinishClass::Complete
+                        | busbar_contract::unit::FinishClass::Error
+                ),
+                now: self.bindings.at.wall,
+                expires_at: self.bindings.expires_at,
+            }) {
+                // The plan naming an operation its schema never declared. The trust unit refuses
+                // such a leg before it is ever run; reaching here means something got past it, and
+                // the answer is the same one, not a softer one.
+                Err(RecordRefusal::Undeclared { .. }) => {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
+                }
+                Err(RecordRefusal::Store(_)) => {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
+                }
+                Ok(answer) => answers.push(answer),
+            }
+        }
+        read_through_poison(&self.progress).legs = answers;
+
+        // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
+        // metering step. The meter is the kernel's running total and the hold is applied to it at
+        // the exit, which is why this is an accrual and not a posting.
+        meter.accrue(self.draft.request_bytes);
+        // How far this unit's reservation may still grow, read off the same chain the door was
+        // judged against. Zero is a top-up that does not happen, never a unit that does not run.
+        meter.offer_headroom(match self.bindings.chain {
+            None => 0,
+            Some(chain) => AdmissionUnit::new(
+                self.bindings.door,
+                self.bindings.pricer,
+                self.bindings.pool,
+                self.bindings.at.wall,
+            )
+            .headroom_nanos(chain),
+        });
+
+        let mut plan = RoutePlan::default();
+        for leg in &self.draft.legs {
+            // Unreachable, because the bound was asked at the top of this step. It is written as a
+            // refusal rather than ignored so that the day the two stop agreeing is a day this step
+            // says no, not a day a leg disappears off the plan it already ran.
+            if plan
+                .legs
+                .push(Leg {
+                    destination: leg.destination,
+                })
+                .is_err()
+            {
+                return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+            }
+        }
+        Decision::proceed(token, plan)
+    }
+
+    fn meter(
+        &self,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        _ctx: &UnitCtx,
+        _provisional: &Outcome,
+    ) -> Decision<Meter> {
+        let op = self.op().unwrap_or(ops::OP_NOTIFICATION);
+        let retained = RetainedLocatorValues::new(located_values(op, self.draft.response_bytes));
+        // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
+        // beside the located figure, never the charge.
+        let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
+            class: CLASS_BYTES,
+            quantity: self.draft.request_bytes,
+            // A byte is a byte: the class's own quantity is the quantity, so the floor divides by
+            // one. The plane declared that divisor and this is the declaration read back.
+            source: busbar_caps::QuantitySource::KernelBytes { divisor: 1 },
+        }]);
+        match meter(
+            &retained,
+            &kernel,
+            self.bindings.meter_policy.policy(),
+            usage,
+        ) {
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
+            Ok(metered) => {
+                let mut progress = read_through_poison(&self.progress);
+                progress.metered = Some(self.draft.response_bytes);
+                progress.disputed = metered.disputed();
+                Decision::proceed(token, metered.usage)
+            }
+        }
+    }
+
+    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+        self.seal(token, ctx, *outcome)
+    }
+
+    fn audit_refused(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> Decision<Audit> {
+        // The second door: a unit that never passed the first one, and was charged nothing. It is
+        // sealed on the same chain, because a refusal is an event with a record of its own.
+        self.seal(
+            token,
+            ctx,
+            Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason()),
+        )
+    }
+
+    fn encode(
+        &self,
+        token: &UnitToken<Encode>,
+        _ctx: &UnitCtx,
+        _outcome: &Outcome,
+    ) -> Decision<Encode> {
+        // The plane's encoders take the unit's arena, and this signature carries neither an arena
+        // nor the plane's draft, so the bytes are written where the borrow lives — see
+        // [`refusal_of`], which is how the root hands the loop's ending back to the plane to render
+        // — and this step reports what left. A root that allocated a second buffer here would be
+        // writing the wire format twice.
+        let bytes = read_through_poison(&self.progress).encoded;
+        Decision::proceed(
+            token,
+            busbar_contract::wire::Frame {
+                direction: busbar_contract::wire::Direction::Outbound,
+                stream: busbar_contract::ids::StreamId(0),
+                bytes: busbar_contract::bounded::SlabBytes::new(Arc::from(&[][..])),
+                meta: busbar_contract::wire::FrameMeta {
+                    bytes,
+                    transport_units: None,
+                    status: None,
+                    status_code: None,
+                    retry_after_secs: None,
+                },
+            },
+        )
+    }
+
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        let progress = read_through_poison(&self.progress);
+        evidence(&self.ended(&progress, ctx.origin))
+    }
+}
+
+/// **The bytes the caller is owed, from the ending the loop sealed.**
+///
+/// The loop decides how a unit ended and the PLANE renders it — that is the split, and this is the
+/// hinge. What the root owns is the join between the kernel's own closed vocabulary and the
+/// contract's spelling of it, so that a refusal a caller reads is the refusal the loop raised rather
+/// than an envelope this file wrote out by hand. The reason side of the join already exists as one
+/// `From` in the capability crate, walked by that crate's own tests; the step side is written here,
+/// totally, so a step added to the loop does not compile until a caller can be told which one it was.
+///
+/// `None` is a unit that SETTLED. A settled unit's bytes are its answer, which the plane writes from
+/// the unit's own arena, and rendering a refusal for one would be inventing an error nothing raised.
+#[must_use]
+pub fn refusal_of(
+    ended: &busbar_kernel::teller::Ended,
+) -> Option<busbar_contract::unit::Refusal<'static>> {
+    let (step, reason) = match ended {
+        busbar_kernel::teller::Ended::Settled { end, .. } => match end.outcome() {
+            Outcome::Refused(step, reason) => (step, reason),
+            // Every other ending either delivered an answer or lost the unit before one could be
+            // written, and neither is a refusal a caller is owed an envelope for.
+            _ => return None,
+        },
+        // The node's own sweep took the hold first, so this unit will not produce an answer at all.
+        busbar_kernel::teller::Ended::AlreadySettled => return None,
+    };
+    Some(busbar_contract::unit::Refusal {
+        step: refusal_step(step),
+        reason: reason.into(),
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    })
+}
+
+/// The contract's spelling of the step a refusal was raised at.
+///
+/// Two crates name the same ten steps and neither depends on the other, so the mapping is written
+/// once, here, where both are in scope. Totality is what makes it safe: an eleventh step would not
+/// compile.
+#[must_use]
+pub fn refusal_step(step: busbar_caps::StepName) -> busbar_contract::unit::Step {
+    match step {
+        StepName::Arrival => busbar_contract::unit::Step::Arrival,
+        StepName::Decode => busbar_contract::unit::Step::Decode,
+        StepName::Authenticate => busbar_contract::unit::Step::Authenticate,
+        StepName::Verify => busbar_contract::unit::Step::Verify,
+        StepName::Approve => busbar_contract::unit::Step::Approve,
+        StepName::Admit => busbar_contract::unit::Step::Admit,
+        StepName::Route => busbar_contract::unit::Step::Route,
+        StepName::Meter => busbar_contract::unit::Step::Meter,
+        StepName::Audit => busbar_contract::unit::Step::Audit,
+        StepName::Encode => busbar_contract::unit::Step::Encode,
     }
 }
 

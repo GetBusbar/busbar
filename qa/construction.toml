@@ -1812,3 +1812,56 @@ because = "the per-scope position bound declared on busbar_unit_audit::legacy::C
 key = "rules.loc-ceilings.union_ceiling"
 by = 1
 because = "the same single const line as the unit_total_ceiling raise, counted once here because this union sums the unit half: busbar_unit_audit::legacy::Chain::MAX_TRACKED_SCOPES. The kernel half does not move — chain.rs is not in the kernel's call-graph name-match set — so this is the unit rise carried through and nothing else, against the 1412 busbar-core production lines the same branch deletes"
+
+# ------------------------------------------------------------------------------------------------
+# THE MCP PLANE ENTERS THE TELLER LOOP (MCP-T, 1.6.0)
+# ------------------------------------------------------------------------------------------------
+#
+# `crates/busbar/src/root/units_mcp.rs` gains `McpDraft`, `McpBindings`, `McpUnits` and the
+# `impl Units` behind them, so an MCP request is answered by the SAME seven steps every other plane
+# is answered by — authenticate, verify, approve, admit, route, meter, audit — served ONCE by the
+# units and by nothing plane-specific. Before this landing the plane had no `impl Units` at all and
+# never entered the loop; its steps existed as free functions with no loop to call them.
+#
+# Every raise below is ROOT COMPOSITION and nothing else. A composition root is the ONE kind
+# entitled to name a plane, the kernel's loop, the units and the capability vocabulary in a single
+# file — that is what a composition root IS — and the rise is that file plus the cells that drive a
+# request through the real `run_unit`. It is NET rather than gross: the capability and kernel
+# spellings were taken through the file's existing imports rather than fully qualified, which is why
+# `caps` rises by 12 rather than by 50 and `kernel` by 4 rather than by 15.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 12
+because = "the capability vocabulary the ten steps are ANSWERED IN, named by the composition that answers them: the step markers (`Approve`, `Route`, `Meter`, `Audit`, `Encode`), the tokens the loop lends each step (`AdmitToken`, `TrustToken`, `UsageToken`, `DurabilityToken`), the answers they carry (`ScopeFacts`, `RoutePlan`, `AuditFacts`, `Outcome`, `Posted`) and `StepName`, which the root joins to the contract's own spelling in `refusal_step` so a caller is told which step said no. A step's answer type is the loop's, not the plane's, and the file that implements the loop's trait is the one file that names them."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "one name, in the cell that drives the loop: the node's own scope policy is built through `crate::root::policy`, which the control surface also names. The composition root binds one policy for every plane; a second one built for this leg would be a second answer to the question the deployment already answered."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "THE LOOP ITSELF, named by the composition that enters it: `busbar_kernel::teller::{Units, UnitCtx, AccrualMeter, run_unit, Run, Ended, Kernel}` and `busbar_kernel::slice::{ConcurrencyGauge, LeaseCell}`. The cell drives `run_unit` rather than an approximation of it, which is the whole value of the proof: a driver that approximated the loop would be proving the plane agrees with the approximation."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 51
+because = "the MCP plane, named by the composition that mounts it on the loop: `busbar_plane_mcp::{McpPlane, ops, records, claims, facts, jsonrpc}` in the draft's read (`McpDraft::read`, the production caller of `read_ingress`), in the classification of the plan's legs, and in the byte-identity cell, which decodes the rig's own request through the plane's own ingress decoder and renders the loop's refusal through the plane's own `encode_refusal`. The root parses none of this protocol and writes none of its envelope: what it owns is the JOIN between the kernel's closed reason vocabulary and the contract's spelling of it, and the bytes come back from the plane."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "the arrival handover, named by the composition that checks it: the claim's transport and the composed chain the transports recorded (`claims::TRANSPORT_HTTP`, the tcp/tls/http chain the cell's `ArrivalRecord` carries). The arrival step's one question is whether the claim and the stack describe the SAME connection, and a cell that did not build a real chain would not be driving the step that can refuse a handoff mismatch."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "the units the seven steps are SERVED BY, named by the composition that binds them: `busbar_unit_auth::{Auth, AuthChain}`, `busbar_unit_trust::{Trust, BreakerView, Unavailable}`, `busbar_unit_scope::Grants`, `busbar_unit_admission::{Door, InMemoryCells, Pricer, GroupTable, BucketChain}`, `busbar_unit_usage::KernelLine` and `busbar_unit_wal::NullShipper`. Every one of them is the node's one instance handed to this leg; nothing here is a second copy of a unit and nothing here is plane-specific."
