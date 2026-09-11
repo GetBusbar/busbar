@@ -7,16 +7,13 @@
     "Coverage GROWING (a new id owed that was not in the baseline) needs no entry here — it is",
     "always allowed and just printed; only a SHRINK needs to be named.",
     "Nothing has been dropped from the 1.5.5 golden since owed-baseline.txt was generated from",
-    "golden/1.5.5/ledger.tsv's PASS rows. The one entry below is a cell that has never been owed:",
-    "it is named here so the reason it is not recorded is written down and owned, and so the entry",
-    "is already in place the day the cell is baselined and then re-loses its fixture."
+    "golden/1.5.5/ledger.tsv's PASS rows.",
+    "",
+    "CLOSED (OR-OP-2, busbar-oracle v0.3.18): gemini-tool-use-token-term. The mock now answers a",
+    "`tool-use-tokens` control on gemini's chat leaf with `usageMetadata.toolUsePromptTokenCount`;",
+    "llm|gemini|gemini|request|ok_tool_use_tokens is recorded (golden/1.5.5), needs_fixture lifted,",
+    "and owed-baseline.txt carries it. Removed from `accepted` rather than left stale: the gap this",
+    "entry named no longer exists, and a gap entry with no matching gap is a claim about nothing."
   ],
-  "accepted": [
-    {
-      "id": "gemini-tool-use-token-term",
-      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
-      "owner": "llm-plane",
-      "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden."
-    }
-  ]
+  "accepted": []
 }

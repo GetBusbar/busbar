@@ -757,6 +757,7 @@ llm|bedrock|anthropic|request|upstream_429
 llm|bedrock|anthropic|request|upstream_down
 llm|bedrock|bedrock|request|malformed
 llm|bedrock|bedrock|request|ok
+llm|bedrock|bedrock|request|ok_cachepoint_document
 llm|bedrock|bedrock|request|ok_stream
 llm|bedrock|bedrock|request|ok_tool_call
 llm|bedrock|bedrock|request|ok_tool_result
@@ -867,6 +868,7 @@ llm|gemini|gemini|request|ok
 llm|gemini|gemini|request|ok_stream_array
 llm|gemini|gemini|request|ok_tool_call
 llm|gemini|gemini|request|ok_tool_result
+llm|gemini|gemini|request|ok_tool_use_tokens
 llm|gemini|gemini|request|out_of_scope
 llm|gemini|gemini|request|over_budget
 llm|gemini|gemini|request|over_budget_total
@@ -972,6 +974,7 @@ llm|responses|openai|request|upstream_429
 llm|responses|openai|request|upstream_down
 llm|responses|responses|request|malformed
 llm|responses|responses|request|ok
+llm|responses|responses|request|ok_citation
 llm|responses|responses|request|ok_stream
 llm|responses|responses|request|ok_tool_call
 llm|responses|responses|request|ok_tool_result
