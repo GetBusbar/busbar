@@ -33,6 +33,10 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+// The `plugins:` block's GRAMMAR and its RESOLUTION, one `mod` apart. Both are facts about the
+// plugin subsystem: the substrate never reads the block, and the config layer states it by naming
+// this crate through the `busbar-core -> busbar-plugin-loader` edge it already has.
+pub mod config;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
@@ -40,6 +44,7 @@ pub mod highwater;
 pub mod hook;
 mod hostlog;
 mod legacy_usage;
+pub mod policy;
 pub mod registry;
 mod stage;
 pub mod store_adapter;
@@ -60,6 +65,9 @@ pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
+// The two resolutions of the `plugins:` block. Named at the crate root because every caller is an
+// engine boot/reload/admin path that already spells `busbar_plugin_loader::`.
+pub use policy::{fetch_specs, trust_policy};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,
