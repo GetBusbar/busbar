@@ -22,10 +22,14 @@ mod rate_tests;
 mod scope_tests;
 
 /// The four classes the older release priced, under the names it used for them.
-pub(crate) const INPUT: &str = "input";
-pub(crate) const OUTPUT: &str = "output";
-pub(crate) const CACHE_READ: &str = "cache_read";
-pub(crate) const CACHE_WRITE: &str = "cache_write";
+// THE DECLARED FOUR, taken and not spelled. A cell that wrote its own literals would be a sixth
+// copy of the names — beside the store's, the admission unit's, the codec's and the planes' own —
+// and a cell whose class names can drift from the ones the summation folds proves nothing about
+// money: it would go green on a card that priced a class no report ever carries.
+pub(crate) const INPUT: &str = busbar_contract::DIM_TOKENS_IN;
+pub(crate) const OUTPUT: &str = busbar_contract::DIM_TOKENS_OUT;
+pub(crate) const CACHE_READ: &str = busbar_contract::DIM_CACHE_READ;
+pub(crate) const CACHE_WRITE: &str = busbar_contract::DIM_CACHE_WRITE;
 
 /// Build a usage report for a test.
 ///
