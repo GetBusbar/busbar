@@ -1179,11 +1179,8 @@ async fn run(data_workers: usize) {
         config::overlay::apply_root_to_deploy(&mut deploy, doc);
     }
 
-    // The OTLP trace sink — 1.5.3: no longer an `observability:` block, but the `module: otlp`
-    // instance of the `export:` NAMED map. Grabbed before `deploy` is borrowed by resolve.
-    let otlp_cfg = config::resolve_export(&deploy.export, &mut Vec::new()).otlp;
-    // The `advanced.response_headers:` toggles (BOTH default false), read here — same
-    // BOOT-ONCE spot as `otlp_cfg` above, for the same reason: `server_timing` is baked into
+    // The `advanced.response_headers:` toggles (BOTH default false), read at this BOOT-ONCE spot
+    // because `server_timing` is baked into
     // router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
     // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
@@ -1234,7 +1231,13 @@ async fn run(data_workers: usize) {
     // subscriber that already exists. This builds the sink, its ONE gate, its ONE queue and the
     // wire it puts an export on; `None` ⇒ no `otlp` instance (or an endpoint the SSRF guard
     // refused), in which case no client is built and no span is ever observed.
-    let traces_layer = root::units_export::traces::install(otlp_cfg.as_ref());
+    //
+    // READ OFF `resolved_export`, LIKE EVERY OTHER SINK. It used to have a resolution of its own,
+    // fifty lines earlier, lowering the same `export:` document a second time for the one instance
+    // whose sink lived in the logging module. There is no such instance now — `otlp` is a sink of
+    // kind `export` composed from the same resolved block as the other three — so the second
+    // resolution is deleted and the last per-sink read in this boot sequence goes with it.
+    let traces_layer = root::units_export::traces::install(resolved_export.otlp.as_ref());
     root::logging::init_logging(traces_layer, mcp_stdio_requested(std::env::args()));
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /

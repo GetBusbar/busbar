@@ -3002,7 +3002,7 @@ count = "19"
 [[cell]]
 crate = "busbar"
 kind = "export"
-count = "63"
+count = "64"
 
 [[disagreement]]
 crate = "busbar"
