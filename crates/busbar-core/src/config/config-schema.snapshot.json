@@ -2210,6 +2210,10 @@
         "lane": {
           "optional": false,
           "type": "String"
+        },
+        "model": {
+          "optional": true,
+          "type": "String"
         }
       },
       "kind": "struct",

@@ -1808,6 +1808,10 @@ impl TestApp {
             m
         };
         let app = std::sync::Arc::new(crate::state::App {
+            // NO CATALOG. A fixture resolves no provider secret, so it declares no model's upstream
+            // and `App::model_upstream` answers `None` for every name — which is the same answer a
+            // deployment that declared no `models:` entry gets, and never a fabricated origin.
+            model_upstreams: std::sync::Arc::default(),
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.

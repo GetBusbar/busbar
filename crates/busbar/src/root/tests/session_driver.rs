@@ -499,6 +499,9 @@ struct RecordingUnits {
     /// Who this composition's authenticate step resolved. `None` is the anonymous posture, which
     /// has to stay representable and is what every cell above runs under.
     principal: Option<PrincipalId>,
+    /// What this composition's units settled the sealed leg PRESENTS when it is dialled. `None` is a
+    /// dialect that declared no presentation, which is what every cell above runs under.
+    credential: Option<crate::root::session_driver::LegSecret>,
 }
 
 impl RecordingUnits {
@@ -530,6 +533,13 @@ impl RecordingUnits {
     }
 }
 
+/// WHAT ONE DIAL WAS HANDED TO PRESENT, as the recorder keeps it: the dialect's declared place,
+/// rendered, and the resolved value. `None` is a dial handed nothing to present.
+///
+/// A named alias rather than the tuple spelled at each of its three sites, because the two `String`s
+/// are not interchangeable and a reader of the assertion has to know which is which.
+type Presented = Option<(String, String)>;
+
 /// The unit one moment runs as: the recorder, told whether to refuse.
 struct OneMoment<'a> {
     log: &'a RecordingUnits,
@@ -554,6 +564,10 @@ impl SessionUnits for RecordingUnits {
 
     fn principal(&self, _session: u64) -> Option<PrincipalId> {
         self.principal.clone()
+    }
+
+    fn leg_credential(&self, _session: u64) -> Option<crate::root::session_driver::LegSecret> {
+        self.credential.clone()
     }
 
     fn closed(&self, session: u64) {
@@ -1289,6 +1303,10 @@ struct FakeDialler {
     /// WHICH SESSION each dial was for. The composition pumps the leg's inbound half, and it cannot
     /// pump it into the right driver slot unless the dial says whose leg this is.
     dialled_for: Arc<Mutex<Vec<SessionHandle>>>,
+    /// WHAT EACH DIAL WAS HANDED TO PRESENT, as the borrowed face reached it. Recorded as the place
+    /// and the secret because the claim under test is that BOTH crossed — a cell that recorded only
+    /// the place would pass on a dial handed a credential with somebody else's value in it.
+    presented: Arc<Mutex<Vec<Presented>>>,
 }
 
 impl crate::root::leg_dial::LegDialer for FakeDialler {
@@ -1296,6 +1314,7 @@ impl crate::root::leg_dial::LegDialer for FakeDialler {
         &'a self,
         session: busbar_contract::transport::session::SessionHandle,
         _dest: &'a PlaneDestination,
+        credential: Option<busbar_contract::transport::session::LegCredential<'a>>,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
@@ -1310,6 +1329,10 @@ impl crate::root::leg_dial::LegDialer for FakeDialler {
         Box::pin(async move {
             *self.dials.lock().expect("the log") += 1;
             self.dialled_for.lock().expect("the log").push(session);
+            self.presented
+                .lock()
+                .expect("the log")
+                .push(credential.map(|c| (format!("{:?}", c.at), c.secret.to_string())));
             if let Some(error) = self.dial_answer {
                 return Err(error);
             }
@@ -1386,6 +1409,7 @@ async fn a_relayed_frame_goes_out_under_the_open_units_own_view() {
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
         dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::new(Mutex::new(Vec::new())),
     };
 
     // The unit that seals the leg.
@@ -1476,6 +1500,7 @@ async fn a_refusing_lease_ends_the_session() {
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
         dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
 
@@ -1518,6 +1543,7 @@ async fn a_failed_dial_ends_the_session_before_the_next_frame_is_read() {
         dial_answer: Some(busbar_contract::TransportError::AddressRefused),
         dials: Arc::clone(&dials),
         dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
 
@@ -1555,6 +1581,7 @@ async fn relayed(
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
         dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::new(Mutex::new(Vec::new())),
     };
     assert_eq!(
         driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
@@ -1754,6 +1781,7 @@ async fn the_legs_view_names_the_principal_the_composition_resolved() {
         dial_answer: None,
         dials: Arc::new(Mutex::new(0)),
         dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::new(Mutex::new(Vec::new())),
     };
     driver.drive(session, frame(0, OPENS_A_UNIT));
     let mut source = crate::root::leg_dial::LegDialing::new(
@@ -1865,9 +1893,6 @@ async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
-        // This leg's dialect declares no credential presented at the upgrade, which is what the
-        // three rows this tree ships say for every dialect but one.
-        None,
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );
@@ -1906,6 +1931,108 @@ async fn a_leg_that_will_not_dial_ends_the_session_and_attaches_nothing() {
     );
 }
 
+/// THE CREDENTIAL THE UNITS SETTLED REACHES THE DIAL, AND NOTHING BETWEEN THE TWO RENDERS IT.
+///
+/// The claim is about WHERE the credential comes from, and it is the whole of R1's second half. A
+/// duplex upstream authenticates once, at the upgrade, and which secret that is depends on which
+/// configured ROW the session's units sealed against — not on which surface the session arrived at.
+/// A session whose own wire has no configured row seals against the first row, so a port that held
+/// its own credential would present one row's secret on another row's socket, and that is precisely
+/// the session a per-mount credential would get wrong.
+///
+/// So the value travels: the opening unit's binding -> `SessionUnits::leg_credential` ->
+/// `PendingLeg` -> `pending_leg` -> `LegDialing` -> the dialler's borrowed face. This cell drives
+/// that whole path and reads out the far end.
+///
+/// THE SECOND ASSERTION IS THE ONE THAT COSTS SOMETHING TO GET WRONG. Everything holding the secret
+/// on that path is `Debug`-formatted somewhere by somebody eventually — a parked leg in a trace, a
+/// port in a panic message — and a DERIVED `Debug` on any of them writes the deployment's resolved
+/// provider credential into that line. `PendingDial` writes its own, so the rendering says where the
+/// credential goes and how long it is and never what it is.
+#[tokio::test]
+async fn the_credential_the_units_settled_is_what_the_dial_is_handed() {
+    const SECRET: &str = "a-provider-secret-nobody-may-log";
+
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    // WHAT UNIT ZERO SETTLED: this row's dialect declares its credential goes in a query parameter
+    // of the dial URL, which is the arm that obliges the redactor.
+    node.units.credential = Some((
+        busbar_contract::transport::session::CredentialAt::Query("key"),
+        SECRET.to_string(),
+    ));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    let presented = Arc::new(Mutex::new(Vec::new()));
+    let dialler = FakeDialler {
+        offers: Arc::new(Mutex::new(Vec::new())),
+        finished: Arc::new(Mutex::new(false)),
+        lease_answer: None,
+        dial_answer: None,
+        dials: Arc::new(Mutex::new(0)),
+        dialled_for: Arc::new(Mutex::new(Vec::new())),
+        presented: Arc::clone(&presented),
+    };
+
+    // The unit that seals the leg — and, in the same step, what the leg presents.
+    assert_eq!(
+        driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
+        Outcome::Completed
+    );
+
+    let parked = driver
+        .pending_leg(session)
+        .expect("the unit sealed a leg, so the driver has one parked to dial");
+    // THE RENDERING, before anything is dialled: the place is public (it is the dialect's own
+    // declaration) and the value is not.
+    let rendered = format!("{parked:?}");
+    assert!(
+        !rendered.contains(SECRET),
+        "a parked leg's own rendering must never carry the deployment's resolved provider \
+         credential — a derived `Debug` here puts it in every trace line that formats one, got: \
+         {rendered}"
+    );
+    assert!(
+        rendered.contains("credential_at: Query(\"key\")")
+            && rendered.contains(&format!("credential_len: {}", SECRET.len())),
+        "what the rendering DOES say is where the credential goes and how long it is, which is \
+         what a reader of that line is actually asking, got: {rendered}"
+    );
+
+    // BETWEEN FRAMES: the decorator dials what the unit parked, and hands the dial what the unit
+    // settled with it.
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted([RELAYS_A_FRAME].into_iter().collect()),
+        &driver,
+        session,
+        &dialler,
+    );
+    let _ = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+
+    assert_eq!(
+        presented.lock().expect("the log").as_slice(),
+        [Some(("Query(\"key\")".to_string(), SECRET.to_string()))],
+        "the dial is handed the credential the UNITS settled for this session's sealed row — both \
+         the dialect's declared place and the deployment's resolved value — and not one the port \
+         held for whichever surface the session arrived on"
+    );
+
+    // AND THE ONE REDACTOR IS WHAT KEEPS IT OUT OF A URL-SHAPED RECORD. A `Query` credential rides
+    // the dial URL by its dialect's own declaration, so every URL-shaped line about this leg — a
+    // dialler quoting its target back, a handshake refusal, an audit record naming where the leg
+    // went — passes through the scrub that declaration obliges.
+    let url_shaped = format!("ws://upstream.example.invalid/leg?key={SECRET} refused");
+    let recorded = busbar_contract::transport::session::redact_url_credentials(&url_shaped);
+    assert!(
+        !recorded.contains(SECRET) && recorded.contains("key=<redacted>"),
+        "a URL-shaped record of this leg carries `key=<redacted>` and never the value, got: \
+         {recorded}"
+    );
+}
+
 /// A SECURE LEG OVER A CLEARTEXT LAYER IS REFUSED BEFORE A SOCKET IS OPENED, AND THE PORT ADDS NO
 /// SECOND PATH THAT COULD MISS IT.
 ///
@@ -1928,9 +2055,6 @@ async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() 
         cleartext_ws_wire(),
         dial_handle(&node.kernel),
         driver,
-        // This leg's dialect declares no credential presented at the upgrade, which is what the
-        // three rows this tree ships say for every dialect but one.
-        None,
         MADE_UP_MEDIA,
         busbar_contract::transport::session::EGRESS_DEPTH,
     );
@@ -1939,11 +2063,13 @@ async fn a_secure_leg_over_a_cleartext_layer_is_refused_before_a_socket_opens() 
         .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
         .expect("the declared mount opens");
     driver.drive(session, frame(0, OPENS_A_UNIT));
-    let dest = driver
+    let pending = driver
         .pending_leg(session)
         .expect("the unit sealed the secure leg");
 
-    let refused = crate::root::leg_dial::LegDialer::dial(&port, session, &dest).await;
+    // This leg's dialect declares no credential presented at the upgrade, which is what the rows
+    // this tree ships say for every dialect but one.
+    let refused = crate::root::leg_dial::LegDialer::dial(&port, session, &pending.dest, None).await;
 
     assert!(
         matches!(

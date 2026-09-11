@@ -256,6 +256,52 @@ impl SessionRead<'_, '_> {
 /// The root implements this over what it composed ([`crate::root::kernel::ProductionUnits`]
 /// carries the composed session units as data), and a plane's own units composition implements it
 /// over the plane's node. This driver names neither.
+///
+/// ONE CONFIGURED LEG'S CREDENTIAL AS IT CROSSES THE DRIVER SEAM: where the dialect declared it goes
+/// and the resolved secret, owned for the length of one dial.
+///
+/// Owned rather than the borrowed [`busbar_contract::transport::session::LegCredential`] face
+/// because this value is read out from under a session's own lock and carried into an await; the
+/// borrowed face is what the WIRE takes, built from this at the one call that presents it. Nothing
+/// between here and there formats it, and no `Debug` on anything holding it renders it.
+pub type LegSecret = (
+    busbar_contract::transport::session::CredentialAt,
+    std::string::String,
+);
+
+/// WHAT ONE SEALED-AND-UNDIALLED LEG IS, as it crosses out of the driver.
+///
+/// Two values and one clone, because they were settled together and are presented together: the
+/// address the units sealed and what the leg presents at it. A seam that answered the address alone
+/// would make whoever dials go looking for the credential somewhere else, and the only somewhere
+/// else is a table keyed by something this value already carries.
+pub struct PendingDial {
+    /// Where the session's units sealed the leg to.
+    pub dest: PlaneDestination,
+    /// What the leg presents when it is dialled. `None` presents nothing added.
+    pub credential: Option<LegSecret>,
+}
+
+/// WRITTEN, NEVER DERIVED, for [`busbar_contract::transport::session::LegCredential`]'s own reason:
+/// a derived `Debug` on a type holding a resolved secret puts that secret in every `{:?}` an author
+/// reaches for while debugging a dial that will not open. This says WHERE the credential goes — the
+/// dialect's public declaration — and how long it is, and says the value nowhere.
+impl std::fmt::Debug for PendingDial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("PendingDial");
+        out.field("dest", &self.dest);
+        match &self.credential {
+            // WHERE it goes is the dialect's public declaration; how LONG it is is what a reader
+            // debugging a dial that will not open is actually asking. The value is neither.
+            Some((at, secret)) => out
+                .field("credential_at", at)
+                .field("credential_len", &secret.len()),
+            None => out.field("credential_at", &Option::<&str>::None),
+        };
+        out.finish()
+    }
+}
+
 pub trait SessionUnits: Send + Sync {
     /// The unit one moment of a declared session runs as.
     fn unit<'f>(&'f self, read: &SessionRead<'_, '_>) -> Box<dyn Units + 'f>;
@@ -270,6 +316,24 @@ pub trait SessionUnits: Send + Sync {
     /// which is the point: the units sealed it at Verify, and this driver merely carries it. `None`
     /// until a unit of this session has sealed one, and `None` from a composition that seals none.
     fn destination(&self, session: u64) -> Option<PlaneDestination> {
+        let _ = session;
+        None
+    }
+
+    /// THE CREDENTIAL THE SEALED LEG PRESENTS WHEN IT IS DIALLED, as the leg's own dialect declared
+    /// its presentation and this deployment's one upstream catalog resolved its value.
+    ///
+    /// Asked of the units for the same reason [`Self::destination`] is: the LEG decides it. A
+    /// session whose wire has no configured row seals against whichever row the composition's own
+    /// walk settled on, so a credential read off the surface the session arrived at would be one
+    /// row's secret on another row's socket. `None` is a leg that presents nothing added — a
+    /// dialect that DECLARED no presentation, and a composition that resolved none — and it stays
+    /// representable so no composition has to invent a secret.
+    ///
+    /// Owned rather than borrowed because it crosses the driver seam into an await, and the lock
+    /// this is read under is released before the dial. What holds a borrow is the one call that
+    /// presents it.
+    fn leg_credential(&self, session: u64) -> Option<LegSecret> {
         let _ = session;
         None
     }
@@ -403,6 +467,10 @@ impl SessionUnits for crate::root::kernel::ProductionUnits {
         self.duplex.as_ref().and_then(|c| c.destination(session))
     }
 
+    fn leg_credential(&self, session: u64) -> Option<LegSecret> {
+        self.duplex.as_ref().and_then(|c| c.leg_credential(session))
+    }
+
     fn principal(&self, session: u64) -> Option<PrincipalId> {
         self.duplex.as_ref().and_then(|c| c.principal(session))
     }
@@ -428,6 +496,10 @@ impl SessionUnits for crate::root::kernel::ProductionUnits {
 struct PendingLeg {
     /// Where the session's units sealed the leg to.
     dest: PlaneDestination,
+    /// What the leg presents when it is dialled, as its own dialect declared — see
+    /// [`SessionUnits::leg_credential`]. Parked with the address because it was settled with it,
+    /// and because the thing that dials must not go looking for it anywhere else.
+    credential: Option<LegSecret>,
     /// Whose writes the leg's frames are.
     unit: UnitIdentity,
     /// The class that priced the unit whose relay this is.
@@ -884,10 +956,13 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
     /// stays here, where it was minted, so that a caller could not attach a leg under a unit of its
     /// own choosing.
     #[must_use]
-    pub fn pending_leg(&self, session: SessionHandle) -> Option<PlaneDestination> {
+    pub fn pending_leg(&self, session: SessionHandle) -> Option<PendingDial> {
         let slot = self.slot(session)?;
         let guard = slot.lock().ok()?;
-        guard.pending.as_ref().map(|p| p.dest.clone())
+        guard.pending.as_ref().map(|p| PendingDial {
+            dest: p.dest.clone(),
+            credential: p.credential.clone(),
+        })
     }
 
     /// ATTACH THE DIALLED LEG to the session that asked for it, and open the plane's half of it.
@@ -1502,6 +1577,9 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             if let Some(dest) = self.units.destination(session.0) {
                 *pending = Some(PendingLeg {
                     dest,
+                    // SETTLED WITH THE ADDRESS, by the same units, at the same moment. A dial that
+                    // resolved it later would be resolving it against whatever the node held then.
+                    credential: self.units.leg_credential(session.0),
                     unit: UnitIdentity {
                         key: busbar_contract::ids::UnitKey::new(key.get()),
                         // The frames this leg carries are the CLIENT's, forwarded. A leg whose

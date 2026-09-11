@@ -41,7 +41,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use busbar_contract::dest::VerifiedDestination as PlaneDestination;
-use busbar_contract::transport::session::{EgressLease, SessionHandle};
+use busbar_contract::transport::session::{EgressLease, LegCredential, SessionHandle};
 use busbar_contract::TransportError;
 use busbar_transport_ws::mount::FrameSource;
 
@@ -77,6 +77,13 @@ pub trait LegDialer: Send + Sync {
     /// session's driver the replies go through. It is the dialler that starts that read, because it
     /// is the composition — the one party here whose driver outlives a session.
     ///
+    /// THE CREDENTIAL COMES WITH IT TOO, and for the same shape of reason: the units that sealed
+    /// this address settled what is presented at it, in one step, at one moment. A dialler that
+    /// looked the credential up for itself would be a second opinion about which row a session's
+    /// leg came off, and the two could disagree for exactly the sessions that matter — the ones
+    /// whose own wire has no configured row and seal against another. It is BORROWED, for the one
+    /// call: nothing here owns a secret and nothing here may keep one.
+    ///
     /// # Errors
     ///
     /// The leg could not be opened. Nothing is half-open on the error path: on it, there is nothing
@@ -85,6 +92,7 @@ pub trait LegDialer: Send + Sync {
         &'a self,
         session: SessionHandle,
         dest: &'a PlaneDestination,
+        credential: Option<LegCredential<'a>>,
     ) -> Pin<Box<dyn Future<Output = Result<DialledLeg, TransportError>> + Send + 'a>>;
 }
 
@@ -139,10 +147,17 @@ async fn dial_pending<U: SessionUnits + ?Sized + Sync>(
     session: SessionHandle,
     dialler: &dyn LegDialer,
 ) -> Result<(), TransportError> {
-    let Some(dest) = driver.pending_leg(session) else {
+    let Some(pending) = driver.pending_leg(session) else {
         return Ok(());
     };
-    let (lease, drain) = dialler.dial(session, &dest).await?;
+    // THE BORROWED FACE, built here and nowhere earlier: what crossed the driver seam is owned
+    // (it was read out from under the session's own lock), and what the wire takes is a borrow for
+    // the length of one dial. Neither end of that is a copy of the secret that outlives the call.
+    let credential = pending
+        .credential
+        .as_ref()
+        .map(|(at, secret)| LegCredential { at: *at, secret });
+    let (lease, drain) = dialler.dial(session, &pending.dest, credential).await?;
     // A driver that will not take the leg is one whose session has gone, or one somebody else
     // attached to first. Either way this lease is nobody's, and dropping it here is what closes the
     // socket rather than leaving it open with no owner.

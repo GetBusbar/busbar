@@ -1181,7 +1181,10 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     // No rows: this cell is about the TABLE the composition writes onto the served door, and a
     // deployment that configured none composes the same table a deployment that configured ten
     // does. The rows themselves are asserted in `booted` below.
-    let calls = crate::compose_voice_governed_calls(&[]);
+    // The node comes back beside the port now, because the credentials this node's legs present
+    // are bound onto it one build later (see `resolve_leg_credentials`). This cell is about the
+    // TABLE, so the node is dropped here — what it carries is the same either way.
+    let (_node, calls) = crate::compose_voice_governed_calls(&[]);
     let ports: [(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
@@ -2636,11 +2639,13 @@ mod booted {
                     dialect: busbar_plane_streams_openai::OPENAI_REALTIME
                         .name
                         .to_string(),
+                    model: Some("realtime-gpt".to_string()),
                     host: "realtime.example.invalid".to_string(),
                     lane: "voice-realtime".to_string(),
                 },
                 UpstreamRow {
                     dialect: busbar_plane_streams_gemini::GEMINI_LIVE.name.to_string(),
+                    model: Some("live-flash".to_string()),
                     host: "live.example.invalid".to_string(),
                     lane: "voice-live".to_string(),
                 },
@@ -2711,6 +2716,7 @@ mod booted {
         register_the_linked_rows();
         let written = vec![UpstreamRow {
             dialect: "no-such-row".to_string(),
+            model: Some("no-such-model".to_string()),
             host: "nowhere.example.invalid".to_string(),
             lane: "voice-realtime".to_string(),
         }];
@@ -2733,6 +2739,7 @@ mod booted {
         let written: StreamsCfg = serde_yaml::from_str(concat!(
             "upstreams:\n",
             "  - dialect: openai-realtime\n",
+            "    model: parsed-realtime\n",
             "    host: parsed.example.invalid\n",
             "    lane: voice-realtime\n",
         ))
@@ -2745,6 +2752,187 @@ mod booted {
         assert_eq!(VoicePlane::new(rows).upstreams().len(), 1);
         // A build with the owner compiled out — no section in the grammar — composes none.
         assert!(crate::composed_upstreams(&[]).is_empty());
+    }
+
+    /// THE ROWS THE CREDENTIAL CELLS BELOW RESOLVE AGAINST, and the catalog they resolve through.
+    ///
+    /// A closure rather than a fixture type: what the composition root hands
+    /// `resolve_leg_credentials` is one question — "what origin and credential serve this model" —
+    /// asked of the generation the app build produced, and a cell that built a second catalog type
+    /// to ask it would be proving something about that type instead.
+    fn catalog(model: &str) -> Option<(&'static str, &'static str)> {
+        match model {
+            "realtime-gpt" => Some(("https://realtime.example.invalid/v1", "sk-openai")),
+            "live-flash" => Some(("https://live.example.invalid", "sk-gemini")),
+            _ => None,
+        }
+    }
+
+    /// A ROW'S CREDENTIAL COMES OFF ITS `model:` ENTRY, AND IT IS THE ENTRY ITS OWN DIALECT ASKED FOR.
+    ///
+    /// Two rows, two dialects, two catalog entries — and only ONE of the two dialects this build
+    /// links declares a credential presentation at all. The gemini row's does (`?key=`); the openai
+    /// row's does not, and that is a DECLARED answer rather than a missing one, so its leg dials
+    /// with nothing added and contributes no entry here. A resolver that emitted an entry per row
+    /// regardless would be one that fabricated a presentation for a dialect that said it takes none.
+    #[test]
+    fn each_rows_credential_is_resolved_off_its_own_model_entry() {
+        register_the_linked_rows();
+        let written = upstream_rows(&two_row_section());
+        let mut interner = busbar_contract::Registration::new();
+        let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("both rows name registered, dialable dialects");
+
+        let resolved = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+            .expect("both rows address a declared model at their own host");
+
+        assert_eq!(
+            resolved.len(),
+            1,
+            "one entry, for the one dialect of the two that DECLARES where its credential goes"
+        );
+        let (host, at, secret) = &resolved[0];
+        assert_eq!(*host, "live.example.invalid");
+        assert_eq!(
+            *at,
+            busbar_contract::transport::session::CredentialAt::Query("key"),
+            "the place is the DIALECT's declaration and never a branch on a vendor's name here"
+        );
+        assert_eq!(
+            secret, "sk-gemini",
+            "and the value is that row's OWN catalog entry — a resolver that took the first \
+             entry, or the row's neighbour's, would authenticate one leg with another's key"
+        );
+    }
+
+    /// A ROW WHOSE `host:` DISAGREES WITH ITS MODEL ENTRY REFUSES THE BOOT.
+    ///
+    /// This is the check the `model:` field is worth having. `host:`/`lane:` stay the DIAL TARGET —
+    /// what socket is opened, what lane it is charged on — and the entry is where the credential
+    /// came from. A row where the two name different authorities is a deployment about to present
+    /// its provider credential to a host its own catalog never said serves that model, which is a
+    /// credential sent somewhere nobody configured it to go. Neither answer is taken: not the
+    /// entry's origin (that would silently move the dial target the operator wrote) and not the
+    /// row's host (that would silently move the credential). The boot refuses, by name.
+    #[test]
+    fn a_row_whose_host_disagrees_with_its_model_entry_refuses_the_boot() {
+        register_the_linked_rows();
+        let written = vec![UpstreamRow {
+            dialect: busbar_plane_streams_gemini::GEMINI_LIVE.name.to_string(),
+            model: Some("live-flash".to_string()),
+            // The catalog serves `live-flash` at `live.example.invalid`. This row would open its
+            // socket somewhere else entirely and present that entry's key when it got there.
+            host: "somewhere.else.invalid".to_string(),
+            lane: "voice-live".to_string(),
+        }];
+        let mut interner = busbar_contract::Registration::new();
+        let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("the row names a registered, dialable dialect");
+
+        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+            .expect_err("a row that dials one authority on another's credential refuses boot");
+
+        let said = refusal.to_string();
+        assert!(
+            said.contains("somewhere.else.invalid")
+                && said.contains("live.example.invalid")
+                && said.contains("live-flash"),
+            "the refusal names all three — what the operator wrote, what the catalog says, and \
+             which entry they disagree about — because an operator reading it has to fix one of \
+             them, got: {said}"
+        );
+        assert!(
+            !said.contains("sk-gemini"),
+            "and it names no secret: a refusal about a credential is not a place to print one, \
+             got: {said}"
+        );
+    }
+
+    /// A ROW WHOSE `model:` THE DEPLOYMENT DOES NOT DECLARE REFUSES THE BOOT.
+    ///
+    /// The same refusal an unregistered dialect gets and for the same reason: a leg this node
+    /// cannot authenticate is a claimed URL it would serve as silence. Dialling it with an empty
+    /// credential would reach the provider unauthenticated and answer every session with the
+    /// upstream's own 401 — a deployment that booted clean and serves nothing.
+    #[test]
+    fn a_row_addressing_no_declared_model_refuses_the_boot() {
+        register_the_linked_rows();
+        let written = vec![UpstreamRow {
+            dialect: busbar_plane_streams_gemini::GEMINI_LIVE.name.to_string(),
+            model: Some("no-such-model".to_string()),
+            host: "live.example.invalid".to_string(),
+            lane: "voice-live".to_string(),
+        }];
+        let mut interner = busbar_contract::Registration::new();
+        let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("the row names a registered, dialable dialect");
+
+        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+            .expect_err("a row addressing a model this deployment never declared refuses boot");
+        assert!(
+            refusal.to_string().contains("no-such-model"),
+            "the refusal names what the operator wrote, got: {refusal}"
+        );
+    }
+
+    /// A ROW WHOSE DIALECT DECLARES A CREDENTIAL AND WHOSE `model:` IS ABSENT REFUSES THE BOOT.
+    ///
+    /// `model:` is OPTIONAL in the grammar because the grammar is additive-only after 1.5.3, and an
+    /// optional key with no refusal behind it is a hole. This is the refusal: the PAIR is what is
+    /// wrong, never the missing key alone. A dialect that declares no presentation dials with
+    /// nothing added and its row is complete without a `model:`; this one's dialect says its
+    /// upstream takes this deployment's credential at the upgrade, so a row that names no entry to
+    /// draw it from would open a socket and present nothing — the provider's own 401, on every
+    /// session, from a node that booted clean.
+    #[test]
+    fn a_row_whose_dialect_declares_a_credential_and_names_no_model_refuses_the_boot() {
+        register_the_linked_rows();
+        let written = vec![UpstreamRow {
+            dialect: busbar_plane_streams_gemini::GEMINI_LIVE.name.to_string(),
+            model: None,
+            host: "live.example.invalid".to_string(),
+            lane: "voice-live".to_string(),
+        }];
+        let mut interner = busbar_contract::Registration::new();
+        let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("the row names a registered, dialable dialect");
+        let refusal = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+            .expect_err("a leg that would dial unauthenticated refuses boot");
+        assert!(
+            refusal
+                .to_string()
+                .contains(busbar_plane_streams_gemini::GEMINI_LIVE.name),
+            "the refusal names the dialect whose own declaration makes the row incomplete, got: \
+             {refusal}"
+        );
+    }
+
+    /// AND A ROW WHOSE DIALECT DECLARES NONE IS COMPLETE WITHOUT ONE, which is the posture every
+    /// row on this branch had before the key existed.
+    ///
+    /// The other half of the optionality, and it has to be cellled beside the refusal: a resolver
+    /// that refused every model-less row would make an additive key a required one by the back
+    /// door, and every deployment that wrote a row before this commit would stop booting.
+    #[test]
+    fn a_row_whose_dialect_declares_no_credential_needs_no_model() {
+        register_the_linked_rows();
+        let written = vec![UpstreamRow {
+            dialect: busbar_plane_streams_openai::OPENAI_REALTIME
+                .name
+                .to_string(),
+            model: None,
+            host: "realtime.example.invalid".to_string(),
+            lane: "voice-realtime".to_string(),
+        }];
+        let mut interner = busbar_contract::Registration::new();
+        let rows = crate::root::units_voice::configured_upstreams(&written, &mut interner)
+            .expect("the row names a registered, dialable dialect");
+        let resolved = crate::root::units_voice::resolve_leg_credentials(&written, &rows, catalog)
+            .expect("a dialect that declares no presentation needs no catalog entry");
+        assert!(
+            resolved.is_empty(),
+            "and it contributes no credential, which is what its own dialect declared"
+        );
     }
 
     /// AN ABSENT LIST COMPOSES NOTHING, which is the posture every deployment that wrote no block

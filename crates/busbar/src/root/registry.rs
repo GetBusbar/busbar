@@ -602,8 +602,10 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
 
 /// THE ROOT'S DIALLER, over the one `ws` wire the boot seal registered.
 ///
-/// Five fields and four of them are the composition's own decisions, spelled once here rather than
-/// re-decided per session:
+/// Four fields and every one of them the composition's own decision, spelled once here rather than
+/// re-decided per session. What is NOT here is the leg's credential: it is a fact of the ROW a
+/// session's units sealed against, not of the surface the session arrived on, so it rides in with
+/// the address (see [`crate::root::leg_dial::LegDialer::dial`]) and this port keeps no secret.
 ///
 /// * `wire` — the seal's instance, never a fresh one (see this module's header);
 /// * `keys` — the dial-side key handle the deployment provisioned, which is a slot and a
@@ -617,19 +619,6 @@ pub struct WsLegEgress<U: crate::root::session_driver::SessionUnits + ?Sized + S
     wire: std::sync::Arc<WsTransport>,
     keys: busbar_contract::TransportKeyHandle,
     driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
-    /// THE LEG'S CREDENTIAL, as this deployment resolved it and as the leg's DIALECT declared its
-    /// presentation — `None` when the dialect declared none.
-    ///
-    /// Held here rather than read per dial because it is a property of the LEG, settled once when
-    /// the composition bound it: the row's dialect said where it goes and the node's one upstream
-    /// catalog said what it is, and neither answer can change between two dials of the same leg. The
-    /// secret is OWNED because this port outlives the config generation's borrow; it is handed to
-    /// the wire as the borrowed [`busbar_contract::transport::session::LegCredential`] face and is
-    /// never formatted, never logged and never written into the sealed destination.
-    credential: Option<(
-        busbar_contract::transport::session::CredentialAt,
-        std::string::String,
-    )>,
     media: &'static str,
     depth: usize,
 }
@@ -643,9 +632,6 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> std
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WsLegEgress")
             .field("keys", &self.keys)
-            // WHERE the credential goes, never whether one is set and never its length: the place is
-            // the dialect's public declaration and the rest is the deployment's secret.
-            .field("credential_at", &self.credential.as_ref().map(|(at, _)| at))
             .field("media", &self.media)
             .field("depth", &self.depth)
             .finish_non_exhaustive()
@@ -664,10 +650,6 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
         wire: std::sync::Arc<WsTransport>,
         keys: busbar_contract::TransportKeyHandle,
         driver: &'static crate::root::session_driver::SessionLoopDriver<'static, U>,
-        credential: Option<(
-            busbar_contract::transport::session::CredentialAt,
-            std::string::String,
-        )>,
         media: &'static str,
         depth: usize,
     ) -> Self {
@@ -675,7 +657,6 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static> WsL
             wire,
             keys,
             driver,
-            credential,
             media,
             depth,
         }
@@ -690,6 +671,7 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static>
         &'a self,
         session: busbar_contract::transport::session::SessionHandle,
         dest: &'a busbar_contract::dest::VerifiedDestination,
+        credential: Option<busbar_contract::transport::session::LegCredential<'a>>,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
@@ -708,13 +690,13 @@ impl<U: crate::root::session_driver::SessionUnits + ?Sized + Sync + 'static>
             // own, made before a socket is opened. This function adds no second dialling path to
             // keep honest — it reaches `Transport::dial` through the same call every other caller
             // does. What it adds is the OWNERSHIP split of the three halves.
-            // THE CREDENTIAL, PRESENTED AS THE DIALECT DECLARED — borrowed out of the field for the
-            // one call, never copied into a message and never into the sealed destination.
-            let cred = self.credential.as_ref().map(|(at, secret)| {
-                busbar_contract::transport::session::LegCredential { at: *at, secret }
-            });
+            // THE CREDENTIAL, PRESENTED AS THE DIALECT DECLARED — handed in with the address it
+            // belongs to, by the units that settled both, and passed straight to the wire. This port
+            // holds NO secret of its own: one port fronts one mounted surface, and a session whose
+            // own wire has no configured row seals against another row entirely, so a credential
+            // held here would be this surface's answer presented on that row's socket.
             let (source, lease, drain) = busbar_transport_ws::mount::dial_session(
-                &self.wire, dest, &self.keys, cred, self.media, self.depth,
+                &self.wire, dest, &self.keys, credential, self.media, self.depth,
             )
             .await?;
 

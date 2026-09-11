@@ -513,7 +513,7 @@ fn section_of<'a>(
 /// seam still carries a failure arm because a catalog that resolves lazily has one; THIS one answers
 /// only "the deployment declares that model" or "it does not".
 struct ConfiguredUpstreams {
-    by_model: HashMap<String, (String, String)>,
+    by_model: Arc<HashMap<String, (String, String)>>,
 }
 
 impl busbar_substrate::plane::registry::UpstreamCatalog for ConfiguredUpstreams {
@@ -1512,6 +1512,13 @@ pub fn build_app_from_config(
     // `A2aPlane::from_config` used to be called directly — it is still lowered ONCE, now through the
     // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
     // admission facts and the registry the re-verification job sweeps).
+    // THE CATALOG, SHARED RATHER THAN MOVED. The resolution above is the deployment's one read of
+    // every provider credential, and it had exactly one reader: the plane-build seam a screen below.
+    // The composition root asks the same question AFTER this function returns — a root-composed leg
+    // whose configured row addresses a `models:` entry has no plane `build` to ask from — so the
+    // table is handed to both readers instead of being resolved twice. Shared, not copied: the
+    // credential exists once in this process.
+    let model_upstreams = Arc::new(model_upstreams);
     let mut plane_slots: std::collections::BTreeMap<
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
@@ -1527,7 +1534,7 @@ pub fn build_app_from_config(
             .map(|(section, parsed)| (*section, parsed.as_any()))
             .collect();
         let upstreams = ConfiguredUpstreams {
-            by_model: model_upstreams,
+            by_model: Arc::clone(&model_upstreams),
         };
         let ctx = crate::plane::registry::BuildCtx {
             // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
@@ -1761,6 +1768,10 @@ pub fn build_app_from_config(
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
         llm_runtime_key,
+        // THIS GENERATION'S MODEL→UPSTREAM CATALOG, retained on the snapshot rather than dropped
+        // with the plane build: the composition root reads it for its own root-composed legs
+        // (`App::model_upstream`), off the same single resolution the plane seam read.
+        model_upstreams,
         store,
         // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a

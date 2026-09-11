@@ -114,6 +114,42 @@ written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-
 the same breaker and failover you already run for models applies to them; see
 [Circuit breaker](circuit-breaker.md).
 
+### `streams.upstreams[].model:` — where a voice leg's credential comes from
+
+A `streams:` block may declare the upstreams its sessions relay to:
+
+```yaml
+streams:
+  upstreams:
+    - dialect: gemini-live
+      model: gemini-live-flash      # a key of your `models:` map
+      host: generativelanguage.googleapis.com
+      lane: voice-live
+```
+
+`model:` is a new OPTIONAL key and nothing else about the row changed. `host:` and `lane:` are what
+they were — the socket that is opened and the priced lane it is charged on. What `model:` adds is
+the ADDRESS of the `models:` entry the leg draws two things from: the provider origin, and the
+provider credential, resolved through the same secret seam every other lane's key is. There is no
+credential field here and there never will be; a second place a provider secret lives is a second
+place it leaks from.
+
+**Whether you need to write it depends on the dialect, and Busbar tells you at boot.** A dialect
+whose upstream takes a credential at the upgrade (`gemini-live` does — it reads a `?key=` query
+parameter) needs the entry, and a row for one that names no `model:` refuses to start rather than
+dialling the provider unauthenticated and answering every session with the provider's own 401. A
+dialect that authenticates some other way (`openai-realtime`, `twilio-media-streams` in this build)
+needs nothing, and its rows are complete exactly as you already wrote them.
+
+**Two consistency checks, both boot refusals, both naming what you wrote.** A `model:` your
+`models:` map does not declare is refused, for the reason an unregistered `dialect:` is. And a
+`host:` that names a different authority from the entry's own `base_url` is refused rather than
+resolved to either one: the row would open a socket at one authority and present a credential your
+catalog said belongs to another. Change whichever of the two is wrong.
+
+Nothing about this is a break: every row that boots on the tip before this change boots after it,
+and a deployment that wrote no `streams.upstreams:` is untouched.
+
 Validation messages know the new keys: an `expected one of` list now includes `mcp`, `oauth_as`,
 `tools`, `agents` and `streams`, and the group-limit `metric` list includes the four token
 sub-metrics `tokens_input`, `tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see
@@ -199,3 +235,7 @@ wrong would silently disarm a provider that does need one.
 - [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
       (overlays migrate themselves at boot).
 - [ ] Want MCP, A2A or voice? Add the section; see the guide in the table above.
+- [ ] Running a `streams.upstreams:` row whose dialect takes a credential at the upgrade
+      (`gemini-live`)? Give the row a `model:` naming the `models:` entry it is served by; boot
+      refuses without it rather than dialling unauthenticated
+      ([§4](#4-new-optional-sections-for-the-planes)).

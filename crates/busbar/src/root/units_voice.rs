@@ -328,6 +328,172 @@ pub fn configured_upstreams(
         .collect()
 }
 
+/// THE CONFIG KEY A CREDENTIAL REFUSAL NAMES, so an operator greps for what they wrote.
+const UPSTREAM_MODEL: &str = "streams.upstreams[].model:";
+
+/// ONE CONFIGURED LEG'S RESOLVED CREDENTIAL: the interned host it is presented at, where the leg's
+/// DIALECT declared it goes, and the resolved secret.
+///
+/// Keyed by HOST rather than by row index or by dialect, because the host is what the sealed
+/// destination carries: unit zero seals an address, the thing that dials reads one, and a table
+/// keyed by anything else would need a second lookup to say which row an address came from.
+pub type LegCredentials = Vec<(
+    &'static str,
+    busbar_contract::transport::session::CredentialAt,
+    String,
+)>;
+
+/// WHY A CONFIGURED ROW'S CREDENTIAL DID NOT RESOLVE — every arm a boot refusal, for
+/// [`UpstreamRefusal`]'s own reason: a declared leg this node cannot authenticate is a claimed URL
+/// this node would serve as silence, and finding that out from a caller is finding it out too late.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialRefusal {
+    /// The row addresses a `models:` entry this deployment does not declare.
+    UnknownModel {
+        /// The `model:` as the operator wrote it.
+        wrote: String,
+    },
+    /// The row's DIALECT declares where its credential goes, and the row names no `model:` to draw
+    /// one from.
+    ///
+    /// The pair is what is refused, never the missing key alone: a dialect that declares no
+    /// presentation dials with nothing added and a row for one is complete without a `model:`. This
+    /// one would open a socket and present nothing where its own dialect says a credential belongs
+    /// — reaching the provider unauthenticated, which is a leg that boots clean and answers every
+    /// session with the upstream's own refusal.
+    NoModel {
+        /// The dialect's own name.
+        dialect: &'static str,
+    },
+    /// The row's dial target and its catalog entry's origin name different authorities.
+    ///
+    /// The two are not two opinions to be reconciled: `host:` is what socket is opened and the
+    /// entry is where the credential came from, so a row where they disagree presents a secret to an
+    /// authority the deployment's own catalog never said it goes to. Neither answer is taken.
+    HostDisagrees {
+        /// The `model:` as the operator wrote it.
+        wrote: String,
+        /// The `host:` as the operator wrote it.
+        host: String,
+        /// The authority of the catalog entry's own origin.
+        origin: String,
+    },
+}
+
+impl std::fmt::Display for CredentialRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CredentialRefusal::UnknownModel { wrote } => write!(
+                f,
+                "`{UPSTREAM_MODEL}` names `{wrote}`, which this deployment's `models:` does not \
+                 declare — the row would compose a leg this node cannot authenticate, so boot \
+                 refuses rather than dialling that upstream with an empty credential"
+            ),
+            CredentialRefusal::NoModel { dialect } => write!(
+                f,
+                "a `{CONFIGURED_UPSTREAMS}` row speaking `{dialect}` names no `{UPSTREAM_MODEL}`,                  and that dialect DECLARES that its upstream takes this deployment's credential at                  the upgrade — so the leg has nowhere to draw one from and would reach the provider                  unauthenticated. Name the `models:` entry this leg is served by"
+            ),
+            CredentialRefusal::HostDisagrees {
+                wrote,
+                host,
+                origin,
+            } => write!(
+                f,
+                "`{UPSTREAM_MODEL}` names `{wrote}`, whose catalog entry is served at `{origin}`, \
+                 but the row's `host:` is `{host}` — the dial target and the credential's own \
+                 origin disagree, so this row would present the deployment's provider credential to \
+                 an authority its catalog never named. Boot refuses rather than picking one"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CredentialRefusal {}
+
+/// THE AUTHORITY OF AN ORIGIN, as a row's `host:` is compared against it.
+///
+/// Scheme off, path/query/fragment off, userinfo off — what is left is the thing a socket is opened
+/// to. A row that wrote no port is compared against the authority's host alone, because a row that
+/// says `api.example.com` and an origin that says `api.example.com:443` are the same authority and
+/// refusing that pair would be refusing the ordinary spelling.
+fn origin_authority(base_url: &str) -> &str {
+    let after_scheme = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    authority.rsplit_once('@').map_or(authority, |(_, h)| h)
+}
+
+/// THE CONFIGURED ROWS' CREDENTIALS, RESOLVED THROUGH THE NODE'S ONE UPSTREAM CATALOG.
+///
+/// The second half of [`configured_upstreams`], and it is a second function rather than more of the
+/// first for one reason: this half cannot run at the same moment. The catalog is the deployment's
+/// `models:`/`providers:` table with every provider secret already resolved, and it does not exist
+/// until the generation that resolves it has been built — so the rows are composed where the node
+/// is and their credentials are bound where the LLM leg's book is, off the same built generation.
+///
+/// `written` and `rows` are the SAME list read twice: `rows` is what [`configured_upstreams`]
+/// composed from `written`, in the same order, so row `i` is written row `i`. That is what lets the
+/// interned host come from the composed row and the operator's own spelling come from the written
+/// one, which is what a refusal has to name.
+///
+/// A dialect that declared no credential presentation contributes no entry — a DECLARED answer, not
+/// a missing one — but its row's `model:` is still resolved and still checked, because the row
+/// addresses the catalog whether or not its dialect presents what it finds there.
+///
+/// # Errors
+///
+/// See [`CredentialRefusal`]: every one is a boot refusal.
+pub fn resolve_leg_credentials<'a>(
+    written: &[busbar_voice::config::UpstreamRow],
+    rows: &[Upstream],
+    catalog: impl Fn(&str) -> Option<(&'a str, &'a str)>,
+) -> Result<LegCredentials, CredentialRefusal> {
+    let mut out = LegCredentials::new();
+    for (row, composed) in written.iter().zip(rows.iter()) {
+        let Some(model) = row.model.as_deref() else {
+            // A ROW WITH NO ADDRESS. Refused only where the absence would dial unauthenticated —
+            // see [`CredentialRefusal::NoModel`]; otherwise it is the complete row for a dialect
+            // that declared it presents nothing, and it composes exactly as it did before this key
+            // existed.
+            if let Some(_at) = composed.dialect.credential_at {
+                return Err(CredentialRefusal::NoModel {
+                    dialect: composed.dialect.name,
+                });
+            }
+            continue;
+        };
+        let Some((base_url, api_key)) = catalog(model) else {
+            return Err(CredentialRefusal::UnknownModel {
+                wrote: model.to_string(),
+            });
+        };
+        let authority = origin_authority(base_url);
+        let agreed = if row.host.contains(':') {
+            authority.eq_ignore_ascii_case(&row.host)
+        } else {
+            authority
+                .rsplit_once(':')
+                .map_or(authority, |(h, _)| h)
+                .eq_ignore_ascii_case(&row.host)
+        };
+        if !agreed {
+            return Err(CredentialRefusal::HostDisagrees {
+                wrote: model.to_string(),
+                host: row.host.clone(),
+                origin: authority.to_string(),
+            });
+        }
+        if let Some(at) = composed.dialect.credential_at {
+            out.push((composed.host, at, api_key.to_string()));
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------------------------
 // The seams to the I/O half
 // ---------------------------------------------------------------------------------------------
@@ -857,6 +1023,15 @@ pub struct VoiceNode {
     /// principal and the only one that holds the trust token; read by the composition that builds
     /// each later unit; dropped when the session closes.
     sessions: Mutex<HashMap<u64, SessionBinding>>,
+    /// THE CONFIGURED LEGS' RESOLVED CREDENTIALS, bound once after the generation that resolves them
+    /// has been built — see [`resolve_leg_credentials`] for why this cannot be a constructor
+    /// argument beside the rows it belongs with.
+    ///
+    /// Set-once and never swapped: a node whose live sessions were opened against one credential
+    /// and whose next dial used another would be two deployments on one session table. Unbound is
+    /// the honest posture for a node nothing has bound — every leg dials with nothing added, which
+    /// is exactly what a deployment that configured no row gets.
+    leg_credentials: std::sync::OnceLock<LegCredentials>,
 }
 
 /// What unit zero settled for one session: read by every unit after it, decided by none of them.
@@ -877,6 +1052,15 @@ pub struct SessionBinding {
     /// composition publishes it back to the driver so that the leg's own writes carry it — a relay
     /// filed under nobody is a bill nobody can be shown.
     pub principal: PrincipalId,
+    /// THE CREDENTIAL THE SEALED LEG PRESENTS, settled in the same breath as the leg itself.
+    ///
+    /// Here rather than on the port that dials because the LEG decides it: a session whose dialect
+    /// has no configured row seals against the FIRST row, so the credential follows the destination
+    /// unit zero settled and not the surface the session arrived on. A mount that read it off its
+    /// own binding would present one row's secret on another row's socket.
+    ///
+    /// Owned, and never rendered: the only thing done with it is presenting it at a dial.
+    pub leg_credential: Option<(busbar_contract::transport::session::CredentialAt, String)>,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -937,6 +1121,7 @@ impl VoiceNode {
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
             sessions: Mutex::new(HashMap::new()),
+            leg_credentials: std::sync::OnceLock::new(),
         }
     }
 
@@ -948,6 +1133,32 @@ impl VoiceNode {
             .unwrap_or_else(|e| e.into_inner())
             .get(&session)
             .cloned()
+    }
+
+    /// BIND THE CONFIGURED LEGS' CREDENTIALS, once, after the generation that resolved them exists.
+    ///
+    /// The same shape the LLM leg's book is bound in and for the same reason: the node is composed
+    /// where its rows are decided and the thing it is bound to is decided one build later. A second
+    /// call is a no-op rather than a swap of what this node's live sessions already sealed against.
+    pub fn bind_leg_credentials(&self, credentials: LegCredentials) {
+        let _ = self.leg_credentials.set(credentials);
+    }
+
+    /// THE CREDENTIAL ONE CONFIGURED HOST'S LEG PRESENTS, as its dialect declared it goes.
+    ///
+    /// `None` for a host nothing was bound for, a dialect that declared no presentation, and a node
+    /// whose credentials were never bound. All three are the same answer to the dial — present
+    /// nothing — and on none of them is a secret guessed.
+    #[must_use]
+    fn leg_credential(
+        &self,
+        host: &str,
+    ) -> Option<(busbar_contract::transport::session::CredentialAt, String)> {
+        self.leg_credentials
+            .get()?
+            .iter()
+            .find(|(h, _, _)| *h == host)
+            .map(|(_, at, secret)| (*at, secret.clone()))
     }
 
     /// Unit zero's settlement for a session, written once.
@@ -1714,6 +1925,12 @@ impl Units for VoiceUnit<'_> {
                         None,
                     )
                 });
+                // THE LEG'S CREDENTIAL, off the SAME row the destination was sealed from: the
+                // dialect that row speaks says where it goes and the node's bound table says what
+                // it is. Settled here because this is the step that settles the leg.
+                let leg_credential = self
+                    .upstream()
+                    .and_then(|upstream| self.node.leg_credential(upstream.host));
                 self.node.bind(
                     self.session,
                     SessionBinding {
@@ -1721,6 +1938,7 @@ impl Units for VoiceUnit<'_> {
                         chain: std::sync::Arc::new(chain),
                         destination,
                         principal: principal.clone(),
+                        leg_credential,
                     },
                 );
             }
@@ -2319,6 +2537,15 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
         self.node
             .bound(session)
             .and_then(|binding| binding.destination)
+    }
+
+    fn leg_credential(
+        &self,
+        session: u64,
+    ) -> Option<(busbar_contract::transport::session::CredentialAt, String)> {
+        self.node
+            .bound(session)
+            .and_then(|binding| binding.leg_credential)
     }
 
     /// The caller unit zero authenticated, off the same settlement the leg came off.

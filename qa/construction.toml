@@ -1717,3 +1717,48 @@ key = "cell.busbar-voice.plane.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "busbar-voice x plane (busbar-voice, plane): the SAME two import lines, counted a second time under the plane kind, because the neutral plane's crate name is spelled in each of them and `busbar_plane_streams::dialect` is one hit in each column by construction. There is no line here that is not already declared above, and both fall with the legacy bodies that call through them (839 -> 843)"
+
+# ── declared raises: R1 HALF 2 — THE CREDENTIAL'S SOURCE. A `streams.upstreams[]` row gains a
+# `model:` addressing the node's ONE upstream catalog, the composition root resolves that entry's
+# origin and credential AFTER the generation that resolves it exists, and the resolved secret rides
+# the sealed leg (`SessionBinding` -> `SessionUnits::leg_credential` -> `PendingLeg` ->
+# `pending_leg` -> `LegDialing` -> the dialler's borrowed face) instead of sitting on the port. Every
+# rise below is the COMPOSITION ROOT composing — ARCHITECTURE.md 1.1/3.1's own rule that the root is
+# the one place a plugin instance may be named — plus the cells that prove it. Each expires when the
+# base carries the number.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "busbar x contract-transport (busbar, contract-transport): the credential's PLACE is a transport-contract type (`CredentialAt`, `LegCredential`) because the presentation is a wire fact, and R1 half 2 is what carries one across the driver seam: the `LegSecret` alias and `PendingDial` the driver answers a parked leg with, the `leg_credential` seam on `SessionUnits` and its `ProductionUnits` forward, the borrowed face `LegDialing` builds for the one call, and the cells that drive that path end to end. The root spells the contract's own vocabulary for it rather than the wire's, which is the whole reason the face is in the contract and not in `busbar-transport-ws` (80 -> 88)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 41
+because = "busbar x dialect (busbar, dialect): WHERE a duplex upstream takes this deployment's credential is a fact of the DIALECT that speaks to it, declared on the dialect's own row, so the composition root that resolves a configured row's credential reads `Dialect::credential_at` and refuses a row whose dialect declares a presentation and names no catalog entry. `resolve_leg_credentials` and its refusal arms are written in that vocabulary throughout — it is the thing being decided — and the cells beside it drive the two linked dialects that answer differently (one declares a query parameter, one declares none) because a resolver cellled against one of them would pass while fabricating a presentation for the other (708 -> 749)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 46
+because = "busbar x plane (busbar, plane): the same composition, counted under the plane kind a dialect's row belongs to. The root now composes the streams plane's rows ONCE and holds them (`composed_upstreams` moved out of the node's constructor so the credential resolver can walk the composed rows beside the written ones), hands the node back beside its governed-call port so the credentials can be bound onto it after the app build, and settles the sealed leg's credential in unit zero's own binding. The cells are the other half: a row whose host disagrees with its catalog entry, a row addressing no declared model, a row whose dialect declares a credential and names none, and the row that needs none (1,924 -> 1,970)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x transport (busbar, transport): `WsLegEgress` stops holding a credential of its own and takes one per dial instead, which is the correction R1 half 2 makes to half 1 — one port fronts one mounted surface, and a session whose own wire has no configured row seals against another row entirely, so a credential held on the port is one row's secret presented on another row's socket. The port's `dial` signature, its hand-written `Debug` and the wire's `dial_session` call move with it (1,100 -> 1,104)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar-voice x dialect (busbar-voice, dialect): the `streams.upstreams[]` row's new `model:` key is documented where the grammar is, and what makes the key OPTIONAL honest rather than a hole is the sentence that names the condition it is refused under — a row whose DIALECT declares a credential presentation and names no catalog entry. The grammar links no dialect crate and gains none here; one line of the declaration names the concept the refusal turns on (720 -> 721)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.plane.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-voice x plane (busbar-voice, plane): the same `model:` declaration, counted under the plane kind the section belongs to. `streams:` is this plane's own config grammar and the key is a plane-level statement about where a configured leg draws its origin and credential from — the row carries no credential field and gains none, which is the sentence the two lines state (843 -> 845)"

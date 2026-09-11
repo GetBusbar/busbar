@@ -1492,7 +1492,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "80"
+count = "88"
 
 [[cell]]
 crate = "busbar"
@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "708"
+count = "749"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1924"
+count = "1970"
 
 [[cell]]
 crate = "busbar"
@@ -1547,7 +1547,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "1100"
+count = "1104"
 
 [[cell]]
 crate = "busbar"
@@ -3207,7 +3207,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "720"
+count = "721"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3217,7 +3217,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "843"
+count = "845"
 
 [[cell]]
 crate = "busbar-voice"

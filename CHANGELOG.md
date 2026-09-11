@@ -23,7 +23,12 @@ does not exist.
 - **Voice.** A `streams:` block declares the live-voice plane: full-duplex realtime sessions
   (OpenAI Realtime and Gemini Live dialects over one IR) metered by the same ledger as everything
   else. The grammar is documented at the head of `crates/busbar-voice/src/config.rs` until the
-  operator guide lands.
+  operator guide lands. A configured upstream row (`streams.upstreams[]`) carries an OPTIONAL
+  `model:` — a key of your own `models:` map — and draws that entry's provider origin and resolved
+  credential from it; `host:`/`lane:` stay the dial target, and a row whose `host:` disagrees with
+  its entry's origin, or whose dialect takes a credential at the upgrade and names no entry at all,
+  refuses the boot rather than dialling the provider unauthenticated. See
+  [the migration guide](docs/migration-1.6.md#4-new-optional-sections-for-the-planes).
 
 Each plane is inert until its section is written. An `mcp:` block with an empty `auth.chain`
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with

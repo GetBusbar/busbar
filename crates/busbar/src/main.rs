@@ -789,8 +789,11 @@ fn register_ws_arrivals() {
 #[cfg(feature = "root-voice")]
 fn mount_root_voice(
     limits: &busbar_substrate::config::limits::LimitsResolved,
-    written: &[busbar_voice::config::UpstreamRow],
-) -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
+    rows: &'static [busbar_plane_streams::Upstream],
+) -> (
+    std::sync::Arc<root::units_voice::VoiceNode>,
+    std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls>,
+) {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
@@ -820,7 +823,7 @@ fn mount_root_voice(
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls(written)
+    compose_voice_governed_calls(rows)
 }
 
 /// THE SECTION'S ROWS, COMPOSED INTO THE LIST THE MOUNTED NODE IS BUILT WITH.
@@ -883,8 +886,11 @@ fn composed_upstreams(
 /// this node's live sessions are already keyed into.
 #[cfg(feature = "root-voice")]
 fn compose_voice_governed_calls(
-    written: &[busbar_voice::config::UpstreamRow],
-) -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
+    rows: &'static [busbar_plane_streams::Upstream],
+) -> (
+    std::sync::Arc<root::units_voice::VoiceNode>,
+    std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls>,
+) {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
 
     let durability = match root::durability::build(
@@ -899,7 +905,7 @@ fn compose_voice_governed_calls(
         }
     };
     let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_streams::VoicePlane::new(composed_upstreams(written)),
+        plane: busbar_plane_streams::VoicePlane::new(rows),
         // No group reaches this node's door: the table's two answers read no cap, and the served
         // sessions' admissions are the sealed root's, not this stub's.
         groups: root::policy::group_table(
@@ -917,7 +923,12 @@ fn compose_voice_governed_calls(
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
     }));
-    std::sync::Arc::new(NodeCalls::new(node))
+    // THE NODE IS HANDED BACK BESIDE THE PORT, and that is the shape the credential bind needs: the
+    // port crosses INTO `build_app_from_config` (the plane's own mount reads it off the composition
+    // seam), and the credentials this node's legs present are resolved OUT of the generation that
+    // call builds. One node, two moments, and the second one holds the first.
+    let calls = std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(&node)));
+    (node, calls)
 }
 
 fn main() {
@@ -1352,8 +1363,14 @@ async fn run(data_workers: usize) {
         .plane_section(busbar_voice::PLANE_DECL.config_section)
         .map(busbar_voice::config::upstream_rows)
         .unwrap_or_default();
+    // THE ROWS, COMPOSED ONCE AND HELD BY THE CALLER, because two readers need them and they must
+    // be the same list: the node is built over them here, and the credential bind below walks them
+    // beside the written rows they came from (`resolve_leg_credentials`), which is what lets a
+    // refusal name the operator's own spelling and the composed row's interned host at once.
     #[cfg(feature = "root-voice")]
-    let voice_calls = mount_root_voice(&cfg.limits, &voice_upstreams);
+    let voice_rows = composed_upstreams(&voice_upstreams);
+    #[cfg(feature = "root-voice")]
+    let (voice_node, voice_calls) = mount_root_voice(&cfg.limits, voice_rows);
     // THE ROOT-COMPOSED PORTS this build hands across the plane-build seam, keyed by the OWNING
     // PLANE'S config section. The voice node's open-call table is one: the root builds it (it is the
     // root's node, its journal and its origin) and the plane cannot, so it crosses HERE, into the
@@ -1463,6 +1480,32 @@ async fn run(data_workers: usize) {
     // `AppHandle` below (`set_snapshot_host`), which owns it for the boot generation and DROPS it on the
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
+    // THE CONFIGURED LEGS' CREDENTIALS, BOUND OFF THE GENERATION THAT RESOLVED THEM — the second
+    // moment of the voice composition, and the first one that could exist. A `streams.upstreams:`
+    // row addresses this deployment's own `models:` catalog, and that catalog is the build above's:
+    // every provider credential in it crossed the deployment's secret resolver exactly once, in the
+    // one loop that resolves them. Reading it here rather than resolving it again beside the node is
+    // what keeps a deployment's provider secret to ONE place it is read from.
+    //
+    // It sits where the LLM leg's own generation-bound parts do, for the same reason they do: the
+    // node was composed before the app because its port crosses INTO the build, and what the build
+    // produces is bound onto it after. No listener is bound for another few hundred lines, so a
+    // refusal here is still a boot refusal and not a served request's surprise.
+    //
+    // A ROW THAT DOES NOT RESOLVE REFUSES THE BOOT, with a non-zero exit, exactly as an unresolvable
+    // dialect or an un-internable host does: a leg this node cannot authenticate is a claimed URL it
+    // would serve as silence.
+    #[cfg(feature = "root-voice")]
+    match root::units_voice::resolve_leg_credentials(&voice_upstreams, voice_rows, |model| {
+        app.model_upstream(model)
+    }) {
+        Ok(credentials) => voice_node.bind_leg_credentials(credentials),
+        Err(refusal) => {
+            eprintln!("busbar: the composition root did not compose: {refusal}");
+            std::process::exit(2);
+        }
+    }
+
     #[cfg(feature = "proto-llm")]
     let boot_host = busbar_core::plane_host::engine_host(&app);
     #[cfg(feature = "proto-llm")]

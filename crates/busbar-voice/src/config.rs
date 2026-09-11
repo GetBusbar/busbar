@@ -68,12 +68,39 @@ fn default_session() -> SessionConfig {
 /// **AND IT CARRIES NO CREDENTIAL**, for the reason the section around it carries none: the
 /// provider secret is resolved through the deployment's ordinary `models:`/`providers:` catalog and
 /// the same secret seam every other lane's key is, and a field here would be a second place it
-/// lives.
+/// lives. What the row carries instead is the ADDRESS of that catalog entry — [`UpstreamRow::model`],
+/// a `models:` key — which is the same address every other plane uses to reach the same table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] // a typo'd key is refused HERE exactly as the file refuses it
 pub struct UpstreamRow {
     /// Which wire vocabulary this upstream speaks, by the name its own crate declares.
     pub dialect: String,
+    /// THE `models:` KEY THIS ROW DRAWS ITS ORIGIN AND CREDENTIAL FROM — the deployment's own
+    /// catalog entry, addressed the same way every other plane addresses it.
+    ///
+    /// The entry supplies two things this grammar therefore does not: the provider `base_url` and
+    /// the resolved provider credential. [`UpstreamRow::host`] and [`UpstreamRow::lane`] stay the
+    /// DIAL TARGET — what socket is opened and what lane it is charged on — and the host must AGREE
+    /// with the entry's origin: a row that dials one authority on another's credential is a
+    /// deployment sending a secret somewhere its own catalog never said it goes, so the disagreement
+    /// REFUSES THE BOOT by name rather than resolving to either answer.
+    ///
+    /// A name the deployment's `models:` does not declare is likewise a boot refusal, for the reason
+    /// an unregistered dialect is one: a configured leg this node cannot authenticate is a claimed
+    /// URL served as silence.
+    ///
+    /// **OPTIONAL, AND THE ABSENCE IS A DECLARED ANSWER RATHER THAN A DEFAULT.** The config grammar
+    /// is additive-only after 1.5.3, so a key that a written row must carry is not a key this
+    /// grammar may grow. What makes the optionality honest rather than a hole is where it is
+    /// refused: a row whose DIALECT declares a credential presentation
+    /// (`busbar_plane_streams::dialect::Dialect::credential_at`) and names no `model:` has nowhere
+    /// to draw a credential from, and dialling it would reach the provider unauthenticated — so the
+    /// composition REFUSES THE BOOT on exactly that pair. A dialect that declares no presentation
+    /// (a carrier that authenticates its own signalling, a leg minted over a separate pass) needs no
+    /// entry and a row for one is complete without this key, which is the posture every row on this
+    /// branch already had.
+    #[serde(default)]
+    pub model: Option<String>,
     /// The host to dial.
     pub host: String,
     /// The priced lane this upstream is reached on.

@@ -119,6 +119,22 @@ pub struct App {
     /// none was inserted — reads as an empty default (the same emptiness the always-present-but-empty
     /// flat field encoded), never a panic. Neutral: names no dialect.
     pub(crate) llm_runtime_key: &'static str,
+    /// THE DEPLOYMENT'S MODEL→UPSTREAM CATALOG FOR THIS GENERATION — every declared `models:` key
+    /// against the origin of the provider serving it and that provider's ALREADY-RESOLVED
+    /// credential, filled by the one loop in `appbuild` that resolves them.
+    ///
+    /// RETAINED rather than dropped at the end of the build, and that is the whole of the change:
+    /// the same table already crosses the plane-build seam as the neutral
+    /// `busbar_substrate::plane::registry::UpstreamCatalog`, so a plane whose section pins a model
+    /// resolves it INSIDE its own `build`. What had no answer was the composition root's own
+    /// question, asked AFTER the build — a root-composed leg whose configured row addresses a
+    /// `models:` entry has no plane `build` to ask from, and re-resolving the secret beside this one
+    /// would be a second place a deployment's provider credential is read. One resolution, now three
+    /// readers.
+    ///
+    /// Server-side, like every other resolved credential on this snapshot: nothing renders it, and
+    /// [`App::model_upstream`] hands back borrows for a dial and never a value to a caller.
+    pub(crate) model_upstreams: Arc<std::collections::HashMap<String, (String, String)>>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
     /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
@@ -580,6 +596,23 @@ impl App {
 }
 
 impl App {
+    /// THE ORIGIN AND CREDENTIAL SERVING ONE DECLARED MODEL, as this generation resolved them —
+    /// the composition root's read of the same catalog a plane's `build` reads through
+    /// [`busbar_substrate::plane::registry::BuildCtx::upstream_for_model`].
+    ///
+    /// `None` is "this deployment declares no such `models:` entry", which is the only failure a
+    /// resolved catalog has: a reference that would not resolve never reached this map — it refused
+    /// the whole build, loudly, where it was read.
+    ///
+    /// Borrowed, and deliberately: a caller gets what its own dial needs for the length of the call
+    /// and never a value it could log, store or hand on.
+    #[must_use]
+    pub fn model_upstream(&self, model: &str) -> Option<(&str, &str)> {
+        self.model_upstreams
+            .get(model)
+            .map(|(base_url, api_key)| (base_url.as_str(), api_key.as_str()))
+    }
+
     /// The ALL-POOLS UPSTREAM-credential DEFAULT — whether the egress path signs with busbar's
     /// configured lane key (`Own`) or forwards the caller's credential (`Passthrough`). Resolved once
     /// at construction from the reserved `pools.upstream_credentials:` key (1.5.3 — it used to be
