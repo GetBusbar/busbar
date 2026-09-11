@@ -3,7 +3,8 @@
 //! super::*` reaches the private items it always did.
 
 use super::{
-    error, id_shape, id_value, read, success, IdShape, CODES, RESULT_TYPE_COMPLETE, RETIRED_CODES,
+    error, id_shape, id_value, read, success, success_envelope, IdShape, CODES,
+    RESULT_TYPE_COMPLETE, RESULT_TYPE_INPUT_REQUIRED, RESULT_TYPE_TASK, RETIRED_CODES,
 };
 use busbar_contract::wire::Decode;
 
@@ -179,6 +180,58 @@ fn a_successful_answer_omits_an_absent_identifier() {
     assert_eq!(
         core::str::from_utf8(&bytes).unwrap(),
         r#"{"jsonrpc":"2.0","result":{"resultType":"complete"}}"#
+    );
+}
+
+/// THE COMPOSED DOCUMENT AND THE WRITTEN BYTES ARE THE SAME ENVELOPE, and this is the cell that
+/// makes the serving leg's answer and the byte-writing leg's answer one thing rather than two.
+///
+/// A leg that already holds its result as a document composes here and frames the value itself; a
+/// leg that holds bytes calls `success`, which is this composition plus a read and a write. Compared as STRINGS, because what is being claimed is the
+/// bytes on the wire and not a structural resemblance between two values.
+#[test]
+fn the_composed_envelope_and_the_written_bytes_are_the_same_answer() {
+    let id = id_value(b"7").expect("a number is a value");
+    let result = serde_json::json!({ "content": [], "isError": false });
+    let composed = success_envelope(Some(&id), result.clone(), RESULT_TYPE_COMPLETE);
+    let written = success(
+        Some(&id),
+        serde_json::to_vec(&result).unwrap().as_slice(),
+        RESULT_TYPE_COMPLETE,
+    )
+    .expect("the result writes");
+    assert_eq!(
+        serde_json::to_string(&composed).unwrap(),
+        core::str::from_utf8(&written).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_string(&composed).unwrap(),
+        r#"{"id":7,"jsonrpc":"2.0","result":{"content":[],"isError":false,"resultType":"complete"}}"#
+    );
+}
+
+/// The composer stamps the discriminator it is given, over anything the result already said, and
+/// omits an absent identifier — the two rules the serving leg used to restate three times.
+#[test]
+fn the_composer_stamps_the_discriminator_and_omits_an_absent_identifier() {
+    let asked = success_envelope(
+        None,
+        serde_json::json!({ "resultType": "complete", "requestState": "s" }),
+        RESULT_TYPE_INPUT_REQUIRED,
+    );
+    assert_eq!(
+        serde_json::to_string(&asked).unwrap(),
+        r#"{"jsonrpc":"2.0","result":{"requestState":"s","resultType":"input_required"}}"#
+    );
+    let id = id_value(br#""a""#).expect("a string is a value");
+    let task = success_envelope(
+        Some(&id),
+        serde_json::json!({ "taskId": "t" }),
+        RESULT_TYPE_TASK,
+    );
+    assert_eq!(
+        serde_json::to_string(&task).unwrap(),
+        r#"{"id":"a","jsonrpc":"2.0","result":{"resultType":"task","taskId":"t"}}"#
     );
 }
 
