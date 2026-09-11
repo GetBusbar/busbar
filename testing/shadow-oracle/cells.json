@@ -19473,8 +19473,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_cachepoint_document",
-      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position \u2014 the index-space disagreement the `ping` fixture's single text block cannot produce",
-      "needs_fixture": true
+      "why": "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the reader parks by wire position \u2014 the index-space disagreement the `ping` fixture's single text block cannot produce"
     },
     {
       "id": "llm|bedrock|bedrock|request|ok_stream",
@@ -20956,8 +20955,7 @@
       "why": "happy path whose ANSWER reports `usageMetadata.toolUsePromptTokenCount`: the server-side tool-use token term Vertex reports BESIDE `promptTokenCount` (measured 32 against an 18-token prompt on a real capture), which the `ping` fixture's tool-less answer never produces and which is therefore the one money term no recorded cell can see",
       "mock_control": {
         "tool-use-tokens": true
-      },
-      "needs_fixture": true
+      }
     },
     {
       "id": "llm|gemini|gemini|request|out_of_scope",
@@ -22371,7 +22369,6 @@
       "op": "chat",
       "outcome": "ok_citation",
       "why": "happy path whose ANSWER carries a URL citation: the Responses annotation the published UrlCitationBody FLATTENS onto the annotation object, which the `ok` fixture's bare-text answer never exercises",
-      "needs_fixture": true,
       "mock_control": {
         "citation": true
       }
