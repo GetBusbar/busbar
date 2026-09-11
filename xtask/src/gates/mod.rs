@@ -422,24 +422,62 @@ const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
 /// a budget compared against it needs.
 pub fn work_unit() -> std::time::Duration {
     static UNIT: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(|| {
-        let t = std::time::Instant::now();
-        let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
-        let mut acc: u64 = 0;
-        for round in 0..64u64 {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            round.hash(&mut h);
-            buf.hash(&mut h);
-            acc = acc.wrapping_add(h.finish());
-        }
-        // The accumulator is fed to something the caller could observe, so the loop is not code the
-        // optimiser may delete: a ruler that compiles away measures nothing.
-        if acc == u64::MAX {
-            eprintln!("xtask: the calibration ruler measured {acc}");
-        }
-        t.elapsed().max(std::time::Duration::from_micros(1))
-    })
+    *UNIT.get_or_init(ruler_once)
+}
+
+/// The fixed arithmetic, once, on this thread.
+fn ruler_once() -> std::time::Duration {
+    let t = std::time::Instant::now();
+    let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
+    let mut acc: u64 = 0;
+    for round in 0..64u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        round.hash(&mut h);
+        buf.hash(&mut h);
+        acc = acc.wrapping_add(h.finish());
+    }
+    // The accumulator is fed to something the caller could observe, so the loop is not code the
+    // optimiser may delete: a ruler that compiles away measures nothing.
+    if acc == u64::MAX {
+        eprintln!("xtask: the calibration ruler measured {acc}");
+    }
+    t.elapsed().max(std::time::Duration::from_micros(1))
+}
+
+/// ONE WORK UNIT AS THE THREAD THAT JUST TOOK A CASE FINDS IT — the ruler for a battery taken
+/// across the cores.
+///
+/// THE BUG THIS EXISTS TO FIX, AND IT IS THE ONE THE BUDGET'S OWN DOCTRINE WARNED ABOUT. The cases
+/// are summed by WALL CLOCK, so taking eighteen at once inflates every one of them: they share
+/// memory bandwidth, caches and whatever else is on the machine. `construction` measured 68 063
+/// units against a budget of 50 000 AT `--jobs 18` AND WAS COMFORTABLY UNDER IT AT `--jobs 1`, on
+/// the same tree, in the same minute. A gate that is red because the box was busy is a gate
+/// somebody deletes -- which is exactly why the budget is denominated in work units and not in
+/// seconds in the first place.
+///
+/// The ruler was measured ONCE, ON ONE THREAD, so it did not stretch when the cases did. Here it
+/// does: the same fixed arithmetic is run on `jobs` threads AT THE SAME TIME and the unit is the
+/// mean of what each thread took. "Four times more contended produces a calibration four times
+/// slower too" was always the claim; this is what makes it true when the contention is the
+/// harness's own.
+///
+/// AND IT IS READ ON THE WORKER, BETWEEN CASES, NOT ONCE BEFORE THEM. Calibrating `jobs` threads of
+/// arithmetic up front does not work and the measurement says so: on eighteen cores that is one
+/// arithmetic thread per core and it barely stretches at all — `structure-lint`'s ruler moved from
+/// 11.0 ms to 11.6 ms while the cases it was measuring went from 85.7 s to 152.5 s. Pure arithmetic
+/// on an idle box is not what a battery does to a box.
+///
+/// So each worker reads the ruler immediately after the case it just took, WITH THE OTHER
+/// SEVENTEEN STILL SCANNING. It is then competing for cache and memory with the real work, which is
+/// the only condition under which the proxy tracks what it is a proxy for — and a case is scored
+/// against the ruler read on its own thread, in its own seconds, rather than against a number taken
+/// when the machine was quiet.
+///
+/// It costs one ruler per case: about 11 ms against cases that average a second, which is under one
+/// per cent of a battery and is the price of a budget that does not flap.
+fn work_unit_here() -> std::time::Duration {
+    ruler_once()
 }
 
 fn selftest_budget(gate: &str) -> f64 {
@@ -764,6 +802,42 @@ impl<'a> From<Case> for CasePlan<'a> {
     }
 }
 
+/// WHAT A CASE PLANTS, AND WHEN IT BUILDS IT.
+///
+/// An `Overlay` handed to `prove_*` was already BUILT by the time the plan was made, because Rust
+/// evaluates arguments where they are written. For most cases that is nothing — a map with one file
+/// in it. For the batteries that matter it is not: a plant that reads the ledger, lists `crates/`,
+/// re-renders a registry or formats a thousand lines of filler is real work, and doing it at the
+/// push is doing it ON ONE THREAD while seventeen sit idle.
+///
+/// THE MEASUREMENT THAT SAYS SO. `kind-isolation` took 1621 s serial and 201 s across eighteen
+/// cores. Solve those two for the serial fraction and it is about 117 s — which is to say that
+/// after the gate runs were spread across the box, MORE THAN HALF of what was left was the plants
+/// being built one after another.
+///
+/// So a plant may be given as the overlay OR as the closure that makes one, and the closure is
+/// called on the worker that takes the case. Both spellings are this one trait, so a case that
+/// plants a single file keeps reading exactly as it did and only the dear ones say `move ||`.
+pub trait Plant<'a>: Send + 'a {
+    fn build(self) -> Overlay;
+}
+
+/// The plant that is already built. Unchanged, and the right answer whenever building it is a map
+/// insert or two.
+impl<'a> Plant<'a> for Overlay {
+    fn build(self) -> Overlay {
+        self
+    }
+}
+
+/// The plant BUILT ON THE WORKER. `Overlay` is a local type and cannot implement `FnOnce`, which is
+/// what lets these two impls coexist.
+impl<'a, F: FnOnce() -> Overlay + Send + 'a> Plant<'a> for F {
+    fn build(self) -> Overlay {
+        self()
+    }
+}
+
 /// How many cases run at once when nothing says otherwise: the cores this box will admit to.
 ///
 /// `XTASK_SELFTEST_JOBS` overrides it and `--jobs N` on the command line overrides that. `1` is
@@ -805,6 +879,15 @@ pub fn set_selftest_jobs(jobs: usize) {
 struct Taken {
     cases: Vec<Case>,
     took: Vec<Duration>,
+    /// What each case cost IN WORK UNITS, scored against the ruler its own worker read right after
+    /// taking it. Kept per case rather than as one divisor because the machine is not the same from
+    /// one end of a battery to the other, and the whole point is that the ruler moves with it.
+    units: Vec<f64>,
+    /// The half of `took` that was spent BEFORE the case reached a worker — building the plant, on
+    /// the one thread that pushes. THE SERIAL FRACTION, itemised: it is the only part of a battery
+    /// that more cores cannot help, so it is the only part worth rewriting, and a number beats a
+    /// guess about which plants are dear.
+    prepaid: Vec<Duration>,
 }
 
 pub struct Report<'a> {
@@ -873,7 +956,7 @@ impl<'a> Report<'a> {
             .plans
             .get_mut()
             .expect("the plan list is never held across a panic");
-        if let Some(Taken { cases, took }) = taken.into_inner() {
+        if let Some(Taken { cases, took, .. }) = taken.into_inner() {
             for (case, took) in cases.into_iter().zip(took) {
                 let mut plan = CasePlan::from(case);
                 plan.prepaid = took;
@@ -939,13 +1022,40 @@ impl<'a> Report<'a> {
         })
     }
 
-    /// What this report cost, in [`work_unit`]s.
+    /// What this report cost, in [`work_unit`]s — each case scored against the ruler its own
+    /// worker read, never against one taken when the machine was quiet.
     pub fn units(&self) -> f64 {
-        self.total().as_secs_f64() / work_unit().as_secs_f64()
+        self.resolve().units.iter().sum()
+    }
+
+    /// The ruler this report's units worked out to, for the message that quotes one.
+    pub fn unit(&self) -> std::time::Duration {
+        let units = self.units();
+        if units <= 0.0 {
+            return work_unit();
+        }
+        std::time::Duration::from_secs_f64(self.total().as_secs_f64() / units)
     }
 
     pub fn total(&self) -> std::time::Duration {
         self.resolve().took.iter().sum()
+    }
+
+    /// WHAT THIS BATTERY SPENT ON ONE THREAD, building its plants. The rest was spread across the
+    /// cores; this was not, and this is what a further speed-up has to come out of.
+    pub fn planting(&self) -> std::time::Duration {
+        self.resolve().prepaid.iter().sum()
+    }
+
+    /// The case whose PLANT cost the most — the first name on the list of plants worth making lazy.
+    pub fn dearest_plant(&self) -> Option<(&str, std::time::Duration)> {
+        let taken = self.resolve();
+        taken
+            .cases
+            .iter()
+            .zip(taken.prepaid.iter())
+            .max_by_key(|(_, t)| **t)
+            .map(|(c, t)| (c.name.as_str(), *t))
     }
 
     pub fn slowest(&self) -> Option<(&str, std::time::Duration)> {
@@ -995,13 +1105,16 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
         return Taken {
             cases: Vec::new(),
             took: Vec::new(),
+            units: Vec::new(),
+            prepaid: Vec::new(),
         };
     }
     let mut queue: Vec<(usize, CasePlan<'_>)> = plans.into_iter().enumerate().collect();
     // Popped from the back, so the cases start in push order.
     queue.reverse();
     let queue = std::sync::Mutex::new(queue);
-    let out: Vec<std::sync::Mutex<Option<(Case, Duration)>>> =
+    #[allow(clippy::type_complexity)]
+    let out: Vec<std::sync::Mutex<Option<(Case, Duration, Duration, f64)>>> =
         (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     let out = &out;
     let queue = &queue;
@@ -1017,26 +1130,40 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
                 let prepaid = plan.prepaid;
                 let started = std::time::Instant::now();
                 let case = (plan.take)();
+                let spent = prepaid + started.elapsed();
+                // THE RULER, HERE, NOW — with the other workers still at their own cases. See
+                // [`work_unit_here`].
+                let unit = work_unit_here();
+                let units = spent.as_secs_f64() / unit.as_secs_f64();
                 *out[slot]
                     .lock()
                     .expect("a case slot is never held across a panic") =
-                    Some((case, prepaid + started.elapsed()));
+                    Some((case, spent, prepaid, units));
             });
         }
     });
 
     let mut cases = Vec::with_capacity(n);
     let mut took = Vec::with_capacity(n);
+    let mut prepaid = Vec::with_capacity(n);
+    let mut units = Vec::with_capacity(n);
     for slot in out {
-        let (case, spent) = slot
+        let (case, spent, before, scored) = slot
             .lock()
             .expect("a case slot is never held across a panic")
             .take()
             .expect("every plan was taken: the queue is drained before the scope ends");
         cases.push(case);
         took.push(spent);
+        prepaid.push(before);
+        units.push(scored);
     }
-    Taken { cases, took }
+    Taken {
+        cases,
+        took,
+        units,
+        prepaid,
+    }
 }
 
 /// Run a gate and reconcile its rows against the owed set it declared. THIS is the only way a gate
@@ -1266,7 +1393,7 @@ pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<Str
         errs.push(format!(
             "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
             gate.name(),
-            work_unit().as_secs_f64() * 1000.0,
+            report.unit().as_secs_f64() * 1000.0,
             report.total().as_secs_f64()
         ));
     }
@@ -1396,7 +1523,7 @@ pub fn prove_red<'a>(
     gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
 ) -> CasePlan<'a> {
     let name = name.into();
@@ -1404,7 +1531,7 @@ pub fn prove_red<'a>(
     let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
-        let planted = cx.with_overlay(overlay);
+        let planted = cx.with_overlay(plant.build());
         let verdict = execute(gate, &planted);
         let got = narrowed_got(&verdict, &refs(&covers));
         Case {
@@ -1434,10 +1561,10 @@ pub fn prove_rows_red<'a>(
     gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
     naming: &[&str],
 ) -> CasePlan<'a> {
-    prove_red(cx, gate, name, covers, overlay, naming)
+    prove_red(cx, gate, name, covers, plant, naming)
 }
 
 /// The green arm, NARROWED TO THE ROWS THE CASE IS ABOUT.
@@ -1457,13 +1584,13 @@ pub fn prove_rows_green<'a>(
     gate: &'a dyn Gate,
     name: impl Into<String>,
     covers: &[&str],
-    overlay: Overlay,
+    plant: impl Plant<'a>,
 ) -> CasePlan<'a> {
     let name = name.into();
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
-        let planted = cx.with_overlay(overlay);
+        let planted = cx.with_overlay(plant.build());
         let verdict = execute(gate, &planted);
         let offenders: Vec<String> = verdict
             .rows
