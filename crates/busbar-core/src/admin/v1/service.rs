@@ -2012,9 +2012,12 @@ impl AdminService {
         // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
-        let mut policy =
-            busbar_plugin_loader::trust_policy(&self.app.plugins_cfg, &manifest.version)
-                .map_err(AdminError::Validation)?;
+        let resolved = busbar_plugin_loader::trust_policy(&self.app.plugins_cfg, &manifest.version)
+            .map_err(AdminError::Validation)?;
+        // A rollback reads the same two floor maps every other path does, so it says the same two
+        // things about them — through the one emit site, never a second wording.
+        crate::preflight::warn_floor_findings(&resolved.floor_findings);
+        let mut policy = resolved.policy;
         policy
             .min_versions
             .insert(manifest.name.clone(), manifest.version.clone());

@@ -440,7 +440,13 @@ fn list_plugins_command() -> i32 {
     // root to ask, so they go through `preflight::engine_trust_policy`, which answers with the
     // engine crate's — the same 1.6.0, from the one workspace version.
     let policy = match busbar_plugin_loader::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
-        Ok(p) => p,
+        Ok(resolved) => {
+            // The resolver FINDS a malformed anti-downgrade floor; the engine crate SAYS it, at the
+            // one emit site every other path reaches. `--list-plugins` is an operator door like any
+            // other, so it prints the same two warnings boot does, in the same words.
+            busbar_core::preflight::warn_floor_findings(&resolved.floor_findings);
+            resolved.policy
+        }
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",

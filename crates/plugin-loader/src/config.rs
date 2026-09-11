@@ -4,13 +4,13 @@
 //! THE `plugins:` BLOCK — the ONLY configuration surface of the dynamic plugin subsystem, as pure
 //! serde data, declared in the crate that reads it.
 //!
-//! Every other block's pure shapes live in `busbar_substrate::config`, and that is right because the
-//! substrate is what reads them. The `plugins:` block is the exception: the substrate never reads a
-//! word of it. Its two readers are this crate (the fetch list) and `busbar-plugin-sign` (the trust
-//! policy), so the grammar is declared HERE, beside [`crate::policy`], which is the only code that
-//! turns it into anything. The config layer states the block by naming this module through the
-//! `busbar-core -> busbar-plugin-loader` edge it already has; nothing below the plugin subsystem
-//! gains a line about plugins in order for an operator to write one.
+//! Every other block's pure shapes live one layer down, in the neutral config leaves, and that is
+//! right because the layer below is what reads them. The `plugins:` block is the exception:
+//! nothing below the plugin subsystem reads a word of it. Its two readers are this crate (the
+//! fetch list) and `busbar-plugin-sign` (the trust policy), so the grammar is declared HERE,
+//! beside [`crate::policy`], which is the only code that turns it into anything. The config layer
+//! states the block by naming this module through the edge it already has; nothing below the
+//! plugin subsystem gains a line about plugins in order for an operator to write one.
 //!
 //! What is here is the GRAMMAR: what an operator may write and what a typo is. What is NOT here is
 //! any RESOLUTION of it — the fetch list becomes [`crate::FetchSpec`]s and the trust block becomes a
