@@ -1733,6 +1733,55 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SAME CLAIM FOR THE GOVERNANCE TABLES, over a true dlopen: mint a virtual key, write its
+/// spend ledger and a metering row through a plugin store loaded over the C ABI, drop the handle
+/// (which unloads the library), `dlopen` it AGAIN at the same `durable_path`, and read all three
+/// back unchanged — tombstone included.
+///
+/// The sibling test above proves the A2A task table survives a restart over this path. This one
+/// proves the tables an operator's money and access live in do, and it does not restate the claim:
+/// it calls the SHARED cross-backend assertion
+/// (`busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen`),
+/// which is the same function `store-memory` and the store-example plugin's in-process `FileStore`
+/// tests call. The claim is written once, against `busbar_api::Store`; what this test contributes is
+/// the HARDEST opener there is — every write and every read crosses the plugin ABI, into a separately
+/// compiled cdylib, and the second handle is a fresh `dlopen` + `busbar_open` whose only possible
+/// source of state is the bytes on disk.
+///
+/// This is the seam-level twin of the recorded `plugins.store-persist|*` oracle cells (mint, spend,
+/// kill, boot, read back over HTTP): same claim, no server.
+#[test]
+fn key_spend_and_metering_written_through_a_plugin_store_survive_a_restart() {
+    let Some(lib) = store_example_plugin_path() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-key-durability-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create durable dir");
+    let cfg = serde_json::json!({ "durable_path": dir.join("durable.json").to_string_lossy() })
+        .to_string();
+
+    // The opener the shared assertion calls twice. Each call is a genuine `dlopen` + `busbar_open`;
+    // dropping the returned handle unloads the library and takes everything the plugin held in
+    // memory with it, so the second call's store shares nothing with the first but the file.
+    // `Arc::from` on the loader's `Box<dyn Store>` is a move, not a copy — the same plugin handle,
+    // reference-counted so the suite can express the RAM case with the same signature.
+    let open = || -> std::sync::Arc<dyn busbar_api::Store> {
+        std::sync::Arc::from(
+            load_store(&lib, &cfg).expect("dlopen the store example plugin over the ABI"),
+        )
+    };
+    busbar_plugin_testkit::store_conformance::assert_key_spend_and_metering_survive_a_reopen(
+        &open, "dlopen",
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The same-handle round trip, split out of the durability test so that a failure there names the
 /// RESTART rather than being pre-empted by a same-process symptom. This is the narrower claim: a
 /// task written through the plugin ABI is readable back through the plugin ABI at all.
