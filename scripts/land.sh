@@ -3804,13 +3804,22 @@ EOF
 #!/bin/bash
 # The stub pair. `build` is cargo's fresh path: it writes the artifact only when it is absent, and
 # leaves an existing one exactly as it found it (mtime included). `test` is plugin_store.rs.
+#
+# THE STALENESS QUESTION IS ASKED WITH SUB-SECOND RESOLUTION, and that is not a detail: bash's
+# `-nt` compares st_mtime in WHOLE SECONDS (bash 3.2, which is /bin/bash on macOS), so an artifact
+# built in the same second as its source read as NOT newer and this fixture failed for a reason
+# the real harness — a Rust `SystemTime` comparison at nanosecond resolution — does not have.
+# Measured 2026-09-11: `--selftest` red on every run whose build step did not happen to cross a
+# second boundary. `find <src> -newer <art>` compares the full timespec on both BSD and GNU find,
+# which is the same question plugin_store.rs asks.
 T="${CARGO_TARGET_DIR:?}"; SRC="${STUB_PLUGIN_SRC:?}"
 art="$T/debug/libbusbar_store_example_plugin.so"
+stub_stale() { [ -n "$(find "$SRC" -newer "$art" 2>/dev/null)" ]; }
 case "${1:-}" in
   build) mkdir -p "$T/debug"; [ -f "$art" ] || : >"$art"; exit 0 ;;
   test)
     [ -f "$art" ] || { echo "panicked at plugin_store.rs:56: the busbar-store-example-plugin cdylib is not built"; exit 101; }
-    [ "$art" -nt "$SRC" ] || { echo "panicked at plugin_store.rs:80: the cdylib is STALE"; exit 101; }
+    stub_stale && { echo "panicked at plugin_store.rs:80: the cdylib is STALE"; exit 101; }
     echo "test result: ok"; exit 0 ;;
 esac
 exit 2
