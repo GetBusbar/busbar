@@ -29,6 +29,10 @@
 //!   word `anonymous` on every surface.
 //! - **Revocation.** Gates NEW units only. A unit already in flight runs to its end.
 //! - **Open admin.** With no admin chain configured, an absent principal is granted full scope.
+//! - **The admitted-identity handle table.** An admission resolves to a principal and the
+//!   enforcement key the rest of the request is spent against; neither is a thing to hand out, and
+//!   the admission runs once. So the resolved pair stays in [`Admitted`] and what leaves is a bare
+//!   `u64` handle, consumed ONCE to recover the exact objects. A replayed handle names nothing.
 //! - **The credential mint registry.** The plaintext end of a resolved credential, held here and
 //!   never handed out: the resolve step mints a destination-bound, expiry-stamped opaque ref
 //!   ([`creds::mint`]) and the outbound open resolves it back to the secret ([`creds::resolve`]),
@@ -49,6 +53,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod admin;
+pub mod admitted;
 pub mod cache;
 pub mod carrier;
 pub mod chain;
@@ -61,6 +66,7 @@ pub mod principal;
 pub mod unit;
 
 pub use admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
+pub use admitted::Admitted;
 pub use cache::{CacheGeneration, CredentialCache, CredentialDigest};
 pub use carrier::{extract_bearer_token, extract_client_token, CallerToken, HeaderView};
 pub use chain::{AuthChain, ChainEntry, ChainVerdict};

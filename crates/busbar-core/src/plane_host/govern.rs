@@ -4,7 +4,16 @@
 //! The GOVERNANCE family of the plane host-vtable, wired over core's REAL primitives:
 //! `govern_admit` (admission + the RAII [`AdmitGrant`](crate::governance::AdmitGrant) registered in
 //! the dispatch arena), `meter_charge` (the money-scalar settlement + the write-behind metering
-//! time-series), and `auth_resolve` (a credential REF → a host-side reference, never plaintext).
+//! time-series), `auth_resolve` (a credential REF → a host-side reference, never plaintext) and
+//! `identity_admit` (the INBOUND-IDENTITY seam: the configured chain plus the ONE verdict
+//! resolution the in-process door runs).
+//!
+//! The two auth slots are here together on purpose. They are the same fact read from the two
+//! directions — `auth_resolve` answers "what may I send out under", `identity_admit` answers "who
+//! sent this in" — and both end at a value the host must NOT hand over: a credential plaintext and
+//! a resolved enforcement key. Both therefore answer with an OPAQUE handle and keep the thing
+//! itself in the unit that owns it ([`busbar_unit_auth::creds`] and
+//! [`busbar_unit_auth::Admitted`]), so nothing across the seam can read either.
 //!
 //! These are the BODIES the three vtable slots delegate to. Each vtable fn owns the boundary
 //! discipline (recover the [`HostState`] first, run inside `catch_unwind`, fail-closed, write any
@@ -24,10 +33,13 @@
 use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
 use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
+use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
+    AuthQuery, AuthResolved, Decision, Facts, IdentityAdmitted, IdentityId, IdentityOutcome,
+    IdentityQuery, MeterOutcome, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
 use busbar_plugin::read_sized_field;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Nanodollars per micro-currency unit — the projection from a [`Usage`]'s `unit_cost_micros` money
 /// scalar into the engine's nanodollar ledger unit ([`CostAmount`]): the cost unit's one constant,
@@ -345,6 +357,117 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
         resolved_ref,
         expires_unix,
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// identity_admit — the INBOUND-IDENTITY seam, over core's REAL data-plane admission.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The resolved inbound identity the host holds behind a handle: the neutral principal and the
+/// per-request governance context (the resolved key). Recovered ONCE, through [`ADMITTED`].
+type Resolved = (
+    crate::auth::AuthPrincipal,
+    crate::governance::PlaneRequestCtx,
+);
+
+/// The process-wide admitted-identity table — [`busbar_unit_auth::Admitted`], which states the
+/// handle discipline and why an admission is not a thing to hand out. What core adds is only WHAT
+/// is held: the resolved pair, whose gov key therefore never crosses as bytes, only the `u64`.
+static ADMITTED: std::sync::LazyLock<busbar_unit_auth::Admitted<Resolved>> =
+    std::sync::LazyLock::new(busbar_unit_auth::Admitted::new);
+
+/// Consume `id`, recovering the resolved `(principal, gov)` — the plane-side half of the opaque
+/// handle. `None` when the handle names no admission (a refusal's [`IdentityId::NONE`], or one
+/// already consumed), which the caller maps to a refusal.
+#[must_use]
+// Consumed only by `identity_admit_over` (the inbound stdio admission path); a build whose planes
+// admit on their own door leaves it uncalled, hence the unconditional dead-code allow.
+#[allow(dead_code)]
+pub(super) fn take_admitted(id: IdentityId) -> Option<Resolved> {
+    ADMITTED.take(id.0)
+}
+
+/// WIRED `identity_admit` → the REAL inbound admission over `crate::auth`: run the configured auth
+/// chain over the caller's OWN wire credential (the [`IdentityQuery`]) and the live governance
+/// state, then the ONE verdict resolution the HTTP middleware runs, and stash the resolved
+/// `(principal, gov)` behind an opaque handle on an admit. Writes the [`IdentityAdmitted`]
+/// out-param on `Ok`. Fail-closed: [`StatusClass::Refused`] on a null query and
+/// [`StatusClass::Fault`] on any panic or a runtime that will not start (`out` untouched on
+/// either — the plane refuses to admit).
+///
+/// The async chain is driven on a FRESH current-thread runtime (the egress precedent), so this sync
+/// `extern "C-unwind"` slot bridges the async admission the same way the egress slots bridge their
+/// async transport — the caller drives this slot from a blocking thread (see
+/// [`super::identity_admit_over`]).
+pub(crate) extern "C-unwind" fn identity_admit(
+    host: HostCtx,
+    query: *const IdentityQuery,
+    out: *mut std::mem::MaybeUninit<IdentityAdmitted>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state: &HostState = unsafe { super::recover(host) };
+        if query.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `query` is a live, initialized `IdentityQuery` for the call (ABI).
+        let q = unsafe { &*query };
+        // The caller's OWN credential (None ⇒ the chain sees no candidate; distinct from empty).
+        let candidate = if q.token_present != 0 {
+            Some(borrowed_str(q.token_ptr, q.token_len))
+        } else {
+            None
+        };
+        // The expected audience (the resource canonical-uri the in-process door binds against).
+        // Absent ⇒ no audience expectation, matching an `expected_aud: None` chain call.
+        let audience = borrowed_str(q.audience_ptr, q.audience_len);
+        let expected_aud = (!audience.is_empty()).then_some(audience);
+        let app = state.app;
+        // Drive the ASYNC chain synchronously on a fresh current-thread runtime — the same
+        // async→sync bridge the egress slots use (`run_http_stream`). A runtime that will not start
+        // is fail-closed.
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(_) => return StatusClass::Fault,
+        };
+        let verdict = rt.block_on(crate::auth::AuthMiddleware::run_chain_on_request_path(
+            &app.auth,
+            &app.credential_cache,
+            candidate,
+            app.governance.clone(),
+            expected_aud,
+        ));
+        // THE ONE VERDICT RESOLUTION, shared with the HTTP middleware. An admit stashes the resolved
+        // pair behind a fresh handle; a refusal keeps its SPECIFIC reason and names no handle.
+        let (outcome, identity) = match crate::auth::resolve_data_plane_identity(app, verdict) {
+            Ok(resolved) => (
+                IdentityOutcome::Admitted,
+                IdentityId(ADMITTED.stash(resolved)),
+            ),
+            Err(crate::auth::IdentityRefusal::Denied) => {
+                (IdentityOutcome::Denied, IdentityId::NONE)
+            }
+            Err(crate::auth::IdentityRefusal::NoGrant) => {
+                (IdentityOutcome::NoGrant, IdentityId::NONE)
+            }
+        };
+        let admitted = IdentityAdmitted {
+            size: core::mem::size_of::<IdentityAdmitted>() as u32,
+            version: POD_VERSION,
+            outcome,
+            _reserved: 0,
+            _reserved2: 0,
+            identity,
+        };
+        // SAFETY: `out` is a writable, aligned `MaybeUninit<IdentityAdmitted>` for the call (ABI);
+        // the write publishes on the Ok path, tolerating a null slot.
+        unsafe { busbar_plugin::write_out(out, admitted) };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

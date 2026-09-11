@@ -109,10 +109,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    net_guard internals whatever the plane); no plane feature gates it. ─────────────────────────
         guard_url: Some(guard_url),
         // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
-        //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the
+        //    `super::govern`: the configured auth chain + the one verdict resolution over the
         //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
         //    host owns the auth chain whatever the plane); no plane feature gates it. ────────────────────
-        identity_admit: Some(super::identity_admit::identity_admit),
+        identity_admit: Some(super::govern::identity_admit),
         // ── WIRED `gate_decide` (minor-18) → the host-side request-admission gate in
         //    `super::dispatch`: re-select the resolved gate set by `(plane_key, container)` and run the
         //    REAL `crate::hooks::gate::decide` over the reconstructed subject, so an MCP/A2A plane body

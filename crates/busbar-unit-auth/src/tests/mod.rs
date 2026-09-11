@@ -3,6 +3,7 @@
 
 //! The unit's tests, ported with their assertions intact from the shipped chain's own suite.
 
+mod admitted_tests;
 mod cache_tests;
 mod carrier_tests;
 mod chain_tests;

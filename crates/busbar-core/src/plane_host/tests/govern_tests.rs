@@ -392,3 +392,53 @@ fn out_of_range_usage_component_is_refused_not_matched() {
     let (cells, _counts) = gov.pending_metering_totals();
     assert_eq!(cells, 0, "a refused charge accrues no metering row");
 }
+
+// ── THE INBOUND-IDENTITY SEAM (`identity_admit`) ─────────────────────────────────────────────────
+// Moved here verbatim with the slot itself, off the deleted `plane_host/identity_admit.rs`: the
+// slot is the auth half of this family now, so its battery is this family's battery.
+
+/// An OPEN chain (`chain: []`, no keys arm) admits ANONYMOUS through the seam: the host runs the
+/// same chain + resolution the in-process door runs, and the plane recovers the EXACT resolved
+/// identity through the opaque handle — `AuthPrincipal(None)` + an ungoverned context. Proves the
+/// async→sync bridge, the POD marshalling, and the handle round-trip end to end.
+#[tokio::test]
+async fn identity_admit_over_open_chain_admits_anonymous_ungoverned() {
+    let auth = Arc::new(crate::auth::AuthMiddleware::new_builtin(
+        &crate::config::AuthCfg::default_none(),
+    ));
+    let app = crate::test_support::TestApp::new().auth(auth).build();
+    let (principal, gov) = crate::plane_host::identity_admit_over(
+        app,
+        None,
+        "urn:aud".to_string(),
+        "urn:aud".to_string(),
+    )
+    .await
+    .expect("an open chain admits");
+    assert_eq!(
+        principal.actor_id(),
+        "anonymous",
+        "the open front door admits the anonymous principal"
+    );
+    assert!(
+        !gov.is_governed(),
+        "the open front door carries an ungoverned (key: None) context"
+    );
+}
+
+/// A CONFIGURED chain refuses an unauthenticated session through the seam with the SAME
+/// `IdentityRefusal::Denied` the in-process resolution returns — the plane then renders its own
+/// unauthenticated sentence unchanged (byte-identical refusal variant).
+#[tokio::test]
+async fn identity_admit_over_configured_chain_denies_missing_credential() {
+    let app = crate::test_support::TestApp::new().keys_chain().build();
+    let refusal = crate::plane_host::identity_admit_over(
+        app,
+        None,
+        "urn:aud".to_string(),
+        "urn:aud".to_string(),
+    )
+    .await
+    .expect_err("a configured chain refuses an unauthenticated session");
+    assert_eq!(refusal, crate::auth::IdentityRefusal::Denied);
+}

@@ -42,7 +42,6 @@ pub mod guard;
 // and the chokepoint reads it off the response extensions), so `spki` is no longer re-exported;
 // the A2A plane and the engine name the neutral `busbar_substrate::plane_host::spki` directly.
 pub(crate) use busbar_substrate::plane_host::{identity, trust_anchor};
-pub(crate) mod identity_admit;
 pub mod pipe;
 pub mod scope;
 pub mod trust;
@@ -289,7 +288,7 @@ pub async fn identity_admit_over(
                 busbar_plugin::hot::IdentityOutcome::Admitted => {
                     // Consume the opaque handle to recover the EXACT resolved (principal, gov). A handle
                     // that vanished (double-consume / eviction) fails closed to a refusal.
-                    identity_admit::take(admitted.identity)
+                    govern::take_admitted(admitted.identity)
                         .ok_or(crate::auth::IdentityRefusal::Denied)
                 }
                 busbar_plugin::hot::IdentityOutcome::Denied => {
