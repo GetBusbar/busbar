@@ -513,7 +513,10 @@ async fn apply(
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
-                    Some(&snapshot),
+                    crate::appbuild::Composition {
+                        ports: &[],
+                        prior: Some(&snapshot),
+                    },
                 )
             })();
             let (built, gov_rotate) = match built {

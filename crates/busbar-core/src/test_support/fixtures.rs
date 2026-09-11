@@ -94,7 +94,7 @@ pub fn build_once(
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
         (None, None),
-        prior,
+        crate::appbuild::Composition { ports: &[], prior },
     )?;
     if let Some(rotate) = gov_rotate {
         rotate();

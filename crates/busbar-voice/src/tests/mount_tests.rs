@@ -142,18 +142,31 @@ impl PlaneBootCtx for FakeBootCtx {
     }
 }
 
-/// Build the voice dispatch slot the way `appbuild` does — a `BuildCtx` carrying the deployment's
-/// `public_url` and NO written `streams:` section (the plane then reads its own defaults, which is
-/// what a deployment that writes nothing already got). The other `BuildCtx` fields are the neutral
-/// absences the voice plane never reads.
-fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+/// BUILD THE DISPATCH SLOT THE WAY `appbuild` DOES — the ONE `BuildCtx` this crate's cells construct,
+/// so every one of them is handed a context of the same shape and a field added to the seam is added
+/// here once. Its siblings under `mount` reach it rather than writing a second one.
+pub(crate) fn slot_from(
+    sections: &[(&'static str, &dyn std::any::Any)],
+    public_url: Option<&str>,
+    upstreams: Option<&dyn busbar_substrate::plane::registry::UpstreamCatalog>,
+    composed: &[(&'static str, Arc<dyn std::any::Any + Send + Sync>)],
+    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
     let ctx = BuildCtx {
         mcp_slot: None,
-        sections: &[],
+        sections,
+        composed,
+        upstreams,
         public_url,
-        prior: None,
+        prior,
     };
     voice_build(&ctx)
+}
+
+/// The slot a deployment that wrote NO section gets: its own defaults, which is byte-identically what
+/// it already got.
+fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    slot_from(&[], public_url, None, &[], None)
 }
 
 /// A session runtime with no live money hop — the in-process `LocalMeteringPort` — used to drive
@@ -544,22 +557,20 @@ fn a_written_streams_section() -> crate::config::StreamsCfg {
     }
 }
 
-/// Built the way `appbuild` does, from the two things the door is a function of: the OWN section handed
-/// across the seam under the key this declaration carries, and the deployment's receiving origin.
+/// Built from the two things the door is a function of: the OWN section handed across the seam under
+/// the key this declaration carries, and the deployment's receiving origin.
 #[cfg(feature = "test-support")]
 fn slot_from_declaration(
-    streams: &crate::config::StreamsCfg,
+    written: &crate::config::StreamsCfg,
     public_url: Option<&str>,
 ) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
-    let sections: [(&'static str, &dyn std::any::Any); 1] =
-        [(crate::PLANE_DECL.config_section, streams)];
-    let ctx = BuildCtx {
-        mcp_slot: None,
-        sections: &sections,
+    slot_from(
+        &[(crate::PLANE_DECL.config_section, written)],
         public_url,
-        prior: None,
-    };
-    voice_build(&ctx)
+        None,
+        &[],
+        None,
+    )
 }
 
 /// A DECLARED `streams:` with no `public_url` is a BOOT REFUSAL, not seven silent 404s.

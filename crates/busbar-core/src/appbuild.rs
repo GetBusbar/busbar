@@ -448,6 +448,53 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// WHAT THE COMPOSITION AROUND THIS BUILD HANDS IT — the two things a generation is given rather than
+/// reads out of its own configuration.
+///
+/// One parameter rather than two because they answer the same question from opposite sides: `ports` is
+/// what the OUTER composition root built for this generation, and `prior` is what the PREVIOUS
+/// generation left behind. A config APPLY has the second and not the first (the outer root is not in
+/// the call), a fresh BOOT has the first and not the second, and every plane's `build` resolves its own
+/// port from whichever of the two carries it.
+pub struct Composition<'a> {
+    /// THE ROOT-COMPOSED PORTS, keyed by the OWNING PLANE'S config section — the runtime objects the
+    /// outer composition root built and a plane cannot build for itself, carried across the plane-build
+    /// seam (`busbar_substrate::plane::registry::BuildCtx::composed`) instead of written into a
+    /// process-wide static after the plane's slot already existed. EMPTY on an in-core apply.
+    pub ports: &'a [(
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )],
+    /// THE LIVE `App` this build REPLACES, or `None` on a fresh boot.
+    pub prior: Option<&'a state::App>,
+}
+
+/// THE MODEL→UPSTREAM CATALOG as this deployment configured it — the composition's own implementation
+/// of the neutral [`busbar_substrate::plane::registry::UpstreamCatalog`] a plane's `build` reads.
+///
+/// Holds the origin and the ALREADY-RESOLVED credential for each declared model, both taken from the
+/// one loop that resolves them, so nothing here reads a credential a second time. A reference that
+/// would not resolve never reaches this map: it refuses the whole build, loudly, where it is read. The
+/// seam still carries a failure arm because a catalog that resolves lazily has one; THIS one answers
+/// only "the deployment declares that model" or "it does not".
+struct ConfiguredUpstreams {
+    by_model: HashMap<String, (String, String)>,
+}
+
+impl busbar_substrate::plane::registry::UpstreamCatalog for ConfiguredUpstreams {
+    fn upstream_for_model(
+        &self,
+        model: &str,
+    ) -> Result<Option<busbar_substrate::plane::registry::ResolvedUpstream>, String> {
+        Ok(self.by_model.get(model).map(|(base_url, api_key)| {
+            busbar_substrate::plane::registry::ResolvedUpstream {
+                base_url: base_url.clone(),
+                api_key: api_key.clone(),
+            }
+        }))
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -457,8 +504,12 @@ pub fn build_app_from_config(
     base_hook_names: std::collections::HashSet<String>,
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
-    prior: Option<&state::App>,
+    around: Composition<'_>,
 ) -> Result<(state::App, Option<GovCredentialRotation>), String> {
+    let Composition {
+        ports: composed_ports,
+        prior,
+    } = around;
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -575,6 +626,13 @@ pub fn build_app_from_config(
     // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
     // from this loop, so no App is built at all.
     let mut provider_api_keys: HashMap<String, String> = HashMap::new();
+    // THE MODEL→UPSTREAM CATALOG this generation hands every plane's `build`, filled in the SAME loop
+    // that resolves the credentials: for each declared model, the origin of the upstream serving it
+    // and the credential already resolved for that upstream one screen down. A plane whose own
+    // section PINS a model reads its endpoint off this instead of the composition writing the answer
+    // into a process-wide static after the plane's slot was already built — a write no config apply
+    // could move. One resolution, two readers, no second read of a credential.
+    let mut model_upstreams: HashMap<String, (String, String)> = HashMap::new();
     // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
     // HashMap iteration order, which is randomized per process start. Lane index is assigned here
     // (`by_model` → `lanes_data.len()`), so a random iteration order gave each lane a different
@@ -656,6 +714,16 @@ pub fn build_app_from_config(
             };
             slot.insert(resolved);
         }
+        model_upstreams.insert(
+            model.clone(),
+            (
+                provider_cfg.base_url.clone(),
+                provider_api_keys
+                    .get(&mc.provider)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        );
         let limited = mc.max_requests >= 0;
         // `max_concurrent` is an OPT-IN limiter: omitted (None) = UNBOUNDED. Realize "unbounded" as a
         // semaphore seeded with `Semaphore::MAX_PERMITS` (usize::MAX >> 3) — a lane will never reach
@@ -1404,6 +1472,9 @@ pub fn build_app_from_config(
             .iter()
             .map(|(section, parsed)| (*section, parsed.as_any()))
             .collect();
+        let upstreams = ConfiguredUpstreams {
+            by_model: model_upstreams,
+        };
         let ctx = crate::plane::registry::BuildCtx {
             // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
             // plane's `build` fn — so the `BuildCtx` seam carries an opaque slot and names no
@@ -1420,6 +1491,14 @@ pub fn build_app_from_config(
                 .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
                 .cloned(),
             sections: &plane_sections,
+            // THE ROOT-COMPOSED PORTS for this generation, keyed by the owning plane's section — what
+            // the outer composition root built and handed IN, rather than a set-once static it wrote
+            // after this fold had already produced the slot. Empty on an in-core apply; each plane
+            // carries its own port forward off `prior` there.
+            composed: composed_ports,
+            // THE MODEL→UPSTREAM CATALOG, so a plane whose section pins a model resolves that model's
+            // origin and credential HERE, for THIS generation, off the same resolved config the root read.
+            upstreams: Some(&upstreams),
             public_url: cfg.public_url.as_deref(),
             // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
             // off its own prior runtime object across this apply (the A2A plane carries its

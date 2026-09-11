@@ -5,11 +5,10 @@
 //!
 //! Two halves, both load-bearing:
 //!
-//!  1. THE COMPOSITION SEAM. The composition root hands the plane a provider ORIGIN and the secret
-//!     REFERENCE the deployment already declared for that provider, plus the deployment's own secret
-//!     resolver. The plane resolves the reference through that seam and composes the endpoint — so a
-//!     deployment's realtime credential arrives the same way every other provider key does, and the
-//!     `streams:` grammar gains no credential field.
+//!  1. THE COMPOSITION SEAM. The plane's own `build` is handed the deployment's model→upstream
+//!     catalog and looks up the model ITS OWN section pins, so a deployment's realtime credential
+//!     arrives the same way every other provider key does, on the slot of the generation that
+//!     resolved it, and the `streams:` grammar gains no credential field.
 //!  2. THE SERVED MINT. With a provider composed, the mint pass no longer answers "no provider
 //!     composed": it dials the provider's client-secrets endpoint under busbar's OWN key and answers
 //!     `200` with the browser-facing ephemeral token shape (`value` + `expires_at_unix`).
@@ -17,12 +16,13 @@
 //! RED before the wiring: nothing composed a provider, so the mint route answered `501` on every
 //! deployment and the real key never had a way in.
 
-use crate::mount::{
-    compose_provider, composed_provider_base_url, open_governed, provider_composed, GovernedOpen,
-    Ingress, ProviderEndpoint,
-};
+use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint, VoiceMount as Door};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
+use busbar_substrate::plane::registry::{ResolvedUpstream, UpstreamCatalog};
+
+/// The operator posture a node is built from — the section this declaration carries, spelled once.
+type Posture = crate::config::StreamsCfg;
 use busbar_substrate::testkit::fixture_host::FixtureHost;
 use std::sync::{Arc, Mutex};
 
@@ -64,26 +64,6 @@ async fn spawn_client_secrets_provider(seen: Arc<Mutex<Option<String>>>) -> std:
         axum::serve(listener, app).await.unwrap();
     });
     addr
-}
-
-/// A stand-in for the deployment's secret resolver: it answers one reference with one credential and
-/// refuses everything else, so the test can tell "resolved through the seam" from "guessed".
-struct OneSecretResolver {
-    expect: busbar_api::SecretRef,
-    value: String,
-}
-
-impl busbar_api::SecretResolve for OneSecretResolver {
-    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
-        self.resolve_string(secret).map(String::into_bytes)
-    }
-    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
-        if secret == &self.expect {
-            Ok(self.value.clone())
-        } else {
-            Err("no such secret reference in this deployment".to_string())
-        }
-    }
 }
 
 fn runtime() -> VoiceRuntime {
@@ -146,52 +126,133 @@ async fn a_composed_provider_credential_makes_the_mint_pass_serve_the_browser_to
     );
 }
 
+/// THE DEPLOYMENT'S MODEL→UPSTREAM CATALOG as the composition hands one to a plane's `build`: the
+/// declared models, each with the origin and RESOLVED credential of the upstream serving it. A model
+/// this deployment does not declare answers `Ok(None)`; one wired to an undeclared credential
+/// reference answers `Err`, which is the fail-closed shape the real catalog gives a reference the
+/// deployment's own resolver refuses.
+struct Catalog(Vec<(&'static str, &'static str, &'static str)>);
+
+impl UpstreamCatalog for Catalog {
+    fn upstream_for_model(&self, model: &str) -> Result<Option<ResolvedUpstream>, String> {
+        match self.0.iter().find(|(m, _, _)| *m == model) {
+            None => Ok(None),
+            Some((_, _, "")) => Err("no such credential reference in this deployment".to_string()),
+            Some((_, base_url, api_key)) => Ok(Some(ResolvedUpstream {
+                base_url: (*base_url).to_string(),
+                api_key: (*api_key).to_string(),
+            })),
+        }
+    }
+}
+
+/// ONE NODE, built the way the composition builds one: this deployment's own posture (pinning
+/// `model`, or nothing) and this deployment's catalog, through the plane's own `build`.
+fn node(model: Option<&str>, catalog: &Catalog) -> Arc<Door> {
+    let mut written = Posture::default();
+    written.session.model = model.map(str::to_string);
+    crate::mount::mount_tests::slot_from(
+        &[(crate::PLANE_DECL.config_section, &written)],
+        Some("https://gw.example.com"),
+        Some(catalog),
+        &[],
+        None,
+    )
+    .expect("a deployment with a receiving origin mounts")
+    .downcast::<Door>()
+    .expect("the slot this plane builds is its own mount")
+}
+
+/// TWO NODES BUILT IN ONE PROCESS, each pinning its own model, EACH DIAL THEIR OWN UPSTREAM.
+///
+/// RED before this seam: the endpoint was a process-wide set-once cell the root wrote AFTER the slot
+/// was built, so the second node in a process read the FIRST node's origin and credential — measured,
+/// `Some("https://a.example.com")` where the node's own configuration said `b`. A deployment could not
+/// tell, because both nodes booted clean and both dialed something.
+///
+/// The fact is a fact of the generation that resolved it, so it rides that generation's slot: each
+/// node's `build` looks its OWN section's model up in the deployment's catalog, and neither node can
+/// reach the other's answer because neither answer is anywhere but on a slot.
 #[test]
-fn the_composition_root_composes_the_provider_through_the_deployments_secret_resolver() {
-    let reference = busbar_api::SecretRef::env("REALTIME_PROVIDER_KEY");
-    let resolver = OneSecretResolver {
-        expect: reference.clone(),
-        value: PROVIDER_KEY.to_string(),
-    };
+fn two_nodes_built_in_one_process_each_dial_their_own_provider() {
+    let catalog = Catalog(vec![
+        ("model-a", "https://a.example.com", "key-a"),
+        ("model-b", "https://b.example.com", "key-b"),
+    ]);
 
-    // A reference this deployment does NOT declare fails closed with the resolver's own message, and
-    // composes nothing — an unresolvable credential must never become an empty one.
-    let unknown = busbar_api::SecretRef::env("NOT_DECLARED_HERE");
-    assert!(
-        compose_provider("https://api.example.com", &unknown, &resolver).is_err(),
-        "an unresolvable reference composes nothing"
-    );
-    assert!(
-        !provider_composed(),
-        "a failed resolve leaves the plane with no provider"
-    );
+    let a = node(Some("model-a"), &catalog);
+    let b = node(Some("model-b"), &catalog);
 
-    // The declared reference resolves through the seam and composes the endpoint the mint / SDP
-    // passes read.
     assert_eq!(
-        compose_provider("https://api.example.com", &reference, &resolver),
-        Ok(true),
-        "the declared provider credential composes"
-    );
-    assert!(
-        provider_composed(),
-        "the mint / SDP passes now have an endpoint"
+        a.provider().map(|p| p.base_url.as_str()),
+        Some("https://a.example.com"),
+        "the first node dials the upstream serving the model its own section pinned"
     );
     assert_eq!(
-        composed_provider_base_url(),
-        Some("https://api.example.com"),
-        "the composed origin is the one the deployment declared"
+        b.provider().map(|p| p.base_url.as_str()),
+        Some("https://b.example.com"),
+        "and the second dials ITS own, not whichever was resolved first in this process"
     );
+    assert_eq!(
+        b.provider().map(|p| p.api_key.as_str()),
+        Some("key-b"),
+        "credential and origin move together — no node dials one origin under another's key"
+    );
+    // The second dialect reads its own field, so a deployment cannot silently point one dialect's
+    // traffic at the other's credential — and it is still this node's own entry, not the other's.
+    assert_eq!(
+        b.gemini_provider.as_ref().map(|p| p.base_url.as_str()),
+        Some("https://b.example.com"),
+        "the second-dialect endpoint is this generation's too"
+    );
+}
 
-    // Set-once: a second compose does not silently swap the deployment's credential.
-    assert_eq!(
-        compose_provider("https://other.example.com", &reference, &resolver),
-        Ok(false),
-        "the first composed endpoint stands"
-    );
-    assert_eq!(
-        composed_provider_base_url(),
-        Some("https://api.example.com"),
-        "a second compose leaves the first endpoint in place"
+/// THE THREE WAYS A NODE RESOLVES NOTHING, and none of them is a dial with an empty credential.
+///
+/// A posture that pins no model asks the catalog nothing; a model this deployment does not declare
+/// answers nothing; and a declared model whose credential reference will not resolve FAILS CLOSED —
+/// the plane says so in its own words and composes nothing, so the mint / SDP passes keep answering
+/// "governed, but no provider composed" rather than dialing under an empty key.
+#[test]
+fn a_node_that_resolves_no_provider_composes_none_rather_than_an_empty_credential() {
+    let catalog = Catalog(vec![
+        ("model-a", "https://a.example.com", "key-a"),
+        // Declared here, but wired to a reference this deployment's resolver refuses.
+        ("model-refused", "https://a.example.com", ""),
+    ]);
+    for (model, why) in [
+        (None, "a posture that pins no model resolves nothing"),
+        (
+            Some("model-absent"),
+            "a model this deployment does not declare resolves nothing",
+        ),
+        (
+            Some("model-refused"),
+            "a declared model whose credential will not resolve fails closed",
+        ),
+    ] {
+        assert!(node(model, &catalog).provider().is_none(), "{why}");
+    }
+}
+
+/// A NODE BUILT WITH NO CATALOG BEHIND IT resolves nothing and still mounts — the honest answer for a
+/// context with no deployment catalog in it, and byte-identically what an uncomposed deployment got.
+#[test]
+fn a_node_built_with_no_catalog_resolves_no_provider_and_still_mounts() {
+    let mut written = Posture::default();
+    written.session.model = Some("model-a".to_string());
+    let mount = crate::mount::mount_tests::slot_from(
+        &[(crate::PLANE_DECL.config_section, &written)],
+        Some("https://gw.example.com"),
+        None,
+        &[],
+        None,
+    )
+    .expect("a deployment with a receiving origin mounts")
+    .downcast::<Door>()
+    .expect("the slot this plane builds is its own mount");
+    assert!(
+        mount.provider().is_none(),
+        "no catalog is no upstream, not an empty one"
     );
 }

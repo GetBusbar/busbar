@@ -108,6 +108,65 @@ fn budget() -> SessionBudget {
     }
 }
 
+/// The dispatch slot this door is, spelled once here so the cells below name the type and not its
+/// path.
+type Door = crate::mount::VoiceMount;
+
+/// THE PRIOR GENERATION'S SLOT MAP, as a config apply hands one to a plane's `build` — one entry, this
+/// plane's own, exactly as the live composition's map carries it.
+struct PriorSlots(std::collections::HashMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>);
+
+impl busbar_substrate::plane_host::PlaneSlots for PriorSlots {
+    fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.0.get(key)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// ONE NODE, built the way the composition builds one, from what the root handed it and what the
+/// previous generation left behind.
+fn build(
+    ports: &[(&'static str, Arc<dyn std::any::Any + Send + Sync>)],
+    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+) -> Arc<Door> {
+    crate::mount::mount_tests::slot_from(&[], Some("https://gw.example.com"), None, ports, prior)
+        .expect("a deployment with a receiving origin mounts")
+        .downcast::<Door>()
+        .expect("the slot this plane builds is its own mount")
+}
+
+/// A node the ROOT handed its table to, under the key this declaration carries.
+fn node_with_table(calls: Arc<dyn GovernedCalls>) -> Arc<Door> {
+    build(
+        &[(
+            crate::PLANE_DECL.config_section,
+            Arc::new(calls) as Arc<dyn std::any::Any + Send + Sync>,
+        )],
+        None,
+    )
+}
+
+/// THE NEXT GENERATION, as an in-core config apply builds one: nothing offered by the root, the prior
+/// slot in hand.
+fn node_carrying(prior: &Arc<Door>) -> Arc<Door> {
+    let slots = PriorSlots(
+        [(
+            crate::PLANE_DECL.key,
+            Arc::clone(prior) as Arc<dyn std::any::Any + Send + Sync>,
+        )]
+        .into_iter()
+        .collect(),
+    );
+    build(&[], Some(&slots))
+}
+
+/// A node the root composed nothing for — the plane mounted without the root's own switch.
+fn node_uncomposed() -> Arc<Door> {
+    build(&[], None)
+}
+
 /// **A served open takes the binding it is handed, and the sweep on that session reaches the table.**
 ///
 /// The post-admit open is the one door every served topology goes through — the dialed proxy, the
@@ -222,38 +281,75 @@ fn a_node_with_no_table_composed_serves_what_it_served_before() {
     assert_eq!(core.sweep_expired(u64::MAX), 0, "and it sweeps nothing");
 }
 
-/// **The composed table is what a served session-open reads, and each open reads a session of its
-/// own.**
+/// **The table the ROOT handed this generation is what a served session-open reads, and each open
+/// reads a session of its own.**
 ///
-/// Two conversations may carry identical call identifiers — a provider mints them per conversation —
-/// so the number the root keys its table by has to be unique per session on this node. It is minted
-/// here, once per open.
+/// The table crosses on the SLOT — the root hands it to the plane's `build` for the generation it
+/// composed it for — so two nodes in one process are two tables, not a race for one process-wide cell.
+/// Two conversations may carry identical call identifiers (a provider mints them per conversation), so
+/// the number the root keys its table by has to be unique per session ON THIS NODE, which is why the
+/// counter is the one thing that stays a process fact.
 #[test]
 fn the_composition_hands_each_served_open_its_own_session() {
-    assert!(
-        crate::mount::install_governed_calls(
-            Arc::new(TableStandIn::default()) as Arc<dyn GovernedCalls>
-        ),
-        "the first composition stands"
-    );
-    assert!(
-        crate::mount::governed_calls_composed(),
-        "and the door now serves governed sessions"
-    );
-    assert!(
-        !crate::mount::install_governed_calls(
-            Arc::new(TableStandIn::default()) as Arc<dyn GovernedCalls>
-        ),
-        "a second compose is a no-op, never a silent swap of the table live sessions are keyed into"
-    );
+    let table_a = Arc::new(TableStandIn::default());
+    let table_b = Arc::new(TableStandIn::default());
+    let a = node_with_table(Arc::clone(&table_a) as Arc<dyn GovernedCalls>);
+    let b = node_with_table(Arc::clone(&table_b) as Arc<dyn GovernedCalls>);
 
-    let first =
-        crate::mount::served_governed_session().expect("a composed node binds every session");
-    let second =
-        crate::mount::served_governed_session().expect("a composed node binds every session");
+    let first = crate::mount::bind_served_session(a.governed_calls.clone())
+        .expect("a composed node binds every session");
+    let second = crate::mount::bind_served_session(a.governed_calls.clone())
+        .expect("a composed node binds every session");
     assert_ne!(
         first.session, second.session,
         "two sessions on one node are told apart before either has a call open"
+    );
+
+    // EACH NODE ITS OWN TABLE: a reply landed through the second node's binding wakes the second
+    // node's table and nothing on the first's — which a single process-wide cell could not answer,
+    // because the second composition was a no-op on it.
+    let bound_b = crate::mount::bind_served_session(b.governed_calls.clone())
+        .expect("a composed node binds every session");
+    table_b.enter(bound_b.session, "call-x", 0);
+    let _ = bound_b.calls.replied(bound_b.session, "call-x");
+    assert!(
+        table_a.woken.lock().unwrap().is_empty(),
+        "the first node's table saw nothing: it is not the table the second node was handed"
+    );
+    assert_eq!(
+        table_b.woken.lock().unwrap().len(),
+        1,
+        "the second node's own table is the one its own session reached"
+    );
+}
+
+/// **A CONFIG APPLY DOES NOT UNGOVERN THE DOOR.** An in-core apply rebuilds every plane's slot without
+/// the outer root in the call, so nothing is offered on `composed` — the plane carries the table it
+/// was handed off the PRIOR generation's slot, which is exactly what the set-once static this replaced
+/// was bought for.
+#[test]
+fn a_config_apply_carries_the_composed_table_onto_the_next_generation() {
+    let table = Arc::new(TableStandIn::default());
+    let first = node_with_table(Arc::clone(&table) as Arc<dyn GovernedCalls>);
+    let next = node_carrying(&first);
+    let bound = crate::mount::bind_served_session(next.governed_calls.clone())
+        .expect("the generation after an apply still binds every session it serves");
+    table.enter(bound.session, "call-y", 0);
+    let _ = bound.calls.replied(bound.session, "call-y");
+    assert_eq!(
+        table.woken.lock().unwrap().len(),
+        1,
+        "the table the boot composed is the table the applied generation still serves into"
+    );
+}
+
+/// **A node the root composed nothing for binds nothing** — an ungoverned deployment serves exactly
+/// what it served before.
+#[test]
+fn a_node_the_root_composed_no_table_for_binds_nothing() {
+    assert!(
+        crate::mount::bind_served_session(node_uncomposed().governed_calls.clone()).is_none(),
+        "no table handed in, no binding minted"
     );
 }
 
@@ -279,7 +375,7 @@ fn every_served_session_open_asks_the_composition_for_its_binding() {
         "the served legs are the dialed proxy, the uplink-only fallback and the WebRTC sideband; \
          a fourth needs its own binding and this cell counted {opens}"
     );
-    let bound = accept.matches("served_governed_session()").count();
+    let bound = accept.matches("bind_served_session(calls.clone())").count();
     assert_eq!(
         bound, opens,
         "every served session-open asks the composition for its binding: {bound} of {opens} do"

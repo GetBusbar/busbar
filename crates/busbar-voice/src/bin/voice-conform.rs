@@ -1214,26 +1214,6 @@ fn gov_v4() -> (&'static str, String) {
 // token for its audience.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// A stand-in for a deployment's secret resolver: answers ONE declared reference and refuses every
-/// other, so the probe can tell "resolved through the seam" apart from "guessed".
-struct OneSecretResolver {
-    expect: busbar_api::SecretRef,
-    value: String,
-}
-
-impl busbar_api::SecretResolve for OneSecretResolver {
-    fn resolve(&self, secret: &busbar_api::SecretRef) -> Result<Vec<u8>, String> {
-        self.resolve_string(secret).map(String::into_bytes)
-    }
-    fn resolve_string(&self, secret: &busbar_api::SecretRef) -> Result<String, String> {
-        if secret == &self.expect {
-            Ok(self.value.clone())
-        } else {
-            Err("no such secret reference in this deployment".to_string())
-        }
-    }
-}
-
 /// One bucket of a caller's budget chain, with `remaining` micro-units (`None` = uncapped).
 fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_api::BudgetBucketState {
     busbar_api::BudgetBucketState {
@@ -1275,67 +1255,132 @@ fn composition(slice: &str) -> i32 {
     i32::from(verdict == "FAIL")
 }
 
-/// K-gap 1 — the realtime provider credential reaches the plane from the deployment's own catalog:
-/// the composition root hands over an origin plus the secret REFERENCE the provider entry declares,
-/// and the plane resolves it through the deployment's secret resolver. Without this, the mint and SDP
-/// passes are governed but have nothing to dial.
-fn probe_provider_credential() -> (&'static str, String) {
-    if busbar_voice::mount::provider_composed() {
-        return (
-            "FAIL",
-            "a provider was already composed before the probe ran".into(),
-        );
-    }
-    let reference = busbar_api::SecretRef::env("REALTIME_PROVIDER_KEY");
-    let resolver = OneSecretResolver {
-        expect: reference.clone(),
-        value: "sk-realtime-key-held-server-side".to_string(),
+/// BUILD THE DISPATCH SLOT THE WAY `appbuild` DOES — the ONE `BuildCtx` this binary constructs, so
+/// every leg that needs a built slot is handed a context of the same shape and a field added to the
+/// seam is added here once.
+fn built_slot(
+    sections: &[(&'static str, &dyn std::any::Any)],
+    upstreams: Option<&dyn busbar_substrate::plane::registry::UpstreamCatalog>,
+    public_url: &str,
+) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+    let ctx = busbar_substrate::plane::registry::BuildCtx {
+        mcp_slot: None,
+        sections,
+        composed: &[],
+        upstreams,
+        public_url: Some(public_url),
+        prior: None,
     };
-    // Fail closed: a reference this deployment does not declare composes nothing.
-    let undeclared = busbar_api::SecretRef::env("NOT_DECLARED_HERE");
-    if busbar_voice::mount::compose_provider("https://api.example.com", &undeclared, &resolver)
-        .is_ok()
-        || busbar_voice::mount::provider_composed()
-    {
+    busbar_voice::mount::voice_build(&ctx)
+}
+
+/// K-gap 1 — the realtime provider credential reaches the plane from the deployment's own catalog:
+/// the plane's own `build` is handed the deployment's model→upstream catalog and looks up the model
+/// ITS OWN declared section pins. Without this, the mint and SDP passes are governed but have
+/// nothing to dial — and with it composed process-wide instead, the SECOND node built in a process
+/// dialed the first node's endpoint.
+fn probe_provider_credential() -> (&'static str, String) {
+    /// The deployment's catalog: two declared models on two providers, and one whose credential
+    /// reference this deployment's resolver refuses (the fail-closed case).
+    struct Catalog;
+    impl busbar_substrate::plane::registry::UpstreamCatalog for Catalog {
+        fn upstream_for_model(
+            &self,
+            model: &str,
+        ) -> Result<Option<busbar_substrate::plane::registry::ResolvedUpstream>, String> {
+            let (base_url, api_key) = match model {
+                "model-a" => (
+                    "https://api.example.com",
+                    "sk-realtime-key-held-server-side",
+                ),
+                "model-b" => ("https://other.example.com", "sk-other-key"),
+                "model-unresolvable" => {
+                    return Err("no such secret reference in this deployment".to_string())
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(busbar_substrate::plane::registry::ResolvedUpstream {
+                base_url: base_url.to_string(),
+                api_key: api_key.to_string(),
+            }))
+        }
+    }
+
+    type Door = busbar_voice::mount::VoiceMount;
+    fn node(model: Option<&str>) -> Option<std::sync::Arc<Door>> {
+        let mut written = busbar_voice::config::StreamsCfg::default();
+        written.session.model = model.map(str::to_string);
+        built_slot(
+            &[(busbar_voice::PLANE_DECL.config_section, &written)],
+            Some(&Catalog),
+            "https://gw.example.com",
+        )?
+        .downcast::<Door>()
+        .ok()
+    }
+
+    let Some(a) = node(Some("model-a")) else {
         return (
             "FAIL",
-            "an unresolvable credential reference still composed a provider".into(),
+            "a declared plane with an origin built no mount".into(),
+        );
+    };
+    let Some(b) = node(Some("model-b")) else {
+        return (
+            "FAIL",
+            "a declared plane with an origin built no mount".into(),
+        );
+    };
+    if a.provider_base_url() != Some("https://api.example.com") {
+        return ("FAIL", "the resolved origin is not the declared one".into());
+    }
+    // THE PROPERTY THE PROCESS-WIDE COMPOSE COULD NOT HOLD: a second node in the same process reads
+    // ITS OWN configuration's endpoint, not whichever endpoint was resolved first.
+    if b.provider_base_url() != Some("https://other.example.com") {
+        return (
+            "FAIL",
+            "the second node built in this process reads the first node's endpoint".into(),
         );
     }
-    // The declared reference resolves and composes the endpoint the mint / SDP passes read.
-    match busbar_voice::mount::compose_provider("https://api.example.com", &reference, &resolver) {
-        Ok(true) => {}
-        Ok(false) => {
+    // The second dialect is its own field, so one dialect's traffic cannot ride the other's credential.
+    if b.gemini_provider_base_url() != Some("https://other.example.com") {
+        return (
+            "FAIL",
+            "the second-dialect endpoint is not this generation's".into(),
+        );
+    }
+    // Fail closed: a declared model whose credential reference does not resolve composes nothing.
+    match node(Some("model-unresolvable")) {
+        Some(m) if m.provider_base_url().is_none() => {}
+        Some(_) => {
             return (
                 "FAIL",
-                "the first compose reported an existing endpoint".into(),
+                "an unresolvable credential reference still composed a provider".into(),
             )
         }
-        Err(e) => {
+        None => {
             return (
                 "FAIL",
-                format!("the declared credential did not resolve: {e}"),
+                "a declared plane with an origin built no mount".into(),
             )
         }
     }
-    if !busbar_voice::mount::provider_composed() {
-        return ("FAIL", "composing left the plane with no provider".into());
-    }
-    if busbar_voice::mount::composed_provider_base_url() != Some("https://api.example.com") {
-        return ("FAIL", "the composed origin is not the declared one".into());
-    }
-    // Set-once: a later caller cannot silently swap the deployment's credential out.
-    if busbar_voice::mount::compose_provider("https://other.example.com", &reference, &resolver)
-        != Ok(false)
-        || busbar_voice::mount::composed_provider_base_url() != Some("https://api.example.com")
-    {
-        return ("FAIL", "a second compose swapped the endpoint".into());
+    // A section that pins no model asks the catalog nothing.
+    match node(None) {
+        Some(m) if m.provider_base_url().is_none() => {}
+        Some(_) => return ("FAIL", "an unpinned section resolved a provider".into()),
+        None => {
+            return (
+                "FAIL",
+                "a declared plane with an origin built no mount".into(),
+            )
+        }
     }
     (
         "PASS",
-        "the declared provider reference resolves through the deployment's secret resolver and \
-         composes the endpoint the mint / SDP passes serve under (set-once; an unresolvable \
-         reference composes nothing)"
+        "each generation resolves the provider serving the model its OWN section pins, off the \
+         deployment's catalog and onto its own slot — two nodes in one process dial their own \
+         endpoints, and a reference that will not resolve composes nothing"
             .into(),
     )
 }
@@ -1781,13 +1826,7 @@ fn declared_base(name: &str) -> Option<&'static str> {
 }
 
 fn probe_gemini_live_route() -> (&'static str, String) {
-    let ctx = busbar_substrate::plane::registry::BuildCtx {
-        mcp_slot: None,
-        sections: &[],
-        public_url: Some("https://gw.conform.example.com"),
-        prior: None,
-    };
-    let Some(slot) = busbar_voice::mount::voice_build(&ctx) else {
+    let Some(slot) = built_slot(&[], None, "https://gw.conform.example.com") else {
         return ("FAIL", "voice_build produced no dispatch slot".into());
     };
 

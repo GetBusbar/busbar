@@ -22,10 +22,12 @@
 //! arrival, runs the governed session-open through [`crate::topology::begin_session`] /
 //! [`crate::topology::telephony::begin_telephony`] — which go through `run_gauntlet_session`
 //! (verify-strictly-before-charge). The two one-shot HTTP passes (`ek_` mint, SDP broker) reach the
-//! provider once one is composed ([`install_provider`]); the browser-sideband WS accept is
+//! provider once the deployment's own catalog resolved one for the model the section pins; the
+//! browser-sideband WS accept is
 //! control-only by design (media is peer-to-peer, see `crate::topology::webrtc`); the telephony and
-//! Gemini Live WS accepts DIAL the composed provider through [`crate::topology::dial_provider`] and
-//! proxy both sockets (see [`ws_accept`]) once one is composed. With no provider composed, every leg
+//! Gemini Live WS accepts DIAL the slot's own resolved provider through
+//! [`crate::topology::dial_provider`] and proxy both sockets (see [`ws_accept`]). With none resolved,
+//! every leg
 //! still governs and mounts — it serves the client socket only, exactly as documented in
 //! `docs/voice.md`.
 
@@ -117,9 +119,10 @@ fn session_scope_refusal() -> axum::response::Response {
 }
 
 /// A CONFIGURED PROVIDER ENDPOINT the one-shot mint / SDP-broker passes reach the realtime provider
-/// through — the base origin plus the real server-side key. Composed by the composition root through
-/// [`install_provider`]; a loopback test injects one directly into [`open_governed`] instead. The real
-/// key stays server-side: it authenticates only the busbar↔provider hop and never reaches a browser
+/// through — the base origin plus the real server-side key. RESOLVED PER GENERATION by the plane's own
+/// [`voice_build`], off the deployment's model/provider catalog, for the model this plane's own
+/// declared section pins; a loopback test injects one directly into [`open_governed`] instead. The key
+/// stays server-side: it authenticates only the busbar↔provider hop and never reaches a browser
 /// payload, and it is never rendered into any public accessor here.
 pub(crate) struct ProviderEndpoint {
     /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
@@ -128,179 +131,46 @@ pub(crate) struct ProviderEndpoint {
     pub api_key: String,
 }
 
-/// THE COMPOSED REALTIME PROVIDER — the one endpoint the mint / SDP-broker passes dial, written once
-/// by the composition root and read by every route thereafter.
-///
-/// SET-ONCE, first writer wins, exactly like the composition root's other process-wide installs (the
-/// WS-accept arrivals, the hostless-egress driver). It is written after the deployment's config
-/// resolves — which is later than the per-generation dispatch slot is built — so the routes read it
-/// HERE rather than off the slot, and a config apply that rebuilds the slot cannot drop it.
-static COMPOSED_PROVIDER: std::sync::OnceLock<ProviderEndpoint> = std::sync::OnceLock::new();
-
-/// COMPOSE the realtime provider endpoint the mint / SDP-broker passes authenticate with — the
-/// composition root's one write of the voice plane's egress credential.
-///
-/// `base_url` is the provider origin and `api_key` the credential the deployment already resolved
-/// through its ordinary provider catalog and secret resolver — the plane's `streams:` grammar carries
-/// no credential field and gains none. Returns `false` when an endpoint was already composed (the
-/// first write stands), so a second caller is a no-op rather than a silent credential swap.
-pub fn install_provider(base_url: impl Into<String>, api_key: impl Into<String>) -> bool {
-    COMPOSED_PROVIDER
-        .set(ProviderEndpoint {
-            base_url: base_url.into(),
-            api_key: api_key.into(),
-        })
-        .is_ok()
-}
-
-/// COMPOSE the realtime provider endpoint from a provider-catalog entry — the form the composition
-/// root calls, so the plane resolves its own credential through the deployment's ordinary secret
-/// resolver rather than the root handing plaintext across.
-///
-/// `base_url` and `api_key` are the origin and the secret REFERENCE the deployment already declared
-/// for this provider in its provider catalog; `resolver` is the neutral secret-resolver seam (the
-/// same one every other credential in the deployment is resolved through, built-in `env`/`file` plus
-/// any `kind: secret` module). Fails closed with the resolver's own message: an unresolvable
-/// reference composes nothing, so the mint / SDP routes keep answering "no provider composed" rather
-/// than dialing with an empty credential. `Ok(false)` means an endpoint was already composed.
-pub fn compose_provider(
-    base_url: impl Into<String>,
-    api_key: &busbar_api::SecretRef,
-    resolver: &dyn busbar_api::SecretResolve,
-) -> Result<bool, String> {
-    let resolved = resolver.resolve_string(api_key)?;
-    Ok(install_provider(base_url, resolved))
-}
-
-/// The composed provider endpoint, or `None` when the composition root composed none — in which case
-/// the mint / SDP routes still answer "governed, but no provider credential composed".
-pub(crate) fn composed_provider() -> Option<&'static ProviderEndpoint> {
-    COMPOSED_PROVIDER.get()
-}
-
-/// Whether a realtime provider endpoint has been composed — i.e. whether the mint / SDP passes serve
-/// rather than answering "no provider composed". The credential itself is never exposed.
-#[must_use]
-pub fn provider_composed() -> bool {
-    COMPOSED_PROVIDER.get().is_some()
-}
-
-/// The composed provider's ORIGIN (never its key) — the non-secret half, for a boot log or a
-/// conformance probe that needs to confirm which endpoint this deployment composed.
-#[must_use]
-pub fn composed_provider_base_url() -> Option<&'static str> {
-    COMPOSED_PROVIDER.get().map(|p| p.base_url.as_str())
-}
-
-// ── THE SECOND DIALECT'S PROVIDER ENDPOINT (the second-dialect route) ─────────────────────────────────────────────────────
+// ── THE SECOND DIALECT'S PROVIDER ENDPOINT ───────────────────────────────────────────────────────
 //
-// The K1 provider seam above is single-endpoint and OpenAI-shaped: one `OnceLock`, one credential, one
-// `Authorization: Bearer` scheme. Gemini Live's provider hop authenticates with a DIFFERENT native
-// scheme (`x-goog-api-key`, never `Authorization`), so it cannot share the OpenAI endpoint without
-// silently reusing the wrong header shape. A second, independently-composed endpoint is the fix: same
-// set-once discipline, same fail-closed resolve, keyed to its own dialect rather than folded into the
-// first.
-
-/// A COMPOSED REALTIME PROVIDER — the ONE endpoint the Gemini Live route dials, written once by the
-/// composition root and read by [`ws_accept`] (via [`composed_gemini_provider`]) thereafter. SET-ONCE, first writer
-/// wins, exactly like [`COMPOSED_PROVIDER`] — a second compose is a no-op, never a silent swap.
-static COMPOSED_PROVIDER_GEMINI: std::sync::OnceLock<ProviderEndpoint> = std::sync::OnceLock::new();
-
-/// COMPOSE the Gemini Live provider endpoint the plane's Gemini route dials — the Gemini twin of
-/// [`install_provider`]. `api_key` is the RAW resolved credential (Gemini's native `x-goog-api-key`
-/// value, never wrapped as a bearer token); the plane never renders it into a public accessor.
-pub fn install_gemini_provider(base_url: impl Into<String>, api_key: impl Into<String>) -> bool {
-    COMPOSED_PROVIDER_GEMINI
-        .set(ProviderEndpoint {
-            base_url: base_url.into(),
-            api_key: api_key.into(),
-        })
-        .is_ok()
-}
-
-/// COMPOSE the Gemini Live provider endpoint from a provider-catalog entry — the Gemini twin of
-/// [`compose_provider`]: resolves `api_key` through the deployment's neutral secret resolver and fails
-/// closed (composes nothing) on an unresolvable reference.
-pub fn compose_gemini_provider(
-    base_url: impl Into<String>,
-    api_key: &busbar_api::SecretRef,
-    resolver: &dyn busbar_api::SecretResolve,
-) -> Result<bool, String> {
-    let resolved = resolver.resolve_string(api_key)?;
-    Ok(install_gemini_provider(base_url, resolved))
-}
-
-/// The composed Gemini Live provider endpoint, or `None` when the composition root composed none.
-pub(crate) fn composed_gemini_provider() -> Option<&'static ProviderEndpoint> {
-    COMPOSED_PROVIDER_GEMINI.get()
-}
-
-/// Whether a Gemini Live provider endpoint has been composed.
-#[must_use]
-pub fn gemini_provider_composed() -> bool {
-    COMPOSED_PROVIDER_GEMINI.get().is_some()
-}
-
-/// The composed Gemini provider's ORIGIN (never its key).
-#[must_use]
-pub fn composed_gemini_provider_base_url() -> Option<&'static str> {
-    COMPOSED_PROVIDER_GEMINI.get().map(|p| p.base_url.as_str())
-}
+// Gemini Live's provider hop authenticates with a DIFFERENT native scheme (`x-goog-api-key`, never
+// `Authorization`), so it cannot share the first dialect's endpoint without silently reusing the
+// wrong header shape. Both are resolved per generation on the slot ([`VoiceMount::provider`] /
+// [`VoiceMount::gemini_provider`]) — separate fields, so a deployment cannot point one dialect's
+// traffic at the other's credential, and a config apply that renames the model moves both.
 
 // ── THE NODE'S OPEN-CALL TABLE, AS A SERVED SESSION REACHES IT ───────────────────────────────────
 //
 // The runtime declares the port (`crate::runtime::GovernedCalls`) and a composition root implements
 // it over its own node. Between the two there was nothing: the port existed, an implementor existed,
 // and no served session was ever handed one — so the whole tool-moat wait was reachable from a test
-// and from nowhere on a socket. This is the missing half, and it is composed exactly the way this
-// plane's provider credentials are: set-once, process-wide, written by the root after its own
-// configuration resolves and read by every session opened thereafter.
-
-/// THE COMPOSED OPEN-CALL TABLE — the node's own, as the served path is allowed to see it.
-///
-/// SET-ONCE, first writer wins, exactly like [`COMPOSED_PROVIDER`]: a second compose is a no-op
-/// rather than a silent swap of the table one half of this node's live sessions are already keyed
-/// into. `None` is a deployment with no composition root behind it (the plane mounted without the
-/// root's own switch), and that deployment keeps the pre-1.6.0 behaviour exactly.
-static COMPOSED_GOVERNED_CALLS: std::sync::OnceLock<Arc<dyn crate::runtime::GovernedCalls>> =
-    std::sync::OnceLock::new();
+// and from nowhere on a socket. The table now crosses on the SLOT, handed in by the root through the
+// plane-build seam ([`busbar_substrate::plane::registry::BuildCtx::composed`]), which is what makes
+// "which table this door was handed" a fact of the generation the door belongs to rather than of
+// whichever writer got to a process-wide cell first.
 
 /// The identifier the next served session is known to the node's table by.
 ///
 /// Minted here rather than derived from anything on the wire. The root keys its open calls by this
 /// number and two conversations may legitimately carry identical call identifiers — a provider mints
-/// them per conversation — so the one thing this number must be is unique per session on this node,
-/// which a counter is and a hash of a client-supplied `call_id` is not.
+/// them per conversation — so the one thing this number must be is unique per session ON THIS NODE,
+/// which is a PROCESS fact and not a generation one: a counter that restarted with each config apply
+/// would hand a live session's identifier to a new one. That is why this one stays a process-wide
+/// counter while the table it names sessions into moved onto the slot.
 static NEXT_SERVED_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// COMPOSE the node's open-call table — the composition root's one write of the governed-call port.
-///
-/// Returns `false` when a table was already composed (the first write stands). Nothing here learns
-/// what is behind the port: the root holds the node, the units and the deadlines, and what crosses is
-/// the two questions [`crate::runtime::GovernedCalls`] declares.
-pub fn install_governed_calls(calls: Arc<dyn crate::runtime::GovernedCalls>) -> bool {
-    COMPOSED_GOVERNED_CALLS.set(calls).is_ok()
-}
-
-/// Whether a composition root has bound its open-call table — i.e. whether the sessions this door
-/// serves are the governed kind.
-#[must_use]
-pub fn governed_calls_composed() -> bool {
-    COMPOSED_GOVERNED_CALLS.get().is_some()
-}
-
 /// THE BINDING ONE SERVED SESSION OPENS UNDER: a fresh identifier for this node's table, and the
-/// table itself.
+/// table itself as the slot was handed it.
 ///
 /// Every served session-open on this door calls this and hands what it returns to the open, which is
-/// what makes "served" and "governed" the same set on a composed node. `None` on a node with no
-/// table composed — an ungoverned deployment serves exactly what it served before.
-#[must_use]
-pub fn served_governed_session() -> Option<crate::runtime::GovernedSession> {
-    let calls = COMPOSED_GOVERNED_CALLS.get()?;
+/// what makes "served" and "governed" the same set on a composed node. `None` on a node whose slot
+/// was handed no table — an ungoverned deployment serves exactly what it served before.
+fn bind_served_session(
+    calls: Option<Arc<dyn crate::runtime::GovernedCalls>>,
+) -> Option<crate::runtime::GovernedSession> {
     Some(crate::runtime::GovernedSession {
         session: NEXT_SERVED_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        calls: Arc::clone(calls),
+        calls: calls?,
     })
 }
 
@@ -365,27 +235,58 @@ pub struct VoiceMount {
     /// each route rebinds the money hop onto the live host lease (`build_runtime_hosted`) once a
     /// request hands it an engine host, so a served session reserves against the caller's real grant.
     runtime: Arc<VoiceRuntime>,
-    /// A per-slot provider endpoint override — `None` in every built slot, because the composition
-    /// root composes the provider process-wide ([`install_provider`]) AFTER the slot is built. Kept as
-    /// a field so a loopback test can inject one directly into [`open_governed`].
-    ///
-    /// The Gemini Live provider has NO per-slot override twin: unlike the OpenAI mint/SDP one-shot
-    /// passes (which take a request-scoped `Option<&ProviderEndpoint>` a test can construct locally,
-    /// see [`GovernedOpen::provider`]), the Gemini leg is a WS accept whose `on_socket` closure must be
-    /// `'static` — so it reads the process-wide [`composed_gemini_provider`] directly rather than
-    /// through the (non-`'static`) mount, and there is no request-scoped path to override on.
+    /// THIS GENERATION'S FIRST-DIALECT PROVIDER ENDPOINT — the origin and resolved credential of the
+    /// upstream serving the model this slot's own declared section pins, resolved at
+    /// [`voice_build`] off the deployment's catalog. `None` when the section pins no model, the
+    /// deployment declares no such model, or its credential reference did not resolve (fail closed) —
+    /// in which case the mint / SDP passes answer "governed, but no provider composed", exactly as
+    /// they always did on an uncomposed deployment.
     provider: Option<ProviderEndpoint>,
+    /// THIS GENERATION'S SECOND-DIALECT PROVIDER ENDPOINT — the Gemini Live twin of [`Self::provider`],
+    /// held as its own field so a deployment cannot silently point one dialect's traffic at the
+    /// other's credential (the two hops authenticate with different native schemes). The section still
+    /// names ONE model, so today both are resolved from the SAME catalog entry; a deployment that
+    /// fronts the second dialect through a distinct provider needs a second knob to name it.
+    gemini_provider: Option<ProviderEndpoint>,
+    /// THE NODE'S OPEN-CALL TABLE this slot's served sessions are bound into, as the composition root
+    /// handed it across [`busbar_substrate::plane::registry::BuildCtx::composed`] — or carried off the
+    /// PRIOR generation's slot on a config apply the outer root is not in the call for. `None` is a
+    /// deployment with no composition root behind it, which serves exactly what it always served.
+    governed_calls: Option<Arc<dyn crate::runtime::GovernedCalls>>,
 }
 
 impl VoiceMount {
-    /// The realtime provider endpoint this mount's routes dial: the slot's own override when one was
-    /// injected, else the one the composition root composed. `None` on a deployment that composed no
-    /// provider, in which case the mint / SDP passes answer "governed, but no provider composed".
+    /// The first-dialect realtime provider endpoint this mount's routes dial — this generation's, off
+    /// the slot. `None` on a deployment that resolved none, in which case the mint / SDP passes answer
+    /// "governed, but no provider composed".
     fn provider(&self) -> Option<&ProviderEndpoint> {
-        match self.provider.as_ref() {
-            Some(p) => Some(p),
-            None => composed_provider(),
-        }
+        self.provider.as_ref()
+    }
+
+    /// THE BINDING one served session on THIS slot opens under — a fresh identifier for this node's
+    /// table, and the table this generation was handed. `None` on a slot the root composed no table
+    /// for, which serves exactly what an ungoverned deployment always served.
+    ///
+    /// Public because the composition root's OWN cells judge this join from outside the crate: the
+    /// root composes a table and needs to read back that the door it mounted was handed that table
+    /// and no other.
+    #[must_use]
+    pub fn served_session(&self) -> Option<crate::runtime::GovernedSession> {
+        bind_served_session(self.governed_calls.clone())
+    }
+
+    /// THE PROVIDER ORIGIN this slot dials, never its key — the non-secret half, for a boot log or a
+    /// conformance probe that needs to confirm which endpoint THIS generation resolved.
+    #[must_use]
+    pub fn provider_base_url(&self) -> Option<&str> {
+        self.provider.as_ref().map(|p| p.base_url.as_str())
+    }
+
+    /// The SECOND DIALECT's provider origin this slot dials, never its key — the twin of
+    /// [`Self::provider_base_url`], separate because the two endpoints are.
+    #[must_use]
+    pub fn gemini_provider_base_url(&self) -> Option<&str> {
+        self.gemini_provider.as_ref().map(|p| p.base_url.as_str())
     }
 }
 
@@ -520,15 +421,70 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
         }
         None => return None,
     };
+    // THIS GENERATION'S UPSTREAM, resolved HERE, from the two facts this plane is allowed to hold: the
+    // model its OWN section pins, and the deployment's own model/provider catalog handed across the
+    // build seam. The declared grammar carries no credential field and gains none — the provider is
+    // the one already serving the model the section targets, resolved through the same secret seam
+    // every other lane's key is. A section that pins no model resolves nothing.
+    let upstream = streams
+        .session
+        .model
+        .as_deref()
+        .and_then(|model| match ctx.upstream_for_model(model) {
+            Ok(found) => found,
+            // FAIL CLOSED, in the plane's own words: the operator DID declare this credential and it
+            // will not resolve, which is worth saying rather than leaving the routes mysteriously
+            // uncomposed. Nothing is composed, so the passes keep answering "no provider composed"
+            // instead of dialing with an empty credential.
+            Err(e) => {
+                tracing::warn!(
+                    section = crate::PLANE_DECL.config_section,
+                    "voice: the realtime provider credential did not resolve, so this generation's \
+                     mint, SDP and Gemini routes stay uncomposed: {e}"
+                );
+                None
+            }
+        })
+        .map(|resolved| ProviderEndpoint {
+            base_url: resolved.base_url,
+            api_key: resolved.api_key,
+        });
     let mount = VoiceMount {
         audience,
         resource_metadata,
         runtime: Arc::new(dispatch_runtime(&streams)),
-        // No per-slot override: the composed provider is read process-wide at request time, because the
-        // composition root composes it only after the deployment's config resolves (see the field doc).
-        provider: None,
+        // BOTH DIALECTS off the one resolved entry, in two fields rather than one: the section names
+        // a single model today, and the day it names two the second reads its own catalog entry here
+        // without any route learning that it moved.
+        gemini_provider: upstream.as_ref().map(|p| ProviderEndpoint {
+            base_url: p.base_url.clone(),
+            api_key: p.api_key.clone(),
+        }),
+        provider: upstream,
+        // THE NODE'S TABLE: the root's own, handed in for this generation — or, on an apply the outer
+        // root is not in the call for, the one the PRIOR generation's slot was handed, so a config
+        // reload does not quietly ungovern every session opened after it.
+        governed_calls: ctx
+            .composed(crate::PLANE_DECL.config_section)
+            .and_then(|port| port.downcast_ref::<Arc<dyn crate::runtime::GovernedCalls>>())
+            .cloned()
+            .or_else(|| carried_governed_calls(ctx)),
     };
     Some(Arc::new(mount))
+}
+
+/// THE PRIOR GENERATION'S OPEN-CALL TABLE, off its own slot — what a config APPLY carries forward.
+///
+/// An in-core apply rebuilds every plane's slot without the outer composition root in the call, so the
+/// port it composed at boot is not offered again. Carrying it here is the move every plane with
+/// accumulated coordination already makes off `prior`, and it is what the set-once static this
+/// replaced was actually bought for: a reload must not ungovern the sessions opened after it.
+fn carried_governed_calls(ctx: &BuildCtx) -> Option<Arc<dyn crate::runtime::GovernedCalls>> {
+    ctx.prior?
+        .plane_slot(crate::PLANE_DECL.key)?
+        .downcast_ref::<VoiceMount>()?
+        .governed_calls
+        .clone()
 }
 
 /// The per-generation session runtime the dispatch slot carries. Seeded with the operator's own
@@ -1286,11 +1242,11 @@ fn redact_url_credentials(msg: &str) -> String {
 ///
 /// EVERY SERVED SESSION IS A GOVERNED SESSION: all three legs below — the dialed proxy, the
 /// uplink-only fallback and the WebRTC sideband — take their binding from
-/// [`served_governed_session`], which mints this session's identifier and hands it the node's own
-/// open-call table. That is the join the tool moat was missing: the composition root entered a wait
-/// where it planned a call's leg, and until this binding existed there was nothing on a socket that
-/// could wake it or sweep it. A deployment with no root composed reads `None` here and keeps exactly
-/// the behaviour it had.
+/// [`bind_served_session`], which mints this session's identifier and hands it the node's own
+/// open-call table AS THIS SLOT WAS HANDED IT. That is the join the tool moat was missing: the
+/// composition root entered a wait where it planned a call's leg, and until this binding existed there
+/// was nothing on a socket that could wake it or sweep it. A deployment with no root composed reads
+/// `None` here and keeps exactly the behaviour it had.
 pub(crate) async fn ws_accept<C>(
     arrival: WsArrival,
     ingress: Ingress,
@@ -1396,15 +1352,21 @@ where
     let meter = vkey.clone().map(|k| {
         crate::runtime::metering::TurnMeter::new(Arc::clone(&host), k, FRONT_DOOR_POOL, dialect)
     });
-    // The composed provider FOR THIS LEG'S DIALECT — read off the PROCESS-WIDE composed statics
-    // directly (not `mount.provider()`/`mount.gemini_provider()`, whose per-slot override is borrowed
-    // from `mount` and so cannot outlive it) so the `'static` `on_socket` closure below captures a
-    // plain `Option<&'static ProviderEndpoint>` rather than a reference into the (non-'static) `arrival`
-    // this fn is about to move out of.
+    // The provider FOR THIS LEG'S DIALECT and the node's table, both taken OFF THIS SLOT — the
+    // generation's own facts, CLONED into owned values so the `'static` `on_socket` closure below
+    // carries them rather than a borrow of the (non-`'static`) `arrival` this fn is about to move out
+    // of. That clone is the whole reason these used to be process-wide statics; it costs two strings
+    // and an `Arc` per accepted socket, and it buys a door that dials what its own generation
+    // resolved.
     let provider = match ingress {
-        Ingress::Gemini => composed_gemini_provider(),
-        _ => composed_provider(),
-    };
+        Ingress::Gemini => mount.gemini_provider.as_ref(),
+        _ => mount.provider.as_ref(),
+    }
+    .map(|p| ProviderEndpoint {
+        base_url: p.base_url.clone(),
+        api_key: p.api_key.clone(),
+    });
+    let calls = mount.governed_calls.clone();
     accept_gauntlet(
         arrival.upgrade,
         gauntlet_req,
@@ -1424,7 +1386,7 @@ where
                         budget,
                         meter,
                         now,
-                        served_governed_session(),
+                        bind_served_session(calls.clone()),
                     ) {
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
@@ -1478,7 +1440,7 @@ where
                             budget,
                             meter,
                             now,
-                            served_governed_session(),
+                            bind_served_session(calls.clone()),
                         ) {
                             let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
                             serve_with_sweep(
@@ -1508,7 +1470,7 @@ where
                         budget,
                         meter,
                         now,
-                        served_governed_session(),
+                        bind_served_session(calls.clone()),
                     ) {
                         // THE FIRST SERVER EVENT, written before the pump takes the sink. GA opens
                         // with `session.created` and every other leg gets it by relaying the

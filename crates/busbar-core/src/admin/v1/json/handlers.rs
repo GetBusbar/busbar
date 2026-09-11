@@ -1677,7 +1677,10 @@ pub(crate) async fn reset_overlay_section(
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
-                    Some(&snapshot),
+                    crate::appbuild::Composition {
+                        ports: &[],
+                        prior: Some(&snapshot),
+                    },
                 )
             })
             .map_err(AdminError::Validation)?;
@@ -2377,7 +2380,10 @@ pub(crate) fn rebuild_app_from_disk(
         base_hook_names,
         base_group_names,
         (Some(config_path), Some(providers_path)),
-        Some(current.as_ref()),
+        crate::appbuild::Composition {
+            ports: &[],
+            prior: Some(current.as_ref()),
+        },
     )
 }
 
@@ -2624,7 +2630,10 @@ pub(crate) async fn apply_config(
                             snapshot.config_path.clone(),
                             snapshot.providers_path.clone(),
                         ),
-                        Some(&snapshot),
+                        crate::appbuild::Composition {
+                            ports: &[],
+                            prior: Some(&snapshot),
+                        },
                     )
                 })
                 .map_err(AdminError::Validation)?;
@@ -3154,7 +3163,10 @@ pub(crate) async fn put_config_settings(
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
-                    Some(&snapshot),
+                    crate::appbuild::Composition {
+                        ports: &[],
+                        prior: Some(&snapshot),
+                    },
                 )
             })
             .map_err(AdminError::Validation)?;

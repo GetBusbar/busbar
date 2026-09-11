@@ -55,6 +55,31 @@ pub struct BuildCtx<'a> {
     /// because every entry is borrowed from the resolved config and consumed synchronously in this
     /// one fold.
     pub sections: &'a [(&'static str, &'a dyn std::any::Any)],
+    /// EVERY PLANE'S ROOT-COMPOSED PORT for this process, keyed by the section key that plane's
+    /// declaration carries in [`PlaneDecl::config_section`] and TYPE-ERASED as `Arc<dyn Any>` — the
+    /// seam a plane is handed a RUNTIME OBJECT the composition root built and the plane cannot build
+    /// for itself (a node's table, an outbound driver), so the root hands it ACROSS the composition
+    /// instead of writing it into process-global state the plane reads back behind the composition's
+    /// back. A plane looks up its own key and downcasts inside its own module, exactly as it does for
+    /// [`Self::sections`]; a key it did not declare is a key it has no type for.
+    ///
+    /// EMPTY on a generation the root composed nothing for — an in-core config APPLY rebuilds every
+    /// slot without the outer root in the call, and the plane carries its port forward off
+    /// [`Self::prior`] there rather than losing it, which is the one thing the set-once statics this
+    /// replaced were bought for.
+    pub composed: &'a [(
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )],
+    /// THE DEPLOYMENT'S MODEL→UPSTREAM CATALOG, as a plane's `build` may read it — the ONE seam a
+    /// plane whose own section PINS A MODEL resolves that model's origin and credential through, so a
+    /// plane's egress endpoint is a fact of the generation it was built for rather than a process-wide
+    /// write that a later config apply cannot move. `None` in a build with no catalog behind it (a
+    /// hand-built context in a cell), which every reader takes as "no upstream resolved".
+    ///
+    /// `models:`/`providers:` are CORE-OWNED sections, so this names no plane: the catalog answers the
+    /// same question for whoever asks it, and the plane supplies the model name its own grammar pinned.
+    pub upstreams: Option<&'a dyn UpstreamCatalog>,
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
     /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
@@ -79,6 +104,66 @@ impl<'a> BuildCtx<'a> {
             .find(|(key, _)| *key == config_section)
             .map(|(_, section)| *section)
     }
+
+    /// THIS PLANE'S OWN ROOT-COMPOSED PORT, by the key its declaration carries — the one read of
+    /// [`Self::composed`]. `None` when the root composed nothing for this plane in this generation,
+    /// which a plane reads as "carry what the prior generation was handed, or run ungoverned exactly
+    /// as a deployment with no root behind it always did".
+    #[must_use]
+    pub fn composed(
+        &self,
+        config_section: &str,
+    ) -> Option<&'a std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        self.composed
+            .iter()
+            .find(|(key, _)| *key == config_section)
+            .map(|(_, port)| port)
+    }
+
+    /// THE UPSTREAM this plane's own section pinned, resolved through the deployment's catalog.
+    /// `Ok(None)` is "no catalog, or no such model in this deployment's `models:`"; `Err` is a model
+    /// that IS declared whose provider credential would not resolve — a fail-closed answer the plane
+    /// reports in its own words rather than dialing with an empty credential.
+    ///
+    /// # Errors
+    /// The catalog's own resolver message when the declared credential reference does not resolve.
+    pub fn upstream_for_model(&self, model: &str) -> Result<Option<ResolvedUpstream>, String> {
+        match self.upstreams {
+            Some(catalog) => catalog.upstream_for_model(model),
+            None => Ok(None),
+        }
+    }
+}
+
+/// AN UPSTREAM ENDPOINT THE COMPOSITION ROOT ALREADY RESOLVED — the origin of the provider serving a
+/// model, and the credential that authenticates the busbar↔provider hop.
+///
+/// The credential is the RESOLVED value, not the reference: it crossed the deployment's own secret
+/// resolver once, at the same point in the build every other upstream credential does. It stays
+/// server-side — nothing here renders it, and a plane that holds one is holding what its own dial
+/// needs and nothing a caller can see.
+#[derive(Clone, Debug)]
+pub struct ResolvedUpstream {
+    /// The provider origin (scheme + authority, e.g. `https://api.example.com`).
+    pub base_url: String,
+    /// The resolved provider credential, held server-side.
+    pub api_key: String,
+}
+
+/// THE DEPLOYMENT'S MODEL→UPSTREAM CATALOG — implemented by the composition over the resolved
+/// `models:`/`providers:` sections and the deployment's secret resolver, and read by a plane's `build`
+/// through [`BuildCtx::upstream_for_model`].
+///
+/// One question, and the plane supplies the model name: a plane whose grammar pins a model gets that
+/// model's origin and credential without a second copy of the provider catalog, a second parse of it,
+/// or a process-wide write the next config apply cannot move.
+pub trait UpstreamCatalog {
+    /// The upstream serving `model`. `Ok(None)` when the deployment declares no such model; `Err`
+    /// with the resolver's own message when it does and the credential reference will not resolve.
+    ///
+    /// # Errors
+    /// The secret resolver's message for a declared-but-unresolvable credential reference.
+    fn upstream_for_model(&self, model: &str) -> Result<Option<ResolvedUpstream>, String>;
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for

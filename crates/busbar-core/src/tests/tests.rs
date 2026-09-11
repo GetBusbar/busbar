@@ -2266,7 +2266,10 @@ fn fetch_cached_pin_boots_without_network() {
         std::collections::HashSet::new(),
         std::collections::HashSet::new(),
         (None, None),
-        None,
+        crate::appbuild::Composition {
+            ports: &[],
+            prior: None,
+        },
     );
     // Ok carries a non-Debug App; collapse to the Err string for the assert message.
     let err = res.err();
@@ -2496,7 +2499,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
             std::collections::HashSet::new(),
             std::collections::HashSet::new(),
             (None, None),
-            prior,
+            crate::appbuild::Composition { ports: &[], prior },
         )
         .expect("boot must succeed")
         .0

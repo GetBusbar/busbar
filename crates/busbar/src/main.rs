@@ -62,7 +62,7 @@ use axum::Router;
 use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
+    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, Composition, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 // Read only by the jemalloc idle-purge fallback below, which is itself
@@ -787,7 +787,9 @@ fn register_ws_arrivals() {
 /// before any reader because `--validate` reads them, and this reads configuration instead. It
 /// still answers before any listener is bound, which is the property the refusal is for.
 #[cfg(feature = "root-voice")]
-fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
+fn mount_root_voice(
+    limits: &busbar_substrate::config::limits::LimitsResolved,
+) -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
@@ -817,7 +819,7 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
     // the half of the plane that owns sockets reaches it through. Without this the seal composed a
     // node nothing on a socket could name — a client-served tool call's wait was entered where the
     // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
+    compose_voice_governed_calls()
 }
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
@@ -840,7 +842,7 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
 #[cfg(feature = "root-voice")]
-fn compose_voice_governed_calls() {
+fn compose_voice_governed_calls() -> std::sync::Arc<dyn busbar_voice::runtime::GovernedCalls> {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
 
     let durability = match root::durability::build(
@@ -873,7 +875,7 @@ fn compose_voice_governed_calls() {
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
         origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
     }));
-    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
+    std::sync::Arc::new(NodeCalls::new(node))
 }
 
 fn main() {
@@ -1304,23 +1306,33 @@ async fn run(data_workers: usize) {
     // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
-    mount_root_voice(&cfg.limits);
-    // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
-    // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
-    // the one already serving the model that section targets: `streams.session.model` names a model,
-    // the model names its provider, and that provider entry carries the origin and the secret
-    // reference every other lane's key is declared as. Captured here — before `cfg` moves into the
-    // build — and handed to the plane below, once the resolver that turns a reference into a
-    // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
-    // nothing about it changes.
-    #[cfg(feature = "plane-voice")]
-    let voice_provider = cfg
-        .plane_sections
-        .get(busbar_voice::PLANE_DECL.config_section)
-        .and_then(|parsed| busbar_voice::config::session_model(&**parsed))
-        .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
-        .and_then(|provider| cfg.providers.get(&provider))
-        .map(|p| (p.base_url.clone(), p.api_key.clone()));
+    let voice_calls = mount_root_voice(&cfg.limits);
+    // THE ROOT-COMPOSED PORTS this build hands across the plane-build seam, keyed by the OWNING
+    // PLANE'S config section. The voice node's open-call table is one: the root builds it (it is the
+    // root's node, its journal and its origin) and the plane cannot, so it crosses HERE, into the
+    // build that produces the plane's slot, rather than being written into a process-wide static
+    // after that slot already existed. Nothing plane-named is decided by the seam — the key is the
+    // decl's own section, and a build with the plane or the root switched off composes an empty list.
+    let composed_ports: Vec<(
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )> = {
+        #[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+        {
+            vec![(
+                busbar_voice::PLANE_DECL.config_section,
+                std::sync::Arc::new(voice_calls) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+            )]
+        }
+        #[cfg(not(all(feature = "root-voice", feature = "plane-voice")))]
+        {
+            // A root with no plane compiled in composed a table nothing can be handed; it is dropped
+            // here rather than carried, exactly as the plane's absence drops every other voice fact.
+            #[cfg(feature = "root-voice")]
+            drop(voice_calls);
+            Vec::new()
+        }
+    };
 
     // THE RELOAD HOOK, installed BEFORE the first app build below so the boot's own rate resolution
     // is the history's OPENING ENTRY and nothing has to read the configuration twice. That ordering
@@ -1356,43 +1368,13 @@ async fn run(data_workers: usize) {
         base_hook_names,
         base_group_names,
         (Some(config_path.clone()), Some(providers_path.clone())),
-        None,
+        Composition {
+            ports: &composed_ports,
+            prior: None,
+        },
     )
     .unwrap_or_else(|e| die(e));
     let app = Arc::new(boot_app);
-
-    // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference
-    // captured above and the deployment's own secret resolver, so the plane resolves its credential
-    // through the same seam every provider key is resolved through and its mint / SDP routes serve
-    // instead of answering "no provider composed". Silent on a deployment that captured nothing (no
-    // `streams:` block, no model pinned, or no such model/provider in the catalog) — the only line
-    // this can emit is a fail-closed warning when a reference the operator DID declare will not
-    // resolve, which is worth saying rather than leaving the routes mysteriously uncomposed.
-    #[cfg(feature = "plane-voice")]
-    if let Some((base_url, api_key)) = voice_provider {
-        if let Err(e) =
-            busbar_voice::mount::compose_provider(base_url.clone(), &api_key, &*app.secret_resolver)
-        {
-            tracing::warn!(
-                "voice: the realtime provider credential did not resolve, so the voice mint and SDP \
-                 routes stay uncomposed: {e}"
-            );
-        }
-        // K4: THE GEMINI LIVE ROUTE'S PROVIDER, composed under its OWN endpoint (a separate set-once
-        // slot, `x-goog-api-key` scheme) rather than reusing the OpenAI one's — a deployment cannot
-        // silently point one dialect's traffic at the other's credential. `streams:` still names ONE
-        // model, so today both endpoints are composed from the SAME resolved (origin, reference) pair;
-        // a deployment that fronts Gemini Live through a distinct provider entry needs a second
-        // `streams:` knob to name it, which is not this cycle's grammar change (see docs/voice.md).
-        if let Err(e) =
-            busbar_voice::mount::compose_gemini_provider(base_url, &api_key, &*app.secret_resolver)
-        {
-            tracing::warn!(
-                "voice: the Gemini Live provider credential did not resolve, so the Gemini route \
-                 stays uncomposed: {e}"
-            );
-        }
-    }
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).

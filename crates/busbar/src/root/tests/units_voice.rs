@@ -1146,12 +1146,35 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
 fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
 
-    // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
-    // one place in the crate that writes it, and it writes it the way `main()` does.
-    crate::compose_voice_governed_calls();
-    let bound = busbar_voice::mount::served_governed_session()
+    // (1) THE ROOT'S OWN COMPOSITION, and the door it produces. The root builds its node's table the
+    // way `main()` does and hands it ACROSS the plane-build seam, keyed by the plane's own declared
+    // section — so what this cell reads back is the slot the composition actually mounted, not a
+    // process-wide cell whichever caller reached first.
+    let calls = crate::compose_voice_governed_calls();
+    let ports: [(
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ); 1] = [(
+        busbar_voice::PLANE_DECL.config_section,
+        std::sync::Arc::new(calls) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )];
+    let ctx = busbar_substrate::plane::registry::BuildCtx {
+        mcp_slot: None,
+        sections: &[],
+        composed: &ports,
+        upstreams: None,
+        public_url: Some("https://gw.example.com"),
+        prior: None,
+    };
+    let door = busbar_voice::mount::voice_build(&ctx)
+        .expect("a declared plane with a receiving origin mounts")
+        .downcast::<busbar_voice::mount::VoiceMount>()
+        .expect("the slot the plane builds is its own mount");
+    let bound = door
+        .served_session()
         .expect("after the root has mounted, every session the door opens is bound to a table");
-    let next = busbar_voice::mount::served_governed_session()
+    let next = door
+        .served_session()
         .expect("and so is the next one, on its own identifier");
     assert_ne!(
         bound.session, next.session,

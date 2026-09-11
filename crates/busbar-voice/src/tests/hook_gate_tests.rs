@@ -123,6 +123,8 @@ fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
     let ctx = busbar_substrate::plane::registry::BuildCtx {
         mcp_slot: None,
         sections: &[],
+        composed: &[],
+        upstreams: None,
         public_url: Some("https://voice.example"),
         prior: None,
     };

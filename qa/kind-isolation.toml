@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "599"
+count = "593"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1799"
+count = "1794"
 
 [[cell]]
 crate = "busbar"
@@ -3187,7 +3187,7 @@ count = "37"
 [[cell]]
 crate = "busbar-voice"
 kind = "api"
-count = "65"
+count = "49"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3202,7 +3202,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "718"
+count = "717"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3212,12 +3212,12 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "840"
+count = "838"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "secret"
-count = "13"
+count = "1"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3227,7 +3227,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "289"
+count = "286"
 
 [[cell]]
 crate = "busbar-voice-codec"
