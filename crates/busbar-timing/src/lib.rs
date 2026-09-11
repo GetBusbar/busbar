@@ -125,7 +125,6 @@ pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
 #[cfg(feature = "timing")]
 mod imp {
     use std::collections::HashMap;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
@@ -398,12 +397,20 @@ mod imp {
     }
 
     /// The `atexit(3)` handler. `atexit` takes a plain `extern "C"` fn pointer, so an unwind out of
-    /// this frame crosses into C — and the body reaches `eprintln!`, which CAN panic (a closed or
-    /// broken stderr on a shutting-down process is not exotic, and a poisoned lock elsewhere in the
-    /// dump path would do it too). Catching here keeps a failed diagnostic print at process exit a
-    /// failed diagnostic print, rather than an abort in the last moments of an otherwise clean run.
+    /// this frame crosses into C and takes the process down in the last moments of an otherwise
+    /// clean run.
+    ///
+    /// THE PANIC IS REMOVED RATHER THAN CAUGHT. This used to wrap the call in
+    /// `catch_unwind(AssertUnwindSafe(dump))`, which bought the same guarantee by standing an
+    /// unwind boundary in a crate that has no business owning one — the same pair of symbols that
+    /// is what lets a hold cross a `catch_unwind` anywhere else in the tree, here purely to survive
+    /// a failed print. So the dump path was made unable to panic instead: every lock it takes is
+    /// read through `into_inner` on poison, its one division is `checked_div`, and
+    /// [`print_table`] writes with `writeln!` to a locked stderr and DISCARDS the error rather than
+    /// reaching for `eprintln!`, which panics on a closed or broken stderr. There is nothing left
+    /// here to catch.
     extern "C" fn timing_atexit() {
-        let _ = catch_unwind(AssertUnwindSafe(dump));
+        dump();
     }
 
     /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed
@@ -532,21 +539,33 @@ mod imp {
     /// Render one `name -> MethodStat` map as the sorted table, largest `total` first. `count` is
     /// the headline column. Durations are auto-scaled (ns/us/ms). Emitted on stderr, like the stage
     /// profiler, so it never contaminates stdout.
+    ///
+    /// WRITTEN WITH `writeln!` TO A LOCKED STDERR, AND THE ERROR IS DISCARDED. `eprintln!` PANICS
+    /// when the write fails, and a closed or broken stderr on a shutting-down process is not
+    /// exotic; this is reached from the `atexit` handler, where a panic crosses into C. A
+    /// diagnostic table nobody can read is not a reason to abort the run that produced it. The lock
+    /// is taken once for the whole table, so the rows cannot interleave with another thread's.
     fn print_table(scope: &str, map: &ThreadRegistry) {
+        use std::io::Write;
+
+        let stderr = std::io::stderr();
+        let mut out = stderr.lock();
         if map.is_empty() {
-            eprintln!("BUSBAR_TIMING scope={scope} (no samples)");
+            let _ = writeln!(out, "BUSBAR_TIMING scope={scope} (no samples)");
             return;
         }
         let mut rows: Vec<(&&'static str, &MethodStat)> = map.iter().collect();
         rows.sort_by_key(|(_, s)| std::cmp::Reverse(s.total_ns));
-        eprintln!(
+        let _ = writeln!(
+            out,
             "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
             "name", "count", "total", "mean", "p50", "p99", "min", "max"
         );
         for (name, s) in rows {
             let mean = s.total_ns.checked_div(s.count).unwrap_or(0);
             let min = if s.min_ns == u64::MAX { 0 } else { s.min_ns };
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "BUSBAR_TIMING scope={scope}  {:<28} {:>10} {:>11} {:>10} {:>10} {:>10} {:>10} {:>10}",
                 name,
                 s.count,
