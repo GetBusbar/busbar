@@ -14,6 +14,52 @@ fn deny() -> super::super::MetadataSsrfPolicy<'static> {
     }
 }
 
+/// THE SEATED JUDGES these tests hand in. The mechanism no longer holds a predicate about an
+/// address: it is given a verdict and renders it, so what is proven here is the handing-over and
+/// the wording, and the predicate itself is proven where it now lives (the egress-auth unit's
+/// `token_endpoint` suite).
+fn admit(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::Admitted
+}
+
+/// A seat that refuses on the scheme.
+fn refuse_scheme(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::InsecureScheme
+}
+
+/// A seat that refuses a blocked cloud-metadata host, naming the host it blocked.
+fn refuse_metadata(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::BlockedMetadataHost {
+        host: "169.254.169.254".to_string(),
+    }
+}
+
+/// A seat that ANSWERS WITH THE POSTURE IT WAS HANDED. The bug this seam closed was a mechanism
+/// judging under a posture that was not the operator's (jwt-bearer ignored the deployment-global
+/// stance entirely, so a token endpoint an operator had allow-listed passed `--validate` and died
+/// at boot). The posture crossing the seam intact is therefore a property worth a case of its own,
+/// and this is the only way to see it from this side.
+fn echo_posture(
+    _url: &str,
+    ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::BlockedMetadataHost {
+        host: format!(
+            "allow={:?} all={} block={:?}",
+            ssrf.allow_overrides, ssrf.allow_all, ssrf.blocked_hosts
+        ),
+    }
+}
+
 /// The resolved `client_secret` NEVER appears in this struct's `Debug` (it is held
 /// `Redacted`). A `{:?}` of the exchange material must show `[REDACTED]`, not the secret.
 #[test]
@@ -38,9 +84,9 @@ fn client_secret_is_redacted_in_debug() {
 
 #[test]
 fn build_rejects_a_credential_without_a_colon() {
-    assert!(build("no-colon-here", "https://t", "s", &deny()).is_err());
-    assert!(build(":secret-only", "https://t", "s", &deny()).is_err());
-    assert!(build("id-only:", "https://t", "s", &deny()).is_err());
+    assert!(build("no-colon-here", "https://t", "s", &deny(), admit).is_err());
+    assert!(build(":secret-only", "https://t", "s", &deny(), admit).is_err());
+    assert!(build("id-only:", "https://t", "s", &deny(), admit).is_err());
 }
 
 // `validate_credential` is the standalone `--validate` dry-run entry point (unlike `build`, it
@@ -54,52 +100,93 @@ fn validate_credential_rejects_malformed_and_accepts_well_formed() {
     assert!(validate_credential("id:secret").is_ok());
 }
 
-// build() re-validates token_url for SSRF/https as defense-in-depth
-// (parity with jwt-bearer). A plaintext-http public token_url and a cloud-metadata/IMDS host are
-// rejected even with a well-formed credential; loopback http is allowed (local dev IdP).
+// build() puts the token_url past the seated judge as defense-in-depth (parity with jwt-bearer)
+// and REFUSES WITH THIS MECHANISM'S OWN WORDS: the field the operator wrote (`token_url`) and the
+// material at risk (the client_id/client_secret). A well-formed credential does not save it; an
+// admitted endpoint builds.
 #[test]
-fn build_rejects_unsafe_token_url() {
-    assert!(build("id:secret", "http://login.example.com/token", "s", &deny()).is_err());
-    assert!(build("id:secret", "https://169.254.169.254/token", "s", &deny()).is_err());
-    assert!(build("id:secret", "http://127.0.0.1:8080/token", "s", &deny()).is_ok());
-}
-
-// The boot-time token_url check MUST honor the operator's
-// metadata-host allow-overrides the SAME way config_validate does — else a config that
-// allow-lists a metadata host as its token endpoint passes `--validate` but dies at boot
-// (validate != apply). With the host allow-listed (or `allow_all`), build() must accept it.
-#[test]
-fn build_honors_metadata_allow_override_matching_validate() {
-    // Denied by default...
-    assert!(build("id:secret", "https://169.254.169.254/token", "s", &deny()).is_err());
-    // ...permitted when the operator allow-lists that exact host (per-provider or global union).
-    let allowed = ["169.254.169.254".to_string()];
-    let overridden = super::super::MetadataSsrfPolicy {
-        allow_overrides: &allowed,
-        allow_all: false,
-        blocked_hosts: &[],
-    };
-    assert!(build(
+fn build_refuses_the_token_url_the_seat_refuses_in_its_own_words() {
+    let e = build(
+        "id:secret",
+        "http://login.example.com/token",
+        "s",
+        &deny(),
+        refuse_scheme,
+    )
+    .err()
+    .expect("an insecure-scheme verdict must refuse the build");
+    assert_eq!(
+        e,
+        "oauth-client-credentials token_url must use https for a public host (got \
+         'http://login.example.com/token'); it receives the client_id/client_secret, so plaintext \
+         http is permitted only for a private/loopback endpoint"
+    );
+    let e = build(
         "id:secret",
         "https://169.254.169.254/token",
         "s",
-        &overridden
+        &deny(),
+        refuse_metadata,
+    )
+    .err()
+    .expect("a blocked-metadata verdict must refuse the build");
+    assert!(
+        e.starts_with(
+            "oauth-client-credentials token_url 'https://169.254.169.254/token' targets a blocked \
+             cloud-metadata host '169.254.169.254' (the client credentials would be POSTed there"
+        ),
+        "got: {e}"
+    );
+    assert!(build(
+        "id:secret",
+        "http://127.0.0.1:8080/token",
+        "s",
+        &deny(),
+        admit
     )
     .is_ok());
-    // ...and permitted under the nuclear allow_all_metadata.
-    let nuclear = super::super::MetadataSsrfPolicy {
-        allow_overrides: &[],
+}
+
+// The boot-time token_url check MUST be made under the operator's REAL posture — the same one
+// config_validate passes — else a config that allow-lists a metadata host as its token endpoint
+// passes `--validate` and dies at boot (validate != apply). The posture is no longer read here, so
+// what this proves is that all three fields cross the seam to the seat unaltered.
+#[test]
+fn build_hands_the_operators_real_posture_to_the_seat() {
+    let allowed = ["169.254.169.254".to_string()];
+    let extra_block = ["evil.example.com".to_string()];
+    let posture = super::super::MetadataSsrfPolicy {
+        allow_overrides: &allowed,
         allow_all: true,
-        blocked_hosts: &[],
+        blocked_hosts: &extra_block,
     };
-    assert!(build("id:secret", "https://169.254.169.254/token", "s", &nuclear).is_ok());
+    let e = build(
+        "id:secret",
+        "https://169.254.169.254/token",
+        "s",
+        &posture,
+        echo_posture,
+    )
+    .err()
+    .expect("the echo seat always refuses, so the posture it saw is readable");
+    assert!(
+        e.contains(r#"allow=["169.254.169.254"] all=true block=["evil.example.com"]"#),
+        "the seat did not receive the operator's posture; got: {e}"
+    );
 }
 
 #[test]
 fn build_accepts_a_secret_containing_a_colon() {
     // Only the FIRST colon splits id:secret, so a secret with colons is preserved. Constructed
     // outside a runtime, so no mint is spawned — this just checks the credential parse.
-    assert!(build("client-abc:secret:with:colons", "https://t", "s", &deny()).is_ok());
+    assert!(build(
+        "client-abc:secret:with:colons",
+        "https://t",
+        "s",
+        &deny(),
+        admit
+    )
+    .is_ok());
 }
 
 // `expires_in` must tolerate a JSON number, a numeric string (ADFS /

@@ -1497,6 +1497,10 @@ pub fn build_app_from_config(
         allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
         allow_all_metadata: cfg.allow_all_metadata,
         blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
+        // THE SEATED TOKEN-ENDPOINT JUDGEMENT, the same one `config_validate` hands the dry-run —
+        // the egress-auth unit's VERIFY step, so the self-minting OAuth mechanisms judge nothing
+        // about an address themselves and cannot drift apart from validate time.
+        token_endpoint_judge: crate::egress_auth::token_endpoint_judge,
         client_settings: llm_client_settings,
         // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
         // table — LLM-plane vocabulary, carried through the neutral carrier so the plane's

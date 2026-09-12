@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2145"
+count = "2152"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "10"
+count = "16"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2434,7 +2434,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "transport"
-count = "1140"
+count = "1138"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -3729,6 +3729,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-trust"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "the [[transitional]] row `busbar-core -> busbar-unit-*` at the head of this file — the legacy drain. This edge is the drain pointed the RIGHT way: core does not reach into the unit for a service, it hands the unit's judgement to a frozen crate that may not name it, and sheds a step it was carrying."
+why     = "busbar-core names busbar-unit-trust: declared normal in the shipped graph, 1 declaration(s) at this commit. The token-endpoint VERIFY judgement (is this URL one busbar may POST its OWN credential to) used to live inside busbar-substrate's two self-minting OAuth mechanisms, on the substrate's dying copy of the SSRF control; it is composed here now, on the SURVIVING copy — the one crates/busbar/tests/net_guard_extraction_parity.rs pins the dying one against — and handed to the mechanisms as a verdict they render. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "the twenty-line composition in busbar-core/src/egress_auth/mod.rs moves into busbar-unit-egress-auth (the egress-auth unit, where the VERIFY step belongs) on the first commit that can PAY for it: `loc-ceilings:unit-total` is pinned to its own measurement and carries no slack, and the step measures 31 lines. Until then the edge dies with this crate like every other row here."
 
 [[dep]]
 from    = "busbar-export-example-plugin"

@@ -115,6 +115,7 @@ pub(crate) fn build_runtime(
                 li.scope.as_deref(),
                 li.subject.as_deref(),
                 &ssrf,
+                input.token_endpoint_judge,
             )
             .unwrap_or_else(|e| panic!("provider for '{}' (jwt-bearer auth): {e}", li.model)),
             AuthStyleInput::OAuthClientCredentials => {
@@ -126,13 +127,19 @@ pub(crate) fn build_runtime(
                     .scope
                     .as_deref()
                     .expect("oauth-client-credentials lane requires scope (validated)");
-                egress_auth::oauth_client_credentials::build(&api_key, token_url, scope, &ssrf)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "provider for '{}' (oauth-client-credentials auth): {e}",
-                            li.model
-                        )
-                    })
+                egress_auth::oauth_client_credentials::build(
+                    &api_key,
+                    token_url,
+                    scope,
+                    &ssrf,
+                    input.token_endpoint_judge,
+                )
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "provider for '{}' (oauth-client-credentials auth): {e}",
+                        li.model
+                    )
+                })
             }
             other => egress_auth::resolve(protocol, provider_auth(other)),
         };

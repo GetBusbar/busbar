@@ -35,9 +35,10 @@ pub fn build(
     token_url: &str,
     scope: &str,
     ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
 ) -> Result<CredentialProviderArc, String> {
     let (client_id, client_secret) = split_credential(credential)?;
-    validate_token_url(token_url, ssrf)?;
+    validate_token_url(token_url, ssrf, judge)?;
     let creds = Arc::new(ClientCreds {
         client_id: client_id.to_string(),
         client_secret: busbar_api::Redacted::new(client_secret.to_string()),
@@ -77,39 +78,34 @@ pub fn validate_credential(credential: &str) -> Result<(), String> {
     split_credential(credential).map(|_| ())
 }
 
-/// Vet the `token_url` (the POST target for `client_id`/`client_secret`) for SSRF/https the same way
-/// `jwt_bearer::validate_token_uri` vets the SA `token_uri`: https for a public host (http only for a
-/// loopback/private endpoint), never a cloud-metadata/IMDS host UNLESS the operator allow-listed it.
-/// Called from [`build`] as defense-in-depth so the check holds even if a future caller reaches `build`
-/// without config_validate running first (the minter client already refuses redirects; this closes the
-/// direct-target case). The `ssrf` posture MUST be the operator's real one (provider+global
+/// RENDER the `token_url` verdict in this mechanism's own words — the POST target for
+/// `client_id`/`client_secret`, judged on exactly the terms `jwt_bearer`'s `token_uri` is judged on:
+/// https for a public host (http only for a loopback/private endpoint), never a cloud-metadata/IMDS
+/// host UNLESS the operator allow-listed it.
+///
+/// THE JUDGEMENT IS THE UNIT'S, seated by the composition as `judge` — the same one fn for both
+/// mechanisms, so "the same terms" is a fact about the code rather than a claim in a comment. Called
+/// from [`build`] as defense-in-depth so the check holds even if a future caller reaches `build`
+/// without config_validate running first (the minter client already refuses redirects; this closes
+/// the direct-target case). The `ssrf` posture MUST be the operator's real one (provider+global
 /// `allow_metadata_hosts`, `allow_all_metadata`, `blocked_metadata_hosts`) so this boot/reload check
 /// matches config_validate's validate-time check EXACTLY — else a token_url an operator legitimately
-/// allow-listed passes `--validate` but dies here at boot.
-fn validate_token_url(token_url: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
-    use crate::net_guard::{
-        extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
-    };
-    let host_private = extract_normalized_host(token_url)
-        .as_deref()
-        .map(host_is_private_or_loopback)
-        .unwrap_or(false);
-    if !(scheme_is(token_url, "https") || (host_private && scheme_is(token_url, "http"))) {
-        return Err(format!(
+/// allow-listed passes `--validate` but dies here at boot. Seating the SAME `judge` at both times is
+/// what holds that equality.
+fn validate_token_url(
+    token_url: &str,
+    ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
+) -> Result<(), String> {
+    match judge(token_url, ssrf) {
+        super::TokenEndpointVerdict::Admitted => Ok(()),
+        super::TokenEndpointVerdict::InsecureScheme => Err(format!(
             "oauth-client-credentials token_url must use https for a public host (got '{token_url}'); it receives the client_id/client_secret, so plaintext http is permitted only for a private/loopback endpoint"
-        ));
-    }
-    if let Some(host) = ssrf_blocked_host(
-        token_url,
-        ssrf.allow_overrides,
-        ssrf.allow_all,
-        ssrf.blocked_hosts,
-    ) {
-        return Err(format!(
+        )),
+        super::TokenEndpointVerdict::BlockedMetadataHost { host } => Err(format!(
             "oauth-client-credentials token_url '{token_url}' targets a blocked cloud-metadata host '{host}' (the client credentials would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
-        ));
+        )),
     }
-    Ok(())
 }
 
 impl ClientCreds {

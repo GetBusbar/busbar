@@ -56,8 +56,9 @@ pub fn build(
     scope_override: Option<&str>,
     subject: Option<&str>,
     ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
 ) -> Result<CredentialProviderArc, String> {
-    let (sa, key_pair) = parse_service_account(credential, ssrf)?;
+    let (sa, key_pair) = parse_service_account(credential, ssrf, judge)?;
 
     let signer = Arc::new(Signer {
         key_pair,
@@ -83,6 +84,7 @@ pub fn build(
 fn parse_service_account(
     credential: &str,
     ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
 ) -> Result<(ServiceAccount, ring::signature::RsaKeyPair), String> {
     let sa_json = read_credential(credential)?;
     let sa: ServiceAccount = serde_json::from_str(&sa_json)
@@ -91,7 +93,7 @@ fn parse_service_account(
     // same way oauth-client-credentials' token_url is vetted — https for a public host (http only for
     // loopback/private) and never a cloud-metadata/IMDS endpoint, honoring the operator's metadata
     // posture. The minter client already refuses redirects; this closes the direct-target case.
-    validate_token_uri(&sa.token_uri, ssrf)?;
+    validate_token_uri(&sa.token_uri, ssrf, judge)?;
     let der = pem_to_pkcs8_der(&sa.private_key)?;
     let key_pair = ring::signature::RsaKeyPair::from_pkcs8(&der)
         .map_err(|e| format!("service-account private_key is not a valid PKCS#8 RSA key: {e}"))?;
@@ -108,42 +110,43 @@ fn parse_service_account(
 pub fn validate_credential(
     credential: &str,
     ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
 ) -> Result<(), String> {
-    parse_service_account(credential, ssrf).map(|_| ())
+    parse_service_account(credential, ssrf, judge).map(|_| ())
 }
 
-/// Vet the service-account `token_uri` (the POST target for the signed assertion) with the same two
-/// guards `oauth-client-credentials`' `token_url` gets: a case-insensitive https requirement (http only
-/// for a loopback/private endpoint) and the shared cloud-metadata/IMDS denylist, honoring the operator's
-/// metadata posture (`ssrf`). The token_uri is not a per-provider config field, but the DEPLOYMENT-global
-/// posture still applies — a global `blocked_metadata_hosts` deny is enforced here and `allow_all_metadata`
-/// uniformly disables the guard, matching oauth-client-credentials (the two mechanisms were otherwise
-/// asymmetric: jwt ignored the global posture). Reuses `config_validate`'s SSRF primitives so this can
-/// never diverge from the config path (`config_validate` passes the identical `ssrf` at validate time).
-fn validate_token_uri(token_uri: &str, ssrf: &super::MetadataSsrfPolicy) -> Result<(), String> {
-    use crate::net_guard::{
-        extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
-    };
-    let host_private = extract_normalized_host(token_uri)
-        .as_deref()
-        .map(host_is_private_or_loopback)
-        .unwrap_or(false);
-    if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
-        return Err(format!(
+/// RENDER the service-account `token_uri` verdict in this mechanism's own words.
+///
+/// The two guards on the `token_uri` — a case-insensitive https requirement (http only for a
+/// loopback/private endpoint) and the shared cloud-metadata/IMDS denylist, under the operator's
+/// metadata posture (`ssrf`) — are the SAME two `oauth-client-credentials`' `token_url` gets, and
+/// they are JUDGED BY THE UNIT the composition seats as `judge`, not here: this mechanism holds no
+/// string predicate about an address any more. One judgement serves both mechanisms and every
+/// plane, so the two can no longer diverge the way they once did (jwt ignored the global posture
+/// entirely) — and the identical `judge` is seated at validate time and at boot/apply time, which
+/// is what makes `--validate` and apply the same check rather than two checks that agree today.
+///
+/// The token_uri is not a per-provider config field, but the DEPLOYMENT-global posture still
+/// applies: a global `blocked_metadata_hosts` deny is enforced and `allow_all_metadata` uniformly
+/// disables the guard.
+///
+/// WHAT IS STILL THIS MODULE'S is the sentence. A refusal has to name the field the operator
+/// actually wrote (`token_uri`, off the service-account JSON) and the material at risk (the signed
+/// JWT assertion); the verdict carries neither, on purpose.
+fn validate_token_uri(
+    token_uri: &str,
+    ssrf: &super::MetadataSsrfPolicy,
+    judge: super::TokenEndpointJudge,
+) -> Result<(), String> {
+    match judge(token_uri, ssrf) {
+        super::TokenEndpointVerdict::Admitted => Ok(()),
+        super::TokenEndpointVerdict::InsecureScheme => Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
-        ));
-    }
-    if let Some(host) = ssrf_blocked_host(
-        token_uri,
-        ssrf.allow_overrides,
-        ssrf.allow_all,
-        ssrf.blocked_hosts,
-    ) {
-        return Err(format!(
+        )),
+        super::TokenEndpointVerdict::BlockedMetadataHost { host } => Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
-        ));
+        )),
     }
-    Ok(())
 }
 
 impl Signer {

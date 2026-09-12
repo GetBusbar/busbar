@@ -317,6 +317,21 @@ pub struct PlaneBuildInput {
     pub allow_all_metadata: bool,
     /// The operator's extra metadata denylist (`security.blocked_metadata_hosts`).
     pub blocked_metadata_hosts: Vec<String>,
+    /// THE SEATED TOKEN-ENDPOINT JUDGEMENT for the two self-minting OAuth credentials
+    /// (`jwt-bearer`, `oauth-client-credentials`): given a token endpoint URL and the three posture
+    /// fields above, is this a URL busbar may POST its own credential to?
+    ///
+    /// Carried rather than decided anywhere on this path because the answer is the VERIFY half of
+    /// egress auth and belongs to a unit, while the mechanisms that need it live under the
+    /// plane's `build_runtime`. The composition seats it once and both mechanisms are handed the
+    /// same one, which is what makes the boot/apply check and the `--validate` dry-run the same
+    /// check.
+    ///
+    /// A bare `fn` pointer, so it is as neutral as every other field here: its argument and return
+    /// types are this crate's own (compiled ONCE for the workspace), and a pointer carries no
+    /// `TypeId`, so it crosses the `&dyn Any` downcast safely under the dual compile this carrier's
+    /// module doc describes.
+    pub token_endpoint_judge: crate::egress_auth::TokenEndpointJudge,
     /// The client-affecting resolved limits (warm-pool reuse key + client build inputs).
     pub client_settings: ClientSettingsInput,
     /// The cross-protocol translation seam's GLOBAL fallback max-output-tokens (`limits.default_max_tokens`),

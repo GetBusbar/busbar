@@ -31,6 +31,15 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE FIRST UNIT THIS CRATE NAMES, and it names it to SHED a step rather than to grow one. The
+# token-endpoint VERIFY judgement (is this URL one busbar may POST its OWN credential to) used to be
+# written inside the substrate's two self-minting OAuth mechanisms, on the substrate's dying copy of
+# the SSRF control; those mechanisms now render a verdict they are handed, and the verdict is
+# composed here on the SURVIVING copy of that control -- the one the extraction-parity gate pins.
+# This crate is where the operator's metadata posture is assembled, for both the `--validate`
+# dry-run and the boot/apply path, so this is where the judgement is seated. The edge is the legacy
+# drain the kind table grants by name, and it dies with this crate.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

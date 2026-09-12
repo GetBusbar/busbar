@@ -160,6 +160,45 @@ pub struct MetadataSsrfPolicy<'a> {
     pub blocked_hosts: &'a [String],
 }
 
+/// THE TOKEN-ENDPOINT VERDICT, handed BACK to this layer by whoever composed the lane.
+///
+/// A self-minting credential POSTs busbar's own authority — a signed service-account assertion, or
+/// a raw `client_id`/`client_secret` — to a configured token endpoint, so that endpoint has to be
+/// judged before the mint runs. THE JUDGEMENT IS NOT MADE HERE. It is the VERIFY half of egress
+/// auth, a string/address predicate over the URL and the operator's posture, which the composition
+/// seats and which is answered in ONE place for every scheme. What this layer keeps is the
+/// WORDING: the two mechanisms name different config fields (`token_uri` off a service-account
+/// JSON, `token_url` off the provider block) and different material at risk, and an operator can
+/// only act on a refusal that names the field they actually wrote.
+///
+/// So the verdict crossing the seam is a FACT with no sentence attached, on the same terms every
+/// other refusal fact in this tree travels: the decision in one place, the sentence at the site
+/// that knows what the operator typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenEndpointVerdict {
+    /// The endpoint may receive the credential.
+    Admitted,
+    /// Plaintext `http` to a public host, or no usable scheme at all.
+    InsecureScheme,
+    /// A blocked cloud-metadata / IMDS host the operator has not allow-listed.
+    BlockedMetadataHost {
+        /// The blocked host as the guard read it.
+        host: String,
+    },
+}
+
+/// THE JUDGEMENT HANDED IN THROUGH THIS PORT — the same shape a dialect's declared credential
+/// builder already arrives as (`ProtocolDecl::egress_auth_headers`): a plain `fn` pointer, seated
+/// by the composition, called by the mechanism that needs the answer.
+///
+/// A `fn` pointer rather than a trait object or a crate name for one reason: this layer must not
+/// NAME the unit that answers. The substrate is frozen and dissolving; it gains no dependency. It
+/// is handed a function, it calls it, and it renders what comes back. Both argument types and the
+/// return type are this crate's own, compiled ONCE for the workspace, so the pointer is safe to
+/// cross the type-erased plane-build carrier (the dual-compile hazard `PlaneBuildInput` documents
+/// is about `TypeId`, and a `fn` pointer carries none).
+pub type TokenEndpointJudge = fn(&str, &MetadataSsrfPolicy<'_>) -> TokenEndpointVerdict;
+
 /// Produces the outbound auth headers for a single upstream request.
 ///
 /// `key` is the per-request credential the caller resolved — the lane's configured key for

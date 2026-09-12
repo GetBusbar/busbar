@@ -1709,6 +1709,9 @@ impl TestApp {
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
+                // The same seat the boot path uses — a fixture that judged differently would be a
+                // fixture proving something the binary does not do.
+                token_endpoint_judge: crate::egress_auth::token_endpoint_judge,
                 client_settings: busbar_substrate::plane_host::ClientSettingsInput {
                     upstream_request_timeout_secs: self.upstream_request_timeout_secs,
                     pool_max_idle_per_host: 4,

@@ -44,58 +44,107 @@ fn deny() -> super::super::MetadataSsrfPolicy<'static> {
     }
 }
 
-// The SA JSON's token_uri is the POST target for the signed assertion,
-// so it gets the same https + cloud-metadata guards as oauth-client-credentials' token_url.
-#[test]
-fn validate_token_uri_requires_https_for_public_and_blocks_metadata() {
-    assert!(validate_token_uri("https://oauth2.googleapis.com/token", &deny()).is_ok());
-    // plaintext http to a public host would expose the assertion on the wire
-    assert!(validate_token_uri("http://oauth2.googleapis.com/token", &deny()).is_err());
-    // http to a loopback/private endpoint is permitted (a local token endpoint)
-    assert!(validate_token_uri("http://127.0.0.1:8080/token", &deny()).is_ok());
-    // cloud-metadata / IMDS is denied even over https (SSRF to the direct target)
-    assert!(validate_token_uri("https://metadata.google.internal/token", &deny()).is_err());
-    assert!(validate_token_uri("https://169.254.169.254/token", &deny()).is_err());
+/// THE SEATED JUDGES these tests hand in — see the sibling `oauth_client_credentials_tests` for
+/// why they are stubs: the mechanism holds no predicate about an address any more, so what is
+/// proven here is the handing-over and the wording. The predicate is proven in the egress-auth
+/// unit's `token_endpoint` suite, once, for both mechanisms.
+fn admit(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::Admitted
 }
 
-// jwt-bearer must honor the operator's DEPLOYMENT-global metadata posture
-// symmetrically with oauth-client-credentials — a global `blocked_metadata_hosts` deny is enforced on
-// the token_uri, and `allow_all_metadata` / an allow-override unblocks an otherwise-denied host.
+/// A seat that refuses on the scheme.
+fn refuse_scheme(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::InsecureScheme
+}
+
+/// A seat that refuses a blocked cloud-metadata host, naming the host it blocked.
+fn refuse_metadata(
+    _url: &str,
+    _ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::BlockedMetadataHost {
+        host: "169.254.169.254".to_string(),
+    }
+}
+
+/// A seat that answers with the posture it was handed, so the three posture fields can be seen to
+/// cross the seam intact. THE ASYMMETRY THIS CLOSED was exactly here: jwt-bearer ignored the
+/// deployment-global stance while oauth-client-credentials honoured it.
+fn echo_posture(
+    _url: &str,
+    ssrf: &super::super::MetadataSsrfPolicy<'_>,
+) -> super::super::TokenEndpointVerdict {
+    super::super::TokenEndpointVerdict::BlockedMetadataHost {
+        host: format!(
+            "allow={:?} all={} block={:?}",
+            ssrf.allow_overrides, ssrf.allow_all, ssrf.blocked_hosts
+        ),
+    }
+}
+
+// The SA JSON's token_uri is the POST target for the signed assertion, and it is judged by the
+// SAME seat oauth-client-credentials' token_url is. What is this module's is the SENTENCE: it names
+// `token_uri` (the field in the service-account JSON, not the provider block) and the signed JWT
+// assertion as the material at risk, because that is what an operator can act on.
 #[test]
-fn validate_token_uri_honors_operator_metadata_posture() {
-    // allow_all disables the guard uniformly (IMDS token_uri now permitted).
-    let nuclear = super::super::MetadataSsrfPolicy {
-        allow_overrides: &[],
-        allow_all: true,
-        blocked_hosts: &[],
-    };
-    assert!(validate_token_uri("https://169.254.169.254/token", &nuclear).is_ok());
-    // An explicit allow-override unblocks just that host.
+fn validate_token_uri_renders_the_seats_verdict_in_this_mechanisms_words() {
+    assert!(validate_token_uri("https://oauth2.googleapis.com/token", &deny(), admit).is_ok());
+    let e = validate_token_uri("http://oauth2.googleapis.com/token", &deny(), refuse_scheme)
+        .expect_err("an insecure-scheme verdict must refuse");
+    assert_eq!(
+        e,
+        "service-account token_uri must use https for a public host (got \
+         'http://oauth2.googleapis.com/token'); it receives the signed JWT assertion, so plaintext \
+         http is permitted only for a private/loopback endpoint"
+    );
+    let e = validate_token_uri("https://169.254.169.254/token", &deny(), refuse_metadata)
+        .expect_err("a blocked-metadata verdict must refuse");
+    assert!(
+        e.starts_with(
+            "service-account token_uri 'https://169.254.169.254/token' targets a blocked \
+             cloud-metadata host '169.254.169.254' (the signed assertion would be POSTed there"
+        ),
+        "got: {e}"
+    );
+}
+
+// jwt-bearer must judge under the operator's DEPLOYMENT-global metadata posture symmetrically with
+// oauth-client-credentials — the asymmetry that once existed was jwt ignoring it. It now cannot
+// differ, because neither mechanism reads the posture: both hand the same three fields to the same
+// seat. This proves they arrive unaltered.
+#[test]
+fn validate_token_uri_hands_the_operators_real_posture_to_the_seat() {
     let allowed = ["169.254.169.254".to_string()];
-    let override_one = super::super::MetadataSsrfPolicy {
-        allow_overrides: &allowed,
-        allow_all: false,
-        blocked_hosts: &[],
-    };
-    assert!(validate_token_uri("https://169.254.169.254/token", &override_one).is_ok());
-    // A global extra-deny is now ENFORCED on the token_uri (was ignored before the fix).
     let extra_block = ["evil.example.com".to_string()];
-    let blocked = super::super::MetadataSsrfPolicy {
-        allow_overrides: &[],
-        allow_all: false,
+    let posture = super::super::MetadataSsrfPolicy {
+        allow_overrides: &allowed,
+        allow_all: true,
         blocked_hosts: &extra_block,
     };
-    assert!(validate_token_uri("https://evil.example.com/token", &blocked).is_err());
+    let e = validate_token_uri("https://169.254.169.254/token", &posture, echo_posture)
+        .expect_err("the echo seat always refuses, so the posture it saw is readable");
+    assert!(
+        e.contains(r#"allow=["169.254.169.254"] all=true block=["evil.example.com"]"#),
+        "the seat did not receive the operator's posture; got: {e}"
+    );
 }
 
 // validate_credential is the config `--validate` dry-run entry point; it
 // must catch a malformed SA JSON and an SSRF token_uri without constructing the provider.
 #[test]
 fn validate_credential_rejects_malformed_json_and_ssrf_token_uri() {
-    assert!(validate_credential("not json", &deny()).is_err());
-    // Valid JSON, but token_uri targets IMDS → rejected before the key is even parsed.
+    assert!(validate_credential("not json", &deny(), admit).is_err());
+    // Valid JSON, but the seat refuses the token_uri → rejected BEFORE the key is even parsed, so
+    // the refusal an operator sees is the endpoint's and not a key-format complaint.
     let imds = r#"{"client_email":"x@y.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nSGVsbG8=\n-----END PRIVATE KEY-----\n","token_uri":"https://169.254.169.254/token"}"#;
-    let e = validate_credential(imds, &deny()).expect_err("IMDS token_uri must be rejected");
+    let e = validate_credential(imds, &deny(), refuse_metadata)
+        .expect_err("IMDS token_uri must be rejected");
     assert!(e.contains("metadata") || e.contains("169.254"), "got: {e}");
 }
 

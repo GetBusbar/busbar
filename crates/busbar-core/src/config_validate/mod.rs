@@ -2184,13 +2184,18 @@ fn validate_providers_with(
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
-                // so the token_uri SSRF check is identical at validate and apply time.
+                // AND the same seated judge, so the token_uri check is identical at validate and
+                // apply time — one predicate, one posture, two call sites.
                 let ssrf = crate::egress_auth::MetadataSsrfPolicy {
                     allow_overrides: &allow_overrides,
                     allow_all: cfg.allow_all_metadata,
                     blocked_hosts: &cfg.blocked_metadata_hosts,
                 };
-                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
+                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(
+                    &cred,
+                    &ssrf,
+                    crate::egress_auth::token_endpoint_judge,
+                ) {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()

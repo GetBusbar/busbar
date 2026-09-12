@@ -113,12 +113,42 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
-# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
-# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
-# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# TWO ENTRIES STAND HERE, and they describe ONE MOVE: the token-endpoint VERIFY judgement leaving
+# busbar-substrate. The substrate is frozen and dissolving, and the two self-minting OAuth
+# mechanisms it still hosts (`jwt-bearer`, `oauth-client-credentials`) were each judging a token
+# endpoint for themselves, on the substrate's own dying copy of the SSRF control. That judgement is
+# the VERIFY half of egress auth: it holds no socket and no clock, it is a string/address predicate,
+# and it belongs to a unit. The mechanisms now RENDER a verdict they are handed and hold no
+# predicate about an address at all; the verdict is composed in busbar-core -- the crate that
+# already assembles the operator's metadata posture for both the `--validate` dry-run and the
+# boot/apply path -- on busbar-unit-trust's `net`, the SURVIVING copy of that control.
+#
+# THE MOVE IS BY IDENTITY AND THE SOURCE FELL IN THIS COMMIT: the two `use crate::net_guard::{...}`
+# blocks and the two guard bodies are DELETED from busbar-substrate (its `× transport` cell falls
+# 1140 -> 1138 in the same edit, re-pinned DOWN below), and after it the substrate names `net_guard`
+# at ZERO of the two sites. What rises is the composition's new home saying the two things it now
+# has to say: the unit crate it composes on, and the scheme words the first guard is written in.
+# NOTHING in the substrate grew, and no new edge of any class was taken there -- the judgement
+# arrives as a `fn` pointer whose argument and return types are the substrate's own.
+#
+# WHY NOT THE UNIT CRATE ITSELF, which is where this step's home is. Measured: the step is 31
+# production lines and `loc-ceilings:unit-total` is pinned at 14476, which IS the base measurement --
+# zero slack -- so putting it in busbar-unit-egress-auth reds that ceiling and `loc-ceilings:union`
+# with it, and there is nothing in the unit crates to pay 31 lines with that the drain does not
+# still need. It is seated in the legacy crate that dies instead, with the drain written on the
+# `[[dep]]` row, and it moves the day a commit can pay for it.
+
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 16
+because = "busbar-core x unit: the token-endpoint VERIFY judgement left busbar-substrate's two self-minting OAuth mechanisms and is composed here, on busbar-unit-trust's net -- the surviving copy of the SSRF control, the one the extraction-parity gate pins the dying copy against. The six hits are the dependency line and the one `use` that names it; the substrate took no edge of any class and its own cell fell in the same commit."
+
+[gate.ceiling_raises."cell.73.count"]
+file = "qa/kind-isolation.toml"
+from = 2145
+to = 2152
+because = "busbar-core x transport: the same move's scheme words. The first of the two guards on a token endpoint is a TLS requirement, so its one predicate call and the three destinations its cases are written over spell a scheme out loud. These exact spellings were in busbar-substrate's two copies of the guard until this commit deleted them, which is why the substrate's own transport cell falls 1140 -> 1138 here."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
