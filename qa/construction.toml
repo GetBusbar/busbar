@@ -113,12 +113,30 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
-# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
-# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
-# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# The admin restart-note wire-byte lock (`test_admin_v1_config_settings_restart_note_wire_bytes`,
+# `test_admin_v1_config_settings_note_names_every_flagged_field`) is two new tests over busbar-core's
+# real PUT /config/settings admin surface. The avoidable prose ("admin surface" in one doc comment)
+# was drained before this declaration was written; both cells below are what is left once the
+# real route, the real header and the real golden wire text are the only things still naming it.
+[gate.ceiling_raises."cell.65.count"]
+file = "qa/kind-isolation.toml"
+from = 5521
+to = 5528
+because = "busbar-core × control: the two new wire-byte-lock tests for PUT /config/settings each drive the real /api/v1/admin/config/settings route under the file's own established test_admin_v1_config_settings_* naming, send the real x-admin-token header twice, and one doc comment cites the golden documented|changelog|admin-restart cell by its real name -- none of it prose, all of it the admin surface the tests exist to lock (5521 -> 5528)"
+
+[gate.ceiling_raises."cell.73.count"]
+file = "qa/kind-isolation.toml"
+from = 2145
+to = 2149
+because = "busbar-core × transport: each new test opens a real http://{addr} connection to exercise the endpoint, one asserts the literal tls_handshake_timeout_secs config field, and the golden restart note's own wire text names a TLS bind verbatim -- none of it is reword-able without breaking the byte-lock the commit exists to add (2145 -> 2149)"
+
+# NO OTHER ENTRY STANDS HERE TODAY, and an otherwise-empty list is this mechanism working rather
+# than resting. `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47
+# calibration while the commit that needed it was in flight. That commit LANDED: the base now
+# carries 47, the rise the row was written to excuse no longer exists, and `ceiling-rose` refused
+# the declaration as stale -- which is the expiry working exactly as the paragraph above describes
+# it. Striking it returns `construction` to its eight standing FAILs, none of which is about a
+# ceiling.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
