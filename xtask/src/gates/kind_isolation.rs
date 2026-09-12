@@ -930,6 +930,12 @@ struct DepEdge {
     cite: String,
     why: String,
     drain: String,
+    /// THE MINTED-DEP DOOR'S OWN FIELD, and the one this table's reader must treat as OPTIONAL:
+    /// absent on every row this tree carried before the door, present (the count the edge is born
+    /// at) on a row admitting a brand-new edge between two existing crates. See
+    /// `construction::ceilings::dep_admission`, which is the only reader that acts on it — this
+    /// table only has to carry it without dropping the row.
+    ceiling: Option<i64>,
 }
 
 /// One `[[question]]` row: the question an `owner-ruling-pending` edge is asking.
@@ -1081,6 +1087,70 @@ fn take_row(
         }
     }
     Some(out)
+}
+
+/// Like [`take_row`], but for a table that has grown an OPTIONAL field: legal absent, legal present
+/// with a value, illegal present and empty. `want` is read exactly as `take_row` reads it —
+/// mandatory, and returned POSITIONALLY, so every row written before the optional field existed
+/// keeps reading byte-identically and no caller's `v[N]` shifts. `optional` is read BY NAME instead,
+/// into the returned map, because a positional slot cannot mean "here, or not here at all" — the
+/// slot has to exist or not shift, and a name is the only address that survives a field's absence.
+///
+/// This is `ceiling`'s reader: the minted-dep door needs a `[[dep]]` row to carry it sometimes and
+/// not carry it every other time, and a table where `unknown-field` refuses it, or where adding it
+/// to `want` reindexes `verdict` into `count`'s old slot, cannot do either.
+fn take_row_opt(
+    fields: &[(String, String)],
+    want: &[&str],
+    optional: &[&str],
+    table: &str,
+    at: usize,
+    errors: &mut Vec<String>,
+) -> Option<(Vec<String>, BTreeMap<String, String>)> {
+    let mut out = Vec::new();
+    for key in want {
+        match fields.iter().find(|(k, _)| k == key) {
+            Some((_, v)) if !v.is_empty() => out.push(v.clone()),
+            Some(_) => {
+                errors.push(format!(
+                    "empty-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{key}` with an \
+                     empty value; every field of a row is part of the reason a human re-reads it"
+                ));
+                return None;
+            }
+            None => {
+                errors.push(format!(
+                    "missing-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` is missing `{key}`; the row \
+                     is not readable and a row nobody can read is not an exemption"
+                ));
+                return None;
+            }
+        }
+    }
+    let mut opt = BTreeMap::new();
+    for key in optional {
+        if let Some((_, v)) = fields.iter().find(|(k, _)| k == key) {
+            if v.is_empty() {
+                errors.push(format!(
+                    "empty-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{key}` with an \
+                     empty value; every field of a row is part of the reason a human re-reads it"
+                ));
+                return None;
+            }
+            opt.insert((*key).to_string(), v.clone());
+        }
+    }
+    for (k, _) in fields {
+        if !want.contains(&k.as_str()) && !optional.contains(&k.as_str()) {
+            errors.push(format!(
+                "unknown-field\t{REGISTRY_FILE}:{at}\t`[[{table}]]` declares `{k}`, which this \
+                 table has no meaning for — a field the gate does not read is a field that says \
+                 nothing"
+            ));
+            return None;
+        }
+    }
+    Some((out, opt))
 }
 
 /// Validate one accumulated row into the registry.
@@ -1454,9 +1524,10 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         // of its own, because a row whose `half` or whose `verdict` is a word this gate has no
         // meaning for is a row that would be silently scored against nothing.
         "dep" => {
-            let Some(v) = take_row(
+            let Some((v, opt)) = take_row_opt(
                 fields,
                 &["from", "to", "half", "count", "verdict", "cite", "why", "drain"],
+                &["ceiling"],
                 table,
                 at,
                 &mut reg.errors,
@@ -1491,6 +1562,20 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 ));
                 return;
             }
+            let ceiling = match opt.get("ceiling") {
+                Some(raw) => match raw.parse::<i64>() {
+                    Ok(c) => Some(c),
+                    Err(_) => {
+                        reg.errors.push(format!(
+                            "bad-count\t{REGISTRY_FILE}:{at}\t`[[dep]] ceiling = \"{raw}\"` is not \
+                             a number. A ceiling that cannot be compared to a measurement is not a \
+                             ceiling"
+                        ));
+                        return;
+                    }
+                },
+                None => None,
+            };
             reg.dep_edges.push(DepEdge {
                 from: v[0].clone(),
                 to: v[1].clone(),
@@ -1500,6 +1585,7 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 cite: v[5].clone(),
                 why: v[6].clone(),
                 drain: v[7].clone(),
+                ceiling,
             });
         }
         "face" => {
@@ -2352,6 +2438,25 @@ pub fn kind_of_crate(cx: &Ctx, name: &str) -> Option<&'static str> {
     census(cx).ok()?.into_iter().find(|c| c.name == name)?.kind
 }
 
+/// PUBLIC FOR THE MINTED-DEP DOOR: is `from -> to` a NAMED `[[transitional]]` drain exemption?
+///
+/// `busbar-core -> busbar-unit-*` is a standing exemption (owner ruling 2026-09-08) that
+/// `kind-isolation:deps` already accepts off exactly this table — see [`Transitional::covers`]. The
+/// minted-dep door asks the same question for the same reason `dep_class_verdict` reads
+/// `ARCHITECTURE_ALLOWED`/`ARCHITECTURE_TCB` rather than keeping its own copy: a transitional
+/// exemption is a GRANT with an expiry, not the absence of one, and a door that could not see it
+/// would refuse the very edge the drain is already carrying.
+///
+/// A read failure of [`REGISTRY_FILE`] answers `false` — the same "no admission" the door falls
+/// back to for any other reason a covering row cannot be found — rather than panicking a caller
+/// that is, on every other path, a pure classifier.
+pub fn transitional_covers(cx: &Ctx, from: &str, to: &str) -> bool {
+    let Ok(reg) = load_registry(cx) else {
+        return false;
+    };
+    reg.transitional.iter().any(|t| t.covers(from, to))
+}
+
 /// The verdict the architecture implies for a class, before anybody writes a sentence about it.
 fn verdict_for(class: &(String, String)) -> &'static str {
     let pair = (class.0.as_str(), class.1.as_str());
@@ -2895,6 +3000,12 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 "--- {} -> {} ({}, count {})\n    cite : {}\n    why  : {}\n    drain: {}",
                 r.from, r.to, r.verdict, r.count, r.cite, r.why, r.drain
             );
+            if let Some(ceiling) = r.ceiling {
+                // A row of the debt list carrying `ceiling` is a MINTED edge — the minted-dep door
+                // admitted it at this figure rather than at a first measurement, so the debt
+                // printout says so rather than reading like every other pre-existing row.
+                println!("    born : minted at ceiling {ceiling}");
+            }
         }
         let mut asked: Vec<&DepQuestion> = reg
             .dep_questions
@@ -6703,6 +6814,49 @@ impl Gate for KindIsolationGate {
                     "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"\"\nunused  = \"",
                 ),
                 &["empty-field", "cite"],
+            ));
+
+            // THE MINTED-DEP DOOR'S OWN FIELD. `ceiling` is OPTIONAL — legal absent (every one of
+            // this table's 220 real rows), legal present with a value, illegal present and empty —
+            // and `take_row_opt` is the reader that has to hold all three at once without shifting
+            // any of the mandatory fields it reads POSITIONALLY. These three cases are that
+            // contract, planted on a REAL row (`busbar-kernel -> busbar-caps`) rather than a
+            // synthetic one, so a regression that reindexed `verdict` into `cite`'s old slot would
+            // show up here first.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dependency row's `ceiling` with an empty value is refused at load",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "verdict = \"allowed\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                    "verdict = \"allowed\"\nceiling = \"\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                ),
+                &["empty-field", "ceiling"],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dependency row's `ceiling` that is not a number is refused as a bad ceiling",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "verdict = \"allowed\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                    "verdict = \"allowed\"\nceiling = \"not-a-number\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                ),
+                &["bad-count", "ceiling", "not-a-number"],
+            ));
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "a dependency row carrying `ceiling` reads like every other row and its edge still counts",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "verdict = \"allowed\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                    "verdict = \"allowed\"\nceiling = \"1\"\ncite    = \"ARCHITECTURE.md 3.1 crate graph",
+                ),
             ));
         }
 
