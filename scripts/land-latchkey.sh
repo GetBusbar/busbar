@@ -459,9 +459,8 @@ case "$BRANCH_NAME" in HEAD|"") BRANCH_NAME="$LKL_REF" ;; esac
 # runs the ORACLE and nothing else, so no ceiling is compared against anything and the degenerate
 # base-equals-tip that would silently pass a ceiling row can never be reached from here.
 ll_base_tree() { # prints a directory holding the base's tree, packed and ready
-  local d="$LAND_TMP/land-latchkey-base-$LKL_REF"
-  rm -rf "$d"; mkdir -p "$d" || return 1
-  git -C "$REPO" archive "$BASE" | tar -x -C "$d" || return 1
+  local d
+  d="$(lk_pack_dir "$REPO" "$BASE" "$LKL_REF-base")" || return 1
   lk_stage_repo "$REPO" "$d/.latchkey" "$BASE" "$BASE" || return 1
   ll_onbox_script >"$d/.lk-land.sh"
   printf '%s\n' "$d"
@@ -481,10 +480,18 @@ ll_launch() { # $1 = shard name, $2 = directory to pack, $3.. = the runner's pos
   return 0
 }
 
-STAGE="$REPO/.latchkey"
-RUNNER="$REPO/.lk-land.sh"
-BASEDIR=""
-cleanup() { rm -rf "$STAGE" "$RUNNER"; [ -n "$BASEDIR" ] && rm -rf "$BASEDIR"; }
+# ── THE DIRECTORY THAT IS PACKED IS NEVER W ─────────────────────────────────────────────────────
+# lk_pack_dir's header has the measurement: `latchkey run` packs the CURRENT DIRECTORY, and staging
+# into the landing tree writes the very tree the engine refuses to find unsettled — while N of these
+# running at once would share one constant path and `rm -rf` each other's staging. Every proof
+# exports the tree it is about into a directory of its own, named by a ref that carries the
+# timestamp and this process's pid.
+#
+# THE UNION AND ITS ORACLE SHARDS SHARE ONE EXPORT, and only that one: they prove the SAME tree, so
+# re-exporting it per shard would be four copies of 3,580 files to say the same thing. The base
+# replay is a different tree and gets its own.
+PACKDIR=""; BASEDIR=""
+cleanup() { [ -n "$PACKDIR" ] && rm -rf "$PACKDIR"; [ -n "$BASEDIR" ] && rm -rf "$BASEDIR"; }
 trap cleanup EXIT INT TERM
 
 if [ "$MODE" = base-replay ]; then
@@ -499,16 +506,18 @@ else
   # and each submission packs the same directory with a different argv. The picks travel as the
   # tip's own objects; there is nothing to cherry-pick on a runner, which is the whole shape change
   # from land-remote.sh.
-  lk_stage_repo "$REPO" "$STAGE" "$TIP" "$BASE" \
-    || { echo "land-latchkey: could not stage the history into $STAGE" >&2; exit 70; }
-  ll_onbox_script >"$RUNNER"
-  lllog "[$LABEL] tip $(git -C "$REPO" rev-parse --short "$TIP")  base $(printf '%.9s' "$BASE")  history $(du -sh "$STAGE/git" 2>/dev/null | cut -f1)"
+  PACKDIR="$(lk_pack_dir "$REPO" "$TIP" "$LKL_REF")" \
+    || { echo "land-latchkey: could not export $(git -C "$REPO" rev-parse --short "$TIP") into $LAND_TMP — nothing was packed" >&2; exit 70; }
+  lk_stage_repo "$REPO" "$PACKDIR/.latchkey" "$TIP" "$BASE" \
+    || { echo "land-latchkey: could not stage the history into $PACKDIR/.latchkey" >&2; exit 70; }
+  ll_onbox_script >"$PACKDIR/.lk-land.sh"
+  lllog "[$LABEL] tip $(git -C "$REPO" rev-parse --short "$TIP")  base $(printf '%.9s' "$BASE")  packed from $PACKDIR, history $(du -sh "$PACKDIR/.latchkey/git" 2>/dev/null | cut -f1)"
 
   # THE UNION JOB: land.sh's whole plan with the oracle subtracted. The subtraction is named, not
   # implied — `workspace-clippy` is in the list because a union that named no package and no family
   # falls back to it, and a shard list that forgot it would silently drop the only leg such a union
   # has.
-  ll_launch union "$REPO" union "$BRANCH_NAME" "$TIP" "$BASE" \
+  ll_launch union "$PACKDIR" union "$BRANCH_NAME" "$TIP" "$BASE" \
     "plugins fmt gatefiles tests clippy workspace-clippy kind-isolation gate" \
     "$TESTS" "$GATE" "" "$FEATURES" \
     || { echo "land-latchkey: concurrency_limit — no job was created for the union; nothing was proven" >&2; exit 75; }
@@ -520,7 +529,7 @@ else
     while IFS= read -r bucket; do
       [ -n "$bucket" ] || continue
       k=$((k + 1))
-      ll_launch "fam-$k" "$REPO" "fam-$k" "$BRANCH_NAME" "$TIP" "$BASE" oracle "" "" "$bucket" "$FEATURES" \
+      ll_launch "fam-$k" "$PACKDIR" "fam-$k" "$BRANCH_NAME" "$TIP" "$BASE" oracle "" "" "$bucket" "$FEATURES" \
         || { echo "land-latchkey: concurrency_limit — no job was created for oracle shard $k; nothing was proven" >&2; exit 75; }
     done <<EOF
 $(ll_family_buckets "$FAMILIES" "$LKL_SHARDS")

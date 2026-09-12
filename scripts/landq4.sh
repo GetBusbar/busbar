@@ -63,6 +63,10 @@ FAULT_RING_KEEP="${LANDQ_FAULT_RING_KEEP:-5}"
 REPO="${LANDQ_GH_REPO:-GetBusbar/busbar}"
 BR="${LANDQ_BRANCH:-integration/oracle-phase0}"
 SCRIPTS="${LAND_SH_SRC:-$W/scripts}"
+# WHERE prove-latchkey.sh KEEPS A JOB'S LOG PAST LATCHKEY'S 24 HOURS. Derived the same way that
+# script derives it — beside the MAIN repository, never inside a worktree — so --smoke-latchkey can
+# count the logs a dispatch really kept rather than trusting that it kept any.
+LK_SMOKE_LOGDIR="${LATCHKEY_LOG_DIR:-$(cd "$(dirname "$(git -C "$W" rev-parse --git-common-dir 2>/dev/null || echo "$W/.git")")/.." 2>/dev/null && pwd)/busbar-landq-state/gate/latchkey-logs}"
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # SCRATCH GOES UNDER $LAND_TMP, AND NEVER UNDER /tmp (owner rule, 2026-09-11)
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -106,6 +110,24 @@ PREPROVE_HEAD="${LANDQ_PREPROVE_HEAD:-2}"
 # as a red. Nothing about the tree has been learned when the account is full.
 LANDQ_PROVE_BACKEND="${BUSBAR_PROVE_BACKEND:-fleet}"
 LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"
+
+# ── AND WHICH MACHINE THE LANDING ITSELF RUNS ON: `BUSBAR_LAND_BACKEND=fleet|latchkey` ──────────
+# Phase 3. The owner's goal is ZERO EC2, and the landing is the last workload on the fleet: with
+# this at `latchkey` the batch is proven as a fan of rented jobs and no box is needed for it at all
+# (scripts/land-latchkey.sh has the shape and the shard plan).
+#
+# IT IS A SEPARATE VARIABLE FROM BUSBAR_PROVE_BACKEND ON PURPOSE. A pre-proof that is wrong costs
+# the queue an order; a landing that is wrong PUBLISHES. The two moved in that order and they must
+# be able to move back independently — an operator who finds the landing backend wanting sets one
+# variable and restarts at a boundary, without giving up the sweep's twelve rented runners too.
+#
+# THE CAP IS NOT WAITED ON. 20 concurrent runners shared with CI (40 requested). A landing whose
+# submission is refused has learned NOTHING about its picks: land-latchkey.sh retries on a bounded
+# backoff and then exits 75, and this file scores that `harness` — the batch's lines go back on the
+# queue LIVE and unchanged and the batch is re-taken on the class's backoff. Never a park, never a
+# HALT, and never a landing that holds the engine open until a slot appears.
+LANDQ_LAND_BACKEND="${BUSBAR_LAND_BACKEND:-fleet}"
+lq_land_backend() { lq_validate_backend "$LANDQ_LAND_BACKEND" && printf '%s\n' "$LANDQ_LAND_BACKEND" || printf 'fleet\n'; }
 
 lq_validate_backend() { # $1 = the value; the engine refuses a backend it does not have
   case "${1:-}" in fleet|latchkey) return 0 ;; esac
@@ -173,6 +195,10 @@ lq_dispatch_preprove() { # $1 = tree, $2 = host ('' = none), $3 = batch file; re
   env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$host" --batch "$bf" </dev/null
 }
 
+# THE LANDING BACKEND TRAVELS TO THE ENGINE, VALIDATED. land.sh reads BUSBAR_LAND_BACKEND itself
+# and would validate it again; exported here so that the value the engine sees is the value this
+# file logged and counted, and never a typo that reached one of them and not the other.
+export BUSBAR_LAND_BACKEND="$(lq_land_backend)"
 export LAND_ORACLE_SHARDS="${LAND_ORACLE_SHARDS:-3}"
 export LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-50100}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
@@ -1728,6 +1754,11 @@ LQ_BOX_STOPPED_RE='TargetNotConnected|InvalidInstanceId|IncorrectInstanceState|t
 LQ_PROBE_EMPTY_RE='no prepared, reachable on-demand box among the'
 LQ_BASE_PUSH_RE='could not push the integration base|could not push [^ ]+ to |remote rejected|failed to push some refs'
 LQ_SPOT_RE='Service initiated|instance-action|spot (instance|interruption)|marked for (termination|retirement)'
+# THE LATCHKEY BACKEND'S OWN "NOTHING WAS LEARNED" SENTENCES. A submission the 20-runner cap
+# refused, a shard the self-heal sidecar touched or one that was never polled, and a shard that hit
+# the 7200 s job ceiling: none of them is a statement about anybody's picks, and every one of them
+# used to be indistinguishable from a box that went away.
+LQ_LK_REFUSED_RE='land-latchkey: (concurrency_limit|NO VERDICT)|no job was created|Job creation blocked'
 LQ_UNREACH_RE='Connection closed by|Connection closed$|ssh: connect to host|ssh_exchange_identification|^scp: |scp: Connection|rsync: |Connection timed out|Connection refused|Broken pipe|No route to host|Host key verification failed|unreachable for [0-9]+ polls|the box vanished mid-proof|Permission denied \(publickey'
 
 # WHICH CLASS THIS LOG IS, IF IT IS ONE AT ALL. Prints nothing when the failure is not the
@@ -1740,6 +1771,11 @@ lq_fault_class() { # $1 = rc, $2 = log (optional); prints the class, or nothing
     grep -qE "$LQ_BASE_PUSH_RE"   "$lg" 2>/dev/null && { printf 'base-push-failed\n'; return 0; }
     grep -qE "$LQ_SPOT_RE"        "$lg" 2>/dev/null && { printf 'spot-reclaimed\n'; return 0; }
     grep -qE "$LQ_HARNESS_RE"     "$lg" 2>/dev/null && { printf 'harness\n'; return 0; }
+    # THE LATCHKEY CAP, AND THE SHARDS THAT NEVER REPORTED. Before LQ_UNREACH_RE, because a landing
+    # on the latchkey backend has no box to be unreachable and `box-unreachable` would send
+    # lq_fault_wake off to start EC2 instances for a workload that has left them — which is the
+    # opposite of what this phase is for. All three sentences are land-latchkey.sh's own.
+    grep -qE "$LQ_LK_REFUSED_RE" "$lg" 2>/dev/null && { printf 'harness\n'; return 0; }
     grep -qE "$LQ_UNREACH_RE"     "$lg" 2>/dev/null && { printf 'box-unreachable\n'; return 0; }
   fi
   [ "$rc" = 75 ] && { printf 'box-unreachable\n'; return 0; }
@@ -1976,6 +2012,17 @@ lq_stage_engine() { # $1 = tree (default $W)
     chmod +x "$t/target/gate/prove-latchkey.run.sh"
   else
     rm -f "$t/target/gate/prove-latchkey.run.sh"
+  fi
+  # THE LANDING TRANSPORT, STAGED THE SAME WAY AND FOR THE SAME REASONS (phase 3). It sources the
+  # staged prove-latchkey.run.sh beside it for the packer, so the two are staged together or not at
+  # all: a land-latchkey without its library is a home that exits 70, which is honest but useless.
+  # Its REPO is pinned to $t so the tree it packs is the runner's and never the scratch worktree
+  # $SCRIPTS lives in — the same defect that would otherwise pack the wrong tree, confidently.
+  if [ -f "$SCRIPTS/land-latchkey.sh" ] && [ -f "$t/target/gate/prove-latchkey.run.sh" ]; then
+    sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/land-latchkey.sh" >"$t/target/gate/land-latchkey.run.sh"
+    chmod +x "$t/target/gate/land-latchkey.run.sh"
+  else
+    rm -f "$t/target/gate/land-latchkey.run.sh"
   fi
   # THE FLEET'S POWER SWITCH TRAVELS WITH THE ENGINE, for the same reason the transport does: the
   # sweep runs out of the staged tree, and a sweep that could not start a stopped box would quietly
@@ -3077,30 +3124,67 @@ lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $
 ci_conclusion() { # $1 = sha ; prints: success|failure|cancelled|cancelled-in-progress|running|none
   local out cancels=""
   lq_ci_cancels_in_progress "$W" && cancels=1
+  # ── NO `gh` IS `none`, SAID OUT LOUD ──────────────────────────────────────────────────────────
+  # The supervised runner's PATH is not a login shell's, and `gh` has been missing from it. An
+  # absent CLI already reached `none` by coincidence — the command printed nothing and the empty
+  # string falls through lq_ci_verdict's `" "` arm — and a coincidence is not a rule: one more arm
+  # in that case statement and a missing `gh` would silently become `running`, which holds every
+  # push for ever. `none` means "no CI run is known about this sha", which is exactly true when
+  # there is no way to ask, and `none` pushes.
+  if ! command -v gh >/dev/null 2>&1; then
+    lq_log "push: no \`gh\` on this PATH — CI on $(printf '%.8s' "$1") cannot be read; treating it as 'none', which pushes"
+    printf 'none\n'; return 0
+  fi
   out="$(gh run list -R "$REPO" --workflow CI --commit "$1" --limit 1 \
         --json status,conclusion,createdAt --jq '.[0] | "\(.status) \(.conclusion) \(.createdAt)"' 2>/dev/null)"
   lq_ci_verdict "$out" "" "$cancels"
 }
 
+# ── A PUSH THAT FAILED MUST NEVER BE SILENT ─────────────────────────────────────────────────────
+# MEASURED, LIVE (after the 19:15 landing): the tip was landed and the ledger carried no `pushed`
+# line and no `push deferred` line either, and an operator pushed it by hand. Every push below was
+# `git push -q … && lq_log "pushed …"`, so a push that FAILED — a stale remote ref, credentials the
+# supervised environment does not have, a ref somebody else moved — logged nothing whatever and was
+# indistinguishable from a loop that never ran. One function, used by all four arms: git's own
+# stderr is kept and said, and a failure is as loud as a success.
+lq_push_tip() { # $1 = why (the sentence's tail); 0 on a push that really happened
+  local why="$1" err sha
+  sha="$(git -C "$W" rev-parse --short HEAD)"
+  err="$(git -C "$W" push -q origin "HEAD:$BR" 2>&1)" \
+    && { lq_log "pushed $sha ($why)"; return 0; }
+  lq_log "=== PUSH FAILED for $sha ($why): $(printf '%s' "$err" | tr '\n' ' ' | cut -c1-300)"
+  lq_log "push: the tip is LANDED and UNPUSHED; the next loop tries again (nothing is lost, nothing is retried on a box)"
+  return 1
+}
+
+# EVERY LOOP SAYS WHAT IT DECIDED. The silent `return 0` below was the other half of the 19:15
+# defect: with nothing to push the function said nothing, so "the tip is already out" and "the push
+# never ran" read the same in the ledger. It is one line a minute and it is the difference between
+# reading the log and guessing at it.
 try_push() {
   local last head c
-  last="$(git -C "$W" rev-parse "origin/$BR")"
-  head="$(git -C "$W" rev-parse HEAD)"
-  [ "$last" = "$head" ] && return 0
+  last="$(git -C "$W" rev-parse "origin/$BR" 2>/dev/null)"
+  head="$(git -C "$W" rev-parse HEAD 2>/dev/null)"
+  if [ -z "$last" ]; then
+    lq_log "push: origin/$BR does not resolve in $W — nothing can be compared, and nothing is pushed"
+    return 1
+  fi
+  if [ "$last" = "$head" ]; then
+    lq_log "push: nothing to push (origin/$BR is already $(printf '%.8s' "$head"))"
+    return 0
+  fi
   c="$(ci_conclusion "$last")"
+  lq_log "push: $(printf '%.8s' "$last") -> $(printf '%.8s' "$head"); ci of the pushed tip reads '$c'"
   case "$c" in
     cancelled-in-progress)
       lq_log "push over in_progress CI on $(printf '%.8s' "$last"): cancelled by CI's own concurrency"
-      git -C "$W" push -q origin "HEAD:$BR" \
-        && lq_log "pushed $(git -C "$W" rev-parse --short HEAD) (ci of $(printf '%.8s' "$last"): in_progress, cancelled by the push)" ;;
+      lq_push_tip "ci of $(printf '%.8s' "$last"): in_progress, cancelled by the push" ;;
     success|none|cancelled)
-      git -C "$W" push -q origin "HEAD:$BR" \
-        && lq_log "pushed $(git -C "$W" rev-parse --short HEAD) (ci of $(printf '%.8s' "$last"): $c)" ;;
+      lq_push_tip "ci of $(printf '%.8s' "$last"): $c" ;;
     running) lq_log "push deferred: ci still running on $(printf '%.8s' "$last")" ;;
     failure)
       if [ -f "$W/target/gate/PUSH-ANYWAY" ]; then
-        git -C "$W" push -q origin "HEAD:$BR" \
-          && lq_log "pushed $(git -C "$W" rev-parse --short HEAD) (ci RED on $(printf '%.8s' "$last"), PUSH-ANYWAY set)"
+        lq_push_tip "ci RED on $(printf '%.8s' "$last"), PUSH-ANYWAY set"
       else
         [ -f "$W/target/gate/CI-RED" ] || {
           lq_log "=== CI RED on $(printf '%.8s' "$last"); pushes held, landings continue locally (touch PUSH-ANYWAY to override)"
@@ -3128,6 +3212,7 @@ lq_selftest() {
   }
   git -C "$repo" init -q
   git -C "$repo" config user.email landq@selftest; git -C "$repo" config user.name landq
+  mkdir -p "$root/emptybin"   # a PATH with no `gh` in it, for try_push's cases below
   git -C "$repo" config commit.gpgsign false
   mkdir -p "$root/nohooks"; git -C "$repo" config core.hooksPath "$root/nohooks"
   printf 'x\n' >"$repo/base.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm base
@@ -4345,12 +4430,43 @@ lq_selftest() {
   # WHEN the push runs, not what GitHub says about the tip before it.
   ci_conclusion() { echo none; }
   _t "an already-pushed tip is a no-op"        0 "$(try_push; echo $?)"
-  _t "  ...and says nothing"                   0 "$(grep -c . "$L" || true)"
+  # …AND IT SAYS SO. It used to say nothing at all, which made "already out" and "the loop never
+  # ran" identical in the ledger — half of the 19:15 landed-and-unpushed tip.
+  _t "  ...and says so, every loop"            1 "$(grep -c '^push: nothing to push' "$L" || true)"
   printf 'landed\n' >"$work/landed.txt"; git -C "$work" add -A; git -C "$work" commit -qm landed
   try_push >/dev/null 2>&1
   _t "a landed tip is pushed"                  "$(git -C "$work" rev-parse HEAD)" "$(git -C "$work" rev-parse "origin/$BR")"
   _t "  ...and the log names it"               1 "$(grep -c "^pushed $(git -C "$work" rev-parse --short HEAD) " "$L" || true)"
+  # ── A FAILED PUSH IS AS LOUD AS A SUCCESSFUL ONE (the 19:15 defect) ─────────────────────────
+  # Driven, not spelled: the remote is pointed at a path that does not exist, so `git push` really
+  # fails, and the ledger is read for the sentence an operator needs.
+  : >"$L"
+  printf 'more\n' >"$work/more.txt"; git -C "$work" add -A; git -C "$work" commit -q --no-verify -m more
+  local _realremote; _realremote="$(git -C "$work" remote get-url origin)"
+  git -C "$work" remote set-url origin "$root/there-is-no-repository-here"
+  _t "a push that fails returns non-zero"      1 "$(try_push >/dev/null 2>&1; echo $?)"
+  _t "  ...and the ledger SAYS it failed"      1 "$(grep -c '^=== PUSH FAILED for ' "$L" || true)"
+  _t "  ...with git's own words kept"          1 "$(grep -c 'PUSH FAILED.*\(does not appear to be a git repository\|not a git repository\|Could not read\|error\)' "$L" || true)"
+  _t "  ...and says the tip is landed and unpushed" 1 "$(grep -c 'LANDED and UNPUSHED' "$L" || true)"
+  _t "  ...and NOTHING was reported as pushed" 0 "$(grep -c '^pushed ' "$L" || true)"
+  git -C "$work" remote set-url origin "$_realremote"
   unset -f ci_conclusion
+  # ── AN ABSENT `gh` IS `none`, WHICH PUSHES — never a silent hold ─────────────────────────────
+  # The supervised runner's PATH is not a login shell's, and `gh` has been missing from it. Driven
+  # on the REAL function, re-read out of this engine's source (the stub above replaced it in this
+  # shell, and `unset -f` removes a definition rather than revealing the one it shadowed), with a
+  # PATH that really has no `gh` on it.
+  : >"$L"
+  eval "$(sed -n '/^ci_conclusion() {/,/^}/p' "$LQ_SRC")"
+  _t "no gh on PATH reads as 'none'"           none "$(PATH="$root/emptybin:/usr/bin:/bin" \
+     bash -c 'unset -f gh; command -v gh >/dev/null 2>&1 && exit 9; exit 0' >/dev/null 2>&1 \
+     && PATH="$root/emptybin" W="$work" ci_conclusion deadbeef 2>/dev/null)"
+  _t "  ...and says why, in the ledger"        1 "$(grep -c "no .gh. on this PATH" "$L" || true)"
+  # …AND IT IS THE FUNCTION'S FIRST QUESTION, before the CLI is called: a `gh` that is absent must
+  # not be discovered by an empty answer from a command that never ran.
+  _t "  ...asked before gh is invoked"         1 \
+     "$( [ "$(grep -n 'command -v gh' "$LQ_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n 'gh run list -R' "$LQ_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
   W="$savedW9"; L="$savedL9"; BR="$savedBR9"
   # THE ORDER IN THE LOOP: the push is above the census, the sweep and the pop, not below them.
   _t "the loop pushes at its top, and still after the batch" 2 "$(grep -c '^  try_push$' "$0")"
@@ -5428,6 +5544,87 @@ case "${1:-}" in
   --selftest) lq_selftest; exit $? ;;
 esac
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --smoke-latchkey '<queue line>' [...]: THE ADOPTION GATE, IN MINUTES RATHER THAN IN A SWEEP
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#   LANDQ_ROOT=~/Developer/tmp/smoke LAND_SH_SRC=<engine home>/scripts BUSBAR_PROVE_BACKEND=latchkey \
+#     scripts/landq4.sh --smoke-latchkey '--prove --tests xtask 6b47b1ca5' '--prove --families …'
+#
+# OWNER'S RULE (2026-09-11): no engine change is handed back until it has been driven THE ENGINE'S
+# WAY once, small, on a scratch root, with the real CLI — never discovered by the live runner's full
+# sweep. The first Latchkey sweep is exactly why: a defect in the dispatcher's path resolution
+# parked twelve real lines before anybody read a log.
+#
+# WHAT IT DRIVES IS THE REAL THING AND NOTHING BESIDE IT: lq_stage_engine stages the transports the
+# way the runner stages them, and lq_dispatch_preprove dispatches the way the runner dispatches —
+# one batch file per line, all of them at once, so the concurrency the sweep really has is the
+# concurrency this smoke has. It takes NO landing lock and lands NOTHING: every line is a pre-proof,
+# which publishes nothing by construction.
+#
+# WHAT IT CHECKS, and each of these was a live defect: a job was created for every line; the scratch
+# tree is byte-clean afterwards, with no `.latchkey` in it; there is a verdict row per line in the
+# engine's own shape; and the job logs were kept where the ledgers cite them.
+if [ "${1:-}" = "--smoke-latchkey" ]; then
+  shift
+  [ $# -gt 0 ] || { echo "landq4: --smoke-latchkey needs at least one queue line" >&2; exit 2; }
+  # IT TAKES NO LANDING LOCK, and it is placed above where that lock is acquired for exactly that
+  # reason: the lock is host-wide ($HOME/.busbar-landq4.lock) and a smoke that took it would refuse
+  # to run whenever the live runner is up, which is whenever anybody would want to run one.
+  # It lands nothing: every line goes through the PRE-PROOF leg, which publishes nothing.
+  sdir="$W/target/gate/smoke-latchkey-$$"
+  mkdir -p "$sdir" "$W/target/gate"
+  echo "smoke: root $W"
+  echo "smoke: engine home $SCRIPTS"
+  echo "smoke: prove backend $(lq_preprove_backend); land backend $(lq_land_backend)"
+  echo "smoke: tip $(git -C "$W" rev-parse --short HEAD 2>/dev/null)"
+  porcelain_before="$(git -C "$W" status --porcelain 2>/dev/null | grep -c . || true)"
+  lq_stage_engine
+  for f in land.run.sh land-remote.sh prove-latchkey.run.sh land-latchkey.run.sh; do
+    [ -f "$W/target/gate/$f" ] && echo "smoke: staged $f" || echo "smoke: NOT staged $f"
+  done
+  logs_before="$(ls "$LK_SMOKE_LOGDIR" 2>/dev/null | grep -c . || true)"
+  k=0; pids=""
+  for line in "$@"; do
+    k=$((k + 1))
+    printf '%s\n' "$line" >"$sdir/line-$k.batch"
+    echo "smoke: line $k: $line"
+    ( lq_dispatch_preprove "$W" "" "$sdir/line-$k.batch" >"$sdir/line-$k.log" 2>&1; echo $? >"$sdir/line-$k.rc" ) &
+    pids="$pids $!"
+  done
+  # shellcheck disable=SC2086
+  wait $pids
+  echo
+  rc=0
+  i=1
+  while [ "$i" -le "$k" ]; do
+    lrc="$(cat "$sdir/line-$i.rc" 2>/dev/null)"
+    job="$(grep -oE 'job cli-[0-9a-f]+' "$sdir/line-$i.log" 2>/dev/null | head -1 | awk '{print $2}')"
+    rows="$(grep -c . "$sdir/line-$i.batch.result" 2>/dev/null || true)"
+    verdict="$(lq_preproof_verdict "$lrc" "$sdir/line-$i.log" "$sdir/line-$i.batch.result" "$(git -C "$W" rev-parse HEAD 2>/dev/null)")"
+    printf 'smoke: line %s  rc %-4s job %-16s result-rows %-3s verdict %s\n' \
+      "$i" "${lrc:-?}" "${job:-<none created>}" "${rows:-0}" "$verdict"
+    [ -n "$job" ] || rc=1
+    [ "${rows:-0}" -gt 0 ] || rc=1
+    i=$((i + 1))
+  done
+  porcelain_after="$(git -C "$W" status --porcelain 2>/dev/null | grep -c . || true)"
+  if [ "$porcelain_after" = "$porcelain_before" ]; then
+    echo "smoke: the tree is byte-clean — porcelain $porcelain_after, exactly what it was"
+  else
+    echo "smoke: FAILED — the tree was written: porcelain $porcelain_before -> $porcelain_after"
+    git -C "$W" status --porcelain 2>/dev/null | head -10
+    rc=1
+  fi
+  if [ -e "$W/.latchkey" ]; then echo "smoke: FAILED — a .latchkey was left in the tree"; rc=1
+  else echo "smoke: no .latchkey anywhere in the tree"; fi
+  logs_after="$(ls "$LK_SMOKE_LOGDIR" 2>/dev/null | grep -c . || true)"
+  echo "smoke: job logs kept under $LK_SMOKE_LOGDIR: $logs_before -> $logs_after"
+  [ "${logs_after:-0}" -gt "${logs_before:-0}" ] || { echo "smoke: FAILED — no job log was kept"; rc=1; }
+  echo "smoke: artifacts under $sdir"
+  [ "$rc" = 0 ] && echo "smoke-latchkey: GREEN" || echo "smoke-latchkey: RED"
+  exit "$rc"
+fi
+
 mkdir -p "$W/target/gate"
 touch "$Q" "$D" "$PP"
 # The lock is taken IN THIS SHELL, never inside a command substitution: `$(lq_lock_acquire ...)` runs
@@ -5443,6 +5640,7 @@ if [ "${1:-}" = "--preprove-once" ]; then
   lq_preprove_sweep
   exit $?
 fi
+
 
 consec_head_conflict=0
 while true; do
@@ -5568,6 +5766,7 @@ while true; do
   fi
 
   lq_log "=== $(date +%H:%M:%S) batch of $n line(s) (size $B), head: $(lq_batch_lines "$batch" | head -n1 | cut -c1-100)"
+  lq_log "backend: this batch is proven on $(lq_land_backend)$( [ "$(lq_land_backend)" = latchkey ] && printf ' (the picks, the bisect and the push stay in this tree; each proof is a fan of rented jobs)' )"
   rm -f "$batch.result"
   # The staged engine (see lq_stage_engine): a landing can change land.sh without changing the copy
   # that is landing it.

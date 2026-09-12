@@ -186,6 +186,35 @@ lk_stage_repo() { # $1 = repo  $2 = stage dir (inside the repo)  $3 = tip  $4 = 
   return 0
 }
 
+# ── AND THE DIRECTORY THAT IS PACKED IS NEVER THE WORKTREE ──────────────────────────────────────
+# MEASURED, LIVE (the first phase-2 sweep on 992781fed): every pre-proof died with
+# `could not stage the history into <W>/.latchkey`, and the two reasons are both fatal on their own.
+#
+#   (a) THE RUNNER TREE MUST NEVER BE WRITTEN. `latchkey run` packs the CURRENT DIRECTORY, so the
+#       first form of this staged a 23 MB bare repository INSIDE W and asked Latchkey to pack W.
+#       W is the landing engine's own checkout: the engine refuses an unsettled tree, `git clean`
+#       runs across it, and a pre-proof is not W's state anyway — it is the LINE's picks threaded
+#       on the tip, which the on-runner engine builds from the refs the bare repo carries.
+#   (b) TWELVE CONCURRENT PRE-PROOFS SHARED ONE PATH. `$REPO/.latchkey` is a constant; the sweep
+#       dispatches up to LATCHKEY_MAX_JOBS of these at once, and each one's `rm -rf` was another's
+#       staging directory. The race is not a rare interleaving — it is every sweep.
+#
+# So every proof exports the tree it is about into a directory of its OWN, under $LAND_TMP, named
+# by the ref (which already carries the timestamp and this process's pid), packs from THERE, and
+# removes it afterwards. `git archive` rather than a copy: the export is exactly the tip's tracked
+# files, so W's `target/`, its dirt and its other worktrees' leftovers cannot travel, and W is not
+# so much as opened for writing.
+lk_pack_dir() { # $1 = repo  $2 = the tree-ish to export  $3 = a unique id; prints the directory
+  # DECLARED IN TWO STATEMENTS, not one. `local a="$1" d="…$a"` is read left-to-right by bash 4
+  # and NOT by the bash 3.2 this laptop ships, where the second initialiser sees an unset name and
+  # `set -u` kills the function — measured here, on the first run of this file's own cases.
+  local repo="$1" treeish="$2" id="$3"
+  local d="$LAND_TMP/latchkey-proof-$id"
+  rm -rf "$d"; mkdir -p "$d" || return 1
+  git -C "$repo" archive --format=tar "$treeish" | tar -xf - -C "$d" || return 1
+  printf '%s\n' "$d"
+}
+
 # ── THE SCRIPT THE RUNNER EXECUTES ──────────────────────────────────────────────────────────────
 # Emitted from ONE function so `--selftest` drives the real text rather than a copy of it — the
 # discipline prove-remote.sh's oracle_golden_path is written for. It is staged INTO the packed tree
@@ -620,6 +649,58 @@ if [ "${1:-}" = "--selftest" ]; then
     say PASS "(not a git repository here — the staging cases are skipped)"
   fi
 
+  echo "== prove-latchkey SELF-TEST (the RUNNER TREE is never written, and two proofs never share a path) =="
+  # MEASURED, LIVE: the first phase-2 sweep staged .latchkey INSIDE W and every pre-proof died
+  # `could not stage the history into <W>/.latchkey` — twelve of them racing on one constant path,
+  # in the engine's own checkout. Both halves are driven here on a real repository.
+  _pt="$root/tree"
+  git init -q "$_pt" 2>/dev/null
+  # --no-verify: this laptop has a global hook that refuses any commit whose author is not the
+  # owner's canonical identity, and a throwaway fixture repository is not a commit anybody keeps.
+  git -C "$_pt" config user.email lk@selftest; git -C "$_pt" config user.name lk
+  git -C "$_pt" config commit.gpgsign false
+  printf 'a\n' >"$_pt/a.txt"; mkdir -p "$_pt/qa"; printf 'x=1\n' >"$_pt/qa/k.toml"
+  git -C "$_pt" add a.txt qa/k.toml >/dev/null 2>&1; git -C "$_pt" commit -q --no-verify -m one
+  printf 'b\n' >"$_pt/b.txt"; git -C "$_pt" add b.txt >/dev/null 2>&1; git -C "$_pt" commit -q --no-verify -m two
+  _tip="$(git -C "$_pt" rev-parse HEAD)"
+  _porcelain_before="$(git -C "$_pt" status --porcelain | grep -c . || true)"
+  _p1="$(lk_pack_dir "$_pt" "$_tip" "case-1")"
+  [ -n "$_p1" ] && [ -f "$_p1/a.txt" ] && [ -f "$_p1/b.txt" ] \
+    && say PASS "the tree is exported, tracked file for tracked file, into its own directory" \
+    || say FAIL "the export did not produce the tip's files"
+  case "$_p1" in "$_pt"*) say FAIL "the export is INSIDE the tree it exports" ;;
+    "$LAND_TMP"/latchkey-proof-*) say PASS "  ...under LAND_TMP, never inside the tree" ;;
+    *) say FAIL "the export is not under LAND_TMP ($_p1)" ;; esac
+  lk_stage_repo "$_pt" "$_p1/.latchkey" "$_tip" "$(git -C "$_pt" rev-parse HEAD~1)" >/dev/null 2>&1 \
+    && say PASS "  ...and the bare repository is staged INSIDE that export" \
+    || say FAIL "the bare repository could not be staged in the export"
+  # THE WHOLE POINT: the runner tree is byte-identical afterwards. Not "no tracked change" — nothing
+  # at all, including the untracked `.latchkey` directory the first form left behind.
+  [ "$(git -C "$_pt" status --porcelain | grep -c . || true)" = "$_porcelain_before" ] \
+    && say PASS "  ...and the runner tree's porcelain is exactly what it was" \
+    || say FAIL "the runner tree was written: $(git -C "$_pt" status --porcelain | head -3 | tr '\n' ' ')"
+  [ -e "$_pt/.latchkey" ] && say FAIL "a .latchkey was left in the runner tree" \
+    || say PASS "  ...with no .latchkey anywhere in it"
+  # TWO PROOFS, ONE TREE, AT ONCE. The ref carries the timestamp and the pid, so two concurrent
+  # pre-proofs of the same tip cannot be handed the same directory — which is what the sweep does
+  # twelve at a time.
+  _p2="$(lk_pack_dir "$_pt" "$_tip" "case-2")"
+  [ -n "$_p2" ] && [ "$_p1" != "$_p2" ] \
+    && say PASS "two proofs of the same tip get two directories" \
+    || say FAIL "two proofs of the same tip were handed one directory ($_p1)"
+  [ -f "$_p1/.latchkey/git/HEAD" ] \
+    && say PASS "  ...and the second's staging did not remove the first's" \
+    || say FAIL "the second proof's staging destroyed the first's bare repository"
+  # THE PACK PATH IS THE SUBMISSION'S cwd. A directory staged correctly and then packed from $REPO
+  # would ship the runner tree anyway.
+  grep -qF 'JOB="$(cd "$PACK" && lk_submit' "${BASH_SOURCE[0]}" \
+    && say PASS "  ...and the job is submitted from the export, never from the repository" \
+    || say FAIL "the job is submitted from somewhere other than the export"
+  [ "$(grep -c 'STAGE="\$REPO/\.latchkey"' "${BASH_SOURCE[0]}")" = 0 ] \
+    && say PASS "  ...nothing here stages into the repository any more" \
+    || say FAIL "this script still stages into the repository"
+  rm -rf "$_p1" "$_p2"
+
   echo "== prove-latchkey SELF-TEST (the batch's picks travel as objects) =="
   printf '#UNIT 1\n--prove --tests xtask deadbee cafebab  # a comment\n\n#a whole comment line\n' >"$root/b.txt"
   n="$(lk_batch_hashes "$root/b.txt" | grep -c .)"
@@ -733,21 +814,24 @@ lklog "runner:          $LK_SIZE, timeout ${LK_TIMEOUT}s, polled every ${LK_POLL
 # Everything the job needs goes INSIDE the directory being packed, and comes out again on the way
 # out, whatever happens. A 23 MB bare repository left behind in a slot's checkout is the next
 # proof's packed tree.
-STAGE="$REPO/.latchkey"
+PACK="$(lk_pack_dir "$REPO" "$TIP" "$REF")" || lkdie "could not export $(git -C "$REPO" rev-parse --short "$TIP") into $LAND_TMP — nothing was packed"
+STAGE="$PACK/.latchkey"
 RUNNER=".lk-run.sh"
-cleanup() { rm -rf "$STAGE" "$REPO/$RUNNER"; }
+# THE EXPORT GOES WHATEVER HAPPENS. It is 3,580 files and a 23 MB repository; left behind by a
+# killed poller it is the next sweep's disk.
+cleanup() { rm -rf "$PACK"; }
 trap cleanup EXIT INT TERM
 lk_stage_repo "$REPO" "$STAGE" "$TIP" "$BASE" $PICKS || lkdie "could not stage the history into $STAGE"
-lklog "history staged: $(du -sh "$STAGE/git" 2>/dev/null | cut -f1) ($(printf '%s' "$PICKS" | grep -c . || true) pick(s))"
+lklog "packed from $PACK ($(find "$PACK" -type f | grep -c . || true) file(s)); history $(du -sh "$STAGE/git" 2>/dev/null | cut -f1), $(printf '%s' "$PICKS" | grep -c . || true) pick(s)"
 [ -n "$BATCH" ] && cp "$BATCH" "$STAGE/batch.txt"
-lk_onbox_script "$MODE" "$BRANCH_NAME" "$POSTURE" >"$REPO/$RUNNER"
-chmod +x "$REPO/$RUNNER"
+lk_onbox_script "$MODE" "$BRANCH_NAME" "$POSTURE" >"$PACK/$RUNNER"
+chmod +x "$PACK/$RUNNER"
 
 LOG="$REPO/target/land-latchkey-$REF.log"
 mkdir -p "$(dirname "$LOG")"
 
 START=$(date +%s)
-JOB="$(cd "$REPO" && lk_submit "bash $RUNNER $MODE $BRANCH_NAME $POSTURE $TIP $BASE '$SCOPE_FAM' '$SCOPE_TESTS'")"
+JOB="$(cd "$PACK" && lk_submit "bash $RUNNER $MODE $BRANCH_NAME $POSTURE $TIP $BASE '$SCOPE_FAM' '$SCOPE_TESTS'")"
 case "$JOB" in
   cli-*) ;;
   # NO JOB IS NOT A RED. The 20-runner workspace cap is shared with CI, and "the account was full"
