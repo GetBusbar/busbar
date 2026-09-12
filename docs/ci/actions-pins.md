@@ -1,8 +1,11 @@
 # GitHub Actions — commit-SHA pins
 
-Every third-party `uses:` in `.github/workflows/*.yml` must resolve to an exact commit, never a tag
-or branch someone else can repoint. This table is the independent resolution behind each pin: each
-row was produced by running
+Every third-party `uses:` under `.github/workflows/*.yml` and `.github/actions/**/action.yml` must
+resolve to an exact commit, never a tag or branch someone else can repoint. This is enforced by rule
+`R14` of `cargo xtask gate release-order` (`xtask/src/gates/release_order.rs`) — there is no separate
+lint for it; `R14` already reads a floating ref by file:line and refuses the pipeline over it, and now
+scans composite-action manifests too, not only workflows. This table is the independent resolution
+behind each pin currently in the tree: each row was produced by running
 
 ```
 git ls-remote https://github.com/<owner>/<repo> refs/tags/<ref> refs/tags/<ref>^{} refs/heads/<ref>
@@ -45,11 +48,17 @@ Resolved 2026-09-11 from `https://github.com/<owner>/<repo>` (git ls-remote, liv
 | sigstore/cosign-installer | v3 | `398d4b0eeef1380460a10c8013a76f728fb906ac` | 2026-09-11 | `git ls-remote` (tag, peeled) |
 | Swatinem/rust-cache | v2 | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` | 2026-09-11 | `git ls-remote` (tag, peeled) |
 | taiki-e/install-action | cargo-llvm-cov | `b3c2424e62a3f08fd88bf434799847a4d0da36c8` | 2026-09-11 | `git ls-remote` (tag, historical — see note) |
+| latchkey-dev/cache-action | v1 | `d0dd21912a57c7435649c77f689b68d348d8a662` | 2026-09-11 | `git ls-remote` (tag) |
 
 Every SHA above was resolved independently against live upstream on 2026-09-11 and matches the SHA
 already committed in `.github/workflows/*.yml`. **No disagreement was found** between this
 independent resolution and what is currently checked in — see "Disagreements" below for the two
 rows that need a note rather than a fix.
+
+`latchkey-dev/cache-action@v1` is `ci.yml`/`gate-mutants.yml`/`keep-proof.yml`'s new cache action
+(54 `uses:`, introduced by the Latchkey CI cut-over); it was unpinned when this table's first draft
+was written and was pinned, independently of this line, by that cut-over's own follow-up commit
+before this table's final draft — the SHA above matches that commit exactly.
 
 ## Disagreements (and why they are not the attack this table exists to catch)
 
@@ -75,21 +84,16 @@ by-design-floating ref at a later date. Dependabot (`.github/dependabot.yml`,
 `package-ecosystem: "github-actions"`) is what is expected to bump both forward over time, opening a
 PR that preserves the trailing tag comment.
 
-## Not yet pinned: `latchkey-dev/cache-action@v1`
+## Every action currently in the tree
 
-`latchkey-dev/cache-action@v1` appears 54 times, confined to `.github/workflows/ci.yml`,
-`.github/workflows/gate-mutants.yml` and `.github/workflows/keep-proof.yml` — the three files this
-line's base branch (`keep-ci-latchkey`) shares with the Latchkey CI cut-over line, and this line does
-not take hunks in those files. `latchkey-dev/cache-action` is the action that cut-over introduced;
-pinning it to a commit SHA is that line's own follow-up, tracked there rather than here so the two
-lines never collide on the same hunks. `scripts/actions-pin-lint.py` correctly flags all 54 as
-`unpinned-action-ref` today; the gate is expected to go green once that pin lands.
-
-## Every other repository action
-
-Every `uses:` outside the three files above — 26 distinct `(action, ref)` pairs across every other
-workflow in `.github/workflows/` — was already pinned to a commit SHA with its tag kept as a trailing
-comment before this line started (see `git log --oneline -- .github/workflows/`, commits "R14: pin
-every third-party GitHub Action `uses:` to its commit sha, tag kept as trailing comment" and "actions:
-every third-party action runs from a sha, and dependabot keeps the sha fresh"). This table is this
-line's independent re-verification of that existing state, not a first-time pin.
+Every `uses:` in `.github/workflows/` — all 27 distinct `(action, ref)` pairs above, across every
+workflow including the three the Latchkey CI cut-over touched (`ci.yml`, `gate-mutants.yml`,
+`keep-proof.yml`) — was already pinned to a commit SHA with its tag kept as a trailing comment before
+this line started (see `git log --oneline -- .github/workflows/`, commits "R14: pin every third-party
+GitHub Action `uses:` to its commit sha, tag kept as trailing comment" and "actions: every third-party
+action runs from a sha, and dependabot keeps the sha fresh", plus that cut-over's own follow-up commit
+for `latchkey-dev/cache-action`). This table is this line's independent re-verification of that
+existing state, not a first-time pin. There is no `.github/actions` directory yet, so `R14`'s
+composite-action half of the scan currently covers zero files — proven able to catch one anyway by
+`r14_reads_uses_out_of_a_composite_action_too_not_only_workflows` in
+`xtask/src/gates/release_order.rs`.
