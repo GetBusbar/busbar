@@ -409,36 +409,45 @@ staging-tag/promote-tag inputs that do not exist on a scratch branch, and manufa
 to force a dry run risks a real publish side effect for zero migration-relevant signal (their
 `runs-on:`/cache/tooling correctness was already established by reading, §§1-3).
 
-`keep-proof.yml`'s own jobs — unchanged by this slot, already on Latchkey since LK-5 — still ran on
-every push (each superseded by the next push's `concurrency: cancel-in-progress`, so only the
-final push's run completed). That final run (commit `acf77ee20`, run id `34666870476`) is this
-slot's only real Latchkey execution evidence:
+`keep-proof.yml`'s own jobs — unchanged by this slot, already on Latchkey since LK-5 — ran on every
+push; `concurrency: cancel-in-progress` superseded most of them, but the second-to-last push's run
+(`34666870476`, commit `acf77ee20`) was still `queued`/`in_progress` when the doc-only final commit
+landed and both runs completed rather than one cancelling cleanly. The **last push's run**
+(`34667344240`, commit `bcc9ab4bb`, the phase-4 doc commit — a docs-only change, so its code-path
+results are identical to `acf77ee20`'s) is this slot's real Latchkey execution evidence, read once
+per the coordinator's resume instruction (`gh run list --branch keep-ci-latchkey-all --limit 3`):
 
 | Job | Label (from LK-5, unchanged) | Wall time | Result | First error line |
 |---|---|---|---|---|
-| build-clippy (fmt · clippy · build) | large | 1m57s | pass | — |
-| tests (shard 1) | xlarge | (see run) | (see run) | — |
-| tests (shard 2) | xlarge | 4m30s | pass | — |
-| tests (shard 3) | xlarge | 5m30s | pass | — |
-| tests (shard 4) | xlarge | 4m32s | pass | — |
-| tests (shard xtask) | xlarge | (see run) | (see run) | — |
-| oracle (shadow-oracle vs published 1.5.5) | xlarge | 1m56s | fail | not yet re-diagnosed — see below |
-| design-bindings | large | 7s | fail | not yet re-diagnosed — see below |
-| gates (cargo xtask gate --all · selftest) | xlarge | (see run) | (see run) | — |
-| construction-gate | xlarge | 3m33s | pass | — |
+| fmt · clippy · build | large | 1m54s | pass | — |
+| tests (shard 1) | xlarge | 4m29s | **fail** | `Process completed with exit code 101` (a test failure) |
+| tests (shard 2) | xlarge | 4m27s | pass | — |
+| tests (shard 3) | xlarge | 5m26s | pass | — |
+| tests (shard 4) | xlarge | 4m36s | pass | — |
+| tests (shard xtask) | xlarge | 28m56s | **fail** | `Process completed with exit code 137` (killed — OOM/timeout signature) |
+| tests total | small | 3s | fail | aggregator: skipped/failed because shard 1 and shard xtask failed |
+| shadow oracle (vs published 1.5.5) | xlarge | 1m57s | **fail** | `the id-filter '^(boot\|config\|documented)([\|.]|$)' owes ZERO cells — a filter that matches nothing... Fix the regex in .keep-proof.toml` |
+| design bindings (existence · regen-clean) | large | 8s | **fail** | `Process completed with exit code 127` (command not found) |
+| cargo xtask gate --all · selftest | xlarge | 21m31s | **fail** | `Process completed with exit code 1` |
+| construction gate | xlarge | 3m35s | pass | — |
+| keep-proof verdict | small | 9s | fail | aggregator: red because upstream jobs failed |
 
-The two failures (`oracle`, `design-bindings`) are on jobs and labels this slot did not touch —
-`keep-proof.yml` was already fully migrated by LK-5 and this slot made zero edits to it. Consistent
-with §4 item 5 of the phase-1 section above (pre-existing red on a stale base is a known risk
-pattern for this branch lineage), not re-diagnosed here: this slot's mandate is `runs-on`/cache/
-label only, and neither failure is a runner-label or caching regression this migration introduced.
+Every failure above is on a job and label this slot did not touch — `keep-proof.yml` was already
+fully migrated by LK-5 and this slot made zero edits to it (only `.github/workflows/` files this
+slot's own commits list, none of which is `keep-proof.yml`, `ci.yml` or `gate-mutants.yml`). The
+`shadow oracle` failure is a config mismatch in `.keep-proof.toml`'s id-filter regex (not a runner
+or cache defect); `design bindings`' exit 127 and `tests (shard xtask)`'s exit 137 are consistent
+with §4 item 5 of the phase-1 section above (pre-existing red on a stale/drifted base for this
+branch lineage). None is a runner-label or Fast-Cache regression this migration introduced — this
+slot's mandate is `runs-on`/cache/label only, and every job here ran on the label LK-5 already
+assigned, unchanged.
 
-Minutes consumed by this slot's own measurement window: the ten `keep-proof.yml` jobs above,
-approximately **25-30 runner-minutes** at Latchkey per-minute rates for this one push — small
-relative to phase 1's because only one push's run survived the concurrency cancellation from the
-eleven earlier pushes on this branch (each commit was pushed individually per the task's own "push
-after every commit" rule, and `keep-proof.yml`'s `cancel-in-progress` concurrency group superseded
-every run but the last).
+Minutes consumed by this slot's own measurement window: the twelve `keep-proof.yml` jobs above sum
+to roughly **80 runner-minutes** of wall time (dominated by the two long failures — `tests (shard
+xtask)` at 29 minutes and `gate --all · selftest` at 21.5 minutes, both jobs this slot never
+touched) at Latchkey per-minute rates for this one final run, plus a comparable amount burned by
+the twelve earlier per-commit pushes before `cancel-in-progress` superseded each of them (per the
+task's own "push after every commit" rule).
 
 ### 7. What sucks (this slot's additions to §4 above)
 
