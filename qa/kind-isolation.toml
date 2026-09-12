@@ -2389,7 +2389,7 @@ count = "3"
 [[cell]]
 crate = "busbar-substrate"
 kind = "control"
-count = "352"
+count = "350"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2399,12 +2399,12 @@ count = "2"
 [[cell]]
 crate = "busbar-substrate"
 kind = "legacy"
-count = "298"
+count = "297"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "plane"
-count = "768"
+count = "767"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2424,7 +2424,7 @@ count = "5"
 [[cell]]
 crate = "busbar-substrate"
 kind = "substrate"
-count = "26"
+count = "28"
 
 [[cell]]
 crate = "busbar-substrate"
@@ -2439,7 +2439,7 @@ count = "1140"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "api"
-count = "31"
+count = "34"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -2449,17 +2449,17 @@ count = "1"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "control"
-count = "121"
+count = "123"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "legacy"
-count = "134"
+count = "135"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "162"
+count = "163"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -4369,6 +4369,16 @@ verdict = "owner-ruling-pending"
 cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
 why     = "busbar-substrate-values names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-substrate-values."
+
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The `groups:` grammar's ONE RELAY projects a parsed limit tree into `busbar_contract::limits`, and it travelled with the grammar it reads when that grammar moved to the surviving half of the substrate. The SAME edge the other half already declares, on the same citation: the two crates are one kind. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar-substrate-values"

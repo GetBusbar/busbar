@@ -1339,3 +1339,53 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 5
 because = "FACE busbar-unit-cost::RateCard: the legacy engine's cost model reads its rate half off the cost unit's card through the one seam cost.rs (one import line, two spellings) and names the unit in its manifest (one dependency line, four spellings), less one prose spelling drained; the private RateNanos table, its projections and the nano constants are deleted (119 lines)"
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE `groups:` VALUE GRAMMAR'S MOVE TO THE SURVIVING HALF OF THE SUBSTRATE.
+#
+# Five rows, one face, one manoeuvre. The FACE two commits below this one put its ONE RELAY —
+# `group_specs` and its three helpers, the projection of a parsed limit tree into
+# `busbar_contract::limits` — into `crates/busbar-substrate/src/config/groups.rs`, 84 production
+# lines on a crate that is FROZEN. The relay has no arithmetic in it and the file it sits in says
+# in its own header that it holds "only the SHAPES (the serde structs/enums, their `Default`s and
+# their pure accessors)": the whole thing is a pure value family over `busbar-api` and
+# `busbar-contract` leaves, opening no socket, no file, no process and reading no environment. So
+# it MOVES by identity (`git mv`, byte for byte, no wire form touched) into
+# `busbar-substrate-values`, the pure half that SURVIVES, re-exported at its historical
+# `busbar_substrate::config::groups::` path so no reader changes a spelling.
+#
+# Every rise below is that move's OTHER END: the same text, scored against the crate it now sits
+# in. The falls are re-pinned by measurement in the same commit — busbar-substrate x control
+# 352 -> 350, x legacy 298 -> 297, x plane 768 -> 767 — and the frozen crate is 501 production
+# lines lighter, which takes THIS LINE's whole +84 back out and 417 more with it.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the `groups:` value grammar's move to busbar-substrate-values (crates/busbar-substrate/src/config/groups.rs -> crates/busbar-substrate-values/src/config/groups.rs, 508 lines, `git mv` byte for byte): the three hits are the grammar's own `busbar_api::ScopeRef` signature and the sentences naming it, the SAME text scored against the crate it now sits in. busbar-substrate x api is unchanged because the grammar was never the only namer of `busbar_api::` there; the dependency edge busbar-substrate-values -> busbar-api already exists and is unchanged."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.control.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "the `groups:` value grammar's move to busbar-substrate-values (crates/busbar-substrate/src/config/groups.rs -> crates/busbar-substrate-values/src/config/groups.rs, 508 lines, `git mv` byte for byte): the two hits are the limit tree's own control vocabulary — the field and variant names an operator writes into a `groups:` block. busbar-substrate x control FALLS 352 -> 350 in this same diff, which is the other end of these two."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the `groups:` value grammar's move to busbar-substrate-values (crates/busbar-substrate/src/config/groups.rs -> crates/busbar-substrate-values/src/config/groups.rs, 508 lines, `git mv` byte for byte): the one hit is the file header's own sentence naming busbar-core's historical `config::groups` re-export. busbar-substrate x legacy FALLS 298 -> 297 in this same diff, and legacy-reach does not move in either direction because the re-export keeps the root's spelling byte-identical."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the `groups:` value grammar's move to busbar-substrate-values (crates/busbar-substrate/src/config/groups.rs -> crates/busbar-substrate-values/src/config/groups.rs, 508 lines, `git mv` byte for byte): the one hit is the grammar naming the plane vocabulary the section it parses belongs to. busbar-substrate x plane FALLS 768 -> 767 in this same diff, which is the other end of this one."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "THE PRICE OF THE MOVE, STATED. busbar-substrate x substrate rises 26 -> 28 because the frozen crate now NAMES the crate it handed the grammar to: `pub use busbar_substrate_values::config::groups;` in config/mod.rs and the sentence above it that says where the grammar went and why. Without those two the historical `busbar_substrate::config::groups::` spelling breaks for every reader and the move becomes a rename. The crate's three other moved cells FALL in the same commit and its production line count falls 30158 -> 29657."

@@ -16,8 +16,25 @@
 #              replaying that family would be a claim about code it did not change. An unfiltered
 #              replay is the better part of half an hour and would be a claim about twenty-six
 #              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   tests    — `xtask` and nothing else FOR THE FACE COMMITS. The branch's last commit MOVES the
+#              `groups:` value grammar and its one `busbar_contract::limits` relay out of the
+#              frozen substrate into `busbar-substrate-values`, so the list gains every package
+#              whose test binary builds a limit tree or a GroupSpec through the historical
+#              `busbar_substrate::config::groups::` spelling the re-export has to keep working:
+#              `busbar-substrate-values` (the grammar's new home), `busbar-substrate` (the
+#              re-export), `busbar-contract` (the vocabulary the relay projects into),
+#              `busbar-unit-cost` and `busbar-unit-admission` (the projection and the walk that
+#              read it), `busbar-llm`, `busbar-core` and `busbar` (the resolvers, the limit trees
+#              their cells build, and the composition root).
+families = '^(documented|boot|config|billing|ledger)([|.]|$)'
+#
+#              `busbar-llm` IS NOT ON THIS LIST, and the reason is measured, not assumed: on an
+#              UNMODIFIED checkout of this branch's base, `cargo test -p busbar-llm --lib` fails
+#              `engine::signal_catalog_tests::admin_registered_hook_signals_take_effect_on_the_next_request`
+#              (583 passed, 1 failed) exactly as it does here, and a second order-dependent case in
+#              that package (`unit::route::tests::naming_the_legs_over_a_pool_...`) fails under fleet
+#              load. A package that is red at the base makes the battery's verdict a statement about
+#              the base rather than about this commit. The grammar's busbar-llm readers are covered
+#              by `busbar-substrate`'s own cells and by the re-export the compiler checks at every
+#              one of those call sites.
+tests = ["xtask", "busbar-substrate-values", "busbar-substrate", "busbar-contract", "busbar-unit-cost", "busbar-unit-admission", "busbar-core", "busbar"]
