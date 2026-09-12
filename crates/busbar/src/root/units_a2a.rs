@@ -824,7 +824,6 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         principal: &PrincipalId,
         // WHAT THE CALLER'S TIER PRICES AT, resolved at the composition root's one site. Same
         // field, same source, on every leg.
-        tiered: &busbar_unit_cost::TieredAt,
         posted: busbar_caps::Posted,
         token: &busbar_caps::DurabilityToken,
     ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -849,9 +848,6 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // off the wall clock is a posting a stepped clock can reorder against its own record.
             stamp: crate::root::durability::PostingStamp {
                 rate_card_version: 0,
-                // THE SCOPE THIS UNIT'S TIER WAS RESOLVED AT, on the row, from the one site that
-                // resolved it. Same field, same source, on every leg.
-                tier_scope: tiered.scope(),
                 wall: self.bindings.now,
                 mono: self.bindings.mono,
             },
@@ -1044,9 +1040,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             },
             amount: busbar_unit_audit::Amount {
                 lines: Vec::new(),
-                pre_tier: 0,
                 priced: 0,
-                tier_bp: 0,
                 fee_count,
                 currency: String::new(),
                 rate_card_version: 0,

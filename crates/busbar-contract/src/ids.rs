@@ -375,14 +375,16 @@ pub struct BucketRef {
 
 /// The chain of buckets one principal draws against, all or nothing.
 ///
-/// One tier multiplier governs the whole chain; a chain whose buckets disagree on the tier is a
-/// mismatch, not an average.
+/// A CHAIN CARRIES NO PRICE. It declared a basis-point tier multiplier governing the whole chain,
+/// and a chain whose buckets disagreed about it was a boot refusal rather than an average. A tier
+/// is a SCOPE of the tariff now — one cell of absolute fee terms selected by the one
+/// `tier > pool > plane > default` walk against the principal's own tier — so there is nothing here
+/// for two groups to disagree about, and the scope a line was charged at is recorded on the line
+/// instead of on the chain that drew it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BucketChain {
     /// The buckets, in pool-filtered chain order.
     pub buckets: crate::bounded::BoundedVec<BucketRef, { crate::bounded::MAX_KEYS }>,
-    /// The chain's tier multiplier, in basis points.
-    pub tier_bp: u32,
 }
 
 /// One class's share of a unit's estimate.

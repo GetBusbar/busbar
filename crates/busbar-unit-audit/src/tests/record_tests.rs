@@ -53,9 +53,7 @@ fn inputs(unit: u64) -> AuditInputs {
                 },
                 estimated: false,
             }],
-            pre_tier: 600,
             priced: 540,
-            tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
             rate_card_version: 3,
@@ -87,9 +85,19 @@ fn inputs(unit: u64) -> AuditInputs {
 /// from a failing run. The inputs deliberately use the enum arms that carry payloads, because those
 /// are the ones whose encoding is easiest to move by accident.
 ///
-/// Moved exactly once, before any release wrote a chain: the record's position entered the digest,
-/// so a chain cut at its tail reports the cut instead of linking perfectly. That is the only
-/// change this value has ever absorbed, and the next one needs a migration, not a re-capture.
+/// Moved TWICE, both times before any release wrote a chain, and each move is named here because
+/// the value's whole worth is that nobody may move it quietly.
+///
+/// 1. The record's position entered the digest, so a chain cut at its tail reports the cut instead
+///    of linking perfectly.
+/// 2. The amount stopped being three fields. It carried a pre-tier figure, that figure through a
+///    basis-point multiplier, and the multiplier itself; a tier is a SCOPE of the tariff now, so
+///    the charge IS the sum and the two retired fields recorded nothing the third did not. 1.5.5
+///    has no audit chain to migrate — this crate is 1.6.0's — so there is no persisted chain
+///    anywhere that this move invalidates, which is the one condition under which it is a re-pin
+///    and not a migration.
+///
+/// After the release ships, the next change needs a migration and not a re-capture.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let mut chain = AuditChain::new();
@@ -99,7 +107,7 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     with_payloads.outcome.finish = FinishClass::Error;
     let record = chain.seal(with_payloads, &token());
     assert_eq!(
-        record.hash, "0161f86736b3ed067dcdbaa80259c52ceb25946076879a8968e3f84570626358",
+        record.hash, "0717bd5e33d7128986fb11b4a0d09df74ffcc6d63596a2a4940c522ea06573be",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
@@ -153,8 +161,6 @@ fn editing_any_recorded_fact_is_caught() {
     // Every one of these is a fact somebody would have a reason to change.
     let edits: Vec<(&str, Edit)> = vec![
         ("the priced amount", |r| r.amount.priced += 1),
-        ("the pre-tier amount", |r| r.amount.pre_tier += 1),
-        ("the tier", |r| r.amount.tier_bp += 1),
         ("the fee count", |r| r.amount.fee_count += 1),
         ("a quantity", |r| r.amount.lines[0].quantity += 1),
         ("a quantity's source", |r| {

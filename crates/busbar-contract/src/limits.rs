@@ -84,13 +84,4 @@ pub struct GroupSpec {
     pub enabled: bool,
     /// The group's limits, in configuration order.
     pub limits: Vec<LimitSpec>,
-    /// What being in this group is worth, in basis points — the group's TIER.
-    ///
-    /// A key binds to at most one group, so a group IS a tier, and the multiplier belongs on the
-    /// projection for the same reason the limits do: the door sizes a hold through it and the
-    /// pricing site charges through it, and both read this one relay rather than the configuration
-    /// twice. `None` is a group that declares no tier, which prices at the scope out from it —
-    /// never `10_000` written out, because a group that declares the standard multiplier resolves
-    /// AT the tier to the same number and the journal row says which.
-    pub tier_bp: Option<u32>,
 }

@@ -12,7 +12,7 @@
 use busbar_contract::tariff::{FeeTerms, ScopeKind, ScopedFeeTerms, TariffScope};
 
 use super::*;
-use crate::{HistorySeq, STANDARD_TIER_BP};
+use crate::HistorySeq;
 
 /// A card with no lane rates at all, so every figure below is the SCHEDULE's and nothing else's.
 fn card(node: i64, pool: (&str, i64)) -> RateCard {
@@ -41,8 +41,6 @@ fn one_visit(scope: TariffScope) -> Posting {
         quantities: Vec::new(),
         entry_count: 1,
         transaction_count: 0,
-        tier_bp: STANDARD_TIER_BP,
-        tier_scope: None,
         arrived_ms: 1_000,
         arrived_mono: 1,
         scope,

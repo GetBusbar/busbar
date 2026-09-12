@@ -26,7 +26,6 @@ fn patch_limits_preserves_other_fields() {
         enabled: true,
         limits: vec![budget(3_000)],
         child_default: None,
-        tier_bp: None,
     };
     let out = merge_group_patch(base, None, None, Some(vec![budget(5_000)]), None);
     assert_eq!(out.parent.as_deref(), Some("team"));
@@ -46,7 +45,6 @@ fn patch_enabled_only_freezes_without_touching_limits() {
         child_default: Some(ChildDefault {
             limits: vec![budget(500)],
         }),
-        tier_bp: None,
     };
     let out = merge_group_patch(base, None, Some(false), None, None);
     assert!(!out.enabled);
@@ -64,7 +62,6 @@ fn empty_patch_is_identity() {
         enabled: false,
         limits: vec![budget(1)],
         child_default: None,
-        tier_bp: None,
     };
     let out = merge_group_patch(base.clone(), None, None, None, None);
     assert_eq!(out, base);

@@ -75,7 +75,7 @@ fn amended() -> History {
 fn archive_of(history: History) -> SealedHistory {
     let mut tiers = BTreeMap::new();
     tiers.insert(key("b"), TIER_BP);
-    SealedHistory { history, tiers }
+    SealedHistory::new(history)
 }
 
 /// A line arriving at `arrived_ms`, with its cache filled from the history it is settled under.
@@ -98,7 +98,6 @@ fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
             },
         ],
         fee_count: 1,
-        tier_bp: TIER_BP,
         arrived_ms,
         currency: CurrencyCode::USD,
         cached: DerivedPrice::default(),
@@ -106,11 +105,10 @@ fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
     };
     let head = archive.head().expect("the fixture's archive has a head");
     let view = archive.view_at(head).expect("and a snapshot at it");
-    let priced = price_line(&line, &view, TIER_BP).expect("the fixture prices");
+    let priced = price_line(&line, &view).expect("the fixture prices");
     line.cached = DerivedPrice {
         history_seq: head,
         card_seq: priced.card_seq,
-        pre_tier_nanos: priced.pre_tier_nanos as i128,
         priced_nanos: priced.priced_nanos as i128,
     };
     line
@@ -139,7 +137,7 @@ fn a_statement_re_derives_from_the_quantities_and_never_sums_a_cached_price() {
 
     for line in &mut lines {
         line.cached.priced_nanos = 999_999_999;
-        line.cached.pre_tier_nanos = -1;
+        line.cached.priced_nanos = -1;
     }
     let over_a_corrupted_book = totals_as_of(&view, WINDOW, CurrencyCode::USD, lines.iter());
     assert_eq!(

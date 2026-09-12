@@ -92,7 +92,7 @@ pub use migration::{
     Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{
-    apply_tier, divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
+    divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
     Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };

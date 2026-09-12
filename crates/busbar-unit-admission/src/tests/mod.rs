@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use busbar_unit_cost::{GroupSpec, LimitMetric, LimitSpec, ScopeSpec};
 
-use crate::chain::{ChainWalk, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use crate::chain::{ChainWalk, GroupRuntime, GroupTable};
 use crate::decide::{Blocked, Door, Metric};
 use crate::price::{Pricer, RateNanos};
 use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL};
@@ -61,12 +61,14 @@ pub(crate) fn pooled(
     }
 }
 
-/// One configured group: the cost unit's spec, plus the tier multiplier the resolver does not read
-/// from configuration and these tests set by hand.
+/// One configured group: the cost unit's spec, and nothing beside it.
+///
+/// It carried a tier multiplier the resolver did not read from configuration and these tests wrote
+/// on by hand. A tier is a SCOPE of the tariff now, resolved against the principal's own tier at
+/// the one walk that answers a schedule, so a group has no price on it for a fixture to set.
 #[derive(Debug, Clone)]
 pub(crate) struct GroupCfg {
     pub spec: GroupSpec,
-    pub tier_bp: u32,
 }
 
 /// A group with a parent, a freeze flag and a set of limits.
@@ -77,30 +79,20 @@ pub(crate) fn group_cfg(parent: Option<&str>, enabled: bool, limits: Vec<LimitSp
             parent: parent.map(str::to_string),
             enabled,
             limits,
-            tier_bp: None,
         },
-        tier_bp: STANDARD_TIER_BP,
     }
 }
 
 /// The configured groups, resolved by the COST UNIT into the table the chain walk chases — the one
 /// projection in the tree, so every decision below is judged over the buckets the resolver really
-/// materialises. The tier multiplier is the one field the resolver does not take from
-/// configuration; it is written onto the resolved group afterwards, per test.
+/// materialises. Nothing is written onto a resolved group afterwards: the resolver's answer IS the
+/// table, which is what it was not while a tier multiplier had to be patched in per test.
 pub(crate) fn table(groups: &[(&str, GroupCfg)]) -> GroupTable {
     let specs: BTreeMap<String, GroupSpec> = groups
         .iter()
         .map(|(n, c)| (n.to_string(), c.spec.clone()))
         .collect();
-    let mut resolved: Vec<GroupRuntime> = GroupTable::resolve(&specs).groups().to_vec();
-    for g in &mut resolved {
-        let (_, cfg) = groups
-            .iter()
-            .find(|(n, _)| *n == g.name)
-            .expect("resolved from this set");
-        g.tier_bp = cfg.tier_bp;
-    }
-    GroupTable::new(resolved)
+    GroupTable::resolve(&specs)
 }
 
 /// The chain for a principal id bound to a group, or the fail-closed error.

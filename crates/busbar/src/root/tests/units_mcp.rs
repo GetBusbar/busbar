@@ -743,7 +743,7 @@ fn a_call_is_estimated_flat_plus_its_document() {
     assert_eq!(call.per_class[0].class, CLASS_TOOL_CALLS.as_str());
     assert_eq!(call.per_class[0].quantity, 1);
     // 100 fee + 1 call at 7 + 10 bytes at 2.
-    assert_eq!(call.pre_tier_nanos(), 127);
+    assert_eq!(call.total_nanos(), 127);
 
     let listing = estimate(ops::OP_TOOLS_LIST, 10, &prices, 100);
     assert_eq!(listing.per_class.len(), 1);
@@ -1275,7 +1275,6 @@ fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
                 downgrade_to: None,
             }],
             child_default: None,
-            tier_bp: None,
         },
     )]);
     let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
@@ -1399,7 +1398,6 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
             mono: mono.tick(),
         },
         &DurabilityToken::mint(&seal),
-        &busbar_unit_cost::TieredAt::STANDARD,
         posted,
         &crate::root::kernel::TariffScope::node(),
     )
@@ -1470,7 +1468,6 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             &who,
             at,
             &DurabilityToken::mint(&seal),
-            &busbar_unit_cost::TieredAt::STANDARD,
             posted,
             &crate::root::kernel::TariffScope::node(),
         )
@@ -1533,7 +1530,6 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
             mono: Mono::new().tick(),
         },
         &DurabilityToken::mint(&seal),
-        &busbar_unit_cost::TieredAt::STANDARD,
         posted,
         &crate::root::kernel::TariffScope::node(),
     )

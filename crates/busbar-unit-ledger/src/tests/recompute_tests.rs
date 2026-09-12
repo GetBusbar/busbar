@@ -4,8 +4,6 @@
 //! The recompute as an arbiter: the lookup wins, the cache is corrected, and a head that did not
 //! move is what tells a hand edit from an amendment.
 
-use std::collections::BTreeMap;
-
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{
     Author, CardEntryDraft, CurrencyCode, FeeTerms, History, HistorySeq, LaneClass, RateCard,
@@ -13,8 +11,8 @@ use busbar_unit_cost::{
 };
 
 use crate::recompute::{
-    apply_tier, price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,
-    PostingOrigin, PricedLine, SealedHistory, Verdict, Watermark, BASIS_POINTS,
+    price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,
+    PostingOrigin, PricedLine, SealedHistory, Verdict, Watermark,
 };
 
 use super::fixtures::key;
@@ -23,10 +21,6 @@ use super::fixtures::key;
 const LANE: &str = "lane-a";
 /// The instant every line arrives at, unless a test moves it on purpose.
 const ARRIVED_MS: u64 = 1_767_225_600_000;
-/// The tier the fixture's bucket is on: a discount, not the neutral value, because `apply_tier` at
-/// ten thousand basis points is the identity function and a fixture priced only there would pass
-/// with the whole tier projection missing.
-const DISCOUNT_TIER_BP: u32 = 9_000;
 
 /// The card the opening entry seals: two classes on one lane, and a flat fee.
 fn opening_card() -> RateCard {
@@ -53,12 +47,7 @@ fn amended_card() -> RateCard {
 
 /// A one-entry history: the opening card, effective from instant zero, open-ended.
 fn archive() -> SealedHistory {
-    let mut tiers = BTreeMap::new();
-    tiers.insert(key("b"), DISCOUNT_TIER_BP);
-    SealedHistory {
-        history: History::opening(opening_card(), 0),
-        tiers,
-    }
+    SealedHistory::new(History::opening(opening_card(), 0))
 }
 
 /// The same archive with a second entry appended over the instant the fixture's lines arrive at —
@@ -103,7 +92,6 @@ fn correct_line(node_seq: u64) -> Posting {
             },
         ],
         fee_count: 1,
-        tier_bp: DISCOUNT_TIER_BP,
         arrived_ms: ARRIVED_MS,
         currency: CurrencyCode::USD,
         cached: DerivedPrice::default(),
@@ -117,11 +105,10 @@ fn correct_line(node_seq: u64) -> Posting {
 fn refresh(line: &mut Posting, archive: &SealedHistory) {
     let head = archive.head().expect("the fixture's archive has a head");
     let view = archive.view_at(head).expect("and a snapshot at it");
-    let priced = price_line(line, &view, archive.tier_bp(&line.key)).expect("the fixture prices");
+    let priced = price_line(line, &view).expect("the fixture prices");
     line.cached = DerivedPrice {
         history_seq: head,
         card_seq: priced.card_seq,
-        pre_tier_nanos: priced.pre_tier_nanos as i128,
         priced_nanos: priced.priced_nanos as i128,
     };
 }
@@ -206,7 +193,7 @@ fn a_pass_of_stale_caches_does_not_alarm_and_one_hand_edit_does() {
     );
 
     let mut one = vec![correct_line(1)];
-    one[0].cached.pre_tier_nanos += 3;
+    one[0].cached.priced_nanos += 3;
     let pass = recompute(Watermark::start(), &mut one, &archive());
     assert!(pass.alarms(), "nothing legitimate can have moved this one");
 }
@@ -218,31 +205,9 @@ fn a_hand_corrupted_quantity_moves_both_figures() {
     let outcome = recheck(&line, &archive());
     let kinds: Vec<_> = outcome.divergences.iter().collect();
     assert!(
-        kinds
-            .iter()
-            .any(|d| matches!(d, Divergence::PreTier { .. }))
-            && kinds.iter().any(|d| matches!(d, Divergence::Priced { .. })),
-        "the pre-tier figure and the priced one both move: {kinds:?}"
+        kinds.iter().any(|d| matches!(d, Divergence::Priced { .. })),
+        "the priced figure moves: {kinds:?}"
     );
-}
-
-#[test]
-fn a_tier_the_line_invented_is_found() {
-    let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
-    let outcome = recheck(&line, &archive());
-    assert!(outcome
-        .divergences
-        .iter()
-        .any(|d| matches!(d, Divergence::Tier { .. })));
-    // And the money does NOT move, which is the point: the lookup priced at the SEALED tier rather
-    // than at the one the line asserted, so the cached amount is still right and only the claim
-    // about the tier is wrong. A recompute that had priced at the line's own tier would have agreed
-    // with a line that invented a discount for itself.
-    assert!(!outcome
-        .divergences
-        .iter()
-        .any(|d| matches!(d, Divergence::Priced { .. })));
 }
 
 #[test]
@@ -267,7 +232,6 @@ fn on_a_deployment_with_no_rate_card_the_fee_line_is_what_gets_checked() {
         0,
     ));
     let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
     line.fee_count = 3;
     refresh(&mut line, &archive);
     assert!(line.cached.priced_nanos > 0, "the fee still posts");
@@ -424,33 +388,6 @@ fn a_watermark_that_survives_a_restart_resumes_where_it_stopped() {
     assert_eq!(second.watermark.mark_for(1), Some(20));
 }
 
-#[test]
-fn the_tier_multiplies_before_it_divides() {
-    // A tier applied by dividing first rounds small amounts to nothing, which is a real way to lose
-    // money one nano-unit at a time.
-    assert_eq!(apply_tier(1, 9_999), 0);
-    assert_eq!(apply_tier(10_000, 9_999), 9_999);
-    assert_eq!(apply_tier(3, 5_000), 1);
-    assert_eq!(apply_tier(-10_000, 9_000), -9_000);
-}
-
-/// The tier multiplier saturates too, so a pre-tier figure at the ceiling does not wrap on the way
-/// through the multiply-before-divide.
-#[test]
-fn the_tier_multiplier_saturates_rather_than_wrapping() {
-    // A wrap here flips the sign, which is how a ceiling figure would come back as a credit.
-    assert_eq!(
-        apply_tier(i128::MAX, BASIS_POINTS),
-        i128::MAX / i128::from(BASIS_POINTS)
-    );
-    assert_eq!(
-        apply_tier(i128::MIN, BASIS_POINTS),
-        i128::MIN / i128::from(BASIS_POINTS)
-    );
-    // And the ordinary figures are untouched.
-    assert_eq!(apply_tier(10_000, 9_999), 9_999);
-}
-
 /// A figure too large to hold is a DISAGREEMENT, not a wrap.
 ///
 /// The recompute is the arbiter the rest of the money path is checked against, so it is the last
@@ -465,7 +402,6 @@ fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
         0,
     ));
     let mut line = correct_line(1);
-    line.tier_bp = BASIS_POINTS;
     line.lines = vec![
         PricedLine {
             class: MeterClassId::new("tokens_in"),
@@ -588,12 +524,7 @@ fn a_line_booked_at_a_pool_scope_recomputes_at_that_pools_schedule() {
             ..FeeTerms::default()
         },
     );
-    let mut tiers = BTreeMap::new();
-    tiers.insert(key("b"), DISCOUNT_TIER_BP);
-    let archive = SealedHistory {
-        history: History::opening(scoped_card, 0),
-        tiers,
-    };
+    let archive = SealedHistory::new(History::opening(scoped_card, 0));
     let head = archive.head().expect("the fixture's archive has a head");
     let view = archive.view_at(head).expect("and a snapshot at it");
 
@@ -602,10 +533,10 @@ fn a_line_booked_at_a_pool_scope_recomputes_at_that_pools_schedule() {
     let mut at_pool = correct_line(1);
     at_pool.scope = TariffScope::pool("busy");
 
-    let node_nanos = price_line(&at_node, &view, archive.tier_bp(&at_node.key))
+    let node_nanos = price_line(&at_node, &view)
         .expect("the fixture prices")
         .priced_nanos;
-    let pool_nanos = price_line(&at_pool, &view, archive.tier_bp(&at_pool.key))
+    let pool_nanos = price_line(&at_pool, &view)
         .expect("the fixture prices")
         .priced_nanos;
     assert_ne!(

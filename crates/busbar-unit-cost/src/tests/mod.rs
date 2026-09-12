@@ -123,9 +123,8 @@ pub(crate) fn priced(
     lane: &str,
     usage: &busbar_caps::Usage,
     fee_count: u64,
-    tier_bp: u32,
 ) -> Priced {
-    priced_in(card, lane, usage, fee_count, tier_bp, CurrencyCode::USD)
+    priced_in(card, lane, usage, fee_count, CurrencyCode::USD)
         .expect("a one-currency card prices in its own currency")
 }
 
@@ -135,34 +134,14 @@ pub(crate) fn priced_in(
     lane: &str,
     usage: &busbar_caps::Usage,
     fee_count: u64,
-    tier_bp: u32,
     currency: CurrencyCode,
 ) -> Result<Priced, Unpriceable> {
     let history = History::opening(card.clone(), 0);
-    let posting = Posting::from_usage(
-        lane,
-        usage,
-        0,
-        fee_count,
-        &crate::TieredAt {
-            bp: tier_bp,
-            tier: None,
-        },
-        0,
-        0,
-    );
+    let posting = Posting::from_usage(lane, usage, 0, fee_count, 0, 0);
     price(&history.current(), &posting, currency)
 }
 
 /// A posting carrying one class's quantity, dated at a named instant.
 pub(crate) fn posting_at(lane: &str, arrived_ms: u64, lines: &[(&'static str, u64)]) -> Posting {
-    Posting::from_usage(
-        lane,
-        &usage(lines),
-        0,
-        0,
-        &crate::TieredAt::STANDARD,
-        arrived_ms,
-        arrived_ms,
-    )
+    Posting::from_usage(lane, &usage(lines), 0, 0, arrived_ms, arrived_ms)
 }

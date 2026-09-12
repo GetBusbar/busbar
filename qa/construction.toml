@@ -1640,7 +1640,10 @@ and never lengthens."""
 scope_note = "production code only; a test may price whatever it likes to prove the arithmetic"
 # The seam verb that turns reported usage into an amount. Definitions and `use` lines are not calls.
 entry_verbs = ["cost_price_usage"]
-# The cost unit's own pricing entry points, named as paths.
+# The cost unit's own pricing entry points, named as paths. `apply_tier` no longer exists -- the
+# tier became a SCOPE of the tariff and its basis-point multiplier was deleted -- and the pattern
+# STAYS for the same reason the retired fee spellings below stay: it is the tripwire that catches a
+# re-introduction of a second pricing mechanism outside the crate that owns the card.
 entry_path_patterns = ['busbar_unit_cost::[A-Za-z0-9_:]*price', 'busbar_unit_cost::apply_tier']
 max_extra_sites = 0
 # The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN

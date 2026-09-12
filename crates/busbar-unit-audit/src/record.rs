@@ -125,12 +125,13 @@ pub use busbar_caps::{QuantitySource, UsageLine};
 pub struct Amount {
     /// The quantities, with their sources.
     pub lines: Vec<UsageLine>,
-    /// What it came to before the tier was applied, in nano-units.
-    pub pre_tier: i128,
-    /// And after — the figure the money moved by.
+    /// **THE FIGURE THE MONEY MOVED BY**, in nano-units.
+    ///
+    /// One amount and not two. It was a pre-tier figure and that figure through a basis-point
+    /// multiplier until the tier became a SCOPE of the schedule: the amounts a tier prices at are
+    /// the terms the one tier > pool > plane > default walk answers with, so the charge IS the sum
+    /// and there is nothing between them for a second figure to record.
     pub priced: i128,
-    /// The tier applied, in basis points.
-    pub tier_bp: u32,
     /// How many request fees were charged.
     pub fee_count: u32,
     /// Which currency the nano-units are of.
@@ -367,9 +368,7 @@ impl AuditChain {
             d.text(&quantity_source_tag(&line.source));
             d.num(u64::from(line.estimated));
         }
-        d.text(&record.amount.pre_tier.to_string());
         d.text(&record.amount.priced.to_string());
-        d.num(u64::from(record.amount.tier_bp));
         d.num(u64::from(record.amount.fee_count));
         d.text(&record.amount.currency);
         d.num(record.amount.rate_card_version);

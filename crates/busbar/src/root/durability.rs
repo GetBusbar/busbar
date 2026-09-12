@@ -302,7 +302,6 @@ impl Durability {
             settled: i128::from(settlement.posted.settled()),
             overdraft: i128::from(settlement.posted.overdraft()),
             rate_card_version: stamp.rate_card_version,
-            tier_scope: stamp.tier_scope,
             wall: stamp.wall,
             mono: stamp.mono,
             scope: at.scope.clone(),
@@ -318,7 +317,6 @@ impl Durability {
             settled: 0,
             overdraft: note.amount,
             rate_card_version: stamp.rate_card_version,
-            tier_scope: stamp.tier_scope,
             wall: stamp.wall,
             mono: stamp.mono,
             scope: at.scope.clone(),
@@ -370,19 +368,6 @@ impl Durability {
 pub struct PostingStamp {
     /// Which card version priced the unit.
     pub rate_card_version: u64,
-    /// THE SCOPE THE UNIT'S TIER MULTIPLIER WAS RESOLVED AT — `tier` where the caller's own tier
-    /// named it, `default` where the resolution fell through to the scope out from it.
-    ///
-    /// A journal row that kept only the figure could not tell a half-price tier from the standard
-    /// price of a halved card: the same number, two different facts, and only the scope tells them
-    /// apart. It is the word [`busbar_unit_cost::TieredAt::scope`] answers, taken from the one site
-    /// that resolved it, so the row and the pricing cannot come to different accounts of which
-    /// scope a unit was billed at.
-    ///
-    /// It is a `&'static str` because the scope is a closed vocabulary of two words and not a name a
-    /// deployment chooses — the tier's NAME is the principal's and belongs with the principal, and
-    /// putting it on a financial record exempt from erasure is a different decision from this one.
-    pub tier_scope: &'static str,
     /// The wall clock, in whole seconds. The unit's pinned arrival epoch, never a fresh read.
     pub wall: u64,
     /// The node's monotonic clock.
@@ -446,8 +431,6 @@ pub struct Posting {
     pub overdraft: i128,
     /// Which card version priced it.
     pub rate_card_version: u64,
-    /// The scope the unit's tier multiplier was resolved at. See [`PostingStamp::tier_scope`].
-    pub tier_scope: &'static str,
     /// The wall clock, in whole seconds.
     pub wall: u64,
     /// The node's monotonic clock.
@@ -473,11 +456,6 @@ impl Posting {
         // and reads back as `default` — which is the only schedule it could have been charged
         // under. Nothing above it moves, so no existing reader's offsets change.
         body.text(&self.scope.encoded());
-        // THE SCOPE, beside the figures it explains and on the same chain. A journal is a financial
-        // record: a fact that is in it can never be taken out, which is exactly why the scope a
-        // charge was decided at belongs in it rather than being re-derived later from a
-        // configuration somebody has since edited.
-        body.text(self.tier_scope);
         body.finish()
     }
 }
@@ -499,9 +477,7 @@ pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
     body.text(record.origin_kind);
     body.text(&format!("{:?}", record.outcome.unit_end));
     body.text(&format!("{:?}", record.outcome.finish));
-    body.figure(record.amount.pre_tier);
     body.figure(record.amount.priced);
-    body.num(u64::from(record.amount.tier_bp));
     body.num(u64::from(record.amount.fee_count));
     body.text(&record.amount.currency);
     body.num(record.amount.rate_card_version);

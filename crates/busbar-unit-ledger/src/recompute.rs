@@ -82,32 +82,25 @@ pub trait HistoryArchive {
     /// The head the history has reached NOW. This is what decides whether a stale cache is an
     /// ordinary consequence of an amendment or a line somebody edited.
     fn head(&self) -> Option<HistorySeq>;
-
-    /// The tier for `key`, in basis points. Ten thousand when none was sealed, which is full price.
-    fn tier_bp(&self, key: &TotalsKey) -> u32;
 }
 
-/// A history with the tiers that went with it — the archive the recompute reads.
+/// The archive the recompute reads: the dated cards, and nothing beside them.
 ///
-/// The tier is a property of the chain a request was admitted through rather than of the card, so
-/// it cannot live inside a `CardEntry`; it is sealed beside the history for the same reason the
-/// history is sealed at all, which is that repricing against a tier somebody changed yesterday
-/// would report every tier change as a defect.
+/// It sealed a per-bucket tier in basis points until the tier became a SCOPE. What a tier costs is
+/// now the terms the one tier > pool > plane > default walk answers with, and the scope that walk
+/// stopped at is recorded ON THE LINE — so a recompute reaches the schedule the settlement used by
+/// reading the row it is re-pricing, and there is nothing left for an archive to seal beside the
+/// history that a row does not already carry.
 #[derive(Debug, Clone, Default)]
 pub struct SealedHistory {
     /// The dated cards.
     pub history: History,
-    /// The tier in basis points, per bucket key. Absent means full price.
-    pub tiers: BTreeMap<TotalsKey, u32>,
 }
 
 impl SealedHistory {
-    /// An archive over a history with no tiers sealed — every bucket at full price.
+    /// An archive over a history.
     pub fn new(history: History) -> Self {
-        SealedHistory {
-            history,
-            tiers: BTreeMap::new(),
-        }
+        SealedHistory { history }
     }
 }
 
@@ -119,10 +112,6 @@ impl HistoryArchive for SealedHistory {
 
     fn head(&self) -> Option<HistorySeq> {
         self.history.head()
-    }
-
-    fn tier_bp(&self, key: &TotalsKey) -> u32 {
-        self.tiers.get(key).copied().unwrap_or(BASIS_POINTS)
     }
 }
 
@@ -159,9 +148,9 @@ pub struct DerivedPrice {
     pub history_seq: HistorySeq,
     /// The entry that head resolved to at the line's instant.
     pub card_seq: HistorySeq,
-    /// The amount before the tier was applied.
-    pub pre_tier_nanos: i128,
-    /// The amount after it.
+    /// **WHAT THE LINE COSTS**, in nano-units. One figure: it was an amount before a basis-point
+    /// tier and the amount after it, and with the tier a scope of the schedule there is nothing
+    /// between the two for a second number to record.
     pub priced_nanos: i128,
 }
 
@@ -175,7 +164,6 @@ impl Default for DerivedPrice {
         DerivedPrice {
             history_seq: HistorySeq::OPENING,
             card_seq: HistorySeq::OPENING,
-            pre_tier_nanos: 0,
             priced_nanos: 0,
         }
     }
@@ -203,8 +191,6 @@ pub struct Posting {
     pub lines: Vec<PricedLine>,
     /// How many request fees the line carries.
     pub fee_count: u64,
-    /// The tier applied, in basis points, as the line recorded it.
-    pub tier_bp: u32,
     /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
     pub arrived_ms: u64,
     /// The currency the bucket is denominated in. Two currencies never sum.
@@ -291,20 +277,6 @@ pub enum Divergence {
         /// What the lookup resolves to.
         resolved: HistorySeq,
     },
-    /// The cached pre-tier figure does not match the lookup.
-    PreTier {
-        /// What the cache says.
-        posted: i128,
-        /// What the lookup makes it.
-        recomputed: i128,
-    },
-    /// The tier the line recorded is not the tier the archive holds.
-    Tier {
-        /// What the line says.
-        posted: u32,
-        /// What the archive says.
-        sealed: u32,
-    },
     /// The cached priced figure does not match the lookup. This is the one that moves money.
     Priced {
         /// What the cache says.
@@ -334,14 +306,6 @@ impl std::fmt::Display for Divergence {
             Divergence::CardSeq { posted, resolved } => write!(
                 f,
                 "the line was priced under history entry {posted}; the snapshot resolves {resolved}"
-            ),
-            Divergence::PreTier { posted, recomputed } => write!(
-                f,
-                "the pre-tier amount is {posted} in the cache and {recomputed} on the lookup"
-            ),
-            Divergence::Tier { posted, sealed } => write!(
-                f,
-                "the line recorded a tier of {posted} basis points; the archive holds {sealed}"
             ),
             Divergence::Priced { posted, recomputed } => write!(
                 f,
@@ -526,17 +490,13 @@ impl Pass {
     }
 }
 
-/// The lookup's answer for one line under one snapshot, at the archive's tier.
+/// The lookup's answer for one line under one snapshot.
 ///
 /// This is the single place the ledger asks what a line costs. It builds the cost unit's posting
 /// from the line's own quantities and hands it to the one lookup, rather than re-deriving a product
 /// out of a card's parts: a second copy of the multiply-and-sum is how a request comes to be judged
 /// at one figure and billed at another, and that has happened here before.
-pub fn price_line(
-    posting: &Posting,
-    view: &HistoryView<'_>,
-    tier_bp: u32,
-) -> Result<Priced, Unpriceable> {
+pub fn price_line(posting: &Posting, view: &HistoryView<'_>) -> Result<Priced, Unpriceable> {
     let cost = CostPosting {
         lane: posting.lane.clone(),
         quantities: posting
@@ -556,13 +516,6 @@ pub fn price_line(
             PostingOrigin::Client => posting.fee_count,
             PostingOrigin::Internal => 0,
         },
-        tier_bp,
-        // THE SCOPE IS NOT THE RE-PRICE'S TO STATE. This posting is built to ask the lookup what a
-        // stored line costs under a snapshot, and it is thrown away on the next line; the scope the
-        // line's own multiplier was resolved at was recorded when it was BOOKED, by the site that
-        // resolved it. Naming one here would be this function inventing a fact about a line it is
-        // only re-reading.
-        tier_scope: None,
         arrived_ms: posting.arrived_ms,
         arrived_mono: 0,
         // THE SCOPE THE ROW RECORDED, not one re-resolved here. A recompute that asked the
@@ -642,8 +595,7 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         return refuse(Divergence::HistoryMissing { seq: head });
     };
 
-    let sealed_tier = archive.tier_bp(&posting.key);
-    let priced = match price_line(posting, &view, sealed_tier) {
+    let priced = match price_line(posting, &view) {
         Ok(priced) => priced,
         Err(why) => return refuse(divergence_of(why)),
     };
@@ -653,21 +605,6 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         divergences.push(Divergence::CardSeq {
             posted: posting.cached.card_seq,
             resolved: priced.card_seq,
-        });
-    }
-
-    let pre_tier = signed(priced.pre_tier_nanos);
-    if pre_tier != posting.cached.pre_tier_nanos {
-        divergences.push(Divergence::PreTier {
-            posted: posting.cached.pre_tier_nanos,
-            recomputed: pre_tier,
-        });
-    }
-
-    if sealed_tier != posting.tier_bp {
-        divergences.push(Divergence::Tier {
-            posted: posting.tier_bp,
-            sealed: sealed_tier,
         });
     }
 
@@ -684,24 +621,10 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         corrected: Some(DerivedPrice {
             history_seq: head,
             card_seq: priced.card_seq,
-            pre_tier_nanos: pre_tier,
             priced_nanos: final_nanos,
         }),
         verdict,
     }
-}
-
-/// Apply a tier in basis points to a pre-tier amount.
-///
-/// Integer arithmetic, multiply before divide, so a tier of 9,999 basis points on a small amount
-/// does not round to nothing through a division that happened first. The multiply saturates, so a
-/// figure at the ceiling stays at the ceiling rather than wrapping through it.
-///
-/// One multiply and ONE divide, over the summed pre-tier amount — never a sum of per-line floors,
-/// which undercharges: two lines of five nano-units at half price are two floors of two, which is
-/// four, where the single divide over ten is five.
-pub fn apply_tier(pre_tier: i128, tier_bp: u32) -> i128 {
-    pre_tier.saturating_mul(i128::from(tier_bp)) / i128::from(BASIS_POINTS)
 }
 
 /// Recompute every line after `watermark`, correcting stale caches in place, and advance the

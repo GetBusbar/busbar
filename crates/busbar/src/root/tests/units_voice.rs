@@ -1739,10 +1739,7 @@ fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
     let estimate = unit.estimate();
     assert_eq!(estimate.per_class.len(), 1);
     assert_eq!(estimate.per_class[0].max_unit_price_nanos, 5_000);
-    assert_eq!(
-        estimate.hold_nanos(busbar_unit_admission::STANDARD_TIER_BP),
-        TURN_OPENING_TOKENS * 5_000
-    );
+    assert_eq!(estimate.hold_nanos(), TURN_OPENING_TOKENS * 5_000);
 
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
@@ -1891,12 +1888,7 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
 
     let who = PrincipalId::new("acct:voice");
     let settled = unit
-        .settle(
-            &who,
-            &busbar_unit_cost::TieredAt::STANDARD,
-            posted,
-            &busbar_caps::DurabilityToken::mint(&seal),
-        )
+        .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
         .expect("the memory-buffered journal takes it");
     assert_eq!(
         settled.settlement.released,
@@ -2004,12 +1996,7 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
     let unit =
         VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
     let settled = unit
-        .settle(
-            &who,
-            &busbar_unit_cost::TieredAt::STANDARD,
-            posted,
-            &busbar_caps::DurabilityToken::mint(&seal),
-        )
+        .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
         .expect("the journal takes both records");
     let note = settled
         .settlement
@@ -2307,7 +2294,6 @@ fn one_turn_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
                 downgrade_to: None,
             }],
             child_default: None,
-            tier_bp: None,
         },
     )]);
     // Through the interner the root uses at boot, so the name the slot records is the same

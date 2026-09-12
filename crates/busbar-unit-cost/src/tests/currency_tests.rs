@@ -5,10 +5,7 @@
 //! currency a card does not name is a refusal rather than a conversion.
 
 use super::*;
-use crate::{
-    micros_of, minor_of, CurrencyCode, LaneClass, RateCard, Unpriceable, NANOS_PER_CENT,
-    STANDARD_TIER_BP,
-};
+use crate::{micros_of, minor_of, CurrencyCode, LaneClass, RateCard, Unpriceable, NANOS_PER_CENT};
 
 /// A code is three ASCII letters or it is not a code. Length, digits and punctuation are all
 /// refused, and case is folded, so a card cannot name `usd` and `USD` as two currencies.
@@ -88,16 +85,14 @@ fn a_cell_prices_in_each_currency_natively_with_no_cross_rate() {
     card.set_terms(jpy, busbar_contract::tariff::FeeTerms::flat(7));
 
     let report = usage(&[(INPUT, 1_000)]);
-    let in_usd = priced_in(&card, "m", &report, 1, STANDARD_TIER_BP, CurrencyCode::USD)
-        .expect("the card names USD");
-    let in_jpy =
-        priced_in(&card, "m", &report, 1, STANDARD_TIER_BP, jpy).expect("the card names JPY");
+    let in_usd = priced_in(&card, "m", &report, 1, CurrencyCode::USD).expect("the card names USD");
+    let in_jpy = priced_in(&card, "m", &report, 1, jpy).expect("the card names JPY");
 
     // 1000 x 2000 nano-units, plus a three-cent fee at ten million nano-units a cent.
-    assert_eq!(in_usd.pre_tier_nanos, 2_000_000 + 30_000_000);
+    assert_eq!(in_usd.priced_nanos, 2_000_000 + 30_000_000);
     assert_eq!(in_usd.minor(), 3);
     // 1000 x 300000 nano-units, plus a seven-yen fee at a billion nano-units a yen.
-    assert_eq!(in_jpy.pre_tier_nanos, 300_000_000 + 7_000_000_000);
+    assert_eq!(in_jpy.priced_nanos, 300_000_000 + 7_000_000_000);
     assert_eq!(in_jpy.minor(), 7);
     assert_eq!(in_jpy.currency, jpy);
 }
@@ -113,7 +108,7 @@ fn a_currency_the_card_does_not_name_refuses_rather_than_converting() {
     assert!(!card.prices_currency(eur));
 
     let report = usage(&[(INPUT, 1_000)]);
-    let refused = priced_in(&card, "m", &report, 1, STANDARD_TIER_BP, eur)
+    let refused = priced_in(&card, "m", &report, 1, eur)
         .expect_err("a card that does not name a currency cannot answer in it");
     assert_eq!(
         refused,

@@ -177,7 +177,6 @@ fn posting() -> Posting {
             BucketScope::All,
         ),
         window: 86_400,
-        tier_scope: busbar_unit_cost::TIER_SCOPE_DEFAULT,
         reserved: 5_000,
         settled: 4_200,
         overdraft: 0,
@@ -216,9 +215,7 @@ fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
         },
         amount: Amount {
             lines: Vec::new(),
-            pre_tier: 600,
             priced: 540,
-            tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
             rate_card_version: 3,
@@ -613,7 +610,6 @@ fn totals_key(bucket: &str) -> TotalsKey {
 fn stamp() -> PostingStamp {
     PostingStamp {
         rate_card_version: 3,
-        tier_scope: busbar_unit_cost::TIER_SCOPE_DEFAULT,
         wall: 1_700_000_000,
         mono: 42,
     }
@@ -692,104 +688,6 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
     assert_eq!(replayed.len(), 1, "one posting, one record");
     assert_eq!(replayed[0].class, RecordClass::Transaction);
     assert_eq!(replayed[0].body, settled.posting.body());
-}
-
-/// **THE JOURNAL ROW RECORDS WHICH SCOPE PRICED IT** — `tier` where a caller's own tier named the
-/// multiplier, not re-derived from a configuration a replay would have to trust.
-///
-/// The figure a gold-tier posting settles at is not this cell's to prove — `tier_at` (see
-/// `root/tests/kernel.rs`) is the one site that turns the name into a number, and this settlement
-/// takes whatever stamp the caller hands it, exactly as every other settlement here does. What this
-/// cell proves is narrower and just as load-bearing: the SCOPE that stamp carries survives onto the
-/// row unchanged, so a reader of the journal — an audit, a dispute, a replay — can tell a half-price
-/// tier from the standard price of a halved card without re-reading a `groups:` block that may have
-/// been edited since.
-///
-/// RED FIRST: this cell was written against a `Settling` whose stamp still spelled
-/// `TIER_SCOPE_DEFAULT`, and it read `left: "default", right: "tier"` — the row said default for a
-/// posting the caller resolved at a tier. Naming `TIER_SCOPE_TIER` in the stamp below is what turns
-/// it green, and it is the same field every served leg's own settlement passes through unread.
-#[test]
-fn a_tier_scoped_settlement_records_the_scope_on_the_journal_row() {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
-    };
-    let seal = KernelSeal::acquire_for_kernel();
-    let mut durability = memory_node();
-    let key = totals_key("vk_gold");
-    durability.ledger.record_hold_opened(&key, 86_400, 5_000);
-
-    let hold = Hold::open(
-        &AdmitToken::<Admit>::mint(&seal),
-        PrincipalId::new("vk_gold"),
-        5_000,
-    );
-    let usage = Usage::report(
-        &UsageToken::mint(&seal),
-        vec![UsageLine {
-            class: MeterClassId::new("nano_units"),
-            quantity: 4_200,
-            source: QuantitySource::Count,
-            estimated: false,
-        }],
-    )
-    .expect("one line");
-
-    let durability_token = token();
-    let gold_stamp = PostingStamp {
-        rate_card_version: 3,
-        tier_scope: busbar_unit_cost::TIER_SCOPE_TIER,
-        wall: 1_700_000_000,
-        mono: 42,
-    };
-    let node_scope = busbar_contract::tariff::TariffScope::node();
-    let settled = durability
-        .settle(
-            &Settling {
-                key: &key,
-                window: 86_400,
-                durability: &durability_token,
-                step: StepName::Meter,
-                stamp: gold_stamp,
-                scope: &node_scope,
-            },
-            hold,
-            4_200,
-            &usage,
-            &LedgerToken::mint(&seal),
-        )
-        .expect("the null shipper takes it");
-
-    assert_eq!(
-        settled.posting.tier_scope,
-        busbar_unit_cost::TIER_SCOPE_TIER,
-        "the posting the settlement built carries the scope the caller resolved it at"
-    );
-
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("and verifies");
-    assert_eq!(replayed.len(), 1, "one posting, one record");
-    assert_eq!(
-        replayed[0].body,
-        settled.posting.body(),
-        "the row on the chain is the same bytes the settlement built, scope included"
-    );
-
-    // The default-scope row is a DIFFERENT row: same figures, same clocks, different scope, and the
-    // encoded body must disagree or the scope was never on the chain at all.
-    let default_stamp = stamp();
-    assert_ne!(gold_stamp.tier_scope, default_stamp.tier_scope);
-    let mut default_posting = settled.posting.clone();
-    default_posting.tier_scope = default_stamp.tier_scope;
-    assert_ne!(
-        replayed[0].body,
-        default_posting.body(),
-        "a row that swapped the scope word must not encode to the same bytes"
-    );
 }
 
 /// A unit that ran past everything reservable leaves TWO records: the settlement, and the carry.
@@ -1146,14 +1044,27 @@ fn a_journal_row_records_the_scope_it_was_priced_at_once_and_in_one_vocabulary()
         "`kind:key` reads back through the one decoder, so an audit can re-price the row"
     );
 
-    // AND THERE IS NOTHING ELSE ON THE ROW THAT CLAIMS TO SAY WHERE IT WAS PRICED. A second
-    // reading of one fact is a row that can contradict itself; the bytes must not move when the
-    // retired field is the only thing that changes.
-    let mut other = settled.posting.clone();
-    other.tier_scope = busbar_unit_cost::TIER_SCOPE_TIER;
-    assert_eq!(
-        settled.posting.body(),
-        other.body(),
-        "the row gave a second account of the scope it was priced at: one fact, one column"
+    // AND THERE IS NOTHING AFTER IT THAT CLAIMS TO SAY WHERE IT WAS PRICED.
+    //
+    // The retired second column sat immediately after this one, so the row ENDING with the
+    // encoded scope is the byte-level statement that there is only one: a row that still carried
+    // the two-word reading would end with that instead. The red form of this cell mutated the
+    // retired field and asserted the bytes did not move; there is no field left to mutate, so the
+    // property is stated the way that survives its removal — the same fact, from the other side.
+    let encoded = settled.posting.scope.encoded();
+    let body = settled.posting.body();
+    assert!(
+        body.ends_with(encoded.as_bytes()),
+        "the row does not end with the scope it was priced at, so something else on it is still \
+         claiming to say where that was: {body:?}"
+    );
+
+    // And a DIFFERENT scope is a different row, or the scope was never on the chain at all.
+    let mut at_default = settled.posting.clone();
+    at_default.scope = busbar_contract::tariff::TariffScope::node();
+    assert_ne!(
+        body,
+        at_default.body(),
+        "two postings differing only in the schedule they were charged under hash the same"
     );
 }

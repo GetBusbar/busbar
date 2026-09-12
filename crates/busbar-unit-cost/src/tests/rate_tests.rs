@@ -102,15 +102,9 @@ fn negative_per_request_fee_clamps_to_zero() {
 #[test]
 fn a_fee_amount_is_an_exact_multiple_of_one_minor_unit() {
     let c = RateCard::absent(3);
-    let priced = crate::tests::priced(
-        &c,
-        "m",
-        &crate::tests::usage(&[]),
-        1,
-        crate::STANDARD_TIER_BP,
-    );
-    assert_eq!(priced.pre_tier_nanos, 30_000_000);
-    assert_eq!(priced.pre_tier_nanos % crate::NANOS_PER_CENT, 0);
+    let priced = crate::tests::priced(&c, "m", &crate::tests::usage(&[]), 1);
+    assert_eq!(priced.priced_nanos, 30_000_000);
+    assert_eq!(priced.priced_nanos % crate::NANOS_PER_CENT, 0);
 }
 
 /// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
@@ -141,8 +135,8 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     );
 
     let report = usage(&[(INPUT, 1_000_000)]);
-    let before = Posting::from_usage("m", &report, 0, 0, &crate::TieredAt::STANDARD, 4_999, 4_999);
-    let after = Posting::from_usage("m", &report, 0, 0, &crate::TieredAt::STANDARD, 5_000, 5_000);
+    let before = Posting::from_usage("m", &report, 0, 0, 4_999, 4_999);
+    let after = Posting::from_usage("m", &report, 0, 0, 5_000, 5_000);
 
     let view = history.current();
     let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");

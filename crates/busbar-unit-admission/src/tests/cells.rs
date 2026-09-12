@@ -694,33 +694,6 @@ fn refusal_reason_code_matches_the_kind_of_block_not_just_that_something_blocked
     );
 }
 
-/// A tier other than one times the multiplier scales the hold once over the whole sum, rounded up,
-/// and does not touch the decision.
-#[test]
-fn tier_scales_the_hold_and_not_the_decision() {
-    let seal = KernelSeal::acquire_for_kernel();
-    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
-    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
-    let d = door();
-    let p = no_card(0);
-    let mut g = group_cfg(None, true, vec![limit(LimitMetric::Requests, 4, Some(DAY))]);
-    g.tier_bp = 15_000; // 1.5x
-    let t = table(&[("g", g)]);
-    let c = chain(&t, "vk_tier", Some("g"));
-    assert_eq!(c.tier_bp(), 15_000);
-    let principal = PrincipalId::new("vk_tier");
-    let mut unit = AdmissionUnit::new(&d, &p, "", 1_700_000_000);
-    let decision = unit.admit(&estimate(3, 1), &principal, &c, &admit_token, &unit_token);
-    match decision.into_result(&seal).expect("admitted") {
-        busbar_caps::Admission::Own(hold) => {
-            // 3 x 1 = 3 pre-tier; 3 x 15000 / 10000 = 4.5, rounded UP once.
-            assert_eq!(hold.reserved(), 5);
-            std::mem::forget(hold);
-        }
-        other => panic!("expected a hold, got {other:?}"),
-    }
-}
-
 /// A unit whose estimate is zero gets no hold at all, which is why a zero-priced unit can run when
 /// everything else is at its ceiling.
 #[test]
@@ -764,26 +737,6 @@ fn an_undersized_hold_tops_up_and_never_refuses() {
     hold.record_overdraft(20);
     assert_eq!(hold.overdraft(), 20);
     std::mem::forget(hold);
-}
-
-/// The chain's own boot rule: one tier per chain. A mixed chain is refused at build time, so no
-/// request ever walks one.
-#[test]
-fn a_mixed_tier_chain_is_a_boot_refusal() {
-    let mut parent = group_cfg(None, true, vec![]);
-    parent.tier_bp = 10_000;
-    let mut child = group_cfg(Some("parent"), true, vec![]);
-    child.tier_bp = 15_000;
-    let t = table(&[("parent", parent), ("child", child)]);
-    let err = t.validate_tiers().expect_err("mixed tiers are refused");
-    match err {
-        crate::chain::ChainError::TierMismatch {
-            expected, found, ..
-        } => {
-            assert_eq!(expected, 15_000);
-            assert_eq!(found, 10_000);
-        }
-    }
 }
 
 /// The arrival hold is the door's, not the table's.
@@ -912,7 +865,6 @@ fn a_parent_index_outside_the_table_ends_the_walk_rather_than_panicking() {
 
     // The boot check reports rather than panicking: there is nothing to mismatch against, so the
     // one readable group's tier stands.
-    assert_eq!(table.validate_tiers(), Ok(()));
 
     // And the same dangling parent on a two-group table still stops at the readable ones.
     let mut child = GroupRuntime::new("child");
@@ -928,5 +880,4 @@ fn a_parent_index_outside_the_table_ends_the_walk_rather_than_panicking() {
             .len(),
         2
     );
-    assert_eq!(deeper.validate_tiers(), Ok(()));
 }

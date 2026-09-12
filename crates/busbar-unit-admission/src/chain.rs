@@ -23,7 +23,7 @@
 // contract: BucketChain is a type the contract crate owns. It is declared here so the decision has
 // something to walk while the crates land side by side; the integrator replaces it and deletes it.
 
-pub use busbar_unit_cost::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+pub use busbar_unit_cost::{GroupBucket, GroupRuntime, GroupTable};
 
 use crate::window::WINDOW_TOTAL;
 
@@ -128,9 +128,6 @@ pub struct ChainGroup {
     pub enabled: bool,
     /// The instantaneous in-flight cap, if any. Never windowed and never pool-scoped.
     pub concurrent_cap: Option<u64>,
-    /// The tier multiplier, in basis points, this group's bucket contributes to the chain. One per
-    /// chain; mixing them is a boot refusal, which is why the constructor checks it.
-    pub tier_bp: u32,
 }
 
 /// A resolved chain: the principal's attribution bucket, then every ancestor group's per-window
@@ -139,51 +136,33 @@ pub struct ChainGroup {
 pub struct BucketChain {
     buckets: Vec<ChainBucket>,
     groups: Vec<ChainGroup>,
-    tier_bp: u32,
 }
 
 /// Why a chain could not be built.
+///
+/// **EMPTY, AND THAT IS THE STATEMENT.** Its one variant was `TierMismatch`: two groups in one
+/// chain declaring different basis-point multipliers, refused at boot so no admitted request could
+/// meet an ambiguous price. A tier is a SCOPE now — one cell selected by the one
+/// tier > pool > plane > default walk, resolved against the principal's own tier and not against
+/// the chain — so there is no per-group multiplier for two groups to disagree about and no chain
+/// that can be built two ways. The type stays because building a chain is a fallible operation in
+/// the caller's shape, and giving it back a `Result` with nothing in the error is how the next
+/// reason to refuse one arrives without moving every call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChainError {
-    /// Two groups in one chain declare different tier multipliers. One tier per chain; this is a
-    /// boot refusal, never a request-time one, so no admitted request ever sees it.
-    TierMismatch {
-        /// The multiplier the chain started with.
-        expected: u32,
-        /// The one that disagreed.
-        found: u32,
-        /// The group that disagreed.
-        group: String,
-    },
-}
+pub enum ChainError {}
 
 impl BucketChain {
-    /// Build a chain from its buckets and groups, innermost first, checking the one-tier-per-chain
-    /// rule. Callers that already ran the boot check use [`BucketChain::unchecked`].
+    /// Build a chain from its buckets and groups, innermost first.
+    ///
+    /// Fallible because the caller's shape is, and there is nothing left for it to refuse: the
+    /// one-tier-per-chain check lived here, and a tier is no longer a property of a chain.
     pub fn new(buckets: Vec<ChainBucket>, groups: Vec<ChainGroup>) -> Result<Self, ChainError> {
-        if let Some(first) = groups.first() {
-            for g in &groups[1..] {
-                if g.tier_bp != first.tier_bp {
-                    return Err(ChainError::TierMismatch {
-                        expected: first.tier_bp,
-                        found: g.tier_bp,
-                        group: g.name.clone(),
-                    });
-                }
-            }
-        }
         Ok(BucketChain::unchecked(buckets, groups))
     }
 
-    /// Build a chain without re-checking the tier rule — the shape the request path uses, because
-    /// the rule is a boot refusal and by then it already holds.
+    /// Build a chain directly — the shape the request path uses.
     pub fn unchecked(buckets: Vec<ChainBucket>, groups: Vec<ChainGroup>) -> Self {
-        let tier_bp = groups.first().map_or(STANDARD_TIER_BP, |g| g.tier_bp);
-        BucketChain {
-            buckets,
-            groups,
-            tier_bp,
-        }
+        BucketChain { buckets, groups }
     }
 
     /// Every bucket, innermost first.
@@ -194,12 +173,6 @@ impl BucketChain {
     /// Every group, innermost first.
     pub fn groups(&self) -> &[ChainGroup] {
         &self.groups
-    }
-
-    /// The chain's tier multiplier in basis points — one per chain, applied once over the summed
-    /// pre-tier nano-units when the hold is sized.
-    pub fn tier_bp(&self) -> u32 {
-        self.tier_bp
     }
 
     /// The buckets this request's pool participates in, in chain order. Filtered ONCE, so the
@@ -234,10 +207,6 @@ pub trait ChainWalk {
         attribution_bucket_id: &str,
         group: Option<&str>,
     ) -> Result<BucketChain, MissingGroup>;
-
-    /// The boot check for the one-tier-per-chain rule: every chain this table can produce carries
-    /// a single tier multiplier. Run at boot; a mixed chain is a boot refusal.
-    fn validate_tiers(&self) -> Result<(), ChainError>;
 }
 
 impl ChainWalk for GroupTable {
@@ -276,7 +245,6 @@ impl ChainWalk for GroupTable {
                 lease_id: g.lease_id,
                 enabled: g.enabled,
                 concurrent_cap: g.concurrent_cap,
-                tier_bp: g.tier_bp,
             });
             for b in &g.buckets {
                 buckets.push(ChainBucket {
@@ -296,39 +264,7 @@ impl ChainWalk for GroupTable {
             }
             next = g.parent;
         }
-        // The one-tier-per-chain rule is a BOOT check, not a request-time one: a config that
-        // mixes multipliers is refused at boot, so by the time a request walks a chain the rule
-        // already holds. Here the chain is built with whatever the innermost group declared.
         Ok(BucketChain::unchecked(buckets, groups))
-    }
-
-    fn validate_tiers(&self) -> Result<(), ChainError> {
-        let table = self.groups();
-        for (i, g) in table.iter().enumerate() {
-            let mut walked = 0usize;
-            let mut next = Some(i);
-            let expected = g.tier_bp;
-            while let Some(j) = next {
-                if walked >= table.len() {
-                    break;
-                }
-                // Checked, as in `chain_for`: a dangling parent index ends this walk, and the boot
-                // check reports on what it could read rather than aborting the boot with a panic.
-                let Some(cur) = table.get(j) else {
-                    break;
-                };
-                walked += 1;
-                if cur.tier_bp != expected {
-                    return Err(ChainError::TierMismatch {
-                        expected,
-                        found: cur.tier_bp,
-                        group: cur.name.clone(),
-                    });
-                }
-                next = cur.parent;
-            }
-        }
-        Ok(())
     }
 }
 

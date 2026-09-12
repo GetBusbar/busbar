@@ -18,7 +18,7 @@
 //! someone else's seed is not a property.
 
 use super::*;
-use crate::{cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP};
+use crate::{cents_of, derive_spend_cents, derive_spend_micros, micros_of};
 use crate::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
 
 /// A deterministic sequence. Same numbers everywhere, forever.
@@ -77,7 +77,7 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
         let report = usage(&reported);
         let plain = lines(&reported);
 
-        let posted = priced(&card, "lane", &report, fee_count, STANDARD_TIER_BP);
+        let posted = priced(&card, "lane", &report, fee_count);
         let derived_cents = derive_spend_cents(
             &card,
             [("lane", plain.as_slice())].into_iter(),
@@ -226,14 +226,6 @@ fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() 
     let plain = lines(&[(INPUT, 3), (OUTPUT, 4)]);
     let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true);
 
-    let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
+    let neutral = priced(&c, "m", &report, 1);
     assert_eq!(derived, neutral.minor());
-
-    let tiered = priced(&c, "m", &report, 1, 15_000);
-    assert_ne!(
-        derived,
-        tiered.minor(),
-        "a tier away from neutral is expected to differ from the older derivation"
-    );
-    assert_eq!(tiered.pre_tier_nanos, neutral.priced_nanos);
 }

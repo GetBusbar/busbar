@@ -61,7 +61,7 @@ pub use cache::{BucketView, Chain, ChainCache};
 pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell, MAX_MODELS_PER_CELL};
 pub use chain::{
     BucketChain, ChainBucket, ChainError, ChainGroup, ChainWalk, GroupBucket, GroupRuntime,
-    GroupTable, MissingGroup, STANDARD_TIER_BP,
+    GroupTable, MissingGroup,
 };
 pub use decide::{AdmitGrant, Blocked, Door, Gauges, Metric};
 pub use estimate::{ClassEstimate, Estimate};
@@ -294,7 +294,7 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                 self.grant = Some(grant);
                 self.blocked = None;
                 self.parent_accrual_refused = None;
-                let nanos = estimate.hold_nanos(chain.tier_bp());
+                let nanos = estimate.hold_nanos();
                 // A child spends against its parent's reservation rather than opening one of its
                 // own. Whatever the parent's cell says, the child is still ADMITTED — the door said
                 // yes and the counters are charged — and the ledger posts it late against a

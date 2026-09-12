@@ -97,7 +97,7 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
             CurrencyCode::USD
         )
         .expect("entry zero is open-ended")
-        .pre_tier_nanos,
+        .priced_nanos,
         1_000_000,
     );
 }
@@ -167,11 +167,11 @@ fn a_snapshot_answers_the_same_way_forever() {
     let older = price(&at_one, &posting, CurrencyCode::USD).expect("covered");
     let newer = price(&at_two, &posting, CurrencyCode::USD).expect("covered");
     assert_eq!(
-        (older.card_seq, older.pre_tier_nanos),
+        (older.card_seq, older.priced_nanos),
         (HistorySeq(1), 2_000_000)
     );
     assert_eq!(
-        (newer.card_seq, newer.pre_tier_nanos),
+        (newer.card_seq, newer.priced_nanos),
         (HistorySeq(2), 3_000_000)
     );
 
@@ -263,15 +263,7 @@ fn a_back_dated_entry_is_visible_as_one() {
 fn a_corrupted_cache_never_becomes_the_bill() {
     let history = History::opening(card_at(2.0), 0);
     let view = history.current();
-    let mut posting = Posting::from_usage(
-        "m",
-        &usage(&[(INPUT, 1_000)]),
-        0,
-        0,
-        &crate::TieredAt::STANDARD,
-        0,
-        0,
-    );
+    let mut posting = Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, 0, 0, 0);
 
     let honest = price(&view, &posting, CurrencyCode::USD).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);
@@ -287,7 +279,6 @@ fn a_corrupted_cache_never_becomes_the_bill() {
         history_seq: HistorySeq(0),
         card_seq: HistorySeq(0),
         currency: CurrencyCode::USD,
-        pre_tier_nanos: 200_000_000,
         priced_nanos: 200_000_000,
     });
     let after = price(&view, &posting, CurrencyCode::USD).expect("covered");
@@ -321,7 +312,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     let read = price(&view, &posting, CurrencyCode::USD).expect("a read reports it");
     assert!(read.lane_unpriced);
     assert_eq!(
-        read.pre_tier_nanos, 0,
+        read.priced_nanos, 0,
         "the fee count is zero on this posting"
     );
 

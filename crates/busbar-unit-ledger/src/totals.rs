@@ -359,7 +359,7 @@ pub fn totals_as_of<'a>(
         if line.window_start != window || line.currency != currency {
             continue;
         }
-        match price_line(line, view, line.tier_bp) {
+        match price_line(line, view) {
             Ok(priced) => {
                 let row = rows.entry(line.key.clone()).or_default();
                 row.priced_nanos = row

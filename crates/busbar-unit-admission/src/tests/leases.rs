@@ -14,7 +14,7 @@
 //! identically; the only difference is whether the answer can be written down elsewhere.
 
 use super::{card, door};
-use crate::chain::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use crate::chain::{GroupBucket, GroupRuntime, GroupTable};
 use crate::decide::{Blocked, Metric};
 use crate::window::WINDOW_MINUTE;
 
@@ -30,7 +30,6 @@ fn capped(
         lease_id,
         enabled: true,
         concurrent_cap: Some(cap),
-        tier_bp: STANDARD_TIER_BP,
         buckets: Vec::new(),
         parent,
     }

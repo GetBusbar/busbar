@@ -20,73 +20,6 @@ use crate::currency::CurrencyCode;
 use crate::history::{HistorySeq, HistoryView};
 use crate::rate::RateCard;
 
-/// The neutral tier multiplier, in basis points: one times the price, so no tier at all.
-pub const STANDARD_TIER_BP: u32 = 10_000;
-
-/// THE SCOPE A POSTING'S TIER MULTIPLIER WAS RESOLVED AT, and the multiplier itself.
-///
-/// The tariff scopes tier over pool over plane over default, and what a reader of a booked line
-/// needs to know is not only WHAT it was charged but at WHICH scope that charge was decided: a
-/// figure that is half the standard price and a figure that is the standard price of a halved card
-/// are the same number and two different facts, and only the scope tells them apart.
-///
-/// So the resolution answers both together. `tier` is the name of the tier the multiplier came from
-/// — the principal's own, which is the key's configured group — and `None` is a resolution that
-/// fell through to the scope out from it, which on a deployment that configures no tier is every
-/// posting it has ever made. [`TieredAt::scope`] is the word a journal row writes, and it is derived
-/// from the name rather than carried beside it so the two cannot disagree.
-///
-/// It carries no card and resolves nothing itself: the composition root reads the deployment's
-/// configuration and hands this over, which is the same division the rate card is built under.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct TieredAt {
-    /// The multiplier, in basis points. [`STANDARD_TIER_BP`] is one times the price.
-    pub bp: u32,
-    /// The tier the multiplier came from, where one named it.
-    pub tier: Option<String>,
-}
-
-/// The word a journal row writes for a posting that resolved at no tier.
-pub const TIER_SCOPE_DEFAULT: &str = "default";
-
-/// The word a journal row writes for a posting that resolved at a tier.
-pub const TIER_SCOPE_TIER: &str = "tier";
-
-impl TieredAt {
-    /// THE RESOLUTION THAT NAMES NO TIER: the standard multiplier, at the default scope.
-    ///
-    /// The answer for a caller on no tier, for a tier no group declares a multiplier for, and for
-    /// every deployment that configures none. It is a constant rather than a `Default` impl because
-    /// it is a statement about the tariff and not a convenience: one times the price is what this
-    /// tree charged before a tier could be configured at all, so every posting under it is
-    /// byte-identical to the one the previous release made.
-    pub const STANDARD: TieredAt = TieredAt {
-        bp: STANDARD_TIER_BP,
-        tier: None,
-    };
-
-    /// Name a tier and what it prices at.
-    pub fn at(tier: impl Into<String>, bp: u32) -> Self {
-        TieredAt {
-            bp,
-            tier: Some(tier.into()),
-        }
-    }
-
-    /// THE SCOPE, as the journal row spells it: `tier` where a tier named the multiplier,
-    /// `default` where none did.
-    #[must_use]
-    pub fn scope(&self) -> &'static str {
-        if self.tier.is_some() {
-            TIER_SCOPE_TIER
-        } else {
-            TIER_SCOPE_DEFAULT
-        }
-    }
-}
-
-/// The meter class the flat per-request fee posts under. It is a usage line like any other, which
-/// is what lets the whole posting be one sum instead of a sum plus a special case.
 /// The meter class the TRANSACTION fee posts under. It is a usage line like any other, which is
 /// what lets the whole posting be one sum instead of a sum plus a special case. The visit's own fee
 /// posts under [`crate::schedule::ENTRY_CLASS`] beside it, and a floor or a cap that moved the
@@ -127,9 +60,7 @@ pub struct CachedPrice {
     pub card_seq: HistorySeq,
     /// The currency the figure is in.
     pub currency: CurrencyCode,
-    /// The summed line amounts, in nano-units, before the tier.
-    pub pre_tier_nanos: u128,
-    /// That sum through the tier multiplier.
+    /// The summed line amounts, in nano-units.
     pub priced_nanos: u128,
 }
 
@@ -149,19 +80,6 @@ pub struct Posting {
     /// How many completed TRANSACTIONS this posting carries — one for a billable client request,
     /// zero otherwise.
     pub transaction_count: u64,
-    /// The chain's tier multiplier, in basis points.
-    pub tier_bp: u32,
-    /// THE SCOPE THE MULTIPLIER WAS RESOLVED AT: the tier that named it, or `None` for a posting
-    /// that fell through to the scope out from the tier.
-    ///
-    /// A booked line that kept only the multiplier could not tell a half-price tier from the
-    /// standard price of a halved card — the same number, two different facts — so the scope travels
-    /// with the figure it explains. It is a NAME and never a price: what a tier is worth is the
-    /// card's and the deployment's, resolved once at the composition root, and a posting that
-    /// carried a rate would be a posting that could disagree with the lookup.
-    ///
-    /// [`TieredAt::scope`] is the word a journal row writes for it.
-    pub tier_scope: Option<String>,
     /// The instant, as a wall clock reads it, in milliseconds. A wall clock DATES a record and
     /// cannot order one, which is why the monotonic reading is beside it rather than instead of it.
     /// This is the field the history is resolved at.
@@ -194,7 +112,6 @@ impl Posting {
         usage: &Usage,
         entry_count: u64,
         transaction_count: u64,
-        tiered: &TieredAt,
         arrived_ms: u64,
         arrived_mono: u64,
     ) -> Self {
@@ -207,8 +124,6 @@ impl Posting {
                 .collect(),
             entry_count,
             transaction_count,
-            tier_bp: tiered.bp,
-            tier_scope: tiered.tier.clone(),
             arrived_ms,
             arrived_mono,
             scope: busbar_contract::tariff::TariffScope::node(),
@@ -253,7 +168,6 @@ impl Posting {
             Some(c) => {
                 c.currency != priced.currency
                     || c.card_seq != priced.card_seq
-                    || c.pre_tier_nanos != priced.pre_tier_nanos
                     || c.priced_nanos != priced.priced_nanos
             }
         }
@@ -288,15 +202,17 @@ pub struct Priced {
     pub currency: CurrencyCode,
     /// Every priced line, in the order the posting carried them, with the fee line last.
     pub lines: Vec<PricedLine>,
-    /// The sum over every line, including the fee line, in nano-units, before the tier.
-    pub pre_tier_nanos: u128,
-    /// The pre-tier amount through the tier multiplier: what the posting actually charges.
+    /// **WHAT THE POSTING CHARGES**, in nano-units: the sum over every line, including the fee
+    /// line the schedule already bounded.
+    ///
+    /// One figure and not two. It was a pre-tier sum and that sum through a basis-point multiplier
+    /// until the tier became a SCOPE: a tier now selects the terms the fee lines are built from, at
+    /// the one walk that resolves a schedule, so there is nothing left between the sum and the
+    /// charge for a second figure to record.
     pub priced_nanos: u128,
     /// Whether the lane itself was absent from a present card. Every token line prices at nothing
     /// when this is set, and the caller decides whether that is a refusal — see [`price_fail_closed`].
     pub lane_unpriced: bool,
-    /// The tier multiplier in basis points that produced the priced amount.
-    pub tier_bp: u32,
     /// How many visits the posting carried.
     pub entry_count: u64,
     /// How many completed transactions the posting carried.
@@ -332,7 +248,6 @@ impl Priced {
             history_seq,
             card_seq: self.card_seq,
             currency: self.currency,
-            pre_tier_nanos: self.pre_tier_nanos,
             priced_nanos: self.priced_nanos,
         }
     }
@@ -363,14 +278,6 @@ pub enum Unpriceable {
         /// The lane the card is silent about.
         lane: String,
     },
-}
-
-/// Apply the tier multiplier: once, over the summed pre-tier amount, with a single divide.
-///
-/// A sum of per-line floors is the wrong answer and undercharges: two lines of five nano-units at
-/// half price are two floors of two, which is four, where the single divide over ten is five.
-pub fn apply_tier(pre_tier_amount: u128, tier_bp: u32) -> u128 {
-    pre_tier_amount.saturating_mul(u128::from(tier_bp)) / u128::from(STANDARD_TIER_BP)
 }
 
 /// **THE LOOKUP** — the whole of layer two, and the only place money is computed.
@@ -508,7 +415,7 @@ pub fn price_at_card(
     let tariff_nanos = charged
         .as_ref()
         .map_or(0, |c| minor_to_nanos(c.total_minor));
-    let pre_tier_nanos = posting
+    let priced_nanos = posting
         .quantities
         .iter()
         .zip(lines.iter())
@@ -519,10 +426,8 @@ pub fn price_at_card(
         card_seq,
         currency,
         lines,
-        pre_tier_nanos,
-        priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
+        priced_nanos,
         lane_unpriced: rates.is_none(),
-        tier_bp: posting.tier_bp,
         entry_count: posting.entry_count,
         transaction_count: posting.transaction_count,
         estimated: posting.estimated,

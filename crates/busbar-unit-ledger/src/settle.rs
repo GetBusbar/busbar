@@ -400,10 +400,7 @@ pub fn adjusting_entries<'a>(
     // depended on a hash map's iteration would verify on the node that made it and nowhere else.
     let mut groups: BTreeMap<(TotalsKey, WindowStart, CurrencyCode), Repricing> = BTreeMap::new();
     for line in lines {
-        let (Ok(old), Ok(new)) = (
-            price_line(line, before, line.tier_bp),
-            price_line(line, after, line.tier_bp),
-        ) else {
+        let (Ok(old), Ok(new)) = (price_line(line, before), price_line(line, after)) else {
             // A line that cannot be priced under one of the two histories is not something an
             // adjusting entry can describe: there is no old figure or no new one to state. It is a
             // finding for the recompute, which reports holes as refusals rather than as zeros.

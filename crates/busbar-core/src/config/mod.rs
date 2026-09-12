@@ -735,10 +735,41 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
             "{msg}\n  hint: `{old}` was retired in 1.5.3 — it is now `{new}`. Run \
              `busbar --migrate-config <config.yaml>` to rewrite it in place"
         )
+    } else if let Some((old, new)) = RETIRED_CONFIG_KEYS_1_6_0
+        .iter()
+        .copied()
+        .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
+    {
+        // The 1.6.0 retirements, and the reason they are NOT on the migrator's table: the key that
+        // replaces one of these does not take the retired key's figure. A tier was a MULTIPLIER
+        // over whatever the card said; a tier scope names ABSOLUTE amounts, so there is no
+        // arithmetic that turns one into the other without knowing what the operator meant. A
+        // rewrite that guessed would be a node billing a number nobody wrote down.
+        format!(
+            "{msg}\n  hint: `{old}` was retired in 1.6.0 — a tier is a SCOPE of the tariff now, \
+             and its price is the terms at `{new}` (entry/transaction/per-unit amounts, resolved \
+             tier > pool > plane > default). There is no mechanical rewrite: the retired key was a \
+             multiplier over the rate card and a scope names amounts, so write the amounts you \
+             meant"
+        )
     } else {
         msg
     }
 }
+
+/// The 1.6.0 retired keys (retired key → the scope its subject lives at now).
+///
+/// ONE TABLE, for the same reason the 1.5.3 ones have one: the refusal's hint, and anything that
+/// later wants to detect the marker at boot, read the same row. It is NOT on the migrator's list —
+/// see the branch above for why a rewrite would have to invent a figure.
+pub(crate) const RETIRED_CONFIG_KEYS_1_6_0: &[(&str, &str)] = &[
+    // A tier was a per-group basis-point multiplier applied over the summed pre-tier amount of a
+    // posting, resolved by a table the composition root held. It is a scope of the tariff now:
+    // `tariff.tier.<group>` names the same absolute fee terms every other scope names, and the one
+    // tier > pool > plane > default walk selects it. Two mechanisms priced a tier and only one of
+    // them was anything an operator could read off the schedule they wrote.
+    ("tier_bp", "tariff.tier.<group>"),
+];
 
 /// The 1.5.3 GRAMMAR-LOCK retired keys (retired key → its new home), shared by
 /// [`augment_config_error`]'s loud-fail hint, `config::migrate::detect_legacy_markers` (the

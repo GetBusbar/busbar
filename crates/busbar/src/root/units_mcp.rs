@@ -1430,7 +1430,6 @@ pub fn settle(
     token: &busbar_caps::DurabilityToken,
     // WHAT THE CALLER'S TIER PRICES AT, resolved at the composition root's one site. Same field,
     // same source, on every leg.
-    tiered: &busbar_unit_cost::TieredAt,
     posted: busbar_caps::Posted,
     scope: &crate::root::kernel::TariffScope,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1452,11 +1451,6 @@ pub fn settle(
         step: busbar_caps::StepName::Meter,
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
-            // THE SCOPE THIS UNIT'S TIER WAS RESOLVED AT, on the row, from the one site that
-            // resolved it. Not re-derived here and not re-read from a configuration: a journal is a
-            // financial record, and a scope a replay had to work out later is a scope an edit can
-            // change after the fact.
-            tier_scope: tiered.scope(),
             wall: at.wall,
             mono: at.mono,
         },
@@ -1565,9 +1559,7 @@ pub fn audit_inputs(
         },
         amount: busbar_unit_audit::Amount {
             lines: Vec::new(),
-            pre_tier: 0,
             priced: 0,
-            tier_bp: 0,
             fee_count,
             currency: String::new(),
             rate_card_version: 0,

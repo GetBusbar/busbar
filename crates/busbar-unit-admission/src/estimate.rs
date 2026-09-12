@@ -17,15 +17,6 @@
 // contract: Estimate { per_class } is a type the contract crate owns. It is declared here so the
 // door has something to size against while the crates land side by side.
 
-/// How many basis points make one whole unit — the divisor that turns a tier expressed in basis
-/// points back into a multiplier. A tier of 10 000 basis points is a multiplier of one, so a hold
-/// sized at the full tier is the pre-tier sum unchanged.
-///
-/// Named rather than written at the divide, because a bare ten thousand at the bottom of a
-/// money calculation is indistinguishable from a rounding scale or a percentage-times-hundred, and
-/// the three are not interchangeable.
-const BASIS_POINTS_PER_UNIT: u128 = 10_000;
-
 /// One meter class's contribution to the estimate: how much of it the unit is expected to consume,
 /// and the highest price any destination it may reach charges for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +48,8 @@ impl Estimate {
         Self::default()
     }
 
-    /// The summed pre-tier size, in nano-units, before the chain's multiplier is applied.
-    pub fn pre_tier_nanos(&self) -> u128 {
+    /// The summed size of every line, in nano-units.
+    pub fn total_nanos(&self) -> u128 {
         let mut total: u128 = self.fee_nanos as u128;
         for line in &self.per_class {
             total =
@@ -67,13 +58,19 @@ impl Estimate {
         total
     }
 
-    /// The hold size in nano-units: the pre-tier sum times the chain's tier in basis points,
-    /// rounded UP once over the whole sum — one divide, never a sum of per-line ceilings, so the
-    /// figure does not drift with how the estimate happened to be split into lines.
-    pub fn hold_nanos(&self, tier_bp: u32) -> u64 {
-        let pre = self.pre_tier_nanos();
-        let scaled = pre.saturating_mul(tier_bp as u128);
-        let ceil = scaled.div_ceil(BASIS_POINTS_PER_UNIT);
-        u64::try_from(ceil).unwrap_or(u64::MAX)
+    /// **THE HOLD SIZE, in nano-units**: the summed size of every line the estimate carries.
+    ///
+    /// One figure and not two. It was a pre-tier sum and that sum through the chain's basis-point
+    /// multiplier until the tier became a SCOPE: the amounts a tier prices at are the terms the one
+    /// tier > pool > plane > default walk answers with, and they are already IN the fee half of
+    /// this estimate. A multiplier here would have been a second pricing of the same tier, over the
+    /// card rather than over the schedule, and a hold is not the place to hold a price nobody wrote
+    /// down.
+    ///
+    /// The figure is identical to the one the previous release opened for every deployment that
+    /// configured no tier, which is every deployment with a recorded cell: the multiplier there was
+    /// one times the price, and one divide by one is the sum.
+    pub fn hold_nanos(&self) -> u64 {
+        u64::try_from(self.total_nanos()).unwrap_or(u64::MAX)
     }
 }

@@ -38,8 +38,12 @@
 //! 4. **Append-only.** A card is never replaced. A price change APPENDS a [`CardEntry`], and a
 //!    posting prices at whatever [`HistoryView::card_at`] resolves for its own instant, so an edit
 //!    prices what happens after it rather than what happened before it. See [`History::append`].
-//! 5. **Tier.** One multiplier per chain, in basis points, applied once over the summed pre-tier
-//!    amount — a single divide, never a sum of per-line floors. See [`apply_tier`].
+//! 5. **Tier.** A tier is a SCOPE of the tariff, never a multiplier over the answer. `tier > pool
+//!    > plane > default` selects ABSOLUTE fee terms field by field at the one walk that resolves a
+//!    schedule, so the priced amount is the sum over the lines and nothing is applied after it.
+//!    The scope the walk stopped at travels on the posting, in the one `kind:key` vocabulary, so a
+//!    booked line can be re-priced at the scope it RECORDED rather than at whatever is configured
+//!    when it is read. See [`charge_minor`] and `busbar_contract::tariff::TariffScope`.
 //!
 //! # No pivot currency
 //!
@@ -77,9 +81,8 @@ pub use model::{
     GROUP_BUCKET_PREFIX,
 };
 pub use posting::{
-    apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced, PricedLine,
-    Quantity, TieredAt, Unpriceable, FEE_CLASS, STANDARD_TIER_BP, TIER_SCOPE_DEFAULT,
-    TIER_SCOPE_TIER,
+    price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced, PricedLine, Quantity,
+    Unpriceable, FEE_CLASS,
 };
 pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in,
