@@ -173,6 +173,36 @@ and a Latchkey runner costs only while it is. The gate-only union on xlarge meas
 (build 168 s, xtask 25 s, kind-isolation 41 s, construction 51 s, contract battery 44 s), and the
 construction gate's own budget **holds** at 16 vCPU — 39,607 of 50,000 work units, 79%.
 
+### What the first live sweep found (2026-09-11 18:09)
+
+Phase 2 went live and the first sweep failed on two defects in the seam, neither of them about
+Latchkey and both of them worth writing down because they are the shape a *second* backend always
+fails in.
+
+1. **The transport was resolved from the tree being proven.** The dispatcher ran
+   `bash "$tree/scripts/prove-latchkey.sh"`, and `$tree` is the runner's checkout at the **landed**
+   tip — which does not carry an unlanded script. Every line came back `No such file or directory`,
+   **exit 127**. The engine's own scripts come from the **engine home** (`$SCRIPTS` / `LAND_SH_SRC`,
+   which the supervisor archives), never from the tree: *the tree is the subject of a proof, not its
+   tooling.* `lq_stage_engine` now stages `prove-latchkey.sh` beside `land.run.sh` as
+   `target/gate/prove-latchkey.run.sh`, with `REPO=` rewritten to the tree exactly as
+   `land-remote.sh`'s is — because that script derives its `REPO` from its own path, and a copy run
+   out of the scratch would have packed the **wrong tree, confidently**. An engine home archived
+   before this landed simply has no latchkey transport; the dispatcher says so and takes a box.
+2. **Exit 127 was scored as a pre-proof RED.** The rows went into `preproved.txt` as
+   `RED <tip>@…` and the lines were parked `#RED-preproof` — the engine parked real work over its
+   own missing file. Nothing had been built, picked or judged. `126`, `127` and `70` are now
+   `NONE:harness` before every other rule, on all three paths (a single line, a chained rung, and a
+   chain root, which empties every rung behind it when it is scored red). `1` is still RED and `2`
+   is unchanged: a rule that swallowed a prover's own red would park nothing ever again, which is
+   the more expensive failure. `75` is left exactly where it was — already a NONE, already never a
+   park, and relabelling it would rewrite every reclaimed box in the ledger.
+
+The general lesson for phase 3: **a second backend's first failure mode is not the backend, it is
+the code path that assumed there was only one.** Both defects are in `landq4.sh`, not in
+`prove-latchkey.sh`, and neither would have been caught by any amount of testing of the Latchkey
+side alone.
+
 ### Go / stop for phase 3 (the landing engine)
 
 **STOP**, on two conditions, both of them about the landing and not about this phase:

@@ -139,19 +139,37 @@ lq_latchkey_slot_free() {
 # resource the backend exists to stop using — six boxes' worth of lines out of a queue of a hundred
 # and twenty, on a backend with twelve slots. The empty string means "no box", and the dispatcher
 # reads it as "there is nothing to fall back to".
-lq_preprove_needs_box() {
-  [ "$(lq_preprove_backend)" = latchkey ] && lq_latchkey_slot_free && return 1
+lq_preprove_needs_box() { # $1 = tree (default $W)
+  [ "$(lq_preprove_backend)" = latchkey ] \
+    && lq_latchkey_slot_free \
+    && [ -n "$(lq_latchkey_script "${1:-$W}")" ] \
+    && return 1
   return 0
 }
+# WHERE THE LATCHKEY TRANSPORT LIVES: the STAGED copy, whose REPO is this tree (lq_stage_engine),
+# and never `$tree/scripts` — the tree is what a proof is ABOUT, and an unlanded script is not in it.
+lq_latchkey_script() { # $1 = tree; prints the staged transport, or nothing when this home has none
+  local f="${1:-$W}/target/gate/prove-latchkey.run.sh"
+  [ -f "$f" ] && printf '%s\n' "$f"
+}
+
 lq_dispatch_preprove() { # $1 = tree, $2 = host ('' = none), $3 = batch file; returns the leg's rc
-  local tree="$1" host="$2" bf="$3" rc=0
+  local tree="$1" host="$2" bf="$3" rc=0 lkscript
   if [ "$(lq_preprove_backend)" = latchkey ] && lq_latchkey_slot_free; then
-    env -u LAND_SELFTEST_SHARDS bash "$tree/scripts/prove-latchkey.sh" --preprove --batch "$bf" </dev/null
-    rc=$?
-    [ "$rc" != 75 ] && return "$rc"
-    lq_log "pre-prove: latchkey created no job for $(basename "$bf") (the workspace cap is shared with CI) — falling back to a box"
+    lkscript="$(lq_latchkey_script "$tree")"
+    if [ -z "$lkscript" ]; then
+      # NOT A RED, AND NOT A 127. The shell's "No such file or directory" is exit 127, and 127 is
+      # what the live sweep recorded as a pre-proof RED on every line it touched. A transport this
+      # engine home does not carry has measured NOTHING about anybody's picks.
+      lq_log "pre-prove: this engine home carries no latchkey transport (no target/gate/prove-latchkey.run.sh) — nothing was proven on it"
+    else
+      env -u LAND_SELFTEST_SHARDS bash "$lkscript" --preprove --batch "$bf" </dev/null
+      rc=$?
+      [ "$rc" != 75 ] && return "$rc"
+      lq_log "pre-prove: latchkey created no job for $(basename "$bf") (the workspace cap is shared with CI) — falling back to a box"
+    fi
   fi
-  [ -n "$host" ] || { lq_log "pre-prove: no box to fall back to for $(basename "$bf") — no verdict"; return 75; }
+  [ -n "$host" ] || { lq_log "pre-prove: no box to fall back to for $(basename "$bf") — no verdict, and no red either"; return 75; }
   env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$host" --batch "$bf" </dev/null
 }
 
@@ -1587,10 +1605,31 @@ lq_box_gone() { # $1 = rc, $2 = log; 0 when the BOX went away rather than the pr
   grep -qE "$LQ_BOX_GONE_RE" "$2" 2>/dev/null
 }
 
+# ── AN EXIT CODE THAT CANNOT BE A VERDICT ───────────────────────────────────────────────────────
+# MEASURED, LIVE (2026-09-11 18:09): the sweep's dispatcher could not find the script it was told to
+# run, the shell exited 127, and every line in that sweep was recorded `RED <tip>@…` in preproved.txt
+# and parked `#RED-preproof`. Nothing had been built, nothing had been picked, nothing had been
+# judged — the engine parked real work over its own missing file.
+#
+# THE ENGINE'S PROVERS SAY 0, 1 OR 2. These three say something else entirely, and none of them can
+# be reached BY a proof:
+#   126  the file is there and the shell cannot execute it
+#   127  the shell could not find it at all — an unlanded transport, a bad LAND_SH_SRC
+#    70  EX_SOFTWARE, the code a driver uses when it gives up (already matched in the log by
+#        lq_harness_gave_up, and now also when the log never got far enough to say it)
+# 75 is deliberately NOT on this list: lq_box_gone already reads it, it is already a NONE, and it is
+# already never a park — moving it would relabel every reclaimed box in the ledger.
+lq_rc_is_harness() { # $1 = rc; 0 when the code is the harness's, never a tree's
+  case "${1:-}" in 126|127|70) return 0 ;; esac
+  return 1
+}
+
 lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line outcome file (optional), $4 = the tip the proof was taken at (optional)
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
   if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
+  # BEFORE EVERY OTHER RULE, because the others all read a log a harness failure never wrote.
+  if lq_rc_is_harness "$1"; then echo "NONE:harness"; return 0; fi
   # …and only then the box: a proof that finished and reported GREEN before the box was reclaimed
   # is a green proof, and the outcome file is the proof's own word.
   if lq_box_gone "$1" "$2"; then echo "NONE:box"; return 0; fi
@@ -1625,7 +1664,8 @@ lq_chain_preproof_verdict() { # $1 = rc, $2 = log, $3 = per-line outcome file, $
     # …and a RED row is the dependent's OWN red only when the proof really ran and really judged
     # it: a box reclaimed mid-proof and a harness that gave up are no more a verdict on a chained
     # line than on a single one (the bisect attributes rows it never got to judge to nobody).
-    RED|RED-*) if lq_box_gone "$1" "$2"; then echo "NONE:box"
+    RED|RED-*) if lq_rc_is_harness "$1"; then echo "NONE:harness"
+               elif lq_box_gone "$1" "$2"; then echo "NONE:box"
                elif lq_harness_gave_up "$2"; then echo "NONE:harness"
                elif lq_base_state_red "$2"; then echo "NONE:base"
                elif lq_line_red_is_base_oracle "${5:-}" "$2"; then echo "NONE:base"
@@ -1914,6 +1954,29 @@ lq_stage_engine() { # $1 = tree (default $W)
   sed "s|^here=.*|here=\"$t\"|" "$SCRIPTS/land.sh" >"$t/target/gate/land.run.sh"
   sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/land-remote.sh" >"$t/target/gate/land-remote.sh"
   cp "$SCRIPTS/ci-remote-lib.sh" "$t/target/gate/ci-remote-lib.sh"
+  # THE LATCHKEY TRANSPORT IS STAGED EXACTLY LIKE THE FLEET ONE, AND FOR THE SAME REASON TWICE OVER.
+  #
+  # MEASURED, LIVE (2026-09-11 18:09, first sweep on BUSBAR_PROVE_BACKEND=latchkey): the dispatcher
+  # ran `bash "$tree/scripts/prove-latchkey.sh"` and the runner tree is the checkout at the LANDED
+  # tip — which does not carry this script, because this script has not landed yet. Every line in
+  # that sweep came back `bash: …/scripts/prove-latchkey.sh: No such file or directory`, exit 127.
+  # The engine's own scripts come from the ENGINE HOME ($SCRIPTS / LAND_SH_SRC, which the supervisor
+  # archives), never from the tree being proven — the tree is the SUBJECT of a proof, not its tooling.
+  #
+  # AND IT IS REWRITTEN, NOT COPIED, for the reason in this function's header: prove-latchkey.sh
+  # derives its REPO from its own path, so a copy run out of $SCRIPTS would pack the SCRATCH
+  # worktree — the wrong tree, proven confidently. `REPO=` is pinned to $t exactly as
+  # land-remote.sh's is.
+  #
+  # AN ENGINE HOME WITHOUT IT IS NOT AN ERROR HERE. A home archived before this landed simply has
+  # no latchkey transport; the dispatcher finds no staged copy and says so, which is an honest
+  # NONE. Failing the staging would take the FLEET down with it, over a backend nobody asked for.
+  if [ -f "$SCRIPTS/prove-latchkey.sh" ]; then
+    sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/prove-latchkey.sh" >"$t/target/gate/prove-latchkey.run.sh"
+    chmod +x "$t/target/gate/prove-latchkey.run.sh"
+  else
+    rm -f "$t/target/gate/prove-latchkey.run.sh"
+  fi
   # THE FLEET'S POWER SWITCH TRAVELS WITH THE ENGINE, for the same reason the transport does: the
   # sweep runs out of the staged tree, and a sweep that could not start a stopped box would quietly
   # dispatch to whatever happened to be awake and call the rest "out of free boxes".
@@ -2161,6 +2224,7 @@ lq_slot_root_red() { # $1 = sweep dir, $2 = slot number, $3 = the tip key; 0 whe
     # attributed it: a RED there is "the root, alone on the tip, is the culprit".
     case "$(lq_outcome_row "$res" "$rootl")" in RED|RED-*) ;; *) return 1 ;; esac
     lq_box_gone "$rc" "$lg" && return 1
+    lq_rc_is_harness "$rc" && return 1
     lq_harness_gave_up "$lg" && return 1
     lq_base_state_red "$lg" && return 1
     lq_line_red_is_base_oracle "$key" "$lg" && return 1
@@ -2437,7 +2501,7 @@ $chained" || true)"
     # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
     # box is never handed out twice and no line has to re-probe the fleet to discover that.
     # shellcheck disable=SC2086
-    if lq_preprove_needs_box; then
+    if lq_preprove_needs_box "$tree"; then
       cand="$( fleet_pick_host $hosts )" || cand=""
       [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
       hosts="$hosts $cand"
@@ -2487,7 +2551,7 @@ EOF
     local chain2; chain2="$(lq_chain_of "$line" "$Q" "$tree" "$LAND_CHAIN_DEPTH")" || continue
     [ -n "$chain2" ] || continue
     # shellcheck disable=SC2086
-    if lq_preprove_needs_box; then
+    if lq_preprove_needs_box "$tree"; then
       cand="$( fleet_pick_host $hosts )" || cand=""
       [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the chained holds wait for the next sweep"; break; }
       hosts="$hosts $cand"
@@ -3736,8 +3800,12 @@ lq_selftest() {
   # to act on. No runner is rented and no box is touched.
   echo "landq4 selftest: BUSBAR_PROVE_BACKEND routes the sweep's pre-proof, and the fleet is the fallback"
   local bt="$root/backend"; mkdir -p "$bt/scripts" "$bt/target/gate"
-  printf '#!/usr/bin/env bash\necho latchkey "$@" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$bt/scripts/prove-latchkey.sh"
-  printf '#!/usr/bin/env bash\necho fleet "$@" >>"%s/calls"\nexit 0\n' "$bt" >"$bt/target/gate/land.run.sh"
+  # BOTH STUBS WHERE THE DISPATCHER REALLY LOOKS: the STAGED transport under target/gate (never
+  # `$tree/scripts` — that is the live defect this file now refuses), and the staged fleet engine
+  # beside it. A stub placed where the code does not look is a case that passes by not running.
+  _lkstub() { printf '#!/usr/bin/env bash\necho latchkey "$@" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$bt/target/gate/prove-latchkey.run.sh"; chmod +x "$bt/target/gate/prove-latchkey.run.sh"; }
+  _flstub() { printf '#!/usr/bin/env bash\necho fleet "$@" >>"%s/calls"\nexit 0\n' "$bt" >"$bt/target/gate/land.run.sh"; chmod +x "$bt/target/gate/land.run.sh"; }
+  _lkstub; _flstub
   printf -- '--prove --tests xtask\n' >"$bt/b.batch"
   _bk() { # $1 = backend, $2 = host, $3 = stub rc; prints "<rc> <who>"
     local rc who
@@ -3771,9 +3839,84 @@ lq_selftest() {
   _t "the latchkey job cap defaults to twelve"               12 "$(LATCHKEY_MAX_JOBS="${LATCHKEY_MAX_JOBS:-12}"; echo "$LATCHKEY_MAX_JOBS")"
   _t "a full cap takes a box instead of a runner"            "0 fleet" "$(LATCHKEY_MAX_JOBS=0 _bk latchkey i-0stub 0)"
   # AND A FULL CAP ASKS THE ALLOCATOR FOR ONE, where a free slot does not.
-  _t "a free latchkey slot needs no fleet box"               1 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_preprove_needs_box; echo $?)"
-  _t "  ...a full cap does"                                  0 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=0 lq_preprove_needs_box; echo $?)"
-  _t "  ...and the fleet backend always does"                0 "$(LANDQ_PROVE_BACKEND=fleet lq_preprove_needs_box; echo $?)"
+  # THE TREE IS AN ARGUMENT, because the answer depends on whether THAT tree has a staged transport
+  # — the second half of the live defect. $bt is the stub tree, and it has one.
+  _t "a free latchkey slot needs no fleet box"               1 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_preprove_needs_box "$bt"; echo $?)"
+  _t "  ...a full cap does"                                  0 "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=0 lq_preprove_needs_box "$bt"; echo $?)"
+  _t "  ...and the fleet backend always does"                0 "$(LANDQ_PROVE_BACKEND=fleet lq_preprove_needs_box "$bt"; echo $?)"
+
+  # ── THE TRANSPORT COMES FROM THE ENGINE HOME, NOT FROM THE TREE (live defect, 18:09) ──────────
+  # The first live latchkey sweep ran `bash "$tree/scripts/prove-latchkey.sh"` and the runner tree
+  # is the checkout at the LANDED tip, which does not carry an unlanded script. Every line came back
+  # `No such file or directory`, exit 127. Driven here over a stubbed engine home whose scripts/ has
+  # the transport and whose TREE deliberately does not — which is the live tree's exact shape.
+  echo "landq4 selftest: the latchkey transport is staged from the engine home, and an absent one is not a red"
+  local eh="$root/enginehome"; mkdir -p "$eh/scripts" "$bt/target/gate"
+  printf '#!/usr/bin/env bash\nREPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\necho staged "$REPO" "$@" >>"%s/calls"\nexit ${LK_STUB_RC:-0}\n' "$bt" >"$eh/scripts/prove-latchkey.sh"
+  printf '#!/usr/bin/env bash\nhere="x"\n' >"$eh/scripts/land.sh"
+  printf '#!/usr/bin/env bash\nREPO="x"\n' >"$eh/scripts/land-remote.sh"
+  printf 'rlog() { :; }\n' >"$eh/scripts/ci-remote-lib.sh"
+  [ -e "$bt/scripts/prove-latchkey.sh" ] && rm -f "$bt/scripts/prove-latchkey.sh"
+  _t "the TREE does not carry the transport (the live shape)" 0 \
+     "$( [ -f "$bt/scripts/prove-latchkey.sh" ] && echo 1 || echo 0)"
+  ( SCRIPTS="$eh/scripts"; W="$bt"; lq_stage_engine "$bt" ) >/dev/null 2>&1
+  _t "  ...so lq_stage_engine puts it under target/gate"     1 \
+     "$( [ -f "$bt/target/gate/prove-latchkey.run.sh" ] && echo 1 || echo 0)"
+  # AND ITS REPO IS THIS TREE, NOT THE SCRATCH IT WAS COPIED FROM — the bug this function's header
+  # is about, one script further on: a transport rooted in the scratch packs the wrong tree.
+  _t "  ...with REPO pinned to the tree, not the engine home" 1 \
+     "$(grep -c "^REPO=\"$bt\"$" "$bt/target/gate/prove-latchkey.run.sh")"
+  : >"$bt/calls"
+  _t "  ...and the dispatcher runs THAT copy"                "0 staged" \
+     "$(LANDQ_PROVE_BACKEND=latchkey lq_dispatch_preprove "$bt" i-0stub "$bt/b.batch" >/dev/null 2>&1; \
+        printf '%s %s\n' "$?" "$(awk 'NR==1{print $1}' "$bt/calls")")"
+  # AN ENGINE HOME ARCHIVED BEFORE THIS LANDED HAS NO TRANSPORT. It must take a box, not a 127.
+  # (lq_stage_engine has just overwritten target/gate with the stub home's copies, so the fleet
+  # stub goes back first — otherwise the fallback case would be measuring the stub home's land.sh.)
+  _flstub
+  rm -f "$bt/target/gate/prove-latchkey.run.sh"
+  _t "a home with no transport asks the allocator for a box"  0 \
+     "$(LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_preprove_needs_box "$bt"; echo $?)"
+  _t "  ...and dispatches to the fleet rather than exit 127"  "0 fleet" "$(_bk latchkey i-0stub 0)"
+  _t "  ...and with no box it is an honest 75, never a 127"   "75 nobody" "$(_bk latchkey '' 0)"
+  # A HOME WITHOUT THE SOURCE LEAVES NO STALE COPY BEHIND. A transport from a previous home would
+  # otherwise go on being dispatched after the home that owned it was replaced.
+  : >"$bt/target/gate/prove-latchkey.run.sh"
+  ( SCRIPTS="$root/no-such-home/scripts"; W="$bt"; lq_stage_engine "$bt" ) >/dev/null 2>&1
+  _t "a home without the transport removes the stale staged copy" 0 \
+     "$( [ -f "$bt/target/gate/prove-latchkey.run.sh" ] && echo 1 || echo 0)"
+
+  # ── AN EXIT CODE THAT CANNOT BE A VERDICT IS NOT A RED (live defect, 18:09) ───────────────────
+  # 127 was recorded `RED <tip>@…` in preproved.txt and the lines were parked `#RED-preproof`.
+  # Nothing had been built, picked or judged.
+  echo "landq4 selftest: 126/127/70 are the harness's codes, never a tree's verdict"
+  local hl="$root/harness.log"; : >"$hl"
+  _t "the shell's could-not-find (127) is NONE:harness"      "NONE:harness" "$(lq_preproof_verdict 127 "$hl")"
+  _t "the shell's could-not-execute (126) is too"            "NONE:harness" "$(lq_preproof_verdict 126 "$hl")"
+  _t "a driver's give-up (70) is too"                        "NONE:harness" "$(lq_preproof_verdict 70 "$hl")"
+  # …AND A REAL VERDICT IS STILL A REAL VERDICT. A rule that swallowed rc 1 would park nothing ever
+  # again, which is the opposite failure and the more expensive one.
+  _t "a prover's own RED (1) is still RED"                   RED    "$(lq_preproof_verdict 1 "$hl")"
+  _t "a prover's own refusal (2) is unchanged"               RED    "$(lq_preproof_verdict 2 "$hl")"
+  _t "  ...and 0 is still GREEN"                             GREEN  "$(lq_preproof_verdict 0 "$hl")"
+  # 75 IS LEFT EXACTLY WHERE IT WAS: already a NONE, already never a park. Relabelling it would
+  # rewrite every reclaimed box in the ledger.
+  _t "75 is still a NONE (and still the box's)"              "NONE:box" "$(lq_preproof_verdict 75 "$hl")"
+  # THE CHAINED PATH TOO: a rung whose dispatcher died 127 was never judged either.
+  printf 'RED\t--prove --tests xtask\n' >"$root/harness.result"
+  _t "a chained rung is NONE:harness on 127, not RED"        "NONE:harness" \
+     "$(lq_chain_preproof_verdict 127 "$hl" "$root/harness.result" '--prove --tests xtask')"
+  _t "  ...and still RED when the prover really said so"     RED \
+     "$(lq_chain_preproof_verdict 1 "$hl" "$root/harness.result" '--prove --tests xtask')"
+  # AND A CHAIN ROOT IS NOT SCORED RED ON ONE EITHER — a red root empties every rung behind it.
+  local sd="$root/sweepdir"; mkdir -p "$sd"
+  printf -- '--prove --tests xtask\n' >"$sd/line-1.root"
+  printf 'k\n' >"$sd/line-1.chainkey"; : >"$sd/line-1.log"
+  cp "$root/harness.result" "$sd/line-1.batch.result"
+  echo 127 >"$sd/line-1.rc"
+  _t "a chain ROOT is not proven red by a 127"               1 "$(lq_slot_root_red "$sd" 1 ''; echo $?)"
+  echo 1 >"$sd/line-1.rc"
+  _t "  ...and IS when the prover proved it red"             0 "$(lq_slot_root_red "$sd" 1 ''; echo $?)"
   # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
   # the loop is still reading its list: a child that inherited that stdin ate the next line (three
   # disjoint lines, two boxes chosen, no "out of free boxes"). The stub engine swallows its stdin
