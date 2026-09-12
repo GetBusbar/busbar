@@ -563,8 +563,13 @@ impl Session {
 
     /// ONE FRAME through the ONE pathway, and its answer(s) onto stdout.
     async fn handle_frame(self: &Arc<Self>, line: Vec<u8>, caller_id: Option<Value>) {
+        // THE CALLER'S OWN LENGTH, taken before this session rewrites anything. What the plane
+        // prices its input on is the document the caller sent; the logging floor the line below may
+        // inject is this SESSION's statement into a per-request slot, and charging a caller for a
+        // byte it did not send would be the transport billing for its own bookkeeping.
+        let arrived_bytes = line.len() as u64;
         let body = self.body_with_session_level(line);
-        let response = self.dispatch_frame(&body).await;
+        let response = self.dispatch_frame(&body, arrived_bytes).await;
         self.deliver(caller_id, body, response, 0).await;
     }
 
@@ -594,7 +599,7 @@ impl Session {
     }
 
     /// One pass of the CORE SEQUENCE over one frame.
-    async fn dispatch_frame(self: &Arc<Self>, body: &[u8]) -> Response {
+    async fn dispatch_frame(self: &Arc<Self>, body: &[u8], arrived_bytes: u64) -> Response {
         // MINT THE NEUTRAL HOST over THIS frame's live snapshot via the factory, so the host is
         // live-capable (its `plane_slot_live` re-reads the CURRENT snapshot for the dispatch-time
         // re-validation and per-round grant re-reads deep in `method`), while its BOUND snapshot is
@@ -636,7 +641,9 @@ impl Session {
                 let session = self.clone();
                 let host = host.clone();
                 move |value, id, method| async move {
-                    session.stdio_dispatch(&host, value, id, method).await
+                    session
+                        .stdio_dispatch(&host, arrived_bytes, value, id, method)
+                        .await
                 }
             },
         )
@@ -648,6 +655,7 @@ impl Session {
     async fn stdio_dispatch(
         self: &Arc<Self>,
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        arrived_bytes: u64,
         value: Value,
         id: Value,
         method: String,
@@ -757,6 +765,11 @@ impl Session {
             &self.gov,
             &self.principal,
             &headers,
+            // THE PIPE'S OWN CARRIER, at the length the frame arrived as — NOT the body this
+            // session may have rewritten to carry its logging floor. What the caller sent is what it
+            // is priced on, and a level this session added on the caller's behalf is not the
+            // caller's byte.
+            super::node::Carrier::pipe(arrived_bytes),
             value,
             id,
             method,
@@ -919,8 +932,9 @@ impl Session {
                 )
                 .await
             {
+                let arrived_bytes = retry.len() as u64;
                 let body = self.body_with_session_level(retry);
-                let response = self.dispatch_frame(&body).await;
+                let response = self.dispatch_frame(&body, arrived_bytes).await;
                 return Box::pin(self.deliver(caller_id, body, response, depth + 1)).await;
             }
             // The client would not (or could not) answer live: hand it the result itself. The

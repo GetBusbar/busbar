@@ -51,14 +51,14 @@ fn booted() -> (McpNode, busbar_plugin_loader::store_adapter::StoreAdapter) {
         Door::new(InMemoryCells::new()),
         Pricer::flat(0),
         crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
-        Mutex::new(
+        Arc::new(Mutex::new(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_unit_wal::NullShipper::new()),
                 Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
             )
             .expect("a memory-buffered journal cannot fail to open"),
-        ),
+        )),
         busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
         Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
             crate::root::adapters::root_diagnostics(),
@@ -240,5 +240,52 @@ fn the_reported_stack_ends_at_the_claim_s_transport() {
     assert!(
         claims::declares(stack.key()),
         "a transport no claim names is one no unit of this plane may arrive on"
+    );
+}
+
+/// **THE AUTHENTICATE STEP READS THE DOOR'S OUTCOME AND DOES NOT RE-DECIDE IT.**
+///
+/// The subject is a unit whose principal was resolved before it opened — which is every unit of this
+/// plane, on every surface it serves. The chain this node binds is EMPTY and is never consulted; what
+/// the loop settles on is the principal the door handed over, and the proof is that the settlement
+/// and the audit row name THAT principal rather than the anonymous actor an empty chain would
+/// resolve.
+///
+/// Why it matters more than it looks: `units_mcp::authenticate` runs the chain, and a chain asked for
+/// a credential that arrived once — at a session's open — refuses every frame after the first. So a
+/// node that re-authenticated would serve exactly one request per session and refuse the rest, for a
+/// reason no operator could read. The LLM plane argues the same shape on the same grounds
+/// (`busbar_llm::unit::authenticate`): a second door answering a question the first already answered
+/// is two refusal shapes for one condition.
+#[test]
+fn the_authenticate_step_reads_the_door_s_outcome() {
+    let (node, _adapter) = booted();
+    let key = busbar_api::VirtualKey {
+        id: "vk-the-door-resolved-this".to_string(),
+        name: "the door's caller".to_string(),
+        generation_hash: String::new(),
+        enabled: true,
+        allowed_scopes: None,
+        created_at: 0,
+        // No group: a chain of one uncapped attribution bucket, which is what a deployment with no
+        // limit tree has. The subject here is the identity, not the cap.
+        group: None,
+        labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 0,
+        idp_subject: None,
+        binding_mode: None,
+        minted_by: None,
+    };
+    let mut arriving = arriving("tools/list");
+    arriving.key = Some(&key);
+    arriving.from_session = true;
+
+    let served = node.serve_class(&arriving, || "served");
+    assert!(
+        matches!(served, Ok("served")),
+        "a unit the door already admitted is served, with an EMPTY chain behind the authenticate \
+         step: the step is a read, so the chain is unreached rather than permissive"
     );
 }

@@ -122,6 +122,15 @@ pub(crate) struct Ctx<'a> {
     /// at every downstream breaker admit/settle site and reclaims on any exit. `None` for the task
     /// path (which re-homes its probe into a `DurableScope`) and for unit tests that admit directly.
     pub(crate) scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
+    /// **WHICH CARRIER THIS REQUEST ARRIVED OVER**, and how long it was.
+    ///
+    /// Read for exactly one thing: the classes the composition's node has taken. Their arrival step
+    /// judges the claim that matched against the composed stack under it, and their input is priced
+    /// on the document's own length — and neither is a fact the dispatch could re-derive, because by
+    /// the time a method is named the frame has already been parsed and the carrier is out of scope.
+    /// Carried rather than re-read, because a second reading of "which transport is this" is a
+    /// second answer.
+    pub(crate) carrier: super::node::Carrier,
 }
 
 impl Ctx<'_> {
@@ -177,9 +186,22 @@ pub(crate) async fn dispatch(
     if row.sender != ops::Sender::Client {
         return None;
     }
+    // **THE COMPOSITION'S SERVING PATH**, consulted before this table and never beside it. A class
+    // the node has taken has NO arm below, so this is the only way it is answered: the unit walks
+    // the loop's ten steps, two audit doors and one exit, and the class's own document is written on
+    // the arm where it settled. A class the node has not taken answers `None` here and falls through
+    // to the table unchanged, which is what makes this a move of one class at a time rather than a
+    // switch on the whole surface.
+    if let Some(answer) = super::node::served(ctx, method, params, id.clone()) {
+        return Some(answer);
+    }
     Some(match row.op {
         ops::OP_DISCOVER => discover(ctx, id),
-        ops::OP_TOOLS_LIST => tools_list(ctx, id),
+        // `ops::OP_TOOLS_LIST` HAS NO ARM. The class is served through the composition's node —
+        // `super::node::served`, consulted before this table — so the arm that answered it here
+        // with no door, no budget, no audit row and no meter is DELETED rather than kept beside it.
+        // Its document is still this crate's and is `tools_list_document` below; what left is the
+        // serving.
         ops::OP_TOOL_CALL => tools_call_via_gauntlet(ctx, params, id).await,
         ops::OP_PROMPTS_LIST => prompts_list(ctx, id),
         ops::OP_PROMPT_GET => prompts_get(ctx, params, id),
@@ -414,6 +436,32 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
             &implemented_methods(),
         ),
     )
+}
+
+/// **ONE CLASS'S DOCUMENT**, as the composition's node invokes it.
+///
+/// The shape every byte source in `super::node`'s table has, and the reason it is a type alias
+/// rather than a closure per row: what the node is handed must be the SAME thing for every class, or
+/// the table is thirteen signatures with one pairing each.
+///
+/// `params` and `id` travel with it because a document is an answer to a request and not to a class:
+/// the identifier is the one the envelope read (never an echo of the caller's own spelling beyond
+/// it), and the parameters are what the classes that take them read.
+pub(in crate::mcp) type ClassDocument =
+    fn(&Ctx<'_>, Option<&serde_json::Value>, Option<serde_json::Value>) -> Response;
+
+/// `tools/list`'s document, in the shape the node's table holds.
+///
+/// A lift and nothing else: it forwards to [`tools_list`], which is byte for byte the body that
+/// answered this class when the dispatch table still had an arm for it. The class takes no
+/// parameters, and saying so by ignoring the argument is the declaration — a class that read them
+/// would be reading a member this method has none of.
+pub(in crate::mcp) fn tools_list_document(
+    ctx: &Ctx<'_>,
+    _params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    tools_list(ctx, id)
 }
 
 /// `tools/list` — the GOVERNANCE-SCOPED catalogue, MINUS anything currently quarantined.

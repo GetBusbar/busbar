@@ -175,6 +175,7 @@ async fn call(
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
         scope: None,
+        carrier: crate::mcp::node::Carrier::document(0),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await
@@ -410,6 +411,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
             capabilities: &ALL_CAPABILITIES,
             headers: &NO_HEADERS,
             scope: None,
+            carrier: crate::mcp::node::Carrier::document(0),
         };
         assert!(
             crate::mcp::method::dispatch(&ctx, m, Some(&serde_json::json!({})), None)
@@ -720,6 +722,7 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
         capabilities: &none,
         headers: &NO_HEADERS,
         scope: None,
+        carrier: crate::mcp::node::Carrier::document(0),
     };
     let params = serde_json::json!({ "name": "fs_needs_sampling", "arguments": {} });
     let response = crate::mcp::method::dispatch(&ctx, "tools/call", Some(&params), Some(1.into()))

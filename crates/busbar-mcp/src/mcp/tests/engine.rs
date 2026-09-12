@@ -25,7 +25,14 @@ pub(crate) fn engine() -> &'static dyn EngineTestKit {
 }
 
 /// A fresh test-App builder — the fluent chain a test drives `.mcp(&cfg).mcp_server(..).build()` on.
+///
+/// **IT ALSO INSTALLS THIS BINARY'S SERVING NODE**, and it is the one place that does. A class the
+/// composition's node has taken has no arm in the dispatch table, so a battery here that had not
+/// installed one would see that class read as unimplemented — which is the deletion working, not a
+/// gap. The double admits everything and runs the document: what this crate's batteries judge is the
+/// BYTES, and the steps the real node adds are the composition root's to prove.
 pub fn test_app() -> Box<dyn TestAppKit> {
+    crate::mcp::node::double::install_test_node();
     engine().new_app()
 }
 

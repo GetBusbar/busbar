@@ -1646,6 +1646,23 @@ pub struct McpDraft {
     pub under_scheme: bool,
     /// Whether the principal is a bound session's rather than these bytes'.
     pub from_session: bool,
+    /// **THE PRINCIPAL THE DOOR ALREADY RESOLVED**, where a door ran in front of this unit.
+    ///
+    /// `Some` is not a shortcut and it is not a cached credential: it is the statement that the
+    /// identity chain HAS ALREADY RUN for these bytes, which is true of every surface this plane
+    /// serves today. The document route is `RouteAuth::Key`, so the middleware resolved the one
+    /// verdict and attached it before any plane code ran; the pipe binds its session at the open,
+    /// through the same sequence, and the frames that follow carry no credential of their own.
+    ///
+    /// A unit whose principal is already established must NOT be authenticated a second time, and
+    /// the reason is the LLM plane's own (`busbar_llm::unit::authenticate`): a second door answering
+    /// a question the first one already answered is two refusal shapes for one condition — and on a
+    /// carrier whose credential arrived once, at the session's open, it is a door that refuses every
+    /// frame after the first for a reason no operator could read.
+    ///
+    /// `None` is a surface with no door in front of it, whose credential is on the frame. The
+    /// authenticate step runs the chain for one of those, which is what [`authenticate`] is.
+    pub admitted: Option<PrincipalId>,
     /// What the transports wrote about the connection, bottom layer first.
     pub arrival: ArrivalRecord,
     /// Where the plane says this unit ends up.
@@ -1694,6 +1711,11 @@ impl McpDraft {
             claim_transport: wire.claim_transport,
             under_scheme: wire.under_scheme,
             from_session: wire.from_session,
+            // NO DOOR RAN IN FRONT OF THIS READ. `read` is the form for a surface whose credential
+            // is on the frame it decoded, so the authenticate step runs the chain for it. A caller
+            // behind a door that already resolved the identity fills `admitted` instead — see the
+            // field.
+            admitted: None,
             arrival: wire.arrival.clone(),
             destination: wire.destination,
             legs: wire.legs.to_vec(),
@@ -1995,6 +2017,19 @@ impl Units for McpUnits<'_> {
         token: &UnitToken<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
+        // **THE DOOR'S OWN OUTCOME, READ RATHER THAN RE-DECIDED.** Every surface this plane serves
+        // runs the identity chain before any plane code does — the document route is
+        // `RouteAuth::Key` and the pipe binds its session at the open — so for those units this step
+        // is a read and its refusal set is EMPTY. See `McpDraft::admitted`, and
+        // `busbar_llm::unit::authenticate`, which argues the same shape for the same reason: a
+        // second door answering a question the first already answered is two refusal shapes for one
+        // condition.
+        if let Some(principal) = &self.draft.admitted {
+            return Decision::proceed(
+                token,
+                busbar_caps::Authenticated::Principal(principal.clone()),
+            );
+        }
         authenticate_bound(
             self.bindings.auth,
             &Arriving {

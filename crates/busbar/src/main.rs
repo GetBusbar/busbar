@@ -879,6 +879,124 @@ fn compose_voice_governed_calls() {
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
+/// **MOUNT THE MCP PLANE ON THE COMPOSITION'S NODE, AND INSTALL THE SERVING PATH.**
+///
+/// The composition root's whole statement about this plane, in one place: the registrations the
+/// operator configured become the plane's own declared table, the plane is mounted on the node every
+/// plane's leg bindings are resolved out of, and the node is installed as the serving path the
+/// plane's dispatch reaches for the classes that have left its `match`.
+///
+/// ## The interning, and why it is the root's to do
+///
+/// A plane's declared table holds `&'static str`, because a declaration outlives every request made
+/// against it, and the operator's registration ids are runtime `String`s. Turning one into the other
+/// is a LEAK, it is bounded by the number of configured registrations, it happens exactly once per
+/// boot, and it is a composition-root decision — which is why the plane crate hands over owned
+/// values (`busbar_mcp::mcp::registrations`) and decides nothing.
+///
+/// ## What each binding is, and why none of them is a default
+///
+/// The book and the store are the PROCESS'S, handed in. The breaker is this node's one unit, and it
+/// is the only thing in the tree that keys this plane's lanes. The auth chain is EMPTY and is never
+/// consulted: every surface of this plane runs the identity chain before any plane code does, so the
+/// authenticate step is a read of that outcome (`McpDraft::admitted`) and the chain behind it is
+/// unreached — an honest empty rather than a second door. The pricer is flat zero and the estimate
+/// carries no maximum, because the classes this node serves today reach two of this plane's own
+/// records and no upstream: nothing is priced, nothing is dialled, no grant is spent. The group table
+/// is the operator's own `groups:` tree, and it is NOT a default for the reason `root::policy`'s own
+/// documentation gives: an empty table is a yes from every configured cap at once.
+///
+/// A boot that cannot seal refuses to bind, exactly as the `seal` check above it does: a composition
+/// that disagrees with itself must not serve, because the alternative is finding out from a customer.
+#[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+fn mount_root_mcp(
+    handle: &std::sync::Arc<busbar_core::state::AppHandle>,
+    store: &busbar_plugin_loader::store_adapter::StoreAdapter,
+    book: &root::durability::NodeBook,
+    groups: &std::collections::BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+) {
+    use busbar_contract::plane::PlaneMeta;
+    use busbar_plane_mcp::McpPlane;
+
+    // ONE HOST, minted here and dropped here. It is read for exactly one thing — what the config
+    // resolved into the catalogue — and the request path mints its own per frame.
+    let host = busbar_core::plane_host::live_host_factory(std::sync::Arc::clone(handle))();
+    // THE INTERNER, and the one place this plane's registration names go through it. Bounded by the
+    // number of configured registrations and paid once, at boot.
+    let mut vocab = root::vocabulary::Vocabulary::new();
+    let servers: Vec<busbar_plane_mcp::Server> = busbar_mcp::mcp::registrations(&host)
+        .into_iter()
+        .map(|r| busbar_plane_mcp::Server {
+            id: vocab.key(&r.id),
+            // THE LANE IS THE POOL KEY, and the two are one string on purpose: the pool view strips
+            // the same prefix the breaker's cells are keyed by, so a lane spelled differently from
+            // its pool would be a registration the door priced and the breaker could not find.
+            lane: busbar_contract::ids::LaneId::new(vocab.key(&root::units_mcp::pool_key(&r.id))),
+            host: vocab.key(&r.host),
+            transport: r.transport,
+        })
+        .collect();
+    let lanes = servers.len();
+    let plane = McpPlane::new(Box::leak(servers.into_boxed_slice()));
+    // THE SEAL, over the table the operator actually configured. `main` already sealed the EMPTY
+    // plane, which checks the declarations that do not depend on a registration; this checks them
+    // against the real one.
+    if let Err(refusal) = root::units_mcp::seal(&plane) {
+        eprintln!("busbar: the composition root did not seal the mcp plane: {refusal}");
+        std::process::exit(2);
+    }
+    // THE GROUP NAMES, interned through the same vocabulary: the door records a lease per capped
+    // `concurrent` group on the unit's slot, and a lease name has to outlive every request.
+    let lease_ids: std::collections::BTreeMap<String, &'static str> = groups
+        .keys()
+        .map(|name| (name.clone(), vocab.key(name)))
+        .collect();
+    vocab.seal();
+
+    let node = root::bindings::Node::over(
+        // EMPTY AND UNREACHED. See the header: the authenticate step reads the door's outcome.
+        busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        root::kernel::auth_bindings::AuthBindings::without_directory(),
+        busbar_unit_admission::Door::new(busbar_unit_admission::InMemoryCells::new()),
+        // NOTHING IS PRICED on the classes this node serves. A flat zero is the statement, not a
+        // placeholder: the class that reaches an upstream is the class that needs a card.
+        busbar_unit_admission::Pricer::flat(0),
+        root::policy::build(&root::policy::MeterPolicyConfig::default()),
+        // THE PROCESS'S ONE BOOK, by handle. A book of this node's own would post onto a set nothing
+        // serves and serve a set nothing posts to, and both halves look healthy.
+        std::sync::Arc::clone(&book.durability),
+        // Minted from the root's own kernel, which is the only place a sealed origin can come from.
+        root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+        // THIS NODE'S ONE BREAKER, and the only thing in the tree that keys this plane's lanes. Two
+        // units would be two opinions about which lanes are down.
+        std::sync::Arc::new(busbar_unit_breaker::BreakerUnit::with_diagnostics(
+            root::adapters::root_diagnostics(),
+        )),
+    )
+    .mounting(
+        <McpPlane as PlaneMeta>::KEY,
+        root::bindings::MountedPlane {
+            // THE PRODUCTION STORE ADAPTER, over the store the loader opened — the node's one
+            // handle, cloned, not a second binding.
+            records: root::store::PlaneRecords::of(
+                store,
+                busbar_plane_mcp::records::operations_for,
+            ),
+            // EVERY class, because the scope unit reads silence as a denial.
+            scope_policy: root::units_mcp::scope_policy(root::policy::ScopePolicy::new()),
+            lanes,
+        },
+    );
+
+    // LEAKED, once, at boot: the serving seam takes a `&'static` because it is reached from every
+    // frame for the life of the process, and a node behind an `Arc` would be a refcount bump on a
+    // value that is never dropped.
+    let node: &'static root::node_mcp::McpNode = Box::leak(Box::new(
+        root::node_mcp::McpNode::over(plane, node, root::policy::group_table(groups, &lease_ids)),
+    ));
+    busbar_mcp::mcp::node::install(node);
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -1261,10 +1379,19 @@ async fn run(data_workers: usize) {
     // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
+    // THE `groups:` TREE THIS BOOT RESOLVED, kept for the MCP node's door. Taken here, after the
+    // overlay merge below has not yet run, would be the pre-overlay reading — so the clone is taken
+    // after it, beside the mount that uses it.
     // Merge the persisted overlay (API-registered hooks + groups) onto the RESOLVED registry.
     if let Some(doc) = overlay_doc {
         config::overlay::merge_into(&mut cfg, doc);
     }
+    // THE GROUP TREE THE MCP NODE'S DOOR WALKS, cloned once, AFTER the overlay merge — so the caps
+    // this node enforces are the ones the operator's API writes as well as the ones the file
+    // declares. The boot reading and not a live one, which is the same property every other node's
+    // table has: a group added by a later apply is a group the next boot's door knows about.
+    #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+    let mcp_groups = cfg.groups.clone();
 
     // Metadata-SSRF protection status (discoverability). When the nuclear `allow_all_metadata` is set
     // the guard is OFF — that is a security-relevant degradation, so WARN. Otherwise report the count
@@ -1487,7 +1614,7 @@ async fn run(data_workers: usize) {
     // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
     // directory, so nothing appears beside a configuration that asked for none, and it is built
     // before either listener binds because the first accepted connection can settle.
-    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    #[cfg(any(feature = "root-admin", feature = "root-llm", feature = "root-mcp"))]
     let book = root::durability::node_book();
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
@@ -1598,6 +1725,15 @@ async fn run(data_workers: usize) {
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
     busbar_core::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
+
+    // **THE MCP PLANE'S SERVING PATH**, installed here and nowhere else. It runs AFTER
+    // `start_planes` because the registrations it reads are the catalogue's, and the catalogue is a
+    // product of the plane's own boot; and BEFORE either transport can serve a frame, because a
+    // class that has left the dispatch table is answered by this node or by nothing.
+    #[cfg(all(feature = "plane-mcp", feature = "root-mcp"))]
+    if let Some(store) = node_store.as_ref() {
+        mount_root_mcp(&app_handle, store, &book, &mcp_groups);
+    }
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve

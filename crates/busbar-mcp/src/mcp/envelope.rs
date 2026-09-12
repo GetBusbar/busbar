@@ -296,6 +296,11 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         .expect("the mcp rpc route is RouteAuth::Key, so the middleware attached an AuthPrincipal");
     let headers = ctx.headers;
     let body = ctx.body;
+    // THE FRAME'S OWN LENGTH, read where the bytes are. What this plane prices its input on is the
+    // whole request document, and the only place that number is available is here: the parsed value
+    // below is a `serde_json::Value`, and re-serialising one is a DIFFERENT number of bytes from the
+    // ones the caller sent.
+    let body_bytes = body.len() as u64;
     // The resource is present whenever this route is mounted — the mount is what creates it. Read off
     // the neutral host seam (BOUND), owned so it outlives the `serve` borrow. The `Option`
     // survives only so a future refactor that mounts the route without the config produces a clean
@@ -340,7 +345,20 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
             }
         },
         |value, id, method| async move {
-            rpc_dispatch(&host, &gov, &principal, headers, value, id, method).await
+            rpc_dispatch(
+                &host,
+                &gov,
+                &principal,
+                headers,
+                // THE DOCUMENT SURFACE'S OWN CARRIER, at the length the body ARRIVED as — measured
+                // where the bytes are rather than re-serialised from the parsed value, which is a
+                // different number and would price a different request.
+                super::node::Carrier::document(body_bytes),
+                value,
+                id,
+                method,
+            )
+            .await
         },
     )
     .await
@@ -359,6 +377,7 @@ pub(in crate::mcp) async fn rpc_dispatch(
     gov: &busbar_api::PlaneRequestCtx,
     principal: &busbar_api::AuthPrincipal,
     headers: &HeaderMap,
+    carrier: super::node::Carrier,
     value: serde_json::Value,
     id: serde_json::Value,
     method_name: String,
@@ -515,6 +534,11 @@ pub(in crate::mcp) async fn rpc_dispatch(
         // The sync leg's shared host arena (CLUSTER-1): `tools/call` admits its breaker probe into
         // this scope and settles each leg through it, and it reclaims on any exit of this future.
         scope: Some(&scope),
+        // WHICH CARRIER THIS REQUEST ARRIVED OVER, and how long it was. The dispatch table needs it
+        // for exactly one thing — the classes the composition's node has taken, whose arrival step
+        // judges the claim against the composed stack — and it is carried rather than re-derived,
+        // because a second reading of "which transport is this" is a second answer.
+        carrier,
     };
     let params = value.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.

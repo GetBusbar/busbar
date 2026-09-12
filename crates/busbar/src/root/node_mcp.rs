@@ -471,6 +471,10 @@ impl McpNode {
         // it" as the empty string.
         let record_keys: Vec<String> = legs.iter().map(|_| String::new()).collect();
 
+        let principal = PrincipalId::new(arriving.key.map_or_else(
+            || busbar_api::AuthPrincipal(None).actor_id(),
+            |k| k.id.as_str(),
+        ));
         let record = ArrivalRecord {
             source: String::new(),
             port: 0,
@@ -491,6 +495,12 @@ impl McpNode {
                 .iter()
                 .any(|c| c.transport == arriving.claim_transport && c.scheme.is_some()),
             from_session: arriving.from_session,
+            // THE PRINCIPAL THE DOOR RESOLVED. Every class this node serves arrives behind one — the
+            // document route's middleware or the pipe's session bind — so the authenticate step
+            // reads that outcome rather than running the chain a second time. An ungoverned
+            // deployment resolved the anonymous actor, which is an outcome too, and it is the same
+            // spelling every other reader of `gov.key` uses for the absence.
+            admitted: Some(principal.clone()),
             arrival: record,
             destination,
             legs,
@@ -508,7 +518,6 @@ impl McpNode {
             finish: busbar_contract::unit::FinishClass::Complete,
         };
 
-        let principal = PrincipalId::new(arriving.key.map_or("<ungoverned>", |k| k.id.as_str()));
         let chain = self
             .groups
             .chain_for(
@@ -679,3 +688,54 @@ static TRUST: busbar_unit_trust::Trust = busbar_unit_trust::Trust;
 #[cfg(test)]
 #[path = "tests/node_mcp.rs"]
 mod tests;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The serving seam
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// **THE PLANE'S DISPATCH REACHES THIS NODE THROUGH HERE**, and through nothing else.
+///
+/// One method and one direction: the plane hands over what arrived and the document the class
+/// already had, and the node answers with that document on the arm where the loop settled. The node
+/// never sees the bytes it returns, and the plane never sees the steps they passed. That is the whole
+/// of the contract, and it is what makes each class's move provable — the document is the SAME
+/// function that produced the class's answer when it still had a `match` arm, so a byte that changed
+/// is a byte the move changed.
+///
+/// A LIFT, and deliberately nothing more. Every judgement is [`McpNode::serve_class`]'s; what this
+/// impl owns is the translation between the two crates' spellings of one arriving request, and the
+/// translation of the loop's ending into the plane's own refusal vocabulary. A conversion that
+/// decided anything would be a second serving path wearing an adapter's clothes.
+#[cfg(feature = "plane-mcp")]
+impl busbar_mcp::mcp::node::ServingNode for McpNode {
+    fn serve(
+        &self,
+        request: &busbar_mcp::mcp::node::ClassRequest<'_>,
+        answer: &dyn Fn() -> axum::response::Response,
+    ) -> Result<axum::response::Response, busbar_mcp::mcp::node::Denied> {
+        let arriving = Arriving {
+            method: request.method,
+            request_bytes: request.request_bytes,
+            key: request.key,
+            claim_transport: request.claim_transport,
+            chain: request.chain,
+            // No credential is read off the frame on any surface of this plane: the identity chain
+            // ran before any plane code did, and `McpDraft::admitted` is what carries its outcome.
+            // Carrying a credential here too would be handing the authenticate step a second input
+            // for a decision it no longer makes.
+            credential: None,
+            from_session: request.from_session,
+        };
+        self.serve_class(&arriving, answer)
+            .map_err(|not_served| match not_served {
+                NotServed::Refused(refusal) => busbar_mcp::mcp::node::Denied::Refused(refusal),
+                // A method the plane's own table does not name as a client class cannot reach here —
+                // the seam looked the class up in that table before it called this node. It is mapped
+                // rather than unwrapped because a path that cannot be taken still has to say something
+                // if it is, and "no answer" is the honest thing to say about a unit that never opened.
+                NotServed::NoSuchClass | NotServed::Unavailable => {
+                    busbar_mcp::mcp::node::Denied::Unavailable
+                }
+            })
+    }
+}

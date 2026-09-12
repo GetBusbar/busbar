@@ -372,6 +372,66 @@ pub(crate) fn runtime_of(
     .expect("the mcp runtime slot is an McpRuntime")
 }
 
+/// **ONE REGISTRATION, as the COMPOSITION ROOT needs it** to build this plane's own declared table.
+///
+/// The root is the one kind entitled to name a plane's registrations — that is what
+/// `busbar_plane_mcp::McpPlane::new` takes — and it cannot read them off the operator's config,
+/// because a plane's config section is parsed into this crate's own shape and resolved into the
+/// catalogue. So this is the read, and it is the whole of it: the id the scope unit judges as a
+/// resource, the endpoint the trust unit's allow-list compares, and which of the transports the hop
+/// is made over.
+///
+/// OWNED strings, and that is deliberate. What the plane's table holds is `&'static str`, because a
+/// declaration outlives every request made against it — and turning a config-derived `String` into
+/// one is a LEAK, which is a composition-root decision and is made where the root makes its others
+/// (see `root::vocabulary`'s interner). This crate hands over values and decides nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Registration {
+    /// The name the operator gave this server: the resource the scope unit judges, and the id every
+    /// refusal names.
+    pub id: String,
+    /// The endpoint to dial, or the EMPTY STRING for a server this node launches itself. The empty
+    /// spelling is the plane's own for a spawned registration (`busbar_plane_mcp::Server::host`), so
+    /// nothing downstream has to know which of the two this is to read the field.
+    pub host: String,
+    /// Which of the three transports the hop is made over, in the plane's own claim vocabulary.
+    pub transport: &'static str,
+}
+
+/// **EVERY REGISTRATION THIS DEPLOYMENT CONFIGURED**, in deterministic id order.
+///
+/// Read off the catalogue the config resolved rather than off the config text, because the catalogue
+/// is what the request path answers from: a registration the catalogue does not hold is one no
+/// listing shows and no call reaches, so a root that mounted it would be declaring a resource that
+/// cannot be served.
+///
+/// The transport is read off the presence of a spawn command and not off a second table.
+/// `validate_endpoint` has already refused every mixture of the two halves — a registration that
+/// spawns carries a command and no url, and one that does not carries a url and no command — so this
+/// is a lift rather than a decision.
+#[must_use]
+pub fn registrations(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> Vec<Registration> {
+    runtime_of(host)
+        .catalogue
+        .servers()
+        .map(|s| Registration {
+            id: s.id.clone(),
+            host: if s.stdio.is_some() {
+                String::new()
+            } else {
+                s.url.clone()
+            },
+            transport: if s.stdio.is_some() {
+                busbar_plane_mcp::claims::TRANSPORT_STDIO
+            } else {
+                busbar_plane_mcp::claims::TRANSPORT_HTTP
+            },
+        })
+        .collect()
+}
+
 /// THE LIVE-SNAPSHOT twin of [`runtime_of`] — the plane's runtime object off the CURRENT snapshot,
 /// re-loading the live handle through [`busbar_substrate::plane_host::EngineHost::plane_slot_live`] so
 /// a config swap or revocation AFTER admission is seen. Used only where the re-read is semantically
@@ -812,6 +872,10 @@ pub(crate) mod connect;
 pub mod envelope;
 pub(crate) mod inputreq;
 pub mod method;
+/// **THE SEAM THE COMPOSITION SERVES A CLASS THROUGH.** `pub` because the installer is the
+/// composition root, which is a different crate; everything else on it is `pub(in crate::mcp)`,
+/// because reaching the node is the DISPATCH's business and nobody else's.
+pub mod node;
 /// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
 /// structured results a MUST for the server that published it, and on this plane that server is
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
