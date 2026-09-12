@@ -1,5 +1,9 @@
 name: Voice conformance
 
+# LATCHKEY MIGRATION (phase 4, LK-7): every ubuntu-latest job moved to a latchkey-* label
+# (latchkey-xlarge for every battery/control/probe leg, latchkey-small for the pure verdict
+# aggregator). No Windows or arm64 legs live in this file, so nothing here is left on GitHub.
+
 # THE 4th-PLANE (VOICE) CONFORMANCE BATTERY — at structural parity with the MCP and A2A workflows,
 # now WIRED: every leg drives the real `busbar-voice` plane (its OpenAI-Realtime and Gemini-Live
 # codecs, the captured fixtures, the cross-dialect map, and the T2 runtime's D2 hard-close path) via
@@ -55,7 +59,7 @@ concurrency:
 jobs:
   gate-selftest:
     name: gate self-test (the accounting cannot be lied to)
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -124,7 +128,7 @@ jobs:
   spec-per-dialect:
     name: spec battery · ${{ matrix.dialect }}
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -166,7 +170,7 @@ jobs:
   replay:
     name: captured-transcript replay
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -198,7 +202,7 @@ jobs:
   cross-parity:
     name: cross-parity · 4 ordered OpenAI<->Gemini pairs
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -230,7 +234,7 @@ jobs:
   provider-dial:
     name: "provider-dial · a session dials the composed provider (the provider-dial leg)"
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -265,7 +269,7 @@ jobs:
   composition:
     name: "composition · provider credential, per-key lease, session scope, gemini route, admit/route/audit/exit"
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -309,7 +313,7 @@ jobs:
   boot-validate:
     name: "boot --features plane-voice parses the owned streams: section"
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 2.4 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -344,7 +348,7 @@ jobs:
   governance-probe:
     name: governance probe · 5 vision checkpoints (NOT a conformance result)
     needs: gate-selftest
-    runs-on: ubuntu-latest
+    runs-on: latchkey-xlarge
     # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
@@ -378,7 +382,7 @@ jobs:
 
   verdict:
     name: Voice conformance verdict
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     # BOUNDED. Measured p95 0.1 min over the last 9 runs of this job; the
     # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
     # Unbounded, this job inherits the runner's six-hour default.
