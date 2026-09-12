@@ -162,6 +162,26 @@ lq_latchkey_proc_bound() {
   printf '%s\n' "$n"
 }
 
+# ── COUNTING LINES IS NOT `grep -c … || echo 0` ─────────────────────────────────────────────────
+# MEASURED (the first multi-line big-batch smoke, 2026-09-12): `--smoke-bigbatch` died on
+# `line 6652: arithmetic syntax error`, and the batch it was judging was CORRECT. The cause is that
+# `grep -c` on a file with NO MATCHES both PRINTS `0` and EXITS 1, so `$(grep -c … || echo 0)`
+# captures TWO lines — `0\n0` — and every arithmetic use of that value is a syntax error. It bites
+# exactly when the count is zero, and for this popper that is the HEADLINE case: big-batch mode
+# takes every applicable line, so an empty `keep.txt` is what success looks like. The adoption gate
+# could therefore never report GREEN on the sweep it exists to gate.
+#
+# scripts/verify-1.6.0-done.sh:144 already carries this rule in a comment. This is the function that
+# makes it unnecessary to remember: it takes whatever a counter printed and yields ONE integer.
+# A missing file (grep prints nothing, exits 2) and an empty file (grep prints 0, exits 1) both
+# come out as 0, which is the truth in both cases.
+lq_count() { # $1.. = a count command's output, however many lines and however it exited
+  local v="${1:-}"
+  v="${v%%$'\n'*}"
+  case "$v" in ''|*[!0-9]*) v=0 ;; esac
+  printf '%s\n' "$v"
+}
+
 # ── AND WHICH MACHINE THE LANDING ITSELF RUNS ON: `BUSBAR_LAND_BACKEND=fleet|latchkey` ──────────
 # Phase 3. The owner's goal is ZERO EC2, and the landing is the last workload on the fleet: with
 # this at `latchkey` the batch is proven as a fan of rented jobs and no box is needed for it at all
@@ -5695,7 +5715,7 @@ lq_selftest() {
   # THE PREFIX BISECT IS land.sh's, READ OUT OF land.sh: `#UNIT` is what it keys on, so a big batch
   # written as one unit is bisected by prefix by the code that already does it.
   _t "land.sh bisects a unit by prefix"          1 \
-     "$(grep -c '^land_unit_prefix() {' "$SCRIPTS/land.sh" 2>/dev/null || echo 0)"
+     "$(lq_count "$(grep -c '^land_unit_prefix() {' "$SCRIPTS/land.sh" 2>/dev/null || true)")"
 
   # A PRE-PROOF RED IS NOT A PARK AT POP TIME ANY MORE (the ruling: no pre-proof to join).
   printf 'RED%s%s%s/l/x%s--prove %s\n' "$TAB" "$tipsha" "$TAB" "$TAB" "$pa" >"$PP"
@@ -6130,7 +6150,7 @@ lq_selftest() {
   _t "  ...and a derived home says so out loud"      1 \
      "$(grep -c 'LK_LOGDIR_DERIVED=1' "$LQ_SRC")"
   _t "  ...and the env file carries the one path"    1 \
-     "$(grep -c '^LATCHKEY_LOG_DIR=' "$SCRIPTS/landq.env.example" 2>/dev/null || echo 0)"
+     "$(lq_count "$(grep -c '^LATCHKEY_LOG_DIR=' "$SCRIPTS/landq.env.example" 2>/dev/null || true)")"
 
   # ── ONE STATUS FILE (F7) ──────────────────────────────────────────────────────────────────────
   # The file is JSON or it is nothing: a tick that has to parse prose is a tick that is confidently
@@ -6566,6 +6586,31 @@ PWSTUB
   _t "  ...and this very selftest ran under it" 1 \
      "$(case "$root" in "$LAND_TMP"/*) echo 1 ;; *) echo 0 ;; esac)"
 
+  # ── COUNTING A ZERO (the big-batch smoke's own defect, 2026-09-12) ────────────────────────────
+  # `grep -c` on a file with no matches PRINTS 0 and EXITS 1. The engine used to write
+  # `$(grep -c … || echo 0)`, which captures `0\n0` and turns every arithmetic use into a syntax
+  # error — and it fires only when the count is ZERO, which for the big-batch popper is the
+  # success case. These assertions are the rule; the last one is the closing property.
+  echo "landq4 selftest: a count of zero is one zero"
+  local _cz="$root/count"; mkdir -p "$_cz"
+  : >"$_cz/empty.txt"
+  printf 'a\nb\n' >"$_cz/two.txt"
+  _t "an EMPTY file counts 0, on one line"      0 "$(lq_count "$(grep -c '' "$_cz/empty.txt" 2>/dev/null || true)")"
+  _t "  ...and the raw idiom really does double it" "0
+0" "$(grep -c '' "$_cz/empty.txt" 2>/dev/null || echo 0)"
+  _t "  ...so the sanitised value is usable in arithmetic" 3 \
+     "$(_k="$(lq_count "$(grep -c '' "$_cz/empty.txt" 2>/dev/null || true)")"; echo "$(( _k + 3 ))")"
+  _t "a two-line file counts 2"                 2 "$(lq_count "$(grep -c '' "$_cz/two.txt" 2>/dev/null || true)")"
+  _t "a MISSING file counts 0, not empty"       0 "$(lq_count "$(grep -c '' "$_cz/nope.txt" 2>/dev/null || true)")"
+  _t "a no-match count is 0"                    0 "$(lq_count "$(grep -c '^#RED' "$_cz/two.txt" 2>/dev/null || true)")"
+  _t "garbage is 0, never a syntax error"       0 "$(lq_count "not-a-number")"
+  _t "an empty argument is 0"                   0 "$(lq_count "")"
+  # THE CLOSING PROPERTY: the idiom cannot come back. Built from a variable so this assertion is
+  # not itself the thing it counts.
+  local _bad; _bad="grep -c"
+  _t "the engine never writes \`$_bad … || echo 0\`" 0 \
+     "$(grep -vE '^[[:space:]]*#' "$LQ_SRC" | grep -cE "$_bad[^|]*\|\| echo 0" || true)"
+
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
     echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone,"
@@ -6641,14 +6686,14 @@ if [ "${1:-}" = "--smoke-bigbatch" ]; then
   Q="$savedQ"; NOAPPLY="$sdir/noapply.txt"
   echo
   echo "smoke: popped $sn landing line(s) of $LAND_BATCH_MAX"
-  echo "smoke: NONE:no-apply rows: $(grep -c . "$sdir/noapply.txt" 2>/dev/null || echo 0)"
+  echo "smoke: NONE:no-apply rows: $(lq_count "$(grep -c . "$sdir/noapply.txt" 2>/dev/null || true)")"
   src=0
   # EVERY LINE ACCOUNTED FOR EXACTLY ONCE. batch (landing lines only — the `#UNIT` markers are the
   # popper's own) plus keep must equal the queue that was read, line for line. A popper that drops a
   # line drops WORK, silently, and the queue is the only record it was ever there.
-  qn="$(grep -c '' "$sdir/queue.txt")"
-  kn="$(grep -c '' "$sdir/keep.txt" 2>/dev/null || echo 0)"
-  ln="$(lq_batch_lines "$sdir/batch.txt" | grep -c . || true)"
+  qn="$(lq_count "$(grep -c '' "$sdir/queue.txt" 2>/dev/null || true)")"
+  kn="$(lq_count "$(grep -c '' "$sdir/keep.txt" 2>/dev/null || true)")"
+  ln="$(lq_count "$(lq_batch_lines "$sdir/batch.txt" | grep -c . || true)")"
   if [ "$(( kn + ln ))" = "$qn" ]; then
     echo "smoke: every queue line is accounted for exactly once — $ln batched + $kn kept = $qn read"
   else
@@ -6656,12 +6701,12 @@ if [ "${1:-}" = "--smoke-bigbatch" ]; then
     src=1
   fi
   # NOTHING IS PARKED BY THIS POPPER, ever. A park is a decision, and this pop takes none.
-  pk="$(grep -c '^#RED' "$sdir/keep.txt" 2>/dev/null || true)"
-  pkq="$(grep -c '^#RED' "$sdir/queue.txt" 2>/dev/null || true)"
+  pk="$(lq_count "$(grep -c '^#RED' "$sdir/keep.txt" 2>/dev/null || true)")"
+  pkq="$(lq_count "$(grep -c '^#RED' "$sdir/queue.txt" 2>/dev/null || true)")"
   if [ "${pk:-0}" = "${pkq:-0}" ]; then echo "smoke: no line was parked (the #RED count is the queue's own: ${pkq:-0})"
   else echo "smoke: FAILED — the park count moved ${pkq:-0} -> ${pk:-0}"; src=1; fi
   # THE BATCH IS ONE UNIT, rooted at the first landing line.
-  um="$(grep -cx '#UNIT 1' "$sdir/batch.txt" 2>/dev/null || true)"
+  um="$(lq_count "$(grep -cx '#UNIT 1' "$sdir/batch.txt" 2>/dev/null || true)")"
   if [ "${ln:-0}" -le 1 ] || [ "${um:-0}" = "$(( ln - 1 ))" ]; then
     echo "smoke: the batch is ONE unit — $um marker(s) for $ln landing line(s)"
   else echo "smoke: FAILED — $um unit marker(s) for $ln landing line(s); the batch is not one unit"; src=1; fi

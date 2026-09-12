@@ -1600,7 +1600,7 @@ if [ "$BASE" = "$TIP" ] && [ "${NPICKS:-0}" = 0 ]; then
 fi
 
 lklog "tip $(git -C "$REPO" rev-parse --short "$TIP")   base $(printf '%.9s' "$BASE")   ref $REF"
-lklog "mode:            $MODE${BATCH:+ (batch $BATCH, $(grep -c . "$BATCH" 2>/dev/null || echo 0) line(s))}"
+lklog "mode:            $MODE${BATCH:+ (batch $BATCH, $(n="$(grep -c . "$BATCH" 2>/dev/null || true)"; n="${n%%$'\n'*}"; case "$n" in ''|*[!0-9]*) n=0 ;; esac; printf '%s' "$n") line(s))}"
 lklog "posture:         --posture $POSTURE"
 lklog "oracle families: $SCOPE_FAM"
 case "$SCOPE_TESTS" in

@@ -748,7 +748,7 @@ rm -f "$FETCH_WHY"
 # refusal — its green lines really did land — so the guard is REFUSED, not RC.
 if [ -n "$BATCH" ] && [ -f "$REPO/$BATCH.remote-done" ]; then
   if [ "$REFUSED" = 1 ]; then
-    rlog "the landing was refused here: the box's $(grep -c . "$REPO/$BATCH.remote-done" 2>/dev/null || echo 0) done row(s) are NOT recorded (kept at $BATCH.remote-done)"
+    rlog "the landing was refused here: the box's $(n="$(grep -c . "$REPO/$BATCH.remote-done" 2>/dev/null || true)"; n="${n%%$'\n'*}"; case "$n" in ''|*[!0-9]*) n=0 ;; esac; printf '%s' "$n") done row(s) are NOT recorded (kept at $BATCH.remote-done)"
   else
     grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true
     rm -f "$REPO/$BATCH.remote-done"
