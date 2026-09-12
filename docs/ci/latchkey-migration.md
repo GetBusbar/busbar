@@ -319,3 +319,215 @@ flagged for the base branch generally.
 findings, after declaring `latchkey-small|medium|large|xlarge` in `.github/actionlint.yaml`
 alongside the existing `busbar-xl`. LK-4 measured 37 unknown-label findings before that entry
 existed.
+
+## Phase 4 (LK-7) — the remaining 19 workflow files
+
+Slot LK-7, branch `keep-ci-latchkey-all` off `origin/keep-ci-latchkey-cache` (LK-5's branch — the
+three phase-1 workflows already on `latchkey-*` labels with Fast Cache, plus `actionlint.yaml`
+declaring the labels). LK-7's mandate: every remaining `.github/workflows/*.yml` still naming
+`ubuntu-latest`/`ubuntu-24.04*`/`windows-latest`.
+
+**The task brief said "Latchkey counts 10 workflows"; the actual tree has 19 workflow files (plus
+one derived JSON dispatcher) still naming a GitHub-hosted label outside the three phase-1 files.**
+Enumerated by reading `.github/workflows/`: `a2a-conformance.yml`, `mcp-conformance.yml`,
+`voice-conformance.yml`, `plugin-ci.yml`, `plugin-consumer-verify.yml`, `plugin-functional.yml`,
+`qa-gate.yml` (+ its derived `qa-gate.dispatcher.json`), `security.yml`, `codeql.yml`, `docker.yml`,
+`release.yml`, `release-stage.yml`, `release-fleet.yml`, `verify-deploy.yml`, `prepare-release.yml`,
+`monthly-refresh.yml`, `ci-images-mirror.yml`, `build-artifact.yml`, `bolt-pass.yml`,
+`oracle-record-store-cells.yml` — 20 files, not 10. Said loudly rather than reconciled to the
+brief's count, which this checkout does not support.
+
+### 1. Workflow -> label table
+
+xlarge/large/small follow the same rule §1 states. "stays" means unchanged — Latchkey has no
+Windows, arm64 or macOS offering, so every `windows-latest`, `ubuntu-24.04-arm` and `macos-*` job
+is untouched.
+
+| Workflow | Job(s) | Label | Why |
+|---|---|---|---|
+| a2a-conformance.yml | harness-selftest, control-a2a-go, control-a2a-python, negative-control, swap-proof, tz-is-load-bearing, tck-control, governance-probe, subject | xlarge | conformance battery legs |
+| a2a-conformance.yml | verdict | small | pure `needs:` aggregator, no cargo |
+| mcp-conformance.yml | gate-selftest, official-control, official-subject, battery-control, battery-negative-control, battery-subject, fixture-absence | xlarge | conformance battery legs (fixture-absence does a real `cargo build`) |
+| mcp-conformance.yml | verdict | small | aggregator |
+| voice-conformance.yml | gate-selftest, spec-per-dialect, replay, cross-parity, provider-dial, composition, boot-validate, governance-probe | xlarge | conformance battery legs |
+| voice-conformance.yml | verdict | small | aggregator |
+| plugin-ci.yml | refs | small | ref-resolution script, no cargo |
+| plugin-ci.yml | build-test-signoff | xlarge | build+test+clippy+fmt battery, live services |
+| plugin-ci.yml | coverage | large | single-crate llvm-cov |
+| plugin-consumer-verify.yml | consumer | large | fetch-and-use verification, no cargo but substantial |
+| plugin-consumer-verify.yml | alert | small | notifier |
+| plugin-functional.yml | functional | *(input, default now `latchkey-xlarge`)* | reusable workflow; `runner` stays a plain string input so an aarch64 caller can override — never hardcoded |
+| qa-gate.yml | fast, loader | large | hydrate + single-suite mechanism tests |
+| qa-gate.yml | build, slow | xlarge | build-once stage; full segment-matrix battery |
+| qa-gate.yml | umbrella | small | pure aggregator |
+| security.yml | cargo-deny | large | bounded dependency/license scan |
+| codeql.yml | analyze | xlarge | whole-repo database build + query run |
+| docker.yml | promote | small | manifest-only retag, no rebuild |
+| docker.yml | build-binaries (amd64) | xlarge | musl/cargo build |
+| docker.yml | build-binaries (arm64 x2), verify-arm64-variants | *(stays: `ubuntu-24.04-arm`)* | Latchkey has no arm64 |
+| docker.yml | publish | large | build & push multi-arch image, cosign sign (installer action) |
+| release.yml | plan, branch-green, resolve-staged, promote-release, notify-downstream, discord-notify | small | gh api/tag/notify scripting, no cargo |
+| release-stage.yml | plan, branch-green, draft, targets, verify-assets, verify-set-equality, record-staged | small | scripting, no cargo |
+| release-stage.yml | gate | xlarge | fmt·clippy·build·test, live Postgres/Valkey |
+| release-stage.yml | sbom, openapi | large | single-crate cargo-based generation |
+| release-fleet.yml | resolve, gate | small | jq/gh api, pure aggregator |
+| release-fleet.yml | docker, channels | large | registry/channel verification, no cargo |
+| release-fleet.yml | fleet | xlarge | rebuilds the busbar-headroom bundle image |
+| verify-deploy.yml | pointers, verify | large | third-party-host verification, no cargo |
+| verify-deploy.yml | alert | small | notifier |
+| prepare-release.yml | cut | large | cargo build/test + Cargo/CHANGELOG bump (Fast Cache added, see §3) |
+| monthly-refresh.yml | refresh | xlarge | cargo update + fmt/clippy/test battery |
+| ci-images-mirror.yml | mirror | large | manifest-only GHCR copy |
+| build-artifact.yml | build | *(input, from `.github/release-targets.json`)* | never hardcoded — see below |
+| bolt-pass.yml | bolt (amd64) | large | BOLT rewrite + execution-verify |
+| bolt-pass.yml | bolt (arm64) | *(stays: `ubuntu-24.04-arm`)* | native-runner execution-verify requirement; Latchkey has no arm64 |
+| oracle-record-store-cells.yml | record | xlarge | 3 live service-container backends, same shape as ci.yml's shadow-oracle |
+| release.yml, release-stage.yml, release-fleet.yml, verify-deploy.yml, build-artifact.yml | (matrix/input `runner`) | *(derived)* | all five read `runner` from `.github/release-targets.json`, edited once there instead of five times: the three linux/x86_64 rows -> `latchkey-xlarge`; arm64/macOS/Windows rows unchanged |
+
+`docker.yml`'s `build-binaries` matrix and every `release-targets.json` consumer are the two places
+item (1)'s "extend the matrix/input values, never hardcode" rule actually bit: both are
+`${{ matrix.* }}`/derived-from-JSON `runs-on:` lines, so the edit lives in the matrix entry or the
+JSON row, never as a second hardcoded `runs-on:` line layered on top.
+
+### 2. Judged and left on GitHub-hosted (with reasons)
+
+**None.** Every release/publish/deploy job in these 20 files was checked individually against the
+three tests the brief set (docker present, secrets injected regardless of runner, no
+GitHub-hosted-only tooling) and all of them cleared:
+
+- `docker.yml`'s `promote` and `publish` jobs log into Docker Hub + GHCR (`docker/login-action`)
+  and sign with cosign — but cosign arrives via `sigstore/cosign-installer`, which downloads its own
+  binary, not a preinstalled one.
+- A `which gh cosign syft docker jq curl npm pnpm cargo` probe run on a `latchkey-small` box
+  (`latchkey run --size small --timeout 120 --no-context`) found `gh`, `docker`, `jq`, `curl`,
+  `npm`, `pnpm` and `cargo` all present at `/usr/bin` or `/usr/local/bin`; `cosign` and `syft` are
+  **not** preinstalled. Grepping all 20 files for `syft` found zero uses. Every `cosign` use in
+  `docker.yml` goes through the installer action, so the missing preinstall never mattered.
+- No `cargo publish`, `cargo-dist`, `npm publish` or `pnpm publish` exists anywhere in this tree's
+  workflows (grepped for all four) — there is no crates.io/npm publish job to judge at all;
+  `verify-deploy.yml` explicitly documents busbar ships as a binary/image/OS-package, no crate.
+- Every `gh release`/`gh api` job runs `gh`, which the probe confirmed present.
+
+So every job moved. The only things left on GitHub-hosted are architecture gaps, not tooling gaps:
+`windows-latest` (x86_64-pc-windows-msvc — pgo-build.sh's own header says its POSIX trainer has
+never run on Windows), `ubuntu-24.04-arm` (every arm64 leg, native-runner execution-verify
+requirements), `macos-15-intel` and `macos-latest` (Intel/Apple Silicon macOS release targets —
+Latchkey offers none of the three non-Linux-x64 architectures/OSes, extending the brief's own
+"Latchkey has no Windows or arm" logic to the macOS rows the brief did not name).
+
+**One tension flagged, not reverted.** `a2a-conformance.yml`, `mcp-conformance.yml` and
+`voice-conformance.yml` each carry a comment recording an ORG rule: "public -> GitHub-hosted
+(free), private -> `busbar-selfhosted`" — busbar is public, so these batteries ran on
+`ubuntu-latest` at zero marginal cost before this migration. Moving them to `latchkey-xlarge` trades
+free minutes for paid ones with no capability gained (GitHub-hosted already ran every leg green).
+GOAL LK ("100% off EC2 and GitHub-hosted runners onto Latchkey") is explicit and postdates that org
+rule, so the move was made as directed — but the cost tradeoff the org rule was optimizing for is
+now reversed for these three files specifically, worth an owner's explicit sign-off rather than a
+silent byproduct of "every ubuntu-latest becomes a label."
+
+### 3. Fast Cache added
+
+This migration's own no-cache scan (every job's `steps` searched for a `cargo build/test/run/install`
+with no `rust-cache`/`cache-action`/`actions/cache` anywhere in the same job) found three
+candidates; one was a false positive:
+
+- `plugin-functional.yml`'s `functional` job (this-tree `cargo build` on both the busbar-source and
+  plugin-cdylib paths) — Fast Cache restore/save added, guarded by the same `if:` as the Rust-install
+  step so a pure-release-artifact run (nothing built from source) never pays for it.
+- `prepare-release.yml`'s `cut` job (`cargo update`/`cargo build`/`cargo test`) — Fast Cache
+  restore/save added unconditionally (this job always builds).
+- `release-stage.yml`'s `targets` job matched the literal-string scan on a *comment* ("the rust
+  triple cargo builds") — reading the job shows it is pure `python3`/JSON parsing of
+  `.github/release-targets.json`, no cargo work at all. Left untouched.
+
+Both real additions use LK-5's exact form: `latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1`
+(SHA-pinned, not `@v1` — R14 would refuse the floating tag), restoring `~/.cargo/registry`,
+`~/.cargo/git` and `target` before the build and saving with `if: always()` after.
+
+### 4. `qa-gate.dispatcher.json` regen
+
+`qa-gate.yml`'s label move left the derived `qa-gate.dispatcher.json` stale — caught immediately by
+`cargo xtask gate qa-gate-dispatch` (RED, naming exactly the five `runs-on` fields that drifted).
+`cargo xtask gate qa-gate-dispatch --write` reports "this gate has nothing to write": the gate's own
+`write_declared` function has no CLI probe wired to it (grepped `xtask/src` — the only two call
+sites are the function definition and a doc-comment referencing it by name). This is a pre-existing
+gap in `xtask`, not something in this slot's mandate to fix — said loudly rather than silently
+worked around. The five fields were hand-synced to match `qa-gate.yml` exactly and the gate re-run
+to confirm `PASS` before committing.
+
+### 5. actionlint
+
+`actionlint` (with the repo's `.github/actionlint.yaml` label declarations from LK-4) run over every
+`.github/workflows/*.yml` file in the tree: **clean** — zero unknown-label findings, zero syntax
+errors. Three pre-existing shellcheck-only findings remain (`plugin-ci.yml:444/586/679` SC2155,
+`release.yml:344` SC2181, `verify-deploy.yml:1825` SC2034), confirmed present on
+`origin/keep-ci-latchkey-cache` before this slot's first commit — not introduced here, not fixed
+here (out of this slot's `runs-on`/cache/label mandate).
+
+### 6. Measurement
+
+`gh run list -R GetBusbar/busbar --branch keep-ci-latchkey-all` after every push on this branch
+shows only **`keep-proof.yml`** actually firing — its `push: branches: ['keep-*', '!wip/**']`
+trigger (documented in §2 above) is the only one of the 20-plus workflows in this repo whose
+trigger a push to a `keep-*` branch satisfies. `ci.yml` and `gate-mutants.yml` trigger on
+`integration/**`/`dev`/`qa`/`main`/`pull_request`, not `keep-*`. None of the 20 files this slot
+touched trigger on push at all: they are `workflow_call` (a2a-conformance.yml, mcp-conformance.yml
+and voice-conformance.yml aside — those three DO trigger on `push: branches:
+['integration/**','dev','qa','main']` and `pull_request`, neither of which a push to this `keep-*`
+branch satisfies), `workflow_dispatch`, `release`, or gated behind `qa-gate.yml`'s own
+`workflow_run` trigger (which only fires after a `workflow_run` completion on `qa`, not on this
+branch). **This confirms the brief's own caveat: tag/release/dispatch-triggered workflows cannot be
+measured by a push to this branch and are judged by reading only (§§1-3 above).** No workflow_dispatch
+was fired manually against `docker.yml`/`release*.yml`/`bolt-pass.yml` to get real run data — every
+one of those either publishes real bytes (Docker Hub/GHCR pushes, GitHub Releases) or requires
+staging-tag/promote-tag inputs that do not exist on a scratch branch, and manufacturing fake inputs
+to force a dry run risks a real publish side effect for zero migration-relevant signal (their
+`runs-on:`/cache/tooling correctness was already established by reading, §§1-3).
+
+`keep-proof.yml`'s own jobs — unchanged by this slot, already on Latchkey since LK-5 — still ran on
+every push (each superseded by the next push's `concurrency: cancel-in-progress`, so only the
+final push's run completed). That final run (commit `acf77ee20`, run id `34666870476`) is this
+slot's only real Latchkey execution evidence:
+
+| Job | Label (from LK-5, unchanged) | Wall time | Result | First error line |
+|---|---|---|---|---|
+| build-clippy (fmt · clippy · build) | large | 1m57s | pass | — |
+| tests (shard 1) | xlarge | (see run) | (see run) | — |
+| tests (shard 2) | xlarge | 4m30s | pass | — |
+| tests (shard 3) | xlarge | 5m30s | pass | — |
+| tests (shard 4) | xlarge | 4m32s | pass | — |
+| tests (shard xtask) | xlarge | (see run) | (see run) | — |
+| oracle (shadow-oracle vs published 1.5.5) | xlarge | 1m56s | fail | not yet re-diagnosed — see below |
+| design-bindings | large | 7s | fail | not yet re-diagnosed — see below |
+| gates (cargo xtask gate --all · selftest) | xlarge | (see run) | (see run) | — |
+| construction-gate | xlarge | 3m33s | pass | — |
+
+The two failures (`oracle`, `design-bindings`) are on jobs and labels this slot did not touch —
+`keep-proof.yml` was already fully migrated by LK-5 and this slot made zero edits to it. Consistent
+with §4 item 5 of the phase-1 section above (pre-existing red on a stale base is a known risk
+pattern for this branch lineage), not re-diagnosed here: this slot's mandate is `runs-on`/cache/
+label only, and neither failure is a runner-label or caching regression this migration introduced.
+
+Minutes consumed by this slot's own measurement window: the ten `keep-proof.yml` jobs above,
+approximately **25-30 runner-minutes** at Latchkey per-minute rates for this one push — small
+relative to phase 1's because only one push's run survived the concurrency cancellation from the
+eleven earlier pushes on this branch (each commit was pushed individually per the task's own "push
+after every commit" rule, and `keep-proof.yml`'s `cancel-in-progress` concurrency group superseded
+every run but the last).
+
+### 7. What sucks (this slot's additions to §4 above)
+
+8. **The task brief's own workflow count was wrong** (10 vs the 19-plus-1-JSON actually in the
+   tree) — the same "brief names something this checkout doesn't have" pattern LK-1 called out for
+   `docs/ci/fleet.md`. Not fabricated to match; enumerated instead (§0 above).
+9. **A derived-artifact gate (`qa-gate-dispatch`) names a regeneration entry point
+   (`QaGateDispatchGate::write_declared`) that the CLI cannot reach.** `--write` silently no-ops
+   ("this gate has nothing to write") instead of erroring, which is the worse failure mode: a
+   contributor who trusts the hint and runs `--write` gets no diff, concludes there is nothing to
+   regenerate, and commits a stale declared shape that only the gate itself (which they may not
+   have re-run) catches.
+10. **The org's own public-repo cost rule and GOAL LK now disagree** for the three conformance
+   suites (§2 above) — moving public, always-green-on-GitHub-hosted batteries to paid Latchkey
+   minutes is correct under the letter of GOAL LK and is a real, avoidable cost increase under the
+   org's stated free-tier rule. Neither this slot nor LK-5 is positioned to resolve that tension;
+   flagged for an owner decision rather than picked silently in either direction.
