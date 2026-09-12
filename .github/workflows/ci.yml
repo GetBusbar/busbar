@@ -75,35 +75,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# ── COMPILER CACHE (sccache) ───────────────────────────────────────────────────────────────────────
-# Latchkey Fast Cache (latchkey-dev/cache-action, restore/save around ~/.cargo and target/) already
-# restores `target/` and the registry PER JOB: it makes the SECOND run of
-# the SAME job on the SAME lockfile cheap. It does nothing for the first run of a new branch, and
-# nothing for the fifteen OTHER jobs in this run that are compiling the same crates from the same
-# sources at the same moment — each one starts from its own key and rebuilds the world.
-#
-# sccache is the layer under that: a CONTENT-addressed cache of individual rustc invocations, shared
-# across every job and every branch through the GitHub Actions cache. Two jobs compiling identical
-# `syn` produce the same cache entry; the second one downloads an object file instead of running
-# rustc. The two caches are complements, not alternatives, and both are wired here.
-#
-# `RUSTC_WRAPPER` IS SET FOR THE WHOLE WORKFLOW, DELIBERATELY. A per-job env would be one more list
-# to keep in sync with reality, and reality has already moved twice: `scripts/construction-gate.sh`
-# shells out to `cargo xtask` from a job whose own steps contain no `cargo` line at all, and
-# `service-image-pins` runs `cargo xtask gate` with no toolchain step. A wrapper named workflow-wide
-# but installed job-by-job is a red waiting for whichever job grows a cargo line next — so EVERY job
-# in this file installs sccache, including the four that compile nothing today. The install is a
-# few seconds of a cached binary download; the alternative is a broken job nobody predicted.
-#
-# `CARGO_INCREMENTAL: 0` because sccache cannot cache incremental compilation and silently falls
-# through to plain rustc when it is on. rust-cache already sets it in the jobs it runs in; naming it
-# here makes it true in the jobs it does not.
+# ── COMPILER CACHE (sccache) — REMOVED, LK-5 ──────────────────────────────────────────────────────
+# sccache used to sit under Latchkey Fast Cache here as a content-addressed cache of individual
+# rustc invocations, shared across jobs/branches THROUGH THE GITHUB ACTIONS CACHE. LK-1's own
+# measurement (docs/ci/latchkey-migration.md §4 item 1) found that backend unreliable from Latchkey
+# runners — `Cache lookup/restore/save failed` warnings on nearly every job, and one job
+# (`ship-ready`) hard-failed because the sccache binary itself was never installed. Phase 2 of that
+# doc floated pointing sccache at an S3 backend instead; this slot's mandate is narrower (get build
+# caching off GitHub, full stop), so sccache is removed rather than re-pointed. Latchkey Fast Cache
+# (`latchkey-dev/cache-action`, restore/save around `~/.cargo/registry`, `~/.cargo/git` and
+# `target/`, keyed per job below) is now the only compiler/dependency cache in this file.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
-  CARGO_INCREMENTAL: "0"
 
 # ── EVERY JOB IS BOUNDED ───────────────────────────────────────────────────────────────────────────
 # A job without `timeout-minutes` inherits the runner's SIX-HOUR default. That is not a ceiling, it
@@ -141,11 +125,6 @@ jobs:
     # over the last 18 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
     steps:
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Declare the tier
         # Ref and event come in as ENV, not as `${{ }}` spliced into the script text. A branch name
         # is attacker-influenced data (anyone who can open a PR picks it) and GitHub allows plenty of
@@ -226,15 +205,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-structure-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-structure-lint-
           path: |
-            ~/.cargo
-            target/
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
 
@@ -587,14 +564,14 @@ jobs:
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-structure-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
   check:
     name: fmt · clippy · build · test
@@ -683,11 +660,6 @@ jobs:
       # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
       - name: Service endpoints (container IP, not a published host port)
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
@@ -697,10 +669,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-check-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-check-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -963,14 +938,14 @@ jobs:
   # Regenerate a stale file with:
   #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-check-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: latchkey-large
@@ -983,11 +958,6 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
@@ -995,10 +965,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-openapi-schema-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-openapi-schema-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
@@ -1037,14 +1010,14 @@ jobs:
   # Needs full history: the corpus is checked in, but `refresh.sh` reads tags, and a shallow clone
   # would make a regenerated corpus silently smaller rather than failing loudly.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-openapi-schema-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: latchkey-xlarge
@@ -1059,21 +1032,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-migration-corpus-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-migration-corpus-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Corpus is present and covers the tags
         run: |
           set -euo pipefail
@@ -1090,14 +1061,14 @@ jobs:
       - name: Every shipped config migrates to a valid current config
         run: cargo test -p busbar --test migration_corpus --locked -- --nocapture
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-migration-corpus-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
   config-stability:
     name: config-stability gate (frozen grammar · additive-only)
@@ -1116,21 +1087,19 @@ jobs:
       # declared here rather than assumed. It is bounded the same way every other converted gate's
       # is: the segregation gate holds the runner's dependency count at one, and the cache is keyed
       # on `xtask` so this job does not pay for the workspace's build.
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-config-stability-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-config-stability-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
 
@@ -1168,14 +1137,14 @@ jobs:
   # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
   # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-config-stability-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   generated-artifact-drift:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: latchkey-large
@@ -1185,21 +1154,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-generated-artifact-drift-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-generated-artifact-drift-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
       # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
       # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
@@ -1253,14 +1220,14 @@ jobs:
   # discovers ZERO files is a HARD FAILURE, so neither a broken rule table nor a mistyped path can
   # read as "clean". The same script runs over every PLUGIN repo via the plugin-ci reusable workflow.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-generated-artifact-drift-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   public-hygiene:
     name: docs hygiene (public prose describes the software, not the process)
     runs-on: latchkey-large
@@ -1270,11 +1237,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
         run: python3 scripts/public-hygiene-lint.py --selftest
       - name: Public-hygiene gate
@@ -1332,11 +1294,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       # THIS JOB NEEDS A TOOLCHAIN, AND NOW DECLARES ONE. It ran `cargo xtask gate service-images`
       # on whatever the runner image happened to ship, and that is a property of the image, not of
       # anything this repository controls. It failed exactly the way an assumption fails: the cache
@@ -1370,7 +1327,6 @@ jobs:
       - name: Store-service fixtures self-test
         run: testing/fleet-fixtures/store-services.sh --selftest
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
@@ -1407,21 +1363,19 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-executable-config-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-executable-config-lint-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build busbar (the validator this gate judges with)
         run: cargo build --locked --bin busbar
       - name: Executable-config gate self-test (RED/GREEN before the verdict is trusted)
@@ -1455,14 +1409,14 @@ jobs:
   # reaches for is absent. Proving the featureless binary WORKS is the `no-plugins-gate` job below,
   # which boots it and drives real HTTP through it.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-executable-config-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: latchkey-xlarge
@@ -1475,11 +1429,6 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
@@ -1487,10 +1436,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-no-default-features-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-no-default-features-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Clippy (no-default-features)
         run: cargo clippy --no-default-features --locked -- -D warnings
       - name: Build (no-default-features)
@@ -1555,14 +1507,14 @@ jobs:
   # plane reports absent. It is wired as its own gate (`plane-delete-test.sh --all`) and passes for all
   # three planes; this weak form is the per-plane compile-level complement, asserted on every matrix leg.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-no-default-features-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
     runs-on: latchkey-xlarge
@@ -1585,20 +1537,18 @@ jobs:
             features: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-deletion-test-matrix-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-deletion-test-matrix-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
         # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
@@ -1635,14 +1585,14 @@ jobs:
   # assertion and break exactly one later one, so a gate that had rotted into passing vacuously fails
   # here instead of manufacturing false confidence.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-deletion-test-matrix-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: latchkey-xlarge
@@ -1655,20 +1605,18 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-no-plugins-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-no-plugins-gate-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
       - name: No-plugins gate (axis 1 compiled out · axis 2 not installed)
@@ -1680,14 +1628,14 @@ jobs:
   # `loom-model`, far too slowly for the default suite. A gate nothing runs is not a gate, so they
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-no-plugins-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   txn-guards:
     name: txn compile fence · loom model
     runs-on: latchkey-xlarge
@@ -1700,20 +1648,18 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-txn-guards-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-txn-guards-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
@@ -1724,14 +1670,14 @@ jobs:
   # noise can never trip it — it exists to catch GROSS hot-path regressions (sync I/O, stray
   # sleeps) the instant they land. Fine-grained overhead numbers are bench/latency/'s job.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-txn-guards-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   timing:
     name: timing gate (release)
     runs-on: latchkey-xlarge
@@ -1744,20 +1690,18 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-timing-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-timing-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Hot-path timing gate
         run: |
           set -euo pipefail
@@ -1786,14 +1730,14 @@ jobs:
   # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
   # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-timing-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
@@ -1988,11 +1932,6 @@ jobs:
       # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
       - name: Service endpoints (container IP, not a published host port)
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
@@ -2001,10 +1940,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-coverage-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (workspace, live-DB tests wired)
@@ -2057,14 +1999,14 @@ jobs:
   #
   # FULL TIER: runs on every PR, on dev/qa/main, and on dispatch — same guard as the other gate jobs.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   perf-build-gate:
     name: perf + build-parity gate
     runs-on: latchkey-xlarge
@@ -2075,11 +2017,6 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           # llvm-tools supplies llvm-profdata, which pgo-drift-check.sh's self-test needs to build
@@ -2091,10 +2028,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-perf-build-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-perf-build-gate-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
       # (same discipline as `cargo xtask gate <name> --selftest` et al).
@@ -2207,14 +2147,14 @@ jobs:
   # counts + names only, no source, no secrets). The commit back carries [skip ci] so it cannot loop.
   # Not in the ci-umbrella needs: a manifest refresh must never gate a promotion.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-perf-build-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   proof-manifest:
     name: proof-manifest (stage-mirrored dev/qa/main)
     if: github.event_name == 'push' && contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -2232,20 +2172,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-proof-manifest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-proof-manifest-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
@@ -2369,14 +2307,14 @@ jobs:
   # public key embedded, exactly as build-artifact.yml builds it — without it every first-party
   # plugin signature is unverifiable and the plugins family reads red for the wrong reason.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-proof-manifest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   shadow-oracle:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
     runs-on: latchkey-xlarge
@@ -2441,21 +2379,19 @@ jobs:
       # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
       - name: Service endpoints (container IP, not a published host port)
         run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} mysql=${{ job.services.mysql.id }} valkey=${{ job.services.valkey.id }}
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-shadow-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-shadow-oracle-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
       # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
       # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
@@ -2491,11 +2427,12 @@ jobs:
           # also held a re-recorded golden; the golden is now read from the tree, so hashing the
           # harness into this key would only throw away a correct download on every harness edit.
           echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
-      - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache the pinned 1.5.5 artifacts (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          path: ~/.cache/busbar-oracle
+          action: restore
           key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
       - name: The differ can see a diff (replay selftest)
         run: ./bin/oracle replay-selftest
       - name: Fetch the published 1.5.5 binary and plugins by digest
@@ -2510,6 +2447,13 @@ jobs:
           for pl in $plugins; do
             ./bin/oracle fetch-plugin "$pl" >/dev/null
           done
+      - name: Cache the pinned 1.5.5 artifacts (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
+
       - name: Build the candidate (release, with the release public key)
         run: |
           set -euo pipefail
@@ -2614,14 +2558,14 @@ jobs:
   # absolute (target/llm-conformance/candidate under the repo), which is what the artifact upload
   # below collects.
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-shadow-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   llm-conformance:
     name: llm spec conformance (HEAD recording vs the published provider specs)
     runs-on: latchkey-large
@@ -2634,11 +2578,6 @@ jobs:
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Download the candidate recording (made by shadow-oracle on this commit)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -2650,11 +2589,12 @@ jobs:
           led=target/oracle/recordings/candidate/ledger.tsv
           [ -s "$led" ] || { echo "::error::no candidate ledger at $led — the shadow-oracle job did not record HEAD"; exit 1; }
           echo "candidate recording: $(wc -l <"$led" | tr -d ' ') ledger rows"
-      - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation) (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          path: ~/.cache/busbar-llm-specs
+          action: restore
           key: llm-specs-${{ hashFiles('testing/llm-conformance/spec-digests.tsv') }}
+          path: ~/.cache/busbar-llm-specs
       # PyYAML is needed the FIRST time the two YAML specs (openai, cohere) are parsed; after that the
       # parsed document is cached as JSON beside the spec. Pinned, so the parse that defines
       # "conformant" cannot move because a parser release did.
@@ -2671,6 +2611,12 @@ jobs:
         run: bash testing/llm-conformance/selftest.sh
       - name: LLM spec conformance — HEAD recording vs the published specs
         run: bash testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
+      - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation) (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: llm-specs-${{ hashFiles('testing/llm-conformance/spec-digests.tsv') }}
+          path: ~/.cache/busbar-llm-specs
       - name: Upload the conformance report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -2731,21 +2677,19 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Latchkey Fast Cache (cargo registry + target, restore)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-teller-steps-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-teller-steps-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: Teller-steps self-test (a lying matrix is refused)
@@ -2761,14 +2705,14 @@ jobs:
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
         run: cargo xtask teller-steps --root-legs
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-teller-steps-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
@@ -2792,11 +2736,6 @@ jobs:
           # ratchet that switches itself off on the runner where it is cheapest to switch off is not
           # a ratchet. So the history is fetched.
           fetch-depth: 0
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
         # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
@@ -2859,11 +2798,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Design bindings self-test (the gate proves itself before it judges the tree)
         run: cargo xtask gate design-bindings --selftest
       - name: Design bindings (existence; unmapped bindings listed as named gaps; regen-clean)
@@ -2903,10 +2837,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-ship-ready-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-ship-ready-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: Ship-ready self-test
@@ -2924,14 +2861,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: cargo xtask gate ship-ready
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-ship-ready-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
 
   ci-umbrella:
     name: ci umbrella
@@ -3021,11 +2958,6 @@ jobs:
         teller-steps|full|${{ needs.teller-steps.result }}
         construction-gate|fast|${{ needs.construction-gate.result }}
     steps:
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
           set -u
