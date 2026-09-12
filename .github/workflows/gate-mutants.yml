@@ -29,10 +29,11 @@ name: gate-mutants
 on:
   push:
     # Same branch set as ci.yml. `keep-*` WAS here and is not any more, and it is not an ungating:
-    # with ~15 live hand-back branches each fanning 24 shards onto the 32-slot busbar-xl fleet, the
+    # with ~15 live hand-back branches each fanning 24 shards onto the Latchkey minute pool, the
     # per-branch `concurrency:` below cannot help (it cancels a branch's OWN superseded run, not its
     # neighbours'), and the integration tip's proof sat starved behind slot work — exactly the
-    # arithmetic docs/ci/self-hosted-runners.md §1-2 predicts. A slot that touches the mutation
+    # arithmetic docs/ci/self-hosted-runners.md §1-2 predicts (folded here from CI2's
+    # 363ac81b8, which is not an ancestor of this branch). A slot that touches the mutation
     # scope (`xtask/src/gates/**` et al., scripts/gate-mutants.sh) runs the same proof by hand —
     # `scripts/gate-mutants.sh --shard 1/1` — and says so in its hand-back; the 24-shard run then
     # happens at landing, on the integration branch, where the required check is read from.
@@ -72,7 +73,8 @@ jobs:
   # -------------------------------------------------------------------------------------------
   scope:
     name: gate-mutants scope
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 10
     outputs:
       in_scope: ${{ steps.scope.outputs.in_scope }}
@@ -131,7 +133,8 @@ jobs:
     name: gate-mutants baseline (the four gates, unmutated)
     needs: scope
     if: needs.scope.outputs.in_scope == 'yes'
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -158,10 +161,14 @@ jobs:
         # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
         run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: gate-mutants
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: The test command, unmutated
@@ -183,11 +190,21 @@ jobs:
   # THE MUTANTS. One shard per runner; every shard sees the same diff and the same denominator, or
   # cargo-mutants' own sharding stops agreeing on how the work is divided.
   # -------------------------------------------------------------------------------------------
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   shard:
     name: gate-mutants shard ${{ matrix.shard }}
     needs: scope
     if: needs.scope.outputs.in_scope == 'yes'
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+
     # 120, NOT 55, AND THE NUMBER IS MEASURED RATHER THAN GUESSED. A shard pays the test command
     # twice for one mutant -- once as its baseline, once for the mutant -- and the widest test
     # command measures 39m43 (docs/ci/gate-integrity.md). 55 minutes could not hold that, and a
@@ -227,10 +244,14 @@ jobs:
         # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
         run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@v1
         with:
-          workspaces: ". -> target"
-          key: gate-mutants
+          action: restore
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
       - name: Cache the pinned cargo-mutants binary
         id: mutants-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -266,11 +287,21 @@ jobs:
   # protection holds. It runs on every event, including the ones where there was no work, so the
   # status always reports.
   # -------------------------------------------------------------------------------------------
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        if: always()
+        uses: latchkey-dev/cache-action@v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            ~/.cargo
+            target/
   gate-mutants:
     name: gate-mutants
     needs: [scope, baseline, shard]
     if: always()
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-small
+
     timeout-minutes: 10
     steps:
       - name: Verdict
