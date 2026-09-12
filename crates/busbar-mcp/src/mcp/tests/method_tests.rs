@@ -817,6 +817,10 @@ fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_t
         super::document_for(super::ops::OP_TASK_GET).is_some(),
         "tasks/get is the eighth class the node has taken, so its document is named here too"
     );
+    assert!(
+        super::document_for(super::ops::OP_TASK_UPDATE).is_some(),
+        "tasks/update is the ninth class the node has taken, so its document is named here too"
+    );
     // AND THE OTHER HALF OF THE COMPLEMENT: every class still holding an arm has NO row. Named one
     // by one rather than derived, so that moving a class makes this cell go red until the line
     // below it is struck — a class with a row here AND an arm there would be two serving paths, and
@@ -824,7 +828,6 @@ fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_t
     // order (§14.3), because it is the only one with money on it.
     for (op, method) in [
         (super::ops::OP_PROMPT_GET, "prompts/get"),
-        (super::ops::OP_TASK_UPDATE, "tasks/update"),
         (super::ops::OP_TASK_CANCEL, "tasks/cancel"),
         (super::ops::OP_SUBSCRIPTIONS_LISTEN, "subscriptions/listen"),
         (super::ops::OP_TOOL_CALL, "tools/call"),

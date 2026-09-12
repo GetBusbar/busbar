@@ -256,7 +256,14 @@ pub(crate) async fn dispatch(
         // The arm that answered it here with no door, no budget, no audit row and no meter is
         // DELETED rather than kept beside the node. Its document is still this crate's and is
         // `tasks_get_document` below; what left is the serving.
-        ops::OP_TASK_UPDATE => tasks_update(ctx, params, id),
+        // `ops::OP_TASK_UPDATE` HAS NO ARM. The ninth class the composition's node has taken, and
+        // the FIRST that WRITES: it delivers the caller's input responses into one task record
+        // scoped to that caller. It still reaches no upstream, so nothing is priced, nothing is
+        // dialled and no grant is spent — but a write that passed no door, drew no budget and
+        // sealed no audit row was a worse gap than a read that did, and this is the commit that
+        // closes it. The `-32021` gate stays the method's, exactly as it does for `tasks/get`. The
+        // arm that answered it here is DELETED rather than kept beside the node. Its document is
+        // still this crate's and is `tasks_update_document` below; what left is the serving.
         ops::OP_TASK_CANCEL => tasks_cancel(ctx, params, id),
         // The one class whose answer is a STREAM rather than a document. It returns through the same
         // `Response` — what differs is the `content-type`, which tells `super::envelope` not to re-frame it.
@@ -370,6 +377,20 @@ fn tasks_get(
 /// refusal, the parameter shape and the JSON-RPC terminal — the engine's three, and none of them the
 /// store's. The `resolve_task` helper this used to share with `tasks/cancel` went with them: the
 /// (id, principal) pair IS the resolution, and a second one above the face could disagree with it.
+/// `tasks/update`'s document, in the shape the node's table holds.
+///
+/// The same lift the eight before it are, forwarding parameters to [`tasks_update`], which is byte
+/// for byte the body that answered this class when the dispatch table still had an arm for it —
+/// the `-32021` gate, the absent-`inputResponses`-is-empty reading, and the deliberate sameness of
+/// the unknown-id and belongs-to-another-caller answers all included.
+fn tasks_update_document(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    tasks_update(ctx, params, id)
+}
+
 fn tasks_update(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -2934,7 +2955,8 @@ pub(super) type ClassDocument =
 /// last before the tasks namespace; it is the first row here for a class that carries a REQUEST
 /// rather than only a question. `tasks/get` is the eighth and opens that namespace; the `-32021`
 /// extension gate stays inside the method, because whether a caller declared the tasks extension is
-/// a fact about the protocol rather than about admission. The order the rest follow is the plan's (§14.3), money-free first
+/// a fact about the protocol rather than about admission. `tasks/update` is the ninth and the first
+/// row here for a class that WRITES. The order the rest follow is the plan's (§14.3), money-free first
 /// and `tools/call` last.
 ///
 /// `prompts/get` is NOT here, and its absence is a ruling in flight rather than an oversight: its
@@ -2966,6 +2988,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_TASK_GET {
         return Some(tasks_get_document);
+    }
+    if op == ops::OP_TASK_UPDATE {
+        return Some(tasks_update_document);
     }
     None
 }
