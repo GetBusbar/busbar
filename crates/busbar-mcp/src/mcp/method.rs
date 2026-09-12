@@ -216,7 +216,12 @@ pub(crate) async fn dispatch(
         // and no grant is spent. The arm that answered it here with no door, no budget, no audit
         // row and no meter is DELETED rather than kept beside the node. Its document is still this
         // crate's and is `resources_list_document` below; what left is the serving.
-        ops::OP_RESOURCE_TEMPLATES_LIST => resources_templates_list(ctx, id),
+        // `ops::OP_RESOURCE_TEMPLATES_LIST` HAS NO ARM. The fourth class the composition's node has
+        // taken, and it is fourth for the reason §14.3 orders by: it is money-free — it reaches
+        // this plane's own template records and no upstream, so nothing is priced, nothing is
+        // dialled and no grant is spent. The arm that answered it here with no door, no budget, no
+        // audit row and no meter is DELETED rather than kept beside the node. Its document is still
+        // this crate's and is `resources_templates_list_document` below; what left is the serving.
         ops::OP_RESOURCE_READ => resources_read(ctx, params, id),
         ops::OP_COMPLETION => completion_complete(id),
         ops::OP_TASK_GET => tasks_get(ctx, params, id),
@@ -694,6 +699,22 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// reason: a template names a capability of a server, and a caller with no reach to the server has
 /// no reach to its templates. The empty list survives for a caller whose grant reaches none, which
 /// is where the old answer was right all along.
+/// `resources/templates/list`'s document, in the shape the node's table holds.
+///
+/// The same lift [`tools_list_document`], [`resources_list_document`] and [`prompts_list_document`]
+/// are, and for the same reason: it forwards to [`resources_templates_list`], which is byte for
+/// byte the body that answered this class when the dispatch table still had an arm for it. That
+/// sameness is the whole of why the byte-identity is provable rather than asserted — there is one
+/// body, and what changed is the path that reaches it. The class takes no parameters, and saying so
+/// by ignoring the argument is the declaration.
+pub(in crate::mcp) fn resources_templates_list_document(
+    ctx: &Ctx<'_>,
+    _params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    resources_templates_list(ctx, id)
+}
+
 fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
     let templates: Vec<serde_json::Value> = super::runtime_of(&ctx.host)

@@ -35,6 +35,10 @@ fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_t
         "prompts/list is the third class the node has taken, so its document is named here too"
     );
     assert!(
+        super::document_for(busbar_plane_mcp::ops::OP_RESOURCE_TEMPLATES_LIST).is_some(),
+        "resources/templates/list is the fourth class the node has taken, so its document is here"
+    );
+    assert!(
         super::document_for(busbar_plane_mcp::ops::OP_TOOL_CALL).is_none(),
         "tools/call has NOT moved: it is the last class, and it still has its arm"
     );
