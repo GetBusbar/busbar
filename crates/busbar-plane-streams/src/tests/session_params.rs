@@ -232,3 +232,105 @@ fn the_opening_event_announces_what_a_rewrite_committed() {
          first rendered: {rendered}"
     );
 }
+
+// ── the request terminal ─────────────────────────────────────────────────────────────────────────
+
+/// A SERVED SESSION MARKS A REQUEST IT CANNOT ANSWER, AND A WIRE WITH NO REQUEST EVENT MARKS
+/// NOTHING.
+///
+/// The claim the declaration exists for. Most client events on a duplex wire are NOTIFICATIONS and
+/// the dialect gives a server nothing to send back for them; a REQUEST is the kind a client BLOCKS
+/// on, and a session that cannot answer one owes it a terminal. Which events are which is the
+/// dialect's own fact, so the plane reads the row rather than deciding — and this cell drives both
+/// answers over two rows, because a cell that mutated one row between two assertions would prove the
+/// plane reads a variable.
+///
+/// THE MARK IS THE WHOLE OF THE PLANE'S PART. What the fact does is open a unit that will be
+/// REFUSED, which is what puts the wire's own terminal on the socket: past the door an ending is a
+/// failure and a failure renders no frame, so a request nothing can answer has to be refused before
+/// the door or answered with silence.
+#[test]
+fn a_request_a_served_session_cannot_answer_is_marked_and_a_notification_is_not() {
+    use busbar_contract::bounded::FactValue;
+    use busbar_contract::plane::Ingress;
+
+    let arena = LeakArena;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let empty = EmptyConfig;
+    let c = ctx(&arena, &empty, &stack, &labels);
+
+    let marked = |dialect: &'static crate::dialect::Dialect, request: bool| -> bool {
+        let mut state = VoiceSessionState::for_dialect(dialect);
+        let read = crate::plane::open_or_relay(
+            &mut state,
+            dialect,
+            busbar_contract::bounded::ArenaBytes::new(&[]),
+            None,
+            None,
+            request,
+            &c,
+        )
+        .expect("a frame opens a turn");
+        match read {
+            Ingress::Open(draft) => matches!(
+                draft.facts.get(crate::meta::FACT_AWAITS_TERMINAL),
+                Some(FactValue::Bool(true))
+            ),
+            _ => false,
+        }
+    };
+
+    assert!(
+        marked(&super::harness::A_SPEAKING_DIALECT, true),
+        "a request this session has no leg for is marked, so the unit opened on it is refused and \
+         the wire's own terminal reaches the client"
+    );
+    assert!(
+        !marked(&super::harness::A_SPEAKING_DIALECT, false),
+        "and a notification is not: the wire gives a server nothing to send back for one, and \
+         inventing an acknowledgement would put a frame on the socket the dialect does not define"
+    );
+    // AND WHAT DECIDES `request` IS THE ROW, never this crate. The fixture rows declare no request
+    // event at all, which is the answer a carrier gives; the plane reads that declaration and marks
+    // nothing for them. A plane that decided it here would be deciding a wire fact for a dialect
+    // that had already answered it.
+    assert!(
+        super::harness::A_DIALECT.request_terminal.is_none(),
+        "a row that declares no request event has none to read"
+    );
+}
+
+/// AND THE ROW'S OWN TERMINAL IS WHAT A REFUSED REQUEST RENDERS.
+///
+/// The other half: the mark opens a unit that is refused, and what that refusal writes is this
+/// wire's own word for "nothing could answer" rather than a generic one. A client library for this
+/// dialect has a case for its own error shape; a string this plane invented is one it would have to
+/// guess at.
+#[test]
+fn a_refused_request_renders_the_rows_own_terminal() {
+    let arena = LeakArena;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let empty = EmptyConfig;
+    let c = ctx(&arena, &empty, &stack, &labels);
+    let st = opened(&super::harness::A_SPEAKING_DIALECT);
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Verify,
+        reason: busbar_contract::unit::RefusalReason::NoDestination,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let bytes =
+        busbar_contract::plane::Plane::encode_refusal(&plane(), &refusal, None, Some(&st), &c)
+            .expect("a refusal renders");
+    let rendered: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("this dialect's own JSON");
+    assert_eq!(
+        rendered.get("type").and_then(serde_json::Value::as_str),
+        Some("error"),
+        "the wire's own terminal shape, got: {rendered}"
+    );
+}

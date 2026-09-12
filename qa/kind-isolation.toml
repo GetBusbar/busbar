@@ -1482,7 +1482,7 @@ count = "26"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "334"
+count = "336"
 
 [[cell]]
 crate = "busbar"
@@ -1502,7 +1502,7 @@ count = "1091"
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "781"
+count = "785"
 
 [[cell]]
 crate = "busbar"
@@ -1522,7 +1522,7 @@ count = "97"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "2007"
+count = "2013"
 
 [[cell]]
 crate = "busbar"
@@ -2342,7 +2342,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "transport"
-count = "107"
+count = "109"
 
 [[cell]]
 crate = "busbar-plane-streams-gemini"

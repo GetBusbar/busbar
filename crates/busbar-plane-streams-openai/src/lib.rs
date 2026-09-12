@@ -67,6 +67,21 @@ use busbar_plane_streams::dialect::{Dialect, OpeningEvent};
 /// name is not shortened with it.
 pub const NAME: &str = "openai-realtime";
 
+/// See [`Dialect::request_terminal`]: this wire's one blocking client event and its own terminal.
+static REQUEST_TERMINAL: busbar_plane_streams::dialect::RequestTerminal =
+    busbar_plane_streams::dialect::RequestTerminal {
+        is_request: |event| {
+            matches!(
+                event,
+                busbar_plane_streams::dialect::IrClientEvent::Control(
+                    busbar_plane_streams::dialect::IrDuplexControl::ResponseCreate { .. }
+                )
+            )
+        },
+        code: "unavailable",
+        message: "no provider is reachable for this session right now",
+    };
+
 /// THE OPENAI REALTIME (GA) DIALECT ROW — PCM16 frames, tool calls, full duplex.
 ///
 /// The row the plane's table answers `NAME` with once the composition root has registered it. It
@@ -105,4 +120,10 @@ pub static OPENAI_REALTIME: Dialect = Dialect {
     // node SERVES has no upstream to relay, so the announcement is this row's declaration and the
     // plane renders it from the posture the session resolved to.
     opening_event: Some(OpeningEvent::SessionCreated),
+    // THE ONE CLIENT EVENT A CALLER BLOCKS ON. `response.create` asks this node to generate a
+    // response; every other client event on this wire is a notification the dialect gives a server
+    // nothing to send back for. With no leg to relay it to there is no response to generate, and
+    // this wire's word for that is its `error` event — which is what a client library for this
+    // dialect has a case for, where a generic "unavailable" is a string it would have to guess at.
+    request_terminal: Some(&REQUEST_TERMINAL),
 };

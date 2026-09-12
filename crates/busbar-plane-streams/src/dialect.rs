@@ -79,6 +79,7 @@ use busbar_contract::wire::{Decode, Encode, FrameCursor};
 /// each dialect's dependency line for a reason that has nothing to do with reading a wire.
 pub use busbar_voice_codec::ir::{
     config::SessionConfig,
+    control::IrDuplexControl,
     event::{IrClientEvent, IrServerEvent},
     DecodeState, DuplexReader, DuplexWriter, WireEvent, WireRef,
 };
@@ -155,6 +156,33 @@ pub enum OpeningEvent {
     SessionCreated,
 }
 
+/// WHICH OF A DIALECT'S CLIENT EVENTS IS A REQUEST, and the word its wire owes when nothing can
+/// answer one.
+///
+/// Most client events on a duplex wire are NOTIFICATIONS — audio arrives, a buffer is committed, an
+/// item is deleted — and the dialect gives a server nothing to send back for them; inventing an
+/// acknowledgement would put a frame on the wire the dialect does not define. A REQUEST is the other
+/// kind, and it is the kind a client BLOCKS on: it asked for something and it will wait for the
+/// answer for as long as the socket is open.
+///
+/// So a session that cannot answer one owes a TERMINAL, and both halves of that are the dialect's
+/// own facts: WHICH events are requests, and what this wire's word for "nothing could answer" is.
+/// The alternative, measured, is the shape this replaces — a served leg answered every request with
+/// silence, because the generic path had no way to know one had arrived, and a client that asked for
+/// a response and was told nothing waits for it forever.
+pub struct RequestTerminal {
+    /// Whether this decoded client event is a REQUEST on this wire.
+    ///
+    /// A predicate over the SHARED IR rather than a list of wire names, because the plane reads a
+    /// frame into the IR before anything about it is decided and a row that answered in wire names
+    /// would be re-parsing what the codec has already parsed.
+    pub is_request: fn(&IrClientEvent) -> bool,
+    /// This wire's own code for "nothing could answer that request".
+    pub code: &'static str,
+    /// The human half of the same, as this wire spells it.
+    pub message: &'static str,
+}
+
 /// ONE DIALECT OF THIS PLANE, as data.
 ///
 /// Every field is a fact the loop asks about, and none of them is a vendor's name in this plane's
@@ -219,6 +247,14 @@ pub struct Dialect {
     /// the neutral plane while leaving the neutral plane the only thing that decides WHEN a session
     /// owes a frame.
     pub opening_event: Option<OpeningEvent>,
+    /// WHICH OF THIS DIALECT'S CLIENT EVENTS ARE REQUESTS, and the terminal each owes when no leg
+    /// can answer. See [`RequestTerminal`].
+    ///
+    /// `None` means this wire has no client event a caller blocks on — a carrier that streams media
+    /// one way, a leg whose every frame is a notification — and a session on it owes nothing when it
+    /// cannot relay. It is a DECLARED answer and not a missing one, the same rule
+    /// [`Dialect::opening_event`] and [`Dialect::credential_at`] state.
+    pub request_terminal: Option<&'static RequestTerminal>,
 }
 
 impl PartialEq for Dialect {

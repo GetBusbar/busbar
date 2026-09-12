@@ -120,4 +120,7 @@ pub static GEMINI_LIVE: Dialect = Dialect {
     // dialled leg does — by relaying the one its upstream sent. A node that announced its own on top
     // of the upstream's would put two openings on one session.
     opening_event: None,
+    // DECLARED `None`: a leg on this dialect is DIALLED, so a request always has an upstream to be
+    // answered by, and a node that answered one itself would be answering for a provider.
+    request_terminal: None,
 };

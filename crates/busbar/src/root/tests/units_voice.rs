@@ -1147,6 +1147,58 @@ impl busbar_substrate::plane_host::MeteringHost for ScriptedHost {
     }
 }
 
+/// A UNIT OPENED ON A REQUEST NOTHING CAN ANSWER IS REFUSED BEFORE THE DOOR.
+///
+/// The consumer half of the dialect's request declaration, and the POSITION is the whole of it. Past
+/// the door an ending is a FAILURE, and a failure renders no frame — the plane is asked to write a
+/// refusal and only a refusal. So a request this session has no leg for has to be refused at the
+/// first step that can refuse one, or the client is answered with silence and waits forever.
+///
+/// It is also the honest place for the money: nothing was admitted, nothing drew a request slot,
+/// and nothing is charged for an answer that never existed.
+#[test]
+fn a_unit_opened_on_an_unanswerable_request_is_refused_before_the_door() {
+    let kernel = Kernel::new();
+    let node = node(serviceable());
+    let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+        .charging_through(ungoverned())
+        .awaiting_terminal();
+    let Ended::Settled { requests, end, .. } = run(&kernel, &unit) else {
+        panic!("the exit settles it");
+    };
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(busbar_caps::StepName::Verify, ReasonCode::NoDestination),
+        "REFUSED and not failed, and at verify: only a refusal renders a frame, and only a refusal \
+         before the door leaves the money alone"
+    );
+    assert_eq!(requests, 0, "a unit refused before the door draws nothing");
+}
+
+/// AND AN ORDINARY TURN IS NOT, which is the half that keeps a session that dials nobody usable.
+///
+/// Every other client event on such a session is a NOTIFICATION — audio arriving, a buffer
+/// committed — and the wire gives a server nothing to send back for one. A step that refused those
+/// too would answer an error to every audio frame of the one leg this plane has always served.
+#[test]
+fn an_ordinary_turn_on_a_session_that_dials_nobody_is_not_refused() {
+    let kernel = Kernel::new();
+    let node = node(serviceable());
+    let unit =
+        VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
+    let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+        panic!("the exit settles it");
+    };
+    assert!(
+        !matches!(
+            end.outcome(),
+            Outcome::Refused(busbar_caps::StepName::Verify, _)
+        ),
+        "a notification is not a request, got {:?}",
+        end.outcome()
+    );
+}
+
 /// The three seams refuse rather than pretend. A node whose I/O half was never installed cannot
 /// pump, cannot lease and has no carrier; saying so at the seam is what keeps "detached" from being
 /// reported as "broken", and keeps neither from being reported as "fine".

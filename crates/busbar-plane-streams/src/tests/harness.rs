@@ -214,6 +214,8 @@ pub static A_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect {
     credential_at: None,
     // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
     opening_event: None,
+    // A fixture row: no client event on this wire is one a caller blocks on.
+    request_terminal: None,
 };
 
 /// A SECOND FIXTURE ROW, identical to [`A_DIALECT`] except that its wire SPEAKS FIRST.
@@ -235,6 +237,8 @@ pub static A_SPEAKING_DIALECT: crate::dialect::Dialect = crate::dialect::Dialect
     // THE ONE DIFFERENCE: this wire owes its client the resolved session object before the client
     // sends anything, because on it a client has nothing to send until it has been told.
     opening_event: Some(crate::dialect::OpeningEvent::SessionCreated),
+    // A fixture row: no client event on this wire is one a caller blocks on.
+    request_terminal: None,
 };
 
 /// REGISTER [`A_DIALECT`], once per test process.

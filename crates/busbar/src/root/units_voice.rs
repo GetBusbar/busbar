@@ -1623,6 +1623,12 @@ pub struct VoiceUnit<'n> {
     pub epoch: u64,
     /// What the route step spent, read back by the settlement table.
     accrued: AtomicU64,
+    /// WHETHER THIS FRAME IS A REQUEST THE WIRE OWES A TERMINAL TO AND THIS SESSION CANNOT ANSWER.
+    ///
+    /// The plane's reading, carried on the draft — see `busbar_plane_streams::meta`'s own key. It is
+    /// the one fact a unit is opened in order to REFUSE: a request nothing can answer must reach a
+    /// terminal, and a unit that completed on it would answer with silence.
+    awaits_terminal: bool,
     /// How the audit step classified this unit's ending, once it sealed one.
     ///
     /// The record is sealed before the exit path settles, and the ending it sealed is one of the
@@ -1683,9 +1689,17 @@ impl<'n> VoiceUnit<'n> {
             now_ms: 0,
             epoch,
             accrued: AtomicU64::new(0),
+            awaits_terminal: false,
             sealed_finish: Mutex::new(None),
             principal: Mutex::new(None),
         }
+    }
+
+    /// Mark this unit as one opened on a request its session cannot answer.
+    #[must_use]
+    pub fn awaiting_terminal(mut self) -> Self {
+        self.awaits_terminal = true;
+        self
     }
 
     /// The credential this unit presents.
@@ -2001,6 +2015,15 @@ impl Units for VoiceUnit<'_> {
         // chain and nothing may open it there; here the loop has already opened it and hands over
         // who it named. Recorded once, on the unit, for the same reason the grants are.
         *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal.clone());
+        // A REQUEST NOTHING CAN ANSWER IS REFUSED HERE, BEFORE THE DOOR, and the position is the
+        // point: past the door an ending is a FAILURE, and a failure renders no frame — the plane is
+        // asked to write a refusal and only a refusal. So a request this session has no leg for is
+        // refused at the first step that can refuse one, which is what puts the wire's own terminal
+        // on the socket instead of silence. It is also the honest place for the money: nothing was
+        // admitted, nothing drew a slot, and nothing is charged for an answer that never existed.
+        if self.awaits_terminal {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
         // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
         // the value it waits on is the identifier this unit's own draft minted, which lives no
         // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
@@ -2662,6 +2685,16 @@ impl crate::root::session_driver::SessionUnits for ComposedUnits {
         let mut unit = VoiceUnit::new(node, shape, read.session, read.clock.unix_secs)
             .on_dialect(dialect)
             .at_ms(now_ms);
+        if read.draft.is_some_and(|draft| {
+            matches!(
+                draft
+                    .facts
+                    .get(busbar_plane_streams::meta::FACT_AWAITS_TERMINAL),
+                Some(busbar_contract::bounded::FactValue::Bool(true))
+            )
+        }) {
+            unit = unit.awaiting_terminal();
+        }
         if let Some(credential) = read.credential() {
             unit = unit.with_credential(credential);
         }

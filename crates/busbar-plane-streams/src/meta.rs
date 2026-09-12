@@ -207,6 +207,18 @@ pub const FACT_DIALECT: &str = "dialect";
 pub const FACT_TOOL_NAME: &str = "tool_name";
 /// The fact key under which a tool-call unit reports the upstream's own call id.
 pub const FACT_CALL_ID: &str = "call_id";
+/// THIS FRAME IS A REQUEST THE WIRE OWES A TERMINAL TO, and this session has no leg to get one from.
+///
+/// Set by the plane's reader on the draft it opens, off the DIALECT's own declaration of which of
+/// its client events are requests ([`crate::dialect::RequestTerminal`]). It is the one fact that
+/// travels from the reader to the unit for the express purpose of being REFUSED: a request nothing
+/// can answer must reach a terminal, and a unit that ran to completion on it would answer with
+/// silence — which is the one answer a client that asked for something cannot act on.
+///
+/// Absent on every other frame, including a request on a session that HAS a leg: that one is
+/// relayed, and what answers it is the provider.
+pub const FACT_AWAITS_TERMINAL: &str = "awaits_terminal";
+
 /// The fact key under which a response reports the audio input milliseconds this plane admitted
 /// since the turn opened — this plane's own derived quantity, not one `IrDuplexUsage` carries.
 pub const FACT_AUDIO_MS_IN: &str = "audio_ms_in";

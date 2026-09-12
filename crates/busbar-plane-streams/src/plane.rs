@@ -975,7 +975,24 @@ fn ingress_from_client_event<'u>(
         }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
         IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
     };
-    open_or_relay(state, dialect, relay, interrupt_ms, audio_ms, ctx)
+    // A REQUEST THIS SESSION HAS NO LEG TO ANSWER, marked for the unit that must refuse it. WHICH
+    // events are requests is the DIALECT's declaration and this crate reads it rather than deciding
+    // it; whether this session can answer one is the session's own view of how many upstreams it
+    // has. Both are read here, once, where the frame is read — and a request on a session that HAS
+    // a leg is not marked at all, because that one is relayed and the provider answers it.
+    let awaits_terminal = dialect
+        .request_terminal
+        .is_some_and(|t| (t.is_request)(&event))
+        && ctx.session().is_none_or(|s| s.upstream_count() == 0);
+    open_or_relay(
+        state,
+        dialect,
+        relay,
+        interrupt_ms,
+        audio_ms,
+        awaits_terminal,
+        ctx,
+    )
 }
 
 /// Open a fresh turn (this is its first frame) or relay onto the one already open, attaching the
@@ -992,6 +1009,7 @@ pub fn open_or_relay<'u>(
     relay: ArenaBytes<'u>,
     interrupt_ms: Option<u64>,
     audio_ms: Option<u64>,
+    awaits_terminal: bool,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let mut facts = Facts::new();
@@ -1016,6 +1034,9 @@ pub fn open_or_relay<'u>(
         }
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name));
+        if awaits_terminal {
+            let _ = facts.set(meta::FACT_AWAITS_TERMINAL, FactValue::Bool(true));
+        }
         let ir = view(relay.as_slice(), ctx)?;
         Ok(Ingress::Open(Box::new(UnitDraft {
             op: OpClassId::new("duplex_turn"),

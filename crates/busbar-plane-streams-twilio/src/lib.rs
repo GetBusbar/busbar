@@ -390,6 +390,9 @@ pub static TWILIO_MEDIA_STREAMS: Dialect = Dialect {
     // its own start frame, and a node that spoke first on this wire would send a frame the carrier's
     // protocol does not define at a point it does not read one.
     opening_event: None,
+    // DECLARED `None`: this carrier streams media and its frames are notifications; there is no
+    // client event on it a caller blocks on, so a session that cannot relay owes nothing.
+    request_terminal: None,
 };
 
 /// This dialect's own row, for the two places its reader has to name it.
@@ -455,6 +458,8 @@ fn decode_ingress<'u>(
                 arena_bytes,
                 None,
                 Some(ms),
+                // This carrier declares no request event, so no frame on it ever awaits a terminal.
+                false,
                 ctx,
             )
         }

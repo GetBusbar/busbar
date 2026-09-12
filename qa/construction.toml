@@ -1860,3 +1860,33 @@ key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
 by = 22
 because = "busbar x plane (busbar, plane): the same composition counted under the plane kind the runtime port belongs to, plus the seam's own widening. `SessionLease::reserve` gains the CAP the unit already holds — the headroom the presenting principal's own resolved chain leaves — because a lease opened without it is an uncapped lease that reports `Live` forever, so the hard close that stops a session which can no longer pay would never fire. The cap is read off the same door and the same chain the admission was judged against and is never a number this unit invented (1,985 -> 2,007)"
+
+# ── declared raises: R3's SECOND FACE — WHICH CLIENT EVENTS ARE REQUESTS, and the terminal each owes
+# when nothing can answer. Most client events on a duplex wire are NOTIFICATIONS the dialect gives a
+# server nothing to send back for; a REQUEST is the kind a client BLOCKS on, and a served leg that
+# answered one with silence left that client waiting for as long as the socket was open. Both halves
+# are the dialect's own facts, so both are declared on its row.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-streams.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-plane-streams x transport (busbar-plane-streams, transport): the request declaration and the fact the plane's reader sets from it are read and written across the SESSION face a transport obliges — the reading that opens a unit, and the cells that drive the reading through that face. A plane that answered `which of my client events is a request` anywhere but where a session is read would be answering it where no transport asks (107 -> 109)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "busbar x dialect (busbar, dialect): the composition root's unit reads the fact the DIALECT's declaration produced and refuses on it. WHICH events are requests is never the root's reading — it is the row's, carried to the unit as one fact — and what the root adds is the POSITION the refusal happens at, which is before the door because past it an ending is a failure and a failure renders no frame (781 -> 785)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "busbar x plane (busbar, plane): the same refusal counted under the plane kind the fact belongs to, plus the two cells that drive it — one that a unit opened on an unanswerable request is REFUSED at verify and draws no request slot, and one that an ordinary turn on a session that dials nobody is not, because a step that refused those too would answer an error to every audio frame of the one leg this plane has always served (2,007 -> 2,013)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar x caps (busbar, caps): the two cells assert the sealed ending in the kernel's own vocabulary — `Refused(Verify, NoDestination)` and not-refused — because the claim is about WHICH step ended the unit and only that word says it. A cell that asserted the rendered bytes instead would be asserting the plane's answer to prove the root's question (334 -> 336)"

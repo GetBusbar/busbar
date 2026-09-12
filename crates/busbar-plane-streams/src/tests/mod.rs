@@ -112,6 +112,8 @@ mod purity {
             credential_at: None,
             // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
             opening_event: None,
+            // A fixture row: no client event on this wire is one a caller blocks on.
+            request_terminal: None,
         };
         assert_eq!(a.upstream_for_dialect(&OTHER), None);
     }
@@ -260,6 +262,8 @@ mod dialect_face {
         credential_at: None,
         // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
         opening_event: None,
+        // A fixture row: no client event on this wire is one a caller blocks on.
+        request_terminal: None,
     };
 
     /// A row that declares `None` — "the shared IR reads my frames", which is an ANSWER and not a
@@ -276,6 +280,8 @@ mod dialect_face {
         credential_at: None,
         // A fixture row: this wire is client-speaks-first, so it owes no opening frame.
         opening_event: None,
+        // A fixture row: no client event on this wire is one a caller blocks on.
+        request_terminal: None,
     };
 
     /// A DIALECT'S READER IS A FIELD OF ITS ROW, NEVER A TEST ON ITS NAME.
