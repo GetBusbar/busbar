@@ -1867,7 +1867,7 @@
             ]
           },
           "module": {
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nOMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today\n`agents:`, whose entries describe endpoints somebody else runs\n(`NamedMapSection::requires_module`).\nEvery section that HAS a module requires it to be non-empty, so this can never be omitted\nfor one that does.",
+            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nALWAYS present, matching 1.5.5's wire shape byte-for-byte (`required` includes `module`,\nschema type `\"string\"`, never nullable): 1.5.5 had no named-map section whose entries\ncarried no module, so it has no representation for one, and the ruling is 1:1 with 1.5.5\nrather than inventing a new shape. EMPTY-STRINGED, not omitted, for a section whose entries\nare not plugin instances -- today `agents:`, whose entries describe endpoints somebody else\nruns (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be\nnon-empty, so an empty string is unambiguous for \"no module\" without a `skip_serializing_if`\nthat would shrink `required` below 1.5.5's.",
             "type": "string"
           },
           "name": {
@@ -1912,6 +1912,7 @@
         },
         "required": [
           "name",
+          "module",
           "settings_keys"
         ],
         "type": "object"

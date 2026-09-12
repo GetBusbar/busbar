@@ -59,12 +59,14 @@ pub struct NamedDefView {
     pub name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
     ///
-    /// OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
-    /// `agents:`, whose entries describe endpoints somebody else runs
-    /// (`NamedMapSection::requires_module`).
-    /// Every section that HAS a module requires it to be non-empty, so this can never be omitted
-    /// for one that does.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// ALWAYS present, matching 1.5.5's wire shape byte-for-byte (`required` includes `module`,
+    /// schema type `"string"`, never nullable): 1.5.5 had no named-map section whose entries
+    /// carried no module, so it has no representation for one, and the ruling is 1:1 with 1.5.5
+    /// rather than inventing a new shape. EMPTY-STRINGED, not omitted, for a section whose entries
+    /// are not plugin instances -- today `agents:`, whose entries describe endpoints somebody else
+    /// runs (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be
+    /// non-empty, so an empty string is unambiguous for "no module" without a `skip_serializing_if`
+    /// that would shrink `required` below 1.5.5's.
     pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
