@@ -1709,21 +1709,63 @@ lq_line_families() { # $1 = queue line; prints its --families value, unquoted
 # be judged against the base and a line was parked #RED with NO EVIDENCE about itself. The replay is
 # not a luxury the sweep spends its leftovers on — it is what makes every other verdict in the sweep
 # readable — so it takes its slot first, and the lines share what is left.
-lq_base_replay_reserve() { # $1 = tip key, $2 = the sweep's lines; prints the reserved host, or nothing
-  local key="$1" fams
+#
+# AND ON THE LATCHKEY BACKEND IT RESERVES NO BOX AT ALL. MEASURED, LIVE (2026-09-12 16:15): with
+# both backends on latchkey the sweep still logged "base state: i-063… reserved for the base replay"
+# and measured the tip ON AN EC2 BOX — the last workload holding the fleet open. The replay's shape
+# is a pre-proof like any other (a batch with no picks), it goes through the same dispatcher as the
+# lines and the chains (`lq_dispatch_preprove`), and that dispatcher already knows which machine a
+# pre-proof runs on. So the question this function asks is the dispatcher's own —
+# `lq_preprove_needs_box` — and when the answer is no, the replay is ON and its host is the empty
+# string. Its Latchkey job counts against `lq_latchkey_proc_bound` for free, because that bound is
+# counted from the prove-latchkey processes in flight and this is one of them.
+#
+# IT STILL TAKES ITS SLOT FIRST, on either backend and for the same reason: it is asked before a
+# single line is dispatched, so on latchkey it holds one of the runner slots the lines then share.
+lq_base_replay_reserve() { # $1 = tip key, $2 = the sweep's lines, $3 = tree; 0 = the replay is ON. Prints its reserved BOX, or nothing when it needs none
+  local key="$1" tree="${3:-$W}" fams
   [ "${LANDQ_BASE_REPLAY:-1}" = 1 ] || return 1
   lq_base_red_known "$key" && return 1
   fams="$(printf '%s\n' "$2" | lq_families_union)"
   [ -n "$fams" ] || return 1
+  lq_preprove_needs_box "$tree" || return 0
   local h; h="$( fleet_pick_host )" || h=""
   [ -n "$h" ] || return 1
   printf '%s\n' "$h"
+}
+# ── THE EVIDENCE A LATCHKEY PROOF LEFT IN ITS JOB LOGS COMES BACK INTO THE PROOF'S OWN LOG ───────
+# prove-latchkey.sh keeps each shard's job log as a FILE and names it in its stream
+# ("shard <name>  job <id>  …  log <path>"); the stream itself carries the transport's narration and
+# none of land.sh's output. Every reader in this file that asks a question ABOUT A TREE reads the
+# proof's log — `lq_base_red_learn` and `lq_base_test_learn` above, and `lq_oracle_fail_detail`
+# under them — so on the latchkey backend they would be reading a log with no oracle table and no
+# `running N tests` in it, and the base replay would measure nothing however faithfully it ran.
+# Appending the shard logs to the proof's log is what keeps ONE set of readers over BOTH backends:
+# no reader learns a second vocabulary, and `NONE:base-test` / `base-unmeasured` mean what they
+# meant. A fleet proof names no shard logs and this is a no-op for it.
+lq_absorb_shard_logs() { # $1 = a proof log a latchkey dispatch wrote; appends the shard logs it names
+  local lg="${1:-}" f n=0
+  [ -n "$lg" ] && [ -f "$lg" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    { printf -- '--- latchkey shard log %s ---\n' "$f"; cat "$f"; } >>"$lg" 2>/dev/null || true
+    n=$((n + 1))
+  done <<EOF
+$(sed -n 's/^\[latchkey [0-9:]*\] shard .*  log \(.*\)$/\1/p' "$lg" | sort -u)
+EOF
+  [ "$n" -gt 0 ] && lq_log "pre-prove: $n latchkey shard log(s) folded into $(basename "$lg") — the readers ask the proof's own log, on either backend"
+  return 0
 }
 lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4 = the sweep's lines, $5 = the RESERVED host
   local tree="$1" dir="$2" key="$3" h="$5" fams
   fams="$(printf '%s\n' "$4" | lq_families_union)"
   [ -n "$fams" ] || { lq_log "base state: no line in this sweep asks the oracle for a family; there is nothing to measure at $(printf '%.9s' "$key")"; return 1; }
-  [ -n "$h" ] || { lq_log "base state: no box was reserved for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red is NONE:base-unmeasured, never a park"; return 1; }
+  # NO HOST IS ONLY A REFUSAL ON A BACKEND THAT NEEDS ONE. On latchkey the empty string means
+  # "this replay rents its own runner", which is the whole of LK-9; on fleet it means the sweep took
+  # every box and the tip stays unmeasured, which is the 09-11 measurement this guard was cut for.
+  if [ -z "$h" ] && lq_preprove_needs_box "$tree"; then
+    lq_log "base state: no box was reserved for the base replay at $(printf '%.9s' "$key") — the tip stays unmeasured, and an oracle red is NONE:base-unmeasured, never a park"; return 1
+  fi
   # ── AND THE REPLAY MEASURES THE CRATE TESTS, NOT ONLY THE ORACLE ────────────────────────────
   # `--tests xtask` is added to the base batch because a crate test that is red AT THE TIP is the
   # same fact about the same tree as an oracle row that is (lq_red_is_base_test), and the ledger
@@ -1732,11 +1774,13 @@ lq_base_red_replay() { # $1 = tree, $2 = the sweep's directory, $3 = tip key, $4
   # parked for a test it cannot have touched. `land.sh`'s own xtask floor widens this further when
   # the tip's own diff asks for it.
   printf -- '--prove --tests xtask --families %s\n' "'"'"'$fams'"'"'" >"$dir/base.batch"
-  lq_log "base state: measuring the tip itself on $h — a batch with NO picks, families $fams, crate tests xtask"
+  lq_log "base state: measuring the tip itself on ${h:-a latchkey job of its own (no EC2 box)} — a batch with NO picks, families $fams, crate tests xtask"
   (
     lq_dispatch_preprove "$tree" "$h" "$dir/base.batch" \
       >"$dir/base.log" 2>&1
     echo $? >"$dir/base.rc"
+    # SO THAT lq_base_red_learn AND lq_base_test_learn READ THE SAME EVIDENCE ON BOTH BACKENDS.
+    lq_absorb_shard_logs "$dir/base.log"
   ) &
   return 0
 }
@@ -2767,6 +2811,54 @@ lq_sweep_slot_demand() { # $1 = live lines, $2 = chained holds, $3 = base replay
   echo "$d"
 }
 
+# ── AND HOW MANY OF THOSE SLOTS ARE *FLEET* SLOTS ───────────────────────────────────────────────
+# THE DEMAND ABOVE IS THE WORK; THIS IS THE PART OF IT THAT STILL NEEDS AN EC2 BOX. They were the
+# same number for as long as the fleet was the only machine this engine had, and `--ensure-slots`
+# was asked for the whole of it.
+#
+# MEASURED, LIVE (2026-09-12 16:15, BUSBAR_PROVE_BACKEND=latchkey and BUSBAR_LAND_BACKEND=latchkey):
+# every line's pre-proof went to Latchkey — and the sweep still asked the allocator for the WHOLE
+# ten-slot demand and STARTED A BOX. The bill was a box nothing ever ran on. The owner's goal is
+# 100% off EC2, and a sweep that starts a box for work that is not going there is the last thing
+# between the queue and that goal.
+#
+# IT IS A COUNT OF BOXES TO *START*, WHICH IS THE ONLY COUNT `--ensure-slots` CAN ACT ON. The
+# allocator already subtracts the slots that are awake and free; what this number decides is how
+# many stopped boxes are woken and billed. So the question per workload is not "could this ever
+# touch a box" but "does this justify STARTING one":
+#
+#   * THE PROOFS — live lines, chained holds, the base replay — justify starting a box only on the
+#     `fleet` pre-proof backend. On `latchkey` they are ZERO, all of them. The backend has a bound
+#     of its own (`lq_latchkey_proc_bound`), and a sweep with more lines than that bound is a sweep
+#     that dispatches what fits and leaves the rest for the next loop, which is what it already
+#     does whenever the fleet is short. The OTHER reading — count the overflow beyond the bound and
+#     start boxes for it — was considered and refused: it puts the queue's depth back on the bill,
+#     which is the whole of the $320 a day the owner is buying out of. A line beyond the bound still
+#     takes a box that is ALREADY AWAKE if the dispatcher finds one free (lq_preprove_needs_box is
+#     asked per line and is unchanged); it simply never wakes one.
+#   * THE BATCH the runner is about to pop justifies a box only when the LANDING runs on the fleet.
+#     `BUSBAR_LAND_BACKEND=latchkey` rents its own runners (scripts/land-latchkey.sh) and needs no
+#     box at all — `lq_landing_slot_ready`, the pop's own precondition, is already a no-op on that
+#     backend for exactly this reason. Waking a box here for a landing that will never use one is
+#     the same mistake, one loop earlier.
+#
+# WITH BOTH BACKENDS ON LATCHKEY THIS IS ZERO, and a demand of zero is not put to the allocator at
+# all (see the call site): `--ensure-slots 0` is a question with a box-shaped answer nobody wants.
+lq_sweep_fleet_demand() { # $1 = live lines, $2 = chained holds, $3 = base replay wanted (0|1), $4 = a batch is in flight (0|1), $5 = tree
+  local nlive="${1:-0}" nch="${2:-0}" base="${3:-0}" inflight="${4:-0}" tree="${5:-$W}" d
+  case "$nlive" in ''|*[!0-9]*) nlive=0 ;; esac
+  case "$nch"   in ''|*[!0-9]*) nch=0 ;; esac
+  case "$base"  in ''|*[!0-9]*) base=0 ;; esac
+  case "$inflight" in ''|*[!0-9]*) inflight=0 ;; esac
+  d=$(( nlive + nch + base ))
+  # THE TRANSPORT MUST REALLY BE THERE. A home whose `BUSBAR_PROVE_BACKEND` says latchkey but which
+  # carries no staged prove-latchkey.run.sh proves everything on boxes (lq_dispatch_preprove says so
+  # in as many words), and a demand of zero would then be a sweep dispatched into a sleeping fleet.
+  [ "$(lq_preprove_backend)" = latchkey ] && [ -n "$(lq_latchkey_script "$tree")" ] && d=0
+  [ "$(lq_land_backend)" = fleet ] && [ "$inflight" != 1 ] && d=$(( d + 1 ))
+  echo "$d"
+}
+
 lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
   local tree="${1:-$W}" inflight="${3:-}"
   local tip; tip="$(git -C "$tree" rev-parse HEAD)"
@@ -2836,7 +2928,6 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   # shellcheck source=scripts/ci-remote-lib.sh
   . "$tree/target/gate/ci-remote-lib.sh" 2>/dev/null || {
     lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
-  ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
   # ONE PROBE ROUND FOR THE WHOLE SWEEP. Measured 2026-09-10: dispatching twelve pre-proofs took
   # from 18:41 to 19:1x, because every line walked the fleet box by box with a `timeout 15 ssh`
   # apiece — and asked again whenever it was handed a box this sweep already held. The table is
@@ -2853,24 +2944,49 @@ lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows 
   # CI_RUNNER_RUNNING_MAX; if it cannot get there the sweep dispatches to what there is and says so,
   # exactly as it does today when the fleet is short.
   local nch_d=0
-  [ -n "$chained" ] && nch_d="$(printf '%s\n' "$chained" | grep -c . || true)"
-  local want; want="$(lq_sweep_slot_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" \
-    "$( [ -n "$inflight" ] && [ -f "$inflight" ] && echo 1 || echo 0 )")"
-  if [ -x "$tree/target/gate/ci-fleet-power.sh" ]; then
-    lq_log "pre-prove: this dispatch wants $want proof slot(s) — starting only what the awake fleet is short of"
+  [ -n "$chained" ] && nch_d="$(lq_count "$(printf '%s\n' "$chained" | grep -c .)")"
+  local ifl; ifl="$( [ -n "$inflight" ] && [ -f "$inflight" ] && echo 1 || echo 0 )"
+  local work; work="$(lq_sweep_slot_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" "$ifl")"
+  # WHAT THE FLEET IS ASKED FOR IS WHAT WILL RUN ON THE FLEET, never the whole demand — see
+  # lq_sweep_fleet_demand. A sweep whose every proof is a rented runner asks the allocator for
+  # NOTHING, and says so in one sentence an operator can grep the bill against.
+  local want; want="$(lq_sweep_fleet_demand "$nlive" "$nch_d" "${LANDQ_BASE_REPLAY:-1}" "$ifl" "$tree")"
+  if [ "${want:-0}" = 0 ]; then
+    lq_log "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend $(lq_preprove_backend))"
+    lq_log "pre-prove: this dispatch is $work proof slot(s) of work, none of it fleet-bound"
+  elif [ -x "$tree/target/gate/ci-fleet-power.sh" ]; then
+    lq_log "pre-prove: this dispatch wants $want proof slot(s) on the FLEET (of $work in all) — starting only what the awake fleet is short of"
     bash "$tree/target/gate/ci-fleet-power.sh" --ensure-slots "$want" >/dev/null 2>&1 \
       || lq_log "pre-prove: could not start a stopped box; dispatching to the boxes that are already awake"
   fi
-  fleet_table_open "$dir/fleet-table" >/dev/null \
-    || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
+  # ── A SWEEP THAT REACHES NO BOX OPENS NO SSH WRAPPER AND PROBES NO FLEET ──────────────────────
+  # The wrapper and the probe round are the fleet's transport, and both are real work against real
+  # boxes — `remote_wrapper` refuses outright on a host with no session-manager-plugin, which used
+  # to SKIP THE WHOLE SWEEP, and `fleet_table_open` is an ssh round over every instance. A sweep
+  # whose fleet demand is zero on the latchkey backend has nothing to say to either of them, and a
+  # runner that can no longer reach EC2 at all is exactly where the owner's goal ends up.
+  # The fallback is unchanged and still honest: if the runner bound runs out mid-sweep, the line
+  # asks `fleet_pick_host` with no table, finds no box, and the sweep says "out of free boxes".
+  if [ "${want:-0}" = 0 ] && [ "$(lq_preprove_backend)" = latchkey ]; then
+    lq_log "pre-prove: this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table"
+  else
+    ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
+    fleet_table_open "$dir/fleet-table" >/dev/null \
+      || lq_log "pre-prove: the fleet probe round found nothing to cache; each line will ask the fleet itself"
+  fi
   # THE BASE REPLAY TAKES ITS SLOT FIRST (see lq_base_replay_reserve). It is what makes every other
   # verdict in this sweep readable — an unmeasured tip turns the oracle's rows into a line's own red
   # with no evidence — so it is never what the sweep spends its leftovers on. The reserved box is in
   # `hosts` from the start, so no line can be handed it.
-  local basehost; basehost="$(lq_base_replay_reserve "$key" "$lines
-$chained" || true)"
+  local basehost basewant=0
+  basehost="$(lq_base_replay_reserve "$key" "$lines
+$chained" "$tree")" && basewant=1
   local i=0 line hosts="$basehost" cand
-  [ -n "$basehost" ] && lq_log "base state: $basehost reserved for the base replay at $(printf '%.9s' "$key") BEFORE any line was dispatched"
+  if [ "$basewant" = 1 ] && [ -n "$basehost" ]; then
+    lq_log "base state: $basehost reserved for the base replay at $(printf '%.9s' "$key") BEFORE any line was dispatched"
+  elif [ "$basewant" = 1 ]; then
+    lq_log "base state: the base replay at $(printf '%.9s' "$key") is a LATCHKEY job — no EC2 box is reserved or started for it, and it takes its runner slot BEFORE any line was dispatched"
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     # ONE ASK, NAMING THE BOXES THIS SWEEP ALREADY HOLDS: the allocator refuses them itself, so a
@@ -2905,6 +3021,7 @@ $chained" || true)"
       lq_dispatch_preprove "$tree" "$cand" "$bf" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
+      lq_absorb_shard_logs "$dir/line-$i.log"
     ) &
     printf '%s\n' "$!" >"$dir/line-$i.driver"
   done <<EOF
@@ -2960,6 +3077,7 @@ EOF
       lq_dispatch_preprove "$tree" "$cand" "$bf2" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
+      lq_absorb_shard_logs "$dir/line-$i.log"
     ) &
     printf '%s\n' "$!" >"$dir/line-$i.driver"
   done <<EOF
@@ -2969,7 +3087,7 @@ EOF
   # Only when it is unknown, only on a box the lines above did not take, and never when the sweep
   # has no oracle family to ask about. An unmeasured tip is not an emergency — it only means an
   # oracle red is scored RED, which is what the engine did before this existed.
-  if [ -n "$basehost" ]; then
+  if [ "$basewant" = 1 ]; then
     lq_base_red_replay "$tree" "$dir" "$key" "$lines
 $chained" "$basehost" || true
   elif [ "${LANDQ_BASE_REPLAY:-1}" = 1 ] && ! lq_base_red_known "$key"; then
@@ -5952,6 +6070,97 @@ lq_selftest() {
   _t "  ...and records each slot's root and driver" 2 \
      "$(grep -c 'line-\$i\.root"$\|line-\$i\.driver"$' "$LQ_SRC")"
 
+  # ── LK-9: THE FLEET IS ASKED FOR WHAT WILL RUN ON THE FLEET, AND FOR NOTHING ELSE ─────────────
+  # MEASURED, LIVE (2026-09-12 16:15, both backends latchkey): every line's pre-proof went to
+  # Latchkey and the sweep still asked `--ensure-slots` for the WHOLE ten-slot demand and started a
+  # box — and reserved a second one for the base replay. Two EC2 dependencies left, both of them
+  # arithmetic. The demand above is the WORK; lq_sweep_fleet_demand is the part of that work which
+  # still justifies WAKING A BOX, and it is driven here over both backends.
+  echo "landq4 selftest: LK-9 — a sweep proven on Latchkey wakes no box, and neither does its base replay"
+  local lk9="$root/lk9" lk9n="$root/lk9-no-transport"
+  mkdir -p "$lk9/target/gate" "$lk9n/target/gate"
+  : >"$lk9/target/gate/prove-latchkey.run.sh"
+  _lk9d() { # $1 = prove backend, $2 = land backend, $3 = tree, $4.. = the counts
+    local pb="$1" lb="$2" tr="$3"; shift 3
+    ( LANDQ_PROVE_BACKEND="$pb"; LANDQ_LAND_BACKEND="$lb"; lq_sweep_fleet_demand "$@" "$tr" )
+  }
+  _t "the fleet backend asks for the whole demand"        8 "$(_lk9d fleet fleet "$lk9" 6 0 1 0)"
+  _t "  ...which is exactly what the WORK is"             8 "$(lq_sweep_slot_demand 6 0 1 0)"
+  _t "both backends on latchkey: ZERO boxes"              0 "$(_lk9d latchkey latchkey "$lk9" 6 0 1 0)"
+  # A QUEUE DEEPER THAN THE RUNNER BOUND IS STILL ZERO. The overflow waits for the next sweep, or
+  # takes a box that is ALREADY awake; it never wakes one. Counting it would put the queue's depth
+  # back on the bill, which is the $320 a day this is buying out of.
+  _t "  ...and a queue far deeper than the runner bound too" 0 "$(_lk9d latchkey latchkey "$lk9" 120 9 1 0)"
+  _t "  ...the base replay on its own wakes nothing"      0 "$(_lk9d latchkey latchkey "$lk9" 0 0 1 0)"
+  _t "a latchkey sweep with a FLEET landing wants the batch's box" 1 "$(_lk9d latchkey fleet "$lk9" 6 0 1 0)"
+  _t "  ...and not even that when the batch is in flight" 0 "$(_lk9d latchkey fleet "$lk9" 6 0 1 1)"
+  # A HOME WHOSE BACKEND SAYS latchkey AND WHICH CARRIES NO TRANSPORT PROVES ON BOXES (the
+  # dispatcher says so in as many words), so a demand of zero there would dispatch a whole sweep
+  # into a sleeping fleet. That is the 992781fed defect with the sign flipped.
+  _t "a home with no staged transport is a fleet sweep"   8 "$(_lk9d latchkey fleet "$lk9n" 6 0 1 0)"
+  _t "  ...and junk counts are still zero, never a fleet" 1 "$(_lk9d latchkey fleet "$lk9" x y z 0)"
+  _t "the fleet demand is what the allocator is asked for" 1 \
+     "$(grep -cF 'want="$(lq_sweep_fleet_demand ' "$LQ_SRC")"
+  _t "  ...and a demand of ZERO never reaches it"         1 \
+     "$(grep -cF 'if [ "${want:-0}" = 0 ]; then' "$LQ_SRC")"
+  _t "  ...with one line an operator can grep the bill against" 1 \
+     "$(grep -c 'sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend ' "$LQ_SRC")"
+  _t "  ...and the allocator is still asked from exactly one place" 1 \
+     "$(grep -cF 'ci-fleet-power.sh" --ensure-slots "$want"' "$LQ_SRC")"
+
+  # ── AND THE BASE REPLAY IS A LATCHKEY JOB, NOT A BOX ──────────────────────────────────────────
+  # It is the SAME batch (no picks, the sweep's union of families, `--tests xtask`) through the SAME
+  # dispatcher; all that changes is that no box is reserved for it. Its Latchkey job counts against
+  # lq_latchkey_proc_bound for free, because that bound is counted from the processes in flight.
+  local savedBR9="$BASERED"; BASERED="$root/lk9-basered.txt"; : >"$BASERED"
+  local lk9line="--prove --tests xtask --families '^(boot)([|.]|\$)' aaa1111"
+  _t "on latchkey the replay is ON and reserves NO box"   "" \
+     "$( LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" )"
+  _t "  ...and ON means rc 0, not 'nothing to do'"        0 \
+     "$( LANDQ_PROVE_BACKEND=latchkey LATCHKEY_MAX_JOBS=12 lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" >/dev/null; echo $? )"
+  _t "  ...the fleet backend still reserves a real box"   i-0lk9stub \
+     "$( fleet_pick_host() { echo i-0lk9stub; }; LANDQ_PROVE_BACKEND=fleet lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" )"
+  _t "  ...and a fleet with no box is still no replay"    1 \
+     "$( fleet_pick_host() { return 1; }; LANDQ_PROVE_BACKEND=fleet lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" >/dev/null 2>&1; echo $? )"
+  _t "  ...a tip already measured is replayed on neither" 1 \
+     "$( printf 'tipLK9%s#measured\n' "$TAB" >>"$BASERED"
+        LANDQ_PROVE_BACKEND=latchkey lq_base_replay_reserve tipLK9 "$lk9line" "$lk9" >/dev/null 2>&1; echo $? )"
+  : >"$BASERED"
+  _t "  ...and a sweep asking the oracle for nothing, neither" 1 \
+     "$( LANDQ_PROVE_BACKEND=latchkey lq_base_replay_reserve tipLK9 "--prove --tests xtask aaa1111" "$lk9" >/dev/null 2>&1; echo $? )"
+  # THREE SITES, AND NOT ONE OF THEM ASKS FOR A HOST: the reserved-box log, the latchkey log, and
+  # the dispatch. The replay happens because the SWEEP wants it, not because a box was handed over.
+  _t "the replay is dispatched on WANT, never on a host"  3 \
+     "$(grep -cF '"$basewant" = 1 ]' "$LQ_SRC")"
+  _t "  ...and the old host-shaped dispatch is gone"      0 \
+     "$(grep -cF 'if [ -n "$basehost" ]; then' "$LQ_SRC")"
+  _t "  ...and no host is a refusal only where a box is needed" 1 \
+     "$(grep -cF 'if [ -z "$h" ] && lq_preprove_needs_box "$tree"; then' "$LQ_SRC")"
+  _t "  ...its log naming the job rather than a box"     1 \
+     "$(grep -c 'measuring the tip itself on \${h:-a latchkey job of its own (no EC2 box)}' "$LQ_SRC")"
+
+  # ── THE SHARD LOGS COME BACK INTO THE PROOF'S OWN LOG ─────────────────────────────────────────
+  # Every reader in this file that asks a question about a TREE reads the proof's log. A latchkey
+  # dispatch's stream is the transport's narration and nothing else — the legs' output is in the
+  # job logs, which it names. Without this, a base replay on latchkey would run perfectly and
+  # measure NOTHING: lq_base_red_learn would find no oracle table, lq_base_test_learn no test leg,
+  # and every `NONE:base-test` / `NONE:base` the engine can say would silently stop being sayable.
+  local lk9log="$root/lk9-proof.log" lk9shard="$root/lk9-shard.log"
+  printf 'land.sh: [base] plan: tests clippy oracle\nrunning 187 tests\ntest gates::x::y ... FAILED\n\nfailures:\n    gates::x::y\n\ntest result: FAILED. 186 passed; 1 failed\nland.sh: RED — oracle families\nFAIL\tboot.refusal|BOOT-P29|validate\teffects.stderr additive: not a superset\n' >"$lk9shard"
+  printf '[latchkey 11:22:33] the pre-proof is SHARDED into 3 job(s) over one packed tree\n[latchkey 11:25:00] shard oracle  job cli-0abc  state succeeded  exit 0  verdict GREEN  runner 12s  ~1 billed runner-minute(s)  log %s\n' "$lk9shard" >"$lk9log"
+  _t "the transport's own stream carries no test leg"     0 "$(grep -c 'running 187 tests' "$lk9log")"
+  lq_absorb_shard_logs "$lk9log"
+  _t "  ...and the shard log it names is folded in"       1 "$(grep -c 'running 187 tests' "$lk9log")"
+  _t "  ...so the crate-test learner can read it"         0 \
+     "$(BASETEST="$root/lk9-basetest.txt"; : >"$BASETEST"; lq_base_test_learn tipLK9 "$lk9log" >/dev/null; echo $?)"
+  _t "a fleet proof's log names no shard and is untouched" 1 \
+     "$(printf 'land.sh: RED — clippy\n' >"$root/lk9-fleet.log"; lq_absorb_shard_logs "$root/lk9-fleet.log"; grep -c . "$root/lk9-fleet.log")"
+  _t "  ...and a log that names a shard file that is GONE too" 1 \
+     "$(printf '[latchkey 1:1:1] shard oracle  job cli-1  state succeeded  exit 0  verdict GREEN  runner 1s  ~1 billed runner-minute(s)  log %s/nope.log\n' "$root" >"$root/lk9-miss.log"; lq_absorb_shard_logs "$root/lk9-miss.log"; grep -c . "$root/lk9-miss.log")"
+  _t "every latchkey dispatch folds its shards back in"   3 \
+     "$(grep -c 'lq_absorb_shard_logs "\$dir/' "$LQ_SRC")"
+  BASERED="$savedBR9"
+
   # ── THE HEAD OF THE LIVE QUEUE KEEPS ITS SLOTS ────────────────────────────────────────────────
   # MEASURED 2026-09-10: a sweep of twelve spent its WHOLE budget on chained holds — "9 chained
   # holds + 3 live lines, 3 of the live lines root a chain" — and the two lines at the HEAD of the
@@ -6057,8 +6266,13 @@ lq_selftest() {
   _t "  ...counted as neither green nor red"   1 "$(grep -c 'nnone=\$((nnone + 1))' "$LQ_SRC")"
   _t "  ...and such a batch never teaches the base" 1 \
      "$(grep -cF '[ "${nnone:-0}" = 0 ] && [ -s "$batch.log" ]' "$LQ_SRC")"
-  _t "the reservation happens, and names the tip" 1 \
+  # TWO SENTENCES, ONE PER BACKEND (LK-9): a reserved BOX, or a Latchkey job that reserved none.
+  # Both say "BEFORE any line was dispatched", because on both backends that is the ruling being
+  # kept — the replay takes its slot first, whatever kind of slot it is.
+  _t "the reservation happens, and names the tip" 2 \
      "$(grep -c 'BEFORE any line was dispatched' "$LQ_SRC")"
+  _t "  ...and on latchkey it reserves no box at all" 1 \
+     "$(grep -c 'is a LATCHKEY job — no EC2 box is reserved or started for it' "$LQ_SRC")"
   _t "  ...and the reserved box is in hosts from the start" 1 \
      "$(grep -cF 'local i=0 line hosts="$basehost" cand' "$LQ_SRC")"
   _t "  ...the old after-the-lines pick is GONE" 0 "$(grep -c 'fleet_pick_host \$taken' "$LQ_SRC")"
@@ -6987,6 +7201,125 @@ if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--landing" ]; then
     75) echo "smoke-landing: NO VERDICT"; exit 75 ;;
     *) echo "smoke-landing: RED"; exit 1 ;;
   esac
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --smoke-latchkey --sweep: THE ADOPTION GATE FOR LK-9 — A REAL SWEEP THAT STARTS NO BOX
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#   LANDQ_ROOT=~/Developer/tmp/lk6-smoke/root LAND_SH_SRC=<engine home>/scripts \
+#     BUSBAR_PROVE_BACKEND=latchkey BUSBAR_LAND_BACKEND=latchkey \
+#     scripts/landq4.sh --smoke-latchkey --sweep [--families '<expr>']
+#
+# The other two smokes drive the DISPATCHER and the POPPER. This one drives `lq_preprove_sweep`
+# itself, because the two live EC2 dependencies LK-9 closes are the sweep's own arithmetic and
+# nowhere else: the slot demand it puts to `ci-fleet-power.sh --ensure-slots`, and the box it
+# reserved for the base-state replay. A unit test can only assert what the code says; this asserts
+# what it DID.
+#
+# THE ASSERTION NOBODY CAN FAKE IS AN EMPTY FILE. `ci-fleet-power.sh` is replaced, in the staged
+# engine where the sweep really looks for it, by a stub that appends its argv to a file. A sweep
+# that started a box wrote in that file. A green smoke is a file with nothing in it.
+#
+# It takes NO landing lock and lands NOTHING — every line is a pre-proof — and the queue it sweeps
+# is one line it cut in the scratch root for the purpose, so it applies cleanly to its own tip.
+if [ "${1:-}" = "--smoke-latchkey" ] && [ "${2:-}" = "--sweep" ]; then
+  shift 2
+  SMOKE_FAM='^(documented)([|.]|$)'
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --families) shift; [ $# -ge 1 ] || { echo "landq4: --families wants an expression" >&2; exit 2; }
+                  SMOKE_FAM="$1"; shift ;;
+      *) echo "landq4: --smoke-latchkey --sweep: unknown argument '$1'" >&2; exit 2 ;;
+    esac
+  done
+  sroot="$LAND_TMP/smoke-sweep-$$"; mkdir -p "$sroot" "$W/target/gate"
+  echo "smoke: root $W"
+  echo "smoke: engine home $SCRIPTS"
+  echo "smoke: prove backend $(lq_preprove_backend); land backend $(lq_land_backend)"
+  [ "$(lq_preprove_backend)" = latchkey ] \
+    || { echo "smoke: FAILED — BUSBAR_PROVE_BACKEND is not latchkey; there is no sweep backend to gate" >&2; exit 2; }
+  base0="$(git -C "$W" rev-parse HEAD)" || { echo "smoke: $W has no HEAD" >&2; exit 2; }
+  echo "smoke: tip $(printf '%.9s' "$base0")"
+  # ── THE PICK: a docs file, cut HERE so that it applies cleanly to this tree's own tip ─────────
+  smokebr="smoke-sweep-$$"
+  git -C "$W" checkout -q -B "$smokebr" "$base0" || { echo "smoke: could not cut the pick's branch" >&2; exit 2; }
+  mkdir -p "$W/docs/design"
+  printf 'A file written by landq4.sh --smoke-latchkey --sweep at %s.\nIt exists to be pre-proven by a real sweep on a scratch root and nowhere else.\n' \
+    "$(date -u +%FT%TZ)" >"$W/docs/design/SMOKE-SWEEP-$$.md"
+  git -C "$W" add "docs/design/SMOKE-SWEEP-$$.md"
+  git -C "$W" commit -q --no-verify -m "smoke: a sweep's own pick ($$)" \
+    || { echo "smoke: could not commit the pick" >&2; exit 2; }
+  pick="$(git -C "$W" rev-parse HEAD)"
+  git -C "$W" checkout -q -B "$BR" "$base0" || { echo "smoke: could not put the tree back on $BR" >&2; exit 2; }
+  echo "smoke: pick $(printf '%.9s' "$pick") (docs only) + --families '$SMOKE_FAM'"
+  # ── THE SCRATCH'S OWN QUEUE AND ITS OWN LEDGERS ──────────────────────────────────────────────
+  mkdir -p "$(dirname "$Q")"
+  printf -- "--prove --tests xtask --families '%s' %s\n" "$SMOKE_FAM" "$pick" >"$Q"
+  : >"$D"; : >"$PP"; : >"$FRONT"
+  # THE BASE LEDGERS ARE EMPTIED so that the tip really is unmeasured and the replay really happens:
+  # `lq_base_replay_reserve` refuses a tip somebody has already measured, which on a scratch root
+  # re-run would be this smoke's own previous pass.
+  : >"$BASERED"; : >"$BASETEST"
+  : >"$L"
+  echo "smoke: queue $Q -> $(cat "$Q")"
+  # ── THE RECORDING STUB, WHERE THE SWEEP REALLY LOOKS FOR THE POWER SWITCH ─────────────────────
+  lq_stage_engine
+  fpcalls="$sroot/fleet-power.calls"; : >"$fpcalls"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\nexit 0\n' "$fpcalls" >"$W/target/gate/ci-fleet-power.sh"
+  chmod +x "$W/target/gate/ci-fleet-power.sh"
+  echo "smoke: ci-fleet-power.sh is a recording stub ($fpcalls) — a sweep that starts a box writes there"
+  start=$(date +%s)
+  lq_preprove_sweep "$W" "$base0"
+  src=$?
+  end=$(date +%s)
+  sdir="$W/target/gate/preprove-$base0"
+  echo "smoke: lq_preprove_sweep exit $src in $(( end - start ))s (sweep dir $sdir)"
+  rc=0
+  _smoke_said() { # $1 = a sentence the sweep's log must carry
+    if grep -qF -- "$1" "$L" 2>/dev/null; then echo "smoke:   LOG: $1"
+    else echo "smoke: FAILED — the sweep's log never said: $1"; rc=1; fi
+  }
+  _smoke_said "sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend latchkey)"
+  _smoke_said "this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table"
+  _smoke_said "is a LATCHKEY job — no EC2 box is reserved or started for it"
+  _smoke_said "measuring the tip itself on a latchkey job of its own (no EC2 box)"
+  ncalls="$(lq_count "$(grep -c . "$fpcalls" 2>/dev/null)")"
+  if [ "$ncalls" = 0 ]; then
+    echo "smoke: ci-fleet-power.sh was NOT CALLED — $fpcalls is empty"
+  else
+    echo "smoke: FAILED — ci-fleet-power.sh was called $ncalls time(s):"
+    sed 's/^/smoke:   /' "$fpcalls"; rc=1
+  fi
+  # ── THE BASE REPLAY IS A REAL LATCHKEY JOB, OVER A BATCH WITH NO PICKS ────────────────────────
+  bjob="$(grep -oE 'job cli-[0-9a-f]+' "$sdir/base.log" 2>/dev/null | head -1 | awk '{print $2}')"
+  [ -n "$bjob" ] && echo "smoke: the base replay created latchkey job $bjob (log $sdir/base.log)" \
+    || { echo "smoke: FAILED — no latchkey job was created for the base replay"; rc=1; }
+  if [ -f "$sdir/base.batch" ]; then
+    echo "smoke: the base batch is: $(cat "$sdir/base.batch")"
+    if [ -z "$(lq_line_hashes "$(cat "$sdir/base.batch")")" ]; then
+      echo "smoke: the base batch carries NO picks — it measures the tip itself"
+    else echo "smoke: FAILED — the base batch carries a pick"; rc=1; fi
+    grep -qF -- "--tests xtask" "$sdir/base.batch" \
+      && echo "smoke: ...and it asks for the crate tests as well as the oracle" \
+      || { echo "smoke: FAILED — the base batch does not ask for the crate tests"; rc=1; }
+  else
+    echo "smoke: FAILED — no base batch was written"; rc=1
+  fi
+  # ── AND THE SAME READERS CONSUMED IT ──────────────────────────────────────────────────────────
+  # NOT a pass/fail: an unmeasured tip is an honest outcome (NONE:base-unmeasured), and what this
+  # gate is for is that the readers were given the same shape they are given on the fleet.
+  lq_base_red_known "$base0" \
+    && echo "smoke: the tip is MEASURED — $(lq_count "$(lq_base_red_rows "$base0" | grep -c .)") oracle row(s) red at it" \
+    || echo "smoke: the tip stayed UNMEASURED — an oracle red is NONE:base-unmeasured (see $sdir/base.log)"
+  lq_base_test_known "$base0" \
+    && echo "smoke: the crate tests are MEASURED at the tip — $(lq_count "$(lq_base_test_rows "$base0" | grep -c .)") test(s) red" \
+    || echo "smoke: the crate tests stayed UNMEASURED at the tip"
+  echo "smoke: the sweep's own verdict rows: $(lq_count "$(grep -c . "$PP" 2>/dev/null)")"
+  sed 's/^/smoke:   /' "$PP" 2>/dev/null | head -5
+  git -C "$W" branch -q -D "$smokebr" 2>/dev/null || true
+  echo "smoke: artifacts under $sroot; the sweep's under $sdir"
+  if [ "$rc" = 0 ]; then echo "smoke-sweep: GREEN"; exit 0; fi
+  echo "smoke-sweep: RED"; exit 1
 fi
 
 if [ "${1:-}" = "--smoke-latchkey" ]; then

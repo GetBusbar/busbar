@@ -271,6 +271,7 @@ will carry**.
 | `landq4.sh --smoke-latchkey '<line>' …` | the pre-proof backend: one batch file per line, all dispatched at once, so the concurrency the sweep really has is the concurrency the gate has | the dispatcher's path resolution; the staging race; the tree's `land.sh` being shipped instead of the engine's |
 | `landq4.sh --smoke-latchkey --landing` | **one real landing**: picks applied, the union proven as rented jobs, a tip published, the push taken | anything that publishes |
 | `landq4.sh --smoke-bigbatch <queue file>` | the popper, against the **real queue** — 717 lines with every tag shape an integrator has ever written | a popper that loses a line |
+| `landq4.sh --smoke-latchkey --sweep` | **`lq_preprove_sweep` itself**, over a one-line queue it cuts, with a recording stub standing in for `ci-fleet-power.sh` | a sweep that starts an EC2 box for work that never goes there (§13) |
 
 ```bash
 LANDQ_ROOT=~/Developer/tmp/smoke/root LAND_SH_SRC=~/.busbar-engine/current/scripts \
@@ -283,7 +284,16 @@ BUSBAR_LAND_BACKEND=latchkey LATCHKEY_SIZE=large \
 
 LANDQ_ROOT=~/Developer/tmp/smoke/root \
   bash scripts/landq4.sh --smoke-bigbatch <the runner's land-queue.txt>
+
+LANDQ_ROOT=~/Developer/tmp/smoke/root LAND_SH_SRC=~/.busbar-engine/current/scripts \
+BUSBAR_PROVE_BACKEND=latchkey BUSBAR_LAND_BACKEND=latchkey LATCHKEY_SIZE=large \
+  bash scripts/landq4.sh --smoke-latchkey --sweep
 ```
+
+The sweep gate's assertion nobody can fake is **an empty file**. `ci-fleet-power.sh` is replaced, in
+the staged engine where the sweep really looks for it, by a stub that appends its argv to a file; a
+sweep that started a box wrote in it. A green run is that file with nothing in it, plus four
+sentences in the sweep's own log (§13).
 
 **None of them takes the landing lock, and that is deliberate.** The lock is host-wide
 (`$HOME/.busbar-landq4.lock`); a gate that could only run while the live runner is down is a gate
@@ -497,3 +507,67 @@ the suite and not by a queue that has quietly stopped moving.
 
 Measured on the live queue at the time of the fix (722 lines, 17 pre-proof parks): `lq_line_payload`
 returned a path for 17 of 17 before, and the line for 17 of 17 after.
+
+## 13. Where the base-state replay runs — one shape, two homes
+
+The sweep proves the LINES, and it proves one thing that is not a line: **the tip itself**. A batch
+with no picks, over the union of the families the sweep's lines ask the oracle for, plus
+`--tests xtask`. It is what makes every other verdict in the sweep readable — without it an oracle
+row that was already red at the tip is scored as a line's own red (`lq_line_red_is_base_oracle` has
+nothing to compare against), and a crate test that was already failing at the tip parks a line that
+cannot have touched it (`lq_red_is_base_test`). Ruled 2026-09-11 after a line was parked `#RED` for
+three hours on rows nobody had measured, and the answer is `NONE:base-unmeasured` / `NONE:base-test`:
+live, unparked, at the **front** of the next sweep.
+
+**Its shape does not change with the backend. Its home does.**
+
+| `BUSBAR_PROVE_BACKEND` | where the replay runs | what the sweep reserves for it | log |
+|---|---|---|---|
+| `fleet` | an EC2 box, taken **before any line is dispatched** so measuring the base never costs a line its proof | one proof slot, held out of `hosts` from the start | `base state: <i-…> reserved for the base replay at <tip> BEFORE any line was dispatched` |
+| `latchkey` | a **rented runner of its own** — the same `lq_dispatch_preprove` every line and every chained hold goes through | **no box at all**; it takes a Latchkey slot instead, still before any line, and counts against `lq_latchkey_proc_bound` like any other pre-proof | `base state: the base replay at <tip> is a LATCHKEY job — no EC2 box is reserved or started for it, …` |
+
+Measured, live, 2026-09-12 16:15: with **both** backends on `latchkey`, every line's pre-proof went
+to Latchkey and the sweep still logged `base state: i-063… reserved for the base replay` and
+measured the tip on a box. That, and the slot demand below, were the last two EC2 dependencies in
+the engine.
+
+### The fleet is asked for what will run on the fleet
+
+`lq_sweep_slot_demand` is the **work**: one slot per live line, one per chained hold, one for the
+base replay, one for the batch the runner is about to pop. `lq_sweep_fleet_demand` is the part of
+that work which still justifies **waking a box**, and it is the only number `--ensure-slots` is ever
+given:
+
+* the **proofs** justify a box only on the `fleet` pre-proof backend. On `latchkey` they are zero,
+  all of them. A sweep with more lines than `lq_latchkey_proc_bound` dispatches what fits and leaves
+  the rest for the next loop — exactly what it already does whenever the fleet is short. Counting
+  the overflow and starting boxes for it was considered and refused: it puts the queue's depth back
+  on the bill. A line beyond the bound still takes a box that is **already awake** if one is free;
+  it simply never wakes one.
+* the **batch** justifies a box only when `BUSBAR_LAND_BACKEND=fleet`. The Latchkey landing path
+  rents its own runners, which is why `lq_landing_slot_ready` — the pop's own precondition (§12) —
+  is already a no-op on that backend.
+
+With both backends on `latchkey` the number is **zero**, and a zero is never put to the allocator at
+all (`--ensure-slots 0` is a question with a box-shaped answer nobody wants). The sweep says so in
+one line an operator can grep the bill against:
+
+```
+sweep: fleet demand 0 — no EC2 box is started or reserved (prove backend latchkey)
+pre-prove: this sweep reaches no box, so it opens no ssh wrapper and probes no fleet table
+```
+
+The second line is the same rule one step further out: `remote_wrapper` and `fleet_table_open` are
+the fleet's transport — a generated ssh wrapper that *refuses outright* on a host without
+`session-manager-plugin`, and an ssh round over every instance. A sweep with nothing to say to the
+fleet opens neither. A runner that can no longer reach EC2 at all is precisely where the owner's
+goal ends.
+
+### The readers did not learn a second vocabulary
+
+`lq_base_red_learn` and `lq_base_test_learn` read the replay's **log**, and so does every rule that
+asks a question about a tree. A Latchkey dispatch's own stream is the transport's narration — the
+legs' output is in the job logs, which it names by path. So each dispatch folds the shard logs it
+names back into the proof's own log (`lq_absorb_shard_logs`) before anything is scored. Without it a
+base replay on Latchkey would run perfectly and measure **nothing**, and `NONE:base-test` /
+`NONE:base` would quietly stop being sayable. A fleet proof names no shard logs and it is a no-op.
