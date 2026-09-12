@@ -264,7 +264,15 @@ pub(crate) async fn dispatch(
         // closes it. The `-32021` gate stays the method's, exactly as it does for `tasks/get`. The
         // arm that answered it here is DELETED rather than kept beside the node. Its document is
         // still this crate's and is `tasks_update_document` below; what left is the serving.
-        ops::OP_TASK_CANCEL => tasks_cancel(ctx, params, id),
+        // `ops::OP_TASK_CANCEL` HAS NO ARM. The tenth class the composition's node has taken, the
+        // second write, and the one that CLOSES the tasks namespace: all three of its methods are
+        // now served through the composition. It reaches no upstream, so nothing is priced, nothing
+        // is dialled and no grant is spent. It is also the only one of the three that already
+        // sealed an audit row of its own — that row is the FACT of the cancellation and stays here
+        // with the body, beside the node's row for the REQUEST, which is a different thing and was
+        // missing entirely. The `-32021` gate stays the method's. The
+        // arm is DELETED rather than kept beside the node. Its document is still this crate's and
+        // is `tasks_cancel_document` below; what left is the serving.
         // The one class whose answer is a STREAM rather than a document. It returns through the same
         // `Response` — what differs is the `content-type`, which tells `super::envelope` not to re-frame it.
         ops::OP_SUBSCRIPTIONS_LISTEN => super::subscribe::listen(ctx, params, id),
@@ -436,6 +444,19 @@ fn tasks_update(
 /// is a host-side effect naming an actor and a resource — it is not task-store data, and a store
 /// face that emitted one would be reaching for a host it deliberately cannot see. It is emitted only
 /// on the arm where the cancel applied, which is the arm it always fired on.
+/// `tasks/cancel`'s document, in the shape the node's table holds.
+///
+/// The same lift the nine before it are, forwarding parameters to [`tasks_cancel`], which is byte
+/// for byte the body that answered this class when the dispatch table still had an arm for it —
+/// `-32021` gate, its own cancellation audit row and all.
+fn tasks_cancel_document(
+    ctx: &Ctx<'_>,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Response {
+    tasks_cancel(ctx, params, id)
+}
+
 fn tasks_cancel(
     ctx: &Ctx<'_>,
     params: Option<&serde_json::Value>,
@@ -2956,7 +2977,8 @@ pub(super) type ClassDocument =
 /// rather than only a question. `tasks/get` is the eighth and opens that namespace; the `-32021`
 /// extension gate stays inside the method, because whether a caller declared the tasks extension is
 /// a fact about the protocol rather than about admission. `tasks/update` is the ninth and the first
-/// row here for a class that WRITES. The order the rest follow is the plan's (§14.3), money-free first
+/// row here for a class that WRITES. `tasks/cancel` is the tenth and closes that namespace — all
+/// three tasks methods are served through the composition. The order the rest follow is the plan's (§14.3), money-free first
 /// and `tools/call` last.
 ///
 /// `prompts/get` is NOT here, and its absence is a ruling in flight rather than an oversight: its
@@ -2991,6 +3013,9 @@ pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassD
     }
     if op == ops::OP_TASK_UPDATE {
         return Some(tasks_update_document);
+    }
+    if op == ops::OP_TASK_CANCEL {
+        return Some(tasks_cancel_document);
     }
     None
 }
