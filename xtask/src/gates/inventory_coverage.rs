@@ -1197,7 +1197,7 @@ impl Gate for InventoryCoverageGate {
         Some(translate_check(cx, &runs[0]))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         let all = all_rows();
 
