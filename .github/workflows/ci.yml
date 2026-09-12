@@ -206,8 +206,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-structure-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-structure-lint-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -670,8 +668,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-check-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-check-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -966,8 +962,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-openapi-schema-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-openapi-schema-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1039,8 +1033,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-migration-corpus-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-migration-corpus-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1094,8 +1086,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-config-stability-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-config-stability-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1161,8 +1151,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-generated-artifact-drift-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-generated-artifact-drift-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1370,8 +1358,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-executable-config-lint-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-executable-config-lint-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1437,8 +1423,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-no-default-features-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-no-default-features-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1543,8 +1527,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-deletion-test-matrix-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-deletion-test-matrix-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1611,8 +1593,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-no-plugins-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-no-plugins-gate-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1654,8 +1634,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-txn-guards-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-txn-guards-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1696,8 +1674,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-timing-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-timing-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -1941,8 +1917,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-coverage-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -2029,8 +2003,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-perf-build-gate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-perf-build-gate-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -2178,8 +2150,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-proof-manifest-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-proof-manifest-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -2386,8 +2356,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-shadow-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-shadow-oracle-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -2684,8 +2652,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-teller-steps-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-teller-steps-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
@@ -2838,8 +2804,6 @@ jobs:
         with:
           action: restore
           key: cargo-${{ runner.os }}-ship-ready-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-ship-ready-
           path: |
             ~/.cargo/registry
             ~/.cargo/git
