@@ -57,9 +57,10 @@ on:
         type: string
       runner:
         description: >-
-          The GitHub-hosted runner label for this target. MUST be native for `target`:
-          .github/release-targets.json declares it and scripts/tests/test_release_contract.py fails the
-          build if a target claims a runner of a different architecture.
+          The GitHub-hosted or Latchkey runner label for this target. MUST be native for `target`:
+          .github/release-targets.json declares it (LK-7: the three linux/x86_64 rows are now
+          latchkey-xlarge; arm64/macOS/Windows rows are unchanged, Latchkey has none of those) and a
+          target claiming a runner of a different architecture is a contract violation.
         required: true
         type: string
       archive:
