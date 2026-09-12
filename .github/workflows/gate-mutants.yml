@@ -165,10 +165,13 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-baseline-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-baseline-
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
       - name: The test command, unmutated
@@ -191,14 +194,14 @@ jobs:
   # cargo-mutants' own sharding stops agreeing on how the work is divided.
   # -------------------------------------------------------------------------------------------
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-baseline-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   shard:
     name: gate-mutants shard ${{ matrix.shard }}
     needs: scope
@@ -248,19 +251,29 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: restore
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-shard-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-shard-
           path: |
-            ~/.cargo
-            target/
-      - name: Cache the pinned cargo-mutants binary
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+      - name: Cache the pinned cargo-mutants binary (restore)
         id: mutants-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
-          path: ~/.cargo/bin/cargo-mutants
+          action: restore
           key: cargo-mutants-${{ env.CARGO_MUTANTS_VERSION }}-linux-x64
+          path: ~/.cargo/bin/cargo-mutants
       - name: Install cargo-mutants (pinned)
         if: steps.mutants-cache.outputs.cache-hit != 'true'
         run: cargo install cargo-mutants --version "${CARGO_MUTANTS_VERSION}" --locked
+      - name: Cache the pinned cargo-mutants binary (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-mutants-${{ env.CARGO_MUTANTS_VERSION }}-linux-x64
+          path: ~/.cargo/bin/cargo-mutants
       - name: Mutate the changed gate code, shard ${{ matrix.shard }}
         env:
           # NOT `skip`. The baseline is a property of the commit IN THE SCRATCH COPY, and the
@@ -288,14 +301,14 @@ jobs:
   # status always reports.
   # -------------------------------------------------------------------------------------------
       - name: Latchkey Fast Cache (cargo registry + target, save)
-        if: always()
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-shard-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
-            ~/.cargo
-            target/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
   gate-mutants:
     name: gate-mutants
     needs: [scope, baseline, shard]
