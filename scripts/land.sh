@@ -151,6 +151,58 @@ land_parse_args() {
 #   $1 = union tests   $2 = union gate rows   $3 = union families
 # tokens: plugins  fmt  gatefiles  tests  clippy  workspace-clippy  kind-isolation  gate  oracle
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH MACHINE A LANDING IS PROVEN ON: `BUSBAR_LAND_BACKEND=fleet|latchkey`
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# `fleet` is the default and is exactly what this engine has always done: the whole batch goes to
+# one EC2 box (scripts/land-remote.sh), which picks, proves, bisects and publishes a tip the laptop
+# fast-forwards onto. `latchkey` is the other shape, and it is a different shape rather than a
+# different host:
+#
+#   THE ENGINE STAYS HERE. This script applies the picks in W, halves the batch on red, writes
+#   `<batch>.result` and pushes, exactly as the copy on a box does — and only prove_tree leaves, as
+#   a fan of `latchkey run` jobs over the tree AS IT STANDS. That is what makes the bisect work
+#   unchanged: it resets to a smaller pick set and calls the prover again, and the prover packs
+#   whatever it is given. It is also what makes the oracle shardable at all — a fleet transport that
+#   ships a BATCH cannot split a leg, because the leg does not exist until the box has picked.
+#
+# LAND_LATCHKEY_INNER is the loop-breaker, the twin of LAND_REMOTE_INNER: the copy of this script
+# running ON a Latchkey runner has it set, so it runs the engine instead of renting another runner.
+LAND_BACKEND="${BUSBAR_LAND_BACKEND:-fleet}"
+land_validate_backend() { # $1 = the value; an unknown backend is the fleet, loudly, never a guess
+  case "${1:-}" in fleet|latchkey) printf '%s\n' "$1"; return 0 ;; esac
+  echo "land.sh: BUSBAR_LAND_BACKEND='${1:-}' is not a backend this engine has (fleet | latchkey) — using fleet" >&2
+  printf 'fleet\n'
+}
+LAND_BACKEND="$(land_validate_backend "$LAND_BACKEND")"
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# LAND_LEGS_ONLY: THE SHARD'S SUBSET OF THE PLAN, AND IT ONLY EVER SUBTRACTS.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A Latchkey job is capped at 7200 s and a full oracle run has been measured at 2.2 h serial, so a
+# landing on that backend runs as several jobs: one for the build, the batteries and the gates, and
+# one per family bucket for the oracle (scripts/land-latchkey.sh has the plan). Each job is THIS
+# script, with this variable naming the legs that job owns.
+#
+# IT CANNOT ADD A LEG, and that is the whole of why it is a function with a selftest rather than a
+# `grep` inline. land_floor_plan is the authority on what a union OWES; a variable that could add to
+# it would be an environment variable deciding what a proof is. So the result is an INTERSECTION,
+# in the plan's own order — and an intersection that comes out EMPTY is refused, loudly, rather than
+# run as a landing that checked nothing and printed GREEN.
+land_legs_only() { # $1 = the plan; prints the plan narrowed by LAND_LEGS_ONLY, rc 1 on an empty one
+  local plan="$1" want="${LAND_LEGS_ONLY:-}" out="" leg
+  [ -n "$want" ] || { printf '%s\n' "$plan"; return 0; }
+  for leg in $plan; do
+    case " $want " in *" $leg "*) out="$out $leg" ;; esac
+  done
+  out="${out# }"
+  [ -n "$out" ] || {
+    echo "land.sh: RED — LAND_LEGS_ONLY='$want' selects none of this union's plan ($plan)." >&2
+    echo "land.sh:       A shard that owns no leg has measured nothing, and nothing is not green." >&2
+    return 1; }
+  printf '%s\n' "$out"
+}
+
 land_floor_plan() {
   # $2 (the union's gate rows) is deliberately NOT read any more: it used to decide WHETHER the
   # construction gate ran, and it is now only the row filter the `gate` leg narrows with. The
@@ -1554,7 +1606,44 @@ prove_tree() {
     PROVEN=" selftest prover;"; echo "land.sh: [$label] selftest prover: green"; return 0
   fi
 
+  # ── THE LATCHKEY BACKEND: THIS PROOF LEAVES, THE ENGINE STAYS ───────────────────────────────
+  # Placed AFTER the selftest prover (which must stay a function of the tree, so the bisect's own
+  # cases never rent a runner) and BEFORE the plan, because the plan is made on the runner: each
+  # shard asks land_floor_plan the same question about the same tree and narrows it to its own legs.
+  # The transport is the STAGED copy under target/gate — whose REPO the engine home rewrote to this
+  # tree — and never the tree's own scripts/: a tree is the SUBJECT of a proof, not its tooling, and
+  # an unlanded transport in the tree is exactly the 127 the first Latchkey sweep recorded as RED on
+  # every line it touched.
+  if [ "$LAND_BACKEND" = latchkey ] && [ -z "${LAND_LATCHKEY_INNER:-}" ]; then
+    local lkt=""
+    for lkt in "$here/target/gate/land-latchkey.run.sh" "$(cd "$(dirname "$0")" && pwd)/land-latchkey.sh"; do
+      [ -f "$lkt" ] && break || lkt=""
+    done
+    if [ -z "$lkt" ]; then
+      # 70 IS EX_SOFTWARE AND landq4.sh READS IT AS NONE:harness. Not 1, and not 127: a transport
+      # this engine home does not carry has measured nothing about anybody's picks.
+      echo "land.sh: [$label] no latchkey transport staged (target/gate/land-latchkey.run.sh) — nothing was proven" >&2
+      return 70
+    fi
+    echo "land.sh: [$label] proving on Latchkey (BUSBAR_LAND_BACKEND=latchkey) via $lkt"
+    set -- --prove-tree --base "$base" --label "$label"
+    [ -n "$tests" ]    && set -- "$@" --tests "$tests"
+    [ -n "$gate" ]     && set -- "$@" --gate "$gate"
+    [ -n "$families" ] && set -- "$@" --families "$families"
+    [ -n "$features" ] && set -- "$@" --features "$features"
+    bash "$lkt" "$@" </dev/null
+    local lkrc=$?
+    # THE PROVEN LIST IS NOT EMPTY ON A GREEN, because the line below this function's leg loop reds
+    # a proof that proved nothing — and a Latchkey green proved a full plan on somebody else's
+    # machine. It names the backend so a reader of GREEN can see where the evidence is.
+    [ "$lkrc" = 0 ] && PROVEN="$PROVEN latchkey jobs (union + oracle shards) green;"
+    return "$lkrc"
+  fi
+
   local plan; plan="$(land_floor_plan "$tests" "$gate" "$families")"
+  # THE SHARD'S SUBSET, when this copy is one job of several (see land_legs_only). Unset — which is
+  # every landing on the fleet backend and every landing anybody runs by hand — this is the plan.
+  plan="$(land_legs_only "$plan")" || return 1
   echo "land.sh: [$label] plan: $plan"
   local touched; touched="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null || true)"
   # WHICH GATE SELF-TEST BATTERIES THIS UNION PAYS FOR (see land_gate_battery_set's header for the
@@ -3884,6 +3973,53 @@ STUBCARGO
   _t2 "  ...its scratch root is LAND_TMP, declared once" 1 \
      "$(grep -c '^LAND_TMP=' "$LAND_SRC")"
 
+  # ── THE LANDING BACKEND AND THE SHARD'S LEG SUBSET ────────────────────────────────────────────
+  echo "land.sh selftest: BUSBAR_LAND_BACKEND, and a shard subset that can only subtract"
+  _t2 "P: fleet is the default backend"            fleet "$(BUSBAR_LAND_BACKEND=""; land_validate_backend "${BUSBAR_LAND_BACKEND:-fleet}" 2>/dev/null)"
+  _t2 "  ...latchkey is the other one"             latchkey "$(land_validate_backend latchkey 2>/dev/null)"
+  _t2 "  ...and a backend this engine has not is the fleet, not a guess" fleet "$(land_validate_backend ec3 2>/dev/null)"
+  _t2 "  ...loudly"                                1 "$(land_validate_backend ec3 2>&1 >/dev/null | grep -c 'is not a backend')"
+  # LAND_LEGS_ONLY IS AN INTERSECTION IN THE PLAN'S ORDER. The plan is the authority on what a union
+  # owes; a variable that could ADD a leg would be an environment variable deciding what a proof is.
+  _t2 "Q: an unset subset is the whole plan"       "plugins fmt gatefiles tests clippy kind-isolation gate" \
+     "$(LAND_LEGS_ONLY="" land_legs_only "plugins fmt gatefiles tests clippy kind-isolation gate")"
+  _t2 "  ...the union shard is the plan minus the oracle" "plugins fmt gatefiles tests clippy kind-isolation gate" \
+     "$(LAND_LEGS_ONLY="plugins fmt gatefiles tests clippy workspace-clippy kind-isolation gate" \
+        land_legs_only "plugins fmt gatefiles tests clippy kind-isolation gate oracle")"
+  _t2 "  ...an oracle shard is the oracle alone"   "oracle" \
+     "$(LAND_LEGS_ONLY="oracle" land_legs_only "plugins fmt gatefiles kind-isolation gate oracle")"
+  _t2 "  ...and it keeps the PLAN's order, never the subset's" "fmt gate" \
+     "$(LAND_LEGS_ONLY="gate fmt" land_legs_only "plugins fmt gatefiles kind-isolation gate")"
+  # A LEG THE PLAN DOES NOT CONTAIN IS NOT ADDED: the subset subtracts, and that is the whole rule.
+  _t2 "  ...a leg the plan does not owe is not added" "gate" \
+     "$(LAND_LEGS_ONLY="gate oracle" land_legs_only "plugins gate" 2>/dev/null; )"
+  _st "  ...and an EMPTY intersection is refused, never run as nothing" 1 \
+     env LAND_LEGS_ONLY=oracle bash -c '. "'"$LAND_SRC"'"; land_legs_only "plugins fmt gate"'
+  _stgrep "  ...in the words an operator can act on" "$ST_OUT" 'selects none of this union.s plan'
+  # ── THE DELEGATION, BY BACKEND ────────────────────────────────────────────────────────────────
+  # prove_tree leaves on the latchkey backend and the batch does NOT: the engine — the picks, the
+  # halving, the outcome rows — stays in this tree, which is what makes the bisect work unchanged.
+  _t2 "R: prove_tree delegates on the latchkey backend" 1 \
+     "$(grep -c 'if \[ "\$LAND_BACKEND" = latchkey \] && \[ -z "\${LAND_LATCHKEY_INNER:-}" \]; then' "$LAND_SRC")"
+  _t2 "  ...and a home with no transport is 70, never 127 and never a red" 1 \
+     "$(grep -c 'return 70' "$LAND_SRC")"
+  # Twice: the candidate list prove_tree searches, and the sentence a home without it prints.
+  _t2 "  ...the staged copy is preferred to the tree's own" 2 \
+     "$(grep -c 'target/gate/land-latchkey.run.sh' "$LAND_SRC")"
+  # ── THESE TWO LIVE BELOW land_selftest, so they are read out of $0 with a letter of each needle
+  # hidden in a bracket: a grep that travels in the file it searches is otherwise its own hit.
+  _t2 "  ...and the batch is NOT handed to land-remote.sh on that backend" 1 \
+     "$(grep -c 'the batch is landed [H]ERE and each proof is rented' "$0")"
+  # THE SELFTEST PROVER IS STILL A FUNCTION OF THE TREE. The bisect's own cases must never rent a
+  # runner, so the delegation sits BELOW the selftest prover's early return.
+  _t2 "  ...but the selftest prover still answers first" 1 \
+     "$( [ "$(grep -n 'selftest prover: green' "$LAND_SRC" | head -n1 | cut -d: -f1)" \
+          -lt "$(grep -n 'if \[ "\$LAND_BACKEND" = latchkey \]' "$LAND_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  # THE LANDING LOCK BINDS ON BOTH BACKENDS. On this one the engine runs in THIS tree, so it matters
+  # more, not less: a slot that landed for real here would move the runner's own HEAD.
+  _t2 "  ...and the landing lock is asked on the latchkey path too" 2 \
+     "$(grep -c 'holds the landing [l]ock; only the runner lands' "$0")"
+
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
     printf '                  conflict isolation, empty-batch refusal, ledger by measurement — each refuses its own planted counter-case)\n'
@@ -3958,6 +4094,23 @@ land_print_posture "$P_to"
 # THE FLAG BECOMES THE VARIABLE, HERE AND ONLY HERE. Every batch line is parsed by the same
 # land_parse_args, which would reset `P_preprove` to 0; the mode is a property of the RUN.
 [ "$P_preprove" = 1 ] && LAND_PREPROVE=1
+# THE LATCHKEY BACKEND DOES NOT DELEGATE THE BATCH — IT KEEPS IT (see LAND_BACKEND above). The
+# picks, the bisect, the outcome rows and the push all happen here; prove_tree is the only thing
+# that leaves. So `--remote`/LAND_REMOTE is consumed and ignored on this backend rather than
+# refused: the runner's environment carries LAND_REMOTE=auto for the fleet and an operator should
+# not have to strip it to change backend.
+#
+# THE LANDING LOCK STILL BINDS. On the fleet path the refusal below is what stops a slot landing for
+# real while the runner is landing; on this path the engine runs in THIS tree, so the refusal
+# matters more, not less.
+if [ "$LAND_BACKEND" = latchkey ] && [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
+  if [ "${LAND_PREPROVE:-}" != 1 ] && holder="$(land_runner_holds_lock)"; then
+    echo "land.sh: REFUSED — landq4.sh (pid $holder) holds the landing lock; only the runner lands. Prove this branch with --preprove, which publishes nothing." >&2
+    exit 2
+  fi
+  echo "land.sh: BUSBAR_LAND_BACKEND=latchkey — the batch is landed HERE and each proof is rented; --remote '$P_remote' is ignored."
+  P_remote=""
+fi
 if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
   if [ "${LAND_PREPROVE:-}" != 1 ] && holder="$(land_runner_holds_lock)"; then
     echo "land.sh: REFUSED — landq4.sh (pid $holder) holds the landing lock; only the runner lands. Prove this branch with --preprove, which publishes nothing." >&2
