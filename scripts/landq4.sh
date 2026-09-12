@@ -977,21 +977,67 @@ lq_cmd_verb() { # $1 = an inbox line; prints its verb when it is a command, else
     ADD|PARK|UNPARK|SUPERSEDE|RETAG|FRONT) printf '%s\n' "${1%% *}" ;;
   esac
 }
-# THE PARK TAGS COME OFF, AND THE LOG PATH WITH THEM. A pre-proof park is written
-# `#RED-preproof <log> <payload>` — the log is not a `#` token, so a blind "drop leading # tokens"
-# would leave the path behind as the head of the payload and hand a box a line that is not a line.
-lq_line_unpark() { # $1 = a queue line; prints it with every park tag (and their arguments) removed
-  local rest="$1" tok
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH TAGS CARRY AN ARGUMENT — ONE LIST, AND EVERY READER OF THE PREFIX WALKS IT
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A queue line is `<tag>… -- <payload>`, and almost every tag is ONE `#` token — so every reader of
+# the prefix was written, independently and correctly, as "drop the leading `#` tokens". The
+# pre-proof parks broke that and nothing else did: `#RED-preproof <log> …` and `#PARK-preproof
+# <log> …` carry the path to their evidence, and A PATH DOES NOT BEGIN WITH `#`. A reader that stops
+# at the first non-`#` token stops ON THE LOG PATH, and everything behind it — the line's
+# `#HOLD-after-<sha>`, its payload — is invisible to it.
+#
+# THE RULED DEFECT AND ITS FOUR SIBLINGS. "A hold on a sha whose pick already landed must release
+# even when the holder line is parked/unparked later" — it did not, and the cause is wider than the
+# wording. FIVE readers walk this prefix, and only `lq_line_unpark` knew:
+#
+#   lq_release_holds    never reaches the `#HOLD-after-<sha>` behind the path, so the hold can NEVER
+#                       release and the line waits on a sha that landed hours ago. (The ruling.)
+#   lq_hold_after_sha   sees NO tags at all: the line is not chainable and its hold is invisible to
+#                       the chained-pre-proof arithmetic too.
+#   lq_line_payload     returns `<log path> #HOLD-after-… --prove …`, so a RETAG rebuilds the line
+#                       with a PATH as the head of its payload and hands a box a line that is not one.
+#   lq_line_still_held  short-circuits on `#RED-preproof` by luck (it parks on `#RED*`), but walks
+#                       into the path on `#PARK-preproof` and then reports "no payload" — the right
+#                       refusal for entirely the wrong reason, and an unreadable one in a log.
+#
+# `lq_line_unpark` was written correctly and its comment WARNED about exactly this. A warning is not
+# a defence; the knowledge is. So the knowledge lives here, once, and every reader is written over
+# `lq_line_tags`. A new argument-carrying tag is one word in one place, and there is no longer a
+# reader that can be the one nobody remembered to update.
+LQ_ARG_TAGS="${LANDQ_ARG_TAGS:-#RED-preproof #PARK-preproof}"
+lq_tag_takes_arg() { # $1 = a tag token; 0 when the NEXT token belongs to it
+  case " $LQ_ARG_TAGS " in *" ${1:-} "*) return 0 ;; esac
+  return 1
+}
+# THE LEADING TAGS OF A QUEUE LINE, ONE PER OUTPUT LINE, each with its argument when it takes one.
+# This is the ONLY walker of the prefix in this engine; the readers below are written over it.
+# A tag that takes an argument and HAS none (a truncated line an integrator half-typed) is printed
+# bare rather than swallowing the payload behind it.
+lq_line_tags() { # $1 = queue line
+  local rest="${1:-}" tok
+  while : ; do
+    case "$rest" in '#'*) ;; *) break ;; esac
+    tok="${rest%% *}"
+    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    if lq_tag_takes_arg "$tok" && [ -n "$rest" ]; then
+      tok="$tok ${rest%% *}"
+      case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    fi
+    printf '%s\n' "$tok"
+  done
+}
+# THE PARK TAGS COME OFF, AND THE LOG PATH WITH THEM (see LQ_ARG_TAGS). Only the LEADING parks: a
+# `#HOLD-after-<sha>` behind them is the line's dependency and stays exactly where it is.
+lq_line_unpark() { # $1 = a queue line; prints it with every leading park tag (and its argument) removed
+  local rest="${1:-}" tok
   while : ; do
     tok="${rest%% *}"
-    case "$tok" in
-      '#RED-preproof'|'#PARK-preproof')
-        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac   # the tag
-        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac ;; # the log path
-      '#RED'|'#RED-'*|'#PARK'|'#PARK-'*)
-        case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac ;;
-      *) break ;;
-    esac
+    case "$tok" in '#RED'|'#RED-'*|'#PARK'|'#PARK-'*) ;; *) break ;; esac
+    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac          # the tag
+    if lq_tag_takes_arg "$tok" && [ -n "$rest" ]; then
+      case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac        # its argument
+    fi
   done
   printf '%s\n' "$rest"
 }
@@ -1213,13 +1259,16 @@ lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per re
       '#'*) case "$line" in *'#HOLD-after-'*) ;; *) printf '%s\n' "$line" >>"$tmp"; continue ;; esac ;;
       *) printf '%s\n' "$line" >>"$tmp"; continue ;;
     esac
-    out=""; rest="$line"
-    while : ; do
-      case "$rest" in '#'*) ;; *) break ;; esac
-      tok="${rest%% *}"
-      case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    # OVER lq_line_tags (see LQ_ARG_TAGS). This walk used to stop at a pre-proof park's LOG PATH,
+    # so a `#HOLD-after-<sha>` behind one could never release however long ago its sha had landed —
+    # the ruled defect, and the reason the queue kept lines waiting on picks that were on the tip.
+    # A released tag is dropped WITH its argument, because lq_line_tags hands it over as one string;
+    # every tag that is kept is written back exactly as it was read, argument and all.
+    out=""
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
       sha=""
-      case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; esac
+      case "${tok%% *}" in '#HOLD-after-'*) sha="${tok%% *}"; sha="${sha#\#HOLD-after-}" ;; esac
       _how=""
       if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}'; then
         _how="$(lq_landed_how "$1" "$sha")"
@@ -1228,13 +1277,15 @@ lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per re
         # EVERY RELEASE IS LOGGED, WITH THE REASON. A hold released because the sha is an ancestor
         # and a hold released because a LANDED commit carries its cherry-pick trailer are different
         # facts about the tree, and the second one is the one that was unreachable for a day.
-        log="$log""released $tok: landed ($_how)
+        log="$log""released ${tok%% *}: landed ($_how)
 "; released=$((released + 1))
       else
         out="$out$tok "
       fi
-    done
-    printf '%s%s\n' "$out" "$rest" >>"$tmp"
+    done <<EOF
+$(lq_line_tags "$line")
+EOF
+    printf '%s%s\n' "$out" "$(lq_line_payload "$line")" >>"$tmp"
   done <"$Q"
   # THE RELEASES ARE ANNOUNCED ONLY IF THEY HAPPENED. Held back until the rewrite is taken, so a
   # refusal (the file moved under us) never leaves "released …" in the log for a queue that still
@@ -1296,10 +1347,16 @@ case "$LAND_CHAIN_DEPTH" in ''|*[!0-9]*) LAND_CHAIN_DEPTH=4 ;; esac
 # THE LANDING LINE BEHIND THE TAGS. Every leading `#…` token is stripped; what is left is what
 # land.sh would be handed, and it is what a batch file and a ledger row carry.
 lq_line_payload() { # $1 = queue line
-  local rest="$1"
+  local rest="${1:-}" tok
   while : ; do
     case "$rest" in '#'*) ;; *) break ;; esac
-    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    tok="${rest%% *}"
+    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac          # the tag
+    # AND ITS ARGUMENT (see LQ_ARG_TAGS). Without this the payload of a pre-proof-parked line is
+    # its LOG PATH followed by everything else, and a RETAG writes that back as a queue line.
+    if lq_tag_takes_arg "$tok" && [ -n "$rest" ]; then
+      case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+    fi
   done
   printf '%s\n' "$rest"
 }
@@ -1314,19 +1371,24 @@ lq_line_payload() { # $1 = queue line
 # out of the change for no reason at all. Only `#HOLD-` tags are counted; the rest are skipped, and
 # the payload is what is left after every leading `#` token.
 lq_hold_after_sha() { # $1 = queue line
-  local rest="$1" tok sha="" holds=0
-  while : ; do
-    case "$rest" in '#'*) ;; *) break ;; esac
-    tok="${rest%% *}"
-    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
-    case "$tok" in
-      '#HOLD-after-'*) holds=$((holds + 1)); sha="${tok#\#HOLD-after-}" ;;
+  local tok head sha="" holds=0 pay
+  # OVER lq_line_tags, so a `#HOLD-after-<sha>` sitting BEHIND a pre-proof park's log path is seen.
+  # It was not, and a parked line's hold was invisible to the chain arithmetic as well as to the
+  # release (see LQ_ARG_TAGS).
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    head="${tok%% *}"
+    case "$head" in
+      '#HOLD-after-'*) holds=$((holds + 1)); sha="${head#\#HOLD-after-}" ;;
       '#HOLD'*)        holds=$((holds + 1)); sha="" ;;
     esac
-  done
+  done <<EOF
+$(lq_line_tags "${1:-}")
+EOF
   [ "$holds" = 1 ] && [ -n "$sha" ] || return 0
   printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' || return 0
-  case "$rest" in '--'*) ;; *) return 0 ;; esac
+  pay="$(lq_line_payload "${1:-}")"
+  case "$pay" in '--'*) ;; *) return 0 ;; esac
   printf '%s\n' "$sha"
 }
 # THE QUEUE LINE WHOSE PICKS INCLUDE THAT SHA. The queue writes short shas and a tag may be shorter
@@ -3245,11 +3307,14 @@ lq_apply_probe() { # $1 = repo, $2 = the accumulated commit, $3 = a queue line's
 #                        it, however big the batch is allowed to be.
 #   anything else        a label. Skipped.
 lq_line_still_held() { # $1 = repo, $2 = the queue line, $3 = the shas this batch already carries
-  local repo="$1" rest="$2" carried="$3" tok sha
-  while : ; do
-    case "$rest" in '#'*) ;; *) break ;; esac
-    tok="${rest%% *}"
-    case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+  local repo="$1" carried="$3" tok sha rest
+  # OVER lq_line_tags (see LQ_ARG_TAGS). This walked into a `#PARK-preproof`'s log path and then
+  # refused the line as "no payload" — the right answer for the wrong reason, and a reason an
+  # integrator reading the log cannot act on. `#RED-preproof` only escaped it by matching `#RED*`
+  # on the way past.
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    tok="${tok%% *}"
     case "$tok" in
       '#RED'*|'#MALFORMED'*) printf 'parked (%s)\n' "$tok"; return 0 ;;
       '#HOLD-after-'*)
@@ -3264,7 +3329,10 @@ lq_line_still_held() { # $1 = repo, $2 = the queue line, $3 = the shas this batc
         ;;
       '#HOLD'*) printf 'a hold this engine does not read (%s)\n' "$tok"; return 0 ;;
     esac
-  done
+  done <<EOF
+$(lq_line_tags "$2")
+EOF
+  rest="$(lq_line_payload "$2")"
   case "$rest" in '--'*) ;; *) printf 'no payload\n'; return 0 ;; esac
   return 0
 }
@@ -4685,6 +4753,91 @@ lq_selftest() {
   _t "  ...and it names no ref that can equal the tip" 0 \
      "$(sed -n '/^lq_landed_range() {/,/^}/p' "$LQ_SRC" | grep -c 'origin/\$BR\|LANDQ_TIPFILE' || true)"
   LANDQ_TIPFILE="$savedTIPF"; BR="$savedBR"
+
+  # ── AND ON A HOLDER THAT WAS PARKED BY A PRE-PROOF (the ruled defect; see LQ_ARG_TAGS) ────────
+  # "A hold on a sha whose pick already landed must release even when the holder line is
+  # parked/unparked later." It did not. `#RED-preproof <log> …` and `#PARK-preproof <log> …` carry
+  # the path to their evidence, and a path is not a `#` token: every reader of the prefix except
+  # lq_line_unpark stopped ON IT and never saw the `#HOLD-after-<sha>` behind it.
+  echo "landq4 selftest: the tags that carry an argument, and the five readers that walk past them"
+  local plog="/var/log/landq/line-7.log"
+  # THE ONE LIST, AND THE ONE WALKER OVER IT.
+  _t "a park tag takes an argument"            0 "$(lq_tag_takes_arg '#RED-preproof'; echo $?)"
+  _t "  ...both of them"                       0 "$(lq_tag_takes_arg '#PARK-preproof'; echo $?)"
+  _t "  ...and an ordinary tag does not"       1 "$(lq_tag_takes_arg '#HOLD-after-abc1234'; echo $?)"
+  _t "  ...nor a park with no argument at all" 1 "$(lq_tag_takes_arg '#RED'; echo $?)"
+  _t "the walker keeps a tag and its argument as one" "#RED-preproof $plog" \
+     "$(lq_line_tags "#RED-preproof $plog #HOLD-after-$hpick --prove parked" | head -n1)"
+  _t "  ...and reaches the tag behind it"      "#HOLD-after-$hpick" \
+     "$(lq_line_tags "#RED-preproof $plog #HOLD-after-$hpick --prove parked" | sed -n 2p)"
+  _t "  ...and stops at the payload"           2 \
+     "$(lq_line_tags "#RED-preproof $plog #HOLD-after-$hpick --prove parked" | grep -c .)"
+  _t "  ...a live line has no tags"            0 "$(lq_line_tags "--prove x" | grep -c . || true)"
+  # A TRUNCATED PARK MUST NOT SWALLOW THE PAYLOAD. An integrator's half-typed line is a line.
+  _t "  ...a park with nothing after it is bare" "#RED-preproof" "$(lq_line_tags "#RED-preproof")"
+
+  # THE PAYLOAD. This returned `<log path> #HOLD-after-… --prove parked`, and a RETAG wrote THAT
+  # back as a queue line — a path as the head of a payload, handed to a box.
+  _t "the payload of a parked holder is the LINE" "--prove parked" \
+     "$(lq_line_payload "#RED-preproof $plog #HOLD-after-$hpick --prove parked")"
+  _t "  ...and of a PARK-preproof too"          "--prove parked" \
+     "$(lq_line_payload "#PARK-preproof $plog #HOLD-after-$hpick --prove parked")"
+  _t "  ...it never begins with the log path"   0 \
+     "$(case "$(lq_line_payload "#RED-preproof $plog --prove parked")" in /*) echo 1 ;; *) echo 0 ;; esac)"
+  # THE HOLD ITSELF, which was invisible: the line was not chainable either.
+  _t "a parked holder's hold is visible"        "$hpick" \
+     "$(lq_hold_after_sha "#RED-preproof $plog #HOLD-after-$hpick --prove parked")"
+  _t "  ...and a park with no hold is still no hold" "" \
+     "$(lq_hold_after_sha "#RED-preproof $plog --prove parked")"
+  # AND lq_line_still_held, which walked into the path on #PARK-preproof and then said "no payload".
+  _t "a parked holder waiting on an unlanded sha says so" "waiting on $hside" \
+     "$(lq_line_still_held "$repo" "#PARK-preproof $plog #HOLD-after-$hside --prove parked" "")"
+  _t "  ...never 'no payload'"                  0 \
+     "$(lq_line_still_held "$repo" "#PARK-preproof $plog #HOLD-after-$hside --prove parked" "" | grep -c 'no payload' || true)"
+  _t "  ...and on a landed sha it is not held"  "" \
+     "$(lq_line_still_held "$repo" "#PARK-preproof $plog #HOLD-after-$hpick --prove parked" "")"
+  # THE UNPARK still does what it always did, and now reads the SAME list.
+  _t "the unpark drops the park and its log"    "#HOLD-after-$hpick --prove parked" \
+     "$(lq_line_unpark "#RED-preproof $plog #HOLD-after-$hpick --prove parked")"
+
+  # ── AND THE RELEASE, ON A QUEUE, WHICH IS THE RULING ──────────────────────────────────────────
+  printf '#RED-preproof %s #HOLD-after-%s --prove parked-landed\n#PARK-preproof %s #HOLD-after-%s --prove parked-unlanded\n#RED-preproof %s --prove parked-nohold\n#HOLD-after-%s --prove plain-landed\n' \
+    "$plog" "$hpick" "$plog" "$hside" "$plog" "$hpick" >"$Q"
+  lq_release_holds "$repo" >"$root/rel5.txt"
+  _t "a PARKED holder's landed hold releases"   1 \
+     "$(grep -cx -- "#RED-preproof $plog --prove parked-landed" "$Q" || true)"
+  # THE PARK SURVIVES THE RELEASE, log path and all. A release that also un-parked the line would
+  # put a line the fleet has already proven RED back in front of the fleet.
+  # Both `#RED-preproof` lines still wear their park and their log path: a release that also
+  # un-parked would put a line the fleet has already proven RED back in front of the fleet.
+  _t "  ...and the parks they were wearing survive" 2 \
+     "$(grep -c "^#RED-preproof $plog " "$Q" || true)"
+  # Two lines held that sha — the parked one and the plain one — and each release is its own row.
+  _t "  ...and it is logged like any other"      2 \
+     "$(grep -cx "released #HOLD-after-$hpick: landed (cherry-picked)" "$root/rel5.txt" || true)"
+  _t "a PARKED holder on an unlanded sha still holds" 1 \
+     "$(grep -cx -- "#PARK-preproof $plog #HOLD-after-$hside --prove parked-unlanded" "$Q" || true)"
+  _t "a park with no hold is untouched"          1 \
+     "$(grep -cx -- "#RED-preproof $plog --prove parked-nohold" "$Q" || true)"
+  _t "  ...and the plain holder released as it always did" 1 \
+     "$(grep -cx -- '--prove plain-landed' "$Q" || true)"
+  _t "the file keeps every line it had"          4 "$(grep -c . "$Q" || true)"
+  # NO READER WALKS THE PREFIX BY HAND ANY MORE. The knowledge is in one list, and a sixth reader
+  # written tomorrow inherits it instead of rediscovering the defect.
+  _t "there is ONE list of argument-carrying tags" 1 "$(grep -c '^LQ_ARG_TAGS=' "$LQ_SRC")"
+  _t "  ...read in exactly one predicate"        1 \
+     "$(grep -c 'case " \$LQ_ARG_TAGS " in' "$LQ_SRC")"
+  _t "  ...and one walker over the tag block"    1 "$(grep -c '^lq_line_tags() {' "$LQ_SRC")"
+  # The three readers that used to walk the prefix by hand are written over that walker now.
+  _t "  ...which the three tag readers go through" 3 "$(grep -c 'lq_line_tags "' "$LQ_SRC")"
+  # AND THE PROPERTY THAT ACTUALLY CLOSES THIS CLASS: nothing shifts a token off the prefix without
+  # asking the list. Any function that does is a sixth reader rediscovering the defect, and this
+  # counts them — so the next one is caught by the suite and not by a queue that stopped moving.
+  _t "no reader walks the prefix without the list" "" \
+     "$(awk '/^[a-z_]+\(\) \{/ { fn = $1; body = "" }
+             { body = body $0 "\n" }
+             /^\}$/ { if (fn != "" && body ~ /rest="\$\{rest#\* \}"/ && body !~ /lq_tag_takes_arg/) print fn
+                      fn = "" }' "$LQ_SRC")"
 
   # ── THE QUEUE IS REWRITTEN BY ITS READER, ONLY IF IT MOVED, AND ONLY IF NOBODY ELSE MOVED IT ───
   # The runner used to rewrite land-queue.txt in full from its own snapshot on EVERY loop, unlocked:
