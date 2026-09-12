@@ -540,3 +540,28 @@ task's own "push after every commit" rule).
    minutes is correct under the letter of GOAL LK and is a real, avoidable cost increase under the
    org's stated free-tier rule. Neither this slot nor LK-5 is positioned to resolve that tension;
    flagged for an owner decision rather than picked silently in either direction.
+11. **(b) Every `latchkey-dev/cache-action` restore/save added by LK-5 (and by this slot's §3
+   above) cached the wrong directories, so the registry/git half of the cache never populated.**
+   All of them hardcoded `~/.cargo/registry` and `~/.cargo/git` as the `path:`, which is correct
+   for a GitHub-hosted runner (`CARGO_HOME` unset, cargo defaults to `$HOME/.cargo`) but wrong on
+   the Latchkey image: its `Dockerfile` sets `CARGO_HOME=/usr/share/rust/.cargo`, so the toolchain
+   never reads or writes anything under `~/.cargo` at all. The `restore`/`save` steps ran, reported
+   success, and moved zero meaningful bytes for the registry/git paths — every job silently fell
+   back to a from-scratch `cargo fetch` on every run, while only `target/` (an absolute path,
+   unaffected by `CARGO_HOME`) was ever actually warm. This was not visible in any per-job log line
+   the migration measurements above quoted; it only shows up by comparing the cache-action's
+   reported save size for the registry/git paths against a nonzero baseline.
+   **Fix:** a reusable composite action, `.github/actions/cargo-home/action.yml`, run once per job
+   before that job's first `cache-action` step. It resolves `CARGO_HOME` at run time
+   (`${CARGO_HOME:-$HOME/.cargo}`) and exports it both to `$GITHUB_ENV` (so later steps in the same
+   job see it via the `env` context) and as a step output (`cargo_home`), so it works whether a
+   caller's `path:` list is written inline or a step needs the value directly. Every non-Windows
+   `cache-action` restore/save step across `ci.yml`, `keep-proof.yml`, `gate-mutants.yml`,
+   `plugin-functional.yml`, and `prepare-release.yml` now reads `${{ env.CARGO_HOME }}/registry`
+   and `${{ env.CARGO_HOME }}/git` instead of the hardcoded `~/.cargo/...` paths; per-job cache
+   keys are untouched. The `windows` job (`windows-latest`, GitHub-hosted, `~/.cargo` as a single
+   path) and the `~/.cargo/bin/cargo-mutants` binary cache in `gate-mutants.yml`'s `shard` job are
+   deliberately left alone — the former never ran on Latchkey and the latter is a separate,
+   pre-existing cache keyed on a different path this fix's mandate does not cover.
+   **Measured on `keep-ci-latchkey-cache-home`** (pushed on top of LK-7's tip,
+   `41fabf25a`): `<FILLED IN AFTER THE keep-proof.yml RUN — see below>`.
