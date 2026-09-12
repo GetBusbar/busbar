@@ -14,19 +14,23 @@
 #   * THE ENGINE HOME is ~/.busbar-engine: `current/scripts` is a `git archive` of the landed tip's
 #     scripts/ at the sha in `sha`, never a hand copy and never a checkout that can be edited under
 #     the runner. `env` is the restart line, one NAME=value per line (scripts/landq.env.example).
-#   * ADOPTION IS A LANDING, AND ONLY A LANDING. At every boundary the runner signals
-#     (target/gate/landq.boundary) the supervisor asks the landed tip which commit last touched
-#     scripts/, and compares it with what the PREVIOUS boundary's tip said (~/.busbar-engine/
-#     last-tip-engine). They differ only when a landing CHANGED the tip's engine — and a landing is
-#     newer by construction, which is the only ordering available: landings are `cherry-pick -x`, so
-#     a landed engine commit is never the branch sha an ancestry test would ask about. Then, and
-#     only then, it asks the runner to stop AT THE BOUNDARY (never mid-batch — a batch is an hour of
-#     a fleet box), re-archives and starts the new engine. Nobody types anything.
-#     THE HOME'S SHA IS A PIN, NOT A COMPARISON. Measured 2026-09-11: the tip carried a scripts/ sha
-#     from the T0-S era while the engine actually running was two unlanded lines AHEAD of it — a
-#     supervisor that adopted "whatever differs from the home" would have adopted that older engine
-#     at its first start and flipped back to it at every boundary after. The integrator pins the
-#     home once; landings move it from there, and ~/.busbar-engine/PIN stops even that.
+#   * ADOPTION IS AN ENGINE LINE LANDING, AND NOTHING ELSE. At every boundary the runner signals
+#     (target/gate/landq.boundary) the supervisor looks at the RANGE that just landed — the tip at
+#     the previous boundary (~/.busbar-engine/last-tip) to the tip at this one — and asks whether it
+#     contains a commit that touches scripts/ AND carries `(cherry picked from commit X)` with X in
+#     the PINNED ENGINE's own branch history (~/.busbar-engine/engine-source). That is the only
+#     evidence that an ENGINE LINE landed: landings are `cherry-pick -x`, so the landed commit never
+#     has the branch sha, and the trailer is the only link back to the branch it was proven on.
+#     Then, and only then, it asks the runner to stop AT THE BOUNDARY (never mid-batch — a batch is
+#     an hour of a fleet box), archives the LANDED TIP's scripts/, and starts it.
+#     MEASURED 2026-09-11 23:54Z, and this is why the rule is provenance and not "the tip's newest
+#     scripts/ commit moved": a batch landed a docs line and, beside it, an unrelated one-file fix to
+#     scripts/release-script-lint.sh. `git log -1 <tip> -- scripts/` duly moved — to a commit whose
+#     tree carries seventy scripts and NO landq4.sh — and the supervisor stopped a healthy runner,
+#     archived that, and looped `No such file` with exit 127 for five minutes. A scripts/ change is
+#     not an engine; an engine line is a scripts/ change with a proof and a provenance.
+#     AND AN ARCHIVE IS CHECKED BEFORE IT IS SWAPPED IN: no landq4.sh, no adoption (SUP_REQUIRED).
+#     ~/.busbar-engine/PIN stops adoption altogether while it exists.
 #   * THE EXIT CLASS DECIDES (landq4.sh's THE EXIT-CODE CONTRACT, and nothing else):
 #       0  STOP marker            the supervisor exits too — a stop is a stop
 #       1  HALT head-conflict-twice   a fact about the tree: PAGE and WAIT for the integrator
@@ -54,7 +58,11 @@ ENVF="$ENGINE_HOME/env"                 # the restart line, as a file
 PAGEDF="$ENGINE_HOME/PAGED"             # present = the integrator owes the engine an answer
 ADOPTF="$ENGINE_HOME/ADOPT"             # present = the STOP marker downstairs is OURS, for an adoption
 PINF="$ENGINE_HOME/PIN"                 # present = adopt nothing, whatever lands (the integrator's pin)
-LASTF="$ENGINE_HOME/last-tip-engine"    # the tip's engine sha AS OF THE LAST BOUNDARY WE SAW
+LASTTIP="$ENGINE_HOME/last-tip"         # the TIP as of the last boundary this supervisor saw
+SOURCEF="$ENGINE_HOME/engine-source"    # the engine BRANCH sha the running engine was cherry-picked from
+# THE ENTRY POINTS AN ENGINE MUST HAVE. An archive that does not carry these is not an engine, and
+# swapping it in is a runner that exits 127 on a ladder (measured 2026-09-11 23:55Z: five minutes).
+SUP_REQUIRED="${LANDQ_SUP_REQUIRED:-landq4.sh land.sh}"
 SUPLOG="${LANDQ_SUP_LOG:-$ENGINE_HOME/supervisor.log}"
 # SCRATCH UNDER $LAND_TMP AND NEVER UNDER /tmp (owner rule, 2026-09-11): a wiped directory took a
 # running engine's staged scripts once already.
@@ -107,10 +115,6 @@ sup_env_value() { # $1 = name, $2 = env file; the supervisor's own lookup (LANDQ
 # selftest's leftovers); a checkout can be moved under the running engine by anything that runs
 # `git checkout` in that tree. An archive of one sha is exactly the engine that landed, and the sha
 # file beside it is what makes "which engine is running" a fact instead of a guess.
-sup_engine_sha_for_tip() { # $1 = the landed tip, $2 = repo; prints the sha that last touched scripts/
-  local tip="$1" repo="${2:-$REPO}"
-  git -C "$repo" log -1 --format=%H "$tip" -- scripts/ 2>/dev/null
-}
 sup_current_sha() { [ -f "$SHAF" ] && head -n1 "$SHAF" | tr -d ' \n' || true; }
 sup_archive() { # $1 = sha, $2 = repo; replaces $CURRENT with scripts/ at that sha
   local sha="$1" repo="${2:-$REPO}" d
@@ -121,6 +125,16 @@ sup_archive() { # $1 = sha, $2 = repo; replaces $CURRENT with scripts/ at that s
     rm -rf "$d"; sup_log "could not archive scripts/ at $sha out of $repo"; return 1
   fi
   [ -d "$d/scripts" ] || { rm -rf "$d"; sup_log "the archive at $sha carries no scripts/"; return 1; }
+  # AN ARCHIVE WITHOUT THE ENTRY POINTS IS NOT AN ENGINE, and it is refused BEFORE the swap.
+  # Measured 2026-09-11 23:55Z: an archive of seventy scripts with no landq4.sh was swapped in and
+  # the runner exited 127 on the backoff ladder for five minutes. The check costs two `test -f`.
+  local want
+  for want in $SUP_REQUIRED; do
+    [ -f "$d/scripts/$want" ] && continue
+    rm -rf "$d"
+    sup_log "the archive at $sha has no scripts/$want — that is not an engine; NOT adopting"
+    return 1
+  done
   chmod +x "$d/scripts"/*.sh 2>/dev/null || true
   rm -rf "$CURRENT.prev"
   [ -e "$CURRENT" ] && mv "$CURRENT" "$CURRENT.prev"
@@ -221,49 +235,105 @@ sup_boundary_tip() { # $1 = the boundary file
   local f="${1:-${BOUNDARY:-}}"
   [ -n "$f" ] && [ -f "$f" ] && awk 'NF { print $2 }' "$f" | tail -n1 || true
 }
-sup_last_tip_engine() { [ -f "$LASTF" ] && head -n1 "$LASTF" | tr -d ' \n' || true; }
-sup_remember_tip_engine() { # $1 = the tip's engine sha at this boundary
+sup_last_tip() { [ -f "$LASTTIP" ] && head -n1 "$LASTTIP" | tr -d ' \n' || true; }
+sup_remember_tip() { # $1 = the tip at this boundary
   [ -n "${1:-}" ] || return 0
   mkdir -p "$ENGINE_HOME" 2>/dev/null || true
-  printf '%s\n' "$1" >"$LASTF.tmp" && mv "$LASTF.tmp" "$LASTF"
+  printf '%s\n' "$1" >"$LASTTIP.tmp" && mv "$LASTTIP.tmp" "$LASTTIP"
 }
-# ADOPTION IS A CHANGE AT THE TIP, NOT A DIFFERENCE FROM THE HOME. Prints the sha to adopt and
-# returns 0 only when a landing moved the tip's engine since the last boundary this supervisor saw.
-# Three refusals, and each of them is a defect this rule exists to avoid:
-#   * NO BASELINE YET (first start, or a fresh engine home): the baseline is RECORDED and nothing is
-#     adopted. The home is whatever the integrator pinned, and a tip that is behind it stays behind.
-#   * THE TIP'S ENGINE DID NOT MOVE: a landing that touches no script changes nothing here.
-#   * ~/.busbar-engine/PIN EXISTS: the integrator is holding an engine on purpose (a bisect, a
-#     revert in flight, an engine being proven by hand). Landings are still tracked — the baseline
-#     moves — so that removing the pin does not adopt a change that landed three batches ago.
-sup_adopt_wanted() { # $1 = tip; prints the sha to adopt, 0 = adopt it
-  local tip="$1" want prev
+# THE ENGINE BRANCH THE RUNNING ENGINE CAME FROM. The integrator pins `sha` by hand once; until an
+# adoption has happened that same sha IS the branch history to check provenance against, so
+# `engine-source` defaults to it. Each adoption then records the cherry-pick SOURCE of the engine
+# line that landed — the commit on the engine branch — because the next engine branch is cut from
+# THAT, never from the integration tip the line landed on.
+sup_engine_source() {
+  local v; v="$([ -f "$SOURCEF" ] && head -n1 "$SOURCEF" | tr -d ' \n' || true)"
+  [ -n "$v" ] || v="$(sup_current_sha)"
+  printf '%s\n' "$v"
+}
+sup_remember_source() { # $1 = the engine-branch sha the landed line was picked from
+  [ -n "${1:-}" ] || return 0
+  mkdir -p "$ENGINE_HOME" 2>/dev/null || true
+  printf '%s\n' "$1" >"$SOURCEF.tmp" && mv "$SOURCEF.tmp" "$SOURCEF"
+}
+# THE CHERRY-PICK TRAILER, read off one commit. `cherry-pick -x` writes exactly one of these, last.
+sup_pick_source() { # $1 = commit, $2 = repo
+  git -C "${2:-$REPO}" log -1 --format=%B "$1" 2>/dev/null \
+    | sed -n 's/^(cherry picked from commit \([0-9a-f]\{7,40\}\))[[:space:]]*$/\1/p' | tail -n1
+}
+# SAME LINE OF HISTORY: one of the two contains the other. An engine branch is cut from the engine
+# branch before it, so the line that lands next is always a descendant of the source of the line
+# that landed last — and a commit from somebody else's branch is neither.
+sup_same_history() { # $1 = a sha, $2 = the pinned engine source, $3 = repo
+  local x="$1" pin="$2" repo="${3:-$REPO}"
+  [ -n "$x" ] && [ -n "$pin" ] || return 1
+  git -C "$repo" rev-parse -q --verify "$x^{commit}"   >/dev/null 2>&1 || return 1
+  git -C "$repo" rev-parse -q --verify "$pin^{commit}" >/dev/null 2>&1 || return 1
+  [ "$(git -C "$repo" rev-parse "$x")" = "$(git -C "$repo" rev-parse "$pin")" ] && return 0
+  git -C "$repo" merge-base --is-ancestor "$x" "$pin" 2>/dev/null && return 0
+  git -C "$repo" merge-base --is-ancestor "$pin" "$x" 2>/dev/null && return 0
+  return 1
+}
+# DID AN ENGINE LINE LAND IN THIS RANGE? Prints `<landed commit> <its pick source>` and returns 0.
+sup_engine_line_landed() { # $1 = old tip, $2 = new tip, $3 = engine source, $4 = repo
+  local old="$1" new="$2" pin="$3" repo="${4:-$REPO}" c x
+  [ -n "$old" ] && [ -n "$new" ] && [ -n "$pin" ] || return 1
+  git -C "$repo" rev-parse -q --verify "$old^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$repo" rev-parse -q --verify "$new^{commit}" >/dev/null 2>&1 || return 1
+  for c in $(git -C "$repo" rev-list "$old..$new" -- scripts/ 2>/dev/null); do
+    x="$(sup_pick_source "$c" "$repo")"
+    [ -n "$x" ] || continue
+    sup_same_history "$x" "$pin" "$repo" || continue
+    printf '%s %s\n' "$c" "$x"
+    return 0
+  done
+  return 1
+}
+# ADOPTION IS AN ENGINE LINE LANDING. Prints `<tip> <pick source>` and returns 0 only then. Four
+# refusals, and each of them is a defect this rule exists to avoid:
+#   * NO BASELINE YET (a first start, or a fresh engine home): the tip is recorded and nothing is
+#     adopted. The home is whatever the integrator pinned, and the tip is usually BEHIND it — the
+#     engine that is running is unlanded by definition while its line is still in the queue.
+#   * THE TIP DID NOT MOVE.
+#   * SCRIPTS/ MOVED WITHOUT AN ENGINE LINE — a docs line that touches a script, somebody else's
+#     one-file fix, a lint rule. Logged by name and never adopted. (23:54Z, five minutes lost.)
+#   * ~/.busbar-engine/PIN EXISTS: the integrator is holding an engine on purpose. Landings are
+#     still tracked, so removing the pin does not adopt a line that landed three batches ago.
+sup_adopt_wanted() { # $1 = the tip at this boundary; prints `<tip> <source>`, 0 = adopt
+  local tip="$1" prev pin hit nscripts
   [ -n "$tip" ] || return 1
-  want="$(sup_engine_sha_for_tip "$tip")"
-  [ -n "$want" ] || return 1
-  prev="$(sup_last_tip_engine)"
+  prev="$(sup_last_tip)"
   if [ -z "$prev" ]; then
-    sup_remember_tip_engine "$want"
-    sup_log "engine baseline recorded at $(printf '%.9s' "$want"); the home stays pinned at $(sup_current_sha) until a landing moves it"
+    sup_remember_tip "$tip"
+    sup_log "baseline recorded at tip $(printf '%.9s' "$tip"); the home stays pinned at $(printf '%.9s' "$(sup_current_sha)") until an ENGINE LINE lands"
     return 1
   fi
-  [ "$want" = "$prev" ] && return 1
+  [ "$tip" = "$prev" ] && return 1
   if [ -e "$PINF" ]; then
-    sup_remember_tip_engine "$want"
-    sup_log "a landing moved the tip's engine to $(printf '%.9s' "$want") but $PINF is set: NOT adopting"
+    sup_remember_tip "$tip"
+    sup_log "the tip moved to $(printf '%.9s' "$tip") but $PINF is set: NOT adopting"
     return 1
   fi
-  printf '%s\n' "$want"
-  return 0
+  pin="$(sup_engine_source)"
+  if hit="$(sup_engine_line_landed "$prev" "$tip" "$pin")"; then
+    sup_log "an ENGINE LINE landed in $(printf '%.9s' "$prev")..$(printf '%.9s' "$tip"): commit ${hit%% *} picked from ${hit##* } (engine source $(printf '%.9s' "$pin"))"
+    printf '%s %s\n' "$tip" "${hit##* }"
+    return 0
+  fi
+  nscripts="$(git -C "$REPO" rev-list "$prev..$tip" -- scripts/ 2>/dev/null | grep -c . || true)"
+  [ "${nscripts:-0}" = 0 ] || \
+    sup_log "$nscripts commit(s) touching scripts/ landed in $(printf '%.9s' "$prev")..$(printf '%.9s' "$tip") with no provenance from the pinned engine $(printf '%.9s' "$pin"): NOT adopting (a scripts/ change is not an engine)"
+  sup_remember_tip "$tip"
+  return 1
 }
-sup_request_adoption() { # $1 = the sha to adopt
+sup_request_adoption() { # $1 = `<tip to adopt> <the engine-branch sha it was picked from>`
   if [ -f "$STOPF" ]; then
     sup_log "adoption to $1 waits: a STOP marker is already set, and it is not ours"
     return 1
   fi
   printf '%s\n' "$1" >"$ADOPTF"
   : >"$STOPF"
-  sup_log "adoption requested at the boundary: engine $(sup_current_sha) -> $1; STOP set, the runner stops after this batch"
+  sup_log "adoption requested at the boundary: engine $(printf '%.9s' "$(sup_current_sha)") -> tip $(printf '%.9s' "${1%% *}") (engine line picked from $(printf '%.9s' "${1##* }")); STOP set, the runner stops after this batch"
   return 0
 }
 
@@ -296,7 +366,7 @@ sup_watch() { # $1 = the runner's pid; polls the boundary signal until the runne
     adopt="$(sup_adopt_wanted "$now")" || continue
     # THE BASELINE MOVES ONLY WITH THE ADOPTION. A request refused (the integrator's own STOP is
     # already set) must fire again at the next boundary, not be forgotten as "seen".
-    sup_request_adoption "$adopt" && sup_remember_tip_engine "$adopt"
+    sup_request_adoption "$adopt" && sup_remember_tip "${adopt%% *}"
   done
   wait "$pid"; return $?
 }
@@ -317,7 +387,8 @@ sup_loop() {
     # a supervisor started by hand after an engine landed adopts it without being told to).
     tip="$(sup_boundary_tip)"; [ -n "$tip" ] || tip="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
     if adopt="$(sup_adopt_wanted "$tip")"; then
-      sup_archive "$adopt" && sup_remember_tip_engine "$adopt" || sup_log "the archive failed; running the engine already in the home"
+      if sup_archive "${adopt%% *}"; then sup_remember_tip "${adopt%% *}"; sup_remember_source "${adopt##* }"
+      else sup_log "the archive was refused; the pinned engine in the home stands and the baseline does not move"; fi
     fi
     [ -d "$CURRENT/scripts" ] || [ -n "${LANDQ_SUP_RUNNER:-}" ] || { sup_log "no engine in $CURRENT — archive one first"; return 2; }
     rm -f "$ADOPTF"
@@ -332,7 +403,8 @@ sup_loop() {
       stop)
         if [ -f "$ADOPTF" ]; then
           adopt="$(head -n1 "$ADOPTF")"; rm -f "$ADOPTF" "$STOPF"
-          sup_archive "$adopt" && sup_remember_tip_engine "$adopt" || sup_log "the adoption archive failed; the engine in the home stands"
+          if sup_archive "${adopt%% *}"; then sup_remember_source "${adopt##* }"
+          else sup_log "the adoption archive was refused; the pinned engine in the home stands"; fi
           consec=0
           sup_log "adopted at the boundary; restarting on $(sup_current_sha)"
           sup_status_merge "{\"state\":\"adopted\",\"starts\":$starts,\"last_exit\":$rc,\"paged\":false,\"engine_sha\":\"$(sup_current_sha)\"}"
@@ -388,26 +460,49 @@ sup_selftest() {
   _t() { if [ "$2" = "$3" ]; then printf '  ok   %-56s\n' "$1"
          else printf '  FAIL %-56s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
 
-  # ── the tree: an engine sha is the newest commit that touched scripts/, and nothing else ───────
+  # ── THE TREE, IN THE SHAPE OF THE LIVE ONE (measured 2026-09-11) ──────────────────────────────
+  # An INTEGRATION branch that does not carry the engine at all — landq4.sh has never landed, it
+  # lives on the engine branches — plus an ENGINE branch two commits ahead of it, plus somebody
+  # else's branch whose one-file script fix lands in the same batch as a docs line. That last pair
+  # is exactly the batch that took the runner down at 23:54Z.
   local repo="$root/repo"; mkdir -p "$repo/scripts" "$repo/docs"
-  git -C "$repo" init -q
+  git -C "$repo" init -q -b main
   git -C "$repo" config user.email landq@selftest; git -C "$repo" config user.name landq
   git -C "$repo" config commit.gpgsign false
   mkdir -p "$root/nohooks"; git -C "$repo" config core.hooksPath "$root/nohooks"
+  printf '#!/usr/bin/env bash\necho land\n' >"$repo/scripts/land.sh"
+  printf '#!/usr/bin/env bash\necho lint v1\n' >"$repo/scripts/release-script-lint.sh"
+  printf 'docs\n' >"$repo/docs/x.md"
+  git -C "$repo" add -A; git -C "$repo" commit -qm "base: an integration tree with no engine in it"
+  local tip0; tip0="$(git -C "$repo" rev-parse HEAD)"
+  # THE ENGINE BRANCH: two lines, the second of which is what the integrator pinned by hand.
+  git -C "$repo" checkout -q -b eng
   printf '#!/usr/bin/env bash\necho engine-1\n' >"$repo/scripts/landq4.sh"
-  git -C "$repo" add -A; git -C "$repo" commit -qm "engine 1"
-  local shaA; shaA="$(git -C "$repo" rev-parse HEAD)"
-  printf 'docs\n' >"$repo/docs/x.md"; git -C "$repo" add -A; git -C "$repo" commit -qm "docs only"
-  local tipB; tipB="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" add -A; git -C "$repo" commit -qm "engine line 1"
+  local engE0; engE0="$(git -C "$repo" rev-parse HEAD)"
   printf '#!/usr/bin/env bash\necho engine-2\n' >"$repo/scripts/landq4.sh"
-  git -C "$repo" add -A; git -C "$repo" commit -qm "engine 2"
-  local tipC; tipC="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" add -A; git -C "$repo" commit -qm "engine line 2"
+  local engE1; engE1="$(git -C "$repo" rev-parse HEAD)"
+  # SOMEBODY ELSE'S BRANCH: a one-file fix to a script that is not the engine.
+  git -C "$repo" checkout -q -b other "$tip0"
+  printf '#!/usr/bin/env bash\necho lint v2 — a guard that is not raced away\n' >"$repo/scripts/release-script-lint.sh"
+  git -C "$repo" add -A; git -C "$repo" commit -qm "the watchdog rule reads its haystack without a pipe"
+  local otherX; otherX="$(git -C "$repo" rev-parse HEAD)"
+  # THE INTEGRATION BRANCH LANDS: a docs line, then that script fix beside it (one batch).
+  git -C "$repo" checkout -q main
+  printf 'more docs\n' >>"$repo/docs/x.md"; git -C "$repo" add -A; git -C "$repo" commit -qm "the docs line"
+  local tipDocs; tipDocs="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" cherry-pick -x "$otherX" >/dev/null 2>&1
+  local tipLint; tipLint="$(git -C "$repo" rev-parse HEAD)"
+  # ...AND THEN, LATER, THE ENGINE LINE ITSELF LANDS — `cherry-pick -x`, as every landing is.
+  git -C "$repo" cherry-pick -x "$engE0" "$engE1" >/dev/null 2>&1
+  local tipEng; tipEng="$(git -C "$repo" rev-parse HEAD)"
 
   # ── the engine home, entirely inside the scratch root ─────────────────────────────────────────
   ENGINE_HOME="$root/home"; mkdir -p "$ENGINE_HOME"
   CURRENT="$ENGINE_HOME/current"; SHAF="$ENGINE_HOME/sha"; ENVF="$ENGINE_HOME/env"
   PAGEDF="$ENGINE_HOME/PAGED"; ADOPTF="$ENGINE_HOME/ADOPT"; SUPLOG="$ENGINE_HOME/supervisor.log"
-  PINF="$ENGINE_HOME/PIN"; LASTF="$ENGINE_HOME/last-tip-engine"
+  PINF="$ENGINE_HOME/PIN"; LASTTIP="$ENGINE_HOME/last-tip"; SOURCEF="$ENGINE_HOME/engine-source"
   REPO="$repo"; STOPF="$repo/target/gate/STOP"; BOUNDARY="$repo/target/gate/landq.boundary"
   STATUSJ="$repo/target/gate/landq.status.json"; mkdir -p "$repo/target/gate"
   POLL=0; PAGE_POLL=0
@@ -449,48 +544,66 @@ sup_selftest() {
   _t "  ...and a second command on one line" 1 "$(sup_env_check "$root/bad3" >/dev/null; echo $?)"
   _t "no env file at all starts nothing"     2 "$(sup_env_check "$root/absent" >/dev/null; echo $?)"
 
-  echo "supervisor selftest: the engine home is a git archive of one sha"
-  _t "archiving the tip's scripts"          0 "$(sup_archive "$shaA" "$repo" >/dev/null 2>&1; echo $?)"
-  _t "  ...puts scripts/ in the home"       1 "$([ -f "$CURRENT/scripts/landq4.sh" ] && echo 1 || echo 0)"
-  _t "  ...at that very sha"                "$shaA" "$(sup_current_sha)"
-  _t "  ...and the archive is the sha's content, not a copy of the worktree" 1 \
-     "$(grep -c 'engine-1' "$CURRENT/scripts/landq4.sh")"
-  _t "  ...and it carries nothing else"     0 "$([ -e "$CURRENT/docs" ] && echo 1 || echo 0)"
+  echo "supervisor selftest: the engine home is a git archive, and an archive is CHECKED"
+  _t "archiving the pinned engine branch"    0 "$(sup_archive "$engE1" "$repo" >/dev/null 2>&1; echo $?)"
+  _t "  ...puts scripts/ in the home"        1 "$([ -f "$CURRENT/scripts/landq4.sh" ] && echo 1 || echo 0)"
+  _t "  ...at that very sha"                 "$engE1" "$(sup_current_sha)"
+  _t "  ...with the content of the sha, not of a worktree" 1 "$(grep -c 'engine-2' "$CURRENT/scripts/landq4.sh")"
+  _t "  ...and nothing but scripts/"         0 "$([ -e "$CURRENT/docs" ] && echo 1 || echo 0)"
+  # THE ARCHIVE THAT TOOK THE RUNNER DOWN: seventy scripts and no landq4.sh. Refused BEFORE the swap.
+  _t "an archive with no landq4.sh is refused" 1 "$(sup_archive "$tipLint" "$repo" >/dev/null 2>&1; echo $?)"
+  _t "  ...saying so"                        1 "$(grep -c 'that is not an engine' "$SUPLOG")"
+  _t "  ...leaving the engine in the home untouched" "$engE1" "$(sup_current_sha)"
+  _t "  ...and its landq4.sh where it was"   1 "$(grep -c 'engine-2' "$CURRENT/scripts/landq4.sh")"
+  _t "  ...and the missing entry point is named, not guessed" 1 \
+     "$(grep -c '^SUP_REQUIRED=' "$SRC")"
 
-  echo "supervisor selftest: adoption is a CHANGE AT THE TIP, never a difference from the home"
-  rm -f "$LASTF" "$PINF"
-  _t "the engine sha of a tip is the last commit touching scripts/" "$shaA" "$(sup_engine_sha_for_tip "$tipB" "$repo")"
-  # A FIRST START HAS NO BASELINE, and a supervisor with nothing to compare adopts nothing: the home
-  # is whatever the integrator pinned, and the tip may be a dozen engine lines behind it.
-  _t "a first start adopts nothing"          1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
-  _t "  ...it records the baseline instead"  "$shaA" "$(sup_last_tip_engine)"
-  # THE DEFECT THIS RULE EXISTS FOR (measured 2026-09-11): the home is pinned AHEAD of the tip,
-  # because the engine that is running has not landed yet. Comparing the home with the tip would
-  # adopt the OLDER engine off the tip at the first start and flip back to it at every boundary.
-  printf '%s\n' "$tipC" >"$SHAF"
-  _t "a tip BEHIND the pinned home is never adopted" 1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
-  _t "  ...and the home stays pinned"        "$tipC" "$(sup_current_sha)"
-  printf '%s\n' "$shaA" >"$SHAF"
-  # ...AND THE ONE THING THAT *IS* AN ADOPTION: a landing that changed the tip's engine.
-  _t "a docs-only landing moves nothing"     1 "$(sup_adopt_wanted "$tipB" >/dev/null 2>&1; echo $?)"
-  _t "a landing that touches scripts/ adopts" "$tipC" "$(sup_adopt_wanted "$tipC")"
-  # THE PIN: while it exists nothing is adopted, but landings are still TRACKED, so removing it
-  # cannot adopt a change that landed three batches ago.
+  echo "supervisor selftest: adoption is an ENGINE LINE landing, proven by provenance"
+  rm -f "$LASTTIP" "$PINF" "$SOURCEF"
+  printf '%s\n' "$engE1" >"$SHAF"
+  _t "the pick source is read off the trailer" "$otherX" "$(sup_pick_source "$tipLint" "$repo")"
+  _t "  ...and a commit without one has none"  ""        "$(sup_pick_source "$tipDocs" "$repo")"
+  _t "the engine branch contains its own sha"  0 "$(sup_same_history "$engE1" "$engE1" "$repo"; echo $?)"
+  _t "  ...and the line before it"             0 "$(sup_same_history "$engE0" "$engE1" "$repo"; echo $?)"
+  _t "  ...and a line cut ahead of it"         0 "$(sup_same_history "$engE1" "$engE0" "$repo"; echo $?)"
+  _t "  ...but not somebody else's branch"     1 "$(sup_same_history "$otherX" "$engE1" "$repo"; echo $?)"
+  # A FIRST START HAS NO BASELINE: the home is what the integrator pinned, and the tip is BEHIND it.
+  _t "a first start adopts nothing"          1 "$(sup_adopt_wanted "$tipDocs" >/dev/null 2>&1; echo $?)"
+  _t "  ...it records the tip instead"       "$tipDocs" "$(sup_last_tip)"
+  # ── THE 23:54Z BATCH, AS IT LANDED: a docs line and, beside it, a fix to a script that is not
+  # the engine. The tip's newest scripts/ commit moves; NOTHING may be adopted.
+  _t "a script that is not the engine NEVER adopts" 1 "$(sup_adopt_wanted "$tipLint" >/dev/null 2>&1; echo $?)"
+  _t "  ...and says why"                     1 "$(grep -c 'no provenance from the pinned engine' "$SUPLOG")"
+  _t "  ...counting what it looked at"       1 "$(grep -c '1 commit(s) touching scripts/ landed' "$SUPLOG")"
+  _t "  ...while the home stays pinned"      "$engE1" "$(sup_current_sha)"
+  _t "  ...and the baseline follows the tip" "$tipLint" "$(sup_last_tip)"
+  # ── AND THE ONE THING THAT *IS* AN ADOPTION: the engine line, cherry-picked from the pinned branch.
+  _t "an engine line landing adopts the TIP" "$tipEng $engE1" "$(sup_adopt_wanted "$tipEng")"
+  _t "  ...naming the line in the log"       1 "$(grep -c 'an ENGINE LINE landed in' "$SUPLOG")"
+  # THE PIN: while it exists nothing is adopted, but landings are still TRACKED.
   : >"$PINF"
-  _t "a PIN refuses the adoption"            1 "$(sup_adopt_wanted "$tipC" >/dev/null 2>&1; echo $?)"
+  _t "a PIN refuses even an engine line"     1 "$(sup_adopt_wanted "$tipEng" >/dev/null 2>&1; echo $?)"
   _t "  ...says so in the log"               1 "$(grep -c 'is set: NOT adopting' "$SUPLOG")"
-  _t "  ...and still tracks the landing"     "$tipC" "$(sup_last_tip_engine)"
+  _t "  ...and still tracks the tip"         "$tipEng" "$(sup_last_tip)"
   rm -f "$PINF"
-  _t "  ...so unpinning adopts nothing by itself" 1 "$(sup_adopt_wanted "$tipC" >/dev/null 2>&1; echo $?)"
-  printf '%s\n' "$shaA" >"$LASTF"
-  printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
-  _t "the boundary signal names the tip"     "$tipC" "$(sup_boundary_tip)"
+  _t "  ...so unpinning adopts nothing by itself" 1 "$(sup_adopt_wanted "$tipEng" >/dev/null 2>&1; echo $?)"
+  # THE CHAIN: after an adoption the provenance is checked against the SOURCE of the line that
+  # landed, because the next engine branch is cut from that and never from the integration tip.
+  printf '%s\n' "$engE0" >"$SOURCEF"
+  _t "the engine source is the branch, not the tip" "$engE0" "$(sup_engine_source)"
+  rm -f "$SOURCEF"
+  _t "  ...and with none recorded it is the pinned sha" "$engE1" "$(sup_engine_source)"
+  printf '%s\n' "$tipLint" >"$LASTTIP"
+  _t "an engine line is found through a range with other landings in it" "$tipEng $engE1" "$(sup_adopt_wanted "$tipEng")"
+
+  printf '%s %s\n' "$(date +%s)" "$tipEng" >"$BOUNDARY"
+  _t "the boundary signal names the tip"     "$tipEng" "$(sup_boundary_tip)"
   rm -f "$STOPF"
-  _t "an adoption sets the STOP marker at the boundary" 0 "$(sup_request_adoption "$tipC" >/dev/null; echo $?)"
-  _t "  ...and a marker of its own beside it" "$tipC" "$(cat "$ADOPTF")"
+  _t "an adoption sets the STOP marker at the boundary" 0 "$(sup_request_adoption "$tipEng $engE1" >/dev/null; echo $?)"
+  _t "  ...and a marker of its own, carrying the tip and its provenance" "$tipEng $engE1" "$(cat "$ADOPTF")"
   _t "  ...so the stop is read as an adoption" 1 "$([ -f "$STOPF" ] && echo 1 || echo 0)"
   rm -f "$ADOPTF"
-  _t "  ...but never over the integrator's STOP" 1 "$(sup_request_adoption "$tipC" >/dev/null; echo $?)"
+  _t "  ...but never over the integrator's STOP" 1 "$(sup_request_adoption "$tipEng $engE1" >/dev/null; echo $?)"
   _t "  ...which stays the integrator's"      0 "$([ -f "$ADOPTF" ] && echo 1 || echo 0)"
   rm -f "$STOPF" "$BOUNDARY"
 
@@ -514,7 +627,7 @@ STUB
       printf 'SUPTEST_ADOPTF=%s\n' "$ADOPTF"
       printf 'SUPTEST_STOPF=%s\n' "$STOPF"
       printf 'SUPTEST_MARK=%s\n' "${1:-plain}"
-      [ -n "${2:-}" ] && printf 'SUPTEST_ADOPT=%s\n' "$2"
+      [ -n "${2:-}" ] && printf 'SUPTEST_ADOPT="%s"\n' "$2"
       true; } >"$ENVF"
   }
 
@@ -558,38 +671,48 @@ STUB
   _t "  ...after one start"                   1 "$(grep -c . "$starts")"
   _t "  ...and pages nobody: it is not a fault" 0 "$([ -e "$PAGEDF" ] && echo 1 || echo 0)"
 
-  echo "supervisor selftest: adoption at the boundary, and no adoption without one"
-  : >"$starts"; rm -f "$PAGEDF" "$ADOPTF" "$STOPF" "$PINF"
-  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"
-  printf '%s %s\n' "$(date +%s)" "$tipB" >"$BOUNDARY"     # a docs-only landing: the engine did not move
+  echo "supervisor selftest: the whole loop, on the batch that took the runner down"
+  : >"$starts"; rm -f "$PAGEDF" "$ADOPTF" "$STOPF" "$PINF" "$SOURCEF"
+  sup_archive "$engE1" "$repo" >/dev/null 2>&1; printf '%s\n' "$tipDocs" >"$LASTTIP"
+  printf '%s %s\n' "$(date +%s)" "$tipLint" >"$BOUNDARY"   # the docs line + somebody else's script fix
   printf '0\n' >"$codes"; sup_env_write nomove
   sup_loop >/dev/null 2>&1
-  _t "a tip whose scripts/ did not move is not adopted" "$shaA" "$(sup_current_sha)"
-  _t "  ...and the engine ran once"           1 "$(grep -c . "$starts")"
-  # THE TIP MOVED WHILE THE SUPERVISOR WAS DOWN: the baseline says so at the next start.
+  _t "the 23:54Z batch adopts nothing"       "$engE1" "$(sup_current_sha)"
+  _t "  ...the engine in the home is intact" 1 "$(grep -c 'engine-2' "$CURRENT/scripts/landq4.sh")"
+  _t "  ...and the runner ran on it, once"   1 "$(grep -c . "$starts")"
+  # THE ENGINE LINE LANDS WHILE THE SUPERVISOR IS DOWN: the baseline says so at the next start.
   : >"$starts"; printf '0\n' >"$codes"; sup_env_write moved
-  printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
+  printf '%s %s\n' "$(date +%s)" "$tipEng" >"$BOUNDARY"
   sup_loop >/dev/null 2>&1
-  _t "a landing that moved the tip's engine is adopted at the start" "$tipC" "$(sup_current_sha)"
-  _t "  ...and the baseline follows it"       "$tipC" "$(sup_last_tip_engine)"
+  _t "an engine line that landed is adopted at the start" "$tipEng" "$(sup_current_sha)"
+  _t "  ...and what runs is the landed engine" 1 "$(grep -c 'engine-2' "$CURRENT/scripts/landq4.sh")"
+  _t "  ...the baseline follows the tip"     "$tipEng" "$(sup_last_tip)"
+  _t "  ...and the provenance is remembered for the next line" "$engE1" "$(sup_engine_source)"
   # ...AND AT A BOUNDARY, through the STOP marker (the stub plays the part of the watch).
-  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"
-  : >"$starts"; printf '0\n0\n' >"$codes"; sup_env_write adopt "$tipC"
-  printf '%s %s\n' "$(date +%s)" "$tipB" >"$BOUNDARY"
+  sup_archive "$engE1" "$repo" >/dev/null 2>&1
+  printf '%s\n' "$tipLint" >"$LASTTIP"; rm -f "$SOURCEF"
+  : >"$starts"; printf '0\n0\n' >"$codes"; sup_env_write adopt "$tipEng $engE1"
+  printf '%s %s\n' "$(date +%s)" "$tipLint" >"$BOUNDARY"
   LANDQ_SUP_MAX_STARTS=2 sup_loop >/dev/null 2>&1
-  _t "a boundary carrying a new engine sha adopts it" "$tipC" "$(sup_current_sha)"
-  _t "  ...re-archived from the tip"          1 "$(grep -c 'engine-2' "$CURRENT/scripts/landq4.sh")"
+  _t "a boundary that carried an engine line adopts it" "$tipEng" "$(sup_current_sha)"
   _t "  ...restarting the runner at that boundary" 2 "$(grep -c . "$starts")"
-  _t "  ...and the STOP it set is taken away again" 0 "$([ -f "$STOPF" ] && echo 1 || echo 0)"
-  _t "  ...with its own marker cleared"       0 "$([ -f "$ADOPTF" ] && echo 1 || echo 0)"
-  _t "  ...and the baseline is the engine that landed" "$tipC" "$(sup_last_tip_engine)"
+  _t "  ...the STOP it set is taken away again" 0 "$([ -f "$STOPF" ] && echo 1 || echo 0)"
+  _t "  ...with its own marker cleared"      0 "$([ -f "$ADOPTF" ] && echo 1 || echo 0)"
+  _t "  ...and the provenance recorded"      "$engE1" "$(sup_engine_source)"
+  # AN ADOPTION WHOSE ARCHIVE IS NOT AN ENGINE IS NOT AN ADOPTION: the pinned engine stands.
+  sup_archive "$engE1" "$repo" >/dev/null 2>&1; printf '%s\n' "$tipDocs" >"$LASTTIP"
+  : >"$starts"; printf '0\n0\n' >"$codes"; sup_env_write badarchive "$tipLint $engE1"
+  printf '%s %s\n' "$(date +%s)" "$tipDocs" >"$BOUNDARY"
+  LANDQ_SUP_MAX_STARTS=2 sup_loop >/dev/null 2>&1
+  _t "an adoption of a tree with no engine in it is refused" "$engE1" "$(sup_current_sha)"
+  _t "  ...and the runner still has a landq4.sh to run" 1 "$([ -f "$CURRENT/scripts/landq4.sh" ] && echo 1 || echo 0)"
   # A PIN STOPS THE WHOLE OF IT, end to end.
-  sup_archive "$shaA" "$repo" >/dev/null 2>&1; printf '%s\n' "$shaA" >"$LASTF"; : >"$PINF"
+  printf '%s\n' "$tipLint" >"$LASTTIP"; : >"$PINF"
   : >"$starts"; printf '0\n' >"$codes"; sup_env_write pinned
-  printf '%s %s\n' "$(date +%s)" "$tipC" >"$BOUNDARY"
+  printf '%s %s\n' "$(date +%s)" "$tipEng" >"$BOUNDARY"
   sup_loop >/dev/null 2>&1
-  _t "a PIN keeps the pinned engine through a landing" "$shaA" "$(sup_current_sha)"
-  _t "  ...and the runner still ran"          1 "$(grep -c . "$starts")"
+  _t "a PIN keeps the pinned engine through an engine landing" "$engE1" "$(sup_current_sha)"
+  _t "  ...and the runner still ran"         1 "$(grep -c . "$starts")"
   rm -f "$PINF"
 
   echo "supervisor selftest: the status file keeps what the runner wrote"

@@ -37,7 +37,8 @@ decision, then return), `--help`.
   PAGED               present = a HALT is waiting for the integrator; nothing starts
   ADOPT               present = the STOP marker in the tree is the supervisor's, for an adoption
   PIN                 present = adopt nothing, whatever lands (an engine held on purpose)
-  last-tip-engine     the tip's engine sha as of the last boundary the supervisor saw
+  last-tip            the TIP as of the last boundary the supervisor saw
+  engine-source       the engine BRANCH sha the running engine was cherry-picked from
   supervisor.log      what the supervisor did, one line each
 ```
 
@@ -46,46 +47,50 @@ happened to hold) and never a checkout (which anything running `git checkout` ca
 running engine). `LAND_SH_SRC` is therefore not an operator's choice any more: the supervisor sets
 it to `~/.busbar-engine/current/scripts` at every start.
 
-### Adoption is a landing
+### Adoption is an engine line landing
 
 `landq4.sh` writes `target/gate/landq.boundary` — one line, `<epoch> <tip>` — at the end of every
-batch and on its way out through the STOP marker. The supervisor reads that signal while the runner
-runs, and at each new boundary asks the landed tip one question:
+batch and on its way out through the STOP marker. At each new boundary the supervisor looks at the
+**range that just landed**, `last-tip..<new tip>`, and asks one question of it:
 
-```bash
-git log -1 --format=%H <tip> -- scripts/       # the tip's engine sha
-```
+> does this range contain a commit that touches `scripts/` **and** carries
+> `(cherry picked from commit X)` with `X` in the pinned engine's own branch history?
 
-**It compares that with the PREVIOUS boundary's answer** (`~/.busbar-engine/last-tip-engine`), never
-with the sha in the engine home. The two differ exactly when a landing *changed* the tip's engine —
-and a landing is newer by construction, which is the only ordering available here: landings are
-`cherry-pick -x`, so a landed engine commit never carries the branch sha an ancestry test would ask
-about.
+`X` qualifies when it *is* `engine-source`, or when one of the two contains the other
+(`git merge-base --is-ancestor` either way) — an engine branch is cut from the engine branch before
+it, so the next engine line always shares history with the last one, and somebody else's branch
+never does. That trailer is the only link available: landings are `cherry-pick -x`, so the landed
+commit never carries the branch sha, and an ancestry test on the landed sha answers nothing.
 
-**The home's sha is a pin, not a comparison.** Measured 2026-09-11: the tip carried a `scripts/` sha
-from the T0-S era while the engine actually running was two unlanded lines *ahead* of it. A
-supervisor that adopted "whatever differs from the home" would have adopted that older engine at its
-first start and flipped back to it at every boundary after. So:
+When the answer is yes, the supervisor archives **the landed tip's** `scripts/` (not the commit's),
+records `X` as the new `engine-source`, and restarts — at the boundary, never mid-batch.
 
-* **no baseline yet** (a first start, or a fresh engine home) — the baseline is recorded and
-  **nothing is adopted**. The integrator pins the home once; see §6.
-* **the tip's engine did not move** — nothing happens. A landing that touches no script is not an
-  engine change.
-* **`~/.busbar-engine/PIN` exists** — nothing is adopted for as long as it is there (a bisect, a
-  revert in flight, an engine being proven by hand). Landings are still tracked, so removing the pin
-  does not then adopt something that landed three batches ago. `rm ~/.busbar-engine/PIN` resumes.
+**Why it is provenance and not "the tip's newest `scripts/` commit moved".** Measured 2026-09-11
+23:54Z: a batch landed a docs line and, beside it, an unrelated one-file fix to
+`scripts/release-script-lint.sh`. `git log -1 <tip> -- scripts/` duly moved — to a commit whose tree
+carries seventy scripts and **no `landq4.sh`**. The supervisor stopped a healthy runner, archived
+that, and looped `No such file` with exit 127 for five minutes. A `scripts/` change is not an
+engine; an engine line is a `scripts/` change with a proof and a provenance.
 
-When a landing *does* move it, the supervisor:
+**An archive is checked before it is swapped in.** `LANDQ_SUP_REQUIRED` (default `landq4.sh
+land.sh`) must exist in the archived `scripts/`, or the adoption is refused, logged, and the pinned
+engine keeps running. Today's integration tip has no `landq4.sh` at all — the engine is unlanded by
+construction while its line is in the queue — so this check alone would have held the line.
 
-1. writes `~/.busbar-engine/ADOPT` (the sha to adopt) and sets `target/gate/STOP`,
-2. lets the runner finish the batch it is in and stop **at the boundary** — never mid-batch, because
-   a batch is an hour of a fleet box,
-3. re-archives `scripts/` at the new sha, removes the STOP marker **it** set, moves the baseline,
-   and starts the runner again.
+Four refusals, each logged by name:
 
-Nobody types anything, and no boundary is lost. If a STOP marker is **already** set when the
-supervisor wants to adopt, that STOP is the integrator's: the supervisor leaves it alone, keeps the
-baseline where it is, and adopts at the next boundary instead.
+* **no baseline yet** (a first start, or a fresh engine home) — the tip is recorded and nothing is
+  adopted. The home is whatever the integrator pinned, and the tip is usually *behind* it.
+* **the tip did not move.**
+* **`scripts/` moved without an engine line** — a docs line that touches a script, somebody else's
+  fix, a lint rule. Never adopted.
+* **`~/.busbar-engine/PIN` exists** — nothing is adopted for as long as it is there. Landings are
+  still tracked, so removing the pin does not then adopt a line that landed three batches ago.
+  `rm ~/.busbar-engine/PIN` resumes.
+
+If a STOP marker is **already** set when the supervisor wants to adopt, that STOP is the
+integrator's: the supervisor leaves it alone, keeps the baseline where it is, and adopts at the next
+boundary instead.
 
 ---
 
@@ -183,11 +188,12 @@ engine costs.
    rm -rf ~/.busbar-engine/current && mkdir -p ~/.busbar-engine/current
    git -C "$LANDQ_ROOT" archive "$ENG" scripts | tar -x -C ~/.busbar-engine/current
    printf '%s\n' "$ENG" > ~/.busbar-engine/sha
-   rm -f ~/.busbar-engine/last-tip-engine                   # no baseline: the first start adopts nothing
+   printf '%s\n' "$ENG" > ~/.busbar-engine/engine-source    # the branch provenance is checked against
+   rm -f ~/.busbar-engine/last-tip                          # no baseline: the first start adopts nothing
    ```
-   The empty baseline is deliberate. The supervisor records the tip's engine at its first start and
-   adopts only what a *later* landing changes, so a tip that is behind the pinned engine can never
-   pull the engine backwards.
+   The empty baseline is deliberate. The supervisor records the tip at its first start and adopts
+   only an engine line that lands *after* it, so a tip that is behind the pinned engine — which is
+   the normal state of affairs — can never pull the engine backwards.
 
 4. **When it has exited** (`tail -n 3 "$LANDQ_ROOT/target/gate/landq.out"` says `STOP marker seen`):
 
@@ -217,8 +223,9 @@ staging directory, no STOP marker and no restart line to re-type.
 * **It writes the status file's `supervisor` section only while no runner is alive**, so the
   "one writer, temp+mv" rule the status file was built on still holds.
 * **It puts no scratch under `/tmp`** (owner rule): the archive is staged under `$LAND_TMP`.
-* **It never adopts an engine off a tip that is behind the pinned home.** Only a landing that
-  *changes* the tip's engine adopts, and `~/.busbar-engine/PIN` stops even that.
+* **It never adopts anything but an engine line.** A `scripts/` change with no cherry-pick
+  provenance from the pinned engine's branch is logged and ignored, an archive without the entry
+  points is refused before the swap, and `~/.busbar-engine/PIN` stops adoption altogether.
 
 ---
 
@@ -233,6 +240,7 @@ bash scripts/landq-ctl.sh --selftest            # the queue commands and the sta
 The supervisor's selftest runs a **stub runner** that exits with each code of the contract in turn
 and asserts the decision taken for each, the backoff ladder actually waited, that the env file is
 read once per start, that a `PAGED` marker blocks every start until it is removed, that a boundary
-carrying a new engine sha adopts (and one that does not, does not), that a tip **behind** the pinned
-home is never adopted, that a first start with no baseline adopts nothing, and that a `PIN` holds
-the engine through a landing while still tracking it.
+that carried an engine line adopts (and the 23:54Z batch — a docs line beside somebody else's
+script fix, reproduced as a fixture — does not), that an archive without `landq4.sh` is refused
+before the swap, that a first start with no baseline adopts nothing, and that a `PIN` holds the
+engine through an engine landing while still tracking the tip.
