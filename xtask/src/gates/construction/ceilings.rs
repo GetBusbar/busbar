@@ -324,7 +324,16 @@ pub fn set_int(text: &str, table: &str, key: &str, value: i64) -> Option<String>
 /// The merge-base with the integration line, because that is the commit the branch's own edits are
 /// diffed from; and `HEAD~1` when the merge-base IS `HEAD`, which is the case on the integration
 /// line itself, where "what this branch changed" is what the last commit changed.
+///
+/// A PLANT ANSWERS THIS BEFORE `git` IS EVER ASKED. `overlay_command("base-ref")` — reachable
+/// through the per-call overlay or the process-wide ambient one — is what lets a self-test (or a
+/// runner that ships its own answer instead of a working `git`) name the commit outright: no
+/// working tree can be shown to have no history by asking THIS function to fail, because it never
+/// has to ask `git` at all when the answer is already known.
 pub fn base_ref(cx: &Ctx) -> Result<String, String> {
+    if let Some(planted) = cx.overlay_command("base-ref") {
+        return Ok(planted);
+    }
     let head = cx.git(&["rev-parse", "HEAD"])?.trim().to_string();
     if cx.git_ref_resolves(INTEGRATION_REF) {
         if let Ok(mb) = cx.git(&["merge-base", "HEAD", INTEGRATION_REF]) {

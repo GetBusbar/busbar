@@ -58,6 +58,24 @@ pub struct Base {
 }
 
 impl Base {
+    /// A `Base` built by hand rather than read out of a commit — for [`plant`], which is how a
+    /// self-test proves this module's ANSWER is what a rule reacts to, deliberately naming a base
+    /// no real commit carries so a pass-through to real `git` would be caught rather than mistaken
+    /// for the plant.
+    pub fn synthetic(
+        commit: impl Into<String>,
+        shipped: impl IntoIterator<Item = (String, String)>,
+        test: impl IntoIterator<Item = (String, String)>,
+    ) -> Base {
+        Base {
+            commit: commit.into(),
+            shipped: shipped.into_iter().collect(),
+            test: test.into_iter().collect(),
+            registry: String::new(),
+            registry_present: true,
+        }
+    }
+
     /// Does the base's build graph already carry this edge, in this half?
     pub fn has_edge(&self, from: &str, to: &str, half_word: &str) -> bool {
         let set = if half_word == "test" {
@@ -74,6 +92,20 @@ type Cache = Mutex<BTreeMap<String, Result<std::sync::Arc<Base>, String>>>;
 fn cache() -> &'static Cache {
     static C: OnceLock<Cache> = OnceLock::new();
     C.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// SEED THE CACHE WITH AN ALREADY-KNOWN ANSWER, for a `Ctx` whose `git` may not work at all.
+///
+/// `read` computes `commit` via [`base_ref`] before it ever touches the cache, so a plant is only
+/// reachable when `base_ref` itself answers from a plant too (`overlay_command("base-ref")`) —
+/// the two are meant to be planted together. Once both are, `read(cx)` never calls [`build`], and
+/// [`build`]'s own `git ls-tree`/`git show` calls — which [`Ctx`]'s overlay does not reach, because
+/// they read a HISTORICAL tree and not the working one — are never made.
+pub fn plant(cx: &Ctx, base: Base) {
+    let key = format!("{}\u{0}{}", cx.root().display(), base.commit);
+    if let Ok(mut m) = cache().lock() {
+        m.insert(key, Ok(std::sync::Arc::new(base)));
+    }
 }
 
 /// THE BASE, READ ONCE PER (repository root, base commit).

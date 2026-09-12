@@ -281,6 +281,18 @@ impl Env {
 pub struct Ctx {
     root: PathBuf,
     overlay: Option<Arc<Overlay>>,
+    /// A SECOND overlay that SURVIVES [`Ctx::with_overlay`], unlike `overlay` itself.
+    ///
+    /// `with_overlay` REPLACES `overlay` wholesale — that is the point of it, a fresh per-plant
+    /// view over an untouched base — but it means a plant has no way to carry forward anything
+    /// declared before it. A self-test that wants EVERY case to see the same synthetic answer for
+    /// a derived input (kind-isolation's synthetic merge-base is the first one) would otherwise
+    /// have to thread it through every single plant by hand, in a file with a hundred of them.
+    /// `ambient` is that answer: set once, read by [`Ctx::overlay_command`], [`Ctx::git_show`] and
+    /// [`Ctx::git_ref_resolves`] AFTER the per-call overlay and BEFORE the real command, so a
+    /// plant may still override it and an ordinary run that never calls [`Ctx::with_ambient`]
+    /// never sees it at all.
+    ambient: Option<Arc<Overlay>>,
     scratch: PathBuf,
     env: Env,
 }
@@ -305,6 +317,7 @@ impl Ctx {
         Ok(Ctx {
             root,
             overlay: None,
+            ambient: None,
             scratch,
             env: Env::capture(),
         })
@@ -319,6 +332,7 @@ impl Ctx {
         Ok(Ctx {
             root: root.into(),
             overlay: None,
+            ambient: None,
             scratch,
             env: Env::capture(),
         })
@@ -356,10 +370,23 @@ impl Ctx {
         self
     }
 
-    /// A FRESH context with this overlay. The base is untouched.
+    /// A FRESH context with this overlay. The base is untouched. `ambient` survives — it is
+    /// carried by `..self.clone()` — because it is the thing this constructor exists to leave
+    /// alone: a per-case plant and the answer every case shares are two different lifetimes.
     pub fn with_overlay(&self, overlay: Overlay) -> Ctx {
         Ctx {
             overlay: Some(Arc::new(overlay)),
+            ..self.clone()
+        }
+    }
+
+    /// A FRESH context with this AMBIENT overlay, read by [`Ctx::overlay_command`],
+    /// [`Ctx::git_show`] and [`Ctx::git_ref_resolves`] whenever a later [`Ctx::with_overlay`] call
+    /// (or none at all) does not itself answer the question. See the field's own doc for why this
+    /// is a second slot rather than a merge into `overlay`.
+    pub fn with_ambient(&self, ambient: Overlay) -> Ctx {
+        Ctx {
+            ambient: Some(Arc::new(ambient)),
             ..self.clone()
         }
     }
@@ -370,9 +397,13 @@ impl Ctx {
 
     /// A canned derived input, when one has been planted. The gates that delegate a measurement to
     /// another instrument read it through here, so a self-test can plant that instrument's ANSWER
-    /// — an overlay lives in this process and a subprocess cannot see it.
+    /// — an overlay lives in this process and a subprocess cannot see it. The per-call overlay
+    /// wins over the ambient one, so a case that plants its own answer is never overruled by it.
     pub fn overlay_command(&self, key: &str) -> Option<String> {
-        self.overlay().and_then(|o| o.command(key)).cloned()
+        self.overlay()
+            .and_then(|o| o.command(key))
+            .or_else(|| self.ambient.as_deref().and_then(|o| o.command(key)))
+            .cloned()
     }
 
     pub fn abs(&self, rel: impl AsRef<Path>) -> PathBuf {
@@ -542,11 +573,40 @@ impl Ctx {
     ///
     /// A tracked path is never reported by `git check-ignore` (it consults the index), so the
     /// answer is exactly the population that is both ignored and live.
-    pub fn ignored(&self, rels: &[String]) -> std::collections::BTreeSet<String> {
-        gitp::check_ignore(&self.root, rels)
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
+    ///
+    /// EACH PATH MAY BE ANSWERED FROM A PLANT FIRST — `check-ignore:<path>` in the overlay or the
+    /// ambient overlay, `"1"` for ignored and anything else for not — which is what lets a
+    /// self-test assert this rule's behaviour without a real repository to ask, and what will let
+    /// a runner that cannot exec `git` supply the answer some other way. A path with no plant falls
+    /// through to `git check-ignore` exactly as before.
+    ///
+    /// A PATH THAT FALLS THROUGH AND FINDS NO WORKING `git` IS A REFUSAL, NOT A SILENT PASS: the
+    /// caller here is asking "is this file invisible to every scanner?", and answering "no" because
+    /// the oracle could not be asked is the one answer that is never honest. See
+    /// [`Self::drop_ignored`] for the walker's own, differently-scoped use of the same oracle.
+    pub fn ignored(&self, rels: &[String]) -> Result<std::collections::BTreeSet<String>, String> {
+        let mut out = std::collections::BTreeSet::new();
+        let mut unplanted: Vec<String> = Vec::new();
+        for r in rels {
+            match self.overlay_command(&format!("check-ignore:{r}")) {
+                Some(v) => {
+                    if v == "1" {
+                        out.insert(r.clone());
+                    }
+                }
+                None => unplanted.push(r.clone()),
+            }
+        }
+        if unplanted.is_empty() {
+            return Ok(out);
+        }
+        match gitp::check_ignore(&self.root, &unplanted) {
+            Ok(v) => {
+                out.extend(v);
+                Ok(out)
+            }
+            Err(e) => Err(format!("`git check-ignore` did not run: {e}")),
+        }
     }
 
     fn drop_ignored(&self, rels: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -635,6 +695,11 @@ impl Ctx {
                 return Ok(out.clone());
             }
         }
+        if let Some(a) = &self.ambient {
+            if let Some(out) = a.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
         if self.planted_ref(r).is_some() {
             return Err(format!(
                 "ref '{r}' resolves but carries no {path} (planted)"
@@ -643,11 +708,13 @@ impl Ctx {
         gitp::git(&self.root, &["show", &format!("{r}:{path}")])
     }
 
-    /// The overlay's answer for `git-ref:<r>`, if it planted one.
+    /// The overlay's answer for `git-ref:<r>`, if it planted one — the per-call overlay first,
+    /// the ambient one otherwise, so a case may still override a shared answer.
     fn planted_ref(&self, r: &str) -> Option<&str> {
-        self.overlay()?
-            .commands
-            .get(&format!("git-ref:{r}"))
+        let key = format!("git-ref:{r}");
+        self.overlay()
+            .and_then(|o| o.commands.get(&key))
+            .or_else(|| self.ambient.as_deref().and_then(|a| a.commands.get(&key)))
             .map(String::as_str)
     }
 

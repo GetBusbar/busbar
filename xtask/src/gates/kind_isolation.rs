@@ -5630,6 +5630,60 @@ impl Gate for KindIsolationGate {
                 ],
             ));
 
+            // THE REGISTRY AND THE BASE ARE READ FROM THE WORKING TREE; HISTORY MAY BE ABSENT.
+            //
+            // KI-ENV-1: a Latchkey runner packs a tree with no `.git`, and this gate judges the
+            // tree it is given — a reader that quietly takes a DIFFERENT answer when history is
+            // unavailable is the gate defect, not the runner. The case above proves the registry
+            // plant reaches `bad-count` with no `git` involved at all (it never was). This case
+            // proves the OTHER two readers a Latchkey run depends on — the merge-base and the
+            // ignore oracle — take their answer from a PLANT and never fall through to a `git` this
+            // `Ctx` could still, in this process, actually run: the planted base names an edge set
+            // the real repository's history could not possibly answer with (empty), and the
+            // planted ignore verdict calls a real, live source path ignored. If either reader
+            // quietly preferred `git` over the plant, the real answer — not this one — would show.
+            const PLANTED_BASE_SHA: &str = "0000000000000000000000000000000000ki01";
+            let mut amb = Overlay::new();
+            amb.set_command("base-ref", PLANTED_BASE_SHA);
+            amb.set_command(
+                "check-ignore:crates/busbar-kernel/src/ki_env_1_probe.rs",
+                "1",
+            );
+            let ambient_cx = cx.with_ambient(amb);
+            base::plant(&ambient_cx, base::Base::synthetic(PLANTED_BASE_SHA, [], []));
+            report.push(prove_rows_red(
+                &ambient_cx,
+                self,
+                "the merge-base is answered by a plant, never by falling through to `git`, when \
+                 one is planted",
+                &[ROW_DEPS],
+                Overlay::new(),
+                &["new-forbidden-edge", &PLANTED_BASE_SHA[..8]],
+            ));
+            let mut hidden_plant = Overlay::new();
+            hidden_plant.set(
+                "crates/busbar-kernel/src/ki_env_1_probe.rs",
+                "pub fn ki_env_1_probe() {}\n",
+            );
+            hidden_plant.set(
+                "crates/busbar-kernel/src/lib.rs",
+                format!(
+                    "{}\n#[path = \"ki_env_1_probe.rs\"]\npub mod ki_env_1_probe;\n",
+                    cx.read("crates/busbar-kernel/src/lib.rs")
+                        .unwrap_or_default()
+                        .trim_end()
+                ),
+            );
+            report.push(prove_rows_red(
+                &ambient_cx,
+                self,
+                "the ignore oracle is answered by a plant, never by falling through to `git`, when \
+                 one is planted",
+                &[ROW_INPUTS],
+                hidden_plant,
+                &["hidden-source", "ki_env_1_probe", "git check-ignore"],
+            ));
+
             // `to = "*"` IS A LEGAL TRAILING GLOB AND A BLANKET AMNESTY. `covers` does
             // `dep.starts_with("")`, which is true of every crate in the tree: one character turns
             // the drain's exemption into permission for every legacy -> unit, legacy -> plane,

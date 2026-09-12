@@ -587,9 +587,23 @@ fn hidden_sources(
         .iter()
         .flat_map(|c| c.candidates.iter().cloned())
         .collect();
-    let ignored = cx.ignored(&asked);
-
     let mut out = Vec::new();
+    // A GIT-LESS RUN IS NOT AN INNOCENT RUN: this rule's whole subject is "is this file invisible
+    // to every scanner", and `git check-ignore` failing outright answers that with silence, not
+    // with "no". A plant may still answer per-path (see `Ctx::ignored`); only an oracle that is
+    // BOTH unplanted AND unable to run refuses the row, named, rather than passing it by default.
+    let ignored = match cx.ignored(&asked) {
+        Ok(set) => set,
+        Err(e) => {
+            out.push(format!(
+                "hidden-source\tthe compiled-vs-scanned check\tthe ignore oracle did not run: {e}. This rule \
+                 exists to catch a file the compiler links and no scanner reads because a \
+                 `.gitignore` line retired it; an oracle that cannot be asked cannot clear that, so \
+                 it refuses rather than assumes nothing is hidden. {MAKE_A_NEW_KIND}"
+            ));
+            BTreeSet::new()
+        }
+    };
     for c in &compiled {
         for cand in &c.candidates {
             if ignored.contains(cand) {
