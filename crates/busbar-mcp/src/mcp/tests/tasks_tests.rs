@@ -524,7 +524,7 @@ async fn tasks_get_answers_through_the_task_store_face() {
         capabilities: &capabilities,
         headers: &headers,
         scope: None,
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::super::method::Carrier::document(0),
     };
 
     let response = crate::mcp::method::dispatch(
@@ -584,7 +584,7 @@ async fn tasks_get_refuses_an_undeclared_capability_before_reading_the_store() {
         capabilities: &capabilities,
         headers: &headers,
         scope: None,
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::super::method::Carrier::document(0),
     };
 
     let response = crate::mcp::method::dispatch(
@@ -659,7 +659,7 @@ impl TaskCtxFixture {
             capabilities: &self.capabilities,
             headers: &self.headers,
             scope: None,
-            carrier: crate::mcp::node::Carrier::document(0),
+            carrier: super::super::method::Carrier::document(0),
         }
     }
 }

@@ -2574,8 +2574,8 @@ because = "THE MCP NODE's mount point, which is still in the retiring crate: `bu
 [[gate.ceiling_raises]]
 key = "cell.busbar.plane.count"
 file = "qa/kind-isolation.toml"
-by = 165
-because = "THE MCP NODE naming the plane it mounts: `busbar_plane_mcp::{claims, ops, McpPlane}` — the claim vocabulary the arrival step judges a carrier against, the method table (`ops::row_for`) the operation class is read off so this file parses nothing and is not a second grammar, and the plane type whose `McpPlane::route` returns the plan the route step walks. The bulk is the bare instance id `mcp` in the node, its cells, the mount in main.rs and the module line in root/mod.rs; the neighbouring planes appear only where the node's cells assert that a2a and llm are NOT this one."
+by = 180
+because = "THE MCP NODE naming the plane it mounts, and the two COMPOSED STACKS the drain moved into it: `busbar_plane_mcp::{claims, ops, McpPlane}` — the claim vocabulary the arrival step judges a carrier against, the method table (`ops::row_for`) the operation class is read off so this file parses nothing and is not a second grammar, and the plane type whose `McpPlane::route` returns the plan the route step walks. The bulk is the bare instance id `mcp` in the node, its cells, the mount in main.rs and the module line in root/mod.rs; the neighbouring planes appear only where the node's cells assert that a2a and llm are NOT this one. Fifteen of the 180 arrived in the DRAIN: `DOCUMENT_CHAIN` and `PIPE_CHAIN` and the surface-to-claim pairing were held in the retiring crate, which was a crate that is being deleted holding a fact about what THIS deployment composed. They are the same lines by identity, one file over, and `busbar-mcp x plane` is back at its base against them, not one word above it."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.plugin-tooling.count"
@@ -2592,8 +2592,8 @@ because = "THE MCP NODE's single neutral-values spelling: `busbar_substrate_valu
 [[gate.ceiling_raises]]
 key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
-by = 22
-because = "THE MCP NODE's CELLS naming the wires a class arrives over: every hit is in `crates/busbar/src/root/tests/node_mcp.rs` and none is in the node itself. The arrival step refuses a record whose composed stack does not END at the claim that matched, and the only way to assert that is to write the stacks down — stdio for the pipe surface, tcp/tls/http for the document one, and ws where a cell asserts a stack this plane does not serve. A cell that named no wire would be asserting a pairing with nothing to pair."
+by = 38
+because = "THE MCP NODE's CELLS naming the wires a class arrives over, and the two composed stacks the drain moved in beside them: every hit is in `crates/busbar/src/root/tests/node_mcp.rs` and none is in the node itself. The arrival step refuses a record whose composed stack does not END at the claim that matched, and the only way to assert that is to write the stacks down — stdio for the pipe surface, tcp/tls/http for the document one, and ws where a cell asserts a stack this plane does not serve. A cell that named no wire would be asserting a pairing with nothing to pair. Sixteen of the 38 are the DRAIN: `DOCUMENT_CHAIN` (`tcp`, `tls`, the document claim) and `PIPE_CHAIN` (the pipe claim) and the surface-to-claim match, moved by identity out of the retiring crate — what is under a surface and what is over it is what a composition wired, and `busbar-mcp x transport` falls to its base against them."
 
 [[gate.ceiling_raises]]
 key = "cell.busbar.unit.count"

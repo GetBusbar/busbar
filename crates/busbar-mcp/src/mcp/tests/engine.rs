@@ -32,7 +32,7 @@ pub(crate) fn engine() -> &'static dyn EngineTestKit {
 /// gap. The double admits everything and runs the document: what this crate's batteries judge is the
 /// BYTES, and the steps the real node adds are the composition root's to prove.
 pub fn test_app() -> Box<dyn TestAppKit> {
-    crate::mcp::node::double::install_test_node();
+    super::method::double::install_test_node();
     engine().new_app()
 }
 

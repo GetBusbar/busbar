@@ -51,7 +51,9 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_plane_mcp::jsonrpc;
+use busbar_api::{PlaneRequestCtx, VirtualKey};
+
+use busbar_plane_mcp::{jsonrpc, ops};
 use busbar_substrate::catalogue::CatalogueItem;
 
 use super::callerask::{self, AskDecision, Bind, Retry};
@@ -96,7 +98,7 @@ pub(crate) struct Ctx<'a> {
     /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// The caller's resolved governance key. `None` when governance is disabled.
-    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
+    pub(crate) gov: &'a PlaneRequestCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
     /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
@@ -130,7 +132,7 @@ pub(crate) struct Ctx<'a> {
     /// the time a method is named the frame has already been parsed and the carrier is out of scope.
     /// Carried rather than re-read, because a second reading of "which transport is this" is a
     /// second answer.
-    pub(crate) carrier: super::node::Carrier,
+    pub(crate) carrier: Carrier,
 }
 
 impl Ctx<'_> {
@@ -181,7 +183,6 @@ pub(crate) async fn dispatch(
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Option<Response> {
-    use busbar_plane_mcp::ops;
     let row = ops::row_for(method)?;
     if row.sender != ops::Sender::Client {
         return None;
@@ -192,13 +193,13 @@ pub(crate) async fn dispatch(
     // the arm where it settled. A class the node has not taken answers `None` here and falls through
     // to the table unchanged, which is what makes this a move of one class at a time rather than a
     // switch on the whole surface.
-    if let Some(answer) = super::node::served(ctx, method, params, id.clone()) {
+    if let Some(answer) = served(ctx, row.op, method, params, id.clone()) {
         return Some(answer);
     }
     Some(match row.op {
         ops::OP_DISCOVER => discover(ctx, id),
         // `ops::OP_TOOLS_LIST` HAS NO ARM. The class is served through the composition's node —
-        // `super::node::served`, consulted before this table — so the arm that answered it here
+        // `served`, consulted before this table — so the arm that answered it here
         // with no door, no budget, no audit row and no meter is DELETED rather than kept beside it.
         // Its document is still this crate's and is `tools_list_document` below; what left is the
         // serving.
@@ -431,12 +432,12 @@ fn tasks_cancel(
 ///
 /// IT IGNORES BOTH THE CONTEXT AND THE PARAMETERS, and that is the method rather than the lift: the
 /// answer this class gives is a CONSTANT — no completions, `hasMore: false` — so it reads no record
-/// and consults no caller grant. That constant is also why this class's stdio before/after is the
+/// and consults no caller grant. That constant is also why this class's pipe-surface before/after is
 /// WEAKEST of the thirteen and is not what proves the move here: a constant answer is byte-identical
 /// whether the node served it, the arm served it, or nothing did. What proves it is the structural
 /// cell (a class in `document_for` has no arm, by construction) and the capped-door run, where the
 /// second and third frames are refused — an outcome only the node's admission step can produce.
-pub(in crate::mcp) fn completion_complete_document(
+fn completion_complete_document(
     _ctx: &Ctx<'_>,
     _params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -478,25 +479,13 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     )
 }
 
-/// **ONE CLASS'S DOCUMENT**, as the composition's node invokes it.
-///
-/// The shape every byte source in `super::node`'s table has, and the reason it is a type alias
-/// rather than a closure per row: what the node is handed must be the SAME thing for every class, or
-/// the table is thirteen signatures with one pairing each.
-///
-/// `params` and `id` travel with it because a document is an answer to a request and not to a class:
-/// the identifier is the one the envelope read (never an echo of the caller's own spelling beyond
-/// it), and the parameters are what the classes that take them read.
-pub(in crate::mcp) type ClassDocument =
-    fn(&Ctx<'_>, Option<&serde_json::Value>, Option<serde_json::Value>) -> Response;
-
 /// `tools/list`'s document, in the shape the node's table holds.
 ///
 /// A lift and nothing else: it forwards to [`tools_list`], which is byte for byte the body that
 /// answered this class when the dispatch table still had an arm for it. The class takes no
 /// parameters, and saying so by ignoring the argument is the declaration — a class that read them
 /// would be reading a member this method has none of.
-pub(in crate::mcp) fn tools_list_document(
+fn tools_list_document(
     ctx: &Ctx<'_>,
     _params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -550,7 +539,7 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// byte-identity is provable rather than asserted — there is one body, and what changed is the path
 /// that reaches it. The class takes no parameters, and saying so by ignoring the argument is the
 /// declaration.
-pub(in crate::mcp) fn prompts_list_document(
+fn prompts_list_document(
     ctx: &Ctx<'_>,
     _params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -695,7 +684,7 @@ fn prompts_get(
 /// table still had an arm for it. That sameness is the whole of why the byte-identity is provable
 /// rather than asserted — there is one body, and what changed is the path that reaches it. The
 /// class takes no parameters, and saying so by ignoring the argument is the declaration.
-pub(in crate::mcp) fn resources_list_document(
+fn resources_list_document(
     ctx: &Ctx<'_>,
     _params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -732,7 +721,7 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// sameness is the whole of why the byte-identity is provable rather than asserted — there is one
 /// body, and what changed is the path that reaches it. The class takes no parameters, and saying so
 /// by ignoring the argument is the declaration.
-pub(in crate::mcp) fn resources_templates_list_document(
+fn resources_templates_list_document(
     ctx: &Ctx<'_>,
     _params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
@@ -2672,6 +2661,362 @@ fn error(
     data: Option<serde_json::Value>,
 ) -> Response {
     super::envelope::error_response(status, id, code, message, data)
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// THE SEAM THE COMPOSITION SERVES A CLASS THROUGH
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// It lives HERE, at the bottom of the dispatch table, and no longer in a file of its own. That is
+// the drain: a seam in its own module needed its own spelling of everything it touched, and every
+// one of those spellings was a RETIRING crate learning a word it did not know before. What is left
+// is written in the vocabulary this file already had — and what the seam used to know about wires,
+// claims and composed stacks now belongs to the composition, which is the one kind entitled to
+// know it.
+//
+// ## What changed, and what did not
+//
+// Every one of this protocol's thirteen client classes used to be answered by an arm of
+// [`dispatch`]'s `match`: the arm read the catalogue (or the task store, or the upstream) and
+// returned a document. No door was asked, no budget was drawn, no audit row was sealed and no meter
+// moved, because a `match` arm is not a serving path — it is a function call.
+//
+// A class in [`document_for`]'s table no longer has an arm. It is walked through the composition
+// root's node instead: arrival over the claim the composition pairs with this surface, decode
+// against the plane's own method table, authenticate, verify, approve, admit at the node's door,
+// route over the legs the plane's own plan names, meter, and both audit doors. The BYTES are
+// unchanged and are produced by the same function that produced them before — that is what makes
+// the move provable — and the node invokes it on the one arm where the loop settled.
+//
+// ## Why the byte source is a table here rather than an argument there
+//
+// Because it is temporary. Each of these documents is a byte source that the plan's own lines move
+// plane-side (the catalogue projections, the answer framing, the task-store reads), and when a
+// document leaves this crate its row leaves this table. One table that shrinks is readable; a
+// closure threaded from each of thirteen call sites is thirteen places to get the pairing wrong.
+//
+// ## The one production implementor, and the one double
+//
+// [`install`] is called by the composition root at boot, with the root's own node. Nothing else may
+// call it and nothing else can: a plane crate cannot name the root. This crate's own batteries
+// install an ADMIT-EVERYTHING double, because what they judge is the BYTES a class puts on the wire
+// — which is this crate's half — while what the node adds is the STEPS, which are the root's and
+// are judged by the root's cells and by the end-to-end battery against the real binary. A double
+// that decided anything would be this crate marking its own governance homework.
+
+/// **WHICH OF THIS PROTOCOL'S TWO SURFACES A REQUEST ARRIVED ON.**
+///
+/// The surface and NOT the wire, and that is the drain in one type. A surface is this protocol's own
+/// statement about itself — one is a request document and one is a pipe — while the composed stack a
+/// surface stands on (what is under it, what is over it, and which claim it is matched by) is the
+/// COMPOSITION's, because a deployment is what decides it. This crate says which of its two doors a
+/// frame came through and stops there; the node pairs that with the claim and the stack its arrival
+/// step judges. Before the drain this enum was two transport spellings and two `&'static` chains
+/// held in a retiring crate, which was this crate holding a fact it does not own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// ONE REQUEST IN, ONE RESPONSE OUT, over a connection the process accepted.
+    Document,
+    /// THIS PROCESS'S OWN standard input and output. There is no connection under it.
+    Pipe,
+}
+
+/// **THE TRANSPORT'S OWN HALF of a [`ClassRequest`]**, supplied by each surface at its dispatch.
+///
+/// Separate from the request because the other half — who is asking, what the method is — is the
+/// envelope's and is read once, in one place. This is the part only the carrier can know: which of
+/// the two surfaces it is, and how many bytes actually arrived.
+///
+/// There are two constructors and no literal one. A caller free to pair a surface with someone
+/// else's byte count could hand the arrival step a record from one door under the other's length,
+/// and the unit would refuse at step zero for a reason no operator could read.
+#[derive(Debug, Clone, Copy)]
+pub struct Carrier {
+    surface: Surface,
+    request_bytes: u64,
+}
+
+impl Carrier {
+    /// The DOCUMENT surface's carrier — one request in, one response out.
+    #[must_use]
+    pub fn document(request_bytes: u64) -> Self {
+        Carrier {
+            surface: Surface::Document,
+            request_bytes,
+        }
+    }
+
+    /// The PIPE surface's carrier — this process's own standard input and output.
+    #[must_use]
+    pub fn pipe(request_bytes: u64) -> Self {
+        Carrier {
+            surface: Surface::Pipe,
+            request_bytes,
+        }
+    }
+
+    /// Which of the two surfaces this carrier's requests arrive on.
+    #[must_use]
+    pub fn surface(&self) -> Surface {
+        self.surface
+    }
+
+    /// The length of the frame as it arrived.
+    #[must_use]
+    pub fn request_bytes(&self) -> u64 {
+        self.request_bytes
+    }
+}
+
+/// What the composition already knew about one arriving request, as the seam hands it over.
+///
+/// Every field is a fact the transport or the neutral ingress reader established before this class
+/// was named. The node reads them and asks the plane's own table what the method means; nothing here
+/// is a judgement.
+pub struct ClassRequest<'a> {
+    /// The method name, exactly as the neutral ingress reader read it off the envelope.
+    pub method: &'a str,
+    /// The whole request document's length, in the bytes it arrived as — never a re-serialisation of
+    /// the parsed value, which is a different number and would price a different request.
+    pub request_bytes: u64,
+    /// The caller's resolved key, or `None` on a deployment with no data-plane chain.
+    pub key: Option<&'a VirtualKey>,
+    /// Which of this protocol's two surfaces the frame arrived on. The composition pairs it with the
+    /// claim that matched and the composed stack under it; this crate does not know either.
+    pub surface: Surface,
+    /// Whether the principal is a bound session's rather than these bytes'.
+    pub from_session: bool,
+}
+
+/// Why the node did not serve a class it took.
+///
+/// The loop's own refusal, in the contract's spelling, or the absence of an answer at all. Both are
+/// rendered by this crate, because how a refusal reads on this wire is this protocol's statement and
+/// not the root's.
+#[derive(Debug)]
+pub enum Denied {
+    /// The loop stopped the unit at a step.
+    Refused(busbar_contract::unit::Refusal<'static>),
+    /// The unit ended without an answer and without a refusal.
+    Unavailable,
+}
+
+/// **THE COMPOSITION'S SERVING PATH**, as this plane reaches it.
+///
+/// One method, and the shape is the whole of the contract between the two crates: the node is handed
+/// what arrived and the document the class already had, it walks the unit, and it invokes the
+/// document on the one arm where the loop settled. The node never sees the bytes it returns and this
+/// crate never sees the steps it passed.
+pub trait ServingNode: Send + Sync {
+    /// Walk one class through the loop and answer with `answer`'s document where it settled.
+    ///
+    /// # Errors
+    ///
+    /// The loop refused the unit at a step, or the unit ended without an answer.
+    fn serve(
+        &self,
+        request: &ClassRequest<'_>,
+        answer: &dyn Fn() -> Response,
+    ) -> Result<Response, Denied>;
+}
+
+/// The node the composition root installed, if it has.
+static NODE: std::sync::OnceLock<&'static dyn ServingNode> = std::sync::OnceLock::new();
+
+/// **INSTALL THE COMPOSITION'S NODE.** Called once, at boot, by the composition root and by nothing
+/// else.
+///
+/// A second call is ignored rather than a panic: two nodes is two doors and two books, and the first
+/// one is the one every request before the second call was already served through — so the honest
+/// answer is to keep it and let the boot that tried twice be the bug it is.
+pub fn install(node: &'static dyn ServingNode) {
+    let _ = NODE.set(node);
+}
+
+/// Whether a node is bound — for a caller reporting what it is running under.
+#[must_use]
+pub fn installed() -> bool {
+    NODE.get().is_some()
+}
+
+/// **ONE CLASS'S DOCUMENT**, as the composition's node invokes it.
+///
+/// The shape every byte source in [`document_for`]'s table has, and the reason it is a type alias
+/// rather than a closure per row: what the node is handed must be the SAME thing for every class, or
+/// the table is thirteen signatures with one pairing each.
+///
+/// `params` and `id` travel with it because a document is an answer to a request and not to a class:
+/// the identifier is the one the envelope read (never an echo of the caller's own spelling beyond
+/// it), and the parameters are what the classes that take them read.
+pub(super) type ClassDocument =
+    fn(&Ctx<'_>, Option<&serde_json::Value>, Option<serde_json::Value>) -> Response;
+
+/// **THE CLASSES THE NODE HAS TAKEN, and the document each of them answers with.**
+///
+/// One row per class served through the composition. A class with no row here still has its arm in
+/// [`dispatch`] and is answered the way it always was; a class with a row here has NO arm, and this
+/// is where its document is named.
+///
+/// `tools/list` is the first, and it is first because it is money-free: it reaches two of this
+/// plane's own records and no upstream, so nothing is priced, nothing is dialled and no grant is
+/// spent. `resources/list` is the second, `prompts/list` the third and `resources/templates/list`
+/// the fourth on the same measurement — one record walk each, no upstream — and
+/// `completion/complete` is the fifth on a stronger version of it, since its answer is a constant
+/// and reads no record at all. The order the rest follow is the plan's (§14.3), money-free first and
+/// `tools/call` last.
+pub(super) fn document_for(op: busbar_contract::ids::OpClassId) -> Option<ClassDocument> {
+    if op == ops::OP_TOOLS_LIST {
+        return Some(tools_list_document);
+    }
+    if op == ops::OP_RESOURCES_LIST {
+        return Some(resources_list_document);
+    }
+    if op == ops::OP_PROMPTS_LIST {
+        return Some(prompts_list_document);
+    }
+    if op == ops::OP_RESOURCE_TEMPLATES_LIST {
+        return Some(resources_templates_list_document);
+    }
+    if op == ops::OP_COMPLETION {
+        return Some(completion_complete_document);
+    }
+    None
+}
+
+/// Serve one class through the composition, where the node has taken it.
+///
+/// `None` is "this class is not served here", which is every class with an arm still in the dispatch
+/// table — so the table runs after this and is unchanged for them.
+///
+/// A class the node HAS taken, on a build with no node installed, answers `None` as well, and that
+/// is deliberate rather than a fallback: the dispatch arm is gone, so the method reads as
+/// unimplemented and says so loudly. Answering it here would be a second serving path beside the
+/// node — the exact thing moving the class was for. Every build that carries this plane carries the
+/// node (the plane's own feature is what turns the root's on), so the only way to reach it is a test
+/// binary that has not
+/// installed its double.
+fn served(
+    ctx: &Ctx<'_>,
+    op: busbar_contract::ids::OpClassId,
+    method: &str,
+    params: Option<&serde_json::Value>,
+    id: Option<serde_json::Value>,
+) -> Option<Response> {
+    let document = document_for(op)?;
+    let node = NODE.get()?;
+    let carrier = ctx.carrier;
+    let request = ClassRequest {
+        method,
+        request_bytes: carrier.request_bytes,
+        key: ctx.gov.key(),
+        surface: carrier.surface,
+        // Every claim of this plane presents its credential once and carries no second round, so a
+        // unit on the pipe surface is one whose principal was resolved at the session's open and a
+        // unit on the document surface is one whose credential arrived with these bytes. The surface
+        // is what says which, because the surface is what the session belongs to.
+        from_session: matches!(carrier.surface, Surface::Pipe),
+    };
+    Some(
+        match node.serve(&request, &|| document(ctx, params, id.clone())) {
+            Ok(answer) => answer,
+            // THE LOOP'S REFUSAL, on this wire. The step and the reason are the loop's; the code,
+            // the status and the sentence are this protocol's, which is why the rendering is here.
+            Err(Denied::Refused(refusal)) => refused(id, &refusal),
+            Err(Denied::Unavailable) => super::envelope::error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                id,
+                crate::codec::CODE_INTERNAL,
+                "this request opened a unit that ended without an answer. Nothing was charged.",
+                None,
+            ),
+        },
+    )
+}
+
+/// **A REFUSAL THE LOOP RAISED, on this wire.**
+///
+/// The STEP is what decides the status, and it decides it because the step is the only thing about a
+/// refusal a caller is owed: which gate said no. The reason is deliberately NOT rendered — a reason
+/// names a cap, a lane or a rate, and a refusal that told a caller about the deployment's money is
+/// exactly the leak the unpriced refusal's own documentation forbids. What goes out is the gate and
+/// the fact that nothing was charged.
+///
+/// `-32000` for all of them: the codec publishes one code for "busbar refused this", and a code per
+/// step would be this plane inventing a vocabulary the schema does not carry.
+fn refused(
+    id: Option<serde_json::Value>,
+    refusal: &busbar_contract::unit::Refusal<'_>,
+) -> Response {
+    use busbar_contract::unit::Step;
+    let (status, sentence) = match refusal.step {
+        // A body this plane does not carry. The same class of answer the envelope's own `_meta`
+        // checks give, because it is the same class of defect.
+        Step::Arrival | Step::Decode => (
+            StatusCode::BAD_REQUEST,
+            "this request could not be read as a call on this server.",
+        ),
+        // No admitted identity. `401` is the door's answer on every transport of this plane.
+        Step::Authenticate => (
+            StatusCode::UNAUTHORIZED,
+            "this request carries no credential this server admits.",
+        ),
+        // An identity that is not permitted what it asked for. Two steps, one answer: whether the
+        // destination was refused or the grant was short, the caller may not do this.
+        Step::Verify | Step::Approve => (
+            StatusCode::FORBIDDEN,
+            "this credential is not permitted the operation it named.",
+        ),
+        // The door. `429` and never `402`: what the door says is "not now", and the caller's own
+        // retry is the remedy.
+        Step::Admit => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "this request was not admitted. Nothing was charged.",
+        ),
+        // Everything past the door. The unit ran and stopped, and the caller is owed the fact
+        // rather than the internals.
+        Step::Route | Step::Meter | Step::Audit | Step::Encode => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this request was admitted and could not be completed.",
+        ),
+    };
+    super::envelope::error_response(status, id, CODE_REFUSED, sentence, None)
+}
+
+/// **THE ADMIT-EVERYTHING DOUBLE** this crate's own batteries are served through.
+///
+/// Behind `test-support`, which is exactly the feature that puts an engine in the closure for this
+/// crate's App-building batteries — so the double exists precisely when there are batteries that
+/// need one, and never in a shipped binary.
+///
+/// It runs the document and nothing else, which is the division of labour the seam exists for: what
+/// this crate owns is the BYTES a class puts on the wire, and those are unchanged by the move — that
+/// is the whole claim. What the real node adds is the STEPS, and a double that pretended to make
+/// step decisions would be this crate marking its own governance homework.
+///
+/// It is deliberately not configurable. A double with a "refuse" mode would invite a battery here to
+/// assert a refusal this crate does not decide; the refusal RENDERING, which this crate does own, is
+/// asserted off a refusal value with no node at all.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod double {
+    /// The double itself: every class admitted, every document run.
+    struct AdmitEverything;
+
+    impl super::ServingNode for AdmitEverything {
+        fn serve(
+            &self,
+            _request: &super::ClassRequest<'_>,
+            answer: &dyn Fn() -> axum::response::Response,
+        ) -> Result<axum::response::Response, super::Denied> {
+            Ok(answer())
+        }
+    }
+
+    /// Install it for this test binary. Idempotent, and called from the one place this crate's
+    /// batteries build an App.
+    pub(crate) fn install_test_node() {
+        static DOUBLE: AdmitEverything = AdmitEverything;
+        super::install(&DOUBLE);
+    }
 }
 
 #[cfg(all(test, feature = "test-support"))]

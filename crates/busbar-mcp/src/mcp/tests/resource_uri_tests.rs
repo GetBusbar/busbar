@@ -142,7 +142,7 @@ async fn call(
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
         scope: None,
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::super::method::Carrier::document(0),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

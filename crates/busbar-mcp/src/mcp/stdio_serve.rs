@@ -769,7 +769,7 @@ impl Session {
             // session may have rewritten to carry its logging floor. What the caller sent is what it
             // is priced on, and a level this session added on the caller's behalf is not the
             // caller's byte.
-            super::node::Carrier::pipe(arrived_bytes),
+            super::method::Carrier::pipe(arrived_bytes),
             value,
             id,
             method,

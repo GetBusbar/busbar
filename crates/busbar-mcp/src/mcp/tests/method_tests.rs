@@ -175,7 +175,7 @@ async fn call(
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
         scope: None,
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::Carrier::document(0),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await
@@ -411,7 +411,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
             capabilities: &ALL_CAPABILITIES,
             headers: &NO_HEADERS,
             scope: None,
-            carrier: crate::mcp::node::Carrier::document(0),
+            carrier: super::Carrier::document(0),
         };
         assert!(
             crate::mcp::method::dispatch(&ctx, m, Some(&serde_json::json!({})), None)
@@ -722,7 +722,7 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
         capabilities: &none,
         headers: &NO_HEADERS,
         scope: None,
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::Carrier::document(0),
     };
     let params = serde_json::json!({ "name": "fs_needs_sampling", "arguments": {} });
     let response = crate::mcp::method::dispatch(&ctx, "tools/call", Some(&params), Some(1.into()))
@@ -756,4 +756,156 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
         body.pointer("/result").is_none(),
         "a refused setup must not be reported as a tool RESULT: {body}"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// THE SEAM, FROM THIS CRATE'S SIDE
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+//
+// Which classes have left the dispatch table, what the carrier each surface supplies says, and the
+// double every other battery in this crate is served through. These cells arrived here in the drain
+// that took the seam out of a module of its own; not a line of what they assert moved with them.
+//
+// **What they do NOT judge, deliberately.** Whether the door admits, whether the budget is drawn,
+// whether the audit row is sealed — those are the composition root's. They are decided in
+// `crates/busbar/src/root/node_mcp.rs`, proved by the cells beside it in
+// `crates/busbar/src/root/tests/node_mcp.rs`, and proved again end to end by the battery that drives
+// the real binary over real pipes. A plane crate that asserted them would be marking its own
+// governance homework with a node it wrote itself.
+
+/// **THE CLASSES THAT HAVE LEFT THE DISPATCH TABLE**, and the seam is what answers them.
+///
+/// The structural half of the move, asserted where it cannot be faked: the node's own table names a
+/// document for this class, which is only true for a class whose arm is gone — `document_for`'s rows
+/// and `dispatch`'s arms are complements by construction, and a class in both would be two serving
+/// paths.
+#[test]
+fn the_moved_classes_are_served_through_the_node_and_no_longer_by_the_dispatch_table() {
+    assert!(
+        super::document_for(super::ops::OP_TOOLS_LIST).is_some(),
+        "tools/list is a class the node has taken, so its document is named in the node's table"
+    );
+    assert!(
+        super::document_for(super::ops::OP_RESOURCES_LIST).is_some(),
+        "resources/list is the second class the node has taken, so its document is named here too"
+    );
+    assert!(
+        super::document_for(super::ops::OP_PROMPTS_LIST).is_some(),
+        "prompts/list is the third class the node has taken, so its document is named here too"
+    );
+    assert!(
+        super::document_for(super::ops::OP_RESOURCE_TEMPLATES_LIST).is_some(),
+        "resources/templates/list is the fourth class the node has taken, so its document is here"
+    );
+    assert!(
+        super::document_for(super::ops::OP_COMPLETION).is_some(),
+        "completion/complete is the fifth class the node has taken, so its document is named here"
+    );
+    assert!(
+        super::document_for(super::ops::OP_TOOL_CALL).is_none(),
+        "tools/call has NOT moved: it is the last class, and it still has its arm"
+    );
+    assert!(
+        super::document_for(super::ops::OP_DISCOVER).is_none(),
+        "server/discover has not moved either; a class with a row here and an arm there would be \
+         two serving paths"
+    );
+}
+
+/// A class the node has taken is not answered at all when nothing is installed.
+///
+/// The property that makes the deletion real rather than nominal: there is no fallback. This cell
+/// can only observe it through the table, because the double is installed process-wide by the time
+/// any battery runs — so what it asserts is the SHAPE of the decision (`served` needs a node) rather
+/// than re-running it.
+#[test]
+fn the_seam_needs_a_node_and_carries_no_fallback() {
+    super::double::install_test_node();
+    assert!(
+        super::installed(),
+        "this test binary installs the double, which is what every other battery here is served \
+         through"
+    );
+}
+
+/// **A CARRIER IS A SURFACE AND A LENGTH, AND NEVER A WIRE.**
+///
+/// The drain's own property, and it is not cosmetic. `units_mcp::arrival` refuses an arrival record
+/// whose composed stack does not END at the claim that matched — and what a surface stands on is a
+/// fact about the DEPLOYMENT, so the composition is what pairs the two. A carrier that carried a
+/// claim would be this retiring crate answering a question it is not asked, and the next deployment
+/// shape would find it answering wrongly. What this crate states is which of its own two doors a
+/// frame came through, and how long the frame was.
+#[test]
+fn a_carrier_reports_its_own_surface_and_the_length_it_was_handed() {
+    assert_eq!(
+        super::Carrier::pipe(77).request_bytes(),
+        77,
+        "the carrier reports the length it was handed, which is the frame's own"
+    );
+    assert_eq!(
+        super::Carrier::document(128).surface(),
+        super::Surface::Document,
+        "one request in and one response out is the DOCUMENT surface"
+    );
+    assert_eq!(
+        super::Carrier::pipe(128).surface(),
+        super::Surface::Pipe,
+        "this process's own standard input and output is the PIPE surface"
+    );
+    assert_ne!(
+        super::Carrier::document(1).surface(),
+        super::Carrier::pipe(1).surface(),
+        "two surfaces, and a seam that could not tell them apart would hand the arrival step one \
+         surface's record under the other's claim"
+    );
+}
+
+/// A refusal the loop raised reads as this protocol's refusal, and names the gate rather than the
+/// reason.
+///
+/// The reason is what a refusal may NOT carry: a reason names a cap, a lane or a rate, and a refusal
+/// that told a caller about the deployment's money is the leak the unpriced refusal's own
+/// documentation forbids. So the status is the step's and the sentence names the gate; the body
+/// carries neither figure nor name.
+#[test]
+fn a_refusal_names_the_gate_and_never_the_reason() {
+    let at = |step| busbar_contract::unit::Refusal {
+        step,
+        reason: busbar_contract::unit::RefusalReason::OverBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let cases = [
+        (
+            busbar_contract::unit::Step::Authenticate,
+            super::StatusCode::UNAUTHORIZED,
+        ),
+        (
+            busbar_contract::unit::Step::Approve,
+            super::StatusCode::FORBIDDEN,
+        ),
+        (
+            busbar_contract::unit::Step::Admit,
+            super::StatusCode::TOO_MANY_REQUESTS,
+        ),
+        (
+            busbar_contract::unit::Step::Decode,
+            super::StatusCode::BAD_REQUEST,
+        ),
+        (
+            busbar_contract::unit::Step::Route,
+            super::StatusCode::SERVICE_UNAVAILABLE,
+        ),
+    ];
+    for (step, expected) in cases {
+        let response = super::refused(Some(serde_json::json!(1)), &at(step));
+        assert_eq!(
+            response.status(),
+            expected,
+            "the STEP decides the status, because which gate said no is the whole of what a caller \
+             is owed"
+        );
+    }
 }

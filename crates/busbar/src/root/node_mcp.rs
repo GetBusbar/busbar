@@ -706,19 +706,47 @@ mod tests;
 /// impl owns is the translation between the two crates' spellings of one arriving request, and the
 /// translation of the loop's ending into the plane's own refusal vocabulary. A conversion that
 /// decided anything would be a second serving path wearing an adapter's clothes.
+/// **THE COMPOSED STACK THE DOCUMENT SURFACE STANDS ON**, bottom layer first.
+///
+/// It ends at the claim's own transport, and that is not decoration: `units_mcp::arrival` refuses an
+/// arrival record whose chain does not END at the claim that matched, and it reads the top rather
+/// than membership precisely because the streamed surface stands on the document one — a chain read
+/// by membership would let a stream be matched as a request.
+///
+/// It is HERE and not in the plane's serving crate because a stack is a fact about a DEPLOYMENT:
+/// what is under a surface and what is over it is what the composition wired, and the retiring crate
+/// that used to hold this constant was holding an answer it is not the one asked.
 #[cfg(feature = "plane-mcp")]
-impl busbar_mcp::mcp::node::ServingNode for McpNode {
+const DOCUMENT_CHAIN: &[&str] = &["tcp", "tls", claims::TRANSPORT_HTTP];
+
+/// **THE COMPOSED STACK A PIPE STANDS ON**, which is one layer.
+///
+/// There is no TCP under a pipe and no TLS over it, so a chain that reported either would be a
+/// transport describing a connection it does not have.
+#[cfg(feature = "plane-mcp")]
+const PIPE_CHAIN: &[&str] = &[claims::TRANSPORT_STDIO];
+
+#[cfg(feature = "plane-mcp")]
+impl busbar_mcp::mcp::method::ServingNode for McpNode {
     fn serve(
         &self,
-        request: &busbar_mcp::mcp::node::ClassRequest<'_>,
+        request: &busbar_mcp::mcp::method::ClassRequest<'_>,
         answer: &dyn Fn() -> axum::response::Response,
-    ) -> Result<axum::response::Response, busbar_mcp::mcp::node::Denied> {
+    ) -> Result<axum::response::Response, busbar_mcp::mcp::method::Denied> {
+        // THE SURFACE PAIRED WITH THE CLAIM AND THE STACK UNDER IT, in the one kind that may make
+        // the pairing. The plane's serving crate says which of its two doors the frame came through;
+        // which claim that door is matched by, and what is composed beneath it, is what this
+        // deployment wired and is read here.
+        let (claim_transport, chain) = match request.surface {
+            busbar_mcp::mcp::method::Surface::Document => (claims::TRANSPORT_HTTP, DOCUMENT_CHAIN),
+            busbar_mcp::mcp::method::Surface::Pipe => (claims::TRANSPORT_STDIO, PIPE_CHAIN),
+        };
         let arriving = Arriving {
             method: request.method,
             request_bytes: request.request_bytes,
             key: request.key,
-            claim_transport: request.claim_transport,
-            chain: request.chain,
+            claim_transport,
+            chain,
             // No credential is read off the frame on any surface of this plane: the identity chain
             // ran before any plane code did, and `McpDraft::admitted` is what carries its outcome.
             // Carrying a credential here too would be handing the authenticate step a second input
@@ -728,13 +756,13 @@ impl busbar_mcp::mcp::node::ServingNode for McpNode {
         };
         self.serve_class(&arriving, answer)
             .map_err(|not_served| match not_served {
-                NotServed::Refused(refusal) => busbar_mcp::mcp::node::Denied::Refused(refusal),
+                NotServed::Refused(refusal) => busbar_mcp::mcp::method::Denied::Refused(refusal),
                 // A method the plane's own table does not name as a client class cannot reach here —
                 // the seam looked the class up in that table before it called this node. It is mapped
                 // rather than unwrapped because a path that cannot be taken still has to say something
                 // if it is, and "no answer" is the honest thing to say about a unit that never opened.
                 NotServed::NoSuchClass | NotServed::Unavailable => {
-                    busbar_mcp::mcp::node::Denied::Unavailable
+                    busbar_mcp::mcp::method::Denied::Unavailable
                 }
             })
     }

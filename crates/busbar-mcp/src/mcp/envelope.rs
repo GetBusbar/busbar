@@ -353,7 +353,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
                 // THE DOCUMENT SURFACE'S OWN CARRIER, at the length the body ARRIVED as — measured
                 // where the bytes are rather than re-serialised from the parsed value, which is a
                 // different number and would price a different request.
-                super::node::Carrier::document(body_bytes),
+                super::method::Carrier::document(body_bytes),
                 value,
                 id,
                 method,
@@ -377,7 +377,7 @@ pub(in crate::mcp) async fn rpc_dispatch(
     gov: &busbar_api::PlaneRequestCtx,
     principal: &busbar_api::AuthPrincipal,
     headers: &HeaderMap,
-    carrier: super::node::Carrier,
+    carrier: super::method::Carrier,
     value: serde_json::Value,
     id: serde_json::Value,
     method_name: String,

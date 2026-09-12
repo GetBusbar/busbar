@@ -933,7 +933,14 @@ fn mount_root_mcp(
             // its pool would be a registration the door priced and the breaker could not find.
             lane: busbar_contract::ids::LaneId::new(vocab.key(&root::units_mcp::pool_key(&r.id))),
             host: vocab.key(&r.host),
-            transport: r.transport,
+            // WHICH CLAIM AN UPSTREAM HOP IS MADE UNDER, decided here. The plane's serving crate
+            // reports what the operator configured — a registration this node launches, or one it
+            // dials — and the composition is what names the claim each of those is made under.
+            transport: if r.host.is_empty() {
+                busbar_plane_mcp::claims::TRANSPORT_STDIO
+            } else {
+                busbar_plane_mcp::claims::TRANSPORT_HTTP
+            },
         })
         .collect();
     let lanes = servers.len();
@@ -994,7 +1001,7 @@ fn mount_root_mcp(
     let node: &'static root::node_mcp::McpNode = Box::leak(Box::new(
         root::node_mcp::McpNode::over(plane, node, root::policy::group_table(groups, &lease_ids)),
     ));
-    busbar_mcp::mcp::node::install(node);
+    busbar_mcp::mcp::method::install(node);
 }
 
 fn main() {

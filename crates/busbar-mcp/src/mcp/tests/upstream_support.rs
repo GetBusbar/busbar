@@ -657,7 +657,7 @@ pub(super) async fn call_response_caps(
         capabilities,
         headers: &NO_HEADERS,
         scope: Some(&scope),
-        carrier: crate::mcp::node::Carrier::document(0),
+        carrier: super::super::method::Carrier::document(0),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await
