@@ -421,3 +421,63 @@ them and nothing preserves them. The ledgers cite these logs by path months late
 exactly one right answer and it is not a function of which tree happened to be proving.
 `LATCHKEY_LOG_DIR` is in `scripts/landq.env.example`; the derivation stays as the last resort for an
 operator running by hand, and it says so in the log when it is used.
+
+## 12. Two rulings the live runner paid for in landings
+
+### A landing that needs a box HAS one before the pop — the precondition, not the retry
+
+Measured 2026-09-12: five `NONE:probe-empty` faults between 07:49 and 14:31, no landing at all in
+those seven hours, and in the end a runner restart ordered by hand.
+
+`power_ensure_slots` was never wrong. It was never **asked**. `--ensure-slots` is called from
+exactly one place — the pre-proof sweep — and the sweep is skipped on precisely the loops that still
+land: a base fix at the head pops alone, and a queue with no live line has no sweep either. The
+fleet idle-stops itself after `LANDQ_IDLE_STOP_MINS`, so after an hour of Latchkey pre-proofs it is
+asleep by construction, and the batch was popped onto it anyway.
+
+Waking **after** the fault does not close it. A box is 60–90 s from proving and the first backoff is
+60 s, so the retry probes a box that is still booting and scores the same class again. And the retry
+must **re-probe, not re-read**: the sweep caches one probe round for its whole dispatch
+(`fleet_table_open`), and that table is by construction the fleet from before any box was started.
+
+So the pop has a precondition (`lq_landing_slot_ready`). When `BUSBAR_LAND_BACKEND=fleet` and no
+awake box has a free proof slot, the engine starts one and **waits** for it
+(`CI_RUNNER_START_WAIT_SECS`), then asks the fleet **again**. The second ask is the whole point:
+`ci-fleet-power.sh --ensure-slots` exits 0 for "starting nothing" and for "no stopped box to start
+(the fleet is all awake or all gone)" alike, so a landing dispatched on that exit status is a
+landing dispatched into nothing. A number can be checked; that exit status cannot — which is why
+`--free-slots` exists, and why it is a fresh ssh round over the boxes and never a cached table.
+
+It runs **before the queue lock** (waking a box can take five minutes, and the lock is what
+`landq-ctl` needs to edit the queue at all) and before any popper. A fleet that will not wake is not
+a fault of the queue's: **nothing is popped**, no line moves, no class is scored against anybody's
+picks, and the loop is taken again on the class's backoff — where `probe-empty` popped lines, failed
+them and put them back, five times over. On `BUSBAR_LAND_BACKEND=latchkey` it is a no-op by design:
+that backend needs no box at all.
+
+### Which tags carry an argument is one list, and every reader of the prefix walks it
+
+A queue line is `<tag>… -- <payload>`, and almost every tag is one `#` token — so every reader of the
+prefix was written, independently and correctly, as "drop the leading `#` tokens". The pre-proof
+parks broke that and nothing else did: `#RED-preproof <log> …` and `#PARK-preproof <log> …` carry the
+path to their evidence, and **a path does not begin with `#`**. A reader that stops at the first
+non-`#` token stops on the log path, and everything behind it is invisible to it.
+
+Five readers walk that prefix, and only `lq_line_unpark` knew:
+
+| reader | what it did on a pre-proof-parked line |
+|---|---|
+| `lq_release_holds` | never reached the `#HOLD-after-<sha>` behind the path — the hold could **never** release, however long ago its sha landed |
+| `lq_hold_after_sha` | saw no tags at all: the line was not chainable, and its hold was invisible to the chained-pre-proof arithmetic too |
+| `lq_line_payload` | returned `<log path> #HOLD-after-… --prove …`, so a `RETAG` rebuilt the line with a **path** as the head of its payload |
+| `lq_line_still_held` | escaped on `#RED-preproof` only by matching `#RED*` on the way past; on `#PARK-preproof` it walked into the path and reported "no payload" |
+| `lq_line_unpark` | correct, and its comment warned about exactly this |
+
+A warning is not a defence; the knowledge is. `LQ_ARG_TAGS` is that knowledge, read in one predicate
+(`lq_tag_takes_arg`), walked in one place (`lq_line_tags`), and every reader is written over it. A
+new argument-carrying tag is one word in one place. The selftest also asserts the closing property —
+no function shifts a token off the prefix without asking the list — so a sixth reader is caught by
+the suite and not by a queue that has quietly stopped moving.
+
+Measured on the live queue at the time of the fix (722 lines, 17 pre-proof parks): `lq_line_payload`
+returned a path for 17 of 17 before, and the line for 17 of 17 after.
