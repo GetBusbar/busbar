@@ -90,6 +90,7 @@ power_box_script() {
 #   ~/.busbar-power.sh claim-stop <mins>     -> `STOP-CLAIMED <s>` | `BUSY <n>` | `IDLE <s>`
 #   ~/.busbar-power.sh admit <pidfile> <pid> -> `ADMITTED` (rc 0) | `REFUSED <why>` (rc 3)
 #   ~/.busbar-power.sh clear                 -> the box may hold proofs again (run after a start)
+#   ~/.busbar-power.sh stopping              -> `STOPPING` | `CLEAR`; is a stop claimed on this box
 set -u
 H="${HOME:-/home/ubuntu}"
 LOCK="$H/.busbar-power.lock"
@@ -172,7 +173,13 @@ case "${1:-}" in
     exit 0
     ;;
   clear) rm -f "$STOPPING" "$IDLE"; echo "CLEARED" ;;
-  *) echo "usage: $0 busy|probe|claim-stop <mins>|admit <pidfile> <pid>|clear" >&2; exit 2 ;;
+  # IS THIS BOX UNDER A STOP CLAIM? Asked by the allocator before it calls a box free, because a
+  # claimed box REFUSES every proof (see the admit rule above) and a proof probe run against one
+  # exits 1 and reads to the caller as "unreachable or unprepared". `busy` cannot answer it: a
+  # claimed box is holding no proof, which is exactly why it was claimed. The idle clock is NOT
+  # touched here — this is a question, and a question must not stop a box from ever idling out.
+  stopping) [ -f "$STOPPING" ] && echo "STOPPING" || echo "CLEAR" ;;
+  *) echo "usage: $0 busy|probe|claim-stop <mins>|admit <pidfile> <pid>|clear|stopping" >&2; exit 2 ;;
 esac
 BOX
 }
@@ -281,10 +288,30 @@ power_start() { # $1 = how many
 # (power_ready does the same thing for the same reason). A box that will not take the install is
 # unreachable or unprepared, and is correctly not free.
 power_free_slots() {
-  local running h free=0 n
+  local running h free=0 n st
   running="$(ids_in_state 'running')"
   for h in $running; do
     power_install "$h" || continue                      # unreachable or unprepared: not free
+    # A CLAIMED BOX IS NOT A FREE BOX, AND A HAND-STARTED ONE STAYS CLAIMED FOREVER.
+    # MEASURED 2026-09-12, faults 4 and 5: both boxes were started BY HAND with `aws
+    # start-instances` after the allocator failed to start them, and a hand start runs none of this
+    # script — so `~/.busbar-stopping`, written by the stopper before it stopped them, was still
+    # there. `busy` says 0 (a claimed box holds no proof; that is why it was claimed), so the box
+    # reads FREE — while the landing's own probe, which begins `test -e ~/.busbar-stopping && exit
+    # 1`, gets no answer at all and logs `skipped (unreachable or unprepared)`. A fleet that is up,
+    # idle, and refuses every proof, with two different subsystems each certain the other is wrong.
+    #
+    # So the allocator asks the question the LANDING will ask, and clears a claim it finds rather
+    # than counting a box it knows the landing cannot use. `power_start` already does exactly this
+    # through power_ready on every start; a hand start is the path that had nobody to do it.
+    st="$(power_ask "$h" stopping)"
+    case "$st" in
+      *STOPPING*)
+        plog "$h: a stop is still claimed on it (a hand start leaves the claim behind) — clearing it, because a claimed box refuses every proof"
+        power_ask "$h" clear >/dev/null 2>&1 || { plog "$h: the claim would not clear — not free"; continue; } ;;
+      *CLEAR*) ;;
+      *) continue ;;                                    # unreachable or unprepared: not free
+    esac
     n="$(power_ask "$h" busy)"
     case "$n" in ''|*[!0-9]*) continue ;; esac          # unreachable or unprepared: not free
     [ "$n" -lt "$PROVE_PER_BOX" ] && free=$(( free + PROVE_PER_BOX - n ))
@@ -572,6 +599,44 @@ SSHSTUB
   # and reports nothing — the exact shape of the fault this number exists to prevent.
   _t "the ask installs the protocol first"       1 \
      "$(sed -n '/^power_free_slots() {/,/^}/p' "$HERE/ci-fleet-power.sh" | grep -c 'power_install "\$h" || continue')"
+
+  # ── A CLAIMED BOX IS NOT A FREE BOX (live faults 4 and 5, 2026-09-12) ──────────────────────────
+  # The shape that cost the queue seven hours: the allocator failed to start the boxes, an operator
+  # started them BY HAND with `aws start-instances`, and a hand start runs none of this script — so
+  # the `~/.busbar-stopping` the stopper wrote before stopping them was still there. `busy` says 0
+  # (a claimed box holds no proof; that is why it was claimed) so the box reads FREE, while the
+  # landing's probe — which begins `test -e ~/.busbar-stopping && exit 1` — got no answer at all and
+  # logged `skipped (unreachable or unprepared)`. Up, idle, and refusing every proof.
+  echo "ci-fleet-power selftest: a box under a stop claim is not free, and the claim is cleared"
+  printf 'i-a running\n' >"$root/state"; box clear >/dev/null
+  rm -f "$BH/busbar-prove/.proof.pid"
+  _t "the box answers the new question"        "CLEAR"    "$(box stopping)"
+  # THE LIVE SHAPE, BUILT EXACTLY: idle, no proof running, and claimed.
+  printf '%s\n' "$(( $(date +%s) - 3600 ))" >"$BH/.busbar-idle-since"
+  box claim-stop 15 >/dev/null
+  _t "  ...and says so under a claim"          "STOPPING" "$(box stopping)"
+  _t "a claimed box holds no proof: busy is 0"  0        "$(box busy)"
+  _t "  ...so the OLD count would have called it free" 2 \
+     "$(n=$(box busy); echo $(( PROVE_PER_BOX - n )))"
+  # ...AND THE LANDING'S OWN PROBE, the one that logged the five faults, refuses it.
+  _t "  ...while the landing's proof probe refuses it"  1 \
+     "$( ( export HOME="$BH"; eval "$(printf '%s' "test -e ~/.busbar-stopping && exit 1; echo 0; echo 0.0")" ) >/dev/null 2>&1; echo $?)"
+  # THE ALLOCATOR NOW ASKS THE QUESTION THE LANDING ASKS, and repairs what it finds.
+  _t "the allocator clears the claim it finds"  2 "$(power_free_slots)"
+  _t "  ...and the box is genuinely clear now"  "CLEAR"    "$(box stopping)"
+  _t "  ...so the landing's probe admits it"    0 \
+     "$( ( export HOME="$BH"; eval "$(printf '%s' "test -e ~/.busbar-stopping && exit 1; echo 0; echo 0.0")" ) >/dev/null 2>&1; echo $?)"
+  # AND A BOX THAT IS BUSY IS STILL COUNTED AS BUSY, claim or no claim.
+  echo $$ >"$BH/busbar-prove/.proof.pid"
+  _t "a busy box is still only half free"       1 "$(power_free_slots)"
+  rm -f "$BH/busbar-prove/.proof.pid"; box clear >/dev/null
+  # THE ASK IS A QUESTION, NOT A STOP-DEFEATER. `stopping` must not touch the idle clock, or a fleet
+  # asked for free slots every loop would never idle out and the whole stop/start posture is gone.
+  _t "asking does not touch the idle clock"     1 \
+     "$(sed -n '/^  stopping)/p' "$HERE/ci-fleet-power.sh" | grep -c 'STOPPING.*CLEAR')"
+  _t "  ...the verb writes nothing at all"      0 \
+     "$(sed -n '/^  stopping)/p' "$HERE/ci-fleet-power.sh" | grep -c 'rm -f\|date +%s >' || true)"
+  printf 'i-a running\ni-b stopped\ni-c stopped\ni-d stopped\n' >"$root/state"; box clear >/dev/null
   printf 'i-a running\ni-b stopped\ni-c stopped\ni-d stopped\n' >"$root/state"; box clear >/dev/null
 
   echo "ci-fleet-power selftest: the stopper, the running floor, and the claim it keeps"
