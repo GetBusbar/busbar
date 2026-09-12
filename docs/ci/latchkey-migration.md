@@ -244,3 +244,78 @@ not GitHub's own billing summary, which was not yet available for these runs): r
 runner-minutes** across the two pushes' worth of jobs captured in this window, well short of the
 full run (several jobs were still `queued` behind the concurrency cap when this measurement window
 closed).
+
+## 7. Fast Cache for cargo (LK-5) — sccache dropped, cold vs warm measured
+
+Per §4 item 1 above, sccache is now removed outright from `ci.yml` and `keep-proof.yml`
+(`mozilla-actions/sccache-action`, `SCCACHE_GHA_ENABLED`, `RUSTC_WRAPPER`, and the
+`CARGO_INCREMENTAL: 0` rationale that existed only for it) rather than repointed at an
+S3-reachable backend — this slot's mandate is "off GitHub for build-related items", not "give
+sccache a working GitHub Actions cache". `latchkey-dev/cache-action` (Fast Cache) is now the only
+compiler/dependency cache in these three files. `windows-latest` (ci.yml's `windows` job) is
+GitHub-hosted, not Latchkey, and keeps its original sccache + Fast Cache steps byte-for-byte
+untouched — it was never migrated off EC2 in the first place.
+
+**Key scheme.** Every Latchkey-hosted job's restore/save pair moved from one workflow-wide key
+(`cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}`, identical across all ~34 jobs — every
+job's save clobbered every other job's slot under the same key) to a per-job key:
+`cargo-${{ runner.os }}-<job-id>-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}`, e.g.
+`cargo-Linux-build-clippy-c56dc...`. Cached path narrowed from `~/.cargo` + `target/` to
+`~/.cargo/registry`, `~/.cargo/git` and `target` (drops `~/.cargo/bin` and any credentials file
+from the cache body). Save steps drop the `if: always()` they carried before, so a broken
+`target/` from a failing job is never persisted into the next run's restore — LK-5's task brief
+called this out explicitly and it is a real behavior change from LK-1's original wiring.
+
+**`restore-keys` does not exist on this action — found and removed.** The task brief called for a
+job-prefixed `restore-keys` fallback; the first push (run `34665911650`) logged, on every single
+restore step: `##[warning]Unexpected input(s) 'restore-keys', valid inputs are ['action', 'path',
+'key', 'cache-url']`. `latchkey-dev/cache-action` has no prefix-fallback feature at all — the
+input was silently ignored (not silently honored), so the step still worked, it just always did an
+exact-key-or-nothing lookup while printing a warning 34 times a run for nothing. Removed in a
+follow-up commit (`f6f57a567`) rather than left in for a fallback that can never fire.
+
+**`~/.cargo/registry` and `~/.cargo/git` are currently a no-op on Latchkey's image — found, not
+yet fixed.** Every restore/save step's own log shows `CARGO_HOME: /usr/share/rust/.cargo`, not
+`$HOME/.cargo` — the Ubuntu image ships Rust via an ambient install rooted outside `$HOME`, the
+same "ambient toolchain" fact §5 already noted for `structure-lint`/`service-image-pins`, just not
+previously connected to caching. `~/.cargo/registry` and `~/.cargo/git` therefore resolve to a
+path cargo never touches; every save step logs `##[warning]Cache path does not exist, skipping:
+/home/runner/.cargo/registry` (and the `/git` sibling) before saving `target/` alone. The
+dependency half of Fast Cache is dead weight today — only `target/` is doing anything. A follow-up
+should point `path:` at `${{ env.CARGO_HOME }}/registry` and `${{ env.CARGO_HOME }}/git` instead
+of the literal `~/.cargo/...` the task brief specified; not changed here without re-measuring,
+flagged instead of silently "fixed" against an assumption.
+
+**Cold vs warm, per job** (`keep-proof` runs `34665911650` cold → `34667698291` warm, same branch,
+back to back; the second push carried only the `restore-keys` removal above, which does not touch
+the cache key, so it measures a genuine warm cache, not a coincidence):
+
+| Job | Label | Cold wall time | Warm wall time | Δ | Cache save size (cold) |
+|---|---|---|---|---|---|
+| build-clippy (`fmt · clippy · build`) | large | 3m57s | 2m07s | **-46%** | 1,146,374,247 B (~1.09 GiB, `target/` only) |
+| tests (shard 1) | xlarge | 8m24s | 8m37s | +2% (noise) | not captured this pass |
+| tests (shard 2) | xlarge | 4m34s | 4m29s | ~flat | not captured this pass |
+| tests (shard 3) | xlarge | 5m17s | 5m28s | ~flat | not captured this pass |
+| tests (shard 4) | xlarge | 4m35s | 4m38s | ~flat | not captured this pass |
+| tests (shard xtask) | xlarge | 28m51s | 28m55s | ~flat | job hangs and is SIGKILLed by `BINARY_TIMEOUT_SECS` at ~25 min in both runs — a pre-existing test hang (`the_audit_register_is_judged_on_every_push` / `selftest_runs_every_registered_gates_red_proof`), not a cache effect |
+| gates (`cargo xtask gate --all · selftest`) | xlarge | 21m33s | 21m31s | ~flat | job time is dominated by the gate selftest's own bash/xtask work, not by rustc; also the one xlarge job where cold-vs-warm should have shown the most, and didn't — consistent with the `CARGO_HOME` no-op above eating the registry-cache benefit this job would otherwise get from a warm dependency set |
+| construction-gate | xlarge | 3m38s | 3m31s | ~flat | — |
+| design-bindings | large | 9s | 7s | n/a | fails before reaching any cargo step (`scripts/design-bindings.sh: No such file or directory` — pre-existing, unrelated to this slot) |
+| shadow-oracle | xlarge | 2m16s | 1m50s | n/a | fails before any real build (`.keep-proof.toml`'s FAMILIES filter owes zero cells — pre-existing, unrelated to this slot) |
+
+**Read on the numbers.** The one job that both (a) completed on time and (b) does real, cacheable
+compilation from a clean job home shows a real, large win (build-clippy, -46%). Every `xlarge` job
+shows ~flat, for two different and unrelated reasons: the two heaviest (`tests shard xtask`,
+`gates`) are dominated by non-cargo wall time (a pre-existing test hang; the gate selftest's own
+runtime) that dwarfs whatever compile time a warm `target/` saves, and the rest of the xlarge jobs
+are gated on Postgres/MySQL/Valkey service-container boot plus their own non-trivial non-cargo
+setup, which a cargo cache does not touch. None of the five failing jobs in either run
+(shadow-oracle, design-bindings, gates, tests shard xtask, tests-total/verdict roll-ups) are
+caused by this slot's changes — none of their error output mentions `cache-action`, a cache key, or
+sccache; they are pre-existing red on this base, the same category of thing §4 item 5 already
+flagged for the base branch generally.
+
+**actionlint**: `actionlint .github/workflows/{ci,keep-proof,gate-mutants}.yml` — clean, 0
+findings, after declaring `latchkey-small|medium|large|xlarge` in `.github/actionlint.yaml`
+alongside the existing `busbar-xl`. LK-4 measured 37 unknown-label findings before that entry
+existed.
