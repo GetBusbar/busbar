@@ -93,6 +93,17 @@ None of these need action; they are listed so what you see is expected.
   listen sockets on the data port via `SO_REUSEPORT`, and one `busbar listening` log line per
   listener. `advanced.worker_threads` now sizes that worker count (default one per core;
   `TOKIO_WORKER_THREADS` still works as a fallback). Non-unix builds are unchanged.
+- **A configured voice/streams `session_fee` now draws.** It never drew in 1.5.x (a defect, not a
+  tariff); on 1.6.0 it charges once per session, exactly as configured, the first time a leg
+  genuinely opens. See [1.6.0 advisories](advisories/1.6.0/voice-session-fee-draws-once-per-session.md).
+- **The published MySQL store plugin's request-count durability is fixed.** A rare split-flush
+  (about 1 run in 40 at the default cadence) could silently drop a key's requests counter across
+  a restart on 1.5.x; token/spend accounting was never affected. See
+  [1.6.0 advisories](advisories/1.6.0/mysql-store-split-flush-request-count-loss.md).
+
+See [the full 1.6.0 advisories index](advisories/1.6.0/README.md) for these and two further
+disclosures (an upstream-429-as-503 status-code clarification, and an open key-level-billing-window
+question) that require no operator action but are recorded for completeness.
 
 ## 4. New optional sections for the planes
 
