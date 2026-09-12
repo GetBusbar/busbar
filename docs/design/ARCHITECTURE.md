@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3663`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3665`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
@@ -110,7 +110,9 @@ them). Each axis is blind to the other two; only the kernel composes them.
   never read as a fact that passes. Nothing is added to what a plugin author must read: no trait
   takes these types and no plugin is handed one. The fourth is **`busbar_contract::tasks`**
   (`TaskStore`, `TaskRecord`; 15 code lines + 1 module line, declared at +16, and a further +8 for
-  the WRITE half — `update` and `cancel` — landed by MCP-G with §11.4's lines 7b/7c): the seam every
+  the WRITE half — `update` and `cancel`, landed by MCP-G with §11.4's lines 7b/7c and then SPLIT
+  onto a second face, `busbar_contract::tasks::TaskAnswers`, at +2 when the measurement said so): the
+  seam every
   plane's task-store methods read a stored task through: one `id`/`status`/timestamps/`ttl_ms`/
   `poll_interval_ms` shape, with `result`, `error` and each `inputRequests` entry carried as opaque
   bytes — the store's own codec's encoding of whatever it settled — because mcp's SEP-2663 extension
@@ -124,7 +126,16 @@ them). Each axis is blind to the other two; only the kernel composes them.
   no clock but the one its context hands it, and a face that broke that rule for the store's
   convenience would move the violation rather than remove it — and answers `None` on a foreign task
   exactly as the read does, which matters more on a write than on a read: a distinguishable refusal
-  would let a caller enumerate live ids without ever being able to read one. Nothing is added to
+  would let a caller enumerate live ids without ever being able to read one. THE SPLIT IS BY
+  CAPABILITY, measured: `busbar-a2a`'s registry has neither write verb — its `input-required` is
+  answered by a fresh `message/send` on the task's own context rather than by a write to a stored
+  row, and every mutation it does have is a hash-chained transition whose event names the request
+  that caused it, so a `cancel` arriving through a face carrying no request id would either break
+  that chain or mint a join key inside the store. One trait with both stores forced onto it would
+  have made `busbar-a2a` answer `None` ("no such task for this caller") to a verb it does not have,
+  which is a lie in exactly the register the privacy rule cannot afford one. `busbar-a2a`'s
+  `TaskRegistry` implements the READ, over its existing scoped predicate, so the two planes share one
+  gate rather than two that agree today. Nothing is added to
   what a plugin author must read: no trait takes an ABI type and no plugin is handed one. The fifth
   is MCP-G's catalogue vocabulary. **`busbar_contract::catalogue`** (`CatalogueView` and the eight
   shapes it answers in — `CatalogueEntry`, `Address`, `Found`, `Resolution`, `PromptTemplate`,

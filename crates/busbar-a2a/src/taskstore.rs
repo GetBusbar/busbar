@@ -1040,3 +1040,62 @@ mod taskstore_tests;
 #[cfg(test)]
 #[path = "a2a/tests/chain_golden.rs"]
 mod chain_golden;
+
+/// THE SCOPED READ, over the contract's neutral store face — the a2a half of
+/// `docs/design/1.6.0-mcp-engine.md` section 12.5.
+///
+/// This is [`TaskRegistry::get_scoped`] and nothing else: one gate, read two ways, rather than two
+/// gates that agree today. The `Err(Denied::NotYours)` that read answers for BOTH "no such task" and
+/// "not yours" becomes the face's `None`, which is the same collapse spelled in the face's own
+/// vocabulary — see `busbar_contract::tasks`'s module note on why the two must not be
+/// distinguishable.
+///
+/// ## What does NOT cross, and why — the measurement
+///
+/// An a2a [`TaskRow`] carries `context_id` (the session a task resumes under), `artifact_cursor`
+/// (how many artifact chunks have been durably relayed) and `push_callback` (the registered
+/// notification URL), and `busbar-mcp`'s registry has no analogue of any of the three. They are NOT
+/// added to [`busbar_contract::tasks::TaskRecord`]: three fields one plane fills and the other
+/// leaves empty for ever would be the face taking a position on a2a's session model, and `direction`
+/// and `agent_id` would be next. They are NOT smuggled through `TaskRecord::result` either — that
+/// member means "the settled answer", and a live task's session id is not one.
+///
+/// Instead they stay where they are, on this plane's own `Task`, and the consumers that need them
+/// (`a2a::receive::addressed_task`, `a2a::local::addressed`) keep reading the row. That is not a
+/// gap: those two need the whole row INCLUDING the integer `created_at`/`updated_at` this face
+/// deliberately pre-formats away, so routing them through the record would be a lossy round trip
+/// that bought a uniform call shape and paid for it in fidelity. What the two planes genuinely share
+/// is the SCOPED RESOLUTION, and that is exactly what this impl is.
+///
+/// The timestamps are formatted from this store's UNIX SECONDS through
+/// [`busbar_substrate::civil::rfc3339_from_secs`] — the renderer this plane's push-notification
+/// `status.timestamp` already uses. Bare seconds rather than mcp's millisecond suffix, because this
+/// store's clock HAS no sub-second component and inventing `.000` would be this face claiming a
+/// precision the row does not carry; both spellings are RFC 3339 and both parse back to the instant
+/// they name. A second date renderer written here to match mcp's digits would have been two answers
+/// to "what time is it" the first time they diverged.
+impl busbar_contract::tasks::TaskStore for TaskRegistry {
+    fn get(&self, id: &str, principal: &str) -> Option<busbar_contract::tasks::TaskRecord> {
+        let row = self.get_scoped(principal, id).ok()?;
+        Some(busbar_contract::tasks::TaskRecord {
+            id: row.task_id,
+            status: row.state,
+            created_at: busbar_substrate::civil::rfc3339_from_secs(row.created_at),
+            updated_at: busbar_substrate::civil::rfc3339_from_secs(row.updated_at),
+            // The two cadence numbers are mcp's SEP-2663 vocabulary. A2A publishes neither a
+            // retention promise nor a poll interval on a task — its client resubscribes to a stream
+            // rather than polling a row — so ZERO is the honest "this store makes no such promise"
+            // rather than a default borrowed from the other plane's extension.
+            ttl_ms: 0,
+            poll_interval_ms: 0,
+            // A2A's settled answer is its artifact stream and its final message, neither of which
+            // lives on the task row: the row records the STATE and the cursor, and the content went
+            // to the caller as it was produced. So there is nothing here to carry, and carrying the
+            // row's own bookkeeping under a member that means "the settled answer" would be a
+            // second, disagreeing view of what this task produced.
+            result: None,
+            error: None,
+            input_requests: Vec::new(),
+        })
+    }
+}

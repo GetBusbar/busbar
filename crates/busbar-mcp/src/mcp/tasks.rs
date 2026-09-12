@@ -536,7 +536,16 @@ impl busbar_contract::tasks::TaskStore for Registry {
                 .collect(),
         })
     }
+}
 
+/// THE WRITE HALF, over the contract's capability-split answer face — plan line 7b/7c.
+///
+/// `busbar-mcp`'s registry has both verbs exactly, which is why it implements this face and
+/// `busbar-a2a`'s does not: an a2a `input-required` is answered by a fresh `message/send` on the
+/// task's own context rather than by a write to a stored row, and every a2a mutation is a
+/// hash-chained transition whose event names the request that caused it. See
+/// `busbar_contract::tasks::TaskAnswers`'s own note.
+impl busbar_contract::tasks::TaskAnswers for Registry {
     /// `tasks/update`'s WRITE — plan line 7b. The answers arrive as the face's opaque bytes (see
     /// `busbar_contract::tasks`'s module note) and are decoded back into this plane's own object
     /// notation here, because that is what `McpTask::deliver` parks against and this crate is where

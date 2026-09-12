@@ -63,30 +63,54 @@ pub struct TaskRecord {
     pub input_requests: Vec<(String, Vec<u8>)>,
 }
 
-/// The seam every plane's task methods read and move a stored task through.
+/// THE SCOPED READ every plane's task surface resolves an id through.
 ///
-/// One face for every plane that has a task extension, so a kind-neutral step (or, short of one, a
-/// second plane reading the same shape) never has to know which store answered it.
-///
-/// ## The clock is HANDED IN, never read here
-///
-/// Both writes take `now_ms` rather than reading a clock behind the face. A store that read its own
-/// clock would be a second reading of the time on a request that already took one, and the two can
-/// disagree — a plane's own rule is that it reads no clock but the one its context hands it, and a
-/// face that broke that rule for the store's convenience would move the violation rather than
-/// remove it. The millisecond scale is the one every timestamp on [`TaskRecord`] was formatted from.
-///
-/// ## An absent task and a foreign one are ONE answer, on the writes too
-///
-/// [`TaskStore::update`] and [`TaskStore::cancel`] answer `None` on a task that belongs to somebody
-/// else, exactly as [`TaskStore::get`] does and for exactly the same reason. It matters MORE here,
-/// not less: a write that refused a foreign task by name would let a caller enumerate live ids
-/// without ever being able to read one, which is the probe the read arm was closed against.
+/// One face for every plane that keeps tasks, so a kind-neutral step (or, short of one, a second
+/// plane reading the same shape) never has to know which store answered it. It is deliberately ONE
+/// verb: the read is the thing two very different stores genuinely share, and it is the verb the
+/// privacy rule lives on. See [`TaskAnswers`] for why the writes are a second face rather than two
+/// more methods here.
 pub trait TaskStore {
     /// Resolve `id` FOR `principal`. `None` when there is no such task, OR it belongs to a
     /// different principal — see the module header for why the two are the same answer.
     fn get(&self, id: &str, principal: &str) -> Option<TaskRecord>;
+}
 
+/// THE ANSWER-DELIVERY HALF, split off [`TaskStore`] BY CAPABILITY rather than folded into it.
+///
+/// ## Why this is a second face and not two more methods on the first
+///
+/// Measured across the two stores that exist. `busbar-mcp`'s SEP-2663 registry has both verbs
+/// exactly: a caller answers a parked ask with `tasks/update`, and cancels with `tasks/cancel`, and
+/// each is a plain mutation stamped with the request's own clock reading.
+///
+/// `busbar-a2a`'s registry has NEITHER, and not by omission. Its `input-required` is answered by a
+/// fresh `message/send` on the task's own context — a new request, not a write to a stored row — so
+/// there is no delivery verb for [`TaskAnswers::update`] to be. And every mutation it does have is a
+/// HASH-CHAINED transition whose event names the request that caused it; a `cancel` reaching it
+/// through a face that carries no request id would either break that chain or mint a join key inside
+/// the store, which is the one thing a provenance chain exists to make impossible.
+///
+/// So a store implements this face when it HAS these verbs. A single trait with both stores forced
+/// onto it would have made `busbar-a2a` answer `None` — "no such task for this caller" — to a verb
+/// it simply does not have, which is a lie in exactly the register the privacy rule cannot afford
+/// one.
+///
+/// ## The clock is HANDED IN, never read here
+///
+/// Both verbs take `now_ms` rather than reading a clock behind the face. A store that read its own
+/// clock would be a second reading of the time on a request that already took one, and a plane's own
+/// rule is that it reads no clock but the one its context hands it; a face that broke that rule for
+/// the store's convenience would move the violation rather than remove it. The millisecond scale is
+/// the one every timestamp on [`TaskRecord`] was formatted from.
+///
+/// ## An absent task and a foreign one are ONE answer here too
+///
+/// Both verbs answer `None` on a task that belongs to somebody else, exactly as
+/// [`TaskStore::get`] does. It matters MORE on a write, not less: one that refused a foreign task by
+/// name would let a caller enumerate live ids without ever being able to read one, which is the
+/// probe the read arm was closed against.
+pub trait TaskAnswers {
     /// DELIVER the caller's answers to a task's outstanding asks.
     ///
     /// `answers` is keyed the way [`TaskRecord::input_requests`] is, and each value is the plane's

@@ -8,7 +8,7 @@
 //! shape handed back is the same thing, a BARE result document with no `jsonrpc`, no `id` and no
 //! `resultType`, because those three are the dialect's and are stamped by whichever side frames it.
 
-use busbar_contract::tasks::{TaskRecord, TaskStore};
+use busbar_contract::tasks::{TaskAnswers, TaskRecord, TaskStore};
 
 /// Render one [`TaskRecord`] as the bare `DetailedTask` document.
 ///
@@ -82,7 +82,7 @@ pub fn get(store: &dyn TaskStore, task_id: &str, principal: &str) -> Option<serd
 /// nine answers a client may have waited a round to send.
 #[must_use]
 pub fn update(
-    store: &dyn TaskStore,
+    store: &dyn TaskAnswers,
     task_id: &str,
     principal: &str,
     responses: &serde_json::Map<String, serde_json::Value>,
@@ -104,7 +104,7 @@ pub fn update(
 /// re-state it as a second rule that could drift from the first.
 #[must_use]
 pub fn cancel(
-    store: &dyn TaskStore,
+    store: &dyn TaskAnswers,
     task_id: &str,
     principal: &str,
     now_ms: u64,

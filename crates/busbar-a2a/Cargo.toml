@@ -43,6 +43,12 @@ busbar-core = { path = "../busbar-core", default-features = false, features = ["
 busbar-substrate = { path = "../busbar-substrate", features = ["plane-a2a"] }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+# THE CONTRACT FACE. Named for `busbar_contract::tasks::{TaskStore, TaskRecord}` — the kind-neutral
+# scoped read this plane's own task registry implements, so a caller's id resolves for a principal
+# through the SAME face `busbar-mcp`'s registry answers through and the "a foreign task is absent,
+# never refused by name" rule is one predicate rather than two that agree today. ARCHITECTURE.md 1.2's
+# manifest allow-list: busbar-contract is the face every kind is written against.
+busbar-contract = { path = "../busbar-contract" }
 # THE WIRE VOCABULARY. The pure half of this plugin, split out so `busbar-plane-a2a` can name the
 # canonicalization, the anomaly grammar, the id remap, the meter classes, the durable task record
 # shapes and the mount paths without pulling this crate's axum routes, tonic binding, reqwest relay

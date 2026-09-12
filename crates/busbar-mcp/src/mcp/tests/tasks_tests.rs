@@ -337,7 +337,7 @@ async fn a_completion_that_beat_the_shutdown_keeps_its_status_and_is_not_audited
 async fn a_caller_cancel_racing_the_shutdown_yields_one_transition_and_one_audit() {
     let task = TASKS.create("key-shutdown-race", busbar_substrate::store::now_ms());
     // The caller's `tasks/cancel` lands first (the verb path audits it on its own).
-    assert!(busbar_contract::tasks::TaskStore::cancel(
+    assert!(busbar_contract::tasks::TaskAnswers::cancel(
         &*TASKS,
         &task.id,
         "key-shutdown-race",

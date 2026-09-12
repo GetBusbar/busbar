@@ -1212,3 +1212,63 @@ fn the_abandonment_ceiling_is_enforced_without_any_new_submission() {
     );
     assert!(reg.sweep_now(at1 + 1), "a later second is a new claim");
 }
+
+/// THE CONTRACT FACE, over this plane's own registry: one gate, read two ways.
+///
+/// `busbar_contract::tasks::TaskStore::get` is implemented over `get_scoped` and nothing else, so a
+/// foreign id and a nonexistent one are the SAME `None` here for the same reason they are the same
+/// `Err(Denied::NotYours)` there — a distinguishable answer would let a caller enumerate live ids.
+///
+/// RED FIRST: watched fail with the impl forced to return `None` unconditionally, which reds this
+/// cell and the three `subscribe_refusal` cells in `local_tests` (the a2a handler that now reads the
+/// face) while the rest of the 587-cell battery stays green.
+#[test]
+fn the_contract_face_answers_this_planes_scoped_read_and_nothing_more() {
+    use busbar_contract::tasks::TaskStore as _;
+
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle);
+    let reg = &h.reg;
+
+    let record = reg
+        .get("t-work", "key-1")
+        .expect("the owner reads its own task through the face");
+    assert_eq!(record.id, "t-work");
+    assert_eq!(
+        record.status,
+        reg.get_scoped("key-1", "t-work").unwrap().state,
+        "the status carried is this plane's own state TOKEN, unread by the face"
+    );
+    assert_eq!(
+        record.created_at,
+        busbar_substrate::civil::rfc3339_from_secs(
+            reg.get_scoped("key-1", "t-work").unwrap().created_at
+        ),
+        "timestamps cross PRE-FORMATTED, through the renderer this plane already uses for its \
+         push-notification timestamps rather than a second one written for this face"
+    );
+
+    // The two cadence numbers are mcp's extension vocabulary and A2A publishes neither, so ZERO is
+    // the honest "this store makes no such promise" rather than a borrowed default.
+    assert_eq!(record.ttl_ms, 0);
+    assert_eq!(record.poll_interval_ms, 0);
+    // A2A's settled answer is its artifact stream and its final message, neither of which lives on
+    // the row — so nothing is carried under a member that means "the settled answer".
+    assert_eq!(record.result, None);
+    assert_eq!(record.error, None);
+    assert!(record.input_requests.is_empty());
+
+    // THE PRIVACY RULE, unchanged by the face: foreign and nonexistent are ONE answer.
+    assert_eq!(reg.get("t-paused", "key-1"), None, "not key-1's task");
+    assert_eq!(
+        reg.get("t-does-not-exist", "key-1"),
+        None,
+        "and a nonexistent id is INDISTINGUISHABLE from a foreign one through the face too"
+    );
+    assert_eq!(
+        reg.get("t-work", ""),
+        None,
+        "an empty principal owns nothing"
+    );
+}

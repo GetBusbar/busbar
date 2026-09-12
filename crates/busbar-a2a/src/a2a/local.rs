@@ -784,24 +784,33 @@ pub(crate) fn subscribe_refusal(
     let named = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(serde_json::Value::as_str))?;
-    match crate::taskstore::TASKS.get_scoped(principal, named) {
+    // THROUGH THE CONTRACT FACE. This verb's whole need of the store is the SCOPED RESOLUTION plus
+    // the state token, which is exactly `busbar_contract::tasks::TaskRecord` — so it reads the same
+    // face `busbar-mcp`'s task methods read, implemented on this plane's own registry over the same
+    // `get_scoped` predicate. The two planes' task surfaces now share one gate rather than two that
+    // agree today. `receive::addressed_task` and `local::addressed` still read the ROW: they need
+    // the whole of it, including the integer timestamps the face pre-formats away — see the impl's
+    // own measurement note in `crate::taskstore`.
+    match busbar_contract::tasks::TaskStore::get(&*crate::taskstore::TASKS, named, principal) {
         // NOT BUSBAR'S, OR NOT THIS CALLER'S — one answer for both, because "there is no such task"
-        // and "there is such a task and it is not yours" must not be distinguishable. The scoped read
-        // collapses both to `Err(Denied)` deliberately.
-        Err(_) => Some(err(
+        // and "there is such a task and it is not yours" must not be distinguishable. The face
+        // collapses both to `None` deliberately, exactly as the scoped read it is implemented over
+        // collapsed both to `Err(Denied)`.
+        None => Some(err(
             rpc_id,
             A2aError::TaskNotFound,
             "no task with that id is open for this caller",
         )),
-        Ok(row) => match Task::from_row(&row) {
-            Ok(task) if task.state.is_terminal() => Some(err(
+        Some(record) => match TaskState::parse(&record.status) {
+            Ok(state) if state.is_terminal() => Some(err(
                 rpc_id,
                 A2aError::UnsupportedOperation,
                 "this task has reached a terminal state, so there are no further events to \
                  subscribe to",
             )),
-            // A live task is the backend's to answer; so is a row this verb cannot reconstruct,
-            // which is not busbar's to refuse on the caller's behalf.
+            // A live task is the backend's to answer; so is a state token this binary does not know,
+            // which is not busbar's to refuse on the caller's behalf — `TaskState::parse` fails
+            // CLOSED on an unknown token for exactly that reason.
             _ => None,
         },
     }

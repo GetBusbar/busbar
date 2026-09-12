@@ -296,7 +296,7 @@ because = "the audit unit's own record and window verifier, named by the root th
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3663
+contract_caps = 3665
 grammar = 388
 contract_transport = 845
 
@@ -517,12 +517,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5382
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3665
+caps_contract_ceiling = 3667
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 15149
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24196
+union_ceiling = 24198
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -2195,3 +2195,108 @@ key = "cell.busbar-mcp.transport.count"
 file = "qa/kind-isolation.toml"
 by = 7
 because = "the four new cells drive method::dispatch the same way method_tests.rs::call already does, which means naming axum::http::{HeaderMap, StatusCode} and axum::body::to_bytes directly; the shared TaskCtxFixture and dispatch_task_method helper hold those names once each rather than once per cell, and the assertions on the 200/400 split name StatusCode again at each terminal they pin."
+
+# ── MCP-G (1.6.0): A2A ON THE SAME FACE, AND THE MEASUREMENT THAT SAYS WHAT DOES NOT CROSS ──────
+#
+# section 11.1's measure table claimed a2a's twin task handlers reach the identical three substrate
+# names. They do -- but measuring what a2a's task surface actually NEEDS off its store settles three
+# questions the plan left open, and two of them settle as "this does not cross".
+#
+# 1. THE WRITES ARE A SECOND FACE, SPLIT BY CAPABILITY. busbar-a2a's registry has NEITHER of
+#    TaskStore's write verbs, and not by omission: its `input-required` is answered by a fresh
+#    message/send on the task's own context (a new request, not a write to a stored row), so there is
+#    no delivery verb at all; and every mutation it does have is a HASH-CHAINED transition whose
+#    event names the request that caused it, so a cancel reaching it through a face carrying no
+#    request id would either break the chain or mint a join key inside the store -- the one thing a
+#    provenance chain exists to make impossible. So `update`/`cancel` move off `TaskStore` onto
+#    `busbar_contract::tasks::TaskAnswers`, which a store implements when it HAS those verbs.
+#    busbar-mcp's Registry implements both; busbar-a2a's implements the read. The alternative was
+#    making busbar-a2a answer None -- "no such task for this caller" -- to a verb it does not have,
+#    which is a lie in exactly the register the privacy rule cannot afford one.
+#
+# 2. context_id / artifact_cursor / push_callback ARE NOT RECORD FIELDS, and are not bytes in
+#    `result` either. Three members one plane fills and the other leaves empty for ever would be the
+#    face taking a position on a2a's session model, and `direction` and `agent_id` would be next;
+#    `result` means "the settled answer" and a live task's session id is not one. MEASURED AGAINST
+#    THE CONSUMERS: a2a::receive::addressed_task and a2a::local::addressed need the WHOLE row,
+#    including the integer created_at/updated_at this face deliberately pre-formats away, so routing
+#    them through TaskRecord would be a lossy round trip that bought a uniform call shape and paid
+#    for it in fidelity. They keep reading the row. What the two planes genuinely share is the SCOPED
+#    RESOLUTION, and that is what crosses: TaskRegistry implements TaskStore over its existing
+#    get_scoped predicate -- ONE gate read two ways, not two gates that agree today -- and
+#    a2a::local::subscribe_refusal, whose whole need of the store is that resolution plus the state
+#    token, reads the face.
+#
+# 3. A2A's DISCOVER TWIN DOES NOT TAKE CatalogueView, and this is recorded rather than deferred.
+#    a2a's catalogue read (`registry::entitled_agents`, the extended agent card) is scoped by a
+#    caller-authored FITNESS QUERY -- a TaskShape the walk matches skills against -- and carries the
+#    matched skill out as the walk's `Fit`. mcp's three inventories take no query and carry no fit.
+#    Putting a2a's query through CatalogueView would mean the face carrying a task-shape vocabulary
+#    mcp has no use for, which is the same verdict as (2) on the same grounds. Both planes already
+#    share the walk that matters -- `busbar_substrate::catalogue::{visible,rendered,judge}`, core's
+#    own, entitlement-before-fitness -- so the coupling the face would add is not coupling the
+#    catalogue read was missing.
+#
+# RED FIRST. With TaskRegistry's TaskStore::get forced to return None unconditionally, 7 cells red
+# (the three subscribe_refusal cells in local_tests -- the handler that now reads the face -- the
+# four client_leg subscribe cells that ride it, and the new
+# the_contract_face_answers_this_planes_scoped_read_and_nothing_more) and the other 581 stay green.
+# Reverted, green: 587 -> 588 with the one added cell.
+#
+# NO SECOND DATE RENDERER. The face's timestamps are pre-formatted, and a2a's row keeps UNIX SECONDS,
+# so the impl renders through busbar_substrate::civil::rfc3339_from_secs -- the renderer this plane's
+# push-notification `status.timestamp` already uses. BARE SECONDS rather than mcp's millisecond
+# suffix, because this store's clock has no sub-second component and inventing `.000` would be the
+# face claiming a precision the row does not carry; both spellings are RFC 3339. A second renderer
+# written here to match mcp's digits would have been two answers to "what time is it".
+#
+# MEASURED. busbar-contract production as the gate counts it 2512 -> 2514 (+2: the TaskAnswers trait
+# line and the TaskStore close). caps_contract_ceiling 3665 -> 3667,
+# gate.surface_ceilings.contract_caps 3663 -> 3665, union_ceiling 24196 -> 24198 (PH-4's landed
+# 24097 carried through MCP-F's +16 and MCP-G's +75/+8; the earlier cut read 23996 -> 23998 off a
+# base PH-4 was absent from). kind-isolation, every figure against the gate's own base
+# (ceilings::base_ref = merge-base(HEAD, integration/oracle-phase0) = 468bad13): busbar-a2a x api
+# 210 -> 211, busbar-a2a x plane 2758 -> 2775 — 2758 is the BASE's figure and the rise ceiling-rose
+# measures is 17, not the 18 a diff against this commit's parent reads, because two unlanded lines
+# (PH-4 and MCP-M2) each lowered that cell to 2757 on their way here and neither declared a drop —
+# busbar-contract x plane 52 -> 55, busbar-mcp x plane 3472 -> 3476, each declared below; one new
+# [[dep]] row, busbar-a2a -> busbar-contract, verdict allowed.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 2
+because = "the CAPABILITY SPLIT of the task face: `pub trait TaskAnswers {` and the brace that now closes `TaskStore` after its one remaining verb. No method is added and none is removed -- `update` and `cancel` MOVE to the second trait, which is why two lines and not fifty. busbar-contract production 2512 -> 2514."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 2
+because = "the same 2 lines as the LOC line above, on the surface line as well. A plugin author reads one more trait NAME and the same two method signatures; what changed is which face a store has to implement to claim which verb, which is the thing the split exists to make legible."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 2
+because = "the same two lines carried through the union (which carries busbar-contract) and nothing else. Neither face is a unit, so unit_total_ceiling does not move."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the new taskstore cell (the_contract_face_answers_this_planes_scoped_read_and_nothing_more) builds its durable fixture through `Arc<dyn busbar_api::Store>`, exactly as every other cell in that file already does -- one more line of the same construction, in the same helper shape."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.plane.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = "the TaskStore impl on TaskRegistry and its measurement note (which names what a PLANE's task row carries and what it therefore does not put on a kind-neutral face), subscribe_refusal's re-spelling onto the face, and the new cell's assertions. The same asymmetry busbar-mcp's own +25/+42 record: plane VOCABULARY rises at the seam when a store is written down as a face rather than as a private predicate. MEASURED AGAINST THE GATE'S OWN BASE, which is ceilings::base_ref = merge-base(HEAD, integration/oracle-phase0) = 468bad13 and never the git parent: the cell reads 2758 there and 2775 here, so the rise is 17. A diff against this commit's PARENT reads 2757 -> 2775 and would say 18; the missing one is a drop PH-4 and MCP-M2 each took on their way here without declaring it, which is allowed in the direction that lowers and is not this commit's to buy back."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar_contract::tasks::TaskAnswers's own doc prose, which states the measurement the split rests on -- that one PLANE's store has both verbs and the other's has neither, and why forcing both onto one trait would have made the second lie. Vocabulary the matrix scanner scores on the word, not a dependency edge. 3 hits, all in crates/busbar-contract/src/tasks.rs."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.plane.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the TaskAnswers impl's own header on busbar-mcp's Registry, which says out loud why THIS plane implements the write face and the other does not -- an a2a input-required is answered by a fresh message/send on the task's context rather than by a write to a stored row. Four lines of prose naming the other plane, at the one place a reader of this impl would ask the question."

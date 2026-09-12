@@ -1248,7 +1248,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
         "jsonrpc": "2.0", "id": "t0",
         "result": { "resultType": "task", "taskId": task.id, "status": "submitted" },
     }));
-    busbar_contract::tasks::TaskStore::cancel(
+    busbar_contract::tasks::TaskAnswers::cancel(
         &*crate::mcp::tasks::TASKS,
         &task.id,
         "anonymous",

@@ -3,7 +3,7 @@
 //! private items it always did.
 
 use super::{cancel, detailed_document, get, update};
-use busbar_contract::tasks::{TaskRecord, TaskStore};
+use busbar_contract::tasks::{TaskAnswers, TaskRecord, TaskStore};
 
 fn minimal_record() -> TaskRecord {
     TaskRecord {
@@ -80,7 +80,9 @@ impl TaskStore for FakeStore {
     fn get(&self, _id: &str, _principal: &str) -> Option<TaskRecord> {
         self.0.clone()
     }
+}
 
+impl TaskAnswers for FakeStore {
     fn update(
         &self,
         _id: &str,
@@ -107,11 +109,7 @@ impl TaskStore for FakeStore {
 /// fails on the store's side, which is exactly where the encoding is owed.
 struct AssertingStore(&'static [(&'static str, &'static str)]);
 
-impl TaskStore for AssertingStore {
-    fn get(&self, _id: &str, _principal: &str) -> Option<TaskRecord> {
-        None
-    }
-
+impl TaskAnswers for AssertingStore {
     fn update(
         &self,
         _id: &str,
